@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -96,6 +97,63 @@ func pkcs7Unpad(data []byte, blockSize int) ([]byte, error) {
 		}
 	}
 	return data[:len(data)-pad], nil
+}
+
+func EncryptFernet(plaintext []byte, key []byte) ([]byte, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("invalid fernet key length %d", len(key))
+	}
+	iv := make([]byte, 16)
+	if _, err := rand.Read(iv); err != nil {
+		return nil, err
+	}
+	encryptionKey := key[16:]
+	block, err := aes.NewCipher(encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	padded := pkcs7Pad(plaintext, block.BlockSize())
+	ciphertext := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, padded)
+
+	ts := make([]byte, 8)
+	binaryBigEndianWrite(ts, uint64(time.Now().Unix()))
+
+	msg := make([]byte, 0, 1+8+16+len(ciphertext))
+	msg = append(msg, 0x80)
+	msg = append(msg, ts...)
+	msg = append(msg, iv...)
+	msg = append(msg, ciphertext...)
+
+	signingKey := key[:16]
+	mac := hmac.New(sha256.New, signingKey)
+	mac.Write(msg)
+	sig := mac.Sum(nil)
+
+	token := make([]byte, len(msg)+32)
+	copy(token, msg)
+	copy(token[len(msg):], sig)
+
+	encoded := make([]byte, base64.URLEncoding.EncodedLen(len(token)))
+	base64.URLEncoding.Encode(encoded, token)
+	return encoded, nil
+}
+
+func pkcs7Pad(data []byte, blockSize int) []byte {
+	pad := blockSize - len(data)%blockSize
+	padded := make([]byte, len(data)+pad)
+	copy(padded, data)
+	for i := len(data); i < len(padded); i++ {
+		padded[i] = byte(pad)
+	}
+	return padded
+}
+
+func binaryBigEndianWrite(b []byte, n uint64) {
+	for i := 7; i >= 0; i-- {
+		b[i] = byte(n)
+		n >>= 8
+	}
 }
 
 func binaryBigEndian(b []byte) uint64 {

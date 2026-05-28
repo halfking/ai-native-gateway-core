@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
@@ -227,9 +228,10 @@ func (e *Executor) tryCandidate(
 			}
 		}
 
-		upstreamURL := cand.BaseURL + "/v1/chat/completions"
+		base := strings.TrimRight(cand.BaseURL, "/")
+		upstreamURL := base + "/chat/completions"
 		if cand.Protocol == "anthropic-messages" {
-			upstreamURL = cand.BaseURL + "/v1/messages"
+			upstreamURL = base + "/messages"
 		}
 
 		req, err := http.NewRequestWithContext(

@@ -60,19 +60,17 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.dbPool.Query(ctx, `
 		SELECT DISTINCT
 			mc.canonical_name,
-			mc.family,
-			COALESCE(mc.modality, 'chat') AS modality
+			COALESCE(mc.family, 'unknown') AS family,
+			COALESCE(mc.modality, 'text') AS modality
 		FROM models_canonical mc
 		JOIN model_offers mo ON mo.canonical_id = mc.id
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE mc.status = 'active'
-		  AND mo.available = TRUE
-		  AND c.lifecycle_status = 'active'
-		  AND c.availability_state = 'ready'
-		  AND c.quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')
-		  AND p.status = 'active'
-		ORDER BY mc.family, mc.canonical_name
+		WHERE mo.available = TRUE
+		  AND c.status = 'active'
+		  AND c.trust_level NOT IN ('quarantine')
+		  AND p.enabled = TRUE
+		ORDER BY family, mc.canonical_name
 	`)
 	if err != nil {
 		slog.Error("models: db query failed", "error", err)

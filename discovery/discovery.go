@@ -162,16 +162,16 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		SELECT
 			c.id,
 			p.id AS provider_id,
-			p.name AS provider_name,
+			p.display_name AS provider_name,
 			p.base_url,
 			p.protocol,
 			p.catalog_code,
 			c.secret_ciphertext
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		WHERE c.lifecycle_status = 'active'
-		  AND c.availability_state NOT IN ('suspended', 'auth_failed')
-		  AND p.status = 'active'
+		WHERE c.status = 'active'
+		  AND c.trust_level NOT IN ('quarantine')
+		  AND p.enabled = TRUE
 	`)
 	if err != nil {
 		return nil, err

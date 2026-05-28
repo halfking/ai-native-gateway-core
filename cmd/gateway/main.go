@@ -28,7 +28,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
@@ -43,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/relay"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -161,6 +164,30 @@ func main() {
 		slog.Info("model discovery service enabled")
 	}
 
+	// ── Admin API ───────────────────────────────────────────────────────
+	var adminHandler *admin.Handler
+	if dbConn != nil && dbConn.Enabled() {
+		fernetKey, ferr := secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
+		if ferr != nil {
+			slog.Warn("admin API: fernet key unavailable", "error", ferr)
+			fernetKey = nil
+		}
+		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+	}
+
+	// ── Background Services ─────────────────────────────────────────────
+	var credRecovery *bg.CredentialRecovery
+	var stickyCleaner *bg.StickyCleaner
+	var envelopeCleaner *bg.EnvelopeCleaner
+	if dbConn != nil && dbConn.Enabled() {
+		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
+		credRecovery.Start(context.Background())
+		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
+		stickyCleaner.Start(context.Background())
+		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
+		envelopeCleaner.Start(context.Background())
+	}
+
 	// ── Listen address ────────────────────────────────────────────────────
 	listen := os.Getenv("LLM_GATEWAY_LISTEN")
 	if listen == "" {
@@ -202,11 +229,17 @@ func main() {
 			if r.URL.Path == "/" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"service":"llm-gateway-go","version":"0.2.0"}`))
+				w.Write([]byte(`{"service":"llm-gateway-go","version":"0.3.0"}`))
 				return
 			}
 			http.NotFound(w, r)
 		})
+	}
+
+	// Admin API routes
+	if adminHandler != nil {
+		adminHandler.RegisterRoutes(mux)
+		slog.Info("admin API enabled")
 	}
 
 	// ── Middleware stack ──────────────────────────────────────────────────
@@ -243,6 +276,15 @@ func main() {
 	// Stop discovery service first
 	if discoverySvc != nil {
 		discoverySvc.Stop()
+	}
+	if credRecovery != nil {
+		credRecovery.Stop()
+	}
+	if stickyCleaner != nil {
+		stickyCleaner.Stop()
+	}
+	if envelopeCleaner != nil {
+		envelopeCleaner.Stop()
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

@@ -133,7 +133,8 @@ func BuildUpstreamRequest(
 	stream bool,
 	id *identity.ClientIdentity,
 ) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1/chat/completions", body)
+	base := strings.TrimRight(baseURL, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", body)
 	if err != nil {
 		return nil, err
 	}
