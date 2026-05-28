@@ -198,7 +198,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	clientID := identity.BuildIdentityFromRequest(r, "default", nil, nil, "")
 	identityHash := clientID.ShortID()
 
-	auditBuilder := audit.NewEvent().
+	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).
 		IdentityHash(identityHash).
 		ClientProfile(clientID.Fingerprint.ClientProfile).
@@ -293,7 +293,6 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_ = result
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 	if h.sticky != nil && policy != nil {
 		stickyKey := routing.BuildStickyKey("default", nil, nil, endUser, clientID.Fingerprint.PrimarySeed())
@@ -304,10 +303,10 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		h.sticky.Set(stickyKey, result.Candidate.CredentialID, stickyTTL)
 	}
 
-	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture)
+	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody)
 }
 
-func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture) {
+func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transform.TransformResult, requestBody []byte, responseBody []byte) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -332,10 +331,36 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		ClientModel:        strPtr(evt.ClientModel),
 		OutboundModel:      strPtr(evt.OutboundModel),
 		ClientProfile:      strPtr(evt.ClientProfile),
-		RequestMode:        strPtr("chat"),
+			RequestMode:        strPtr(requestMode),
 		IdentityHash:       strPtr(evt.IdentityHash),
 		TransformRuleID:    strPtr(evt.TransformRule),
 	})
+
+	var requestBodyText *string
+	if len(requestBody) > 0 {
+		v := string(requestBody)
+		requestBodyText = &v
+	}
+	var responseBodyText *string
+	if len(responseBody) > 0 {
+		v := string(responseBody)
+		responseBodyText = &v
+	}
+	requestPreviewText := requestPreview(requestBody)
+	transformSummaryText := transformSummary(txResult, evt.OutboundModel)
+	responsePreviewText := responsePreview(responseBody)
+	var requestPreviewPtr *string
+	if requestPreviewText != "" {
+		requestPreviewPtr = strPtr(requestPreviewText)
+	}
+	var transformSummaryPtr *string
+	if transformSummaryText != "" {
+		transformSummaryPtr = strPtr(transformSummaryText)
+	}
+	var responsePreviewPtr *string
+	if responsePreviewText != "" {
+		responsePreviewPtr = strPtr(responsePreviewText)
+	}
 
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:     evt.RequestID,
@@ -347,10 +372,15 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		CredentialID:  intPtr(result.Candidate.CredentialID),
 		ProviderID:    intPtr(result.Candidate.ProviderID),
 		ClientProfile: strPtr(evt.ClientProfile),
-		RequestMode:   strPtr("chat"),
+		RequestMode:   strPtr(requestMode),
 		LatencyMs:     intPtr(result.LatencyMs),
 		Success:       true,
 		IdentityHash:  strPtr(evt.IdentityHash),
+		RequestPreview: requestPreviewPtr,
+		TransformSummary: transformSummaryPtr,
+		ResponsePreview: responsePreviewPtr,
+		RequestBody: requestBodyText,
+		ResponseBody: responseBodyText,
 	}
 
 	if capture != nil {
@@ -381,6 +411,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 		if v, ok := m["stream_interrupted"].(bool); ok {
 			reqLog.StreamInterrupted = &v
+		}
+		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {
+			reqLog.ResponsePreview = strPtr(v)
 		}
 	}
 
@@ -493,7 +526,7 @@ func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Audit event builder ────────────────────────────────────────────
-	auditBuilder := audit.NewEvent().
+	auditBuilder := newAuditEvent(r.Header.Get("X-Request-Id")).
 		ClientModel(clientModel).
 		OutboundModel(explicitOutbound).
 		IdentityHash(identityHash).
@@ -660,10 +693,7 @@ func ChatCompletionsPhase3(
 
 	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 		slog.Error("upstream request failed", "error", uErr)
-		errKind := errorsx.ErrorKind("")
-		if uErr != nil {
-			errKind = uErr.Kind
-		}
+		errKind := uErr.Kind
 		writeJSON(w, http.StatusBadGateway, map[string]any{
 			"error": map[string]string{
 				"message": "Provider service is currently unavailable. Please try again later.",

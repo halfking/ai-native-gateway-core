@@ -72,6 +72,11 @@ type requestLogInput struct {
 	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
 	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
 	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
+	RequestPreview     *string  `json:"request_preview,omitempty"`
+	TransformSummary   *string  `json:"transform_summary,omitempty"`
+	ResponsePreview    *string  `json:"response_preview,omitempty"`
+	RequestBody        *string  `json:"request_body,omitempty"`
+	ResponseBody       *string  `json:"response_body,omitempty"`
 }
 
 type batchEntry struct {
@@ -236,6 +241,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			cost_usd, latency_ms, success, error_kind, search_text,
 			identity_hash, response_checksum,
 			transform_rule_id, egress_protocol, failure_detail_code,
+			request_preview, transform_summary, response_preview,
+			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted
 		) VALUES (
@@ -249,7 +256,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			$23, $24,
 			$25, $26, $27,
 			$28, $29, $30,
-			$31
+			CAST($31 AS jsonb), CAST($32 AS jsonb),
+			$33, $34, $35,
+			$36
 		)
 	`,
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
@@ -261,6 +270,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.CostUSD, e.LatencyMs, e.Success, e.ErrorKind, search,
 		e.IdentityHash, e.ResponseChecksum,
 		e.TransformRuleID, e.EgressProtocol, e.FailureDetailCode,
+		e.RequestPreview, e.TransformSummary, e.ResponsePreview,
+		e.RequestBody, e.ResponseBody,
 		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 		e.StreamInterrupted,
 	)

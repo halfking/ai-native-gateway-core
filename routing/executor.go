@@ -83,6 +83,7 @@ type ExecParams struct {
 	R             *http.Request
 	BodyBytes     []byte
 	IsStream      bool
+	SuppressSuccessWrite bool
 	ClientModel   string
 	OutboundModel string
 	ClientID      identity.ClientIdentity
@@ -99,6 +100,8 @@ type ExecuteResult struct {
 	Response  *http.Response
 	Candidate provider.Candidate
 	LatencyMs int
+	RequestBody []byte
+	ResponseBody []byte
 }
 
 type ExecuteError struct {
@@ -213,7 +216,7 @@ func (e *Executor) tryCandidate(
 			profileName = params.ClientID.Fingerprint.ClientProfile
 		}
 		if profileName != "" {
-			bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, "default", 0)
+			bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
 			slog.Debug("disguise layer applied", "profile", profileName)
 		}
 	}
@@ -305,10 +308,7 @@ func (e *Executor) tryCandidate(
 		}
 
 		if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
-			errKind := errorsx.ErrorKind("")
-			if uErr != nil {
-				errKind = uErr.Kind
-			}
+			errKind := uErr.Kind
 			if errKind == errorsx.KindRateLimit {
 				e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 			}
@@ -356,6 +356,12 @@ func (e *Executor) tryCandidate(
 			} else if e.StreamChat != nil {
 				e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
 			}
+			return &ExecuteResult{
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
+			}, nil
 		} else {
 			defer resp.Body.Close()
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodySize)+1))
@@ -372,20 +378,23 @@ func (e *Executor) tryCandidate(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
-			for k, vs := range resp.Header {
-				for _, v := range vs {
-					params.W.Header().Add(k, v)
+			if !params.SuppressSuccessWrite {
+				for k, vs := range resp.Header {
+					for _, v := range vs {
+						params.W.Header().Add(k, v)
+					}
 				}
+				params.W.WriteHeader(resp.StatusCode)
+				params.W.Write(respBody)
 			}
-			params.W.WriteHeader(resp.StatusCode)
-			params.W.Write(respBody)
+			return &ExecuteResult{
+				Response:     resp,
+				Candidate:    cand,
+				LatencyMs:    latencyMs,
+				RequestBody:  append([]byte(nil), bodyBytes...),
+				ResponseBody: append([]byte(nil), respBody...),
+			}, nil
 		}
-
-		return &ExecuteResult{
-			Response:  resp,
-			Candidate: cand,
-			LatencyMs: latencyMs,
-		}, nil
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
 }

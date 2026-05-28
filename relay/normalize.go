@@ -142,7 +142,6 @@ func (n *Normalizer) normalizeStreamChunk(data []byte) []byte {
 			if err := json.Unmarshal(frRaw, &frNull); err == nil && frNull == nil {
 				continue
 			}
-			continue
 		}
 		if frStr == "" || frStr == "null" {
 			continue

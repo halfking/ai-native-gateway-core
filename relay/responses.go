@@ -24,6 +24,29 @@ type responsesRequestBody struct {
 	Stream         bool            `json:"stream"`
 	Temperature    *float64        `json:"temperature,omitempty"`
 	TopP           *float64        `json:"top_p,omitempty"`
+	Extra          map[string]json.RawMessage `json:"-"`
+}
+
+func (r *responsesRequestBody) UnmarshalJSON(data []byte) error {
+	type alias responsesRequestBody
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	delete(raw, "model")
+	delete(raw, "input")
+	delete(raw, "instructions")
+	delete(raw, "max_output_tokens")
+	delete(raw, "stream")
+	delete(raw, "temperature")
+	delete(raw, "top_p")
+	*r = responsesRequestBody(decoded)
+	r.Extra = raw
+	return nil
 }
 
 type ResponsesHandler struct {
@@ -101,7 +124,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), "")
 
-	auditBuilder := audit.NewEvent().
+	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).
 		IdentityHash(clientID.ShortID()).
 		ClientProfile(clientID.Fingerprint.ClientProfile).
@@ -132,7 +155,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var txResult *transform.TransformResult
 	tCtx := &transform.TransformContext{
-		RequestMode:   "chat",
+		RequestMode:   "responses",
 		ClientProfile: clientID.Fingerprint.ClientProfile,
 		ClientModel:   clientModel,
 	}
@@ -152,6 +175,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		R:             r,
 		BodyBytes:     chatBodyBytes,
 		IsStream:      isStream,
+		SuppressSuccessWrite: !isStream,
 		ClientModel:   clientModel,
 		OutboundModel: explicitOutbound,
 		ClientID:      clientID,
@@ -173,7 +197,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = result
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
 	if h.chatHandler.sticky != nil && policy != nil {
@@ -185,11 +208,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.sticky.Set(stickyKey, result.Candidate.CredentialID, stickyTTL)
 	}
 
+	var responseBody []byte
 	if !isStream {
-		h.writeNonStreamResponse(w, result.Response, clientModel, requestID)
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture)
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.RequestBody, responseBody)
 }
 
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
@@ -239,18 +263,67 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 		chatBody["top_p"] = *req.TopP
 	}
 
+	for key, raw := range req.Extra {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		if key == "tools" {
+			value = normalizeResponsesTools(value)
+		}
+		chatBody[key] = value
+	}
+
 	return chatBody
 }
 
-func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, requestID string) {
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodySize)+1))
-	if err != nil {
-		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
-		return
+func normalizeResponsesTools(value any) any {
+	tools, ok := value.([]any)
+	if !ok {
+		return value
 	}
-	if len(body) > maxBodySize {
-		body = body[:maxBodySize]
+
+	normalized := make([]any, 0, len(tools))
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			normalized = append(normalized, item)
+			continue
+		}
+		if _, exists := tool["function"]; exists {
+			normalized = append(normalized, tool)
+			continue
+		}
+		if toolType, _ := tool["type"].(string); toolType != "function" {
+			normalized = append(normalized, tool)
+			continue
+		}
+
+		function := map[string]any{}
+		for _, key := range []string{"name", "description", "parameters", "strict"} {
+			if val, exists := tool[key]; exists {
+				function[key] = val
+				delete(tool, key)
+			}
+		}
+		if len(function) == 0 {
+			normalized = append(normalized, tool)
+			continue
+		}
+		tool["function"] = function
+		normalized = append(normalized, tool)
+	}
+
+	return normalized
+}
+
+func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+	if len(body) == 0 {
+		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
+		return nil
 	}
 
 	respBody := convertChatResponseToResponses(body, clientModel, requestID)
@@ -259,6 +332,7 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, resp *h
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBody)
+	return respBody
 }
 
 func convertChatResponseToResponses(body []byte, clientModel, requestID string) []byte {
@@ -274,6 +348,8 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 
 	finishReason := "stop"
 	textContent := ""
+	reasoningContent := ""
+	var toolCalls []map[string]any
 
 	if len(choices) > 0 {
 		choice := choices[0]
@@ -283,6 +359,18 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 		if msg, ok := choice["message"].(map[string]any); ok {
 			if c, ok := msg["content"].(string); ok {
 				textContent = c
+			}
+			if rc, ok := msg["reasoning_content"].(string); ok {
+				reasoningContent = rc
+			}
+			if tc, ok := msg["tool_calls"].([]any); ok {
+				for _, call := range tc {
+					toolCall, ok := call.(map[string]any)
+					if !ok {
+						continue
+					}
+					toolCalls = append(toolCalls, toolCall)
+				}
 			}
 		}
 	}
@@ -328,27 +416,55 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 		msgID += requestID
 	}
 
+	output := make([]map[string]any, 0, 2)
+	if reasoningContent != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning",
+			"id":   msgID + "_reasoning",
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": reasoningContent,
+			}},
+		})
+	}
+	if len(toolCalls) > 0 {
+		for index, call := range toolCalls {
+			function, _ := call["function"].(map[string]any)
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			callID, _ := call["id"].(string)
+			output = append(output, map[string]any{
+				"type":      "function_call",
+				"id":        fmt.Sprintf("%s_fc_%d", msgID, index),
+				"call_id":   callID,
+				"name":      name,
+				"arguments": arguments,
+				"status":    "completed",
+			})
+		}
+	} else {
+		output = append(output, map[string]any{
+			"type":   "message",
+			"id":     msgID,
+			"status": status,
+			"role":   "assistant",
+			"content": []map[string]any{
+				{
+					"type":        "output_text",
+					"text":        textContent,
+					"annotations": []any{},
+				},
+			},
+		})
+	}
+
 	resp := map[string]any{
 		"id":         respID,
 		"object":     "response",
 		"created_at": created,
 		"model":      clientModel,
 		"status":     status,
-		"output": []map[string]any{
-			{
-				"type":   "message",
-				"id":     msgID,
-				"status": status,
-				"role":   "assistant",
-				"content": []map[string]any{
-					{
-						"type":        "output_text",
-						"text":        textContent,
-						"annotations": []any{},
-					},
-				},
-			},
-		},
+		"output":     output,
 		"usage": map[string]any{
 			"input_tokens":  inputTokens,
 			"output_tokens": outputTokens,

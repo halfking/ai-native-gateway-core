@@ -22,7 +22,10 @@ FROM --platform=linux/amd64 alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 1001 llmgw
 
+WORKDIR /opt/llm-gateway-go
+
 COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
+COPY --from=builder /src/web/dist ./web/dist
 
 USER llmgw
 

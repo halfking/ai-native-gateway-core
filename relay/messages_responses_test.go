@@ -347,6 +347,49 @@ func TestConvertResponsesToChatBody_Array(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesToChatBody_PreservesExtraParams(t *testing.T) {
+	var req responsesRequestBody
+	if err := json.Unmarshal([]byte(`{
+		"model":"mimo-v2.5-pro",
+		"input":[{"role":"user","content":"我们现在是什么模型？"}],
+		"tools":[{"type":"function","name":"get_model","parameters":{"type":"object"}}],
+		"tool_choice":"required",
+		"reasoning":{"effort":"high"},
+		"parallel_tool_calls":true,
+		"max_output_tokens":256,
+		"stream":false
+	}`), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	result := convertResponsesToChatBody(&req)
+	tools, ok := result["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected tools to be preserved, got %T %#v", result["tools"], result["tools"])
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first tool to be an object, got %T", tools[0])
+	}
+	function, ok := tool["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized function payload, got %#v", tool)
+	}
+	if function["name"] != "get_model" {
+		t.Fatalf("expected function.name=get_model, got %#v", function)
+	}
+	if result["tool_choice"] != "required" {
+		t.Fatalf("expected tool_choice=required, got %v", result["tool_choice"])
+	}
+	reasoning, ok := result["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", result["reasoning"])
+	}
+	if result["parallel_tool_calls"] != true {
+		t.Fatalf("expected parallel_tool_calls=true, got %v", result["parallel_tool_calls"])
+	}
+}
+
 func TestConvertChatResponseToResponses(t *testing.T) {
 	chatResp := map[string]any{
 		"choices": []map[string]any{
@@ -406,6 +449,43 @@ func TestConvertChatResponseToResponses_Incomplete(t *testing.T) {
 	json.Unmarshal(result, &resp)
 	if resp["status"] != "incomplete" {
 		t.Fatalf("expected incomplete, got %v", resp["status"])
+	}
+}
+
+func TestConvertChatResponseToResponses_ToolCalls(t *testing.T) {
+	body := []byte(`{
+		"choices":[{
+			"finish_reason":"tool_calls",
+			"message":{
+				"content":"",
+				"reasoning_content":"need to call tool",
+				"tool_calls":[{
+					"id":"call_123",
+					"type":"function",
+					"function":{"name":"get_time","arguments":"{}"}
+				}]
+			}
+		}]
+	}`)
+
+	result := convertChatResponseToResponses(body, "gpt-4o", "req-id-456")
+
+	var resp map[string]any
+	if err := json.Unmarshal(result, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	output, ok := resp["output"].([]any)
+	if !ok || len(output) != 2 {
+		t.Fatalf("expected 2 output items, got %#v", resp["output"])
+	}
+	if output[0].(map[string]any)["type"] != "reasoning" {
+		t.Fatalf("expected reasoning output first, got %#v", output[0])
+	}
+	if output[1].(map[string]any)["type"] != "function_call" {
+		t.Fatalf("expected function_call output second, got %#v", output[1])
+	}
+	if output[1].(map[string]any)["name"] != "get_time" {
+		t.Fatalf("expected function_call name get_time, got %#v", output[1])
 	}
 }
 

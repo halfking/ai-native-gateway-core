@@ -120,7 +120,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), "")
 
-	auditBuilder := audit.NewEvent().
+	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).
 		IdentityHash(clientID.ShortID()).
 		ClientProfile(clientID.Fingerprint.ClientProfile).
@@ -171,6 +171,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		R:             r,
 		BodyBytes:     chatBodyBytes,
 		IsStream:      isStream,
+		SuppressSuccessWrite: !isStream,
 		ClientModel:   clientModel,
 		OutboundModel: explicitOutbound,
 		ClientID:      clientID,
@@ -192,7 +193,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = result
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
 	if h.chatHandler.sticky != nil && policy != nil {
@@ -204,11 +204,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.sticky.Set(stickyKey, result.Candidate.CredentialID, stickyTTL)
 	}
 
+	var responseBody []byte
 	if !isStream {
-		h.writeNonStreamResponse(w, result.Response, clientModel, requestID)
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture)
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.RequestBody, responseBody)
 }
 
 func (h *MessagesHandler) convertToChatBody(req *messagesRequestBody) map[string]any {
@@ -460,15 +461,10 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 	return v
 }
 
-func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, requestID string) {
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodySize)+1))
-	if err != nil {
+func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
-		return
-	}
-	if len(body) > maxBodySize {
-		body = body[:maxBodySize]
+		return nil
 	}
 
 	anthropicBody := convertChatResponseToAnthropic(body, clientModel, requestID)
@@ -477,6 +473,7 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, resp *ht
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
 	w.Write(anthropicBody)
+	return anthropicBody
 }
 
 func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) []byte {
