@@ -31,6 +31,22 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch remaining {
+	case "verify":
+		h.verifyKey(w, r)
+		return
+	case "budget-check":
+		h.budgetCheck(w, r)
+		return
+	case "apply":
+		if r.Method == http.MethodPost {
+			h.adminApplyForKey(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
 	idStr := remaining
 	subPath := ""
 	for i, c := range remaining {
