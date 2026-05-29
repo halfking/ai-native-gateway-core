@@ -23,9 +23,9 @@ var (
 )
 
 const (
-	streamBufSize            = 64 * 1024
-	sseKeepaliveComment      = ": keep-alive\n\n"
-	sseKeepaliveEnvVar       = "LLM_GATEWAY_KEEPALIVE_INTERVAL"
+	streamBufSize             = 64 * 1024
+	sseKeepaliveComment       = ": keep-alive\n\n"
+	sseKeepaliveEnvVar        = "LLM_GATEWAY_KEEPALIVE_INTERVAL"
 	sseFirstByteTimeoutEnvVar = "LLM_GATEWAY_FIRST_BYTE_TIMEOUT"
 )
 
@@ -70,6 +70,10 @@ func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboun
 }
 
 func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) {
+	StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false)
+}
+
+func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) {
 	defer resp.Body.Close()
 
 	flusher, ok := w.(http.Flusher)
@@ -115,6 +119,7 @@ func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientMod
 	}
 
 	if firstLine != "" {
+		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(firstLine)
 		}
@@ -179,6 +184,8 @@ func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientMod
 			}
 			return
 		}
+
+		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
 
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(line)

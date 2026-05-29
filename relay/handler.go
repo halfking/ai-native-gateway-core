@@ -71,19 +71,19 @@ type chatResponseBody struct {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit    *circuit.Manager
-	limiter    *limiter.Limiter
-	matrix     *transform.Matrix
-	pools      *pool.PoolManager
-	resolver   *resolve.Resolver
-	auditor    audit.Sink
-	client     *upstreampkg.Client
-	normalizer *Normalizer
-	executor   *routing.Executor
-	provider   *provider.Client
-	sticky     *routing.StickyCache
-	keyVerifier *auth.KeyVerifier
-	rateLimiter *ratelimit.SlidingWindowLimiter
+	circuit         *circuit.Manager
+	limiter         *limiter.Limiter
+	matrix          *transform.Matrix
+	pools           *pool.PoolManager
+	resolver        *resolve.Resolver
+	auditor         audit.Sink
+	client          *upstreampkg.Client
+	normalizer      *Normalizer
+	executor        *routing.Executor
+	provider        *provider.Client
+	sticky          *routing.StickyCache
+	keyVerifier     *auth.KeyVerifier
+	rateLimiter     *ratelimit.SlidingWindowLimiter
 	telemetryClient *telemetry.Client
 }
 
@@ -331,7 +331,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		ClientModel:        strPtr(evt.ClientModel),
 		OutboundModel:      strPtr(evt.OutboundModel),
 		ClientProfile:      strPtr(evt.ClientProfile),
-			RequestMode:        strPtr(requestMode),
+		RequestMode:        strPtr(requestMode),
 		IdentityHash:       strPtr(evt.IdentityHash),
 		TransformRuleID:    strPtr(evt.TransformRule),
 	})
@@ -363,24 +363,24 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:     evt.RequestID,
-		TenantID:      tenantID,
-		APIKeyID:      apiKeyID,
-		EndUserID:     strPtr(endUser),
-		ClientModel:   strPtr(evt.ClientModel),
-		OutboundModel: strPtr(evt.OutboundModel),
-		CredentialID:  intPtr(result.Candidate.CredentialID),
-		ProviderID:    intPtr(result.Candidate.ProviderID),
-		ClientProfile: strPtr(evt.ClientProfile),
-		RequestMode:   strPtr(requestMode),
-		LatencyMs:     intPtr(result.LatencyMs),
-		Success:       true,
-		IdentityHash:  strPtr(evt.IdentityHash),
-		RequestPreview: requestPreviewPtr,
+		RequestID:        evt.RequestID,
+		TenantID:         tenantID,
+		APIKeyID:         apiKeyID,
+		EndUserID:        strPtr(endUser),
+		ClientModel:      strPtr(evt.ClientModel),
+		OutboundModel:    strPtr(evt.OutboundModel),
+		CredentialID:     intPtr(result.Candidate.CredentialID),
+		ProviderID:       intPtr(result.Candidate.ProviderID),
+		ClientProfile:    strPtr(evt.ClientProfile),
+		RequestMode:      strPtr(requestMode),
+		LatencyMs:        intPtr(result.LatencyMs),
+		Success:          true,
+		IdentityHash:     strPtr(evt.IdentityHash),
+		RequestPreview:   requestPreviewPtr,
 		TransformSummary: transformSummaryPtr,
-		ResponsePreview: responsePreviewPtr,
-		RequestBody: requestBodyText,
-		ResponseBody: responseBodyText,
+		ResponsePreview:  responsePreviewPtr,
+		RequestBody:      requestBodyText,
+		ResponseBody:     responseBodyText,
 	}
 
 	if capture != nil {
@@ -748,8 +748,9 @@ func ChatCompletionsPhase3(
 	}
 
 	// ── Success — proxy the response ───────────────────────────────────
+	toolsRequested := requestHasTools(bodyBytes)
 	if isStream {
-		StreamChat(w, resp, clientModel, explicitOutbound, norm)
+		StreamChatWithCaptureAndToolFallback(w, resp, clientModel, explicitOutbound, norm, nil, toolsRequested)
 		released = true
 		release()
 		cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
@@ -776,26 +777,28 @@ func ChatCompletionsPhase3(
 			respBody = respBody[:maxBodySize]
 		}
 
-	// Replace model in non-streaming response
+		// Replace model in non-streaming response
 		if clientModel != "" {
 			respBody = ReplaceModelInResponseBody(respBody, clientModel)
 		}
+
+		respBody = coerceXMLToolCallsInChatResponse(respBody, toolsRequested)
 
 		if norm != nil {
 			respBody = norm.NormalizeChunk(respBody, false)
 		}
 
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
 		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
-	released = true
-	release()
-	cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
-	auditBuilder.Success(true)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(respBody)
+		released = true
+		release()
+		cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
+		auditBuilder.Success(true)
 	}
 }
 
@@ -853,6 +856,19 @@ func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
 		}
 	}
 	return body
+}
+
+func requestHasTools(body []byte) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return false
+	}
+	toolsRaw, ok := obj["tools"]
+	if !ok || len(toolsRaw) == 0 || string(toolsRaw) == "null" {
+		return false
+	}
+	var tools []any
+	return json.Unmarshal(toolsRaw, &tools) == nil && len(tools) > 0
 }
 
 // ChatCompletionsWithHooks proxies a chat completion request and calls the
@@ -960,8 +976,8 @@ func resolveEndUser(bodyUser string, r *http.Request) string {
 	return "anonymous"
 }
 
-func intPtr(v int) *int        { return &v }
-func strPtr(v string) *string  {
+func intPtr(v int) *int { return &v }
+func strPtr(v string) *string {
 	if v == "" {
 		return nil
 	}
