@@ -19,15 +19,17 @@ import (
 )
 
 const (
-	maxIdleConnsPerHost    = 32
-	maxConnsPerHost        = 128
-	idleConnTimeout        = 90 * time.Second
-	healthCheckInterval    = 30 * time.Second
-	healthCheckTimeout     = 5 * time.Second
-	degradedThreshold      = 3
-	poolIdleTTL           = 5 * time.Minute
-	poolMaxPools          = 1024
-	poolEvictInterval     = 60 * time.Second
+	maxIdleConnsPerHost = 32
+	maxConnsPerHost     = 128
+	idleConnTimeout     = 90 * time.Second
+	healthCheckInterval = 30 * time.Second
+	healthCheckTimeout  = 5 * time.Second
+	degradedThreshold   = 3
+	deadThreshold       = 10 // Consecutive failures to mark pool as dead
+	successThreshold    = 3  // Consecutive successes to recover from degraded
+	poolIdleTTL         = 5 * time.Minute
+	poolMaxPools        = 1024
+	poolEvictInterval   = 60 * time.Second
 )
 
 // PoolState represents the health state of a connection pool.
@@ -74,12 +76,12 @@ type Pool struct {
 	client    *http.Client
 	probeURL  string
 
-	state         atomic.Int32
-	failCount     atomic.Int32
-	successCount  atomic.Int32
-	lastUsed      atomic.Int64
-	mu            sync.Mutex
-	stopCh        chan struct{}
+	state        atomic.Int32
+	failCount    atomic.Int32
+	successCount atomic.Int32
+	lastUsed     atomic.Int64
+	mu           sync.Mutex
+	stopCh       chan struct{}
 }
 
 // NewPool creates a new connection pool.
@@ -96,11 +98,11 @@ func NewPool(key PoolKey, probeURL string) *Pool {
 	}
 
 	p := &Pool{
-		key:      key,
+		key:       key,
 		transport: transport,
-		client:   &http.Client{Transport: transport, Timeout: 120 * time.Second},
-		probeURL: probeURL,
-		stopCh:   make(chan struct{}),
+		client:    &http.Client{Transport: transport, Timeout: 120 * time.Second},
+		probeURL:  probeURL,
+		stopCh:    make(chan struct{}),
 	}
 	p.state.Store(int32(PoolActive))
 	return p
@@ -141,22 +143,48 @@ func (p *Pool) StopHealthCheck() {
 	}
 }
 
-// RecordFailure increments the failure counter and may mark the pool degraded.
+// RecordFailure increments the failure counter and may mark the pool degraded or dead.
 func (p *Pool) RecordFailure() {
 	count := p.failCount.Add(1)
 	p.successCount.Store(0)
-	if count >= degradedThreshold {
+
+	currentState := p.State()
+
+	// Transition to dead if consecutive failures exceed dead threshold
+	if count >= deadThreshold && currentState != PoolDead {
+		p.state.Store(int32(PoolDead))
+		slog.Warn("pool marked dead",
+			"key", p.key.String(),
+			"failures", count,
+		)
+		return
+	}
+
+	// Transition to degraded if consecutive failures exceed degraded threshold
+	if count >= degradedThreshold && currentState == PoolActive {
 		p.state.Store(int32(PoolDegraded))
+		slog.Warn("pool marked degraded",
+			"key", p.key.String(),
+			"failures", count,
+		)
 	}
 }
 
-// RecordSuccess resets the failure counter and marks the pool active.
+// RecordSuccess resets the failure counter and may recover the pool state.
 func (p *Pool) RecordSuccess() {
 	p.failCount.Store(0)
 	n := p.successCount.Add(1)
-	if n >= 2 && p.State() == PoolDegraded {
+
+	currentState := p.State()
+
+	// Recover from degraded to active after enough consecutive successes
+	if currentState == PoolDegraded && n >= successThreshold {
 		p.state.Store(int32(PoolActive))
 		p.successCount.Store(0)
+		slog.Info("pool recovered to active",
+			"key", p.key.String(),
+			"successes", n,
+		)
 	}
 }
 

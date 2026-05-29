@@ -1,1 +1,7 @@
 /gateway
+bin/
+dist/
+build/
+coverage/
+*.test
+*.out
