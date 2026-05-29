@@ -57,7 +57,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		FROM usage_ledger WHERE ts > now() - interval '24 hours'
 	`).Scan(&stats.TotalRequests, &stats.TotalTokens, &stats.TotalCostUSD, &stats.SuccessRate)
 
-	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE AND tenant_id = 'default'`).Scan(&stats.ActiveKeys)
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'`).Scan(&stats.ActiveKeys)
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE enabled = TRUE AND tenant_id = 'default'`).Scan(&stats.ActiveProviders)
 
 	writeJSON(w, http.StatusOK, stats)
@@ -202,7 +202,7 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var keyPrefix string
-	err = h.db.QueryRow(ctx, `SELECT COALESCE(key_prefix,'') FROM api_keys WHERE id = $1`, keyID).Scan(&keyPrefix)
+	err = h.db.QueryRow(ctx, `SELECT COALESCE(key_prefix,'') FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'`, keyID).Scan(&keyPrefix)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "API key not found")
 		return

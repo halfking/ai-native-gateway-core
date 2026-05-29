@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -180,11 +181,16 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func includeRevokedKeys(r *http.Request) bool {
+	return strings.EqualFold(queryString(r, "include_revoked"), "true")
+}
+
 func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	appCode := queryString(r, "application")
+	includeRevoked := includeRevokedKeys(r)
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
 		       ak.budget_usd::float8, ak.rate_limit_rpm,
@@ -193,9 +199,10 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = 'default'
-		  AND ($1 = '' OR app.code = $1)
+		  AND ($1 OR COALESCE(ak.status, 'active') <> 'revoked')
+		  AND ($2 = '' OR app.code = $2)
 		ORDER BY ak.id DESC
-	`, appCode)
+	`, includeRevoked, appCode)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -229,9 +236,17 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	_, err := h.db.Exec(ctx, `DELETE FROM api_keys WHERE id = $1 AND tenant_id = 'default'`, id)
+	cmd, err := h.db.Exec(ctx, `
+		UPDATE api_keys
+		SET status = 'revoked', enabled = FALSE, updated_at = now()
+		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
+	`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "delete failed")
+		return
+	}
+	if cmd.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
@@ -242,7 +257,10 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	var ciphertext string
-	err := h.db.QueryRow(ctx, `SELECT key_ciphertext FROM api_keys WHERE id = $1 AND tenant_id = 'default'`, id).Scan(&ciphertext)
+	err := h.db.QueryRow(ctx, `
+		SELECT key_ciphertext FROM api_keys
+		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
+	`, id).Scan(&ciphertext)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
@@ -309,6 +327,7 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1 AND ak.enabled = TRUE
+		  AND COALESCE(ak.status, 'active') <> 'revoked'
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
 	`, keyHash).Scan(&id, &tenantID, &appID, &appCode, &dcp, &owner, &rpm, &budget)
 	if err == nil {
@@ -338,7 +357,10 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var budgetUSD *float64
-	err := h.db.QueryRow(ctx, `SELECT budget_usd FROM api_keys WHERE id = $1 AND tenant_id = 'default'`, req.APIKeyID).Scan(&budgetUSD)
+	err := h.db.QueryRow(ctx, `
+		SELECT budget_usd FROM api_keys
+		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
+	`, req.APIKeyID).Scan(&budgetUSD)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "api_key not found")
 		return
@@ -359,6 +381,7 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	includeRevoked := includeRevokedKeys(r)
 
 	var k struct {
 		ID              int      `json:"id"`
@@ -375,7 +398,8 @@ func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.id = $1 AND ak.tenant_id = 'default'
-	`, id).Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
+		  AND ($2 OR COALESCE(ak.status, 'active') <> 'revoked')
+	`, id, includeRevoked).Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
 		&k.BudgetUSD, &k.RateLimitRPM, &k.ApplicationCode)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")

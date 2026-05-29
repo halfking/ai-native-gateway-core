@@ -55,6 +55,7 @@ func verifyAdminAuth(r *http.Request, db *pgxpool.Pool, secretKey string) bool {
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1 AND ak.enabled = TRUE
+		  AND COALESCE(ak.status, 'active') <> 'revoked'
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
 	`, keyHash).Scan(&appCode)
 	if err != nil {
@@ -115,7 +116,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(ctx, `
 		SELECT id, key_ciphertext FROM api_keys
 		WHERE application_id = $1 AND tenant_id = 'default'
-		  AND enabled = TRUE AND key_ciphertext IS NOT NULL AND key_ciphertext != ''
+		  AND enabled = TRUE AND COALESCE(status, 'active') <> 'revoked'
+		  AND key_ciphertext IS NOT NULL AND key_ciphertext != ''
 		ORDER BY id ASC LIMIT 1
 	`, appID).Scan(&existingID, &ciphertext)
 	if err == nil && ciphertext != "" {

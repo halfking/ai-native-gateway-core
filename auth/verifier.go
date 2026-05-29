@@ -122,6 +122,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
 		  AND ak.enabled = TRUE
+		  AND COALESCE(ak.status, 'active') <> 'revoked'
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
 	`, keyHash).Scan(
 		&info.ID,
@@ -300,7 +301,7 @@ func (kv *KeyVerifier) CheckBudget(ctx context.Context, keyID int) error {
 
 func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
 	var budget *float64
-	err := kv.dbPool.QueryRow(ctx, "SELECT budget_usd::float8 FROM api_keys WHERE id = $1", keyID).Scan(&budget)
+	err := kv.dbPool.QueryRow(ctx, "SELECT budget_usd::float8 FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'", keyID).Scan(&budget)
 	if err != nil {
 		return err
 	}
