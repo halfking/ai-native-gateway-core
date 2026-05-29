@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+type keyActionRoute struct {
+	kind    string
+	idPart  string
+	subPath string
+}
+
+func parseKeyActionRoute(remaining string) keyActionRoute {
+	if remaining == "" {
+		return keyActionRoute{kind: "root"}
+	}
+
+	switch remaining {
+	case "verify", "budget-check", "apply":
+		return keyActionRoute{kind: "action", subPath: remaining}
+	}
+
+	idPart := remaining
+	subPath := ""
+	for i, c := range remaining {
+		if c == '/' {
+			idPart = remaining[:i]
+			subPath = remaining[i+1:]
+			break
+		}
+	}
+
+	return keyActionRoute{kind: "resource", idPart: idPart, subPath: subPath}
+}
+
 func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -19,8 +48,9 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 
 	stripPrefix := "/api/keys/"
 	remaining := r.URL.Path[len(stripPrefix):]
+	route := parseKeyActionRoute(remaining)
 
-	if remaining == "" {
+	if route.kind == "root" {
 		if r.Method == http.MethodPost {
 			h.createKey(w, r)
 		} else if r.Method == http.MethodGet {
@@ -31,7 +61,7 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch remaining {
+	switch route.subPath {
 	case "verify":
 		h.verifyKey(w, r)
 		return
@@ -47,15 +77,8 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idStr := remaining
-	subPath := ""
-	for i, c := range remaining {
-		if c == '/' {
-			idStr = remaining[:i]
-			subPath = remaining[i+1:]
-			break
-		}
-	}
+	idStr := route.idPart
+	subPath := route.subPath
 
 	switch subPath {
 	case "reveal":
@@ -86,16 +109,6 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.setKeyEnabled(w, r, id, true)
-	case "verify":
-		h.verifyKey(w, r)
-	case "budget-check":
-		h.budgetCheck(w, r)
-	case "apply":
-		if r.Method == http.MethodPost {
-			h.adminApplyForKey(w, r)
-		} else {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		}
 	case "detail":
 		rest := ""
 		for i, c := range idStr {
@@ -153,10 +166,10 @@ func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApplicationCode string  `json:"application_code"`
-		OwnerUser       *string `json:"owner_user"`
+		ApplicationCode string   `json:"application_code"`
+		OwnerUser       *string  `json:"owner_user"`
 		BudgetUSD       *float64 `json:"budget_usd"`
-		RateLimitRPM    *int    `json:"rate_limit_rpm"`
+		RateLimitRPM    *int     `json:"rate_limit_rpm"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -226,13 +239,13 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type key struct {
-		ID              int      `json:"id"`
-		KeyPrefix       string   `json:"key_prefix"`
-		OwnerUser       *string  `json:"owner_user"`
-		Enabled         bool     `json:"enabled"`
-		BudgetUSD       *float64 `json:"budget_usd"`
-		RateLimitRPM    *int     `json:"rate_limit_rpm"`
-		ApplicationCode string   `json:"application_code"`
+		ID              int        `json:"id"`
+		KeyPrefix       string     `json:"key_prefix"`
+		OwnerUser       *string    `json:"owner_user"`
+		Enabled         bool       `json:"enabled"`
+		BudgetUSD       *float64   `json:"budget_usd"`
+		RateLimitRPM    *int       `json:"rate_limit_rpm"`
+		ApplicationCode string     `json:"application_code"`
 		CreatedAt       *time.Time `json:"created_at"`
 		LastUsedAt      *time.Time `json:"last_used_at"`
 	}
@@ -321,15 +334,15 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var result struct {
-		Valid               bool    `json:"valid"`
-		KeyID               *int    `json:"key_id,omitempty"`
-		TenantID            *string `json:"tenant_id,omitempty"`
-		ApplicationID       *int    `json:"application_id,omitempty"`
-		ApplicationCode     *string `json:"application_code,omitempty"`
-		DefaultClientProfile *string `json:"default_client_profile,omitempty"`
-		OwnerUser           *string `json:"owner_user,omitempty"`
-		RateLimitRPM        *int    `json:"rate_limit_rpm,omitempty"`
-		BudgetUSD           *float64 `json:"budget_usd,omitempty"`
+		Valid                bool     `json:"valid"`
+		KeyID                *int     `json:"key_id,omitempty"`
+		TenantID             *string  `json:"tenant_id,omitempty"`
+		ApplicationID        *int     `json:"application_id,omitempty"`
+		ApplicationCode      *string  `json:"application_code,omitempty"`
+		DefaultClientProfile *string  `json:"default_client_profile,omitempty"`
+		OwnerUser            *string  `json:"owner_user,omitempty"`
+		RateLimitRPM         *int     `json:"rate_limit_rpm,omitempty"`
+		BudgetUSD            *float64 `json:"budget_usd,omitempty"`
 	}
 	var id, appID int
 	var tenantID, appCode string
@@ -516,17 +529,17 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type app struct {
-		ID         string     `json:"id"`
-		ClientIP   string     `json:"client_ip"`
-		Contact    string     `json:"contact"`
-		Purpose    string     `json:"purpose"`
-		Status     string     `json:"status"`
-		IssuedKeyID *int      `json:"issued_key_id"`
-		AdminNotes string     `json:"admin_notes"`
-		ReviewedBy string     `json:"reviewed_by"`
-		ReviewedAt *time.Time `json:"reviewed_at"`
-		CreatedAt  *time.Time `json:"created_at"`
-		ExpiresAt  *time.Time `json:"expires_at"`
+		ID          string     `json:"id"`
+		ClientIP    string     `json:"client_ip"`
+		Contact     string     `json:"contact"`
+		Purpose     string     `json:"purpose"`
+		Status      string     `json:"status"`
+		IssuedKeyID *int       `json:"issued_key_id"`
+		AdminNotes  string     `json:"admin_notes"`
+		ReviewedBy  string     `json:"reviewed_by"`
+		ReviewedAt  *time.Time `json:"reviewed_at"`
+		CreatedAt   *time.Time `json:"created_at"`
+		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 	var apps []app
 	for rows.Next() {
@@ -546,17 +559,17 @@ func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, id i
 	defer cancel()
 
 	var a struct {
-		ID         string     `json:"id"`
-		ClientIP   string     `json:"client_ip"`
-		Contact    string     `json:"contact"`
-		Purpose    string     `json:"purpose"`
-		Status     string     `json:"status"`
-		IssuedKeyID *int      `json:"issued_key_id"`
-		AdminNotes string     `json:"admin_notes"`
-		ReviewedBy string     `json:"reviewed_by"`
-		ReviewedAt *time.Time `json:"reviewed_at"`
-		CreatedAt  *time.Time `json:"created_at"`
-		ExpiresAt  *time.Time `json:"expires_at"`
+		ID          string     `json:"id"`
+		ClientIP    string     `json:"client_ip"`
+		Contact     string     `json:"contact"`
+		Purpose     string     `json:"purpose"`
+		Status      string     `json:"status"`
+		IssuedKeyID *int       `json:"issued_key_id"`
+		AdminNotes  string     `json:"admin_notes"`
+		ReviewedBy  string     `json:"reviewed_by"`
+		ReviewedAt  *time.Time `json:"reviewed_at"`
+		CreatedAt   *time.Time `json:"created_at"`
+		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 	err := h.db.QueryRow(ctx, `
 		SELECT id::text, COALESCE(client_ip,''), COALESCE(contact,''), COALESCE(purpose,''),
