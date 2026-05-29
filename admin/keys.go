@@ -164,8 +164,8 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm)
-		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, $6, $7)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status)
+		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, $6, $7, 'active')
 		RETURNING id
 	`, appID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM).Scan(&id)
 	if err != nil {
@@ -238,7 +238,7 @@ func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 	cmd, err := h.db.Exec(ctx, `
 		UPDATE api_keys
-		SET status = 'revoked', enabled = FALSE, updated_at = now()
+		SET status = 'revoked', enabled = FALSE
 		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
 	`, id)
 	if err != nil {
