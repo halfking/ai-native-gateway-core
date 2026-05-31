@@ -15,7 +15,6 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
-	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/limiter"
@@ -24,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
@@ -85,7 +85,17 @@ type ChatHandler struct {
 	keyVerifier      *auth.KeyVerifier
 	rateLimiter      *ratelimit.SlidingWindowLimiter
 	telemetryClient  *telemetry.Client
-	sessionGetter    func(ctx context.Context, id string) (interface{ APIKeyID() int; TenantID() string; SessionKey() string }, error)
+	sessionGetter    interface {
+		Get(ctx context.Context, id string) (SessionInfo, error)
+		Touch(ctx context.Context, id string) error
+	}
+	apiKeyIDGetter func(ctx context.Context) (int, string)
+}
+
+type SessionInfo interface {
+	APIKeyID() int
+	TenantID() string
+	SessionKey() string
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -108,6 +118,17 @@ func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl *ratelimit.SlidingWindowL
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetryClient = tc
+}
+
+func (h *ChatHandler) SetSessionGetter(sg interface {
+	Get(ctx context.Context, id string) (SessionInfo, error)
+	Touch(ctx context.Context, id string) error
+}) {
+	h.sessionGetter = sg
+}
+
+func (h *ChatHandler) SetAPIKeyIDGetter(getter func(ctx context.Context) (int, string)) {
+	h.apiKeyIDGetter = getter
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
