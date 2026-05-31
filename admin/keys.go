@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -251,7 +252,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		CreatedAt       *time.Time `json:"created_at"`
 		LastUsedAt      *time.Time `json:"last_used_at"`
 	}
-	var keys []key
+	keys := make([]key, 0)
 	for rows.Next() {
 		var k key
 		if err := rows.Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
@@ -472,28 +473,28 @@ func (h *Handler) handleKeyApplications(w http.ResponseWriter, r *http.Request) 
 			break
 		}
 	}
-	id, err := strconv.Atoi(idStr)
+	appID, err := uuid.Parse(idStr)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid id")
+		writeError(w, http.StatusBadRequest, "invalid application id")
 		return
 	}
 
 	switch subPath {
 	case "approve":
 		if r.Method == http.MethodPost {
-			h.approveKeyApplication(w, r, id)
+			h.approveKeyApplication(w, r, appID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "reject":
 		if r.Method == http.MethodPost {
-			h.rejectKeyApplication(w, r, id)
+			h.rejectKeyApplication(w, r, appID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	default:
 		if r.Method == http.MethodGet {
-			h.getKeyApplication(w, r, id)
+			h.getKeyApplication(w, r, appID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -543,7 +544,7 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 		CreatedAt   *time.Time `json:"created_at"`
 		ExpiresAt   *time.Time `json:"expires_at"`
 	}
-	var apps []app
+	apps := make([]app, 0)
 	for rows.Next() {
 		var a app
 		if err := rows.Scan(&a.ID, &a.ClientIP, &a.Contact, &a.Purpose,
@@ -556,7 +557,7 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apps)
 }
 
-func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, id int) {
+func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, appID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -578,7 +579,7 @@ func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, id i
 		       status, issued_key_id, COALESCE(admin_notes,''), COALESCE(reviewed_by,''),
 		       reviewed_at, created_at, expires_at
 		FROM key_applications WHERE id = $1
-	`, id).Scan(&a.ID, &a.ClientIP, &a.Contact, &a.Purpose,
+	`, appID.String()).Scan(&a.ID, &a.ClientIP, &a.Contact, &a.Purpose,
 		&a.Status, &a.IssuedKeyID, &a.AdminNotes, &a.ReviewedBy,
 		&a.ReviewedAt, &a.CreatedAt, &a.ExpiresAt)
 	if err != nil {
@@ -588,12 +589,12 @@ func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, id i
 	writeJSON(w, http.StatusOK, a)
 }
 
-func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, id int) {
+func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, appID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var status, contact string
-	err := h.db.QueryRow(ctx, `SELECT status, COALESCE(contact,'') FROM key_applications WHERE id = $1`, id).Scan(&status, &contact)
+	err := h.db.QueryRow(ctx, `SELECT status, COALESCE(contact,'') FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status, &contact)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "application not found")
 		return
@@ -644,11 +645,11 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 	h.db.Exec(ctx, `
 		UPDATE key_applications
 		SET status = 'approved', issued_key_id = $1, admin_notes = $2, reviewed_by = $3, reviewed_at = now(), updated_at = now()
-		WHERE id = $4
-	`, keyID, notes, reviewer, id)
+		WHERE id = $4::uuid
+	`, keyID, notes, reviewer, appID.String())
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"application_id": id,
+		"application_id": appID.String(),
 		"status":         "approved",
 		"key_id":         keyID,
 		"key_prefix":     keyPrefix,
@@ -656,12 +657,12 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, id int) {
+func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, appID uuid.UUID) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var status string
-	err := h.db.QueryRow(ctx, `SELECT status FROM key_applications WHERE id = $1`, id).Scan(&status)
+	err := h.db.QueryRow(ctx, `SELECT status FROM key_applications WHERE id = $1::uuid`, appID.String()).Scan(&status)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "application not found")
 		return
@@ -688,11 +689,11 @@ func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, i
 	h.db.Exec(ctx, `
 		UPDATE key_applications
 		SET status = 'rejected', admin_notes = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
-		WHERE id = $3
-	`, notes, reviewer, id)
+		WHERE id = $3::uuid
+	`, notes, reviewer, appID.String())
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"application_id": id,
+		"application_id": appID.String(),
 		"status":         "rejected",
 		"message":        "Application rejected",
 	})
