@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -11,38 +13,104 @@ func (h *Handler) handleTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	if r.Method == http.MethodGet {
+		h.listTags(ctx, w)
+		return
+	}
+	if r.Method == http.MethodPost {
+		h.createTag(ctx, w, r)
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 	rows, err := h.db.Query(ctx, `
-		SELECT DISTINCT jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb)) AS tag
-		FROM models_canonical
-		WHERE tags IS NOT NULL AND tags != '[]'::jsonb
+		WITH unnested AS (
+			SELECT mc.id, mc.canonical_name, UNNEST(COALESCE(mc.tags,'[]'::jsonb)) AS tag
+			FROM models_canonical mc
+			WHERE mc.tags IS NOT NULL AND mc.tags != '[]'::jsonb
+			AND COALESCE(mc.status,'active') = 'active'
+		)
+		SELECT tag,
+		       COUNT(*) AS canonical_count,
+		       ARRAY_AGG(canonical_name ORDER BY canonical_name)[1:5] AS samples
+		FROM unnested
+		GROUP BY tag
 		ORDER BY tag
 	`)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"tags": []string{}})
+		writeJSON(w, http.StatusOK, map[string]any{"namespaces": []any{}})
 		return
 	}
 	defer rows.Close()
 
-	var tags []string
+	type tagInfo struct {
+		Tag     string   `json:"tag"`
+		Count   int      `json:"count"`
+		Samples []string `json:"samples"`
+	}
+	type namespaceInfo struct {
+		Namespace string    `json:"namespace"`
+		Tags     []tagInfo `json:"tags"`
+	}
+
+	grouped := map[string][]tagInfo{}
 	for rows.Next() {
 		var tag string
-		if err := rows.Scan(&tag); err != nil {
+		var count int
+		var samples []string
+		if err := rows.Scan(&tag, &count, &samples); err != nil {
 			continue
 		}
-		tags = append(tags, tag)
+		ns := "other"
+		if idx := strings.Index(tag, ":"); idx > 0 {
+			ns = tag[:idx]
+		}
+		grouped[ns] = append(grouped[ns], tagInfo{Tag: tag, Count: count, Samples: samples})
 	}
-	if tags == nil {
-		tags = []string{}
+
+	var namespaces []namespaceInfo
+	for ns, tags := range grouped {
+		namespaces = append(namespaces, namespaceInfo{Namespace: ns, Tags: tags})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tags": tags})
+	if namespaces == nil {
+		namespaces = []namespaceInfo{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"namespaces": namespaces})
+}
+
+func (h *Handler) createTag(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Tag    string `json:"tag"`
+		Models []int  `json:"models,omitempty"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Tag == "" {
+		writeError(w, http.StatusBadRequest, "tag required")
+		return
+	}
+
+	if len(req.Models) > 0 {
+		h.db.Exec(ctx, `
+			UPDATE models_canonical
+			SET tags = COALESCE(tags, '[]'::jsonb) || $1::jsonb
+			WHERE id = ANY($2)
+		`, fmt.Sprintf(`["%s"]`, req.Tag), req.Models)
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"tag":      req.Tag,
+		"models":   len(req.Models),
+		"message":  "tag created",
+	})
 }
 
 func (h *Handler) handleSystemTasks(w http.ResponseWriter, r *http.Request) {
@@ -50,8 +118,33 @@ func (h *Handler) handleSystemTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+
+	type taskStatus struct {
+		Name    string `json:"name"`
+		Alive   bool   `json:"alive"`
+		Status  string `json:"status,omitempty"`
+		Started string `json:"started_at,omitempty"`
+	}
+	tasks := []taskStatus{
+		{Name: "discovery", Alive: h.discSvc != nil},
+		{Name: "cred_cycler", Alive: h.credCycler != nil},
+		{Name: "cred_recovery", Alive: h.credRecov != nil},
+		{Name: "env_cleaner", Alive: h.envCleaner != nil},
+		{Name: "sticky_clean", Alive: h.stickyClean != nil},
+		{Name: "tax_sync", Alive: h.taxSync != nil},
+	}
+	aliveCount := 0
+	for i := range tasks {
+		if tasks[i].Alive {
+			tasks[i].Status = "running"
+			aliveCount++
+		} else {
+			tasks[i].Status = "not_configured"
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tasks": []any{},
+		"tasks":  tasks,
 		"status": "running",
+		"alive_count": aliveCount,
 	})
 }

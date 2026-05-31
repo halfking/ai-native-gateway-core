@@ -8,16 +8,36 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/discovery"
 )
 
 type Handler struct {
-	db      *pgxpool.Pool
-	secret  string
-	encKey  []byte
+	db          *pgxpool.Pool
+	secret      string
+	encKey      []byte
+	discSvc     *discovery.Service
+	credCycler  *bg.CredentialCycler
+	credRecov   *bg.CredentialRecovery
+	envCleaner  *bg.EnvelopeCleaner
+	stickyClean *bg.StickyCleaner
+	taxSync     *bg.TaxonomySync
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	return &Handler{db: db, secret: secretKey, encKey: encKey}
+}
+
+func (h *Handler) SetDiscoveryService(svc *discovery.Service) {
+	h.discSvc = svc
+}
+
+func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRecov *bg.CredentialRecovery, envCleaner *bg.EnvelopeCleaner, stickyClean *bg.StickyCleaner, taxSync *bg.TaxonomySync) {
+	h.credCycler = credCycler
+	h.credRecov = credRecov
+	h.envCleaner = envCleaner
+	h.stickyClean = stickyClean
+	h.taxSync = taxSync
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -38,6 +58,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/telemetry/batch", h.handleTelemetryBatch)
 	mux.HandleFunc("/api/providers", h.handleProvidersRoot)
 	mux.HandleFunc("/api/providers/", h.handleProviders)
+	mux.HandleFunc("/api/providers/seed-from-catalog", h.handleSeedFromCatalog)
 	mux.HandleFunc("/api/keys", h.handleKeysRoot)
 	mux.HandleFunc("/api/keys/", h.handleKeys)
 	mux.HandleFunc("/api/key-applications", h.handleKeyApplicationsList)

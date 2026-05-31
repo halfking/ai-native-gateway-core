@@ -45,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/relay"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -95,6 +96,21 @@ func main() {
 	)
 
 	pools := pool.NewPoolManager()
+
+	// ── Session Manager ────────────────────────────────────────────────
+	var sessionMgr *sessions.Manager
+	if cfg.RedisAddr != "" {
+		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		if err := redisClient.Ping(context.Background()); err == nil {
+			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
+			sessionMgr = sessions.NewManager(redisClient, ttl)
+			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
+		} else {
+			slog.Warn("session manager: redis ping failed", "error", err)
+		}
+	} else {
+		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
+	}
 
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
 	healthHandler := relay.NewHealthHandler(cm, lim)
@@ -166,26 +182,41 @@ func main() {
 
 	// ── Admin API ───────────────────────────────────────────────────────
 	var adminHandler *admin.Handler
+	var fernetKey []byte
 	if dbConn != nil && dbConn.Enabled() {
-		fernetKey, ferr := secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
+		var ferr error
+		fernetKey, ferr = secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
 		if ferr != nil {
 			slog.Warn("admin API: fernet key unavailable", "error", ferr)
 			fernetKey = nil
 		}
 		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+		if discoverySvc != nil {
+			adminHandler.SetDiscoveryService(discoverySvc)
+		}
 	}
 
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
+	var credCycler *bg.CredentialCycler
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
+	var taxonomySync *bg.TaxonomySync
 	if dbConn != nil && dbConn.Enabled() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
+		if fernetKey != nil {
+			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
+			credCycler.Start(context.Background())
+			slog.Info("credential cycler started")
+		}
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 		envelopeCleaner.Start(context.Background())
+		taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
+		taxonomySync.Start(context.Background())
+		slog.Info("taxonomy sync started")
 	}
 
 	// ── Listen address ────────────────────────────────────────────────────
@@ -219,6 +250,14 @@ func main() {
 
 	// Models listing
 	mux.Handle("/v1/models", modelsHandler)
+
+	// Session management
+	if sessionMgr != nil {
+		sessionHandler := sessions.NewHandler(sessionMgr)
+		mux.Handle("/v1/sessions", sessionHandler)
+		mux.Handle("/v1/sessions/", sessionHandler)
+		slog.Info("session endpoints enabled")
+	}
 
 	// Static files / SPA fallback
 	if staticHandler != nil {
@@ -279,6 +318,12 @@ func main() {
 	}
 	if credRecovery != nil {
 		credRecovery.Stop()
+	}
+	if credCycler != nil {
+		credCycler.Stop()
+	}
+	if taxonomySync != nil {
+		taxonomySync.Stop()
 	}
 	if stickyCleaner != nil {
 		stickyCleaner.Stop()

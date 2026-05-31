@@ -19,27 +19,29 @@ import (
 )
 
 type Candidate struct {
-	CredentialID      int      `json:"credential_id"`
-	ProviderID        int      `json:"provider_id"`
-	BaseURL           string   `json:"base_url"`
-	Protocol          string   `json:"protocol"`
-	CatalogCode       string   `json:"catalog_code"`
-	Tier              int      `json:"tier"`
-	Weight            int      `json:"weight"`
-	RawModel          string   `json:"model_name"`
-	SuccessRate       float64  `json:"success_rate"`
-	P95LatencyMs      int      `json:"p95_latency_ms"`
-	ConcurrencyLimit  *int     `json:"concurrency_limit"`
-	BalanceUSD        *float64 `json:"balance_usd"`
-	CircuitState      string   `json:"circuit_state"`
-	AvailabilityState string   `json:"availability_state"`
-	QuotaState        string   `json:"quota_state"`
-	LifecycleStatus   string   `json:"lifecycle_status"`
-	Routable          bool     `json:"runtime_routable"`
-	BlockReason       *string  `json:"runtime_block_reason"`
-	PriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
-	PriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
-	APIKey            string   `json:"-"`
+	CredentialID        int      `json:"credential_id"`
+	ProviderID          int      `json:"provider_id"`
+	BaseURL             string   `json:"base_url"`
+	Protocol            string   `json:"protocol"`
+	CatalogCode         string   `json:"catalog_code"`
+	Tier                int      `json:"tier"`
+	Weight              int      `json:"weight"`
+	RawModel            string   `json:"model_name"`
+	SuccessRate         float64  `json:"success_rate"`
+	P95LatencyMs        int      `json:"p95_latency_ms"`
+	ConcurrencyLimit    *int     `json:"concurrency_limit"`
+	BalanceUSD          *float64 `json:"balance_usd"`
+	CircuitState        string   `json:"circuit_state"`
+	AvailabilityState   string   `json:"availability_state"`
+	QuotaState          string   `json:"quota_state"`
+	LifecycleStatus     string   `json:"lifecycle_status"`
+	Routable            bool     `json:"runtime_routable"`
+	BlockReason         *string  `json:"runtime_block_reason"`
+	PriceInPer1M        *float64 `json:"unit_price_in_per_1m"`
+	PriceOutPer1M       *float64 `json:"unit_price_out_per_1m"`
+	SupportsPromptCache bool     `json:"supports_prompt_cache"`
+	CacheMode           string   `json:"cache_mode"`
+	APIKey              string   `json:"-"`
 }
 
 func (c *Candidate) IsAvailable() bool {

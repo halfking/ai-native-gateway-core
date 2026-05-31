@@ -267,7 +267,15 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `SELECT id, display_name, COALESCE(vendor,'') FROM model_families ORDER BY display_name`)
+	rows, err := h.db.Query(ctx, `
+		SELECT mf.id, mf.display_name, COALESCE(mf.vendor,''),
+		       COUNT(DISTINCT mc.id) AS model_count
+		FROM model_families mf
+		LEFT JOIN models_canonical mc ON mc.family = mf.id AND mc.status = 'active'
+		WHERE mf.status = 'active'
+		GROUP BY mf.id, mf.display_name, mf.vendor
+		ORDER BY mf.display_name
+	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -275,14 +283,15 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type family struct {
-		ID          int    `json:"id"`
+		ID          string `json:"id"`
 		DisplayName string `json:"display_name"`
 		Vendor      string `json:"vendor"`
+		ModelCount  int    `json:"model_count"`
 	}
 	var families []family
 	for rows.Next() {
 		var f family
-		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor); err != nil {
+		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.ModelCount); err != nil {
 			continue
 		}
 		families = append(families, f)
@@ -291,32 +300,33 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	tagParam := r.URL.Query()["tag"]
-	params := []any{"default", "active", "active"}
+	params := []any{"active", "active"}
 	whereExtra := ""
 	if len(tagParam) > 0 {
-		whereExtra = " AND mc.tags @> $4::text[]"
-		params = append(params, tagParam)
+		whereExtra = " AND mc.tags @> $3::jsonb"
+		params = append(params, tagParam[0])
 	}
 
 	query := `SELECT mc.canonical_name, COALESCE(mc.tags,'[]'::jsonb),
-	                 p.id, COALESCE(p.display_name,''), COUNT(DISTINCT mo.id)
+	                 p.id, COALESCE(p.display_name,''), COUNT(DISTINCT mo.id) AS offer_count
 	          FROM models_canonical mc
 	          JOIN model_aliases ma ON ma.canonical_id = mc.id
 	          JOIN model_offers mo ON lower(mo.raw_model_name) = lower(ma.raw_name)
 	          JOIN credentials c ON c.id = mo.credential_id
 	          JOIN providers p ON p.id = c.provider_id
-	          WHERE mo.available = TRUE AND c.status = $2 AND p.enabled = TRUE
-	            AND mc.status = $3 AND ma.status = 'active'` + whereExtra + `
+	          WHERE mo.available = TRUE AND c.status = 'active' AND p.enabled = TRUE
+	            AND mc.status = $1 AND ma.status = 'active'` + whereExtra + `
 	          GROUP BY mc.canonical_name, mc.tags, p.id, p.display_name
 	          ORDER BY mc.canonical_name, p.display_name`
 
 	rows, err := h.db.Query(ctx, query, params...)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		slog.Warn("tag matrix query failed", "error", err)
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "error": err.Error()})
 		return
 	}
 	defer rows.Close()
@@ -324,13 +334,14 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 	type providerInfo struct {
 		ProviderID   int    `json:"provider_id"`
 		ProviderName string `json:"provider_name"`
-		Offers       int    `json:"offers"`
+		OfferCount   int    `json:"offer_count"`
 	}
-	matrix := map[string]*struct {
-		CanonicalName string         `json:"canonical_name"`
-		Tags          []any          `json:"tags"`
-		Providers     []providerInfo `json:"providers"`
-	}{}
+	type matrixEntry struct {
+		CanonicalName string          `json:"canonical_name"`
+		Tags          json.RawMessage `json:"tags"`
+		Providers     []providerInfo  `json:"providers"`
+	}
+	matrix := make(map[string]*matrixEntry)
 
 	for rows.Next() {
 		var cn string
@@ -342,30 +353,41 @@ func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if _, ok := matrix[cn]; !ok {
-			matrix[cn] = &struct {
-				CanonicalName string         `json:"canonical_name"`
-				Tags          []any          `json:"tags"`
-				Providers     []providerInfo `json:"providers"`
-			}{CanonicalName: cn}
+			matrix[cn] = &matrixEntry{CanonicalName: cn, Tags: tagsJSON}
 		}
 		matrix[cn].Providers = append(matrix[cn].Providers, providerInfo{
-			ProviderID: pid, ProviderName: pname, Offers: offers,
+			ProviderID: pid, ProviderName: pname, OfferCount: offers,
 		})
 	}
 
-	items := make([]any, 0, len(matrix))
+	items := make([]*matrixEntry, 0, len(matrix))
 	for _, v := range matrix {
 		items = append(items, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":      items,
+		"total":      len(items),
+		"by_tag":     tagParam != nil,
+		"filter_tag": tagParam,
+	})
 }
 
 func (h *Handler) getDiscoverStatus(w http.ResponseWriter, r *http.Request) {
+	if h.discSvc != nil {
+		status := h.discSvc.Status()
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "idle", "last_run": nil})
 }
 
 func (h *Handler) triggerDiscover(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+	if h.discSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "discovery service not available")
+		return
+	}
+	go h.discSvc.RunOnce(r.Context())
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 }
 
 func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, modelID int) {

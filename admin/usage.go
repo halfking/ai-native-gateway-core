@@ -19,6 +19,8 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 		h.usageDashboard(w, r)
 	case remaining == "hot-keys":
 		h.usageHotKeys(w, r)
+	case remaining == "by-provider":
+		h.usageByProvider(w, r)
 	case remaining == "by-model":
 		h.usageByModel(w, r)
 	case remaining == "by-key":
@@ -95,6 +97,51 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 		keys = append(keys, k)
 	}
 	writeJSON(w, http.StatusOK, keys)
+}
+
+func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT p.id, COALESCE(p.display_name, p.code) as provider_name,
+		       COUNT(*) as req_count,
+		       COALESCE(SUM(u.prompt_tokens),0) as prompt_tokens,
+		       COALESCE(SUM(u.completion_tokens),0) as completion_tokens,
+		       COALESCE(SUM(u.cost_usd),0)::float8 as total_cost,
+		       COALESCE(AVG(CASE WHEN u.success THEN 1 ELSE 0 END),0) as success_rate
+		FROM usage_ledger u
+		JOIN credentials c ON c.id = u.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE u.ts > now() - interval '24 hours'
+		GROUP BY p.id, p.display_name, p.code
+		ORDER BY total_cost DESC
+		LIMIT 50
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type providerUsage struct {
+		ProviderID      int      `json:"provider_id"`
+		ProviderName    string   `json:"provider_name"`
+		ReqCount        int      `json:"request_count"`
+		PromptTokens    int      `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		TotalCost       float64  `json:"total_cost_usd"`
+		SuccessRate     float64  `json:"success_rate"`
+	}
+	var usage []providerUsage
+	for rows.Next() {
+		var u providerUsage
+		if err := rows.Scan(&u.ProviderID, &u.ProviderName, &u.ReqCount, &u.PromptTokens, &u.CompletionTokens, &u.TotalCost, &u.SuccessRate); err != nil {
+			continue
+		}
+		usage = append(usage, u)
+	}
+	writeJSON(w, http.StatusOK, usage)
 }
 
 func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {

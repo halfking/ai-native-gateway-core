@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,7 +46,7 @@ func splitSlash(s string) []string {
 }
 
 func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, providerID int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	var code, displayName string
@@ -55,13 +57,107 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 		return
 	}
 
+	rows, err := h.db.Query(ctx, `
+		SELECT c.id, c.label, c.secret_ciphertext, p.base_url, p.protocol
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.provider_id = $1 AND c.status = 'active' AND p.enabled = TRUE
+		ORDER BY c.id
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type credResult struct {
+		CredentialID int    `json:"credential_id"`
+		Label        string `json:"label"`
+		Status       string `json:"status"`
+		Error        string `json:"error,omitempty"`
+	}
+	results := []credResult{}
+	checked := 0
+	healthy := 0
+
+	for rows.Next() {
+		var credID int
+		var label, ciphertext, baseURL, protocol string
+		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol); err != nil {
+			continue
+		}
+
+		healthStatus := "unknown"
+		errMsg := ""
+
+		decrypted, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+		if decErr != nil {
+			healthStatus = "error"
+			errMsg = "decrypt failed"
+			results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg})
+			continue
+		}
+
+		if _, probeErr := probeProvider(ctx, baseURL, protocol, decrypted); probeErr != nil {
+			healthStatus = "unreachable"
+			errMsg = probeErr.Error()
+		} else {
+			healthStatus = "healthy"
+			healthy++
+		}
+
+		h.db.Exec(ctx, `
+			UPDATE credentials
+			SET health_status = $1, health_error = $2, health_checked_at = NOW()
+			WHERE id = $3
+		`, healthStatus, errMsg, credID)
+
+		results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg})
+		checked++
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id":   providerID,
-		"code":          code,
-		"display_name":  displayName,
-		"enabled":       enabled,
-		"message":       "provider health check not yet fully implemented (stub)",
+		"provider_id":    providerID,
+		"code":           code,
+		"display_name":   displayName,
+		"enabled":        enabled,
+		"checked":        checked,
+		"healthy":        healthy,
+		"credentials":    results,
+		"message":        "health check completed",
 	})
+}
+
+func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool, error) {
+	if baseURL == "" {
+		return false, fmt.Errorf("empty base URL")
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
+		if strings.HasSuffix(baseURL, suffix) {
+			baseURL = baseURL[:len(baseURL)-len(suffix)]
+			break
+		}
+	}
+
+	modelsURL := baseURL + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+	return false, fmt.Errorf("status %d", resp.StatusCode)
 }
 
 func (h *Handler) handleProvidersRoot(w http.ResponseWriter, r *http.Request) {
@@ -300,6 +396,70 @@ func (h *Handler) toggleProvider(w http.ResponseWriter, r *http.Request, id int)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "toggled"})
+}
+
+func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	type createdProvider struct {
+		ID          int    `json:"id"`
+		Code        string `json:"code"`
+		DisplayName string `json:"display_name"`
+	}
+
+	var created []createdProvider
+
+	rows, err := h.db.Query(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, catalog_code, protocol, base_url, enabled)
+		SELECT
+			'default',
+			pc.code,
+			pc.display_name,
+			pc.code,
+			COALESCE(pc.protocol, 'openai-completions'),
+			COALESCE(pc.base_url_template, ''),
+			TRUE
+		FROM provider_catalog pc
+		WHERE NOT EXISTS (
+			SELECT 1 FROM providers p
+			WHERE p.tenant_id = 'default' AND p.catalog_code = pc.code
+		)
+		ORDER BY pc.code
+		RETURNING id, code, display_name
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "seed failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cp createdProvider
+		if err := rows.Scan(&cp.ID, &cp.Code, &cp.DisplayName); err != nil {
+			continue
+		}
+		created = append(created, cp)
+	}
+
+	var total int
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE tenant_id = 'default'`).Scan(&total)
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message":  fmt.Sprintf("Seeded %d new providers from catalog", len(created)),
+		"created": len(created),
+		"total":   total,
+		"providers": created,
+	})
 }
 
 func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Request, providerID int, credPath string) {

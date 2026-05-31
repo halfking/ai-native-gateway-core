@@ -71,20 +71,21 @@ type chatResponseBody struct {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit         *circuit.Manager
-	limiter         *limiter.Limiter
-	matrix          *transform.Matrix
-	pools           *pool.PoolManager
-	resolver        *resolve.Resolver
-	auditor         audit.Sink
-	client          *upstreampkg.Client
-	normalizer      *Normalizer
-	executor        *routing.Executor
-	provider        *provider.Client
-	sticky          *routing.StickyCache
-	keyVerifier     *auth.KeyVerifier
-	rateLimiter     *ratelimit.SlidingWindowLimiter
-	telemetryClient *telemetry.Client
+	circuit          *circuit.Manager
+	limiter          *limiter.Limiter
+	matrix           *transform.Matrix
+	pools            *pool.PoolManager
+	resolver         *resolve.Resolver
+	auditor          audit.Sink
+	client           *upstreampkg.Client
+	normalizer       *Normalizer
+	executor         *routing.Executor
+	provider         *provider.Client
+	sticky           *routing.StickyCache
+	keyVerifier      *auth.KeyVerifier
+	rateLimiter      *ratelimit.SlidingWindowLimiter
+	telemetryClient  *telemetry.Client
+	sessionGetter    func(ctx context.Context, id string) (interface{ APIKeyID() int; TenantID() string; SessionKey() string }, error)
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
