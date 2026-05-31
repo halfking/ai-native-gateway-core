@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -198,7 +199,8 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		RETURNING id
 	`, appID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+		slog.Error("listKeyApplications query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 
@@ -507,7 +509,7 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if statusFilter != "" {
 		rows, err = h.db.Query(ctx, `
-			SELECT id::text, COALESCE(client_ip,''), COALESCE(contact,''), COALESCE(purpose,''),
+			SELECT id::text, client_ip::text, COALESCE(contact,''), COALESCE(purpose,''),
 			       status, issued_key_id, COALESCE(admin_notes,''), COALESCE(reviewed_by,''),
 			       reviewed_at, created_at, expires_at
 			FROM key_applications WHERE status = $1
@@ -515,7 +517,7 @@ func (h *Handler) listKeyApplications(w http.ResponseWriter, r *http.Request) {
 		`, statusFilter)
 	} else {
 		rows, err = h.db.Query(ctx, `
-			SELECT id::text, COALESCE(client_ip,''), COALESCE(contact,''), COALESCE(purpose,''),
+			SELECT id::text, client_ip::text, COALESCE(contact,''), COALESCE(purpose,''),
 			       status, issued_key_id, COALESCE(admin_notes,''), COALESCE(reviewed_by,''),
 			       reviewed_at, created_at, expires_at
 			FROM key_applications
@@ -572,7 +574,7 @@ func (h *Handler) getKeyApplication(w http.ResponseWriter, r *http.Request, id i
 		ExpiresAt   *time.Time `json:"expires_at"`
 	}
 	err := h.db.QueryRow(ctx, `
-		SELECT id::text, COALESCE(client_ip,''), COALESCE(contact,''), COALESCE(purpose,''),
+		SELECT id::text, client_ip::text, COALESCE(contact,''), COALESCE(purpose,''),
 		       status, issued_key_id, COALESCE(admin_notes,''), COALESCE(reviewed_by,''),
 		       reviewed_at, created_at, expires_at
 		FROM key_applications WHERE id = $1
