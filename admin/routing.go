@@ -86,7 +86,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var candidates []candidate
+	candidates := make([]candidate, 0)
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(
@@ -169,7 +169,7 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 		CircuitState  string  `json:"circuit_state"`
 		Status        string  `json:"status"`
 	}
-	var entries []entry
+	entries := make([]entry, 0)
 	for rows.Next() {
 		var e entry
 		if err := rows.Scan(&e.RawModel, &e.OutboundModel, &e.CredentialID,
@@ -413,7 +413,7 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	}
 	defer rows.Close()
 
-	var decisions []map[string]any
+	decisions := make([]map[string]any, 0)
 	for rows.Next() {
 		var ts time.Time
 		var reqID, mdl string
@@ -478,7 +478,7 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 		ConsecutiveFailures int   `json:"consecutive_failures"`
 		CoolingUntil       *time.Time `json:"cooling_until,omitempty"`
 	}
-	var creds []credHealth
+	creds := make([]credHealth, 0)
 	openCount := 0
 	for rows.Next() {
 		var c credHealth
@@ -523,7 +523,7 @@ func (h *Handler) handleRoutingAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var audits []map[string]any
+	audits := make([]map[string]any, 0)
 	for rows.Next() {
 		var ts time.Time
 		var actor, action string

@@ -247,8 +247,8 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.kind, p.category, p.protocol, p.base_url,
-		       p.egress_profile, p.domestic, p.discount_rate, p.enabled, p.notes,
-		       COALESCE(pc.vendor_name, pc.code) as vendor_name
+		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled, COALESCE(p.notes, ''),
+		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
 		WHERE p.tenant_id = 'default'
@@ -273,15 +273,16 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		Domestic     bool    `json:"domestic"`
 		DiscountRate float64 `json:"discount_rate"`
 		Enabled      bool    `json:"enabled"`
-		Notes        *string `json:"notes"`
-		VendorName   string  `json:"vendor_name"`
+		Notes        string `json:"notes"`
+		VendorName   string `json:"vendor_name"`
 	}
-	var providers []provider
+	providers := make([]provider, 0)
 	for rows.Next() {
 		var p provider
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.Kind,
 			&p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
 			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName); err != nil {
+			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
 		providers = append(providers, p)
@@ -417,7 +418,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 		DisplayName string `json:"display_name"`
 	}
 
-	var created []createdProvider
+	created := make([]createdProvider, 0)
 
 	rows, err := h.db.Query(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, catalog_code, protocol, base_url, enabled)

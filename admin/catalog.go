@@ -46,7 +46,7 @@ func (h *Handler) listCatalog(w http.ResponseWriter, r *http.Request) {
 		DisplayName string `json:"display_name"`
 		Protocol    string `json:"protocol"`
 	}
-	var entries []catalogEntry
+	entries := make([]catalogEntry, 0)
 	for rows.Next() {
 		var e catalogEntry
 		if err := rows.Scan(&e.Code, &e.DisplayName, &e.Protocol); err != nil {

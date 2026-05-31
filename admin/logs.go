@@ -102,7 +102,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		CompletionTokens *int     `json:"completion_tokens"`
 		CostUSD          *float64 `json:"cost_usd"`
 	}
-	var logs []logEntry
+	logs := make([]logEntry, 0)
 	for rows.Next() {
 		var l logEntry
 		if err := rows.Scan(&l.ID, &l.RequestID, &l.Ts, &l.ClientModel,

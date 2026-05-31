@@ -88,7 +88,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 		ReqCount  int      `json:"request_count"`
 		TotalCost *float64 `json:"total_cost_usd"`
 	}
-	var keys []hotKey
+	keys := make([]hotKey, 0)
 	for rows.Next() {
 		var k hotKey
 		if err := rows.Scan(&k.APIKeyID, &k.ReqCount, &k.TotalCost); err != nil {
@@ -133,7 +133,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 		TotalCost       float64  `json:"total_cost_usd"`
 		SuccessRate     float64  `json:"success_rate"`
 	}
-	var usage []providerUsage
+	usage := make([]providerUsage, 0)
 	for rows.Next() {
 		var u providerUsage
 		if err := rows.Scan(&u.ProviderID, &u.ProviderName, &u.ReqCount, &u.PromptTokens, &u.CompletionTokens, &u.TotalCost, &u.SuccessRate); err != nil {
@@ -172,7 +172,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 		CompletionTokens *int     `json:"completion_tokens"`
 		TotalCost        *float64 `json:"total_cost_usd"`
 	}
-	var usage []modelUsage
+	usage := make([]modelUsage, 0)
 	for rows.Next() {
 		var u modelUsage
 		if err := rows.Scan(&u.Model, &u.ReqCount, &u.PromptTokens, &u.CompletionTokens, &u.TotalCost); err != nil {
@@ -207,7 +207,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 		ReqCount  int      `json:"request_count"`
 		TotalCost *float64 `json:"total_cost_usd"`
 	}
-	var usage []keyUsage
+	usage := make([]keyUsage, 0)
 	for rows.Next() {
 		var u keyUsage
 		if err := rows.Scan(&u.APIKeyID, &u.ReqCount, &u.TotalCost); err != nil {
@@ -326,7 +326,7 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		FirstUsedAt      *string  `json:"first_used_at"`
 		LastUsedAt       *string  `json:"last_used_at"`
 	}
-	var usage []modelUsage
+	usage := make([]modelUsage, 0)
 	for rows.Next() {
 		var u modelUsage
 		var firstAt, lastAt *time.Time
@@ -384,7 +384,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		TotalTokens      int     `json:"total_tokens"`
 		CostUSD          float64 `json:"cost_usd"`
 	}
-	var trends []trendEntry
+	trends := make([]trendEntry, 0)
 	for rows.Next() {
 		var t trendEntry
 		if err := rows.Scan(&t.Period, &t.Requests, &t.PromptTokens, &t.CompletionTokens, &t.TotalTokens, &t.CostUSD); err != nil {

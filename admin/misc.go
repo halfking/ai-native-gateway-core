@@ -74,7 +74,7 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 		grouped[ns] = append(grouped[ns], tagInfo{Tag: tag, Count: count, Samples: samples})
 	}
 
-	var namespaces []namespaceInfo
+	namespaces := make([]namespaceInfo, 0)
 	for ns, tags := range grouped {
 		namespaces = append(namespaces, namespaceInfo{Namespace: ns, Tags: tags})
 	}

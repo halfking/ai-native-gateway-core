@@ -288,7 +288,7 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 		Vendor      string `json:"vendor"`
 		ModelCount  int    `json:"model_count"`
 	}
-	var families []family
+	families := make([]family, 0)
 	for rows.Next() {
 		var f family
 		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.ModelCount); err != nil {
