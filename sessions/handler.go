@@ -18,8 +18,13 @@ func NewHandler(manager *Manager) *Handler {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	if strings.HasPrefix(path, "/v1/sessions") && path == "/v1/sessions" && r.Method == http.MethodPost {
+	if path == "/v1/sessions" && r.Method == http.MethodPost {
 		h.CreateSession(w, r)
+		return
+	}
+
+	if path == "/v1/sessions/migrate" && r.Method == http.MethodPost {
+		h.MigrateSession(w, r)
 		return
 	}
 
@@ -98,7 +103,7 @@ func (h *Handler) GetSessionByID(w http.ResponseWriter, r *http.Request, session
 	}
 
 	apiKeyID := GetAPIKeyIDFromContext(r.Context())
-	if session.APIKeyID != apiKeyID {
+	if session.GetAPIKeyID() != apiKeyID {
 		writeErrorJSON(w, http.StatusForbidden, "", "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 		return
 	}
@@ -119,7 +124,7 @@ func (h *Handler) DeleteSessionByID(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 
-	if session.APIKeyID != apiKeyID {
+	if session.GetAPIKeyID() != apiKeyID {
 		writeErrorJSON(w, http.StatusForbidden, "", "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 		return
 	}
@@ -172,7 +177,7 @@ func (h *Handler) MigrateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if existingSession.APIKeyID != apiKeyID {
+	if existingSession.GetAPIKeyID() != apiKeyID {
 		writeErrorJSON(w, http.StatusForbidden, "", "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 		return
 	}

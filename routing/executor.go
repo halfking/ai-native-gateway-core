@@ -94,6 +94,7 @@ type ExecParams struct {
 	AuditBuilder  *audit.EventBuilder
 	Capture       *audit.StreamCapture
 	StreamWrapper StreamWrapperFunc
+	SessionKey    string
 }
 
 type ExecuteResult struct {
@@ -219,6 +220,10 @@ func (e *Executor) tryCandidate(
 			bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
 			slog.Debug("disguise layer applied", "profile", profileName)
 		}
+	}
+
+	if params.SessionKey != "" && cand.SupportsPromptCache {
+		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -540,4 +545,34 @@ func injectStreamOptions(body []byte) []byte {
 func executorMustMarshal(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func injectCacheParams(body []byte, cacheMode, sessionKey string) ([]byte, error) {
+	if cacheMode == "" || sessionKey == "" {
+		return body, nil
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body, err
+	}
+
+	switch cacheMode {
+	case "checkpoint":
+		obj["cache_checkpoint"] = sessionKey
+	case "tokens":
+		meta, ok := obj["metadata"].(map[string]any)
+		if !ok {
+			meta = make(map[string]any)
+		}
+		if cc, ok := meta["cache_control"].(map[string]any); ok {
+			cc["type"] = "ephemeral"
+			meta["cache_control"] = cc
+		} else {
+			meta["cache_control"] = map[string]any{"type": "ephemeral"}
+		}
+		obj["metadata"] = meta
+	}
+
+	return json.Marshal(obj)
 }

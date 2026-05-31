@@ -411,10 +411,13 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 				     AND (c.cooling_until IS NULL OR c.cooling_until > now()) THEN FALSE
 				WHEN c.balance_usd IS NOT NULL AND c.balance_usd <= 0 THEN FALSE
 				ELSE TRUE
-			END AS runtime_routable
+			END AS runtime_routable,
+			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
+			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
 		LEFT JOIN model_aliases ma ON lower(ma.raw_name) = lower(mo.raw_model_name)
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
@@ -449,6 +452,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 			&cand.PriceInPer1M,
 			&cand.PriceOutPer1M,
 			&cand.Routable,
+			&cand.SupportsPromptCache,
+			&cand.CacheMode,
 		); err != nil {
 			return nil, err
 		}

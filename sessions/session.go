@@ -43,6 +43,18 @@ type Session struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
+func (s *Session) GetAPIKeyID() int {
+	return s.APIKeyID
+}
+
+func (s *Session) GetTenantID() string {
+	return s.TenantID
+}
+
+func (s *Session) GetSessionKey() string {
+	return s.SessionKey
+}
+
 type RedisClient struct {
 	client *redis.Client
 }

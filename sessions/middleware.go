@@ -18,6 +18,13 @@ func SessionFromContext(ctx context.Context) *Session {
 	return nil
 }
 
+func SessionFromContextWith(ctx context.Context, s *Session) context.Context {
+	if s == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionContextKey, s)
+}
+
 func WithSession(next http.Handler, manager *Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.Header.Get("X-Session-Id")

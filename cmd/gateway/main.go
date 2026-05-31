@@ -97,6 +97,12 @@ func main() {
 
 	pools := pool.NewPoolManager()
 
+	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	healthHandler := relay.NewHealthHandler(cm, lim)
+	modelsHandler := relay.NewModelsHandler(pythonEndpoint)
+	messagesHandler := relay.NewMessagesHandler(chatHandler)
+	responsesHandler := relay.NewResponsesHandler(chatHandler)
+
 	// ── Session Manager ────────────────────────────────────────────────
 	var sessionMgr *sessions.Manager
 	if cfg.RedisAddr != "" {
@@ -104,6 +110,7 @@ func main() {
 		if err := redisClient.Ping(context.Background()); err == nil {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
 			sessionMgr = sessions.NewManager(redisClient, ttl)
+			chatHandler.SetSessionGetter(sessionMgr)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -111,12 +118,6 @@ func main() {
 	} else {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
-
-	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
-	healthHandler := relay.NewHealthHandler(cm, lim)
-	modelsHandler := relay.NewModelsHandler(pythonEndpoint)
-	messagesHandler := relay.NewMessagesHandler(chatHandler)
-	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	adminAPIKey := os.Getenv("LLM_GATEWAY_ADMIN_API_KEY")
@@ -217,6 +218,10 @@ func main() {
 		taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
 		taxonomySync.Start(context.Background())
 		slog.Info("taxonomy sync started")
+
+		if adminHandler != nil {
+			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
+		}
 	}
 
 	// ── Listen address ────────────────────────────────────────────────────

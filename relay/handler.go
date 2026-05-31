@@ -15,6 +15,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/limiter"
@@ -86,16 +87,9 @@ type ChatHandler struct {
 	rateLimiter      *ratelimit.SlidingWindowLimiter
 	telemetryClient  *telemetry.Client
 	sessionGetter    interface {
-		Get(ctx context.Context, id string) (SessionInfo, error)
+		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
 	}
-	apiKeyIDGetter func(ctx context.Context) (int, string)
-}
-
-type SessionInfo interface {
-	APIKeyID() int
-	TenantID() string
-	SessionKey() string
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -121,14 +115,10 @@ func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
-	Get(ctx context.Context, id string) (SessionInfo, error)
+	Get(ctx context.Context, id string) (*sessions.Session, error)
 	Touch(ctx context.Context, id string) error
 }) {
 	h.sessionGetter = sg
-}
-
-func (h *ChatHandler) SetAPIKeyIDGetter(getter func(ctx context.Context) (int, string)) {
-	h.apiKeyIDGetter = getter
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -189,6 +179,35 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
 			}
+		}
+	}
+
+	// ── Inject API Key info into context for session middleware ─────────
+	ctx := r.Context()
+	if keyInfo != nil {
+		ctx = sessions.SetAPIKeyID(ctx, keyInfo.ID)
+		ctx = sessions.SetTenantID(ctx, keyInfo.TenantID)
+	}
+
+	// ── Session validation (if X-Session-Id provided) ──────────────────
+	var sessionInfo *sessions.Session
+	sessionID := r.Header.Get("X-Session-Id")
+	if sessionID != "" && h.sessionGetter != nil {
+		si, err := h.sessionGetter.Get(ctx, sessionID)
+		if err != nil {
+			if err == sessions.ErrSessionNotFound {
+				writeErrorJSON(w, http.StatusBadRequest, requestID, "invalid session", "session_error", "SESSION_INVALID")
+				return
+			}
+			slog.Warn("session lookup failed", "error", err)
+		} else {
+			sessionInfo = si
+			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
+				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+				return
+			}
+			go h.sessionGetter.Touch(context.Background(), sessionID)
+			ctx = sessions.SessionFromContextWith(ctx, sessionInfo)
 		}
 	}
 
@@ -284,6 +303,11 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		auditBuilder.TransformRule(txResult.MatchedRule)
 	}
 
+	var sessionKey string
+	if sessionInfo != nil {
+		sessionKey = sessionInfo.SessionKey
+	}
+
 	result, execErr := h.executor.Execute(&routing.ExecParams{
 		W:             w,
 		R:             r,
@@ -298,6 +322,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		Policy:        policy,
 		AuditBuilder:  auditBuilder,
 		Capture:       streamCapture,
+		SessionKey:    sessionKey,
 	})
 
 	if execErr != nil {
