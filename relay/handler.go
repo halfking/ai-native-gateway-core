@@ -459,6 +459,20 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 	}
 
+	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
+		cost := CalcCost(CostInput{
+			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
+			CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
+			CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
+			CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
+			PriceIn:          result.Candidate.PriceInPer1M,
+			PriceOut:         result.Candidate.PriceOutPer1M,
+			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
+			CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
+		})
+		reqLog.CostUSD = cost
+	}
+
 	h.telemetryClient.EmitRequestLog(reqLog)
 }
 
@@ -1047,6 +1061,13 @@ func resolveEndUser(bodyUser string, r *http.Request) string {
 }
 
 func intPtr(v int) *int { return &v }
+func floatPtrFromInt(p *int) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := float64(*p)
+	return &v
+}
 func strPtr(v string) *string {
 	if v == "" {
 		return nil

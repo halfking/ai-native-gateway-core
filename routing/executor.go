@@ -35,16 +35,17 @@ type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel,
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture)
 
 type Executor struct {
-	Router     *Router
-	Circuit    *circuit.Manager
-	Limiter    *limiter.Limiter
-	Pools      *pool.PoolManager
-	Upstream   *upstreampkg.Client
-	Normalize  NormalizerFunc
-	StreamChat StreamHandler
-	Auditor    audit.Sink
-	State      *credentialstate.Writer
-	DB         *db.DB
+	Router        *Router
+	Circuit       *circuit.Manager
+	Limiter       *limiter.Limiter
+	Pools         *pool.PoolManager
+	Upstream      *upstreampkg.Client
+	Normalize     NormalizerFunc
+	StreamChat    StreamHandler
+	Auditor       audit.Sink
+	State         *credentialstate.Writer
+	DB            *db.DB
+	HeaderProfiles *HeaderProfileCache
 
 	StreamTimeout   time.Duration
 	UpstreamTimeout time.Duration
@@ -281,6 +282,15 @@ func (e *Executor) tryCandidate(
 				}
 				for k, v := range params.Transform.InjectHeaders {
 					req.Header.Set(k, v)
+				}
+			}
+
+			if e.HeaderProfiles != nil {
+				prof := e.HeaderProfiles.load(params.R.Context(), cand.CatalogCode, cand.Protocol)
+				if prof != nil {
+					for k, v := range prof.Headers {
+						req.Header.Set(k, v)
+					}
 				}
 			}
 

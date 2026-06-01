@@ -2,15 +2,13 @@ package resolve
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"golang.org/x/sync/singleflight"
 )
@@ -29,34 +27,29 @@ type cacheEntry struct {
 }
 
 type Resolver struct {
-	mu       sync.RWMutex
-	cache    map[string]cacheEntry
-	ttl      time.Duration
-	endpoint string
-	client   *http.Client
-	sfGroup  singleflight.Group
-	stopCh   chan struct{}
+	mu      sync.RWMutex
+	cache   map[string]cacheEntry
+	ttl     time.Duration
+	dbPool  *pgxpool.Pool
+	sfGroup singleflight.Group
+	stopCh  chan struct{}
 }
 
-func NewResolver(pythonEndpoint string, cacheTTL time.Duration) *Resolver {
+func NewResolver(_ string, cacheTTL time.Duration) *Resolver {
 	if cacheTTL == 0 {
 		cacheTTL = 120 * time.Second
 	}
 	r := &Resolver{
-		cache:    make(map[string]cacheEntry),
-		ttl:      cacheTTL,
-		stopCh:   make(chan struct{}),
-	}
-	if pythonEndpoint == "" {
-		slog.Warn("resolve: no Python endpoint configured, resolution disabled")
-		return r
-	}
-	r.endpoint = strings.TrimRight(pythonEndpoint, "/")
-	r.client = &http.Client{
-		Timeout: 5 * time.Second,
+		cache:  make(map[string]cacheEntry),
+		ttl:    cacheTTL,
+		stopCh: make(chan struct{}),
 	}
 	go r.evictLoop()
 	return r
+}
+
+func (r *Resolver) SetDB(pool *pgxpool.Pool) {
+	r.dbPool = pool
 }
 
 func cacheKey(model, profile string) string {
@@ -68,10 +61,6 @@ func cacheKey(model, profile string) string {
 }
 
 func (r *Resolver) Resolve(ctx context.Context, clientModel, clientProfile string) *Resolution {
-	if r.endpoint == "" {
-		return passthrough(clientModel)
-	}
-
 	key := cacheKey(clientModel, clientProfile)
 
 	r.mu.RLock()
@@ -82,12 +71,15 @@ func (r *Resolver) Resolve(ctx context.Context, clientModel, clientProfile strin
 	r.mu.RUnlock()
 
 	v, err, _ := r.sfGroup.Do(key, func() (any, error) {
-		resolved, fetchErr := r.fetch(ctx, clientModel, clientProfile)
+		resolved, fetchErr := r.resolveDB(ctx, clientModel, clientProfile)
 		if fetchErr != nil {
-			slog.Warn("resolve: fetch failed, using passthrough",
+			slog.Debug("resolve: DB failed, using passthrough",
 				"model", clientModel,
 				"error", fetchErr,
 			)
+			return passthrough(clientModel), nil
+		}
+		if resolved == nil {
 			return passthrough(clientModel), nil
 		}
 
@@ -103,36 +95,130 @@ func (r *Resolver) Resolve(ctx context.Context, clientModel, clientProfile strin
 	if err != nil {
 		return passthrough(clientModel)
 	}
+	if v == nil {
+		return passthrough(clientModel)
+	}
 	return v.(*Resolution)
 }
 
-func (r *Resolver) fetch(ctx context.Context, clientModel, clientProfile string) (*Resolution, error) {
-	params := url.Values{"model": {modelname.NormalizeRouteKey(clientModel)}}
-	if clientProfile != "" {
-		params.Set("profile", clientProfile)
+func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile string) (*Resolution, error) {
+	if r.dbPool == nil {
+		return nil, nil
 	}
-	fetchURL := fmt.Sprintf("%s/api/routing/resolve?%s", r.endpoint, params.Encode())
+	normalized := modelname.NormalizeRouteKey(clientModel)
+	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	var canonicalID *int
+	var canonicalName *string
+
+	err := r.dbPool.QueryRow(ctx, `
+		SELECT id, canonical_name
+		FROM models_canonical
+		WHERE lower(canonical_name) = lower($1)
+		  AND COALESCE(status, 'active') = 'active'
+	`, normalized).Scan(&canonicalID, &canonicalName)
+	if err == nil && canonicalID != nil {
+		raw, err := r.aliasRawNames(ctx, *canonicalID, profile)
+		if err != nil {
+			return nil, err
+		}
+		all := append([]string{normalized}, raw...)
+		return &Resolution{
+			ClientModel:    clientModel,
+			CanonicalID:    canonicalID,
+			CanonicalName:  canonicalName,
+			RawModels:      lowerUnique(all),
+			ResolutionPath: "canonical",
+		}, nil
+	}
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	err = r.dbPool.QueryRow(ctx, `
+		SELECT mc.id, mc.canonical_name
+		FROM model_aliases ma
+		JOIN models_canonical mc ON mc.id = ma.canonical_id
+		WHERE lower(ma.raw_name) = lower($1)
+		  AND COALESCE(ma.status, 'active') = 'active'
+		  AND COALESCE(mc.status, 'active') = 'active'
+		  AND (
+		      ma.client_profiles IS NULL
+		      OR cardinality(ma.client_profiles) = 0
+		      OR $2 = ANY(ma.client_profiles)
+		      OR $2 = ''
+		  )
+		LIMIT 1
+	`, normalized, profile).Scan(&canonicalID, &canonicalName)
+	if err == nil && canonicalID != nil {
+		raw, err := r.aliasRawNames(ctx, *canonicalID, profile)
+		if err != nil {
+			return nil, err
+		}
+		all := append([]string{normalized}, raw...)
+		return &Resolution{
+			ClientModel:    clientModel,
+			CanonicalID:    canonicalID,
+			CanonicalName:  canonicalName,
+			RawModels:      lowerUnique(all),
+			ResolutionPath: "alias",
+		}, nil
+	}
+
+	return passthrough(clientModel), nil
+}
+
+func (r *Resolver) aliasRawNames(ctx context.Context, canonicalID int, profile string) ([]string, error) {
+	rows, err := r.dbPool.Query(ctx, `
+		SELECT raw_name
+		FROM model_aliases
+		WHERE canonical_id = $1
+		  AND COALESCE(status, 'active') = 'active'
+		  AND (
+		      client_profiles IS NULL
+		      OR cardinality(client_profiles) = 0
+		      OR $2 = ANY(client_profiles)
+		      OR $2 = ''
+		  )
+	`, canonicalID, profile)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, err
 	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		out = append(out, raw)
+	}
+	return out, rows.Err()
+}
 
-	resp, err := r.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http call: %w", err)
+func lowerUnique(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
 	}
-	defer resp.Body.Close()
+	return out
+}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("python returned %d", resp.StatusCode)
+func passthrough(model string) *Resolution {
+	lowered := modelname.NormalizeRouteKey(model)
+	return &Resolution{
+		ClientModel:    model,
+		CanonicalID:    nil,
+		CanonicalName:  nil,
+		RawModels:      []string{lowered},
+		ResolutionPath: "direct",
 	}
-
-	var result Resolution
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-	return &result, nil
 }
 
 func (r *Resolver) CachedCount() int {
@@ -149,17 +235,6 @@ func (r *Resolver) EvictExpired() {
 		if now.After(v.expiration) {
 			delete(r.cache, k)
 		}
-	}
-}
-
-func passthrough(model string) *Resolution {
-	lowered := modelname.NormalizeRouteKey(model)
-	return &Resolution{
-		ClientModel:    model,
-		CanonicalID:    nil,
-		CanonicalName:  nil,
-		RawModels:      []string{lowered},
-		ResolutionPath: "direct",
 	}
 }
 

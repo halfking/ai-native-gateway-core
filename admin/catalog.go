@@ -58,5 +58,30 @@ func (h *Handler) listCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getCatalog(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not yet implemented")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	remaining := r.URL.Path[len("/api/catalog/"):]
+	if remaining == "" {
+		h.listCatalog(w, r)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var code, displayName, protocol string
+	err := h.db.QueryRow(ctx, `
+		SELECT code, COALESCE(display_name,''), COALESCE(protocol,'')
+		FROM provider_catalog WHERE code = $1
+	`, remaining).Scan(&code, &displayName, &protocol)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "catalog entry not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"code":         code,
+		"display_name": displayName,
+		"protocol":     protocol,
+	})
 }

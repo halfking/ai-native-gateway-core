@@ -99,8 +99,7 @@ func main() {
 	matrixPath := transform.DefaultMatrixPath()
 	matrix := transform.New(matrixPath)
 
-	pythonEndpoint := cfg.PythonEndpoint
-	resolver := resolve.NewResolver(pythonEndpoint, 120*time.Second)
+	resolver := resolve.NewResolver("", 120*time.Second)
 
 	auditSink := audit.NewMultiSink(
 		&audit.LogSink{},
@@ -111,7 +110,7 @@ func main() {
 
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
 	healthHandler := relay.NewHealthHandler(cm, lim)
-	modelsHandler := relay.NewModelsHandler(pythonEndpoint)
+	modelsHandler := relay.NewModelsHandler("")
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
@@ -135,9 +134,16 @@ func main() {
 	providerClient := provider.NewClient()
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
+		resolver.SetDB(dbConn.Pool())
 	}
 	if providerClient.Enabled() {
 		stickyCache := routing.NewStickyCache()
+		if dbConn != nil && dbConn.Enabled() {
+			stickyCache.SetDB(dbConn.Pool())
+			if err := stickyCache.RestoreFromDB(context.Background()); err != nil {
+				slog.Warn("sticky restore from DB failed", "error", err)
+			}
+		}
 		router := routing.NewRouter(stickyCache, lim)
 		norm := relay.NewNormalizer()
 		upClient := upstream.New()
@@ -154,6 +160,7 @@ func main() {
 		if dbConn != nil && dbConn.Enabled() {
 			exec.State = credentialstate.NewWriter(dbConn.Pool())
 			exec.DB = dbConn
+			exec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled")

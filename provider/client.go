@@ -38,9 +38,35 @@ type Candidate struct {
 	BlockReason         *string  `json:"runtime_block_reason"`
 	PriceInPer1M        *float64 `json:"unit_price_in_per_1m"`
 	PriceOutPer1M       *float64 `json:"unit_price_out_per_1m"`
+	CacheReadPricePer1M *float64 `json:"cache_read_price_per_1m"`
+	CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
 	SupportsPromptCache bool     `json:"supports_prompt_cache"`
 	CacheMode           string   `json:"cache_mode"`
 	APIKey              string   `json:"-"`
+}
+
+func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
+	pIn := float64(0)
+	if c.PriceInPer1M != nil {
+		pIn = *c.PriceInPer1M
+	}
+	pOut := float64(0)
+	if c.PriceOutPer1M != nil {
+		pOut = *c.PriceOutPer1M
+	}
+	if pIn == 0 && pOut == 0 {
+		return 0
+	}
+	promptCost := float64(promptTokens) * pIn
+	if c.CacheReadPricePer1M != nil && cacheReadTokens != nil && *cacheReadTokens > 0 {
+		promptCost -= float64(*cacheReadTokens) * pIn
+		promptCost += float64(*cacheReadTokens) * *c.CacheReadPricePer1M
+	}
+	if c.CacheWritePricePer1M != nil && cacheWriteTokens != nil && *cacheWriteTokens > 0 {
+		promptCost -= float64(*cacheWriteTokens) * pIn
+		promptCost += float64(*cacheWriteTokens) * *c.CacheWritePricePer1M
+	}
+	return (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
 }
 
 func (c *Candidate) IsAvailable() bool {
@@ -360,6 +386,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
 			mo.unit_price_in_per_1m::float8,
 			mo.unit_price_out_per_1m::float8,
+			mo.cache_read_price_per_1m::float8,
+			mo.cache_write_price_per_1m::float8,
 			CASE
 				WHEN mo.available IS NOT TRUE THEN FALSE
 				WHEN c.status NOT IN ('active','cooling','degraded') THEN FALSE
@@ -422,6 +450,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			&cand.LifecycleStatus,
 			&cand.PriceInPer1M,
 			&cand.PriceOutPer1M,
+			&cand.CacheReadPricePer1M,
+			&cand.CacheWritePricePer1M,
 			&cand.Routable,
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
