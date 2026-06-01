@@ -1,13 +1,9 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -18,10 +14,7 @@ import (
 var errNoTelemetryDB = errors.New("telemetry database not configured")
 
 type Client struct {
-	endpoint   string
-	adminKey   string
-	httpClient *http.Client
-	dbPool     *pgxpool.Pool
+	dbPool *pgxpool.Pool
 
 	queue chan any
 	done  chan struct{}
@@ -96,13 +89,10 @@ type RequestLogEntry struct {
 	ResponseBody       *string  `json:"response_body,omitempty"`
 }
 
-func NewClient(pythonEndpoint, adminAPIKey string) *Client {
+func NewClient() *Client {
 	c := &Client{
-		endpoint:   pythonEndpoint,
-		adminKey:   adminAPIKey,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		queue:      make(chan any, 4096),
-		done:       make(chan struct{}),
+		queue: make(chan any, 4096),
+		done:  make(chan struct{}),
 	}
 	c.wg.Add(1)
 	go c.worker()
@@ -110,7 +100,7 @@ func NewClient(pythonEndpoint, adminAPIKey string) *Client {
 }
 
 func (c *Client) Enabled() bool {
-	return c.dbPool != nil || (c.endpoint != "" && c.adminKey != "")
+	return c.dbPool != nil
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool) {
@@ -179,13 +169,11 @@ func (c *Client) flush(batch []any) {
 		switch v := item.(type) {
 		case *DecisionLogEntry:
 			if err := c.insertDecisionLog(v); err != nil {
-				slog.Debug("telemetry decision db insert failed, falling back to RPC", "request_id", v.RequestID, "error", err)
-				c.send("/api/telemetry/decision-log", v)
+				slog.Debug("telemetry decision db insert failed", "request_id", v.RequestID, "error", err)
 			}
 		case *RequestLogEntry:
 			if err := c.insertRequestLog(v); err != nil {
-				slog.Debug("telemetry request db insert failed, falling back to RPC", "request_id", v.RequestID, "error", err)
-				c.send("/api/telemetry/request-log", v)
+				slog.Debug("telemetry request db insert failed", "request_id", v.RequestID, "error", err)
 			}
 		}
 	}
@@ -372,40 +360,6 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 	return tx.Commit(ctx)
-}
-
-func (c *Client) send(path string, payload any) {
-	if c.endpoint == "" || c.adminKey == "" {
-		return
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		slog.Warn("telemetry marshal error", "error", err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+path, bytes.NewReader(body))
-	if err != nil {
-		slog.Warn("telemetry request error", "error", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.adminKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		slog.Debug("telemetry send failed", "path", path, "error", err)
-		return
-	}
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		slog.Debug("telemetry send non-2xx", "path", path, "status", resp.StatusCode)
-	}
 }
 
 func intptr(v int) *int           { return &v }

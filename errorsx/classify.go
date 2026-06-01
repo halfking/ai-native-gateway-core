@@ -28,13 +28,16 @@ const (
 )
 
 var modelNotFoundRe = regexp.MustCompile(
-	`(?i)(model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|` +
-		`(no such|unknown) model|` +
-		`endpoint.{0,40}(does not exist|not found)|` +
-		`(does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
-		`(tool|function)[- _]?call(ing|s)? (is )?not supported|` +
-		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|` +
+	`(?i)(model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|`+
+		`(no such|unknown) model|`+
+		`endpoint.{0,40}(does not exist|not found)|`+
+		`(does not|doesn'?t) support (coding plan|tool|function|tools|function call)|`+
+		`(tool|function)[- _]?call(ing|s)? (is )?not supported|`+
+		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|`+
 		`model.{0,40}(deprecated|retired|sunset))`,
+)
+var modelNotFoundCJKRe = regexp.MustCompile(
+	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到|当前模型不支持`,
 )
 
 func ClassifyError(err error, resp *http.Response) ErrorKind {
@@ -73,8 +76,10 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 }
 
 func ClassifyResponseBody(body []byte) ErrorKind {
-	if len(body) > 0 && modelNotFoundRe.Match(body) {
-		return KindModelNotFound
+	if len(body) > 0 {
+		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
+			return KindModelNotFound
+		}
 	}
 	return ""
 }

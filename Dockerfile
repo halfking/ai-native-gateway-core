@@ -2,7 +2,7 @@
 # Build with: docker build -t kx-llm-gateway-go:latest .
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 golang:1.24-alpine AS builder
+FROM --platform=linux/amd64 golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 

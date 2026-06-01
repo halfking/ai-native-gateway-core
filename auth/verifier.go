@@ -1,17 +1,12 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -32,11 +27,8 @@ type KeyInfo struct {
 }
 
 type KeyVerifier struct {
-	endpoint   string
-	adminKey   string
-	httpClient *http.Client
-	dbPool     *pgxpool.Pool
-	secretKey  string
+	dbPool    *pgxpool.Pool
+	secretKey string
 
 	cache   map[string]*keyCacheEntry
 	mu      sync.RWMutex
@@ -50,20 +42,15 @@ type keyCacheEntry struct {
 	expiresAt time.Time
 }
 
-func NewKeyVerifier(pythonEndpoint, adminAPIKey string) *KeyVerifier {
+func NewKeyVerifier() *KeyVerifier {
 	return &KeyVerifier{
-		endpoint: pythonEndpoint,
-		adminKey: adminAPIKey,
-		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
-		},
 		cache: make(map[string]*keyCacheEntry),
 		ttl:   60 * time.Second,
 	}
 }
 
 func (kv *KeyVerifier) Enabled() bool {
-	return (kv.dbPool != nil && kv.secretKey != "") || (kv.endpoint != "" && kv.adminKey != "")
+	return kv.dbPool != nil && kv.secretKey != ""
 }
 
 func (kv *KeyVerifier) SetDB(pool *pgxpool.Pool, secretKey string) {
@@ -83,13 +70,7 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 	v, err, _ := kv.sfGroup.Do("key:"+rawKey, func() (any, error) {
 		info, verifyErr := kv.callVerifyDB(ctx, rawKey)
 		if verifyErr != nil {
-			if _, ok := verifyErr.(*InvalidKeyError); ok {
-				return nil, verifyErr
-			}
-			info, verifyErr = kv.callVerifyRPC(ctx, rawKey)
-			if verifyErr != nil {
-				return nil, verifyErr
-			}
+			return nil, verifyErr
 		}
 		kv.setCache(rawKey, info)
 		return info, nil
@@ -186,43 +167,6 @@ func (kv *KeyVerifier) setCache(key string, info *KeyInfo) {
 	}
 }
 
-func (kv *KeyVerifier) callVerifyRPC(ctx context.Context, rawKey string) (*KeyInfo, error) {
-	reqBody := fmt.Sprintf(`{"api_key":"%s"}`, rawKey)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kv.endpoint+"/api/keys/verify", strings.NewReader(reqBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+kv.adminKey)
-
-	resp, err := kv.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("key verify RPC failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, &InvalidKeyError{Message: "Invalid or expired API key"}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("key verify RPC returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var info KeyInfo
-	if err := json.Unmarshal(body, &info); err != nil {
-		return nil, fmt.Errorf("key verify RPC invalid response: %w", err)
-	}
-
-	slog.Debug("key verified",
-		"key_id", info.ID,
-		"tenant_id", info.TenantID,
-		"app_code", info.ApplicationCode,
-	)
-	return &info, nil
-}
-
 type InvalidKeyError struct {
 	Message string
 }
@@ -241,62 +185,11 @@ func (e *BudgetExceededError) Error() string {
 	return fmt.Sprintf("budget exceeded for key %d: spent %.4f >= budget %.4f", e.KeyID, e.Spent, e.Budget)
 }
 
-type budgetCheckResponse struct {
-	APIKeyID  int      `json:"api_key_id"`
-	BudgetUSD *float64 `json:"budget_usd"`
-	SpentUSD  float64  `json:"spent_usd"`
-	Exceeded  bool     `json:"exceeded"`
-}
-
 func (kv *KeyVerifier) CheckBudget(ctx context.Context, keyID int) error {
 	if !kv.Enabled() {
 		return nil
 	}
-	if kv.dbPool != nil {
-		if err := kv.checkBudgetDB(ctx, keyID); err == nil || isBudgetExceeded(err) {
-			return err
-		} else {
-			slog.Warn("budget check DB failed, falling back to RPC", "error", err)
-		}
-	}
-	if kv.endpoint == "" || kv.adminKey == "" {
-		return nil
-	}
-
-	payload, _ := json.Marshal(map[string]any{"api_key_id": keyID})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kv.endpoint+"/api/keys/budget-check", bytes.NewReader(payload))
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+kv.adminKey)
-
-	resp, err := kv.httpClient.Do(req)
-	if err != nil {
-		slog.Warn("budget check RPC failed", "error", err)
-		return nil
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != http.StatusOK {
-		slog.Warn("budget check RPC non-200", "status", resp.StatusCode, "body", string(body))
-		return nil
-	}
-
-	var result budgetCheckResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil
-	}
-
-	if result.Exceeded {
-		budget := 0.0
-		if result.BudgetUSD != nil {
-			budget = *result.BudgetUSD
-		}
-		return &BudgetExceededError{KeyID: keyID, Budget: budget, Spent: result.SpentUSD}
-	}
-	return nil
+	return kv.checkBudgetDB(ctx, keyID)
 }
 
 func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {

@@ -165,7 +165,7 @@ func (b *Breaker) Allow() bool {
 		}
 		return false
 	case StateHalfOpen:
-		return b.halfOpenProbes.Add(1) <= 1
+		return b.halfOpenProbes.Add(1) == 1
 	default:
 		return false
 	}

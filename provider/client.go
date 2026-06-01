@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -108,32 +105,14 @@ type resolveResponse struct {
 	Candidates []json.RawMessage `json:"candidates"`
 }
 
-type revealResponse struct {
-	CredentialID int    `json:"credential_id"`
-	APIKey       string `json:"api_key"`
-}
-
-type policyResponse struct {
-	AlgorithmVersion        int `json:"algorithm_version"`
-	RetryPerCredential      int `json:"retry_per_credential"`
-	TierFallbackMax         int `json:"tier_fallback_max"`
-	CircuitOpenSeconds      int `json:"circuit_open_seconds"`
-	CircuitFailureThreshold int `json:"circuit_failure_threshold"`
-	CircuitMaxOpenSeconds   int `json:"circuit_max_open_seconds"`
-	StickyTTLMilliseconds   int `json:"sticky_ttl_seconds"`
-}
-
 type cacheEntry[T any] struct {
 	value   T
 	expires time.Time
 }
 
 type Client struct {
-	endpoint   string
-	adminKey   string
-	httpClient *http.Client
-	dbPool     *pgxpool.Pool
-	fernetKey  []byte
+	dbPool    *pgxpool.Pool
+	fernetKey []byte
 
 	mu        sync.RWMutex
 	candCache map[string]cacheEntry[*resolveResponse]
@@ -143,26 +122,15 @@ type Client struct {
 	sf singleflight.Group
 }
 
-func NewClient(pythonEndpoint, adminAPIKey string) *Client {
-	if pythonEndpoint == "" {
-		return &Client{
-			candCache: make(map[string]cacheEntry[*resolveResponse]),
-			keyCache:  make(map[int]cacheEntry[string]),
-		}
-	}
+func NewClient() *Client {
 	return &Client{
-		endpoint: strings.TrimRight(pythonEndpoint, "/"),
-		adminKey: adminAPIKey,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
 		candCache: make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:  make(map[int]cacheEntry[string]),
 	}
 }
 
 func (c *Client) Enabled() bool {
-	return c.endpoint != "" || c.dbPool != nil
+	return c.dbPool != nil
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey string) {
@@ -196,10 +164,6 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 
 	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
 		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile)
-		if fetchErr != nil {
-			slog.Warn("candidate resolve DB failed, falling back to RPC", "model", routeModel, "error", fetchErr)
-			resp, fetchErr = c.fetchCandidates(ctx, routeModel, profile)
-		}
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
@@ -239,10 +203,6 @@ func (c *Client) getPolicyCached(ctx context.Context) (*Policy, error) {
 
 	v, err, _ := c.sf.Do("policy", func() (any, error) {
 		pol, fetchErr := c.fetchPolicyDB(ctx)
-		if fetchErr != nil {
-			slog.Warn("policy DB fetch failed, falling back to RPC", "error", fetchErr)
-			pol, fetchErr = c.fetchPolicy(ctx)
-		}
 		if fetchErr != nil {
 			return DefaultPolicy(), nil
 		}
@@ -589,126 +549,11 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 	return v.(string), nil
 }
 
-func (c *Client) fetchCandidates(ctx context.Context, model, profile string) (*resolveResponse, error) {
-	params := url.Values{"model": {model}}
-	if profile != "" {
-		params.Set("client_profile", profile)
-	}
-	fetchURL := fmt.Sprintf("%s/api/routing/resolve?%s", c.endpoint, params.Encode())
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http call: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("resolve returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result resolveResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-	return &result, nil
-}
-
-func (c *Client) fetchPolicy(ctx context.Context) (*Policy, error) {
-	fetchURL := c.endpoint + "/api/routing/policy"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return DefaultPolicy(), nil
-	}
-
-	var pr policyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return DefaultPolicy(), nil
-	}
-
-	pol := &Policy{
-		AlgorithmVersion:        pr.AlgorithmVersion,
-		RetryPerCredential:      pr.RetryPerCredential,
-		TierFallbackMax:         pr.TierFallbackMax,
-		CircuitOpenSeconds:      pr.CircuitOpenSeconds,
-		CircuitFailureThreshold: pr.CircuitFailureThreshold,
-		CircuitMaxOpenSeconds:   pr.CircuitMaxOpenSeconds,
-		StickyTTLMilliseconds:   pr.StickyTTLMilliseconds,
-	}
-	if pol.AlgorithmVersion == 0 {
-		pol.AlgorithmVersion = 2
-	}
-	if pol.RetryPerCredential == 0 {
-		pol.RetryPerCredential = 1
-	}
-	if pol.TierFallbackMax == 0 {
-		pol.TierFallbackMax = 3
-	}
-	if pol.CircuitOpenSeconds == 0 {
-		pol.CircuitOpenSeconds = 300
-	}
-	if pol.CircuitFailureThreshold == 0 {
-		pol.CircuitFailureThreshold = 5
-	}
-	if pol.CircuitMaxOpenSeconds == 0 {
-		pol.CircuitMaxOpenSeconds = 1800
-	}
-	if pol.StickyTTLMilliseconds == 0 {
-		pol.StickyTTLMilliseconds = 1800
-	}
-	return pol, nil
-}
-
 func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) (string, error) {
 	if c.dbPool != nil && len(c.fernetKey) == 32 {
-		if apiKey, err := c.fetchRevealDB(ctx, providerID, credentialID); err == nil {
-			return apiKey, nil
-		} else {
-			slog.Warn("credential reveal DB failed, falling back to RPC", "credential_id", credentialID, "error", err)
-		}
+		return c.fetchRevealDB(ctx, providerID, credentialID)
 	}
-	if c.endpoint == "" {
-		return "", fmt.Errorf("provider reveal not configured")
-	}
-	fetchURL := fmt.Sprintf("%s/api/providers/%d/credentials/%d/reveal", c.endpoint, providerID, credentialID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchURL, nil)
-	if err != nil {
-		return "", err
-	}
-	c.setAuth(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("reveal returned %d for cred %d", resp.StatusCode, credentialID)
-	}
-
-	var rr revealResponse
-	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {
-		return "", err
-	}
-	return rr.APIKey, nil
+	return "", fmt.Errorf("credential reveal not configured (no DB or fernet key)")
 }
 
 func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int) (string, error) {
@@ -781,10 +626,4 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 		}
 	}
 	return ordered
-}
-
-func (c *Client) setAuth(req *http.Request) {
-	if c.adminKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.adminKey)
-	}
 }

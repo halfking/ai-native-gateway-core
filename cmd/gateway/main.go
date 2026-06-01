@@ -132,8 +132,7 @@ func main() {
 	}
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
-	adminAPIKey := cfg.AdminAPIKey
-	providerClient := provider.NewClient(pythonEndpoint, adminAPIKey)
+	providerClient := provider.NewClient()
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
 	}
@@ -157,13 +156,13 @@ func main() {
 			exec.DB = dbConn
 		}
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
-		slog.Info("routing executor enabled", "endpoint", pythonEndpoint)
+		slog.Info("routing executor enabled")
 	} else {
-		slog.Warn("routing executor disabled (no LLM_GATEWAY_ADMIN_API_KEY or LLM_GATEWAY_PYTHON_ENDPOINT)")
+		slog.Warn("routing executor disabled (no database connection)")
 	}
 
 	// ── Auth + Rate Limiting ──────────────────────────────────────────────
-	keyVerifier := auth.NewKeyVerifier(pythonEndpoint, adminAPIKey)
+	keyVerifier := auth.NewKeyVerifier()
 	if dbConn != nil && dbConn.Enabled() {
 		keyVerifier.SetDB(dbConn.Pool(), cfg.SecretKey)
 	}
@@ -172,11 +171,11 @@ func main() {
 		chatHandler.SetAuth(keyVerifier, slidingRL)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else {
-		slog.Warn("API key authentication disabled (no admin key or Python endpoint)")
+		slog.Warn("API key authentication disabled (no database connection)")
 	}
 
 	// ── Telemetry ─────────────────────────────────────────────────────────
-	telemetryClient := telemetry.NewClient(pythonEndpoint, adminAPIKey)
+	telemetryClient := telemetry.NewClient()
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 	}
