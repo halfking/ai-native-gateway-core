@@ -186,6 +186,9 @@ func TestCacheKey(t *testing.T) {
 	if cacheKey("GPT-4O", "") != "gpt-4o" {
 		t.Fatalf("unexpected key: %s", cacheKey("GPT-4O", ""))
 	}
+	if cacheKey("GPT-4O-2024-08-06", "") != "gpt-4o" {
+		t.Fatalf("unexpected normalized key: %s", cacheKey("GPT-4O-2024-08-06", ""))
+	}
 	if cacheKey("GPT-4O", "Cursor") != "gpt-4o|cursor" {
 		t.Fatalf("unexpected key: %s", cacheKey("GPT-4O", "Cursor"))
 	}

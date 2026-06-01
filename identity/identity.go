@@ -154,14 +154,24 @@ func ExtractFingerprint(r *http.Request, clientProfile string) ClientFingerprint
 		UserAgent:      firstNonEmpty(h.Get("User-Agent")),
 		ClientProfile:  clientProfile,
 	}
-	// When all structured fields are empty, use client IP as fallback
-	// to prevent identity collision for headerless clients.
-	if fp.DeviceSeed == "" && fp.MachineID == "" && fp.UserAgent == "" &&
-		fp.OSName == "" && fp.OSArch == "" && fp.RuntimeName == "" &&
-		fp.RuntimeVersion == "" && fp.ClientProfile == "" {
+	// Always blend client IP into the fingerprint when no explicit seeding
+	// header (DeviceSeed/MachineID) is present, to prevent identity collision
+	// for clients behind NAT or with identical user agents.
+	if fp.DeviceSeed == "" && fp.MachineID == "" {
 		clientIP := extractClientIP(r)
 		if clientIP != "" {
-			fp.UserAgent = "ip:" + clientIP
+			// Prepend IP-based tag so PrimarySeed returns a unique composite
+			if fp.UserAgent == "" {
+				fp.UserAgent = "ip:" + clientIP
+			} else {
+				fp.UserAgent = "ip:" + clientIP + "|" + fp.UserAgent
+			}
+		}
+		// Last resort: even without client IP, add a random component
+		// for uniqueness. This trades perfect reproducibility for
+		// preventing mass identity collision.
+		if fp.UserAgent == "" {
+			fp.UserAgent = "ip:unknown"
 		}
 	}
 	return fp

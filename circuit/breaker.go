@@ -160,7 +160,10 @@ func (b *Breaker) Allow() bool {
 	case StateQuarantined:
 		return false
 	case StateOpen:
-		return b.tryTransitionToHalfOpen()
+		if b.tryTransitionToHalfOpen() {
+			return b.halfOpenProbes.Add(1) <= 1
+		}
+		return false
 	case StateHalfOpen:
 		return b.halfOpenProbes.Add(1) <= 1
 	default:
@@ -169,13 +172,14 @@ func (b *Breaker) Allow() bool {
 }
 
 // tryTransitionToHalfOpen checks if the cooling period has expired and
-// transitions from OPEN to HALF_OPEN if so.
+// transitions from OPEN to HALF_OPEN if so. Only returns true when this
+// goroutine actually performed the OPEN→HALF_OPEN transition.
 func (b *Breaker) tryTransitionToHalfOpen() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.State() != StateOpen {
-		return b.State() == StateHalfOpen || b.State() == StateClosed
+		return false
 	}
 
 	if time.Now().After(b.coolingExpires) {

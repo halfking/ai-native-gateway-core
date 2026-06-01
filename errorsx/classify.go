@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -26,6 +27,16 @@ const (
 	KindModelNotFound   ErrorKind = "model_not_found"
 )
 
+var modelNotFoundRe = regexp.MustCompile(
+	`(?i)(model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|` +
+		`(no such|unknown) model|` +
+		`endpoint.{0,40}(does not exist|not found)|` +
+		`(does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
+		`(tool|function)[- _]?call(ing|s)? (is )?not supported|` +
+		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|` +
+		`model.{0,40}(deprecated|retired|sunset))`,
+)
+
 func ClassifyError(err error, resp *http.Response) ErrorKind {
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -38,6 +49,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if strings.Contains(msg, "connection") || strings.Contains(msg, "refused") ||
 			strings.Contains(msg, "no such host") || strings.Contains(msg, "reset") {
 			return KindNetwork
+		}
+		if modelNotFoundRe.MatchString(msg) {
+			return KindModelNotFound
 		}
 		return KindTransient
 	}
@@ -56,6 +70,17 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 	default:
 		return KindTransient
 	}
+}
+
+func ClassifyResponseBody(body []byte) ErrorKind {
+	if len(body) > 0 && modelNotFoundRe.Match(body) {
+		return KindModelNotFound
+	}
+	return ""
+}
+
+func IsModelNotFound(kind ErrorKind) bool {
+	return kind == KindModelNotFound
 }
 
 func IsRetryable(kind ErrorKind) bool {

@@ -121,6 +121,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientModel := reqBody.Model
 	isStream := reqBody.Stream
+	sessionID := r.Header.Get("X-Session-Id")
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), "")
 
@@ -186,6 +187,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		AuditBuilder:  auditBuilder,
 		Capture:       streamCapture,
 		StreamWrapper: responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:     buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
 	})
 
 	if execErr != nil {
@@ -198,15 +200,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
-
-	if h.chatHandler.sticky != nil && policy != nil {
-		stickyKey := routing.BuildStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), endUser, clientID.Fingerprint.PrimarySeed())
-		stickyTTL := time.Duration(policy.StickyTTLMilliseconds) * time.Second
-		if stickyTTL < time.Minute {
-			stickyTTL = time.Minute
-		}
-		h.chatHandler.sticky.Set(stickyKey, result.Candidate.CredentialID, stickyTTL)
-	}
 
 	var responseBody []byte
 	if !isStream {

@@ -38,6 +38,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		Tier              int     `json:"tier"`
 		Weight            int     `json:"weight"`
 		RawModel          string  `json:"raw_model"`
+		StandardizedName  string  `json:"standardized_name"`
 		OutboundModel     string  `json:"outbound_model"`
 		SuccessRate       float64 `json:"success_rate"`
 		P95LatencyMs      int     `json:"p95_latency_ms"`
@@ -61,6 +62,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mo.routing_tier, 2)::int,
 			COALESCE(mo.weight, 100)::int,
 			mo.raw_model_name,
+			mo.standardized_name,
 			COALESCE(mo.outbound_model_name, mo.raw_model_name),
 			COALESCE(mo.success_rate, 0.9)::float8,
 			COALESCE(mo.p95_latency_ms, 9999)::int,
@@ -91,7 +93,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var c candidate
 		if err := rows.Scan(
 			&c.CredentialID, &c.ProviderID, &c.BaseURL, &c.Protocol,
-			&c.Tier, &c.Weight, &c.RawModel, &c.OutboundModel,
+			&c.Tier, &c.Weight, &c.RawModel, &c.StandardizedName, &c.OutboundModel,
 			&c.SuccessRate, &c.P95LatencyMs, &c.ConcurrencyLimit,
 			&c.BalanceUSD, &c.CircuitState, &c.LifecycleStatus,
 			&c.AvailabilityState, &c.QuotaState,

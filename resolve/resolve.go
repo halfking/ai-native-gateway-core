@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -59,6 +60,7 @@ func NewResolver(pythonEndpoint string, cacheTTL time.Duration) *Resolver {
 }
 
 func cacheKey(model, profile string) string {
+	model = modelname.NormalizeRouteKey(model)
 	if profile == "" {
 		return strings.ToLower(model)
 	}
@@ -105,7 +107,7 @@ func (r *Resolver) Resolve(ctx context.Context, clientModel, clientProfile strin
 }
 
 func (r *Resolver) fetch(ctx context.Context, clientModel, clientProfile string) (*Resolution, error) {
-	params := url.Values{"model": {clientModel}}
+	params := url.Values{"model": {modelname.NormalizeRouteKey(clientModel)}}
 	if clientProfile != "" {
 		params.Set("profile", clientProfile)
 	}
@@ -151,7 +153,7 @@ func (r *Resolver) EvictExpired() {
 }
 
 func passthrough(model string) *Resolution {
-	lowered := strings.ToLower(model)
+	lowered := modelname.NormalizeRouteKey(model)
 	return &Resolution{
 		ClientModel:    model,
 		CanonicalID:    nil,

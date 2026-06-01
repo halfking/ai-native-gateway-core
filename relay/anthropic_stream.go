@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) {
 	defer resp.Body.Close()
+	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -81,7 +81,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	inputTokens := 0
 
 	// First-byte timeout
-	firstLine, err := readLineWithTimeout(ctx, reader, firstByteTimeout)
+	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
@@ -208,36 +208,46 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 
 	for {
-		if time.Since(lastSend) > keepaliveInterval {
-			w.Write([]byte(sseKeepaliveComment))
-			flusher.Flush()
-			lastSend = time.Now()
-		}
-
-		line, err := readLineWithTimeout(ctx, reader, streamChunkTimeout)
-		if err != nil {
-			if ctx.Err() == context.Canceled {
+		readResult := readNextStreamLine(ctx, reader, w, &lastSend, runtimeCfg)
+		if readResult.err != nil {
+			switch readResult.state {
+			case streamReadCanceled:
 				slog.Debug("anthropic stream client disconnected")
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
 				break
-			}
-			if err == io.EOF {
+			case streamReadEOF:
+				break
+			case streamReadTimeout:
+				slog.Warn("anthropic stream read timeout", "error", readResult.err)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("stream_timeout")
+				}
+				errPayload := map[string]any{
+					"type":  "error",
+					"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
+				}
+				writeSSE(w, "error", errPayload)
+				flusher.Flush()
+				break
+			default:
+				slog.Warn("anthropic stream read error", "error", readResult.err)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("stream_error")
+				}
+				errPayload := map[string]any{
+					"type":  "error",
+					"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
+				}
+				writeSSE(w, "error", errPayload)
+				flusher.Flush()
 				break
 			}
-			slog.Warn("anthropic stream read error", "error", err)
-			if capture != nil {
-				capture.MarkInterruptedWithReason("stream_error")
-			}
-			errPayload := map[string]any{
-				"type":  "error",
-				"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", err)},
-			}
-			writeSSE(w, "error", errPayload)
-			flusher.Flush()
 			break
 		}
+
+		line := readResult.line
 
 		if line == "" {
 			continue

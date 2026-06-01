@@ -1,7 +1,10 @@
 package pool
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 )
 
 func TestPoolKeyString(t *testing.T) {
@@ -70,4 +73,41 @@ func TestPoolClose(t *testing.T) {
 	p.Close()
 	// Should not panic on double close
 	p.Close()
+}
+
+func TestPoolManagerStopPreventsNewPools(t *testing.T) {
+	pm := NewPoolManager()
+	pm.Stop()
+	if p := pm.GetOrCreate(PoolKey{IdentityHash: "stop", ProviderID: 9, CredentialID: 9}, ""); p != nil {
+		t.Fatal("GetOrCreate should return nil after Stop")
+	}
+	// Should stay safe on repeated stop calls.
+	pm.Stop()
+}
+
+func TestPoolAcquireReleaseRespectsCapacity(t *testing.T) {
+	p := NewPool(PoolKey{IdentityHash: "cap", ProviderID: 7, CredentialID: 7}, "")
+	ctx := context.Background()
+	for i := 0; i < poolMaxActiveConns; i++ {
+		if err := p.Acquire(ctx); err != nil {
+			t.Fatalf("acquire %d failed: %v", i, err)
+		}
+	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	if err := p.Acquire(timeoutCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded when pool is full, got %v", err)
+	}
+	p.Release()
+	if err := p.Acquire(ctx); err != nil {
+		t.Fatalf("acquire after release failed: %v", err)
+	}
+}
+
+func TestPoolAcquireFailsAfterClose(t *testing.T) {
+	p := NewPool(PoolKey{IdentityHash: "closed", ProviderID: 8, CredentialID: 8}, "")
+	p.Close()
+	if err := p.Acquire(context.Background()); !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("expected ErrPoolClosed, got %v", err)
+	}
 }

@@ -254,7 +254,9 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
 		}
-		h.auditor.Emit(r.Context(), auditBuilder.Build())
+		// Use background context — request context may be cancelled by now
+		// for long-running streaming requests.
+		h.auditor.Emit(context.Background(), auditBuilder.Build())
 	}()
 
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
@@ -307,6 +309,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	if sessionInfo != nil {
 		sessionKey = sessionInfo.SessionKey
 	}
+	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed())
 
 	result, execErr := h.executor.Execute(&routing.ExecParams{
 		W:             w,
@@ -323,6 +326,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		AuditBuilder:  auditBuilder,
 		Capture:       streamCapture,
 		SessionKey:    sessionKey,
+		StickyKey:     stickyKey,
 	})
 
 	if execErr != nil {
@@ -341,15 +345,6 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
-	if h.sticky != nil && policy != nil {
-		stickyKey := routing.BuildStickyKey("default", nil, nil, endUser, clientID.Fingerprint.PrimarySeed())
-		stickyTTL := time.Duration(policy.StickyTTLMilliseconds) * time.Second
-		if stickyTTL < time.Minute {
-			stickyTTL = time.Minute
-		}
-		h.sticky.Set(stickyKey, result.Candidate.CredentialID, stickyTTL)
-	}
-
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody)
 }
 
@@ -592,7 +587,7 @@ func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
 		auditBuilder.TransformRule(txResult.MatchedRule)
 	}
 	defer func() {
-		h.auditor.Emit(r.Context(), auditBuilder.Build())
+		h.auditor.Emit(context.Background(), auditBuilder.Build())
 	}()
 
 	// ── Concurrency limiter ────────────────────────────────────────────
@@ -703,6 +698,7 @@ func ChatCompletionsPhase3(
 
 	// ── Get HTTP client (identity-bound pool or default) ───────────────
 	var httpClient *http.Client
+	var reqPool *pool.Pool
 	if pools != nil {
 		poolKey := pool.PoolKey{
 			IdentityHash: clientID.IdentityHash,
@@ -710,12 +706,19 @@ func ChatCompletionsPhase3(
 			CredentialID: svc.CredentialID,
 		}
 		p := pools.GetOrCreate(poolKey, "")
-		if p.State() == pool.PoolActive {
+		if p != nil && p.State() == pool.PoolActive {
+			reqPool = p
 			httpClient = p.Client()
 		}
 	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
+	} else if err := reqPool.Acquire(r.Context()); err != nil {
+		writeErrorJSON(w, http.StatusTooManyRequests, r.Header.Get("X-Request-Id"), "connection pool busy", "rate_limit_exceeded", "pool_busy")
+		return
+	}
+	if reqPool != nil {
+		defer reqPool.Release()
 	}
 
 	timeout := UpstreamTimeout()
@@ -753,7 +756,9 @@ func ChatCompletionsPhase3(
 		if errKind == errorsx.KindCanceled {
 			// Client disconnect — don't affect circuit breaker state
 		} else if errKind == "" {
-			cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
+			// Empty kind means the error wasn't classified — don't silently
+			// record as success. Only unretryable upstream 4xx with no
+			// rate-limit/auth/quota semantics should be no-ops.
 		} else {
 			cm.RecordFailure(svc.ProviderID, svc.CredentialID, errKind)
 			if errKind == circuit.KindRateLimit {
@@ -891,18 +896,36 @@ func ReplaceModelInRequestBody(body []byte, newModel string) []byte {
 
 // ReplaceModelInResponseBody replaces whatever model is in the response with clientModel.
 func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
+	pattern := []byte(`"model"`)
+	idx := bytes.Index(body, pattern)
+	if idx < 0 {
 		return body
 	}
-	if _, ok := obj["model"]; ok {
-		obj["model"], _ = json.Marshal(clientModel)
-		newBody, err := json.Marshal(obj)
-		if err == nil {
-			return newBody
-		}
+	after := body[idx+len(pattern):]
+	colonIdx := bytes.IndexByte(after, ':')
+	if colonIdx < 0 {
+		return body
 	}
-	return body
+	rest := after[colonIdx+1:]
+	rest = bytes.TrimLeft(rest, " \t\n\r")
+	if len(rest) < 2 || rest[0] != '"' {
+		return body
+	}
+	endIdx := bytes.IndexByte(rest[1:], '"')
+	if endIdx < 0 {
+		return body
+	}
+	oldValue := rest[1 : endIdx+1]
+	if string(oldValue) == clientModel {
+		return body
+	}
+	var buf bytes.Buffer
+	prefix := body[:idx+len(pattern)+colonIdx+1]
+	suffix := rest[endIdx+2:]
+	buf.Write(prefix)
+	buf.WriteString(`"` + clientModel + `"`)
+	buf.Write(suffix)
+	return buf.Bytes()
 }
 
 func requestHasTools(body []byte) bool {

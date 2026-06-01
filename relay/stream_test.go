@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,8 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 )
 
@@ -535,5 +539,55 @@ func BenchmarkReplaceModelInChunk_NoMatch(b *testing.B) {
 	line := `data: {"id":"chat-1","model":"some-other-model","choices":[{"delta":{"content":"test"}}]}` + "\n\n"
 	for i := 0; i < b.N; i++ {
 		replaceModelInChunk(line, "claude-sonnet-4.5", "claude-sonnet-4-5-20250929")
+	}
+}
+
+func TestStreamTimeoutsUseConfigStore(t *testing.T) {
+	store := config.NewStore(&config.Config{
+		UpstreamTimeout:    11,
+		StreamTimeout:      22,
+		StreamChunkTimeout: 33,
+		FirstByteTimeout:   44,
+		KeepaliveInterval:  55,
+	})
+	SetConfigStore(store)
+	t.Cleanup(func() { SetConfigStore(nil) })
+
+	runtimeCfg := currentStreamRuntimeConfig()
+	if runtimeCfg.upstreamTimeout != 11*time.Second {
+		t.Fatalf("expected upstream timeout 11s, got %v", runtimeCfg.upstreamTimeout)
+	}
+	if runtimeCfg.streamTimeout != 22*time.Second {
+		t.Fatalf("expected stream timeout 22s, got %v", runtimeCfg.streamTimeout)
+	}
+	if runtimeCfg.streamChunkTimeout != 33*time.Second {
+		t.Fatalf("expected stream chunk timeout 33s, got %v", runtimeCfg.streamChunkTimeout)
+	}
+	if runtimeCfg.firstByteTimeout != 44*time.Second {
+		t.Fatalf("expected first byte timeout 44s, got %v", runtimeCfg.firstByteTimeout)
+	}
+	if runtimeCfg.keepaliveInterval != 55*time.Second {
+		t.Fatalf("expected keepalive interval 55s, got %v", runtimeCfg.keepaliveInterval)
+	}
+}
+
+func TestMaybeSendKeepalive(t *testing.T) {
+	rec := httptest.NewRecorder()
+	lastSend := time.Now().Add(-2 * time.Second)
+	maybeSendKeepalive(rec, &lastSend, time.Second)
+	if got := rec.Body.String(); got != sseKeepaliveComment {
+		t.Fatalf("expected keepalive comment, got %q", got)
+	}
+}
+
+func TestReadNextStreamLineEOF(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader(""))
+	lastSend := time.Now()
+	result := readNextStreamLine(context.Background(), reader, httptest.NewRecorder(), &lastSend, streamRuntimeConfig{streamChunkTimeout: time.Second})
+	if !result.EOF {
+		t.Fatal("expected EOF result")
+	}
+	if result.state != streamReadEOF {
+		t.Fatalf("expected EOF state, got %v", result.state)
 	}
 }

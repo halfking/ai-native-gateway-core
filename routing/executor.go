@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
@@ -43,6 +44,7 @@ type Executor struct {
 	StreamChat StreamHandler
 	Auditor    audit.Sink
 	State      *credentialstate.Writer
+	DB         *db.DB
 
 	StreamTimeout   time.Duration
 	UpstreamTimeout time.Duration
@@ -95,6 +97,7 @@ type ExecParams struct {
 	Capture       *audit.StreamCapture
 	StreamWrapper StreamWrapperFunc
 	SessionKey    string
+	StickyKey     string
 }
 
 type ExecuteResult struct {
@@ -121,7 +124,7 @@ func (e *ExecuteError) Error() string {
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
-		nil,
+		e.stickyCredentialID(params.StickyKey),
 		params.Policy,
 		egressPref(params.Transform),
 	)
@@ -165,11 +168,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
+			e.recordStickySuccess(params, cand.CredentialID)
 			return result, nil
+		}
+
+		if mnf, ok := execErr.(*modelNotFoundError); ok {
+			e.disableModelOffer(params.R.Context(), mnf.credentialID, mnf.rawModel)
+			lastErr = execErr
+			continue
 		}
 
 		lastErr = execErr
 		kind := errorsx.ClassifyError(execErr, nil)
+		e.recordStickyFailure(params, cand.CredentialID, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
@@ -236,138 +247,159 @@ func (e *Executor) tryCandidate(
 			}
 		}
 
-		base := strings.TrimRight(cand.BaseURL, "/")
-		upstreamURL := base + "/chat/completions"
-		if cand.Protocol == "anthropic-messages" {
-			upstreamURL = base + "/messages"
-		}
-
-		req, err := http.NewRequestWithContext(
-			params.R.Context(),
-			http.MethodPost,
-			upstreamURL,
-			bytes.NewReader(bodyBytes),
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+cand.APIKey)
-		if params.IsStream {
-			req.Header.Set("Accept", "text/event-stream")
-		}
-		req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
-		req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
-		req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
-		req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
-
-		if params.Transform != nil {
-			for _, h := range params.Transform.StripHeaders {
-				req.Header.Del(h)
+		result, tryErr := func() (*ExecuteResult, error) {
+			var reqPool *pool.Pool
+			base := strings.TrimRight(cand.BaseURL, "/")
+			upstreamURL := base + "/chat/completions"
+			if cand.Protocol == "anthropic-messages" {
+				upstreamURL = base + "/messages"
 			}
-			for k, v := range params.Transform.InjectHeaders {
-				req.Header.Set(k, v)
-			}
-		}
 
-		var httpClient *http.Client
-		if e.Pools != nil {
-			poolKey := pool.PoolKey{
-				IdentityHash: params.ClientID.IdentityHash,
-				ProviderID:   cand.ProviderID,
-				CredentialID: cand.CredentialID,
+			req, err := http.NewRequestWithContext(
+				params.R.Context(),
+				http.MethodPost,
+				upstreamURL,
+				bytes.NewReader(bodyBytes),
+			)
+			if err != nil {
+				return nil, err
 			}
-			if p := e.Pools.GetOrCreate(poolKey, ""); p.State() == pool.PoolActive {
-				httpClient = p.Client()
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cand.APIKey)
+			if params.IsStream {
+				req.Header.Set("Accept", "text/event-stream")
 			}
-		}
-		if httpClient == nil {
-			httpClient = http.DefaultClient
-		}
+			req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+			req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
+			req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
+			req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
 
-		timeout := e.UpstreamTimeout
-		if params.IsStream {
-			timeout = e.StreamTimeout
-		}
-		ctx, cancel := context.WithTimeout(params.R.Context(), timeout)
-		defer cancel()
-		req = req.WithContext(ctx)
-
-		if e.Upstream != nil {
-			req.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
-			}
-		}
-
-		var resp *http.Response
-		var uErr *upstreampkg.Error
-		if e.Upstream != nil {
-			resp, uErr = e.Upstream.Do(req)
-		} else {
-			var doErr error
-			resp, doErr = httpClient.Do(req)
-			if doErr != nil {
-				uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
-			}
-		}
-
-		if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
-			errKind := uErr.Kind
-			if errKind == errorsx.KindRateLimit {
-				e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
-			}
-			if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
-				return nil, uErr
-			}
-			continue
-		}
-
-		if resp != nil && resp.StatusCode >= 400 {
-			defer resp.Body.Close()
-			body := make([]byte, 4096)
-			n, _ := resp.Body.Read(body)
-			errKind := errorsx.ClassifyError(nil, resp)
-
-			for k, vs := range resp.Header {
-				for _, v := range vs {
-					params.W.Header().Add(k, v)
+			if params.Transform != nil {
+				for _, h := range params.Transform.StripHeaders {
+					req.Header.Del(h)
+				}
+				for k, v := range params.Transform.InjectHeaders {
+					req.Header.Set(k, v)
 				}
 			}
-			params.W.WriteHeader(resp.StatusCode)
-			if n > 0 {
-				params.W.Write(body[:n])
+
+			var httpClient *http.Client
+			if e.Pools != nil {
+				poolKey := pool.PoolKey{
+					IdentityHash: params.ClientID.IdentityHash,
+					ProviderID:   cand.ProviderID,
+					CredentialID: cand.CredentialID,
+				}
+				if p := e.Pools.GetOrCreate(poolKey, ""); p != nil && p.State() == pool.PoolActive {
+					reqPool = p
+					httpClient = p.Client()
+				}
+			}
+			if httpClient == nil {
+				httpClient = http.DefaultClient
+			} else if err := reqPool.Acquire(params.R.Context()); err != nil {
+				return nil, err
+			}
+			if reqPool != nil {
+				defer reqPool.Release()
 			}
 
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
-				resp.StatusCode != 429 && resp.StatusCode != 401 &&
-				resp.StatusCode != 403 && resp.StatusCode != 402 {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-			} else if errKind == errorsx.KindRateLimit {
-				e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+			timeout := e.UpstreamTimeout
+			if params.IsStream {
+				timeout = e.StreamTimeout
 			}
-			if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
-				return nil, fmt.Errorf("upstream %d", resp.StatusCode)
-			}
-			continue
-		}
+			ctx, cancel := context.WithTimeout(params.R.Context(), timeout)
+			defer cancel()
+			req = req.WithContext(ctx)
 
-		e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-		latencyMs := int(time.Since(tTotal).Milliseconds())
-
-		if params.IsStream {
-			if params.StreamWrapper != nil {
-				params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
-			} else if e.StreamChat != nil {
-				e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
+			if e.Upstream != nil {
+				req.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+				}
 			}
-			return &ExecuteResult{
-				Response:    resp,
-				Candidate:   cand,
-				LatencyMs:   latencyMs,
-				RequestBody: append([]byte(nil), bodyBytes...),
-			}, nil
-		} else {
+
+			var resp *http.Response
+			var uErr *upstreampkg.Error
+			if e.Upstream != nil {
+				resp, uErr = e.Upstream.Do(req)
+			} else {
+				var doErr error
+				resp, doErr = httpClient.Do(req)
+				if doErr != nil {
+					uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+				}
+			}
+
+			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+				errKind := uErr.Kind
+				if errKind == errorsx.KindRateLimit {
+					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+				}
+				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+					return nil, uErr
+				}
+				return nil, &retryableError{err: uErr}
+			}
+
+			if resp != nil && resp.StatusCode >= 400 {
+				defer resp.Body.Close()
+				body := make([]byte, 4096)
+				n, _ := resp.Body.Read(body)
+				errKind := errorsx.ClassifyError(nil, resp)
+
+				if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
+					slog.Info("model_not_found skip offer",
+						"credential_id", cand.CredentialID,
+						"model", cand.RawModel,
+						"status", resp.StatusCode,
+						"body_preview", string(body[:min(n, 120)]),
+					)
+					return nil, &modelNotFoundError{
+						credentialID: cand.CredentialID,
+						rawModel:     cand.RawModel,
+						body:         string(body[:n]),
+					}
+				}
+
+				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+					resp.StatusCode != 429 && resp.StatusCode != 401 &&
+					resp.StatusCode != 403 && resp.StatusCode != 402 {
+					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				} else if errKind == errorsx.KindRateLimit {
+					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+				}
+				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+					for k, vs := range resp.Header {
+						for _, v := range vs {
+							params.W.Header().Add(k, v)
+						}
+					}
+					params.W.WriteHeader(resp.StatusCode)
+					if n > 0 {
+						params.W.Write(body[:n])
+					}
+					return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+				}
+				return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+			}
+
+			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+			latencyMs := int(time.Since(tTotal).Milliseconds())
+
+			if params.IsStream {
+				if params.StreamWrapper != nil {
+					params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
+				} else if e.StreamChat != nil {
+					e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
+				}
+				return &ExecuteResult{
+					Response:    resp,
+					Candidate:   cand,
+					LatencyMs:   latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...),
+				}, nil
+			}
 			defer resp.Body.Close()
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodySize)+1))
 			if err != nil {
@@ -399,6 +431,13 @@ func (e *Executor) tryCandidate(
 				RequestBody:  append([]byte(nil), bodyBytes...),
 				ResponseBody: append([]byte(nil), respBody...),
 			}, nil
+		}()
+
+		if tryErr == nil {
+			return result, nil
+		}
+		if _, ok := tryErr.(*retryableError); !ok {
+			return nil, tryErr
 		}
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
@@ -410,6 +449,25 @@ func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int)
 	}
 	if err := e.State.RestoreOnSuccess(ctx, credentialID); err != nil {
 		slog.Debug("credential state restore failed", "credential_id", credentialID, "error", err)
+	}
+}
+
+func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string) {
+	if e.DB == nil || !e.DB.Enabled() {
+		slog.Warn("disable_model_offer: no db pool available")
+		return
+	}
+	pool := e.DB.Pool()
+	tag, err := pool.Exec(ctx,
+		"UPDATE model_offers SET available = FALSE WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE",
+		credentialID, rawModel,
+	)
+	if err != nil {
+		slog.Warn("disable_model_offer failed", "credential_id", credentialID, "model", rawModel, "error", err)
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		slog.Info("model_offer_disabled", "credential_id", credentialID, "model", rawModel)
 	}
 }
 
@@ -428,6 +486,62 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
 	}
 }
+
+func (e *Executor) stickyCredentialID(stickyKey string) *int {
+	if e.Router == nil || e.Router.Sticky == nil || stickyKey == "" {
+		return nil
+	}
+	credentialID, _, ok := e.Router.Sticky.GetEntry(stickyKey)
+	if !ok {
+		return nil
+	}
+	return &credentialID
+}
+
+func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
+	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
+		return
+	}
+	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Second
+	if stickyTTL < time.Minute {
+		stickyTTL = time.Minute
+	}
+	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
+}
+
+func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kind errorsx.ErrorKind) {
+	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" {
+		return
+	}
+	boundID, _, ok := e.Router.Sticky.GetEntry(params.StickyKey)
+	if !ok || boundID != credentialID {
+		return
+	}
+	if errorsx.IsCredentialFatal(kind) {
+		e.Router.Sticky.Delete(params.StickyKey)
+		return
+	}
+	if kind == errorsx.KindCanceled {
+		return
+	}
+	e.Router.Sticky.RecordFailure(params.StickyKey, 3)
+}
+
+type modelNotFoundError struct {
+	credentialID int
+	rawModel     string
+	body         string
+}
+
+func (e *modelNotFoundError) Error() string {
+	return "model_not_found: " + e.rawModel
+}
+
+type retryableError struct {
+	err error
+}
+
+func (e *retryableError) Error() string { return e.err.Error() }
 
 func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	switch kind {
@@ -504,42 +618,61 @@ func replaceModelInRequestBody(body []byte, newModel string) []byte {
 }
 
 func replaceModelInResponseBody(body []byte, clientModel string) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
+	// Use raw byte matching to replace "model":"<old>" with the client model,
+	// preserving original JSON key ordering.
+	pattern := []byte(`"model"`)
+	idx := bytes.Index(body, pattern)
+	if idx < 0 {
 		return body
 	}
-	if _, ok := obj["model"]; ok {
-		obj["model"], _ = json.Marshal(clientModel)
-		newBody, err := json.Marshal(obj)
-		if err == nil {
-			return newBody
-		}
+	after := body[idx+len(pattern):]
+	colonIdx := bytes.IndexByte(after, ':')
+	if colonIdx < 0 {
+		return body
 	}
-	return body
+	rest := after[colonIdx+1:]
+	rest = bytes.TrimLeft(rest, " \t\n\r")
+	if len(rest) < 2 || rest[0] != '"' {
+		return body
+	}
+	endIdx := bytes.IndexByte(rest[1:], '"')
+	if endIdx < 0 {
+		return body
+	}
+	oldValue := rest[1 : endIdx+1]
+	if string(oldValue) == clientModel {
+		return body
+	}
+	var buf bytes.Buffer
+	prefix := body[:idx+len(pattern)+colonIdx+1]
+	suffix := rest[endIdx+2:]
+	buf.Write(prefix)
+	buf.WriteString(`"` + clientModel + `"`)
+	buf.Write(suffix)
+	return buf.Bytes()
 }
 
 func injectStreamOptions(body []byte) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
+	body = bytes.TrimSpace(body)
+	if len(body) < 2 || body[len(body)-1] != '}' {
 		return body
 	}
-
-	var streamOpts map[string]json.RawMessage
-	if raw, ok := obj["stream_options"]; ok {
-		if err := json.Unmarshal(raw, &streamOpts); err != nil {
-			streamOpts = make(map[string]json.RawMessage)
-		}
-	} else {
-		streamOpts = make(map[string]json.RawMessage)
-	}
-	streamOpts["include_usage"], _ = json.Marshal(true)
-	obj["stream_options"] = executorMustMarshal(streamOpts)
-
-	result, err := json.Marshal(obj)
-	if err != nil {
+	if bytes.Contains(body, []byte(`"stream_options"`)) {
 		return body
 	}
-	return result
+	end := len(body) - 1
+	for end > 0 && body[end-1] <= ' ' {
+		end--
+	}
+
+	streamOpts := `"include_usage":true`
+	insert := `,"stream_options":{` + streamOpts + `}`
+
+	var buf bytes.Buffer
+	buf.Write(body[:end])
+	buf.WriteString(insert)
+	buf.Write(body[end:])
+	return buf.Bytes()
 }
 
 func executorMustMarshal(v any) json.RawMessage {

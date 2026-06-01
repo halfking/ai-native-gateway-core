@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 // Service manages model discovery from providers.
@@ -345,13 +346,14 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 
 	// Upsert into model_offers
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, available, last_seen_at)
-		VALUES ($1, $2, $3, TRUE, NOW())
+		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
+		VALUES ($1, $2, $3, $4, TRUE, NOW())
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
 			canonical_id = EXCLUDED.canonical_id,
+			standardized_name = COALESCE(model_offers.standardized_name, EXCLUDED.standardized_name),
 			available = TRUE,
 			last_seen_at = NOW()
-	`, cred.ID, canonicalID, rawName)
+	`, cred.ID, canonicalID, rawName, modelname.StandardizeName(rawName))
 	if err != nil {
 		return err
 	}

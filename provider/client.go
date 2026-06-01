@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"golang.org/x/sync/singleflight"
 )
@@ -27,6 +28,7 @@ type Candidate struct {
 	Tier                int      `json:"tier"`
 	Weight              int      `json:"weight"`
 	RawModel            string   `json:"model_name"`
+	StandardizedName    string   `json:"standardized_name"`
 	SuccessRate         float64  `json:"success_rate"`
 	P95LatencyMs        int      `json:"p95_latency_ms"`
 	ConcurrencyLimit    *int     `json:"concurrency_limit"`
@@ -176,10 +178,11 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 	if !c.Enabled() {
 		return nil, DefaultPolicy(), fmt.Errorf("provider client not configured")
 	}
+	routeModel := modelname.NormalizeRouteKey(model)
 
-	key := model
+	key := routeModel
 	if profile != "" {
-		key = model + "|" + profile
+		key = routeModel + "|" + profile
 	}
 
 	c.mu.RLock()
@@ -192,10 +195,10 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 	c.mu.RUnlock()
 
 	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
-		resp, fetchErr := c.fetchCandidatesDB(ctx, model, profile)
+		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile)
 		if fetchErr != nil {
-			slog.Warn("candidate resolve DB failed, falling back to RPC", "model", model, "error", fetchErr)
-			resp, fetchErr = c.fetchCandidates(ctx, model, profile)
+			slog.Warn("candidate resolve DB failed, falling back to RPC", "model", routeModel, "error", fetchErr)
+			resp, fetchErr = c.fetchCandidates(ctx, routeModel, profile)
 		}
 		if fetchErr != nil {
 			return nil, fetchErr
@@ -265,7 +268,7 @@ func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile string) (
 	if err != nil {
 		return nil, err
 	}
-	cands, err := c.loadCandidatesDB(ctx, res.RawModels)
+	cands, err := c.loadCandidatesDB(ctx, res.ClientModel, res.RawModels)
 	if err != nil {
 		return nil, err
 	}
@@ -372,8 +375,8 @@ func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile s
 	return out, rows.Err()
 }
 
-func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Candidate, error) {
-	if len(rawModels) == 0 {
+func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawModels []string) ([]Candidate, error) {
+	if c.dbPool == nil {
 		return nil, nil
 	}
 	rows, err := c.dbPool.Query(ctx, `
@@ -386,6 +389,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 			COALESCE(mo.routing_tier, 2)::int AS tier,
 			COALESCE(mo.weight, 100)::int AS weight,
 			COALESCE(mo.outbound_model_name, mo.raw_model_name) AS model_name,
+			mo.standardized_name,
 			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
@@ -413,7 +417,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 				ELSE TRUE
 			END AS runtime_routable,
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
-			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode
+			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
+			mo.raw_model_name
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -421,17 +426,22 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 		LEFT JOIN model_aliases ma ON lower(ma.raw_name) = lower(mo.raw_model_name)
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = ANY($1)
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		ORDER BY COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
-	`, rawModels)
+	`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Candidate
+
+	var rawOffers []struct {
+		Candidate
+		OfferRawModel string
+	}
+
 	for rows.Next() {
 		var cand Candidate
+		var offerRawModel string
 		if err := rows.Scan(
 			&cand.CredentialID,
 			&cand.ProviderID,
@@ -441,6 +451,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 			&cand.Tier,
 			&cand.Weight,
 			&cand.RawModel,
+			&cand.StandardizedName,
 			&cand.SuccessRate,
 			&cand.P95LatencyMs,
 			&cand.ConcurrencyLimit,
@@ -454,12 +465,26 @@ func (c *Client) loadCandidatesDB(ctx context.Context, rawModels []string) ([]Ca
 			&cand.Routable,
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
+			&offerRawModel,
 		); err != nil {
 			return nil, err
 		}
-		out = append(out, cand)
+		rawOffers = append(rawOffers, struct {
+			Candidate
+			OfferRawModel string
+		}{cand, offerRawModel})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []Candidate
+	for _, offer := range rawOffers {
+		if modelname.MatchModelOffer(clientModel, offer.OfferRawModel) {
+			out = append(out, offer.Candidate)
+		}
+	}
+	return out, nil
 }
 
 func (c *Client) fetchPolicyDB(ctx context.Context) (*Policy, error) {

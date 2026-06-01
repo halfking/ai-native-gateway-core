@@ -8,6 +8,7 @@ package pool
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -19,18 +20,21 @@ import (
 )
 
 const (
-	maxIdleConnsPerHost = 32
-	maxConnsPerHost     = 128
+	maxIdleConnsPerHost = 16
+	maxConnsPerHost     = 64
 	idleConnTimeout     = 90 * time.Second
 	healthCheckInterval = 30 * time.Second
 	healthCheckTimeout  = 5 * time.Second
 	degradedThreshold   = 3
 	deadThreshold       = 10 // Consecutive failures to mark pool as dead
 	successThreshold    = 3  // Consecutive successes to recover from degraded
-	poolIdleTTL         = 5 * time.Minute
-	poolMaxPools        = 1024
-	poolEvictInterval   = 60 * time.Second
+	poolIdleTTL         = 3 * time.Minute
+	poolMaxPools        = 256
+	poolEvictInterval   = 30 * time.Second
+	poolMaxActiveConns  = 32
 )
+
+var ErrPoolClosed = errors.New("pool closed")
 
 // PoolState represents the health state of a connection pool.
 type PoolState int32
@@ -82,6 +86,9 @@ type Pool struct {
 	lastUsed     atomic.Int64
 	mu           sync.Mutex
 	stopCh       chan struct{}
+	closed       atomic.Bool
+	wg           sync.WaitGroup
+	activeConns  chan struct{}
 }
 
 // NewPool creates a new connection pool.
@@ -103,6 +110,7 @@ func NewPool(key PoolKey, probeURL string) *Pool {
 		client:    &http.Client{Transport: transport, Timeout: 120 * time.Second},
 		probeURL:  probeURL,
 		stopCh:    make(chan struct{}),
+		activeConns: make(chan struct{}, poolMaxActiveConns),
 	}
 	p.state.Store(int32(PoolActive))
 	return p
@@ -113,6 +121,28 @@ func (p *Pool) Client() *http.Client { return p.client }
 
 // State returns the current pool health state.
 func (p *Pool) State() PoolState { return PoolState(p.state.Load()) }
+
+func (p *Pool) Acquire(ctx context.Context) error {
+	if p.closed.Load() {
+		return ErrPoolClosed
+	}
+	select {
+	case p.activeConns <- struct{}{}:
+		p.touch()
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.stopCh:
+		return ErrPoolClosed
+	}
+}
+
+func (p *Pool) Release() {
+	select {
+	case <-p.activeConns:
+	default:
+	}
+}
 
 func (p *Pool) touch() {
 	p.lastUsed.Store(time.Now().UnixMilli())
@@ -128,7 +158,14 @@ func (p *Pool) LastUsed() time.Time {
 
 // StartHealthCheck begins periodic health probing.
 func (p *Pool) StartHealthCheck() {
-	go p.healthLoop()
+	if p.closed.Load() {
+		return
+	}
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.healthLoop()
+	}()
 }
 
 // StopHealthCheck stops periodic health probing.
@@ -137,7 +174,6 @@ func (p *Pool) StopHealthCheck() {
 	defer p.mu.Unlock()
 	select {
 	case <-p.stopCh:
-		// already closed
 	default:
 		close(p.stopCh)
 	}
@@ -188,9 +224,13 @@ func (p *Pool) RecordSuccess() {
 	}
 }
 
-// Close shuts down the pool's idle connections.
+// Close shuts down the pool's idle connections and waits for health loop to stop.
 func (p *Pool) Close() {
+	if !p.closed.CompareAndSwap(false, true) {
+		return
+	}
 	p.StopHealthCheck()
+	p.wg.Wait()
 	p.transport.CloseIdleConnections()
 }
 
@@ -252,9 +292,11 @@ func (p *Pool) probe() {
 
 // PoolManager manages all connection pools keyed by (identity, provider, credential).
 type PoolManager struct {
-	mu     sync.RWMutex
-	pools  map[PoolKey]*Pool
-	stopCh chan struct{}
+	mu      sync.RWMutex
+	pools   map[PoolKey]*Pool
+	stopCh  chan struct{}
+	stopped atomic.Bool
+	wg      sync.WaitGroup
 }
 
 func NewPoolManager() *PoolManager {
@@ -262,12 +304,16 @@ func NewPoolManager() *PoolManager {
 		pools:  make(map[PoolKey]*Pool),
 		stopCh: make(chan struct{}),
 	}
+	pm.wg.Add(1)
 	go pm.evictLoop()
 	return pm
 }
 
 // GetOrCreate returns the pool for the given key, creating it if needed.
 func (pm *PoolManager) GetOrCreate(key PoolKey, probeURL string) *Pool {
+	if pm.stopped.Load() {
+		return nil
+	}
 	pm.mu.RLock()
 	p, ok := pm.pools[key]
 	pm.mu.RUnlock()
@@ -321,6 +367,7 @@ func (pm *PoolManager) evictOldestLocked() {
 }
 
 func (pm *PoolManager) evictLoop() {
+	defer pm.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("pool evictLoop panic", "recover", r)
@@ -353,7 +400,11 @@ func (pm *PoolManager) evictIdle() {
 }
 
 func (pm *PoolManager) Stop() {
+	if !pm.stopped.CompareAndSwap(false, true) {
+		return
+	}
 	close(pm.stopCh)
+	pm.wg.Wait()
 }
 
 // CloseAll stops and closes all pools.
@@ -364,6 +415,7 @@ func (pm *PoolManager) CloseAll() {
 		p.Close()
 		delete(pm.pools, key)
 	}
+	pm.pools = make(map[PoolKey]*Pool)
 }
 
 // Stats returns the count of pools by state.

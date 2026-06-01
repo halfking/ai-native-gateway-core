@@ -8,62 +8,16 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-var (
-	streamChunkTimeout = 300 * time.Second
-	firstByteTimeout   = 30 * time.Second
-	keepaliveInterval  = 15 * time.Second
-)
-
 const (
-	streamBufSize             = 64 * 1024
-	sseKeepaliveComment       = ": keep-alive\n\n"
-	sseKeepaliveEnvVar        = "LLM_GATEWAY_KEEPALIVE_INTERVAL"
-	sseFirstByteTimeoutEnvVar = "LLM_GATEWAY_FIRST_BYTE_TIMEOUT"
+	streamBufSize       = 64 * 1024
+	sseKeepaliveComment = ": keep-alive\n\n"
 )
-
-func init() {
-	if v := os.Getenv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT"); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			streamChunkTimeout = time.Duration(s) * time.Second
-		}
-	}
-	if v := os.Getenv(sseKeepaliveEnvVar); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			keepaliveInterval = time.Duration(s) * time.Second
-		}
-	}
-	if v := os.Getenv(sseFirstByteTimeoutEnvVar); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			firstByteTimeout = time.Duration(s) * time.Second
-		}
-	}
-}
-
-func StreamTimeout() time.Duration {
-	if v := os.Getenv("LLM_GATEWAY_STREAM_TIMEOUT"); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			return time.Duration(s) * time.Second
-		}
-	}
-	return 900 * time.Second
-}
-
-func UpstreamTimeout() time.Duration {
-	if v := os.Getenv("LLM_GATEWAY_UPSTREAM_TIMEOUT"); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			return time.Duration(s) * time.Second
-		}
-	}
-	return 120 * time.Second
-}
 
 func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) {
 	StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
@@ -75,6 +29,7 @@ func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientMod
 
 func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) {
 	defer resp.Body.Close()
+	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -107,7 +62,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 	}
 
 	// ── First-byte timeout ──────────────────────────────────────────
-	firstLine, err := readLineWithTimeout(ctx, reader, firstByteTimeout)
+	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
@@ -156,34 +111,37 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		default:
 		}
 
-		line, err := readLineWithTimeout(ctx, reader, streamChunkTimeout)
-		if err != nil {
-			if err == io.EOF || strings.Contains(err.Error(), "EOF") {
+		readResult := readNextStreamLine(ctx, reader, w, &lastSend, runtimeCfg)
+		if readResult.err != nil {
+			switch readResult.state {
+			case streamReadEOF:
 				safeWriteSSE(w, "data: [DONE]\n\n")
 				safeFlush(flusher)
 				if capture != nil {
 					capture.ObservePayload("[DONE]", "", true)
 				}
-			} else if strings.Contains(err.Error(), "context canceled") {
+			case streamReadCanceled:
 				slog.Debug("stream cancelled by client")
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_cancel")
 				}
-			} else if strings.Contains(err.Error(), "timeout") {
+			case streamReadTimeout:
 				slog.Warn("stream read timeout, sending error chunk")
 				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
 				safeFlush(flusher)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-			} else {
-				slog.Warn("stream read error", "error", err)
+			default:
+				slog.Warn("stream read error", "error", readResult.err)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("read_error")
 				}
 			}
 			return
 		}
+
+		line := readResult.line
 
 		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
 
@@ -212,12 +170,6 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		safeWriteSSE(w, line)
 		safeFlush(flusher)
 		lastSend = time.Now()
-
-		// ── Keep-alive: if next read is slow, send comment ping ────
-		if time.Since(lastSend) > keepaliveInterval {
-			safeWriteSSE(w, sseKeepaliveComment)
-			safeFlush(flusher)
-		}
 	}
 }
 
@@ -230,6 +182,18 @@ func extractPayload(line string) string {
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
+	return newTimedLineReader(reader).ReadLine(ctx, timeout)
+}
+
+type timedLineReader struct {
+	reader *bufio.Reader
+}
+
+func newTimedLineReader(reader *bufio.Reader) *timedLineReader {
+	return &timedLineReader{reader: reader}
+}
+
+func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
 	type result struct {
 		line string
 		err  error
@@ -244,7 +208,7 @@ func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time
 				ch <- result{"", fmt.Errorf("read panic: %v", r)}
 			}
 		}()
-		line, err := reader.ReadString('\n')
+		line, err := r.reader.ReadString('\n')
 		ch <- result{line, err}
 	}()
 

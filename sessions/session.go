@@ -118,7 +118,7 @@ func NewManager(redisClient *RedisClient, ttl time.Duration) *Manager {
 }
 
 func generateSessionKey(apiKeyID int, tenantID string) string {
-	raw := fmt.Sprintf("%d:%s:%s:%d", apiKeyID, tenantID, time.Now().UnixNano(), uuid.New().String())
+	raw := fmt.Sprintf("%d:%s:%d:%s", apiKeyID, tenantID, time.Now().UnixNano(), uuid.New().String())
 	hash := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(hash[:])[:32]
 }

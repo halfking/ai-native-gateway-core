@@ -6,16 +6,23 @@ import (
 	"net/http"
 )
 
-// requestIDKey is the context key for the request ID.
-type requestIDKey struct{}
+type requestIDContextKey struct{}
 
-// WithRequestID injects a unique X-Request-Id header into every response and
-// stores it in the request context.
-func WithRequestID(next http.Handler) http.Handler {
+type RequestIDMiddleware struct {
+	BaseMiddleware
+}
+
+func NewRequestIDMiddleware() *RequestIDMiddleware {
+	return &RequestIDMiddleware{
+		BaseMiddleware: BaseMiddleware{name: "request_id"},
+	}
+}
+
+func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
 		if id == "" {
-			id = generateID()
+			id = generateRequestID()
 			r.Header.Set("X-Request-Id", id)
 		}
 		w.Header().Set("X-Request-Id", id)
@@ -23,7 +30,7 @@ func WithRequestID(next http.Handler) http.Handler {
 	})
 }
 
-func generateID() string {
+func generateRequestID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)

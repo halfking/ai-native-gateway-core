@@ -4,23 +4,17 @@
 //
 //	LLM_GATEWAY_LISTEN=:8781 LLM_GATEWAY_API_KEY=... go run ./cmd/gateway
 //
-// Environment variables:
+// Configuration (priority: env vars > YAML file > defaults):
+//   - Environment variables (see each var below)
+//   - YAML config file (LLM_GATEWAY_CONFIG_FILE or ./config.yml)
 //
-//	LLM_GATEWAY_LISTEN                  TCP listen address (default ":8781")
-//	LLM_GATEWAY_API_KEY                 Gateway API key for client auth (empty = disabled)
-//	LLM_GATEWAY_LOG_LEVEL               Log level: debug, info, warn, error (default "info")
-//	LLM_GATEWAY_DEFAULT_PROVIDER        Default provider ID (default "1")
-//	LLM_GATEWAY_DEFAULT_CREDENTIAL      Default credential ID (default "1")
-//	LLM_GATEWAY_PYTHON_ENDPOINT         Python control plane base URL (e.g. http://127.0.0.1:8780)
-//	LLM_GATEWAY_ADMIN_API_KEY           Admin API key for Python control plane calls
-//	LLM_GATEWAY_UPSTREAM                Upstream URL override (default http://127.0.0.1:8780)
-//	LLM_GATEWAY_STREAM_CHUNK_TIMEOUT    Per-SSE-chunk idle timeout in seconds (default 300)
-//	LLM_GATEWAY_STREAM_TIMEOUT          Total streaming request timeout in seconds (default 900)
-//	LLM_GATEWAY_UPSTREAM_TIMEOUT        Non-streaming request timeout in seconds (default 120)
+// Hot-reload: POST /admin/config/reload to reload YAML config at runtime.
+// Only YAML-sourced values are reloaded; env vars keep their process-level values.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,8 +24,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/audit"
-	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
@@ -45,8 +39,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/relay"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
-	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -54,23 +48,41 @@ import (
 
 func main() {
 	// ── Logging ───────────────────────────────────────────────────────────
+	cfg := config.Load()
+
 	level := slog.LevelInfo
-	if l := os.Getenv("LLM_GATEWAY_LOG_LEVEL"); l != "" {
-		switch l {
-		case "debug":
-			level = slog.LevelDebug
-		case "warn":
-			level = slog.LevelWarn
-		case "error":
-			level = slog.LevelError
-		}
+	switch cfg.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: level,
 	})))
 
+	// ── Optional YAML config file ─────────────────────────────────────────
+	configFile := os.Getenv("LLM_GATEWAY_CONFIG_FILE")
+	if configFile == "" {
+		if _, err := os.Stat("./config.yml"); err == nil {
+			configFile = "./config.yml"
+		}
+	}
+	if configFile != "" {
+		if err := cfg.LoadFile(configFile); err != nil {
+			slog.Warn("config: failed to load YAML file, using env-only", "path", configFile, "error", err)
+		} else {
+			slog.Info("config: loaded YAML file", "path", configFile)
+		}
+	}
+
+	cfgStore := config.NewStore(cfg)
+	relay.SetConfigStore(cfgStore)
+	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel)
+
 	// ── Dependencies ──────────────────────────────────────────────────────
-	cfg := config.Load()
 	dbConn, err := db.Open(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		slog.Warn("postgres disabled", "error", err)
@@ -87,7 +99,7 @@ func main() {
 	matrixPath := transform.DefaultMatrixPath()
 	matrix := transform.New(matrixPath)
 
-	pythonEndpoint := os.Getenv("LLM_GATEWAY_PYTHON_ENDPOINT")
+	pythonEndpoint := cfg.PythonEndpoint
 	resolver := resolve.NewResolver(pythonEndpoint, 120*time.Second)
 
 	auditSink := audit.NewMultiSink(
@@ -120,7 +132,7 @@ func main() {
 	}
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
-	adminAPIKey := os.Getenv("LLM_GATEWAY_ADMIN_API_KEY")
+	adminAPIKey := cfg.AdminAPIKey
 	providerClient := provider.NewClient(pythonEndpoint, adminAPIKey)
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
@@ -138,10 +150,11 @@ func main() {
 			},
 			auditSink,
 		)
-		exec.StreamTimeout = relay.StreamTimeout()
-		exec.UpstreamTimeout = relay.UpstreamTimeout()
+		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
+		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		if dbConn != nil && dbConn.Enabled() {
 			exec.State = credentialstate.NewWriter(dbConn.Pool())
+			exec.DB = dbConn
 		}
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled", "endpoint", pythonEndpoint)
@@ -224,39 +237,21 @@ func main() {
 		}
 	}
 
-	// ── Listen address ────────────────────────────────────────────────────
-	listen := os.Getenv("LLM_GATEWAY_LISTEN")
-	if listen == "" {
-		listen = ":8781"
-	}
-
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
-	staticDir := os.Getenv("LLM_GATEWAY_STATIC_DIR")
-	if staticDir == "" {
-		staticDir = "web/dist"
-	}
-	staticHandler := relay.NewStaticHandler(staticDir)
+	staticHandler := relay.NewStaticHandler(cfg.StaticDir)
 
 	// ── Router ────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
-	// Health
 	mux.Handle("/healthz", healthHandler)
+	mux.Handle("/metrics", middleware.MetricsHandler())
 
-	// Chat completions
 	mux.Handle("/v1/chat/completions", chatHandler)
 	mux.Handle("/v1/completions", chatHandler)
-
-	// Anthropic Messages API
 	mux.Handle("/v1/messages", messagesHandler)
-
-	// OpenAI Responses API
 	mux.Handle("/v1/responses", responsesHandler)
-
-	// Models listing
 	mux.Handle("/v1/models", modelsHandler)
 
-	// Session management
 	if sessionMgr != nil {
 		sessionHandler := sessions.NewHandler(sessionMgr)
 		mux.Handle("/v1/sessions", sessionHandler)
@@ -264,10 +259,32 @@ func main() {
 		slog.Info("session endpoints enabled")
 	}
 
+	// ── Config reload endpoint ──────────────────────────────────────────
+	if configFile != "" {
+		configPath := configFile
+		mux.HandleFunc("/admin/config/reload", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			if err := cfgStore.ReloadFile(configPath); err != nil {
+				slog.Error("config: hot-reload failed", "error", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+				return
+			}
+			slog.Info("config: hot-reload succeeded")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		})
+		slog.Info("config: hot-reload endpoint enabled", "path", configFile)
+	}
+
 	// Static files / SPA fallback
 	if staticHandler != nil {
 		mux.Handle("/", staticHandler)
-		slog.Info("serving Vue SPA", "dir", staticDir)
+		slog.Info("serving Vue SPA", "dir", cfg.StaticDir)
 	} else {
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/" {
@@ -286,15 +303,19 @@ func main() {
 		slog.Info("admin API enabled")
 	}
 
-	// ── Middleware stack ──────────────────────────────────────────────────
-	handler := middleware.APIKeyAuth(mux)
-	handler = middleware.WithRequestID(handler)
-	handler = middleware.WithLogging(handler)
-	handler = middleware.CORS(handler)
-	handler = middleware.WithRecovery(handler)
+	// ── Middleware stack (declarative chain) ─────────────────────────────
+	handler := middleware.NewBuilder().
+		Add(middleware.NewRecoveryMiddleware()).
+		Add(middleware.NewRequestIDMiddleware()).
+		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
+		Add(middleware.NewPrometheusMiddleware()).
+		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
+		Add(middleware.NewLoggingMiddleware()).
+		Build().
+		Then(mux)
 
 	srv := &http.Server{
-		Addr:           listen,
+		Addr:           cfg.Listen,
 		Handler:        handler,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   0,
@@ -307,7 +328,7 @@ func main() {
 	defer stop()
 
 	go func() {
-		slog.Info("gateway starting", "listen", listen)
+		slog.Info("gateway listening", "listen", cfg.Listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway listen failed", "error", err)
 			os.Exit(1)
@@ -317,7 +338,20 @@ func main() {
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
 
-	// Stop discovery service first
+	// 1. Stop accepting new connections — in-flight requests drain naturally
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("gateway shutdown error", "error", err)
+	}
+
+	// 2. Close connection pools after all HTTP handlers have completed
+	telemetryClient.Stop()
+	lim.Stop()
+	pools.Stop()
+	pools.CloseAll()
+
+	// 3. Stop background services last
 	if discoverySvc != nil {
 		discoverySvc.Stop()
 	}
@@ -337,15 +371,5 @@ func main() {
 		envelopeCleaner.Stop()
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("gateway shutdown error", "error", err)
-	}
-	telemetryClient.Stop()
-	lim.Stop()
-	pools.Stop()
-	pools.CloseAll()
 	slog.Info("gateway stopped")
 }
