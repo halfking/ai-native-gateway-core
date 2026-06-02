@@ -150,7 +150,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, failure Fai
 			  AND lifecycle_status = 'active'
 		`, string(failure.Kind), detail, credentialID)
 		return err
-	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown:
+	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindStreamTimeout:
 		availability := "cooling"
 		if failure.Kind == errorsx.KindRateLimit {
 			availability = "rate_limited"
@@ -194,7 +194,7 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 		return 15 * time.Second
 	case errorsx.KindRateLimit:
 		return 60 * time.Second
-	case errorsx.KindTransient, errorsx.KindTimeout:
+	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindStreamTimeout:
 		return 30 * time.Second
 	case errorsx.KindUpstreamDown:
 		return 60 * time.Second

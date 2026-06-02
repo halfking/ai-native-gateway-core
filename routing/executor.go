@@ -534,11 +534,11 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 
 	_, err = tx.Exec(ctx,
 		`UPDATE credentials SET availability_state = 'cooling',
-			availability_recover_at = now() + ($3 || ' seconds')::interval,
-			state_reason_code = $4, state_reason_detail = $5, state_updated_at = now()
+			availability_recover_at = now() + ($2 || ' seconds')::interval,
+			state_reason_code = $3, state_reason_detail = $4, state_updated_at = now()
 		 WHERE id = $1 AND lifecycle_status = 'active'
 		   AND availability_state NOT IN ('suspended', 'auth_failed')`,
-		credentialID, 0, coolingSeconds, string(kind), detailStr,
+		credentialID, coolingSeconds, string(kind), detailStr,
 	)
 	if err != nil {
 		slog.Warn("disable_model_offer: credentials update failed", "error", err)

@@ -244,6 +244,14 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "credentials":
+		if r.Method == http.MethodGet {
+			h.listCredentials(w, r, providerID)
+		} else if r.Method == http.MethodPost {
+			h.addCredential(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
 		if len(subPath) > 7 && subPath[:7] == "models/" {
 			modelsPath := subPath[7:]
@@ -266,9 +274,13 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, `
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.kind, p.category, p.protocol, p.base_url,
 		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled, COALESCE(p.notes, ''),
-		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name
+		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name,
+		       COALESCE(ac.cnt, 0),
+		       COALESCE(er.rate, 0)
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
+		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) ac ON ac.provider_id=p.id
+		LEFT JOIN (SELECT provider_id, count(*) FILTER (WHERE NOT success) * 1.0 / NULLIF(count(*), 0) AS rate FROM request_logs WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id=p.id
 		WHERE p.tenant_id = 'default'
 		ORDER BY p.id
 	`)
@@ -279,27 +291,30 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type provider struct {
-		ID           int     `json:"id"`
-		TenantID     string  `json:"tenant_id"`
-		Code         string  `json:"code"`
-		DisplayName  string  `json:"display_name"`
-		Kind         string  `json:"kind"`
-		Category     string  `json:"category"`
-		Protocol     string  `json:"protocol"`
-		BaseURL      string  `json:"base_url"`
-		EgressProfile string `json:"egress_profile"`
-		Domestic     bool    `json:"domestic"`
-		DiscountRate float64 `json:"discount_rate"`
-		Enabled      bool    `json:"enabled"`
-		Notes        string `json:"notes"`
-		VendorName   string `json:"vendor_name"`
+		ID              int     `json:"id"`
+		TenantID        string  `json:"tenant_id"`
+		Code            string  `json:"code"`
+		DisplayName     string  `json:"display_name"`
+		Kind            string  `json:"kind"`
+		Category        string  `json:"category"`
+		Protocol        string  `json:"protocol"`
+		BaseURL         string  `json:"base_url"`
+		EgressProfile   string  `json:"egress_profile"`
+		Domestic        bool    `json:"domestic"`
+		DiscountRate    float64 `json:"discount_rate"`
+		Enabled         bool    `json:"enabled"`
+		Notes           string  `json:"notes"`
+		VendorName      string  `json:"vendor_name"`
+		AvailModelCount int     `json:"available_model_count"`
+		ErrorRate24h    float64 `json:"error_rate_24h"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
 		var p provider
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.Kind,
 			&p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
-			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName); err != nil {
+			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName,
+			&p.AvailModelCount, &p.ErrorRate24h); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
@@ -339,8 +354,8 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE status='active' GROUP BY provider_id) hc ON hc.provider_id=p.id
 		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE health_status='warning' GROUP BY provider_id) wc ON wc.provider_id=p.id
 		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE circuit_state='open' GROUP BY provider_id) cc ON cc.provider_id=p.id
-		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true AND c.status='active' GROUP BY c.provider_id) ac ON ac.provider_id=p.id
-		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=false OR c.status!='active' GROUP BY c.provider_id) uc ON uc.provider_id=p.id
+		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) ac ON ac.provider_id=p.id
+		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) uc ON uc.provider_id=p.id
 		WHERE p.id = $1 AND p.tenant_id = 'default'
 	`, id).Scan(&p.ID, &p.Code, &p.DisplayName, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.Enabled,
 		&p.VendorName,
@@ -642,24 +657,28 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer rows.Close()
 
 	type cred struct {
-		ID                int     `json:"id"`
-		Label             string  `json:"label"`
-		Status            string  `json:"status"`
-		ConcurrencyLimit  int     `json:"concurrency_limit"`
-		BalanceUSD        float64 `json:"balance_usd"`
-		CircuitState      string  `json:"circuit_state"`
-		LifecycleStatus   string  `json:"lifecycle_status"`
-		AvailabilityState string  `json:"availability_state"`
-		QuotaState        string  `json:"quota_state"`
+		ID                int      `json:"id"`
+		Label             string   `json:"label"`
+		Status            string   `json:"status"`
+		ConcurrencyLimit  *int     `json:"concurrency_limit"`
+		BalanceUSD        *float64 `json:"balance_usd"`
+		CircuitState      string   `json:"circuit_state"`
+		LifecycleStatus   string   `json:"lifecycle_status"`
+		AvailabilityState string   `json:"availability_state"`
+		QuotaState        string   `json:"quota_state"`
 	}
 	var creds []cred
 	for rows.Next() {
 		var c cred
 		if err := rows.Scan(&c.ID, &c.Label, &c.Status, &c.ConcurrencyLimit, &c.BalanceUSD,
 			&c.CircuitState, &c.LifecycleStatus, &c.AvailabilityState, &c.QuotaState); err != nil {
+			slog.Warn("listCredentials scan failed", "error", err, "provider_id", providerID)
 			continue
 		}
 		creds = append(creds, c)
+	}
+	if creds == nil {
+		creds = []cred{}
 	}
 	writeJSON(w, http.StatusOK, creds)
 }
