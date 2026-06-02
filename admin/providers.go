@@ -1,10 +1,14 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -118,14 +122,10 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id":    providerID,
-		"code":           code,
-		"display_name":   displayName,
-		"enabled":        enabled,
-		"checked":        checked,
-		"healthy":        healthy,
-		"credentials":    results,
-		"message":        "health check completed",
+		"accepted":  true,
+		"reason":    "health check completed",
+		"checked":   checked,
+		"healthy":   healthy,
 	})
 }
 
@@ -244,20 +244,27 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-	case "credentials":
-		if r.Method == http.MethodGet {
-			h.listCredentials(w, r, providerID)
-		} else if r.Method == http.MethodPost {
-			h.addCredential(w, r, providerID)
+	case "query":
+		if r.Method == http.MethodPost {
+			h.queryProviderModels(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-	default:
-		if len(subPath) > 7 && subPath[:7] == "models/" {
-			modelsPath := subPath[7:]
-			h.handleProviderModels(w, r, providerID, modelsPath)
-			return
+	case "logs":
+		if r.Method == http.MethodGet || r.Method == http.MethodPost {
+			h.providerLogs(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "batch-recover":
+		if r.Method == http.MethodPost {
+			h.batchRecoverCredentials(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "credentials":
+		h.handleProviderCredentials(w, r, providerID, "")
+	default:
 		if len(subPath) > 12 && subPath[:12] == "credentials/" {
 			credPath := subPath[12:]
 			h.handleProviderCredentials(w, r, providerID, credPath)
@@ -274,13 +281,9 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, `
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.kind, p.category, p.protocol, p.base_url,
 		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled, COALESCE(p.notes, ''),
-		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name,
-		       COALESCE(ac.cnt, 0),
-		       COALESCE(er.rate, 0)
+		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
-		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) ac ON ac.provider_id=p.id
-		LEFT JOIN (SELECT provider_id, count(*) FILTER (WHERE NOT success) * 1.0 / NULLIF(count(*), 0) AS rate FROM request_logs WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id=p.id
 		WHERE p.tenant_id = 'default'
 		ORDER BY p.id
 	`)
@@ -291,30 +294,27 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type provider struct {
-		ID              int     `json:"id"`
-		TenantID        string  `json:"tenant_id"`
-		Code            string  `json:"code"`
-		DisplayName     string  `json:"display_name"`
-		Kind            string  `json:"kind"`
-		Category        string  `json:"category"`
-		Protocol        string  `json:"protocol"`
-		BaseURL         string  `json:"base_url"`
-		EgressProfile   string  `json:"egress_profile"`
-		Domestic        bool    `json:"domestic"`
-		DiscountRate    float64 `json:"discount_rate"`
-		Enabled         bool    `json:"enabled"`
-		Notes           string  `json:"notes"`
-		VendorName      string  `json:"vendor_name"`
-		AvailModelCount int     `json:"available_model_count"`
-		ErrorRate24h    float64 `json:"error_rate_24h"`
+		ID            int     `json:"id"`
+		TenantID      string  `json:"tenant_id"`
+		Code          string  `json:"code"`
+		DisplayName   string  `json:"display_name"`
+		Kind          string  `json:"kind"`
+		Category      string  `json:"category"`
+		Protocol      string  `json:"protocol"`
+		BaseURL       string  `json:"base_url"`
+		EgressProfile string  `json:"egress_profile"`
+		Domestic      bool    `json:"domestic"`
+		DiscountRate  float64 `json:"discount_rate"`
+		Enabled       bool    `json:"enabled"`
+		Notes         string  `json:"notes"`
+		VendorName    string  `json:"vendor_name"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
 		var p provider
 		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.Kind,
 			&p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
-			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName,
-			&p.AvailModelCount, &p.ErrorRate24h); err != nil {
+			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
@@ -328,39 +328,64 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	var p struct {
-		ID                int     `json:"id"`
-		Code              string  `json:"code"`
-		DisplayName       string  `json:"display_name"`
-		Kind              string  `json:"kind"`
-		Category          string  `json:"category"`
-		Protocol          string  `json:"protocol"`
-		BaseURL           string  `json:"base_url"`
-		Enabled           bool    `json:"enabled"`
-		VendorName        string  `json:"vendor_name"`
-		HealthyCount      int     `json:"healthy_count"`
-		WarningCount      int     `json:"warning_count"`
-		CoolingCount      int     `json:"cooling_count"`
-		AvailModelCount   int     `json:"available_model_count"`
-		UnavailModelCount int     `json:"unavailable_model_count"`
+		ID                   int     `json:"id"`
+		Code                 string  `json:"code"`
+		DisplayName          string  `json:"display_name"`
+		CatalogCode          *string `json:"catalog_code"`
+		Kind                 string  `json:"kind"`
+		Category             string  `json:"category"`
+		Protocol             string  `json:"protocol"`
+		BaseURL              string  `json:"base_url"`
+		EgressProfile        *string `json:"egress_profile"`
+		Domestic             bool    `json:"domestic"`
+		DiscountRate         float64 `json:"discount_rate"`
+		Enabled              bool    `json:"enabled"`
+		Notes                *string `json:"notes"`
+		VendorName           *string `json:"vendor_name"`
+		ActiveCredCount      int     `json:"active_cred_count"`
+		HealthyCredCount     int     `json:"healthy_cred_count"`
+		WarningCredCount     int     `json:"warning_cred_count"`
+		CoolingCredCount     int     `json:"cooling_cred_count"`
+		UnreachableCredCount int     `json:"unreachable_cred_count"`
+		AvailableModelCount  int     `json:"available_model_count"`
+		UnavailableModelCount int    `json:"unavailable_model_count"`
+		ErrorRate24h         float64 `json:"error_rate_24h"`
+		CreatedAt            *time.Time `json:"created_at"`
 	}
+
 	err := h.db.QueryRow(ctx, `
-		SELECT p.id, COALESCE(p.code,''), COALESCE(p.display_name,''), COALESCE(p.kind,''),
-		       COALESCE(p.category,''), COALESCE(p.protocol,''), COALESCE(p.base_url,''), p.enabled,
-		       COALESCE(pc.vendor_name, pc.code, ''),
-		       COALESCE(hc.cnt,0), COALESCE(wc.cnt,0), COALESCE(cc.cnt,0),
-		       COALESCE(ac.cnt,0), COALESCE(uc.cnt,0)
+		SELECT p.id, COALESCE(p.code,''), COALESCE(p.display_name,''), p.catalog_code,
+		       COALESCE(p.kind,''), COALESCE(p.category,''), COALESCE(p.protocol,''),
+		       COALESCE(p.base_url,''), p.egress_profile, p.domestic,
+		       COALESCE(p.discount_rate::float8, 0), p.enabled, p.notes,
+		       pc.vendor_name,
+		       COALESCE(ac.cnt, 0), COALESCE(hc.cnt, 0), COALESCE(wc.cnt, 0),
+		       COALESCE(cc.cnt, 0), COALESCE(uc.cnt, 0),
+		       COALESCE(am.cnt, 0), COALESCE(um.cnt, 0),
+		       COALESCE(er.rate, 0),
+		       p.created_at
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
-		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE status='active' GROUP BY provider_id) hc ON hc.provider_id=p.id
-		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE health_status='warning' GROUP BY provider_id) wc ON wc.provider_id=p.id
-		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE circuit_state='open' GROUP BY provider_id) cc ON cc.provider_id=p.id
-		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) ac ON ac.provider_id=p.id
-		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) uc ON uc.provider_id=p.id
+		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE status='active' GROUP BY provider_id) ac ON ac.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE health_status='healthy' AND status='active' GROUP BY provider_id) hc ON hc.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE health_status='warning' GROUP BY provider_id) wc ON wc.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE circuit_state='open' GROUP BY provider_id) cc ON cc.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COUNT(*) cnt FROM credentials WHERE availability_state='unreachable' GROUP BY provider_id) uc ON uc.provider_id = p.id
+		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=true GROUP BY c.provider_id) am ON am.provider_id = p.id
+		LEFT JOIN (SELECT c.provider_id, COUNT(*) cnt FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE mo.available=false GROUP BY c.provider_id) um ON um.provider_id = p.id
+		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
 		WHERE p.id = $1 AND p.tenant_id = 'default'
-	`, id).Scan(&p.ID, &p.Code, &p.DisplayName, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.Enabled,
+	`, id).Scan(
+		&p.ID, &p.Code, &p.DisplayName, &p.CatalogCode,
+		&p.Kind, &p.Category, &p.Protocol, &p.BaseURL,
+		&p.EgressProfile, &p.Domestic, &p.DiscountRate, &p.Enabled, &p.Notes,
 		&p.VendorName,
-		&p.HealthyCount, &p.WarningCount, &p.CoolingCount,
-		&p.AvailModelCount, &p.UnavailModelCount)
+		&p.ActiveCredCount, &p.HealthyCredCount, &p.WarningCredCount,
+		&p.CoolingCredCount, &p.UnreachableCredCount,
+		&p.AvailableModelCount, &p.UnavailableModelCount,
+		&p.ErrorRate24h,
+		&p.CreatedAt,
+	)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
 		return
@@ -437,6 +462,9 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	if req.Notes != nil {
 		h.db.Exec(ctx, `UPDATE providers SET notes = $1 WHERE id = $2`, *req.Notes, id)
 	}
+	if req.Enabled != nil {
+		h.db.Exec(ctx, `UPDATE providers SET enabled = $1 WHERE id = $2`, *req.Enabled, id)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -509,8 +537,8 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message":  fmt.Sprintf("Seeded %d new providers from catalog", len(created)),
-		"created": len(created),
-		"total":   total,
+		"created":  len(created),
+		"total":    total,
 		"providers": created,
 	})
 }
@@ -643,9 +671,37 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT c.id, c.label, c.status, c.concurrency_limit, c.balance_usd::float8,
-		       COALESCE(c.circuit_state, 'closed'), COALESCE(c.lifecycle_status, 'active'),
-		       COALESCE(c.availability_state, 'ready'), COALESCE(c.quota_state, 'ok')
+		SELECT c.id, c.provider_id, COALESCE(c.label,''), COALESCE(c.status,'active'),
+		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
+		       c.balance_usd::float8,
+		       COALESCE(c.circuit_state,'closed'),
+		       c.circuit_opened_at,
+		       COALESCE(c.consecutive_failures, 0),
+		       c.cooling_until,
+		       COALESCE(c.lifecycle_status,'active'),
+		       COALESCE(c.availability_state,'ready'),
+		       c.availability_recover_at,
+		       COALESCE(c.quota_state,'ok'),
+		       c.quota_recover_at,
+		       c.state_reason_code,
+		       c.state_reason_detail,
+		       c.state_updated_at,
+		       COALESCE(c.health_status,'unknown'),
+		       c.health_checked_at,
+		       c.health_source,
+		       c.health_warning_code,
+		       c.health_error,
+		       c.health_latency_ms,
+		       c.health_probe_model,
+		       c.api_models_ok,
+		       c.api_models_last_checked_at,
+		       c.api_models_error,
+		       c.effective_at,
+		       c.expires_at,
+		       c.tags,
+		       COALESCE(c.notes,''),
+		       c.created_at,
+		       c.updated_at
 		FROM credentials c
 		WHERE c.provider_id = $1
 		ORDER BY c.id
@@ -657,24 +713,91 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer rows.Close()
 
 	type cred struct {
-		ID                int      `json:"id"`
-		Label             string   `json:"label"`
-		Status            string   `json:"status"`
-		ConcurrencyLimit  *int     `json:"concurrency_limit"`
-		BalanceUSD        *float64 `json:"balance_usd"`
-		CircuitState      string   `json:"circuit_state"`
-		LifecycleStatus   string   `json:"lifecycle_status"`
-		AvailabilityState string   `json:"availability_state"`
-		QuotaState        string   `json:"quota_state"`
+		ID                      int        `json:"id"`
+		ProviderID              int        `json:"provider_id"`
+		Label                   string     `json:"label"`
+		Status                  string     `json:"status"`
+		TrustLevel              string     `json:"trust_level"`
+		ConcurrencyLimit        *int       `json:"concurrency_limit"`
+		BalanceUSD              *float64   `json:"balance_usd"`
+		CircuitState            string     `json:"circuit_state"`
+		CircuitOpenedAt         *time.Time `json:"circuit_opened_at"`
+		ConsecutiveFailures     int        `json:"consecutive_failures"`
+		CoolingUntil           *time.Time `json:"cooling_until"`
+		LifecycleStatus         string     `json:"lifecycle_status"`
+		AvailabilityState       string     `json:"availability_state"`
+		AvailabilityRecoverAt   *time.Time `json:"availability_recover_at"`
+		QuotaState              string     `json:"quota_state"`
+		QuotaRecoverAt          *time.Time `json:"quota_recover_at"`
+		StateReasonCode         *string    `json:"state_reason_code"`
+		StateReasonDetail       *string    `json:"state_reason_detail"`
+		StateUpdatedAt          *time.Time `json:"state_updated_at"`
+		HealthStatus            string     `json:"health_status"`
+		HealthCheckedAt         *time.Time `json:"health_checked_at"`
+		HealthSource            *string    `json:"health_source"`
+		HealthWarningCode       *string    `json:"health_warning_code"`
+		HealthError             *string    `json:"health_error"`
+		HealthLatencyMs         *int       `json:"health_latency_ms"`
+		HealthProbeModel        *string    `json:"health_probe_model"`
+		ApiModelsOk             *bool      `json:"api_models_ok"`
+		ApiModelsLastCheckedAt  *time.Time `json:"api_models_last_checked_at"`
+		ApiModelsError          *string    `json:"api_models_error"`
+		EffectiveAt             *time.Time `json:"effective_at"`
+		ExpiresAt               *time.Time `json:"expires_at"`
+		Tags                    []string   `json:"tags"`
+		Notes                   string     `json:"notes"`
+		CreatedAt               *time.Time `json:"created_at"`
+		UpdatedAt               *time.Time `json:"updated_at"`
 	}
+
 	var creds []cred
 	for rows.Next() {
 		var c cred
-		if err := rows.Scan(&c.ID, &c.Label, &c.Status, &c.ConcurrencyLimit, &c.BalanceUSD,
-			&c.CircuitState, &c.LifecycleStatus, &c.AvailabilityState, &c.QuotaState); err != nil {
-			slog.Warn("listCredentials scan failed", "error", err, "provider_id", providerID)
+		var tagsStr sql.NullString
+		var balanceUSD sql.NullFloat64
+
+		if err := rows.Scan(
+			&c.ID, &c.ProviderID, &c.Label, &c.Status,
+			&c.TrustLevel, &c.ConcurrencyLimit,
+			&balanceUSD,
+			&c.CircuitState,
+			&c.CircuitOpenedAt,
+			&c.ConsecutiveFailures,
+			&c.CoolingUntil,
+			&c.LifecycleStatus,
+			&c.AvailabilityState,
+			&c.AvailabilityRecoverAt,
+			&c.QuotaState,
+			&c.QuotaRecoverAt,
+			&c.StateReasonCode,
+			&c.StateReasonDetail,
+			&c.StateUpdatedAt,
+			&c.HealthStatus,
+			&c.HealthCheckedAt,
+			&c.HealthSource,
+			&c.HealthWarningCode,
+			&c.HealthError,
+			&c.HealthLatencyMs,
+			&c.HealthProbeModel,
+			&c.ApiModelsOk,
+			&c.ApiModelsLastCheckedAt,
+			&c.ApiModelsError,
+			&c.EffectiveAt,
+			&c.ExpiresAt,
+			&tagsStr,
+			&c.Notes,
+			&c.CreatedAt,
+			&c.UpdatedAt,
+		); err != nil {
+			slog.Warn("listCredentials scan failed", "error", err)
 			continue
 		}
+
+		if balanceUSD.Valid {
+			c.BalanceUSD = &balanceUSD.Float64
+		}
+
+		c.Tags = parseTags(tagsStr)
 		creds = append(creds, c)
 	}
 	if creds == nil {
@@ -683,11 +806,783 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	writeJSON(w, http.StatusOK, creds)
 }
 
+func parseTags(ns sql.NullString) []string {
+	if !ns.Valid || ns.String == "" {
+		return []string{}
+	}
+	s := strings.TrimSpace(ns.String)
+	if s == "" {
+		return []string{}
+	}
+	if s[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal([]byte(s), &arr); err == nil {
+			return arr
+		}
+	}
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
+		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
+		       mo.canonical_id, COALESCE(mo.outbound_model_name,'') AS display_name,
+		       mo.available, mo.unavailable_reason, mo.unavailable_at,
+		       mo.p95_latency_ms, mo.success_rate::float8,
+		       mo.unit_price_in_per_1m::float8 AS input_price,
+		       mo.unit_price_out_per_1m::float8 AS output_price,
+		       mo.last_seen_at, COALESCE(mo.routing_tier::text,'')
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE c.provider_id = $1
+		ORDER BY mo.raw_model_name
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type modelOffer struct {
+		ID                int        `json:"id"`
+		CredentialID      int        `json:"credential_id"`
+		CredentialLabel   string     `json:"credential_label"`
+		RawModelName      string     `json:"raw_model_name"`
+		StandardizedName  string     `json:"standardized_name"`
+		CanonicalID       *int       `json:"canonical_id"`
+		DisplayName       string     `json:"display_name"`
+		Available         bool       `json:"available"`
+		UnavailableReason *string    `json:"unavailable_reason"`
+		UnavailableAt     *time.Time `json:"unavailable_at"`
+		P95LatencyMs      *int       `json:"p95_latency_ms"`
+		SuccessRate       *float64   `json:"success_rate"`
+		InputPrice        *float64   `json:"input_price"`
+		OutputPrice       *float64   `json:"output_price"`
+		LastSeenAt        *time.Time `json:"last_seen_at"`
+		RoutingTier       string     `json:"routing_tier"`
+		AvailabilitySource string    `json:"availability_source"`
+	}
+
+	var offers []modelOffer
+	for rows.Next() {
+		var o modelOffer
+		if err := rows.Scan(
+			&o.ID, &o.CredentialID, &o.CredentialLabel,
+			&o.RawModelName, &o.StandardizedName,
+			&o.CanonicalID, &o.DisplayName,
+			&o.Available, &o.UnavailableReason, &o.UnavailableAt,
+			&o.P95LatencyMs, &o.SuccessRate,
+			&o.InputPrice, &o.OutputPrice,
+			&o.LastSeenAt, &o.RoutingTier,
+		); err != nil {
+			slog.Warn("getProviderModels scan failed", "error", err)
+			continue
+		}
+		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
+		offers = append(offers, o)
+	}
+	if offers == nil {
+		offers = []modelOffer{}
+	}
+	writeJSON(w, http.StatusOK, offers)
+}
+
+func classifyAvailability(available bool, reason *string) string {
+	if reason == nil {
+		if available {
+			return "auto"
+		}
+		return "never"
+	}
+	r := *reason
+	if strings.HasPrefix(r, "auto_") {
+		return "auto"
+	}
+	if strings.HasPrefix(r, "manual") {
+		return "manual"
+	}
+	if available {
+		return "auto"
+	}
+	return "never"
+}
+
+func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	var req struct {
+		Q             *string   `json:"q"`
+		Available     *bool     `json:"available"`
+		UnavailReason *string   `json:"unavailable_reason"`
+		CredentialID  *int      `json:"credential_id"`
+		MinSuccess    *float64  `json:"min_success_rate"`
+		MaxP95Latency *int      `json:"max_p95_latency"`
+		Page          int       `json:"page"`
+		PageSize      int       `json:"page_size"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	if req.PageSize <= 0 {
+		req.PageSize = 50
+	}
+
+	conditions := []string{"c.provider_id = $1"}
+	args := []any{providerID}
+	argIdx := 2
+
+	if req.Q != nil && *req.Q != "" {
+		conditions = append(conditions, fmt.Sprintf("(mo.raw_model_name ILIKE $%d OR mo.standardized_name ILIKE $%d)", argIdx, argIdx))
+		args = append(args, "%"+*req.Q+"%")
+		argIdx++
+	}
+	if req.Available != nil {
+		conditions = append(conditions, fmt.Sprintf("mo.available = $%d", argIdx))
+		args = append(args, *req.Available)
+		argIdx++
+	}
+	if req.UnavailReason != nil && *req.UnavailReason != "" {
+		conditions = append(conditions, fmt.Sprintf("mo.unavailable_reason = $%d", argIdx))
+		args = append(args, *req.UnavailReason)
+		argIdx++
+	}
+	if req.CredentialID != nil {
+		conditions = append(conditions, fmt.Sprintf("mo.credential_id = $%d", argIdx))
+		args = append(args, *req.CredentialID)
+		argIdx++
+	}
+	if req.MinSuccess != nil {
+		conditions = append(conditions, fmt.Sprintf("mo.success_rate >= $%d", argIdx))
+		args = append(args, *req.MinSuccess)
+		argIdx++
+	}
+	if req.MaxP95Latency != nil {
+		conditions = append(conditions, fmt.Sprintf("mo.p95_latency_ms <= $%d", argIdx))
+		args = append(args, *req.MaxP95Latency)
+		argIdx++
+	}
+
+	where := strings.Join(conditions, " AND ")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	var total int
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE %s`, where)
+	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		slog.Warn("queryProviderModels count failed", "error", err)
+		total = 0
+	}
+
+	offset := (req.Page - 1) * req.PageSize
+	dataSQL := fmt.Sprintf(`
+		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
+		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
+		       mo.canonical_id, COALESCE(mo.outbound_model_name,'') AS display_name,
+		       mo.available, mo.unavailable_reason, mo.unavailable_at,
+		       mo.p95_latency_ms, mo.success_rate::float8,
+		       mo.unit_price_in_per_1m::float8 AS input_price,
+		       mo.unit_price_out_per_1m::float8 AS output_price,
+		       mo.last_seen_at, COALESCE(mo.routing_tier::text,'')
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE %s
+		ORDER BY mo.raw_model_name
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+	args = append(args, req.PageSize, offset)
+
+	rows, err := h.db.Query(ctx, dataSQL, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type modelOffer struct {
+		ID                int        `json:"id"`
+		CredentialID      int        `json:"credential_id"`
+		CredentialLabel   string     `json:"credential_label"`
+		RawModelName      string     `json:"raw_model_name"`
+		StandardizedName  string     `json:"standardized_name"`
+		CanonicalID       *int       `json:"canonical_id"`
+		DisplayName       string     `json:"display_name"`
+		Available         bool       `json:"available"`
+		UnavailableReason *string    `json:"unavailable_reason"`
+		UnavailableAt     *time.Time `json:"unavailable_at"`
+		P95LatencyMs      *int       `json:"p95_latency_ms"`
+		SuccessRate       *float64   `json:"success_rate"`
+		InputPrice        *float64   `json:"input_price"`
+		OutputPrice       *float64   `json:"output_price"`
+		LastSeenAt        *time.Time `json:"last_seen_at"`
+		RoutingTier       string     `json:"routing_tier"`
+		AvailabilitySource string    `json:"availability_source"`
+	}
+
+	offers := make([]modelOffer, 0)
+	for rows.Next() {
+		var o modelOffer
+		if err := rows.Scan(
+			&o.ID, &o.CredentialID, &o.CredentialLabel,
+			&o.RawModelName, &o.StandardizedName,
+			&o.CanonicalID, &o.DisplayName,
+			&o.Available, &o.UnavailableReason, &o.UnavailableAt,
+			&o.P95LatencyMs, &o.SuccessRate,
+			&o.InputPrice, &o.OutputPrice,
+			&o.LastSeenAt, &o.RoutingTier,
+		); err != nil {
+			slog.Warn("queryProviderModels scan failed", "error", err)
+			continue
+		}
+		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
+		offers = append(offers, o)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     offers,
+		"total":     total,
+		"page":      req.Page,
+		"page_size": req.PageSize,
+	})
+}
+
+func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerID int) {
+	var filter struct {
+		CredentialID *int       `json:"credential_id"`
+		Model        *string    `json:"model"`
+		FromTS       *time.Time `json:"from_ts"`
+		ToTS         *time.Time `json:"to_ts"`
+		Success      *bool      `json:"success"`
+		ErrorKind    *string    `json:"error_kind"`
+		Page         int        `json:"page"`
+		PageSize     int        `json:"page_size"`
+	}
+
+	if r.Method == http.MethodPost {
+		if err := readJSON(r, &filter); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+	} else {
+		filter.CredentialID = queryIntPtr(r, "credential_id")
+		if m := queryString(r, "model"); m != "" {
+			filter.Model = &m
+		}
+		if s := queryString(r, "success"); s != "" {
+			b := s == "true" || s == "1"
+			filter.Success = &b
+		}
+		if ek := queryString(r, "error_kind"); ek != "" {
+			filter.ErrorKind = &ek
+		}
+	}
+
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+	if filter.PageSize <= 0 {
+		filter.PageSize = 50
+	}
+
+	conditions := []string{"rl.provider_id = $1"}
+	args := []any{providerID}
+	argIdx := 2
+
+	if filter.CredentialID != nil {
+		conditions = append(conditions, fmt.Sprintf("rl.credential_id = $%d", argIdx))
+		args = append(args, *filter.CredentialID)
+		argIdx++
+	}
+	if filter.Model != nil && *filter.Model != "" {
+		conditions = append(conditions, fmt.Sprintf("(rl.client_model ILIKE $%d OR rl.outbound_model ILIKE $%d)", argIdx, argIdx))
+		args = append(args, "%"+*filter.Model+"%")
+		argIdx++
+	}
+	if filter.FromTS != nil {
+		conditions = append(conditions, fmt.Sprintf("rl.ts >= $%d", argIdx))
+		args = append(args, *filter.FromTS)
+		argIdx++
+	}
+	if filter.ToTS != nil {
+		conditions = append(conditions, fmt.Sprintf("rl.ts <= $%d", argIdx))
+		args = append(args, *filter.ToTS)
+		argIdx++
+	}
+	if filter.Success != nil {
+		conditions = append(conditions, fmt.Sprintf("rl.success = $%d", argIdx))
+		args = append(args, *filter.Success)
+		argIdx++
+	}
+	if filter.ErrorKind != nil && *filter.ErrorKind != "" {
+		conditions = append(conditions, fmt.Sprintf("rl.error_kind = $%d", argIdx))
+		args = append(args, *filter.ErrorKind)
+		argIdx++
+	}
+
+	where := strings.Join(conditions, " AND ")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	var total int
+	countSQL := fmt.Sprintf(`SELECT COUNT(*) FROM request_logs rl WHERE %s`, where)
+	if err := h.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		slog.Warn("providerLogs count failed", "error", err)
+		total = 0
+	}
+
+	offset := (filter.Page - 1) * filter.PageSize
+	dataSQL := fmt.Sprintf(`
+		SELECT rl.ts, rl.request_id, rl.credential_id,
+		       rl.client_model, rl.outbound_model,
+		       rl.success, rl.error_kind,
+		       rl.prompt_tokens, rl.completion_tokens, rl.total_tokens,
+		       rl.cost_usd::float8, rl.latency_ms
+		FROM request_logs rl
+		WHERE %s
+		ORDER BY rl.ts DESC
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
+	args = append(args, filter.PageSize, offset)
+
+	rows, err := h.db.Query(ctx, dataSQL, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type logEntry struct {
+		Ts               *time.Time `json:"ts"`
+		RequestID        *string    `json:"request_id"`
+		CredentialID     *int       `json:"credential_id"`
+		ClientModel      *string    `json:"client_model"`
+		OutboundModel    *string    `json:"outbound_model"`
+		Success          bool       `json:"success"`
+		ErrorKind        *string    `json:"error_kind"`
+		PromptTokens     *int       `json:"prompt_tokens"`
+		CompletionTokens *int       `json:"completion_tokens"`
+		TotalTokens      *int       `json:"total_tokens"`
+		CostUSD          *float64   `json:"cost_usd"`
+		LatencyMs        *int       `json:"latency_ms"`
+	}
+
+	items := make([]logEntry, 0)
+	for rows.Next() {
+		var l logEntry
+		if err := rows.Scan(
+			&l.Ts, &l.RequestID, &l.CredentialID,
+			&l.ClientModel, &l.OutboundModel,
+			&l.Success, &l.ErrorKind,
+			&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
+			&l.CostUSD, &l.LatencyMs,
+		); err != nil {
+			slog.Warn("providerLogs scan failed", "error", err)
+			continue
+		}
+		items = append(items, l)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":     items,
+		"total":     total,
+		"page":      filter.Page,
+		"page_size": filter.PageSize,
+	})
+}
+
+func queryIntPtr(r *http.Request, key string) *int {
+	s := r.URL.Query().Get(key)
+	if s == "" {
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
+func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	var providerCode, baseURL, protocol string
+	var enabled bool
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
+		FROM providers WHERE id = $1 AND tenant_id = 'default'
+	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	type modelsProbe struct {
+		StatusCode  int      `json:"status_code"`
+		LatencyMs   int      `json:"latency_ms"`
+		Error       string   `json:"error,omitempty"`
+		ModelsCount int      `json:"models_count"`
+		SampleModels []string `json:"sample_models"`
+	}
+
+	type chatProbe struct {
+		StatusCode       int    `json:"status_code"`
+		LatencyMs        int    `json:"latency_ms"`
+		Error            string `json:"error,omitempty"`
+		ModelInResponse  string `json:"model_in_response,omitempty"`
+	}
+
+	type credDiag struct {
+		CredentialID       int         `json:"credential_id"`
+		Label              string      `json:"label"`
+		Status             string      `json:"status"`
+		CircuitState       string      `json:"circuit_state"`
+		AvailabilityState  string      `json:"availability_state"`
+		HealthStatus       string      `json:"health_status"`
+		ConsecutiveFailures int        `json:"consecutive_failures"`
+		ModelsProbe        modelsProbe `json:"models_probe"`
+		ChatProbe          chatProbe   `json:"chat_probe"`
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT c.id, COALESCE(c.label,''), COALESCE(c.status,'active'),
+		       COALESCE(c.circuit_state,'closed'), COALESCE(c.availability_state,'ready'),
+		       COALESCE(c.health_status,'unknown'), COALESCE(c.consecutive_failures,0),
+		       c.secret_ciphertext
+		FROM credentials c
+		WHERE c.provider_id = $1 AND c.status = 'active'
+		ORDER BY c.id
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	var credDiags []credDiag
+	var totalLatencyMs int
+	latencyCount := 0
+
+	for rows.Next() {
+		var cd credDiag
+		var ciphertext string
+		if err := rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status,
+			&cd.CircuitState, &cd.AvailabilityState, &cd.HealthStatus,
+			&cd.ConsecutiveFailures, &ciphertext); err != nil {
+			continue
+		}
+
+		apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+		if decErr != nil {
+			cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
+			cd.ChatProbe = chatProbe{Error: "decrypt failed"}
+			credDiags = append(credDiags, cd)
+			continue
+		}
+
+		cleanURL := cleanBaseURL(baseURL)
+
+		modelsURL := cleanURL + "/v1/models"
+		start := time.Now()
+		modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
+		modelsLatency := int(time.Since(start).Milliseconds())
+		totalLatencyMs += modelsLatency
+		latencyCount++
+
+		if modelsErr != nil {
+			cd.ModelsProbe = modelsProbe{
+				LatencyMs: modelsLatency,
+				Error:     modelsErr.Error(),
+			}
+		} else {
+			cd.ModelsProbe = modelsProbe{
+				StatusCode:   modelsResp.statusCode,
+				LatencyMs:    modelsLatency,
+				ModelsCount:  modelsResp.modelCount,
+				SampleModels: modelsResp.sampleModels,
+			}
+		}
+
+		var testModel string
+		err := h.db.QueryRow(ctx, `
+			SELECT mo.raw_model_name FROM model_offers mo
+			JOIN credentials c ON c.id = mo.credential_id
+			WHERE c.provider_id = $1 AND mo.available = TRUE
+			LIMIT 1
+		`, providerID).Scan(&testModel)
+		if err != nil {
+			testModel = "gpt-4o-mini"
+		}
+
+		chatURL := cleanURL + "/v1/chat/completions"
+		start = time.Now()
+		chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
+		chatLatency := int(time.Since(start).Milliseconds())
+		totalLatencyMs += chatLatency
+		latencyCount++
+
+		if chatErr != nil {
+			cd.ChatProbe = chatProbe{
+				LatencyMs: chatLatency,
+				Error:     chatErr.Error(),
+			}
+		} else {
+			cd.ChatProbe = chatProbe{
+				StatusCode:      chatResp.statusCode,
+				LatencyMs:       chatLatency,
+				ModelInResponse: chatResp.modelInResponse,
+			}
+		}
+
+		credDiags = append(credDiags, cd)
+	}
+
+	healthy := 0
+	degraded := 0
+	unreachable := 0
+	cooling := 0
+	disabled := 0
+	for _, cd := range credDiags {
+		switch {
+		case cd.HealthStatus == "healthy":
+			healthy++
+		case cd.AvailabilityState == "unreachable":
+			unreachable++
+		case cd.CircuitState == "open":
+			cooling++
+		case cd.HealthStatus == "warning" || cd.HealthStatus == "degraded":
+			degraded++
+		default:
+			if cd.Status != "active" {
+				disabled++
+			}
+		}
+	}
+
+	var availableCount, totalOffers int
+	h.db.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE mo.available = TRUE), COUNT(*)
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE c.provider_id = $1
+	`, providerID).Scan(&availableCount, &totalOffers)
+
+	coveragePct := 0.0
+	if totalOffers > 0 {
+		coveragePct = float64(availableCount) / float64(totalOffers) * 100
+	}
+
+	avgLatency := 0.0
+	if latencyCount > 0 {
+		avgLatency = float64(totalLatencyMs) / float64(latencyCount)
+	}
+
+	type errorClassification struct {
+		AuthErrors         int `json:"auth_errors"`
+		RateLimitErrors    int `json:"rate_limit_errors"`
+		TimeoutErrors      int `json:"timeout_errors"`
+		ModelNotFoundErrors int `json:"model_not_found_errors"`
+		OtherErrors        int `json:"other_errors"`
+	}
+
+	var ec errorClassification
+	ecRows, err := h.db.Query(ctx, `
+		SELECT COALESCE(error_kind,'other'), COUNT(*)
+		FROM request_logs
+		WHERE provider_id = $1 AND ts >= now() - interval '24 hours'
+		GROUP BY error_kind
+	`, providerID)
+	if err == nil {
+		for ecRows.Next() {
+			var kind string
+			var cnt int
+			if ecRows.Scan(&kind, &cnt) != nil {
+				continue
+			}
+			switch {
+			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"):
+				ec.AuthErrors += cnt
+			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"):
+				ec.RateLimitErrors += cnt
+			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"):
+				ec.TimeoutErrors += cnt
+			case strings.Contains(kind, "model") || strings.Contains(kind, "404"):
+				ec.ModelNotFoundErrors += cnt
+			default:
+				ec.OtherErrors += cnt
+			}
+		}
+		ecRows.Close()
+	}
+
+	type healthScore struct {
+		CredentialID int     `json:"credential_id"`
+		Score        float64 `json:"score"`
+	}
+	scores := make([]healthScore, 0, len(credDiags))
+	for _, cd := range credDiags {
+		score := 100.0
+		if cd.CircuitState != "closed" {
+			score -= 30
+		}
+		if cd.HealthStatus != "healthy" {
+			score -= 20
+		}
+		if cd.ConsecutiveFailures > 0 {
+			score -= 10
+			score -= math.Min(20, float64(cd.ConsecutiveFailures)*5)
+		}
+		score = math.Max(0, math.Min(100, score))
+		scores = append(scores, healthScore{CredentialID: cd.CredentialID, Score: score})
+	}
+
+	totalCreds := len(credDiags)
+	result := map[string]any{
+		"provider_id":  providerID,
+		"provider_code": providerCode,
+		"enabled":      enabled,
+		"base_url":     baseURL,
+		"protocol":     protocol,
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"credentials":  credDiags,
+		"summary": map[string]any{
+			"total_credentials":    totalCreds,
+			"healthy":              healthy,
+			"degraded":             degraded,
+			"unreachable":          unreachable,
+			"cooling":              cooling,
+			"disabled":             disabled,
+			"models_coverage_pct":  coveragePct,
+			"avg_latency_ms":       avgLatency,
+		},
+		"error_classification": ec,
+		"health_scores":        scores,
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func cleanBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
+		if strings.HasSuffix(baseURL, suffix) {
+			baseURL = baseURL[:len(baseURL)-len(suffix)]
+			break
+		}
+	}
+	return baseURL
+}
+
+type probeResult struct {
+	statusCode   int
+	modelCount   int
+	sampleModels []string
+}
+
+func doProbeRequest(ctx context.Context, url, apiKey string) (*probeResult, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	result := &probeResult{statusCode: resp.StatusCode}
+
+	if resp.StatusCode == http.StatusOK {
+		var modelsResp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &modelsResp) == nil {
+			result.modelCount = len(modelsResp.Data)
+			limit := 3
+			if len(modelsResp.Data) < limit {
+				limit = len(modelsResp.Data)
+			}
+			for i := 0; i < limit; i++ {
+				result.sampleModels = append(result.sampleModels, modelsResp.Data[i].ID)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+type chatResult struct {
+	statusCode      int
+	modelInResponse string
+}
+
+func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, error) {
+	payload := map[string]any{
+		"model":      model,
+		"max_tokens": 5,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	result := &chatResult{statusCode: resp.StatusCode}
+
+	if resp.StatusCode == http.StatusOK {
+		var chatResp struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(respBody, &chatResp) == nil {
+			result.modelInResponse = chatResp.Model
+		}
+	}
+
+	return result, nil
+}
+
 func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	var req struct {
-		Label            *string `json:"label"`
-		Status           *string `json:"status"`
-		ConcurrencyLimit *int    `json:"concurrency_limit"`
+		Label            *string  `json:"label"`
+		Status           *string  `json:"status"`
+		ConcurrencyLimit *int     `json:"concurrency_limit"`
+		EffectiveAt      *string  `json:"effective_at"`
+		ExpiresAt        *string  `json:"expires_at"`
+		Tags             []string `json:"tags"`
+		Notes            *string  `json:"notes"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -704,6 +1599,19 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.ConcurrencyLimit != nil {
 		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
+	}
+	if req.EffectiveAt != nil {
+		h.db.Exec(ctx, `UPDATE credentials SET effective_at = $1 WHERE id = $2 AND provider_id = $3`, *req.EffectiveAt, credID, providerID)
+	}
+	if req.ExpiresAt != nil {
+		h.db.Exec(ctx, `UPDATE credentials SET expires_at = $1 WHERE id = $2 AND provider_id = $3`, *req.ExpiresAt, credID, providerID)
+	}
+	if req.Tags != nil {
+		tagsStr := strings.Join(req.Tags, ",")
+		h.db.Exec(ctx, `UPDATE credentials SET tags = $1 WHERE id = $2 AND provider_id = $3`, tagsStr, credID, providerID)
+	}
+	if req.Notes != nil {
+		h.db.Exec(ctx, `UPDATE credentials SET notes = $1 WHERE id = $2 AND provider_id = $3`, *req.Notes, credID, providerID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
@@ -743,7 +1651,10 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 		writeError(w, http.StatusInternalServerError, "decryption failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"api_key": plaintext})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"credential_id": credID,
+		"api_key":       plaintext,
+	})
 }
 
 func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Request, providerID, credID int) {
@@ -763,32 +1674,130 @@ func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Reque
 func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	h.db.Exec(ctx, `UPDATE credentials SET availability_state = 'ready', availability_recover_at = NULL WHERE id = $1 AND provider_id = $2`, credID, providerID)
+	h.db.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state = 'ready', availability_recover_at = NULL,
+		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
+		WHERE id = $1 AND provider_id = $2
+	`, credID, providerID)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
 
 func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	h.db.Exec(ctx, `UPDATE credentials SET quota_state = 'ok', quota_recover_at = NULL WHERE id = $1 AND provider_id = $2`, credID, providerID)
+	h.db.Exec(ctx, `
+		UPDATE credentials SET quota_state = 'ok', quota_recover_at = NULL
+		WHERE id = $1 AND provider_id = $2
+	`, credID, providerID)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
 
 func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var exists int
-	err := h.db.QueryRow(ctx, `SELECT 1 FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&exists)
+	var label, ciphertext, baseURL string
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(c.label,''), c.secret_ciphertext, COALESCE(p.base_url,'')
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1 AND c.provider_id = $2
+	`, credID, providerID).Scan(&label, &ciphertext, &baseURL)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
+	apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+	probeOk := false
+	var healthStatus, healthError string
+	var healthLatencyMs int
+	var modelsCount int
+	var sampleModels []string
+
+	if decErr != nil {
+		healthStatus = "error"
+		healthError = "decrypt failed"
+	} else {
+		cleanURL := cleanBaseURL(baseURL)
+		modelsURL := cleanURL + "/v1/models"
+		start := time.Now()
+		result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
+		healthLatencyMs = int(time.Since(start).Milliseconds())
+
+		if probeErr != nil {
+			healthStatus = "unreachable"
+			healthError = probeErr.Error()
+		} else if result.statusCode != 200 {
+			healthStatus = "unhealthy"
+			healthError = fmt.Sprintf("status %d", result.statusCode)
+		} else {
+			healthStatus = "healthy"
+			probeOk = true
+			modelsCount = result.modelCount
+			sampleModels = result.sampleModels
+		}
+	}
+
+	if sampleModels == nil {
+		sampleModels = []string{}
+	}
+
+	h.db.Exec(ctx, `
+		UPDATE credentials
+		SET health_status = $1, health_checked_at = now(), health_error = $2,
+		    health_latency_ms = $3, health_source = 'probe', api_models_ok = $4
+		WHERE id = $5
+	`, healthStatus, healthError, healthLatencyMs, probeOk, credID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"credential_id": credID,
-		"status":        "ok",
-		"message":       "health check not yet fully implemented (stub)",
+		"credential_id":    credID,
+		"health_status":    healthStatus,
+		"health_source":    "probe",
+		"probe_ok":         probeOk,
+		"health_latency_ms": healthLatencyMs,
+		"health_error":     healthError,
+		"models_count":     modelsCount,
+		"sample_models":    sampleModels,
+	})
+}
+
+func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	credTag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state = 'ready', availability_recover_at = NULL,
+		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
+		WHERE provider_id = $1
+		  AND availability_state IN ('cooling','unreachable','degraded')
+		  AND lifecycle_status = 'active'
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential recovery failed")
+		return
+	}
+	recoveredCreds := int(credTag.RowsAffected())
+
+	offerTag, err := h.db.Exec(ctx, `
+		UPDATE model_offers
+		SET available = true, unavailable_reason = NULL, unavailable_at = NULL
+		WHERE credential_id IN (
+		    SELECT id FROM credentials
+		    WHERE provider_id = $1 AND availability_state = 'ready'
+		      AND lifecycle_status = 'active'
+		) AND unavailable_reason LIKE 'auto_%%'
+	`, providerID)
+	recoveredOffers := 0
+	if err == nil {
+		recoveredOffers = int(offerTag.RowsAffected())
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"recovered_credentials": recoveredCreds,
+		"recovered_offers":      recoveredOffers,
 	})
 }
 
@@ -830,201 +1839,5 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 		"cost_usd":           cost,
 		"avg_latency_ms":     avgLatency,
 		"success_rate":       successRate,
-	})
-}
-
-type credDiag struct {
-	ID              int     `json:"credential_id"`
-	Label           string  `json:"label"`
-	State           string  `json:"state"`
-	LastError       *string `json:"last_error"`
-	CircuitState    string  `json:"circuit_state"`
-	Healthy         bool    `json:"healthy"`
-	Recommendation  string  `json:"recommendation"`
-}
-
-func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, providerID int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	var baseURL, protocol string
-	var enabled bool
-	err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions'), enabled
-		FROM providers WHERE id=$1 AND tenant_id='default'
-	`, providerID).Scan(&baseURL, &protocol, &enabled)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "provider not found")
-		return
-	}
-
-	rows, err := h.db.Query(ctx, `
-		SELECT c.id, COALESCE(c.label,''), COALESCE(c.status,''), c.health_error,
-		       COALESCE(c.circuit_state,'closed')
-		FROM credentials c
-		WHERE c.provider_id=$1 AND c.tenant_id='default'
-		ORDER BY c.id
-	`, providerID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer rows.Close()
-
-	var diags []credDiag
-	for rows.Next() {
-		var d credDiag
-		if err := rows.Scan(&d.ID, &d.Label, &d.State, &d.LastError, &d.CircuitState); err != nil {
-			continue
-		}
-		d.Healthy = d.State == "active" && d.LastError == nil && d.CircuitState != "open"
-		switch {
-		case !enabled:
-			d.Recommendation = "provider_disabled"
-		case d.CircuitState == "open":
-			d.Recommendation = "wait_for_cooling"
-		case d.State == "quarantine":
-			d.Recommendation = "manual_recovery_needed"
-		case d.State == "active" && d.LastError != nil:
-			d.Recommendation = "transient_error_monitor"
-		default:
-			d.Recommendation = "ok"
-		}
-		diags = append(diags, d)
-	}
-	if diags == nil {
-		diags = []credDiag{}
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id": providerID,
-		"enabled":     enabled,
-		"base_url":    baseURL,
-		"protocol":    protocol,
-		"credentials": diags,
-		"summary": map[string]any{
-			"total":     len(diags),
-			"healthy":   countByRec(diags, "ok"),
-			"degraded":  countByRec(diags, "transient_error_monitor"),
-			"disabled":  countByRec(diags, "provider_disabled"),
-			"cooling":   countByRec(diags, "wait_for_cooling"),
-			"quarantine": countByRec(diags, "manual_recovery_needed"),
-		},
-	})
-}
-
-func countByRec(diags []credDiag, rec string) int {
-	n := 0
-	for _, d := range diags {
-		if d.Recommendation == rec {
-			n++
-		}
-	}
-	return n
-}
-
-func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	rows, err := h.db.Query(ctx, `
-		SELECT mo.id, mo.credential_id, COALESCE(c.label,''),
-		       mo.raw_model_name, mo.standardized_name, mo.canonical_id,
-		       mo.outbound_model_name,
-		       mo.available, mo.unavailable_reason, mo.unavailable_at
-		FROM model_offers mo
-		JOIN credentials c ON c.id = mo.credential_id
-		WHERE c.provider_id=$1
-		ORDER BY mo.standardized_name, mo.id
-	`, providerID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
-	}
-	defer rows.Close()
-
-	type ModelOffer struct {
-		ID                int      `json:"id"`
-		CredentialID      int      `json:"credential_id"`
-		CredentialLabel   string   `json:"credential_label"`
-		RawModelName      string   `json:"raw_model_name"`
-		StandardizedName  *string  `json:"standardized_name"`
-		CanonicalID       *int     `json:"canonical_id"`
-		OutboundModelName *string  `json:"display_name"`
-		Available         bool     `json:"available"`
-		UnavailableReason *string  `json:"unavailable_reason"`
-		UnavailableAt     *string  `json:"unavailable_at"`
-	}
-	var offers []ModelOffer
-	for rows.Next() {
-		var o ModelOffer
-		if err := rows.Scan(&o.ID, &o.CredentialID, &o.CredentialLabel,
-			&o.RawModelName, &o.StandardizedName, &o.CanonicalID,
-			&o.OutboundModelName,
-			&o.Available, &o.UnavailableReason, &o.UnavailableAt); err != nil {
-			continue
-		}
-		offers = append(offers, o)
-	}
-	if offers == nil {
-		offers = []ModelOffer{}
-	}
-	writeJSON(w, http.StatusOK, offers)
-}
-
-func (h *Handler) handleProviderModels(w http.ResponseWriter, r *http.Request, providerID int, modelsPath string) {
-	if strings.Contains(modelsPath, "/state") {
-		parts := strings.SplitN(modelsPath, "/", 2)
-		if len(parts) == 2 && parts[1] == "state" {
-			offerID, err := strconv.Atoi(parts[0])
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid offer id")
-				return
-			}
-			h.toggleModelOfferState(w, r, providerID, offerID)
-			return
-		}
-	}
-	http.NotFound(w, r)
-}
-
-func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
-	if r.Method != http.MethodPatch {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var req struct {
-		Available bool `json:"available"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	var reason sql.NullString
-	if !req.Available {
-		reason = sql.NullString{String: "manual_override", Valid: true}
-	}
-
-	tag, err := h.db.Exec(ctx, `
-		UPDATE model_offers SET available=$1,
-			unavailable_reason=CASE WHEN $1 THEN NULL ELSE $2 END,
-			unavailable_at=CASE WHEN $1 THEN NULL ELSE now() END
-		WHERE id=$3 AND credential_id IN (SELECT id FROM credentials WHERE provider_id=$4)
-	`, req.Available, reason, offerID, providerID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "offer not found")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"message":   "ok",
-		"available": req.Available,
 	})
 }
