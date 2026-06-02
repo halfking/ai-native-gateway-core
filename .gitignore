@@ -5,3 +5,5 @@ build/
 coverage/
 *.test
 *.out
+llm-gateway-go-linux
+Dockerfile.local
