@@ -487,11 +487,11 @@ func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType
 }
 
 func responsesStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) routing.StreamWrapperFunc {
-	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) {
+	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) routing.StreamOutcome {
 		c := cap
 		if c == nil {
 			c = capture
 		}
-		StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
+		return StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
 	}
 }

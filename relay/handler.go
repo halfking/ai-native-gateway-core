@@ -816,11 +816,21 @@ func ChatCompletionsPhase3(
 	// ── Success — proxy the response ───────────────────────────────────
 	toolsRequested := requestHasTools(bodyBytes)
 	if isStream {
-		StreamChatWithCaptureAndToolFallback(w, resp, clientModel, explicitOutbound, norm, nil, toolsRequested)
+		outcome := StreamChatWithCaptureAndToolFallback(w, resp, clientModel, explicitOutbound, norm, nil, toolsRequested)
 		released = true
 		release()
-		cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
-		auditBuilder.Success(true)
+		if outcome.Interrupted && outcome.Reason != "client_cancel" {
+			cm.RecordFailure(svc.ProviderID, svc.CredentialID, errorsx.KindStreamTimeout)
+			auditBuilder.Success(false)
+			slog.Warn("stream interrupted, recording failure",
+				"provider_id", svc.ProviderID,
+				"credential_id", svc.CredentialID,
+				"reason", outcome.Reason,
+			)
+		} else {
+			cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
+			auditBuilder.Success(true)
+		}
 	} else {
 		defer resp.Body.Close()
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))

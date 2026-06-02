@@ -25,6 +25,7 @@ const (
 	KindQuotaBalance    ErrorKind = "quota_balance"
 	KindQuotaPermanent  ErrorKind = "quota_permanent"
 	KindModelNotFound   ErrorKind = "model_not_found"
+	KindStreamTimeout   ErrorKind = "stream_timeout"
 )
 
 var modelNotFoundRe = regexp.MustCompile(
@@ -90,7 +91,7 @@ func IsModelNotFound(kind ErrorKind) bool {
 
 func IsRetryable(kind ErrorKind) bool {
 	switch kind {
-	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindRateLimit, KindConcurrent:
+	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindRateLimit, KindConcurrent, KindStreamTimeout:
 		return true
 	default:
 		return false

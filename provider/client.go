@@ -102,6 +102,7 @@ type Policy struct {
 	CircuitFailureThreshold int `json:"circuit_failure_threshold"`
 	CircuitMaxOpenSeconds   int `json:"circuit_max_open_seconds"`
 	StickyTTLMilliseconds   int `json:"sticky_ttl_seconds"`
+	TransientFailThreshold  int `json:"transient_fail_threshold"`
 }
 
 func DefaultPolicy() *Policy {
@@ -113,6 +114,7 @@ func DefaultPolicy() *Policy {
 		CircuitFailureThreshold: 5,
 		CircuitMaxOpenSeconds:   1800,
 		StickyTTLMilliseconds:   1800,
+		TransientFailThreshold:  2,
 	}
 }
 
@@ -490,7 +492,8 @@ func (c *Client) fetchPolicyDB(ctx context.Context) (*Policy, error) {
 			COALESCE(circuit_open_seconds, 300)::int,
 			COALESCE(circuit_failure_threshold, 5)::int,
 			COALESCE(circuit_max_open_seconds, 1800)::int,
-			COALESCE(sticky_ttl_seconds, 1800)::int
+			COALESCE(sticky_ttl_seconds, 1800)::int,
+			COALESCE(transient_fail_threshold, 2)::int
 		FROM routing_policy
 		WHERE tenant_id = 'default'
 		ORDER BY id
@@ -503,6 +506,7 @@ func (c *Client) fetchPolicyDB(ctx context.Context) (*Policy, error) {
 		&pol.CircuitFailureThreshold,
 		&pol.CircuitMaxOpenSeconds,
 		&pol.StickyTTLMilliseconds,
+		&pol.TransientFailThreshold,
 	)
 	if err != nil {
 		return nil, err
@@ -534,6 +538,9 @@ func normalizePolicy(pol *Policy) *Policy {
 	}
 	if pol.StickyTTLMilliseconds == 0 {
 		pol.StickyTTLMilliseconds = 1800
+	}
+	if pol.TransientFailThreshold == 0 {
+		pol.TransientFailThreshold = 2
 	}
 	return pol
 }

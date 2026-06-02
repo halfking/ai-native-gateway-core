@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -231,7 +232,24 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "diagnose":
+		if r.Method == http.MethodPost {
+			h.diagnoseProvider(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "models":
+		if r.Method == http.MethodGet {
+			h.getProviderModels(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
+		if len(subPath) > 7 && subPath[:7] == "models/" {
+			modelsPath := subPath[7:]
+			h.handleProviderModels(w, r, providerID, modelsPath)
+			return
+		}
 		if len(subPath) > 12 && subPath[:12] == "credentials/" {
 			credPath := subPath[12:]
 			h.handleProviderCredentials(w, r, providerID, credPath)
@@ -295,20 +313,39 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	var p struct {
-		ID           int     `json:"id"`
-		Code         string  `json:"code"`
-		DisplayName  string  `json:"display_name"`
-		Kind         string  `json:"kind"`
-		Category     string  `json:"category"`
-		Protocol     string  `json:"protocol"`
-		BaseURL      string  `json:"base_url"`
-		Enabled      bool    `json:"enabled"`
+		ID                int     `json:"id"`
+		Code              string  `json:"code"`
+		DisplayName       string  `json:"display_name"`
+		Kind              string  `json:"kind"`
+		Category          string  `json:"category"`
+		Protocol          string  `json:"protocol"`
+		BaseURL           string  `json:"base_url"`
+		Enabled           bool    `json:"enabled"`
+		VendorName        string  `json:"vendor_name"`
+		HealthyCount      int     `json:"healthy_count"`
+		WarningCount      int     `json:"warning_count"`
+		CoolingCount      int     `json:"cooling_count"`
+		AvailModelCount   int     `json:"available_model_count"`
+		UnavailModelCount int     `json:"unavailable_model_count"`
 	}
 	err := h.db.QueryRow(ctx, `
-		SELECT id, COALESCE(code,''), COALESCE(display_name,''), COALESCE(kind,''),
-		       COALESCE(category,''), COALESCE(protocol,''), COALESCE(base_url,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
-	`, id).Scan(&p.ID, &p.Code, &p.DisplayName, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.Enabled)
+		SELECT p.id, COALESCE(p.code,''), COALESCE(p.display_name,''), COALESCE(p.kind,''),
+		       COALESCE(p.category,''), COALESCE(p.protocol,''), COALESCE(p.base_url,''), p.enabled,
+		       COALESCE(pc.vendor_name, pc.code, ''),
+		       COALESCE(hc.cnt,0), COALESCE(wc.cnt,0), COALESCE(cc.cnt,0),
+		       COALESCE(ac.cnt,0), COALESCE(uc.cnt,0)
+		FROM providers p
+		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
+		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE status='active' GROUP BY provider_id) hc ON hc.provider_id=p.id
+		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE health_status='warning' GROUP BY provider_id) wc ON wc.provider_id=p.id
+		LEFT JOIN (SELECT provider_id, count(*) cnt FROM credentials WHERE circuit_state='open' GROUP BY provider_id) cc ON cc.provider_id=p.id
+		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=true AND c.status='active' GROUP BY c.provider_id) ac ON ac.provider_id=p.id
+		LEFT JOIN (SELECT c.provider_id, count(*) cnt FROM model_offers mo JOIN credentials c ON c.id=mo.credential_id WHERE mo.available=false OR c.status!='active' GROUP BY c.provider_id) uc ON uc.provider_id=p.id
+		WHERE p.id = $1 AND p.tenant_id = 'default'
+	`, id).Scan(&p.ID, &p.Code, &p.DisplayName, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.Enabled,
+		&p.VendorName,
+		&p.HealthyCount, &p.WarningCount, &p.CoolingCount,
+		&p.AvailModelCount, &p.UnavailModelCount)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
 		return
@@ -774,5 +811,201 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 		"cost_usd":           cost,
 		"avg_latency_ms":     avgLatency,
 		"success_rate":       successRate,
+	})
+}
+
+type credDiag struct {
+	ID              int     `json:"credential_id"`
+	Label           string  `json:"label"`
+	State           string  `json:"state"`
+	LastError       *string `json:"last_error"`
+	CircuitState    string  `json:"circuit_state"`
+	Healthy         bool    `json:"healthy"`
+	Recommendation  string  `json:"recommendation"`
+}
+
+func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	var baseURL, protocol string
+	var enabled bool
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions'), enabled
+		FROM providers WHERE id=$1 AND tenant_id='default'
+	`, providerID).Scan(&baseURL, &protocol, &enabled)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT c.id, COALESCE(c.label,''), COALESCE(c.status,''), c.health_error,
+		       COALESCE(c.circuit_state,'closed')
+		FROM credentials c
+		WHERE c.provider_id=$1 AND c.tenant_id='default'
+		ORDER BY c.id
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	var diags []credDiag
+	for rows.Next() {
+		var d credDiag
+		if err := rows.Scan(&d.ID, &d.Label, &d.State, &d.LastError, &d.CircuitState); err != nil {
+			continue
+		}
+		d.Healthy = d.State == "active" && d.LastError == nil && d.CircuitState != "open"
+		switch {
+		case !enabled:
+			d.Recommendation = "provider_disabled"
+		case d.CircuitState == "open":
+			d.Recommendation = "wait_for_cooling"
+		case d.State == "quarantine":
+			d.Recommendation = "manual_recovery_needed"
+		case d.State == "active" && d.LastError != nil:
+			d.Recommendation = "transient_error_monitor"
+		default:
+			d.Recommendation = "ok"
+		}
+		diags = append(diags, d)
+	}
+	if diags == nil {
+		diags = []credDiag{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id": providerID,
+		"enabled":     enabled,
+		"base_url":    baseURL,
+		"protocol":    protocol,
+		"credentials": diags,
+		"summary": map[string]any{
+			"total":     len(diags),
+			"healthy":   countByRec(diags, "ok"),
+			"degraded":  countByRec(diags, "transient_error_monitor"),
+			"disabled":  countByRec(diags, "provider_disabled"),
+			"cooling":   countByRec(diags, "wait_for_cooling"),
+			"quarantine": countByRec(diags, "manual_recovery_needed"),
+		},
+	})
+}
+
+func countByRec(diags []credDiag, rec string) int {
+	n := 0
+	for _, d := range diags {
+		if d.Recommendation == rec {
+			n++
+		}
+	}
+	return n
+}
+
+func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT mo.id, mo.credential_id, COALESCE(c.label,''),
+		       mo.raw_model_name, mo.standardized_name, mo.canonical_id,
+		       mo.outbound_model_name,
+		       mo.available, mo.unavailable_reason, mo.unavailable_at
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE c.provider_id=$1
+		ORDER BY mo.standardized_name, mo.id
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type ModelOffer struct {
+		ID                int      `json:"id"`
+		CredentialID      int      `json:"credential_id"`
+		CredentialLabel   string   `json:"credential_label"`
+		RawModelName      string   `json:"raw_model_name"`
+		StandardizedName  *string  `json:"standardized_name"`
+		CanonicalID       *int     `json:"canonical_id"`
+		OutboundModelName *string  `json:"display_name"`
+		Available         bool     `json:"available"`
+		UnavailableReason *string  `json:"unavailable_reason"`
+		UnavailableAt     *string  `json:"unavailable_at"`
+	}
+	var offers []ModelOffer
+	for rows.Next() {
+		var o ModelOffer
+		if err := rows.Scan(&o.ID, &o.CredentialID, &o.CredentialLabel,
+			&o.RawModelName, &o.StandardizedName, &o.CanonicalID,
+			&o.OutboundModelName,
+			&o.Available, &o.UnavailableReason, &o.UnavailableAt); err != nil {
+			continue
+		}
+		offers = append(offers, o)
+	}
+	if offers == nil {
+		offers = []ModelOffer{}
+	}
+	writeJSON(w, http.StatusOK, offers)
+}
+
+func (h *Handler) handleProviderModels(w http.ResponseWriter, r *http.Request, providerID int, modelsPath string) {
+	if strings.Contains(modelsPath, "/state") {
+		parts := strings.SplitN(modelsPath, "/", 2)
+		if len(parts) == 2 && parts[1] == "state" {
+			offerID, err := strconv.Atoi(parts[0])
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid offer id")
+				return
+			}
+			h.toggleModelOfferState(w, r, providerID, offerID)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Available bool `json:"available"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var reason sql.NullString
+	if !req.Available {
+		reason = sql.NullString{String: "manual_override", Valid: true}
+	}
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE model_offers SET available=$1,
+			unavailable_reason=CASE WHEN $1 THEN NULL ELSE $2 END,
+			unavailable_at=CASE WHEN $1 THEN NULL ELSE now() END
+		WHERE id=$3 AND credential_id IN (SELECT id FROM credentials WHERE provider_id=$4)
+	`, req.Available, reason, offerID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "ok",
+		"available": req.Available,
 	})
 }

@@ -19,22 +19,28 @@ const (
 	sseKeepaliveComment = ": keep-alive\n\n"
 )
 
-func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) {
-	StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
+type StreamOutcome struct {
+	Interrupted bool
+	Reason      string
 }
 
-func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) {
-	StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false)
+func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
+	return StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
 }
 
-func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) {
+func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) StreamOutcome {
+	return StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false)
+}
+
+func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
 	defer resp.Body.Close()
+	outcome := StreamOutcome{}
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
+		return StreamOutcome{}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -70,7 +76,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		slog.Warn("stream first-byte timeout", "error", err)
 		safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
 		safeFlush(flusher)
-		return
+		outcome.Interrupted = true
+		outcome.Reason = "first_byte_timeout"
+		return outcome
 	}
 
 	if firstLine != "" {
@@ -107,7 +115,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 			if capture != nil {
 				capture.MarkInterruptedWithReason("client_cancel")
 			}
-			return
+			outcome.Interrupted = true
+			outcome.Reason = "client_cancel"
+			return outcome
 		default:
 		}
 
@@ -125,6 +135,8 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_cancel")
 				}
+				outcome.Interrupted = true
+				outcome.Reason = "client_cancel"
 			case streamReadTimeout:
 				slog.Warn("stream read timeout, sending error chunk")
 				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
@@ -132,13 +144,17 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
+				outcome.Interrupted = true
+				outcome.Reason = "stream_timeout"
 			default:
 				slog.Warn("stream read error", "error", readResult.err)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("read_error")
 				}
+				outcome.Interrupted = true
+				outcome.Reason = "read_error"
 			}
-			return
+			return outcome
 		}
 
 		line := readResult.line

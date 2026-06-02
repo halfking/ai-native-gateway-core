@@ -13,14 +13,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) {
+func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome {
 	defer resp.Body.Close()
+	outcome := StreamOutcome{}
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
+		return StreamOutcome{}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -94,7 +95,9 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		writeSSE(w, "error", errPayload)
 		flusher.Flush()
 		writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
-		return
+		outcome.Interrupted = true
+		outcome.Reason = "first_byte_timeout"
+		return outcome
 	}
 
 	processLine := func(line string) {
@@ -216,9 +219,9 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
-				break
+				outcome.Interrupted = true
+				outcome.Reason = "client_cancel"
 			case streamReadEOF:
-				break
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)
 				if capture != nil {
@@ -230,7 +233,8 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				}
 				writeSSE(w, "error", errPayload)
 				flusher.Flush()
-				break
+				outcome.Interrupted = true
+				outcome.Reason = "stream_timeout"
 			default:
 				slog.Warn("anthropic stream read error", "error", readResult.err)
 				if capture != nil {
@@ -242,7 +246,8 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				}
 				writeSSE(w, "error", errPayload)
 				flusher.Flush()
-				break
+				outcome.Interrupted = true
+				outcome.Reason = "read_error"
 			}
 			break
 		}
@@ -260,6 +265,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	if capture != nil {
 		capture.ObservePayload(`{"type":"message_stop"}`, finalFinishReason, true)
 	}
+	return outcome
 }
 
 func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, msgID, clientModel, finishReason string, outputTokens int) {

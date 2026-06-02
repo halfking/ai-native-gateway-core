@@ -30,9 +30,14 @@ const maxBodySize = 32 << 20
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
 
-type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture)
+type StreamOutcome = struct {
+	Interrupted bool
+	Reason      string
+}
 
-type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture)
+type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
+
+type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
 type Executor struct {
 	Router        *Router
@@ -174,8 +179,24 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
-			e.disableModelOffer(params.R.Context(), mnf.credentialID, mnf.rawModel)
+			e.disableModelOffer(params.R.Context(), mnf.credentialID, mnf.rawModel, errorsx.KindModelNotFound, mnf.body)
 			lastErr = execErr
+			continue
+		}
+
+		if sie, ok := execErr.(*streamInterruptedError); ok {
+			kind := errorsx.KindStreamTimeout
+			e.recordStickyFailure(params, cand.CredentialID, kind)
+			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+			if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+				e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+			}
+			lastErr = execErr
+			slog.Warn("candidate stream interrupted, trying next",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"reason", sie.reason,
+			)
 			continue
 		}
 
@@ -399,10 +420,24 @@ func (e *Executor) tryCandidate(
 			latencyMs := int(time.Since(tTotal).Milliseconds())
 
 			if params.IsStream {
+				var streamOutcome StreamOutcome
 				if params.StreamWrapper != nil {
-					params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
+					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
 				} else if e.StreamChat != nil {
-					e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
+					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
+				}
+				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
+					slog.Warn("executor: stream interrupted, recording failure",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"reason", streamOutcome.Reason,
+					)
+					return &ExecuteResult{
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID}
 				}
 				return &ExecuteResult{
 					Response:    resp,
@@ -463,22 +498,64 @@ func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int)
 	}
 }
 
-func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string) {
+func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, detail string) {
 	if e.DB == nil || !e.DB.Enabled() {
 		slog.Warn("disable_model_offer: no db pool available")
 		return
 	}
 	pool := e.DB.Pool()
-	tag, err := pool.Exec(ctx,
-		"UPDATE model_offers SET available = FALSE WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE",
-		credentialID, rawModel,
-	)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		slog.Warn("disable_model_offer failed", "credential_id", credentialID, "model", rawModel, "error", err)
+		slog.Warn("disable_model_offer: begin tx failed", "error", err)
 		return
 	}
+	defer tx.Rollback(ctx)
+
+	reason := "auto_" + string(kind)
+	if len(reason) > 100 {
+		reason = reason[:100]
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
+		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE`,
+		credentialID, rawModel, reason,
+	)
+	if err != nil {
+		slog.Warn("disable_model_offer: model_offers update failed", "error", err)
+		return
+	}
+
+	coolingSeconds := 60
+	detailStr := detail
+	if len(detailStr) > 500 {
+		detailStr = detailStr[:500]
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE credentials SET availability_state = 'cooling',
+			availability_recover_at = now() + ($3 || ' seconds')::interval,
+			state_reason_code = $4, state_reason_detail = $5, state_updated_at = now()
+		 WHERE id = $1 AND lifecycle_status = 'active'
+		   AND availability_state NOT IN ('suspended', 'auth_failed')`,
+		credentialID, 0, coolingSeconds, string(kind), detailStr,
+	)
+	if err != nil {
+		slog.Warn("disable_model_offer: credentials update failed", "error", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("disable_model_offer: commit failed", "error", err)
+		return
+	}
+
 	if tag.RowsAffected() > 0 {
-		slog.Info("model_offer_disabled", "credential_id", credentialID, "model", rawModel)
+		slog.Info("model_offer_disabled",
+			"credential_id", credentialID,
+			"model", rawModel,
+			"reason", reason,
+		)
 	}
 }
 
@@ -548,6 +625,15 @@ func (e *modelNotFoundError) Error() string {
 	return "model_not_found: " + e.rawModel
 }
 
+type streamInterruptedError struct {
+	reason       string
+	credentialID int
+}
+
+func (e *streamInterruptedError) Error() string {
+	return "stream_interrupted: " + e.reason
+}
+
 type retryableError struct {
 	err error
 }
@@ -558,7 +644,8 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	switch kind {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked,
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
-		errorsx.KindConcurrent, errorsx.KindRateLimit:
+		errorsx.KindConcurrent, errorsx.KindRateLimit,
+		errorsx.KindStreamTimeout:
 		return true
 	default:
 		return false

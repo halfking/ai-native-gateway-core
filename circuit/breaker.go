@@ -56,13 +56,14 @@ func (s State) String() string {
 type ErrorKind = errorsx.ErrorKind
 
 var (
-	KindTransient    = errorsx.KindTransient
-	KindTimeout      = errorsx.KindTimeout
-	KindNetwork      = errorsx.KindNetwork
-	KindRateLimit    = errorsx.KindRateLimit
-	KindAuth         = errorsx.KindAuth
-	KindQuota        = errorsx.KindQuota
-	KindUpstreamDown = errorsx.KindUpstreamDown
+	KindTransient      = errorsx.KindTransient
+	KindTimeout        = errorsx.KindTimeout
+	KindNetwork        = errorsx.KindNetwork
+	KindRateLimit      = errorsx.KindRateLimit
+	KindAuth           = errorsx.KindAuth
+	KindQuota          = errorsx.KindQuota
+	KindUpstreamDown   = errorsx.KindUpstreamDown
+	KindStreamTimeout  = errorsx.KindStreamTimeout
 )
 
 const (
@@ -94,13 +95,14 @@ const (
 
 // Default cooling policies per error kind.
 var defaultPolicies = map[ErrorKind]CoolingPolicy{
-	KindTransient:    {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindTimeout:      {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindNetwork:      {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindRateLimit:    {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
-	KindAuth:         {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
-	KindQuota:        {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
-	KindUpstreamDown: {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	KindTransient:      {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindTimeout:        {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindNetwork:        {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindRateLimit:      {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	KindAuth:           {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindQuota:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindUpstreamDown:   {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	KindStreamTimeout:  {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +265,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		} else {
 			b.coolingExpires = now.Add(policy.InitialCooling)
 			// Escalate: 3 consecutive transient/timeout/network → use exponential policy
-			if kind == KindTransient || kind == KindTimeout || kind == KindNetwork {
+			if kind == KindTransient || kind == KindTimeout || kind == KindNetwork || kind == KindStreamTimeout {
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
 					b.coolingExpires = now.Add(escalated.InitialCooling)
