@@ -593,12 +593,12 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message
 }
 
 func anthropicStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) routing.StreamWrapperFunc {
-	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) {
+	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) routing.StreamOutcome {
 		c := cap
 		if c == nil {
 			c = capture
 		}
-		StreamAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c)
+		return StreamAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c)
 	}
 }
 

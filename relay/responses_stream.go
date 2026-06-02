@@ -13,14 +13,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) {
+func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome {
 	defer resp.Body.Close()
+	outcome := StreamOutcome{}
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
+		return StreamOutcome{}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -107,7 +108,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		}
 		slog.Warn("responses stream first-byte timeout", "error", err)
 		writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
-		return
+		outcome.Interrupted = true
+		outcome.Reason = "first_byte_timeout"
+		return outcome
 	}
 
 	processLine := func(line string) {
@@ -193,7 +196,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
-				return
+				outcome.Interrupted = true
+				outcome.Reason = "client_cancel"
+				return outcome
 			case streamReadEOF:
 				stop = true
 			case streamReadTimeout:
@@ -202,14 +207,18 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
-				return
+				outcome.Interrupted = true
+				outcome.Reason = "stream_timeout"
+				return outcome
 			default:
 				slog.Warn("responses stream read error", "error", readResult.err)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_error")
 				}
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
-				return
+				outcome.Interrupted = true
+				outcome.Reason = "read_error"
+				return outcome
 			}
 		}
 
@@ -281,6 +290,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	if capture != nil {
 		capture.ObservePayload(`{"type":"response.completed"}`, finalFinishReason, true)
 	}
+	return outcome
 }
 
 func writeResponsesIncomplete(w http.ResponseWriter, flusher http.Flusher, respID, msgID string, createdAt int, clientModel, fullText, reason string) {
