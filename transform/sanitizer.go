@@ -111,6 +111,35 @@ func ApplyCapabilitySanitizer(body []byte, catalogCode string) []byte {
 	return body
 }
 
+func MergeConsecutiveMessages(body []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	msgsRaw, ok := obj["messages"]
+	if !ok {
+		return body
+	}
+	var messages []map[string]any
+	if err := json.Unmarshal(msgsRaw, &messages); err != nil {
+		return body
+	}
+	if len(messages) <= 1 {
+		return body
+	}
+	merged := dedupConsecutive(messages)
+	if len(merged) == len(messages) {
+		return body
+	}
+	msgsJSON, _ := json.Marshal(merged)
+	obj["messages"] = msgsJSON
+	result, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
 func capMaxTokens(body []byte, maxVal int) []byte {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {

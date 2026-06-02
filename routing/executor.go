@@ -220,6 +220,7 @@ func (e *Executor) tryCandidate(
 		bodyBytes = transform.CollapseToolHistory(bodyBytes)
 	}
 	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
 
 	if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
 		profileName := ""
