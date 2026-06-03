@@ -73,6 +73,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/catalog/", h.handleCatalog)
 	mux.HandleFunc("/api/tags", h.handleTags)
 	mux.HandleFunc("/api/system/background-tasks", h.handleSystemTasks)
+	mux.HandleFunc("/api/tasks/", h.handleTasks)
 	mux.HandleFunc("/v1/keys/apply/", h.handleV1KeysApplyStatus)
 	mux.HandleFunc("/v1/keys/apply", h.handleV1KeysApply)
 }
