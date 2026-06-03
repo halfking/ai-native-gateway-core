@@ -57,6 +57,7 @@ func New() *Client {
 		hc: &http.Client{
 			Timeout: defaultTimeout,
 			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
 				IdleConnTimeout: 90 * time.Second,
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
