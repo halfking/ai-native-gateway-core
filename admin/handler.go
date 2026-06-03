@@ -10,12 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 type Handler struct {
 	db          *pgxpool.Pool
 	secret      string
 	encKey      []byte
+	keyring     *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
 	discSvc     *discovery.Service
 	credCycler  *bg.CredentialCycler
 	credRecov   *bg.CredentialRecovery
@@ -26,6 +28,56 @@ type Handler struct {
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	return &Handler{db: db, secret: secretKey, encKey: encKey}
+}
+
+// SetKeyring configures AES-256-GCM key rotation.  Call this at startup after
+// loading the KEYRING_JSON environment variable.
+func (h *Handler) SetKeyring(kr *secret.Keyring) {
+	h.keyring = kr
+}
+
+// encryptCred encrypts a plaintext credential using AES-256-GCM (if keyring is
+// configured) or Fernet-CBC legacy (backward-compat fallback).
+// Returns the envelope string ready to store in key_ciphertext.
+func (h *Handler) encryptCred(plaintext []byte) (string, error) {
+	if h.keyring != nil {
+		return secret.EncryptAESGCM(plaintext, h.keyring)
+	}
+	enc, err := encryptFernet(plaintext, h.encKey)
+	if err != nil {
+		return "", err
+	}
+	return string(enc), nil
+}
+
+// decryptCred decrypts a credential stored as either a v1 AES-GCM envelope or
+// a legacy Fernet token.  Returns (plaintext, isLegacy, error).
+// When isLegacy=true the caller MAY re-encrypt and update the DB row.
+func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
+	if secret.IsV1Envelope(ciphertext) {
+		if h.keyring == nil {
+			return "", false, errorf("AES-GCM keyring not configured")
+		}
+		pt, err := secret.DecryptAESGCM([]byte(ciphertext), h.keyring)
+		if err != nil {
+			return "", false, err
+		}
+		return string(pt), false, nil
+	}
+	// Legacy Fernet path
+	if len(h.encKey) != 32 {
+		return "", false, errorf("legacy encryption key not configured")
+	}
+	pt, err := decryptFernet([]byte(ciphertext), h.encKey)
+	return pt, err == nil, err
+}
+
+// decryptCredStr is a convenience wrapper over decryptCred that returns only
+// the plaintext string and an error, discarding the isLegacy flag.
+// Use this where lazy re-encryption is not needed.
+func (h *Handler) decryptCredStr(ciphertext string) (string, error) {
+	pt, _, err := h.decryptCred(ciphertext)
+	return pt, err
 }
 
 func (h *Handler) SetDiscoveryService(svc *discovery.Service) {

@@ -599,7 +599,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
 	rows.Close()
 
-	_, decErr := decryptFernet(ciphertext, h.encKey)
+	_, decErr := h.decryptCredStr(string(ciphertext))
 	if decErr != nil {
 		writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
 		return

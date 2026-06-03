@@ -191,7 +191,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, keyHash, keyPrefix, keyCiphertext := generateAdminKey(h.secret, h.encKey)
+	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 
 	var id int
 	err = h.db.QueryRow(ctx, `
@@ -302,7 +302,7 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
-	plaintext, err := decryptFernet([]byte(ciphertext), h.encKey)
+	plaintext, err := h.decryptCredStr(ciphertext)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "decryption failed")
 		return
@@ -617,7 +617,7 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	_, keyHash, keyPrefix, keyCiphertext := generateAdminKey(h.secret, h.encKey)
+	_, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	var keyID int
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, status)
@@ -726,7 +726,7 @@ func (h *Handler) adminApplyForKey(w http.ResponseWriter, r *http.Request) {
 	if req.OwnerUser != nil {
 		owner = *req.OwnerUser
 	}
-	_, keyHash, keyPrefix, keyCiphertext := generateAdminKey(h.secret, h.encKey)
+	_, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	var keyID int
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, status)
