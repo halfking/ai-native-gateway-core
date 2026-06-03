@@ -94,6 +94,7 @@ type Pool struct {
 // NewPool creates a new connection pool.
 func NewPool(key PoolKey, probeURL string) *Pool {
 	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
 		MaxIdleConns:        maxConnsPerHost,
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
