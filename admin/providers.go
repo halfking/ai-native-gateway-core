@@ -702,6 +702,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.expires_at,
 		       c.tags,
 		       COALESCE(c.notes,''),
+		       c.secret_ciphertext,
 		       c.created_at,
 		       c.updated_at
 		FROM credentials c
@@ -748,6 +749,8 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		ExpiresAt               *time.Time `json:"expires_at"`
 		Tags                    []string   `json:"tags"`
 		Notes                   string     `json:"notes"`
+		KeyMasked               *string    `json:"key_masked"`
+		KeyMaskError            *string    `json:"key_mask_error"`
 		CreatedAt               *time.Time `json:"created_at"`
 		UpdatedAt               *time.Time `json:"updated_at"`
 	}
@@ -757,6 +760,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		var c cred
 		var tagsStr sql.NullString
 		var balanceUSD sql.NullFloat64
+		var ciphertext []byte
 
 		if err := rows.Scan(
 			&c.ID, &c.ProviderID, &c.Label, &c.Status,
@@ -788,6 +792,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.ExpiresAt,
 			&tagsStr,
 			&c.Notes,
+			&ciphertext,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		); err != nil {
@@ -800,6 +805,15 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		}
 
 		c.Tags = parseTags(tagsStr)
+		if len(ciphertext) > 0 {
+			if plaintext, decErr := decryptFernet(ciphertext, h.encKey); decErr != nil {
+				errCode := "decrypt_failed"
+				c.KeyMaskError = &errCode
+			} else {
+				masked := maskAPIKey(plaintext)
+				c.KeyMasked = &masked
+			}
+		}
 		creds = append(creds, c)
 	}
 	if creds == nil {
