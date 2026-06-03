@@ -234,18 +234,20 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		}
 	case "diagnose":
 		if r.Method == http.MethodPost {
-			h.diagnoseProvider(w, r, providerID)
+			h.startDiagnose(w, r, providerID)
+		} else if r.Method == http.MethodGet {
+			h.getDiagnoseResult(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "models":
-		if r.Method == http.MethodGet {
+		if r.Method == http.MethodGet || r.Method == http.MethodPost {
 			h.getProviderModels(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "query":
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost || r.Method == http.MethodGet {
 			h.queryProviderModels(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -587,7 +589,7 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		}
 	case "check", "check-health":
 		if r.Method == http.MethodPost {
-			h.checkCredentialHealth(w, r, providerID, credID)
+			h.startCheckCredentialHealth(w, r, providerID, credID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -1477,6 +1479,204 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) startDiagnose(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	taskID, err := insertBackgroundTask(ctx, h.db, "diagnose", &providerID, nil, map[string]any{"provider_id": providerID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		return
+	}
+
+	go h.runDiagnose(providerID, taskID)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"task_id": taskID, "status": "running"})
+}
+
+func (h *Handler) getDiagnoseResult(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	result, err := getLatestDiagnoseResult(ctx, h.db, providerID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no completed diagnose result found")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) runDiagnose(providerID int, taskID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	result := h.doDiagnose(ctx, providerID)
+	if ctx.Err() != nil {
+		failBackgroundTask(ctx, h.db, taskID, "timeout")
+		return
+	}
+	completeBackgroundTask(ctx, h.db, taskID, result)
+}
+
+func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any {
+	var providerCode, baseURL, protocol string
+	var enabled bool
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
+		FROM providers WHERE id = $1 AND tenant_id = 'default'
+	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
+
+	type modelsProbe struct {
+		StatusCode   int      `json:"status_code"`
+		LatencyMs    int      `json:"latency_ms"`
+		Error        string   `json:"error,omitempty"`
+		ModelsCount  int      `json:"models_count"`
+		SampleModels []string `json:"sample_models"`
+	}
+	type chatProbe struct {
+		StatusCode      int    `json:"status_code"`
+		LatencyMs       int    `json:"latency_ms"`
+		Error           string `json:"error,omitempty"`
+		ModelInResponse string `json:"model_in_response,omitempty"`
+	}
+	type credDiag struct {
+		CredentialID      int         `json:"credential_id"`
+		Label             string      `json:"label"`
+		Status            string      `json:"status"`
+		CircuitState      string      `json:"circuit_state"`
+		AvailabilityState string      `json:"availability_state"`
+		HealthStatus      string      `json:"health_status"`
+		ConsecutiveFailures int       `json:"consecutive_failures"`
+		ModelsProbe       modelsProbe `json:"models_probe"`
+		ChatProbe         chatProbe   `json:"chat_probe"`
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT c.id, COALESCE(c.label,''), COALESCE(c.status,'active'),
+		       COALESCE(c.circuit_state,'closed'), COALESCE(c.availability_state,'ready'),
+		       COALESCE(c.health_status,'unknown'), COALESCE(c.consecutive_failures,0),
+		       c.secret_ciphertext
+		FROM credentials c WHERE c.provider_id = $1 AND c.status = 'active' ORDER BY c.id
+	`, providerID)
+
+	var credDiags []credDiag
+	var totalLatencyMs int
+	latencyCount := 0
+
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var cd credDiag
+			var ciphertext string
+			if rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status, &cd.CircuitState,
+				&cd.AvailabilityState, &cd.HealthStatus, &cd.ConsecutiveFailures, &ciphertext) != nil {
+				continue
+			}
+
+			apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+			if decErr != nil {
+				cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
+				cd.ChatProbe = chatProbe{Error: "decrypt failed"}
+				credDiags = append(credDiags, cd)
+				continue
+			}
+
+			cleanURL := cleanBaseURL(baseURL)
+			modelsURL := cleanURL + "/v1/models"
+			start := time.Now()
+			modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
+			modelsLatency := int(time.Since(start).Milliseconds())
+			totalLatencyMs += modelsLatency
+			latencyCount++
+
+			if modelsErr != nil {
+				cd.ModelsProbe = modelsProbe{LatencyMs: modelsLatency, Error: modelsErr.Error()}
+			} else {
+				cd.ModelsProbe = modelsProbe{StatusCode: modelsResp.statusCode, LatencyMs: modelsLatency, ModelsCount: modelsResp.modelCount, SampleModels: modelsResp.sampleModels}
+			}
+
+			var testModel string
+			h.db.QueryRow(ctx, `SELECT mo.raw_model_name FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE c.provider_id = $1 AND mo.available = TRUE LIMIT 1`, providerID).Scan(&testModel)
+			if testModel == "" { testModel = "gpt-4o-mini" }
+
+			chatURL := cleanURL + "/v1/chat/completions"
+			start = time.Now()
+			chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
+			chatLatency := int(time.Since(start).Milliseconds())
+			totalLatencyMs += chatLatency
+			latencyCount++
+
+			if chatErr != nil {
+				cd.ChatProbe = chatProbe{LatencyMs: chatLatency, Error: chatErr.Error()}
+			} else {
+				cd.ChatProbe = chatProbe{StatusCode: chatResp.statusCode, LatencyMs: chatLatency, ModelInResponse: chatResp.modelInResponse}
+			}
+			credDiags = append(credDiags, cd)
+		}
+	}
+
+	healthy, degraded, unreachable, cooling, disabled := 0, 0, 0, 0, 0
+	for _, cd := range credDiags {
+		switch {
+		case cd.HealthStatus == "healthy": healthy++
+		case cd.AvailabilityState == "unreachable": unreachable++
+		case cd.CircuitState == "open": cooling++
+		case cd.HealthStatus == "warning" || cd.HealthStatus == "degraded": degraded++
+		default:
+			if cd.Status != "active" { disabled++ }
+		}
+	}
+
+	var availableCount, totalOffers int
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FILTER (WHERE mo.available = TRUE), COUNT(*) FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE c.provider_id = $1`, providerID).Scan(&availableCount, &totalOffers)
+	coveragePct := 0.0
+	if totalOffers > 0 { coveragePct = float64(availableCount) / float64(totalOffers) * 100 }
+	avgLatency := 0.0
+	if latencyCount > 0 { avgLatency = float64(totalLatencyMs) / float64(latencyCount) }
+
+	type errorClassification struct {
+		AuthErrors int `json:"auth_errors"`; RateLimitErrors int `json:"rate_limit_errors"`; TimeoutErrors int `json:"timeout_errors"`; ModelNotFoundErrors int `json:"model_not_found_errors"`; OtherErrors int `json:"other_errors"`
+	}
+	var ec errorClassification
+	ecRows, _ := h.db.Query(ctx, `SELECT COALESCE(error_kind,'other'), COUNT(*) FROM request_logs WHERE provider_id = $1 AND ts >= now() - interval '24 hours' GROUP BY error_kind`, providerID)
+	if ecRows != nil {
+		for ecRows.Next() {
+			var kind string; var cnt int
+			if ecRows.Scan(&kind, &cnt) != nil { continue }
+			switch {
+			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"): ec.AuthErrors += cnt
+			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"): ec.RateLimitErrors += cnt
+			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"): ec.TimeoutErrors += cnt
+			case strings.Contains(kind, "model") || strings.Contains(kind, "404"): ec.ModelNotFoundErrors += cnt
+			default: ec.OtherErrors += cnt
+			}
+		}
+		ecRows.Close()
+	}
+
+	type healthScore struct { CredentialID int `json:"credential_id"`; Score float64 `json:"score"` }
+	scores := make([]healthScore, 0, len(credDiags))
+	for _, cd := range credDiags {
+		score := 100.0
+		if cd.CircuitState != "closed" { score -= 30 }
+		if cd.HealthStatus != "healthy" { score -= 20 }
+		if cd.ConsecutiveFailures > 0 { score -= 10; score -= math.Min(20, float64(cd.ConsecutiveFailures)*5) }
+		score = math.Max(0, math.Min(100, score))
+		scores = append(scores, healthScore{CredentialID: cd.CredentialID, Score: score})
+	}
+
+	return map[string]any{
+		"provider_id": providerID, "provider_code": providerCode, "enabled": enabled,
+		"base_url": baseURL, "protocol": protocol, "timestamp": time.Now().UTC().Format(time.RFC3339),
+		"credentials": credDiags, "summary": map[string]any{
+			"total_credentials": len(credDiags), "healthy": healthy, "degraded": degraded,
+			"unreachable": unreachable, "cooling": cooling, "disabled": disabled,
+			"models_coverage_pct": coveragePct, "avg_latency_ms": avgLatency,
+		},
+		"error_classification": ec, "health_scores": scores,
+	}
+}
+
 func cleanBaseURL(baseURL string) string {
 	baseURL = strings.TrimRight(baseURL, "/")
 	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
@@ -1693,6 +1893,86 @@ func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
 
+func (h *Handler) startCheckCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	taskID, err := insertBackgroundTask(ctx, h.db, "health_check", &providerID, &credID, map[string]any{"provider_id": providerID, "credential_id": credID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create task: "+err.Error())
+		return
+	}
+
+	go h.runHealthCheck(providerID, credID, taskID)
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"task_id": taskID, "status": "running"})
+}
+
+func (h *Handler) runHealthCheck(providerID, credID int, taskID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result := h.doHealthCheck(ctx, providerID, credID)
+	if result == nil {
+		failBackgroundTask(ctx, h.db, taskID, "health check failed")
+		return
+	}
+	completeBackgroundTask(ctx, h.db, taskID, result)
+}
+
+func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map[string]any {
+	var label, ciphertext, baseURL string
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(c.label,''), c.secret_ciphertext, COALESCE(p.base_url,'')
+		FROM credentials c JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1 AND c.provider_id = $2
+	`, credID, providerID).Scan(&label, &ciphertext, &baseURL)
+	if err != nil { return nil }
+
+	apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+	probeOk := false
+	var healthStatus, healthError string
+	var healthLatencyMs int
+	var modelsCount int
+	var sampleModels []string
+
+	if decErr != nil {
+		healthStatus = "error"
+		healthError = "decrypt failed"
+	} else {
+		cleanURL := cleanBaseURL(baseURL)
+		modelsURL := cleanURL + "/v1/models"
+		start := time.Now()
+		result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
+		healthLatencyMs = int(time.Since(start).Milliseconds())
+		if probeErr != nil {
+			healthStatus = "unreachable"
+			healthError = probeErr.Error()
+		} else if result.statusCode != 200 {
+			healthStatus = "unhealthy"
+			healthError = fmt.Sprintf("status %d", result.statusCode)
+		} else {
+			healthStatus = "healthy"
+			probeOk = true
+			modelsCount = result.modelCount
+			sampleModels = result.sampleModels
+		}
+	}
+
+	if sampleModels == nil { sampleModels = []string{} }
+
+	h.db.Exec(ctx, `
+		UPDATE credentials SET health_status = $1, health_checked_at = now(), health_error = $2,
+		health_latency_ms = $3, health_source = 'probe', api_models_ok = $4 WHERE id = $5
+	`, healthStatus, healthError, healthLatencyMs, probeOk, credID)
+
+	return map[string]any{
+		"credential_id": credID, "health_status": healthStatus, "probe_ok": probeOk,
+		"health_latency_ms": healthLatencyMs, "health_error": healthError,
+		"models_count": modelsCount, "sample_models": sampleModels,
+	}
+}
+
 func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -1840,4 +2120,36 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 		"avg_latency_ms":     avgLatency,
 		"success_rate":       successRate,
 	})
+}
+
+func (h *Handler) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	path := r.URL.Path
+	stripPrefix := "/api/tasks/"
+	remaining := path[len(stripPrefix):]
+	if remaining == "" {
+		writeError(w, http.StatusBadRequest, "task_id required")
+		return
+	}
+
+	taskID, err := strconv.ParseInt(remaining, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid task_id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	task, err := getBackgroundTask(ctx, h.db, taskID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, task)
 }
