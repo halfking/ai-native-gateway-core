@@ -66,6 +66,13 @@ func encryptFernet(plaintext []byte, key []byte) ([]byte, error) {
 	return encoded, nil
 }
 
+func maskAPIKey(plaintext string) string {
+	if len(plaintext) <= 16 {
+		return "****"
+	}
+	return plaintext[:10] + "..." + plaintext[len(plaintext)-6:]
+}
+
 func decryptFernet(token []byte, key []byte) (string, error) {
 	if len(key) != 32 {
 		return "", errInvalidKeyLen
