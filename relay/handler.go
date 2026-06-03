@@ -84,7 +84,7 @@ type ChatHandler struct {
 	provider         *provider.Client
 	sticky           *routing.StickyCache
 	keyVerifier      *auth.KeyVerifier
-	rateLimiter      *ratelimit.SlidingWindowLimiter
+	rateLimiter      ratelimit.RPMLimiter
 	telemetryClient  *telemetry.Client
 	sessionGetter    interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
@@ -105,7 +105,7 @@ func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov *provider.Client,
 	h.sticky = sticky
 }
 
-func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl *ratelimit.SlidingWindowLimiter) {
+func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
 	h.keyVerifier = kv
 	h.rateLimiter = rl
 }
@@ -160,11 +160,20 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// ── Status checks (throttled key → hard rate-limit) ────────────────
+	if keyInfo != nil && keyInfo.Status == "throttled" {
+		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
+			"Your API key has been throttled due to anomalous usage. Contact admin.",
+			"rate_limit_error", "key_throttled")
+		return
+	}
+
 	// ── RPM rate limit ──────────────────────────────────────────────────
-	if keyInfo != nil && h.rateLimiter != nil && keyInfo.RateLimitRPM != nil && *keyInfo.RateLimitRPM > 0 {
-		if !h.rateLimiter.CheckRPM(keyInfo.ID, *keyInfo.RateLimitRPM) {
-			_, remaining := h.rateLimiter.RPMStatus(keyInfo.ID, *keyInfo.RateLimitRPM)
-			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", *keyInfo.RateLimitRPM))
+	if keyInfo != nil && h.rateLimiter != nil && !keyInfo.IsInternal {
+		rpmLimit := keyInfo.EffectiveRPM()
+		if !h.rateLimiter.CheckRPM(keyInfo.ID, rpmLimit) {
+			_, remaining := h.rateLimiter.RPMStatus(keyInfo.ID, rpmLimit)
+			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rpmLimit))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 			w.Header().Set("Retry-After", "60")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")

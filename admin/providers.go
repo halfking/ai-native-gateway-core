@@ -95,7 +95,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 		healthStatus := "unknown"
 		errMsg := ""
 
-		decrypted, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+		decrypted, decErr := h.decryptCredStr(ciphertext)
 		if decErr != nil {
 			healthStatus = "error"
 			errMsg = "decrypt failed"
@@ -637,7 +637,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		return
 	}
 
-	encrypted, err := encryptFernet([]byte(req.APIKey), h.encKey)
+	encrypted, err := h.encryptCred([]byte(req.APIKey))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encryption failed")
 		return
@@ -806,7 +806,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 
 		c.Tags = parseTags(tagsStr)
 		if len(ciphertext) > 0 {
-			if plaintext, decErr := decryptFernet(ciphertext, h.encKey); decErr != nil {
+			if plaintext, decErr := h.decryptCredStr(string(ciphertext)); decErr != nil {
 				errCode := "decrypt_failed"
 				c.KeyMaskError = &errCode
 			} else {
@@ -1303,7 +1303,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+		apiKey, decErr := h.decryptCredStr(ciphertext)
 		if decErr != nil {
 			cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
 			cd.ChatProbe = chatProbe{Error: "decrypt failed"}
@@ -1587,7 +1587,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+			apiKey, decErr := h.decryptCredStr(ciphertext)
 			if decErr != nil {
 				cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
 				cd.ChatProbe = chatProbe{Error: "decrypt failed"}
@@ -1859,7 +1859,7 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	plaintext, err := decryptFernet(ciphertext, h.encKey)
+	plaintext, err := h.decryptCredStr(string(ciphertext))
 	if err != nil {
 		slog.Warn("credential decrypt failed", "credential_id", credID, "error", err)
 		writeError(w, http.StatusInternalServerError, "decryption failed")
@@ -1943,7 +1943,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map
 	`, credID, providerID).Scan(&label, &ciphertext, &baseURL)
 	if err != nil { return nil }
 
-	apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+	apiKey, decErr := h.decryptCredStr(ciphertext)
 	probeOk := false
 	var healthStatus, healthError string
 	var healthLatencyMs int
@@ -2003,7 +2003,7 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	apiKey, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+	apiKey, decErr := h.decryptCredStr(ciphertext)
 	probeOk := false
 	var healthStatus, healthError string
 	var healthLatencyMs int

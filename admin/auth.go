@@ -121,7 +121,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ORDER BY id ASC LIMIT 1
 	`, appID).Scan(&existingID, &ciphertext)
 	if err == nil && ciphertext != "" {
-		decrypted, decErr := decryptFernet([]byte(ciphertext), h.encKey)
+		decrypted, decErr := h.decryptCredStr(ciphertext)
 		if decErr == nil {
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE WHERE id = $1`, existingID)
 			prefix := decrypted[:12]
@@ -134,7 +134,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to decrypt existing admin key, creating new", "error", decErr)
 	}
 
-	raw, keyHash, keyPrefix, keyCiphertext := generateAdminKey(h.secret, h.encKey)
+	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	_, err = h.db.Exec(ctx, `
 		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, is_system)
 		VALUES ($1, 'default', $2, $3, $4, 'admin', TRUE, TRUE)
@@ -151,15 +151,13 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func generateAdminKey(secretKey string, encKey []byte) (raw, hash, prefix, ciphertext string) {
+func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphertext string) {
 	raw = fmt.Sprintf("sk-%s", randomAlphanum(48))
 	hash = hashAPIKey(secretKey, raw)
 	prefix = raw[:10] + "****"
-	if len(encKey) == 32 {
-		encrypted, err := encryptFernet([]byte(raw), encKey)
-		if err == nil {
-			ciphertext = string(encrypted)
-		}
+	enc, err := h.encryptCred([]byte(raw))
+	if err == nil {
+		ciphertext = enc
 	}
 	return
 }
