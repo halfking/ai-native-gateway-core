@@ -585,7 +585,7 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-	case "check":
+	case "check", "check-health":
 		if r.Method == http.MethodPost {
 			h.checkCredentialHealth(w, r, providerID, credID)
 		} else {
