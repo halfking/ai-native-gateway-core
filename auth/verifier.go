@@ -15,6 +15,14 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// Tier default limits
+var tierDefaults = map[string][2]int{
+	"system":     {300, 50},
+	"production": {60, 20},
+	"default":    {12, 6},
+	"applicant":  {6, 2},
+}
+
 type KeyInfo struct {
 	ID                   int      `json:"id"`
 	TenantID             string   `json:"tenant_id"`
@@ -23,7 +31,42 @@ type KeyInfo struct {
 	DefaultClientProfile *string  `json:"default_client_profile"`
 	OwnerUser            *string  `json:"owner_user"`
 	RateLimitRPM         *int     `json:"rate_limit_rpm"`
+	RateLimitConcurrent  *int     `json:"rate_limit_concurrent"`
+	RateLimitTPM         *int     `json:"rate_limit_tpm"`
+	KeyTier              string   `json:"key_tier"`
 	BudgetUSD            *float64 `json:"budget_usd"`
+	Status               string   `json:"status"`
+	IsInternal           bool     `json:"is_internal"`
+}
+
+// EffectiveRPM returns the applicable RPM limit (per-key or tier default).
+func (ki *KeyInfo) EffectiveRPM() int {
+	if ki.RateLimitRPM != nil && *ki.RateLimitRPM > 0 {
+		return *ki.RateLimitRPM
+	}
+	tier := ki.KeyTier
+	if tier == "" {
+		tier = "default"
+	}
+	if d, ok := tierDefaults[tier]; ok {
+		return d[0]
+	}
+	return tierDefaults["default"][0]
+}
+
+// EffectiveConcurrent returns the applicable concurrent limit.
+func (ki *KeyInfo) EffectiveConcurrent() int {
+	if ki.RateLimitConcurrent != nil && *ki.RateLimitConcurrent > 0 {
+		return *ki.RateLimitConcurrent
+	}
+	tier := ki.KeyTier
+	if tier == "" {
+		tier = "default"
+	}
+	if d, ok := tierDefaults[tier]; ok {
+		return d[1]
+	}
+	return tierDefaults["default"][1]
 }
 
 type KeyVerifier struct {
@@ -98,12 +141,16 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			app.default_client_profile,
 			ak.owner_user,
 			ak.rate_limit_rpm,
-			ak.budget_usd::float8
+			ak.rate_limit_concurrent,
+			ak.rate_limit_tpm,
+			COALESCE(ak.key_tier, 'default') AS key_tier,
+			ak.budget_usd::float8,
+			COALESCE(ak.status, 'active') AS status
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
 		  AND ak.enabled = TRUE
-		  AND COALESCE(ak.status, 'active') <> 'revoked'
+		  AND COALESCE(ak.status, 'active') NOT IN ('revoked', 'disabled')
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
 	`, keyHash).Scan(
 		&info.ID,
@@ -113,7 +160,11 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.DefaultClientProfile,
 		&info.OwnerUser,
 		&info.RateLimitRPM,
+		&info.RateLimitConcurrent,
+		&info.RateLimitTPM,
+		&info.KeyTier,
 		&info.BudgetUSD,
+		&info.Status,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -122,12 +173,14 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		return nil, err
 	}
 	info.ApplicationID = int(appID)
+	// Throttled keys are allowed through (rate-limit enforced downstream)
+	// but we surface the status so the relay handler can set appropriate headers.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, _ = kv.dbPool.Exec(ctx, "UPDATE api_keys SET last_used_at = now() WHERE id = $1", info.ID)
 	}()
-	slog.Debug("key verified via db", "key_id", info.ID, "tenant_id", info.TenantID, "app_code", info.ApplicationCode)
+	slog.Debug("key verified via db", "key_id", info.ID, "tenant_id", info.TenantID, "app_code", info.ApplicationCode, "tier", info.KeyTier, "status", info.Status)
 	return &info, nil
 }
 

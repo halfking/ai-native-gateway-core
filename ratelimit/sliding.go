@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// RPMLimiter is the minimal interface used by relay/handler.go.
+// Both SlidingWindowLimiter and RedisLimiter satisfy it.
+type RPMLimiter interface {
+	CheckRPM(keyID int, limit int) bool
+	RPMStatus(keyID int, limit int) (used int, remaining int)
+}
+
 type SlidingWindowLimiter struct {
 	mu        sync.Mutex
 	windows   map[int]*rpmWindow
