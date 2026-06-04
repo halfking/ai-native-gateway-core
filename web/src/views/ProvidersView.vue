@@ -126,17 +126,19 @@ const showEdit      = ref(false)
 const editProvider  = ref<Provider | null>(null)
 const editName      = ref('')
 const editBaseUrl   = ref('')
+const editProtocol  = ref('')
 const editNotes     = ref('')
 const editSaving    = ref(false)
 const editErr       = ref('')
 
 function openEdit(p: Provider) {
   editProvider.value = p
-  editName.value    = p.display_name
-  editBaseUrl.value = p.base_url ?? ''
-  editNotes.value   = p.notes ?? ''
-  editErr.value     = ''
-  showEdit.value    = true
+  editName.value     = p.display_name
+  editBaseUrl.value  = p.base_url ?? ''
+  editProtocol.value = p.protocol ?? 'openai-completions'
+  editNotes.value    = p.notes ?? ''
+  editErr.value      = ''
+  showEdit.value     = true
 }
 
 async function submitEdit() {
@@ -147,6 +149,7 @@ async function submitEdit() {
     await updateProvider(editProvider.value.id, {
       display_name: editName.value || undefined,
       base_url: editBaseUrl.value || undefined,
+      protocol: editProtocol.value || undefined,
       notes: editNotes.value || undefined,
     })
     await load()
@@ -252,6 +255,7 @@ async function saveCredential(p: Provider, c: ProviderCredential) {
       expires_at: c.expires_at,
       tags: c.tags,
       notes: c.notes || '',
+      balance_usd: c.balance_usd != null ? Number(c.balance_usd) : null,
     })
     await loadCredentials(p.id)
     p.active_credential_count = (credentialsByProvider.value[p.id] ?? []).filter((row) => row.status === 'active').length
@@ -608,8 +612,29 @@ onUnmounted(() => {
         <h3>编辑提供商 — {{ editProvider?.display_name }}</h3>
         <div v-if="editErr" class="alert alert-danger">{{ editErr }}</div>
         <div class="form-group">
+          <label>目录代码</label>
+          <input :value="editProvider?.catalog_code || '—'" disabled class="muted" />
+        </div>
+        <div class="form-group">
+          <label>供应商</label>
+          <input :value="editProvider?.vendor_name || '—'" disabled class="muted" />
+        </div>
+        <div class="form-group">
+          <label>Header Profile</label>
+          <input :value="editProvider?.header_profile_code || '—'" disabled class="muted" />
+        </div>
+        <div class="form-group">
           <label>显示名</label>
           <input v-model="editName" placeholder="供应商显示名称" />
+        </div>
+        <div class="form-group">
+          <label>Protocol</label>
+          <select v-model="editProtocol">
+            <option value="openai-completions">OpenAI Completions</option>
+            <option value="openai-responses">OpenAI Responses</option>
+            <option value="anthropic-messages">Anthropic Messages</option>
+            <option value="gemini-generate">Gemini Generate</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Base URL</label>
@@ -690,7 +715,7 @@ onUnmounted(() => {
                 </td>
                 <td>
                   <div>{{ c.total_requests }} 次 · {{ money(c.total_cost_usd) }}</div>
-                  <div class="muted">余额 {{ money(c.quota_summary?.remaining_usd ?? null) }}</div>
+                  <div class="muted">余额 <input v-model.number="c.balance_usd" type="number" min="0" step="100" class="compact-input number" style="width:80px;display:inline-block" placeholder="—" /></div>
                   <div v-if="c.quota_summary?.any_exhausted" class="badge badge-red">配额耗尽</div>
                 </td>
                 <td>
