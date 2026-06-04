@@ -281,9 +281,12 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT p.id, p.tenant_id, p.code, p.display_name, p.kind, p.category, p.protocol, p.base_url,
-		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled, COALESCE(p.notes, ''),
-		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name
+		SELECT p.id, p.tenant_id, p.code, p.display_name, p.catalog_code,
+		       p.kind, p.category, p.protocol, p.base_url,
+		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled,
+		       COALESCE(p.notes, ''),
+		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name,
+		       COALESCE(pc.header_profile_code, '') as header_profile_code
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
 		WHERE p.tenant_id = 'default'
@@ -296,27 +299,29 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type provider struct {
-		ID            int     `json:"id"`
-		TenantID      string  `json:"tenant_id"`
-		Code          string  `json:"code"`
-		DisplayName   string  `json:"display_name"`
-		Kind          string  `json:"kind"`
-		Category      string  `json:"category"`
-		Protocol      string  `json:"protocol"`
-		BaseURL       string  `json:"base_url"`
-		EgressProfile string  `json:"egress_profile"`
-		Domestic      bool    `json:"domestic"`
-		DiscountRate  float64 `json:"discount_rate"`
-		Enabled       bool    `json:"enabled"`
-		Notes         string  `json:"notes"`
-		VendorName    string  `json:"vendor_name"`
+		ID               int     `json:"id"`
+		TenantID         string  `json:"tenant_id"`
+		Code             string  `json:"code"`
+		DisplayName      string  `json:"display_name"`
+		CatalogCode      *string `json:"catalog_code"`
+		Kind             string  `json:"kind"`
+		Category         string  `json:"category"`
+		Protocol         string  `json:"protocol"`
+		BaseURL          string  `json:"base_url"`
+		EgressProfile    string  `json:"egress_profile"`
+		Domestic         bool    `json:"domestic"`
+		DiscountRate     float64 `json:"discount_rate"`
+		Enabled          bool    `json:"enabled"`
+		Notes            string  `json:"notes"`
+		VendorName       string  `json:"vendor_name"`
+		HeaderProfileCode string `json:"header_profile_code"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
 		var p provider
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.Kind,
-			&p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
-			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName); err != nil {
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.CatalogCode,
+			&p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
+			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName, &p.HeaderProfileCode); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
@@ -411,26 +416,85 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	displayName := req.Code
+	catalogCode := ""
+	if req.CatalogCode != nil {
+		catalogCode = *req.CatalogCode
+	}
+
+	// ── Custom provider (no catalog lookup) ──
+	if catalogCode == "__custom__" || catalogCode == "" {
+		code := req.Code
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "code is required for custom provider")
+			return
+		}
+		displayName := code
+		if req.DisplayName != nil && *req.DisplayName != "" {
+			displayName = *req.DisplayName
+		}
+		baseURL := ""
+		if req.BaseURL != nil {
+			baseURL = *req.BaseURL
+		}
+		protocol := "openai-completions"
+		if req.Protocol != nil && *req.Protocol != "" {
+			protocol = *req.Protocol
+		}
+
+		var id int
+		err := h.db.QueryRow(ctx, `
+			INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, is_custom, kind, category, enabled)
+			VALUES ('default', $1, $2, $3, $4, TRUE, 'cloud', 'official', TRUE)
+			RETURNING id
+		`, code, displayName, baseURL, protocol).Scan(&id)
+		if err != nil {
+			if strings.Contains(err.Error(), "duplicate key") {
+				writeError(w, http.StatusConflict, "provider already exists: "+code)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
+		return
+	}
+
+	// ── Catalog-based provider ──
+	var catProtocol, catBaseURL, catHeaderProfile string
+	err := h.db.QueryRow(ctx, `
+		SELECT protocol, base_url_template, COALESCE(header_profile_code,'')
+		FROM provider_catalog WHERE code = $1
+	`, catalogCode).Scan(&catProtocol, &catBaseURL, &catHeaderProfile)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "unknown catalog code: "+catalogCode)
+		return
+	}
+
+	code := catalogCode
+	displayName := code
 	if req.DisplayName != nil && *req.DisplayName != "" {
 		displayName = *req.DisplayName
 	}
-	baseURL := ""
-	if req.BaseURL != nil {
+	baseURL := catBaseURL
+	if req.BaseURL != nil && *req.BaseURL != "" {
 		baseURL = *req.BaseURL
 	}
-	protocol := "openai-completions"
+	protocol := catProtocol
 	if req.Protocol != nil && *req.Protocol != "" {
 		protocol = *req.Protocol
 	}
 
 	var id int
-	err := h.db.QueryRow(ctx, `
-		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, is_custom, kind, category, enabled)
-		VALUES ('default', $1, $2, $3, $4, TRUE, 'cloud', 'official', TRUE)
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, catalog_code, is_custom, kind, category, enabled)
+		VALUES ('default', $1, $2, $3, $4, $5, FALSE, 'cloud', 'official', TRUE)
 		RETURNING id
-	`, req.Code, displayName, baseURL, protocol).Scan(&id)
+	`, code, displayName, baseURL, protocol, catalogCode).Scan(&id)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "provider already exists: "+code)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
 	}
@@ -1797,6 +1861,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		ExpiresAt        *string  `json:"expires_at"`
 		Tags             []string `json:"tags"`
 		Notes            *string  `json:"notes"`
+		BalanceUSD       *float64 `json:"balance_usd"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1826,6 +1891,9 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.Notes != nil {
 		h.db.Exec(ctx, `UPDATE credentials SET notes = $1 WHERE id = $2 AND provider_id = $3`, *req.Notes, credID, providerID)
+	}
+	if req.BalanceUSD != nil {
+		h.db.Exec(ctx, `UPDATE credentials SET balance_usd = $1 WHERE id = $2 AND provider_id = $3`, *req.BalanceUSD, credID, providerID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
