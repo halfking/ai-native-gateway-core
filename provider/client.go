@@ -413,7 +413,13 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
-		LEFT JOIN model_aliases ma ON lower(ma.raw_name) = lower(mo.raw_model_name)
+		LEFT JOIN LATERAL (
+			SELECT canonical_id
+			FROM model_aliases
+			WHERE lower(raw_name) = lower(mo.raw_model_name)
+			  AND status = 'active'
+			LIMIT 1
+		) ma ON TRUE
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
