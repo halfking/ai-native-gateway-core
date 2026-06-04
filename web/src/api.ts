@@ -72,11 +72,14 @@ export function getCatalogEntry(code: string) {
 
 export interface Provider {
   id: number
-  catalog_code: string
+  code: string
+  catalog_code: string | null
   display_name: string
   enabled: boolean
   base_url: string | null
+  protocol: string
   header_profile_code?: string | null
+  vendor_name?: string | null
   notes: string | null
   active_credential_count: number
   healthy_credential_count?: number
@@ -116,7 +119,7 @@ export function createProvider(data: { catalog_code: string; display_name?: stri
   return req<{ id: number; message: string }>('POST', '/api/providers', data)
 }
 
-export function updateProvider(id: number, data: { display_name?: string; base_url?: string; notes?: string }) {
+export function updateProvider(id: number, data: { display_name?: string; base_url?: string; protocol?: string; notes?: string }) {
   return req<{ message: string }>('PATCH', `/api/providers/${id}`, data)
 }
 
@@ -221,6 +224,7 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   expires_at: string | null
   tags: string[]
   notes: string
+  balance_usd: number | null
 }>) {
   return req<{ message: string }>('PATCH', `/api/providers/${providerId}/credentials/${credId}`, data)
 }
