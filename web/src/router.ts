@@ -15,6 +15,7 @@ import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
 import RequestLogsView        from './views/RequestLogsView.vue'
 import ModelsView             from './views/ModelsView.vue'
+import FreePoolView           from './views/FreePoolView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -32,6 +33,7 @@ export const router = createRouter({
     { path: '/routing-overview',   component: RoutingOverviewView },
     { path: '/routing-policy',     component: RoutingPolicyView },
     { path: '/routing-decisions',  component: DecisionsView },
+    { path: '/free-pool',          component: FreePoolView },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { getPolicy, patchPolicy, getFeatured, patchFeatured, type RoutingPolicy } from '../api'
+import {
+  getPolicy, patchPolicy, getFeatured, patchFeatured,
+  getScoringWeights, updateScoringWeights,
+  type RoutingPolicy, type ScoringWeights,
+} from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const policy   = ref<RoutingPolicy | null>(null)
@@ -10,6 +14,15 @@ const loading  = ref(false)
 const saving   = ref(false)
 const error    = ref('')
 const message  = ref('')
+
+const weights   = ref<ScoringWeights>({
+  price: 10,
+  session_load: 5,
+  failure_penalty: 20,
+  default_price_cny: 5.0,
+  default_price_usd: 5.0,
+})
+const weightsDraft = ref<ScoringWeights>({ ...weights.value })
 
 const FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: number; step?: number }[] = [
   { key: 'algorithm_version',         label: '算法版本 (1=旧, 2=v2 分层)', min: 1, max: 2, step: 1 },
@@ -23,6 +36,11 @@ const FIELDS: { key: keyof RoutingPolicy; label: string; min?: number; max?: num
   { key: 'circuit_max_open_seconds',  label: '熔断最大冷却秒',              min: 1, max: 86400, step: 1 },
 ]
 
+const formulaPreview = computed(() => {
+  const w = weightsDraft.value
+  return `composite_score = 手工序号 + (归一化价格 × ${w.price}) + (会话负载 × ${w.session_load}) + (错误次数 × ${w.failure_penalty})`
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -31,6 +49,9 @@ async function load() {
     draft.value  = { ...policy.value }
     const f = await getFeatured()
     featuredArray.value = (f.featured_models || []).slice()
+    const w = await getScoringWeights()
+    weights.value = w
+    weightsDraft.value = { ...w }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -49,6 +70,10 @@ const dirtyKeys = computed<string[]>(() => {
   return out
 })
 
+const weightsDirty = computed(() => {
+  return JSON.stringify(weights.value) !== JSON.stringify(weightsDraft.value)
+})
+
 async function savePolicy() {
   if (!dirtyKeys.value.length) {
     message.value = '没有变更'
@@ -64,6 +89,21 @@ async function savePolicy() {
     policy.value = updated
     draft.value  = { ...updated }
     message.value = '策略已更新'
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveWeights() {
+  saving.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    await updateScoringWeights(weightsDraft.value)
+    weights.value = { ...weightsDraft.value }
+    message.value = '综合得分系数已更新'
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '保存失败'
   } finally {
@@ -97,7 +137,7 @@ onMounted(load)
       <button class="btn btn-ghost" @click="load" :disabled="loading">刷新</button>
     </div>
     <p style="color:var(--muted);margin-bottom:16px">
-      调整路由 v2 全局策略：算法版本、并发槽位、熔断阈值。改动会写入审计日志并立即生效（10s 内策略缓存失效）。
+      调整路由 v2 全局策略：算法版本、并发槽位、熔断阈值、综合得分系数。改动会写入审计日志并立即生效。
     </p>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
@@ -137,6 +177,51 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="!loading" class="card" style="margin-bottom:16px">
+      <h3 style="margin-top:0">综合得分系数</h3>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+        综合得分公式：值越小，候选越优先。<strong>免费模型（价格=0）得分固定为 0，最高优先。</strong>
+      </p>
+      <div style="background:var(--surface-alt,#f4f4f5);padding:12px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px">
+        {{ formulaPreview }}
+      </div>
+      <div class="weights-grid">
+        <div class="weight-item">
+          <label>价格权重 (W2)</label>
+          <input type="number" v-model.number="weightsDraft.price" min="0" max="100" step="1" />
+          <span class="cell-muted">归一化价格 = 实际价格 / 默认价格</span>
+        </div>
+        <div class="weight-item">
+          <label>会话负载权重 (W3)</label>
+          <input type="number" v-model.number="weightsDraft.session_load" min="0" max="100" step="1" />
+          <span class="cell-muted">会话数 / 并发上限，0-1</span>
+        </div>
+        <div class="weight-item">
+          <label>错误惩罚权重 (W4)</label>
+          <input type="number" v-model.number="weightsDraft.failure_penalty" min="0" max="100" step="1" />
+          <span class="cell-muted">直接使用连续错误次数</span>
+        </div>
+        <div class="weight-item">
+          <label>国内模型默认价格 (CNY)</label>
+          <input type="number" v-model.number="weightsDraft.default_price_cny" min="0.01" max="100" step="0.1" />
+          <span class="cell-muted">无价格时的归一化基准</span>
+        </div>
+        <div class="weight-item">
+          <label>国外模型默认价格 (USD)</label>
+          <input type="number" v-model.number="weightsDraft.default_price_usd" min="0.01" max="100" step="0.1" />
+          <span class="cell-muted">无价格时的归一化基准</span>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary" @click="saveWeights" :disabled="saving || !weightsDirty">
+          {{ saving ? '保存中…' : '保存系数' }}
+        </button>
+        <span v-if="weightsDirty" style="color:var(--muted);font-size:12px">
+          系数有变更，未保存
+        </span>
+      </div>
+    </div>
+
     <div v-if="!loading" class="card">
       <h3 style="margin-top:0">特色模型 (Featured)</h3>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">
@@ -156,3 +241,31 @@ onMounted(load)
     </div>
   </div>
 </template>
+
+<style scoped>
+.weights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.weight-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.weight-item label {
+  font-weight: 600;
+  font-size: 13px;
+}
+.weight-item input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 4px;
+  font-size: 14px;
+}
+.cell-muted {
+  color: var(--muted);
+  font-size: 11px;
+}
+</style>

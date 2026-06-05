@@ -19,6 +19,7 @@ const nav = [
   { path: '/routing-overview',  label: '路由总览',  icon: '🗺️' },
   { path: '/routing-policy',    label: '路由策略',  icon: '⚙️' },
   { path: '/routing-decisions', label: '决策日志',  icon: '📜' },
+  { path: '/free-pool',         label: '免费资源',  icon: '🎁' },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
 ]
 

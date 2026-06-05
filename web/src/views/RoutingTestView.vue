@@ -1,6 +1,12 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { resolveRouting, probeModel, type RoutingCandidate, type ProbeResult, type RoutingResolveResponse } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import {
+  resolveRouting, probeModel,
+  getScoreDetails, updateManualPriority,
+  getFeaturedModelsDynamic,
+  type RoutingCandidate, type ProbeResult, type RoutingResolveResponse,
+  type ScoreDetail, type FeaturedModel,
+} from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const modelInput  = ref('')
@@ -16,6 +22,12 @@ const probing     = ref(false)
 const probeResult = ref<ProbeResult | null>(null)
 const probeErr    = ref('')
 
+const scoreDetails = ref<ScoreDetail[]>([])
+const loadingScores = ref(false)
+const featuredModels = ref<FeaturedModel[]>([])
+const editingPriority = ref<number | null>(null)
+const editingValue = ref(99)
+
 const filteredCandidates = computed(() =>
   showUnavailable.value ? candidates.value : candidates.value.filter(c => c.routable)
 )
@@ -23,6 +35,32 @@ const filteredCandidates = computed(() =>
 const unavailableCount = computed(() =>
   candidates.value.filter(c => !c.routable).length
 )
+
+const compositeScores = computed(() => {
+  const map = new Map<number, number>()
+  for (const d of scoreDetails.value) {
+    map.set(d.credential_id, d.composite_score)
+  }
+  return map
+})
+
+onMounted(async () => {
+  await loadFeaturedModels()
+})
+
+async function loadFeaturedModels() {
+  try {
+    const res = await getFeaturedModelsDynamic()
+    featuredModels.value = res.models
+  } catch (e) {
+    console.warn('Failed to load featured models:', e)
+  }
+}
+
+async function selectModel(name: string) {
+  modelInput.value = name
+  await doResolve()
+}
 
 async function doResolve() {
   if (!modelInput.value.trim()) return
@@ -38,10 +76,25 @@ async function doResolve() {
     resolution.value = res
     candidates.value = res.candidates
     resolved.value = true
+    await loadScoreDetails()
   } catch (e: unknown) {
     resolveErr.value = e instanceof Error ? e.message : '查询失败'
   } finally {
     resolving.value = false
+  }
+}
+
+async function loadScoreDetails() {
+  if (!modelInput.value.trim()) return
+  loadingScores.value = true
+  try {
+    const res = await getScoreDetails(modelInput.value.trim())
+    scoreDetails.value = res.candidates
+  } catch (e) {
+    console.warn('Failed to load score details:', e)
+    scoreDetails.value = []
+  } finally {
+    loadingScores.value = false
   }
 }
 
@@ -62,6 +115,38 @@ async function doProbe() {
   } finally {
     probing.value = false
   }
+}
+
+function startEditPriority(credId: number, current: number) {
+  editingPriority.value = credId
+  editingValue.value = current
+}
+
+async function savePriority(credId: number, modelName: string) {
+  if (editingValue.value < 1 || editingValue.value > 99) {
+    alert('手工序号必须在 1-99 之间')
+    return
+  }
+  try {
+    await updateManualPriority(credId, modelName, editingValue.value)
+    editingPriority.value = null
+    await loadScoreDetails()
+    await doResolve()
+  } catch (e: unknown) {
+    alert('保存失败: ' + (e instanceof Error ? e.message : '未知错误'))
+  }
+}
+
+function cancelEdit() {
+  editingPriority.value = null
+}
+
+function getScoreFor(credId: number): number | null {
+  return compositeScores.value.get(credId) ?? null
+}
+
+function getScoreBreakdown(credId: number): ScoreDetail | null {
+  return scoreDetails.value.find(s => s.credential_id === credId) ?? null
 }
 
 function latencyLabel(ms: number): string {
@@ -135,6 +220,19 @@ function dateWindow(c: RoutingCandidate): string {
           {{ probing ? '测试中…' : '发送测试请求' }}
         </button>
       </div>
+      <div v-if="featuredModels.length > 0" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:var(--muted)">常用模型：</span>
+        <button
+          v-for="m in featuredModels"
+          :key="m.name"
+          class="btn btn-ghost btn-sm"
+          :class="{ active: modelInput === m.name }"
+          @click="selectModel(m.name)"
+          style="font-size:12px;padding:4px 10px"
+        >
+          {{ m.name }} <span style="color:var(--muted);font-size:10px">({{ m.count }})</span>
+        </button>
+      </div>
     </div>
 
     <div v-if="resolveErr" class="alert alert-danger">{{ resolveErr }}</div>
@@ -184,23 +282,35 @@ function dateWindow(c: RoutingCandidate): string {
       <table v-else-if="filteredCandidates.length > 0">
         <thead>
           <tr>
-            <th>排序</th>
+            <th>综合得分</th>
             <th>供应商</th>
             <th>目录代码</th>
             <th>凭据</th>
             <th>上游 raw</th>
             <th>策略</th>
+            <th>手工序号</th>
             <th>价格 in/out</th>
-            <th>限额/余额</th>
-            <th>效期</th>
-            <th>成功率</th>
-            <th>P95延迟</th>
+            <th>会话/错误</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="c in filteredCandidates" :key="c.credential_id" :style="c.routable ? '' : 'opacity:0.55'">
-            <td style="font-weight:600;text-align:center">{{ c.rank }}</td>
+            <td style="text-align:center">
+              <span
+                class="score-badge"
+                :class="getScoreFor(c.credential_id) === 0 ? 'score-free' : (getScoreFor(c.credential_id) !== null && getScoreFor(c.credential_id)! < 20 ? 'score-good' : 'score-normal')"
+                :title="getScoreFor(c.credential_id) === 0 ? '免费模型，最优先' : ''"
+              >
+                {{ getScoreFor(c.credential_id) !== null ? getScoreFor(c.credential_id)!.toFixed(1) : '—' }}
+              </span>
+              <div v-if="getScoreBreakdown(c.credential_id)" class="cell-muted" style="font-size:10px">
+                <span title="手工序号">P{{ getScoreBreakdown(c.credential_id)!.manual_priority }}</span> ·
+                <span title="归一化价格">C{{ getScoreBreakdown(c.credential_id)!.normalized_cost.toFixed(2) }}</span> ·
+                <span title="会话负载">L{{ getScoreBreakdown(c.credential_id)!.session_load.toFixed(2) }}</span> ·
+                <span title="错误次数">F{{ getScoreBreakdown(c.credential_id)!.consecutive_failures }}</span>
+              </div>
+            </td>
             <td>{{ c.provider_name }}</td>
             <td><code style="font-size:11px">{{ c.catalog_code }}</code></td>
             <td>
@@ -209,11 +319,35 @@ function dateWindow(c: RoutingCandidate): string {
             </td>
             <td><code style="font-size:11px">{{ c.model_name }}</code></td>
             <td>T{{ c.tier }} · w{{ c.weight }}</td>
+            <td>
+              <div v-if="editingPriority === c.credential_id" style="display:flex;gap:4px;align-items:center">
+                <input
+                  v-model.number="editingValue"
+                  type="number"
+                  min="1"
+                  max="99"
+                  style="width:50px;padding:2px 6px;font-size:12px"
+                  @keyup.enter="savePriority(c.credential_id, c.model_name)"
+                  @keyup.esc="cancelEdit"
+                />
+                <button class="btn btn-primary btn-sm" @click="savePriority(c.credential_id, c.model_name)" style="font-size:11px;padding:2px 6px">保存</button>
+                <button class="btn btn-ghost btn-sm" @click="cancelEdit" style="font-size:11px;padding:2px 6px">取消</button>
+              </div>
+              <div v-else style="cursor:pointer" @click="startEditPriority(c.credential_id, getScoreBreakdown(c.credential_id)?.manual_priority ?? 99)">
+                <span style="font-weight:600">{{ getScoreBreakdown(c.credential_id)?.manual_priority ?? 99 }}</span>
+                <span class="cell-muted" style="font-size:10px;margin-left:4px">✎</span>
+              </div>
+            </td>
             <td>{{ priceLabel(c) }}</td>
-            <td>{{ quotaLabel(c) }}</td>
-            <td>{{ dateWindow(c) }}</td>
-            <td>{{ rateLabel(c.success_rate) }}</td>
-            <td>{{ latencyLabel(c.p95_latency_ms) }}</td>
+            <td>
+              <div style="font-size:12px">
+                会话: <strong>{{ getScoreBreakdown(c.credential_id)?.active_sessions ?? 0 }}</strong>
+                / {{ c.concurrency_limit ?? '—' }}
+              </div>
+              <div class="cell-muted" style="font-size:11px">
+                错误: {{ getScoreBreakdown(c.credential_id)?.consecutive_failures ?? 0 }}
+              </div>
+            </td>
             <td>
               <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
                 {{ c.routable ? '可路由' : '不可用' }}
@@ -260,4 +394,26 @@ function dateWindow(c: RoutingCandidate): string {
 
 <style scoped>
 .cell-muted { color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+.score-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 40px;
+  text-align: center;
+}
+.score-free {
+  background: #dcfce7;
+  color: #166534;
+}
+.score-good {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.score-normal {
+  background: #f3f4f6;
+  color: #374151;
+}
 </style>
