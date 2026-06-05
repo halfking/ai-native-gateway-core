@@ -1093,3 +1093,106 @@ export interface BackgroundTasksStatus {
 export function getBackgroundTasksStatus() {
   return req<BackgroundTasksStatus>('GET', '/api/system/background-tasks')
 }
+
+// ── Routing: Score Details & Manual Priority ──────────────────────────────
+
+export interface ScoreDetail {
+  credential_id: number
+  provider_id: number
+  provider_name: string
+  raw_model: string
+  manual_priority: number
+  price_in: number
+  price_out: number
+  blended_cost: number
+  active_sessions: number
+  consecutive_failures: number
+  concurrency_limit: number | null
+  currency: string
+  normalized_cost: number
+  session_load: number
+  composite_score: number
+}
+
+export interface ScoreDetailsResponse {
+  model: string
+  weights: ScoringWeights
+  candidates: ScoreDetail[]
+}
+
+export interface ScoringWeights {
+  price: number
+  session_load: number
+  failure_penalty: number
+  default_price_cny: number
+  default_price_usd: number
+}
+
+export function getScoreDetails(model: string) {
+  return req<ScoreDetailsResponse>('GET', `/api/routing/score-details?model=${encodeURIComponent(model)}`)
+}
+
+export function updateManualPriority(credentialId: number, modelName: string, priority: number) {
+  return req<{ status: string }>('PATCH', '/api/routing/manual-priority', {
+    credential_id: credentialId,
+    model_name: modelName,
+    manual_priority: priority,
+  })
+}
+
+export function getScoringWeights() {
+  return req<ScoringWeights>('GET', '/api/routing/scoring-weights')
+}
+
+export function updateScoringWeights(weights: Partial<ScoringWeights>) {
+  return req<{ status: string }>('PATCH', '/api/routing/scoring-weights', weights)
+}
+
+export interface FeaturedModel {
+  name: string
+  count: number
+}
+
+export function getFeaturedModelsDynamic() {
+  return req<{ models: FeaturedModel[] }>('GET', '/api/routing/featured-models')
+}
+
+// ── Free Pool ────────────────────────────────────────────────────────────
+
+export interface FreePoolEntry {
+  catalog_code: string
+  provider_name: string
+  credential_id: number
+  credential_label: string
+  credential_status: string
+  availability_state: string
+  quota_state: string
+  total_offers: number
+  available_offers: number
+  free_offers: number
+}
+
+export interface FreePoolStatusResponse {
+  pool: FreePoolEntry[]
+  stats: {
+    total_providers: number
+    available_providers: number
+    total_models: number
+    free_models: number
+  }
+}
+
+export function getFreePoolStatus() {
+  return req<FreePoolStatusResponse>('GET', '/api/free-pool/status')
+}
+
+export function registerFreeProvider(data: {
+  catalog_code: string
+  display_name?: string
+  base_url: string
+  protocol?: string
+  api_key?: string
+  models?: string[]
+}) {
+  return req<{ status: string; provider_id: number }>('POST', '/api/free-pool/register', data)
+}

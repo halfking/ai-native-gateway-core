@@ -15,6 +15,22 @@ type routingHandler struct {
 	secret string
 }
 
+func (h *Handler) logAudit(r *http.Request, action string, details map[string]any) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	detailsJSON, _ := json.Marshal(details)
+	actor := r.Header.Get("X-Actor")
+	if actor == "" {
+		actor = "admin"
+	}
+
+	h.db.Exec(ctx, `
+		INSERT INTO routing_audit_log (actor, action, details)
+		VALUES ($1, $2, $3)
+	`, actor, action, detailsJSON)
+}
+
 func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -618,5 +634,466 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		"outbound_model": outModel,
 		"client_profile": clientProfile,
 		"message":       "probe resolved provider (actual call not implemented)",
+	})
+}
+
+func (h *Handler) handleRoutingManualPriority(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		CredentialID   int    `json:"credential_id"`
+		ModelName      string `json:"model_name"`
+		ManualPriority int    `json:"manual_priority"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.ManualPriority < 1 || req.ManualPriority > 99 {
+		writeError(w, http.StatusBadRequest, "manual_priority must be between 1 and 99")
+		return
+	}
+	if req.CredentialID == 0 || req.ModelName == "" {
+		writeError(w, http.StatusBadRequest, "credential_id and model_name required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE model_offers SET manual_priority = $1, updated_at = NOW()
+		WHERE credential_id = $2 AND lower(raw_model_name) = lower($3)
+	`, req.ManualPriority, req.CredentialID, req.ModelName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "model offer not found")
+		return
+	}
+
+	h.logAudit(r, "manual_priority_update", map[string]any{
+		"credential_id":   req.CredentialID,
+		"model_name":      req.ModelName,
+		"manual_priority": req.ManualPriority,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	model := queryString(r, "model")
+	if model == "" {
+		writeError(w, http.StatusBadRequest, "model parameter required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	weights := h.getScoringWeights(ctx)
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			c.id AS credential_id,
+			p.id AS provider_id,
+			p.display_name,
+			COALESCE(mo.raw_model_name, '') AS raw_model,
+			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS price_in,
+			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS price_out,
+			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
+			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
+			c.concurrency_limit,
+			COALESCE(mo.currency, 'USD') AS currency,
+			CASE
+				WHEN mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0 THEN 0
+				WHEN mo.unit_price_in_per_1m IS NULL AND mo.unit_price_out_per_1m IS NULL THEN 5.0
+				ELSE COALESCE(mo.unit_price_in_per_1m, 0) + COALESCE(mo.unit_price_out_per_1m, 0)
+			END AS blended_cost
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE p.tenant_id = 'default'
+		  AND lower(mo.raw_model_name) = lower($1)
+		  AND mo.available IS TRUE
+		ORDER BY mo.manual_priority NULLS LAST
+	`, model)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type scoreDetail struct {
+		CredentialID       int     `json:"credential_id"`
+		ProviderID         int     `json:"provider_id"`
+		ProviderName       string  `json:"provider_name"`
+		RawModel           string  `json:"raw_model"`
+		ManualPriority     int     `json:"manual_priority"`
+		PriceIn            float64 `json:"price_in"`
+		PriceOut           float64 `json:"price_out"`
+		BlendedCost        float64 `json:"blended_cost"`
+		ActiveSessions     int     `json:"active_sessions"`
+		ConsecutiveFailures int    `json:"consecutive_failures"`
+		ConcurrencyLimit   *int    `json:"concurrency_limit"`
+		Currency           string  `json:"currency"`
+		NormalizedCost     float64 `json:"normalized_cost"`
+		SessionLoad        float64 `json:"session_load"`
+		CompositeScore     float64 `json:"composite_score"`
+	}
+
+	details := make([]scoreDetail, 0)
+	for rows.Next() {
+		var d scoreDetail
+		if err := rows.Scan(
+			&d.CredentialID, &d.ProviderID, &d.ProviderName, &d.RawModel,
+			&d.ManualPriority, &d.PriceIn, &d.PriceOut, &d.BlendedCost,
+			&d.ActiveSessions, &d.ConsecutiveFailures, &d.ConcurrencyLimit,
+			&d.Currency, &d.BlendedCost,
+		); err != nil {
+			continue
+		}
+
+		var defaultPrice float64
+		if d.Currency == "CNY" {
+			defaultPrice = weights["default_price_cny"]
+		} else {
+			defaultPrice = weights["default_price_usd"]
+		}
+		if defaultPrice <= 0 {
+			defaultPrice = 5.0
+		}
+
+		if d.BlendedCost == 0 {
+			d.NormalizedCost = 0
+		} else {
+			d.NormalizedCost = d.BlendedCost / defaultPrice
+		}
+
+		if d.ConcurrencyLimit != nil && *d.ConcurrencyLimit > 0 {
+			d.SessionLoad = float64(d.ActiveSessions) / float64(*d.ConcurrencyLimit)
+			if d.SessionLoad > 1 {
+				d.SessionLoad = 1
+			}
+		}
+
+		d.CompositeScore = float64(d.ManualPriority) + d.NormalizedCost*weights["price"] +
+			d.SessionLoad*weights["session_load"] + float64(d.ConsecutiveFailures)*weights["failure_penalty"]
+
+		details = append(details, d)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"model":     model,
+		"weights":   weights,
+		"candidates": details,
+	})
+}
+
+func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if r.Method == http.MethodGet {
+		weights := h.getScoringWeights(ctx)
+		writeJSON(w, http.StatusOK, weights)
+		return
+	}
+
+	if r.Method == http.MethodPatch {
+		var patch map[string]float64
+		if err := readJSON(r, &patch); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid body")
+			return
+		}
+
+		current := h.getScoringWeights(ctx)
+		if v, ok := patch["price"]; ok {
+			current["price"] = v
+		}
+		if v, ok := patch["session_load"]; ok {
+			current["session_load"] = v
+		}
+		if v, ok := patch["failure_penalty"]; ok {
+			current["failure_penalty"] = v
+		}
+		if v, ok := patch["default_price_cny"]; ok {
+			current["default_price_cny"] = v
+		}
+		if v, ok := patch["default_price_usd"]; ok {
+			current["default_price_usd"] = v
+		}
+
+		weightsJSON, _ := json.Marshal(current)
+		_, err := h.db.Exec(ctx, `
+			UPDATE routing_policy SET scoring_weights_json = $1 WHERE tenant_id = 'default'
+		`, weightsJSON)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed")
+			return
+		}
+
+		auditMap := make(map[string]any)
+		for k, v := range current {
+			auditMap[k] = v
+		}
+		h.logAudit(r, "scoring_weights_update", auditMap)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func (h *Handler) getScoringWeights(ctx context.Context) map[string]float64 {
+	defaultWeights := map[string]float64{
+		"price":           10,
+		"session_load":    5,
+		"failure_penalty": 20,
+		"default_price_cny": 5.0,
+		"default_price_usd": 5.0,
+	}
+
+	var weightsJSON []byte
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(scoring_weights_json, '{}'::jsonb)
+		FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1
+	`).Scan(&weightsJSON)
+	if err != nil || len(weightsJSON) == 0 {
+		return defaultWeights
+	}
+
+	var weights map[string]float64
+	if err := json.Unmarshal(weightsJSON, &weights); err != nil {
+		return defaultWeights
+	}
+
+	for k, v := range defaultWeights {
+		if _, ok := weights[k]; !ok {
+			weights[k] = v
+		}
+	}
+	return weights
+}
+
+func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT model, COUNT(*) as cnt
+		FROM routing_decision_log
+		WHERE ts > NOW() - INTERVAL '7 days'
+		  AND model IS NOT NULL AND model != ''
+		GROUP BY model
+		ORDER BY cnt DESC
+		LIMIT 10
+	`)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"models": []any{}})
+		return
+	}
+	defer rows.Close()
+
+	type featuredModel struct {
+		Name  string `json:"name"`
+		Count int    `json:"count"`
+	}
+	models := make([]featuredModel, 0)
+	for rows.Next() {
+		var m featuredModel
+		if err := rows.Scan(&m.Name, &m.Count); err != nil {
+			continue
+		}
+		models = append(models, m)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			p.catalog_code,
+			p.display_name AS provider_name,
+			c.id AS credential_id,
+			c.label AS credential_label,
+			c.status AS credential_status,
+			c.availability_state,
+			c.quota_state,
+			COUNT(mo.id) AS total_offers,
+			COUNT(mo.id) FILTER (WHERE mo.available) AS available_offers,
+			COUNT(mo.id) FILTER (WHERE mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0) AS free_offers
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN model_offers mo ON mo.credential_id = c.id
+		WHERE c.pool_group = 'free'
+		GROUP BY p.catalog_code, p.display_name, c.id, c.label,
+				 c.status, c.availability_state, c.quota_state
+		ORDER BY p.display_name
+	`)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"pool": []any{}, "error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type poolEntry struct {
+		CatalogCode       string `json:"catalog_code"`
+		ProviderName      string `json:"provider_name"`
+		CredentialID      int    `json:"credential_id"`
+		CredentialLabel   string `json:"credential_label"`
+		CredentialStatus  string `json:"credential_status"`
+		AvailabilityState string `json:"availability_state"`
+		QuotaState        string `json:"quota_state"`
+		TotalOffers       int    `json:"total_offers"`
+		AvailableOffers   int    `json:"available_offers"`
+		FreeOffers        int    `json:"free_offers"`
+	}
+	pool := make([]poolEntry, 0)
+	for rows.Next() {
+		var e poolEntry
+		if err := rows.Scan(
+			&e.CatalogCode, &e.ProviderName, &e.CredentialID,
+			&e.CredentialLabel, &e.CredentialStatus, &e.AvailabilityState,
+			&e.QuotaState, &e.TotalOffers, &e.AvailableOffers, &e.FreeOffers,
+		); err != nil {
+			continue
+		}
+		pool = append(pool, e)
+	}
+
+	var totalProviders, availableProviders, totalModels, freeModels int
+	for _, e := range pool {
+		totalProviders++
+		if e.CredentialStatus == "active" {
+			availableProviders++
+		}
+		totalModels += e.TotalOffers
+		freeModels += e.FreeOffers
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pool": pool,
+		"stats": map[string]int{
+			"total_providers":    totalProviders,
+			"available_providers": availableProviders,
+			"total_models":       totalModels,
+			"free_models":        freeModels,
+		},
+	})
+}
+
+func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		CatalogCode string `json:"catalog_code"`
+		DisplayName string `json:"display_name"`
+		BaseURL     string `json:"base_url"`
+		Protocol    string `json:"protocol"`
+		APIKey      string `json:"api_key"`
+		Models      []string `json:"models"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	if req.CatalogCode == "" || req.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, "catalog_code and base_url required")
+		return
+	}
+
+	if req.DisplayName == "" {
+		req.DisplayName = req.CatalogCode
+	}
+	if req.Protocol == "" {
+		req.Protocol = "openai-completions"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Check if already exists
+	var exists bool
+	h.db.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM providers WHERE catalog_code = $1 AND tenant_id = 'default')
+	`, req.CatalogCode).Scan(&exists)
+
+	if exists {
+		writeError(w, http.StatusConflict, "provider already exists")
+		return
+	}
+
+	// Insert provider
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
+			kind, category, protocol, base_url, egress_profile, domestic, enabled)
+		VALUES ('default', $1, $2, $1, true,
+			'cloud', 'aggregator', $3, $4, 'direct', true, true)
+	`, req.CatalogCode, req.DisplayName, req.Protocol, req.BaseURL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "insert provider failed")
+		return
+	}
+
+	// Get provider ID
+	var providerID int
+	h.db.QueryRow(ctx, `
+		SELECT id FROM providers WHERE catalog_code = $1 AND tenant_id = 'default'
+	`, req.CatalogCode).Scan(&providerID)
+
+	// Insert credential if API key provided
+	if req.APIKey != "" {
+		h.db.Exec(ctx, `
+			INSERT INTO credentials (provider_id, tenant_id, label, trust_level, status,
+				lifecycle_status, availability_state, quota_state, pool_group, billing_mode)
+			VALUES ($1, 'default', $2 || '-free-key', 'degraded', 'active',
+				'active', 'ready', 'ok', 'free', 'free')
+		`, providerID, req.CatalogCode)
+	}
+
+	// Insert model offers
+	for _, model := range req.Models {
+		h.db.Exec(ctx, `
+			INSERT INTO model_offers (credential_id, raw_model_name, available,
+				routing_tier, billing_mode, currency, unit_price_in_per_1m, unit_price_out_per_1m,
+				pricing_source, pricing_updated_at)
+			SELECT c.id, $1, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW()
+			FROM credentials c WHERE c.provider_id = $2 AND c.pool_group = 'free' LIMIT 1
+			ON CONFLICT (credential_id, raw_model_name) DO NOTHING
+		`, model, providerID)
+	}
+
+	h.logAudit(r, "free_pool_register", map[string]any{
+		"catalog_code": req.CatalogCode,
+		"base_url":     req.BaseURL,
+		"models":       req.Models,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":      "registered",
+		"provider_id": providerID,
 	})
 }
