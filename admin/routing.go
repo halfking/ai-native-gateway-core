@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -726,7 +727,8 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		ORDER BY mo.manual_priority NULLS LAST
 	`, model)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("score-details query failed", "error", err, "model", model)
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
@@ -754,9 +756,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		var d scoreDetail
 		if err := rows.Scan(
 			&d.CredentialID, &d.ProviderID, &d.ProviderName, &d.RawModel,
-			&d.ManualPriority, &d.PriceIn, &d.PriceOut, &d.BlendedCost,
+			&d.ManualPriority, &d.PriceIn, &d.PriceOut,
 			&d.ActiveSessions, &d.ConsecutiveFailures, &d.ConcurrencyLimit,
-			&d.Currency,
+			&d.Currency, &d.BlendedCost,
 		); err != nil {
 			continue
 		}
