@@ -466,6 +466,18 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {
 			reqLog.ResponsePreview = strPtr(v)
 		}
+	} else {
+		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
+		if pt > 0 || ct > 0 {
+			reqLog.PromptTokens = &pt
+			reqLog.CompletionTokens = &ct
+			if crt > 0 {
+				reqLog.CacheReadTokens = &crt
+			}
+			if cwt > 0 {
+				reqLog.CacheWriteTokens = &cwt
+			}
+		}
 	}
 
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
@@ -1077,6 +1089,51 @@ func resolveEndUser(bodyUser string, r *http.Request) string {
 		return strings.TrimSpace(header)
 	}
 	return "anonymous"
+}
+
+func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
+	if len(body) == 0 {
+		return 0, 0, 0, 0
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return 0, 0, 0, 0
+	}
+	usageRaw, ok := data["usage"]
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	usage, ok := usageRaw.(map[string]any)
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	if v, ok := usage["prompt_tokens"].(float64); ok {
+		promptTokens = int(v)
+	}
+	if v, ok := usage["completion_tokens"].(float64); ok {
+		completionTokens = int(v)
+	}
+	if v, ok := usage["cache_read_tokens"].(float64); ok {
+		cacheRead = int(v)
+	}
+	if v, ok := usage["cache_write_tokens"].(float64); ok {
+		cacheWrite = int(v)
+	}
+	if pt := usage["prompt_tokens_details"]; pt != nil {
+		if details, ok := pt.(map[string]any); ok {
+			if v, ok := details["cached_tokens"].(float64); ok && cacheRead == 0 {
+				cacheRead = int(v)
+			}
+		}
+	}
+	if pt := usage["input_token_details"]; pt != nil {
+		if details, ok := pt.(map[string]any); ok {
+			if v, ok := details["cache_read"].(float64); ok && cacheRead == 0 {
+				cacheRead = int(v)
+			}
+		}
+	}
+	return
 }
 
 func intPtr(v int) *int { return &v }
