@@ -105,6 +105,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/health", h.handleRoutingHealth)
 	mux.HandleFunc("/api/routing/audit", h.handleRoutingAudit)
 	mux.HandleFunc("/api/routing/probe", h.handleRoutingProbe)
+	mux.HandleFunc("/api/routing/manual-priority", h.handleRoutingManualPriority)
+	mux.HandleFunc("/api/routing/score-details", h.handleRoutingScoreDetails)
+	mux.HandleFunc("/api/routing/scoring-weights", h.handleRoutingScoringWeights)
+	mux.HandleFunc("/api/routing/featured-models", h.handleRoutingFeaturedModelsDynamic)
 	mux.HandleFunc("/api/telemetry/decision-log", h.handleTelemetryDecisionLog)
 	mux.HandleFunc("/api/telemetry/request-log", h.handleTelemetryRequestLog)
 	mux.HandleFunc("/api/telemetry/batch", h.handleTelemetryBatch)
@@ -128,6 +132,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/tasks/", h.handleTasks)
 	mux.HandleFunc("/v1/keys/apply/", h.handleV1KeysApplyStatus)
 	mux.HandleFunc("/v1/keys/apply", h.handleV1KeysApply)
+	mux.HandleFunc("/api/free-pool/status", h.handleFreePoolStatus)
+	mux.HandleFunc("/api/free-pool/register", h.handleFreePoolRegister)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

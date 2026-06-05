@@ -225,3 +225,77 @@ func applyProtocolAffinity(ordered []provider.Candidate, pref []string) []provid
 	})
 	return ordered
 }
+
+// ScoringWeights defines the weights for composite score calculation
+type ScoringWeights struct {
+	Price           float64 `json:"price"`
+	SessionLoad     float64 `json:"session_load"`
+	FailurePenalty  float64 `json:"failure_penalty"`
+	DefaultPriceCNY float64 `json:"default_price_cny"`
+	DefaultPriceUSD float64 `json:"default_price_usd"`
+}
+
+// DefaultScoringWeights returns the default scoring weights
+func DefaultScoringWeights() ScoringWeights {
+	return ScoringWeights{
+		Price:           10,
+		SessionLoad:     5,
+		FailurePenalty:  20,
+		DefaultPriceCNY: 5.0,
+		DefaultPriceUSD: 5.0,
+	}
+}
+
+// CalculateCompositeScore computes the composite score for a candidate
+// Lower score = higher priority. Free models (cost=0) get score=0 (highest priority)
+func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float64 {
+	// Free models get highest priority (score=0)
+	cost := blendedCost(c)
+	if cost == 0 {
+		return 0
+	}
+
+	// Start with manual priority (1-99)
+	score := float64(c.ManualPriority)
+
+	// Normalize cost based on currency
+	var defaultPrice float64
+	if c.Currency == "CNY" {
+		defaultPrice = weights.DefaultPriceCNY
+	} else {
+		defaultPrice = weights.DefaultPriceUSD
+	}
+	if defaultPrice <= 0 {
+		defaultPrice = 5.0
+	}
+	score += (cost / defaultPrice) * weights.Price
+
+	// Session load (0-1)
+	if c.ConcurrencyLimit != nil && *c.ConcurrencyLimit > 0 {
+		load := float64(c.ActiveSessions) / float64(*c.ConcurrencyLimit)
+		if load > 1 {
+			load = 1
+		}
+		score += load * weights.SessionLoad
+	}
+
+	// Failure penalty
+	score += float64(c.ConsecutiveFailures) * weights.FailurePenalty
+
+	return score
+}
+
+// SortByCompositeScore sorts candidates by composite score (ascending)
+func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeights) []provider.Candidate {
+	// Calculate composite scores
+	for i := range candidates {
+		candidates[i].CompositeScore = CalculateCompositeScore(candidates[i], weights)
+	}
+
+	// Sort by composite score ascending (lower = better)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].CompositeScore < candidates[j].CompositeScore
+	})
+
+	return candidates
+}

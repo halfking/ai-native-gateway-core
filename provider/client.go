@@ -42,6 +42,11 @@ type Candidate struct {
 	CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
 	SupportsPromptCache bool     `json:"supports_prompt_cache"`
 	CacheMode           string   `json:"cache_mode"`
+	ManualPriority      int      `json:"manual_priority"`
+	ActiveSessions      int      `json:"active_sessions"`
+	ConsecutiveFailures int      `json:"consecutive_failures"`
+	CompositeScore      float64  `json:"composite_score"`
+	Currency            string   `json:"currency"`
 	APIKey              string   `json:"-"`
 }
 
@@ -408,6 +413,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			END AS runtime_routable,
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
+			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
+			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
+			COALESCE(mo.currency, 'USD') AS currency,
 			mo.raw_model_name
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
@@ -423,7 +432,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
-		ORDER BY COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
+		ORDER BY COALESCE(mo.manual_priority, 99), COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -463,6 +472,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			&cand.Routable,
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
+			&cand.ManualPriority,
+			&cand.ActiveSessions,
+			&cand.ConsecutiveFailures,
+			&cand.Currency,
 			&offerRawModel,
 		); err != nil {
 			return nil, err
