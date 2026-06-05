@@ -756,7 +756,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 			&d.CredentialID, &d.ProviderID, &d.ProviderName, &d.RawModel,
 			&d.ManualPriority, &d.PriceIn, &d.PriceOut, &d.BlendedCost,
 			&d.ActiveSessions, &d.ConsecutiveFailures, &d.ConcurrencyLimit,
-			&d.Currency, &d.BlendedCost,
+			&d.Currency,
 		); err != nil {
 			continue
 		}
