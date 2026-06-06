@@ -498,6 +498,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 }
 
 func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
+	// No executor available — return error instead of forwarding to Python upstream
+	writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+		"error": map[string]string{
+			"message": "Routing executor not available. Database connection required.",
+			"type":    "server_error",
+			"code":    "executor_unavailable",
+		},
+	})
+}
+
+func (h *ChatHandler) serveFallbackDisabled(w http.ResponseWriter, r *http.Request) {
 	svc := defaultService()
 
 	// ── Circuit breaker check ──────────────────────────────────────────

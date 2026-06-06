@@ -1,22 +1,11 @@
 package relay
 
 import (
-	"log/slog"
 	"net/url"
-	"os"
 )
 
+// chat.go — The Go version routes requests through its own routing executor,
+// not through a Python upstream. The upstream variable is kept as a placeholder
+// for backward compatibility with ChatCompletionsPhase3, but is not initialized
+// from any Python endpoint.
 var upstream *url.URL
-
-func init() {
-	target := os.Getenv("LLM_GATEWAY_UPSTREAM")
-	if target == "" {
-		target = "http://127.0.0.1:8780"
-	}
-	var err error
-	upstream, err = url.Parse(target)
-	if err != nil {
-		slog.Error("invalid LLM_GATEWAY_UPSTREAM", "url", target, "error", err)
-		upstream, _ = url.Parse("http://127.0.0.1:8780")
-	}
-}

@@ -172,6 +172,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		OwnerUser       *string  `json:"owner_user"`
 		BudgetUSD       *float64 `json:"budget_usd"`
 		RateLimitRPM    *int     `json:"rate_limit_rpm"`
+		Remark          *string  `json:"remark"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -191,16 +192,38 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for existing available key (prevent duplicate)
+	var existingID int
+	var existingPrefix string
+	err = h.db.QueryRow(ctx, `
+		SELECT id, key_prefix FROM api_keys
+		WHERE application_id = $1 AND tenant_id = 'default'
+		  AND enabled = TRUE AND COALESCE(status, 'active') = 'active'
+		  AND (expires_at IS NULL OR expires_at > now())
+		ORDER BY id ASC LIMIT 1
+	`, appID).Scan(&existingID, &existingPrefix)
+	if err == nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"该应用已有可用密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有密钥。",
+			existingID, existingPrefix[:8],
+		))
+		return
+	}
+
+	remark := "admin manual creation"
+	if req.Remark != nil && *req.Remark != "" {
+		remark = *req.Remark
+	}
 	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status)
-		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, $6, $7, 'active')
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark)
+		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, $6, $7, 'active', $8)
 		RETURNING id
-	`, appID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM).Scan(&id)
+	`, appID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM, remark).Scan(&id)
 	if err != nil {
-		slog.Error("listKeyApplications query failed", "error", err)
+		slog.Error("createKey insert failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -227,7 +250,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
 		       ak.budget_usd::float8, ak.rate_limit_rpm,
 		       app.code AS application_code,
-		       ak.created_at, ak.last_used_at
+		       ak.created_at, ak.last_used_at, ak.remark
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = 'default'
@@ -251,13 +274,14 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		ApplicationCode string     `json:"application_code"`
 		CreatedAt       *time.Time `json:"created_at"`
 		LastUsedAt      *time.Time `json:"last_used_at"`
+		Remark          *string    `json:"remark"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
 		var k key
 		if err := rows.Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
 			&k.BudgetUSD, &k.RateLimitRPM, &k.ApplicationCode,
-			&k.CreatedAt, &k.LastUsedAt); err != nil {
+			&k.CreatedAt, &k.LastUsedAt, &k.Remark); err != nil {
 			continue
 		}
 		keys = append(keys, k)
@@ -617,17 +641,6 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	_, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
-	var keyID int
-	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, status)
-		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, 'active') RETURNING id
-	`, dbAppID, keyHash, keyPrefix, keyCiphertext, contact).Scan(&keyID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create key")
-		return
-	}
-
 	var req struct {
 		AdminNotes *string `json:"admin_notes"`
 		ReviewedBy *string `json:"reviewed_by"`
@@ -640,6 +653,40 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 	reviewer := "admin"
 	if req.ReviewedBy != nil {
 		reviewer = *req.ReviewedBy
+	}
+	noteSummary := notes
+	if len(noteSummary) > 200 {
+		noteSummary = noteSummary[:200]
+	}
+	remark := fmt.Sprintf("approved by %s: %s", reviewer, noteSummary)
+
+	// Check for existing active key for this applicant (prevent duplicate)
+	var existingKeyID int
+	var existingPrefix string
+	err = h.db.QueryRow(ctx, `
+		SELECT id, key_prefix FROM api_keys
+		WHERE application_id = $1 AND tenant_id = 'default'
+		  AND enabled = TRUE AND COALESCE(status, 'active') = 'active'
+		  AND (expires_at IS NULL OR expires_at > now())
+		ORDER BY id ASC LIMIT 1
+	`, dbAppID).Scan(&existingKeyID, &existingPrefix)
+	if err == nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"该申请人的应用已有可用密钥 (id=%d, prefix=%s****)，请勿重复签发。如需新建，请先禁用或吊销现有密钥。",
+			existingKeyID, existingPrefix[:8],
+		))
+		return
+	}
+
+	_, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
+	var keyID int
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, status, remark)
+		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, 'active', $6) RETURNING id
+	`, dbAppID, keyHash, keyPrefix, keyCiphertext, contact, remark).Scan(&keyID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create key")
+		return
 	}
 
 	h.db.Exec(ctx, `
