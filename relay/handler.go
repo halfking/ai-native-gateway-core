@@ -16,7 +16,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -35,8 +34,6 @@ const maxBodySize = 32 << 20
 func MaxBodySize() int { return maxBodySize }
 
 // ServiceID maps an API key to a (providerID, credentialID) pair.
-// In production this will come from the Python control plane; for now
-// it's configured via environment variables.
 type ServiceID struct {
 	ProviderID   int
 	CredentialID int
@@ -72,21 +69,21 @@ type chatResponseBody struct {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit          *circuit.Manager
-	limiter          *limiter.Limiter
-	matrix           *transform.Matrix
-	pools            *pool.PoolManager
-	resolver         *resolve.Resolver
-	auditor          audit.Sink
-	client           *upstreampkg.Client
-	normalizer       *Normalizer
-	executor         *routing.Executor
-	provider         *provider.Client
-	sticky           *routing.StickyCache
-	keyVerifier      *auth.KeyVerifier
-	rateLimiter      ratelimit.RPMLimiter
-	telemetryClient  *telemetry.Client
-	sessionGetter    interface {
+	circuit         *circuit.Manager
+	limiter         *limiter.Limiter
+	matrix          *transform.Matrix
+	pools           *pool.PoolManager
+	resolver        *resolve.Resolver
+	auditor         audit.Sink
+	client          *upstreampkg.Client
+	normalizer      *Normalizer
+	executor        *routing.Executor
+	provider        *provider.Client
+	sticky          *routing.StickyCache
+	keyVerifier     *auth.KeyVerifier
+	rateLimiter     ratelimit.RPMLimiter
+	telemetryClient *telemetry.Client
+	sessionGetter   interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
 	}
@@ -263,8 +260,6 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
 		}
-		// Use background context — request context may be cancelled by now
-		// for long-running streaming requests.
 		h.auditor.Emit(context.Background(), auditBuilder.Build())
 	}()
 
@@ -485,7 +480,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
 			CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
 			CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-			CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
+			CacheWriteTokens:  floatPtrFromInt(reqLog.CacheWriteTokens),
 			PriceIn:          result.Candidate.PriceInPer1M,
 			PriceOut:         result.Candidate.PriceOutPer1M,
 			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
@@ -498,7 +493,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 }
 
 func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
-	// No executor available — return error instead of forwarding to Python upstream
 	writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 		"error": map[string]string{
 			"message": "Routing executor not available. Database connection required.",
@@ -506,408 +500,6 @@ func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {
 			"code":    "executor_unavailable",
 		},
 	})
-}
-
-func (h *ChatHandler) serveFallbackDisabled(w http.ResponseWriter, r *http.Request) {
-	svc := defaultService()
-
-	// ── Circuit breaker check ──────────────────────────────────────────
-	if !h.circuit.Allow(svc.ProviderID, svc.CredentialID) {
-		state := h.circuit.GetOrCreate(svc.ProviderID, svc.CredentialID).State()
-		status := http.StatusServiceUnavailable
-		code := "service_unavailable"
-		message := "Service temporarily unavailable due to provider issues. Please retry later."
-		if state == circuit.StateQuarantined {
-			status = http.StatusBadGateway
-			code = "invalid_api_key"
-			message = "Provider credentials are invalid. Please check your configuration."
-		}
-		writeJSON(w, status, map[string]any{
-			"error": map[string]string{
-				"message": message,
-				"type":    "server_error",
-				"code":    code,
-			},
-		})
-		return
-	}
-
-	// ── Read and buffer body (capped at 32 MiB) ──────────────────────
-	defer r.Body.Close()
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{
-				"message": "failed to read request body",
-				"type":    "invalid_request",
-				"code":    "body_read_error",
-			},
-		})
-		return
-	}
-	if len(bodyBytes) > maxBodySize {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{
-				"message": "request body exceeds 32 MiB limit",
-				"type":    "invalid_request",
-				"code":    "body_too_large",
-			},
-		})
-		return
-	}
-
-	// ── Parse request body for model + stream ──────────────────────────
-	var reqBody chatRequestBody
-	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{
-				"message": "invalid JSON in request body",
-				"type":    "invalid_request",
-				"code":    "json_parse_error",
-			},
-		})
-		return
-	}
-
-	clientModel := reqBody.Model
-	isStream := reqBody.Stream
-
-	// ── Build identity from request ────────────────────────────────────
-	clientID := identity.BuildIdentityFromRequest(r, "default", nil, nil, "")
-	identityHash := clientID.ShortID()
-
-	// ── Resolve model name via control plane ──────────────────────────
-	var modelResolution *resolve.Resolution
-	if h.resolver != nil {
-		modelResolution = h.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
-		slog.Debug("model resolved",
-			"client_model", clientModel,
-			"resolution_path", modelResolution.ResolutionPath,
-			"raw_models", modelResolution.RawModels,
-			"canonical", modelResolution.CanonicalName,
-		)
-	}
-
-	// ── Resolve transform rules ────────────────────────────────────────
-	tCtx := &transform.TransformContext{
-		RequestMode:   "chat",
-		ClientProfile: clientID.Fingerprint.ClientProfile,
-		ClientModel:   clientModel,
-	}
-	if modelResolution != nil && modelResolution.CanonicalName != nil {
-		tCtx.CanonicalName = *modelResolution.CanonicalName
-	}
-	var txResult *transform.TransformResult
-	if h.matrix != nil {
-		txResult = h.matrix.Resolve(tCtx)
-	}
-	explicitOutbound := ""
-	if txResult != nil && txResult.OutboundModel != "" {
-		explicitOutbound = transform.RenderOutboundModel(
-			txResult.OutboundModel, txResult.OutboundModel, clientModel, tCtx.CanonicalName,
-		)
-	}
-
-	// ── Replace model in request body if transformed ───────────────────
-	if explicitOutbound != "" && explicitOutbound != clientModel {
-		bodyBytes = ReplaceModelInRequestBody(bodyBytes, explicitOutbound)
-	}
-
-	// ── Audit event builder ────────────────────────────────────────────
-	auditBuilder := newAuditEvent(r.Header.Get("X-Request-Id")).
-		ClientModel(clientModel).
-		OutboundModel(explicitOutbound).
-		IdentityHash(identityHash).
-		ClientProfile(clientID.Fingerprint.ClientProfile).
-		Stream(isStream).
-		Provider(svc.ProviderID).
-		Credential(svc.CredentialID).
-		RequestChecksum(bodyBytes)
-	if modelResolution != nil {
-		auditBuilder.ResolutionPath(modelResolution.ResolutionPath)
-		if modelResolution.CanonicalName != nil {
-			auditBuilder.CanonicalName(*modelResolution.CanonicalName)
-		}
-	}
-	if txResult != nil {
-		auditBuilder.TransformRule(txResult.MatchedRule)
-	}
-	defer func() {
-		h.auditor.Emit(context.Background(), auditBuilder.Build())
-	}()
-
-	// ── Concurrency limiter ────────────────────────────────────────────
-	release, err := h.limiter.AcquireAll(r.Context(), svc.ProviderID, svc.CredentialID, identityHash)
-	if err != nil {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"error": map[string]string{
-				"message": "concurrency limit reached",
-				"type":    "rate_limit_exceeded",
-				"code":    "concurrency_limit",
-			},
-		})
-		return
-	}
-
-	// ── Build upstream request ─────────────────────────────────────────
-	ChatCompletionsPhase3(w, r, bodyBytes, isStream, clientModel, explicitOutbound, clientID, txResult, svc, h.circuit, h.limiter, h.pools, h.client, h.normalizer, auditBuilder, release)
-}
-
-//-----------------------------------------------------------------------------
-// ChatCompletionsPhase3 — full pipeline with transform, pool, streaming
-//-----------------------------------------------------------------------------
-
-func ChatCompletionsPhase3(
-	w http.ResponseWriter,
-	r *http.Request,
-	bodyBytes []byte,
-	isStream bool,
-	clientModel string,
-	explicitOutbound string,
-	clientID identity.ClientIdentity,
-	txResult *transform.TransformResult,
-	svc ServiceID,
-	cm *circuit.Manager,
-	lim *limiter.Limiter,
-	pools *pool.PoolManager,
-	upClient *upstreampkg.Client,
-	norm *Normalizer,
-	auditBuilder *audit.EventBuilder,
-	release limiter.ReleaseFunc,
-) {
-	var released bool
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Error("panic in chat handler", "panic", rec)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error": map[string]string{
-					"message": "internal server error",
-					"type":    "server_error",
-					"code":    "panic",
-				},
-			})
-			if !released {
-				release()
-				released = true
-			}
-			cm.RecordFailure(svc.ProviderID, svc.CredentialID, circuit.KindTransient)
-		}
-	}()
-
-	rid := r.Header.Get("X-Request-Id")
-	slog.Info("chat completions",
-		"request_id", rid,
-		"client_model", clientModel,
-		"outbound_model", explicitOutbound,
-		"stream", isStream,
-		"identity", clientID.ShortID(),
-		"upstream", upstream.String(),
-	)
-
-	// ── Build upstream request ─────────────────────────────────────────
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream.String()+r.URL.Path, bytes.NewReader(bodyBytes))
-	if err != nil {
-		slog.Error("failed to create upstream request", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error": map[string]string{
-				"message": "failed to create upstream request",
-				"type":    "server_error",
-				"code":    "upstream_error",
-			},
-		})
-		released = true
-		release()
-		cm.RecordFailure(svc.ProviderID, svc.CredentialID, circuit.KindTransient)
-		return
-	}
-
-	// Copy only safe headers (H4: strip hop-by-hop and auth headers)
-	safeHeaders := copySafeHeaders(r.Header)
-	upstreamReq.Header = safeHeaders
-	upstreamReq.Header.Set("X-Request-Id", rid)
-	upstreamReq.Header.Set("Content-Type", "application/json")
-
-	// ── Inject identity headers ────────────────────────────────────────
-	upstreamReq.Header.Set("X-Virtual-Client-Id", clientID.VirtualClientID)
-	upstreamReq.Header.Set("X-Virtual-IP", clientID.VirtualIP)
-	upstreamReq.Header.Set("X-Virtual-MAC", clientID.VirtualMAC)
-
-	// ── Apply transform header rules ───────────────────────────────────
-	if txResult != nil {
-		for _, h := range txResult.StripHeaders {
-			upstreamReq.Header.Del(h)
-		}
-		for k, v := range txResult.InjectHeaders {
-			upstreamReq.Header.Set(k, v)
-		}
-	}
-
-	// ── Get HTTP client (identity-bound pool or default) ───────────────
-	var httpClient *http.Client
-	var reqPool *pool.Pool
-	if pools != nil {
-		poolKey := pool.PoolKey{
-			IdentityHash: clientID.IdentityHash,
-			ProviderID:   svc.ProviderID,
-			CredentialID: svc.CredentialID,
-		}
-		p := pools.GetOrCreate(poolKey, "")
-		if p != nil && p.State() == pool.PoolActive {
-			reqPool = p
-			httpClient = p.Client()
-		}
-	}
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	} else if err := reqPool.Acquire(r.Context()); err != nil {
-		writeErrorJSON(w, http.StatusTooManyRequests, r.Header.Get("X-Request-Id"), "connection pool busy", "rate_limit_exceeded", "pool_busy")
-		return
-	}
-	if reqPool != nil {
-		defer reqPool.Release()
-	}
-
-	timeout := UpstreamTimeout()
-	if isStream {
-		timeout = StreamTimeout()
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	upstreamReq = upstreamReq.WithContext(ctx)
-
-	var resp *http.Response
-	var uErr *upstreampkg.Error
-	if upClient != nil {
-		resp, uErr = upClient.Do(upstreamReq)
-	} else {
-		var doErr error
-		resp, doErr = httpClient.Do(upstreamReq)
-		if doErr != nil {
-			uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
-		}
-	}
-
-	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
-		slog.Error("upstream request failed", "error", uErr)
-		errKind := uErr.Kind
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error": map[string]string{
-				"message": "Provider service is currently unavailable. Please try again later.",
-				"type":    "server_error",
-				"code":    "provider_error",
-			},
-		})
-		released = true
-		release()
-		if errKind == errorsx.KindCanceled {
-			// Client disconnect — don't affect circuit breaker state
-		} else if errKind == "" {
-			// Empty kind means the error wasn't classified — don't silently
-			// record as success. Only unretryable upstream 4xx with no
-			// rate-limit/auth/quota semantics should be no-ops.
-		} else {
-			cm.RecordFailure(svc.ProviderID, svc.CredentialID, errKind)
-			if errKind == circuit.KindRateLimit {
-				lim.Shrink(svc.ProviderID, svc.CredentialID)
-			}
-		}
-		return
-	}
-
-	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
-		body := make([]byte, 4096)
-		n, _ := resp.Body.Read(body)
-		errKind := errorsx.ClassifyError(nil, resp)
-
-		for k, vs := range resp.Header {
-			for _, v := range vs {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		if n > 0 {
-			w.Write(body[:n])
-		}
-
-		released = true
-		release()
-		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
-			resp.StatusCode != 429 && resp.StatusCode != 401 &&
-			resp.StatusCode != 403 && resp.StatusCode != 402 {
-			cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
-		} else {
-			cm.RecordFailure(svc.ProviderID, svc.CredentialID, errKind)
-			if errKind == circuit.KindRateLimit {
-				lim.Shrink(svc.ProviderID, svc.CredentialID)
-			}
-		}
-		return
-	}
-
-	// ── Success — proxy the response ───────────────────────────────────
-	toolsRequested := requestHasTools(bodyBytes)
-	if isStream {
-		outcome := StreamChatWithCaptureAndToolFallback(w, resp, clientModel, explicitOutbound, norm, nil, toolsRequested)
-		released = true
-		release()
-		if outcome.Interrupted && outcome.Reason != "client_cancel" {
-			cm.RecordFailure(svc.ProviderID, svc.CredentialID, errorsx.KindStreamTimeout)
-			auditBuilder.Success(false)
-			slog.Warn("stream interrupted, recording failure",
-				"provider_id", svc.ProviderID,
-				"credential_id", svc.CredentialID,
-				"reason", outcome.Reason,
-			)
-		} else {
-			cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
-			auditBuilder.Success(true)
-		}
-	} else {
-		defer resp.Body.Close()
-		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
-		if err != nil {
-			slog.Error("failed to read upstream response", "error", err)
-			writeJSON(w, http.StatusBadGateway, map[string]any{
-				"error": map[string]string{
-					"message": "failed to read upstream response",
-					"type":    "upstream_error",
-					"code":    "read_error",
-				},
-			})
-			release()
-			released = true
-			cm.RecordFailure(svc.ProviderID, svc.CredentialID, circuit.KindTransient)
-			return
-		}
-		if len(respBody) > maxBodySize {
-			slog.Warn("upstream response truncated", "size", len(respBody))
-			respBody = respBody[:maxBodySize]
-		}
-
-		// Replace model in non-streaming response
-		if clientModel != "" {
-			respBody = ReplaceModelInResponseBody(respBody, clientModel)
-		}
-
-		respBody = coerceXMLToolCallsInChatResponse(respBody, toolsRequested)
-
-		if norm != nil {
-			respBody = norm.NormalizeChunk(respBody, false)
-		}
-
-		for k, vs := range resp.Header {
-			for _, v := range vs {
-				w.Header().Add(k, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
-		released = true
-		release()
-		cm.RecordSuccess(svc.ProviderID, svc.CredentialID)
-		auditBuilder.Success(true)
-	}
 }
 
 // ReplaceModelInRequestBody replaces the "model" field in a JSON body.
@@ -997,8 +589,6 @@ func requestHasTools(body []byte) bool {
 	return json.Unmarshal(toolsRaw, &tools) == nil && len(tools) > 0
 }
 
-// ChatCompletionsWithHooks proxies a chat completion request and calls the
-// done callback with success/failure after the request completes.
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
