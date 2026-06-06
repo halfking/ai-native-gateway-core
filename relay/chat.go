@@ -4,8 +4,7 @@ import (
 	"net/url"
 )
 
-// chat.go — The Go version routes requests through its own routing executor,
-// not through a Python upstream. The upstream variable is kept as a placeholder
-// for backward compatibility with ChatCompletionsPhase3, but is not initialized
-// from any Python endpoint.
+// chat.go — The Go version routes requests through its own routing executor.
+// The upstream variable is kept for test compatibility but is not used
+// in production routing (the executor handles upstream requests directly).
 var upstream *url.URL
