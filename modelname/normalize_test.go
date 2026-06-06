@@ -9,7 +9,7 @@ func TestNormalizeRouteKey(t *testing.T) {
 	}{
 		// Date suffix stripping
 		{in: "gpt-4o-2024-08-06", want: "gpt-4o"},
-		{in: "claude-sonnet-4-5-20250929", want: "claude-sonnet-4-5"},
+		{in: "claude-sonnet-4-5-20250929", want: "claude-sonnet-4.5"},
 		{in: "glm-4-7-251222", want: "glm-4.7"},
 		{in: "glm-4-7-20251201", want: "glm-4.7"},
 		{in: "minimax-m2.7-20251201", want: "minimax-m2.7"},
@@ -33,12 +33,24 @@ func TestNormalizeRouteKey(t *testing.T) {
 		{in: "volcengine/glm-4-9b", want: "glm-4-9b"},
 
 		// [1M] suffix stripping
-		{in: "claude-sonnet-4-5 [1M]", want: "claude-sonnet-4-5"},
+		{in: "claude-sonnet-4-5 [1M]", want: "claude-sonnet-4.5"},
 		{in: "gpt-4o [2M]", want: "gpt-4o"},
 
 		// Complex date + version combinations
 		{in: "glm-4-5-air-20250728", want: "glm-4.5-air"},
 		{in: "glm-4-5-pro-20251201", want: "glm-4.5-pro"},
+
+		// Claude tier-first normalization (new)
+		{in: "claude-opus-4-6", want: "claude-opus-4.6"},
+		{in: "claude-sonnet-4-6", want: "claude-sonnet-4.6"},
+		{in: "claude-haiku-4-5", want: "claude-haiku-4.5"},
+		{in: "claude-opus-4-5", want: "claude-opus-4.5"},
+		{in: "claude-opus-4-7", want: "claude-opus-4.7"},
+		{in: "claude-instant-4-6", want: "claude-instant-4.6"},
+
+		// Claude old pattern (number-first) — unchanged
+		{in: "claude-3-5-sonnet", want: "claude-3-5-sonnet"},
+		{in: "claude-3-7-sonnet", want: "claude-3-7-sonnet"},
 
 		// Edge cases
 		{in: "", want: ""},
@@ -148,6 +160,13 @@ func TestMatchModelOffer(t *testing.T) {
 		{name: "minimax-m4.7_should_not_match_scnet_minimax_m2.5", client: "minimax-m4.7", offer: "scnet/minimax-m2.5", shouldMatch: false},
 		{name: "minimax-m2.7_matches_minimax_m2.7", client: "minimax-m2.7", offer: "minimax-m2.7", shouldMatch: true},
 		{name: "minimax-m2.7_matches_MiniMax-M2.7", client: "minimax-m2.7", offer: "MiniMax-M2.7", shouldMatch: true},
+
+		// Claude tier-first normalization
+		{name: "claude-opus-4-6_matches_claude-opus-4.6", client: "claude-opus-4-6", offer: "claude-opus-4.6", shouldMatch: true},
+		{name: "claude-opus-4.6_matches_claude-opus-4-6", client: "claude-opus-4.6", offer: "claude-opus-4-6", shouldMatch: true},
+		{name: "claude-sonnet-4-5_matches_claude-sonnet-4.5", client: "claude-sonnet-4-5", offer: "claude-sonnet-4.5", shouldMatch: true},
+		{name: "claude-sonnet-4-5-20250929_matches_claude-sonnet-4.5", client: "claude-sonnet-4-5-20250929", offer: "claude-sonnet-4.5", shouldMatch: true},
+		{name: "claude-opus-4.5_does_not_match_claude-opus-4.6", client: "claude-opus-4.5", offer: "claude-opus-4.6", shouldMatch: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
