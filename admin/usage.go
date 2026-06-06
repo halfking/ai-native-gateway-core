@@ -25,6 +25,8 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 		h.usageByModel(w, r)
 	case remaining == "by-key":
 		h.usageByKey(w, r)
+	case remaining == "by-application":
+		h.usageByApplication(w, r)
 	case remaining == "summary":
 		h.usageDashboard(w, r)
 	default:
@@ -241,6 +243,9 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		case "trend":
 			h.usageKeyTrend(w, r, keyID)
 			return
+		case "remaining":
+			h.usageKeyRemaining(w, r, keyID)
+			return
 		}
 	}
 
@@ -393,4 +398,114 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		trends = append(trends, t)
 	}
 	writeJSON(w, http.StatusOK, trends)
+}
+
+func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	period := queryString(r, "period")
+	if period == "" {
+		period = "month"
+	}
+
+	intervalMap := map[string]string{
+		"today": "1 day",
+		"week":  "7 days",
+		"month": "30 days",
+		"year":  "365 days",
+	}
+	interval := intervalMap[period]
+	if interval == "" {
+		interval = "30 days"
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			COALESCE(app.code, 'unknown') AS application_code,
+			COUNT(*) AS request_count,
+			COALESCE(SUM(ul.cost_usd), 0.0) AS total_cost_usd,
+			COALESCE(SUM(ul.total_tokens), 0) AS total_tokens,
+			COALESCE(SUM(ul.prompt_tokens), 0) AS prompt_tokens,
+			COALESCE(SUM(ul.completion_tokens), 0) AS completion_tokens,
+			COUNT(DISTINCT ul.api_key_id) AS unique_keys,
+			COUNT(DISTINCT ul.canonical_id) AS unique_models
+		FROM usage_ledger ul
+		LEFT JOIN applications app ON app.id = ul.application_id
+		WHERE ul.tenant_id = 'default'
+		  AND ul.ts >= now() - ($1::INTERVAL)
+		GROUP BY app.code
+		ORDER BY total_cost_usd DESC
+	`, interval)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type appUsage struct {
+		ApplicationCode  string  `json:"application_code"`
+		RequestCount     int     `json:"request_count"`
+		TotalCostUSD     float64 `json:"total_cost_usd"`
+		TotalTokens      int     `json:"total_tokens"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		UniqueKeys       int     `json:"unique_keys"`
+		UniqueModels     int     `json:"unique_models"`
+	}
+	usage := make([]appUsage, 0)
+	for rows.Next() {
+		var u appUsage
+		if err := rows.Scan(&u.ApplicationCode, &u.RequestCount, &u.TotalCostUSD,
+			&u.TotalTokens, &u.PromptTokens, &u.CompletionTokens,
+			&u.UniqueKeys, &u.UniqueModels); err != nil {
+			continue
+		}
+		usage = append(usage, u)
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
+func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	days := queryInt(r, "days", 30)
+
+	var keyPrefix string
+	var budgetUSD *float64
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(key_prefix,''), budget_usd
+		FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'
+	`, keyID).Scan(&keyPrefix, &budgetUSD)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+
+	var spentUSD float64
+	h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(cost_usd), 0.0)
+		FROM usage_ledger
+		WHERE tenant_id = 'default'
+		  AND api_key_id = $1
+		  AND ts >= now() - ($2 * INTERVAL '1 day')
+	`, keyID, days).Scan(&spentUSD)
+
+	var remainingUSD *float64
+	quotaOK := true
+	if budgetUSD != nil {
+		rem := *budgetUSD - spentUSD
+		remainingUSD = &rem
+		quotaOK = rem > 0
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key_id":        keyID,
+		"key_prefix":    keyPrefix,
+		"budget_usd":    budgetUSD,
+		"spent_usd":     spentUSD,
+		"remaining_usd": remainingUSD,
+		"quota_ok":      quotaOK,
+	})
 }
