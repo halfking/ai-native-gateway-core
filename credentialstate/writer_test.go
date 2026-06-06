@@ -14,7 +14,7 @@ func TestCoolingDurationMatchesPythonDefaults(t *testing.T) {
 		want time.Duration
 	}{
 		{errorsx.KindConcurrent, 15 * time.Second},
-		{errorsx.KindRateLimit, 60 * time.Second},
+		{errorsx.KindRateLimit, 900 * time.Second},
 		{errorsx.KindTransient, 30 * time.Second},
 		{errorsx.KindTimeout, 30 * time.Second},
 		{errorsx.KindUpstreamDown, 60 * time.Second},
