@@ -40,6 +40,14 @@ func NormalizeRouteKey(model string) string {
 }
 
 func normalizeVersionDots(model string) string {
+	// Handle Claude tier-first pattern: claude-opus-4-6 → claude-opus-4.6
+	if strings.HasPrefix(model, "claude-") {
+		claudeTierRe := regexp.MustCompile(`(?i)^(claude-(?:opus|sonnet|haiku|instant))-(\d+)-(\d+)(.*)$`)
+		if matches := claudeTierRe.FindStringSubmatch(model); len(matches) >= 5 {
+			return matches[1] + "-" + matches[2] + "." + matches[3] + matches[4]
+		}
+	}
+
 	idx := versionPat.FindStringIndex(model)
 	if idx != nil && len(idx) >= 2 {
 		matches := versionPat.FindStringSubmatch(model)
@@ -64,6 +72,11 @@ func normalizeVersionDots(model string) string {
 			family := matches[1]
 			version := matches[2]
 			rest := model[simpleIdx[1]:]
+			// For Claude old pattern (e.g. claude-3-5-sonnet), skip normalization —
+			// the tier-first pattern above already handled the new format.
+			if strings.HasPrefix(model, "claude-") {
+				return model
+			}
 			if rest == "" || strings.HasPrefix(rest, "-") && !strings.ContainsAny(rest, "0123456789") {
 				return family + "-" + strings.ReplaceAll(version, "-", ".") + rest
 			}
@@ -184,33 +197,39 @@ func StandardizeName(rawName string) string {
 	// Normalize duplicate dashes
 	model = dupDashPattern.ReplaceAllString(model, "-")
 
-	// Handle minimax: minimax-m2.7, minimax-m2.5 (keep m prefix as part of version)
+	// Handle minimax: minimax-m2.7, minimax-m2.5, minimax-m2-7 (keep m prefix as part of version)
 	if strings.HasPrefix(model, "minimax-m") {
-		// Extract version from minimax-mX.X pattern
+		// Try dot version first: minimax-m2.7
 		matches := minimaxVersionPat.FindStringSubmatch(model)
 		if len(matches) >= 3 {
 			return "minimax-m" + matches[2]
 		}
-		// Fallback: try to extract anyway
-		if idx := strings.Index(model, "-m"); idx >= 0 && idx+2 < len(model) {
-			version := model[idx+2:]
-			// Remove any features after the version
-			if dashIdx := strings.Index(version, "-"); dashIdx > 0 {
-				version = version[:dashIdx]
-			}
-			if regexp.MustCompile(`^\d+\.\d+$`).MatchString(version) {
-				return "minimax-m" + version
-			}
+		// Try dash version: minimax-m2-7 → minimax-m2.7
+		dashRe := regexp.MustCompile(`(?i)^minimax-m(\d+)-(\d+)(.*)$`)
+		if matches := dashRe.FindStringSubmatch(model); len(matches) >= 4 {
+			return "minimax-m" + matches[1] + "." + matches[2] + matches[3]
 		}
 	}
 
 	// Handle GLM: glm-4-7 → glm-4.7, glm-4-5-flash → glm-4.5-flash
 	if strings.HasPrefix(model, "glm-") {
-		// Convert dash-separated version to dot (glm-4-7 → glm-4.7)
 		replacer := regexp.MustCompile(`(?i)^(glm-\d+)-(\d+)(.*)$`)
 		matches := replacer.FindStringSubmatch(model)
 		if len(matches) >= 4 {
 			return matches[1] + "." + matches[2] + matches[3]
+		}
+	}
+
+	// Handle Claude: claude-opus-4-6 → claude-opus-4.6, claude-sonnet-4-5 → claude-sonnet-4.5
+	// New pattern: claude-{tier}-{major}-{minor} where tier is opus/sonnet/haiku/instant
+	if strings.HasPrefix(model, "claude-") {
+		claudeTierRe := regexp.MustCompile(`(?i)^(claude-(?:opus|sonnet|haiku|instant))-(\d+-\d+)(.*)$`)
+		matches := claudeTierRe.FindStringSubmatch(model)
+		if len(matches) >= 4 {
+			family := matches[1]
+			version := strings.ReplaceAll(matches[2], "-", ".")
+			rest := matches[3]
+			return family + "-" + version + rest
 		}
 	}
 
