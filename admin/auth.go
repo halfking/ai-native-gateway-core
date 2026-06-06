@@ -123,7 +123,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err == nil && ciphertext != "" {
 		decrypted, decErr := h.decryptCredStr(ciphertext)
 		if decErr == nil {
-			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE WHERE id = $1`, existingID)
+			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
 			writeJSON(w, http.StatusOK, keyCreatedResponse{
 				APIKey:    decrypted,
@@ -136,8 +136,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	raw, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	_, err = h.db.Exec(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, is_system)
-		VALUES ($1, 'default', $2, $3, $4, 'admin', TRUE, TRUE)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, is_system, remark)
+		VALUES ($1, 'default', $2, $3, $4, 'admin', TRUE, TRUE, 'admin login: no usable existing key')
 	`, appID, keyHash, keyPrefix, keyCiphertext)
 	if err != nil {
 		slog.Error("failed to create admin key", "error", err)

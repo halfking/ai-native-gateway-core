@@ -110,7 +110,7 @@ func main() {
 
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
 	healthHandler := relay.NewHealthHandler(cm, lim)
-	modelsHandler := relay.NewModelsHandler("")
+	modelsHandler := relay.NewModelsHandler()
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 

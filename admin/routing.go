@@ -664,11 +664,12 @@ func (h *Handler) handleRoutingManualPriority(w http.ResponseWriter, r *http.Req
 	defer cancel()
 
 	tag, err := h.db.Exec(ctx, `
-		UPDATE model_offers SET manual_priority = $1, updated_at = NOW()
+		UPDATE model_offers SET manual_priority = $1
 		WHERE credential_id = $2 AND lower(raw_model_name) = lower($3)
 	`, req.ManualPriority, req.CredentialID, req.ModelName)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
+		slog.Error("manual-priority update failed", "error", err, "cred_id", req.CredentialID, "model", req.ModelName)
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -700,7 +701,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 
 	weights := h.getScoringWeights(ctx)
 
-	rows, err := h.db.Query(ctx, `
+	sqlQuery := `
 		SELECT
 			c.id AS credential_id,
 			p.id AS provider_id,
@@ -725,7 +726,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		  AND lower(mo.raw_model_name) = lower($1)
 		  AND mo.available IS TRUE
 		ORDER BY mo.manual_priority NULLS LAST
-	`, model)
+	`
+	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model)
+	rows, err := h.db.Query(ctx, sqlQuery, model)
 	if err != nil {
 		slog.Error("score-details query failed", "error", err, "model", model)
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
@@ -1037,43 +1040,56 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Check if already exists
-	var exists bool
-	h.db.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM providers WHERE catalog_code = $1 AND tenant_id = 'default')
-	`, req.CatalogCode).Scan(&exists)
-
-	if exists {
-		writeError(w, http.StatusConflict, "provider already exists")
-		return
-	}
-
-	// Insert provider
+	// Upsert provider (align with Python free_pool_manager)
 	_, err := h.db.Exec(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
 			kind, category, protocol, base_url, egress_profile, domestic, enabled)
-		VALUES ('default', $1, $2, $1, true,
+		VALUES ('default', $1, $2, $1, false,
 			'cloud', 'aggregator', $3, $4, 'direct', true, true)
+		ON CONFLICT (tenant_id, code) DO UPDATE SET
+			display_name = EXCLUDED.display_name,
+			base_url = EXCLUDED.base_url,
+			enabled = true
 	`, req.CatalogCode, req.DisplayName, req.Protocol, req.BaseURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "insert provider failed")
 		return
 	}
 
-	// Get provider ID
 	var providerID int
 	h.db.QueryRow(ctx, `
 		SELECT id FROM providers WHERE catalog_code = $1 AND tenant_id = 'default'
 	`, req.CatalogCode).Scan(&providerID)
 
-	// Insert credential if API key provided
+	credLabel := req.CatalogCode + "-free-key"
 	if req.APIKey != "" {
-		h.db.Exec(ctx, `
-			INSERT INTO credentials (provider_id, tenant_id, label, trust_level, status,
-				lifecycle_status, availability_state, quota_state, pool_group, billing_mode)
-			VALUES ($1, 'default', $2 || '-free-key', 'degraded', 'active',
-				'active', 'ready', 'ok', 'free', 'free')
-		`, providerID, req.CatalogCode)
+		encrypted, encErr := h.encryptCred([]byte(req.APIKey))
+		if encErr != nil {
+			writeError(w, http.StatusInternalServerError, "encryption failed")
+			return
+		}
+		var existingID int
+		findErr := h.db.QueryRow(ctx, `
+			SELECT id FROM credentials WHERE provider_id = $1 AND label = $2
+		`, providerID, credLabel).Scan(&existingID)
+		if findErr != nil {
+			h.db.Exec(ctx, `
+				INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
+					trust_level, status, lifecycle_status, availability_state, quota_state,
+					pool_group)
+				VALUES ($1, 'default', $2, $3, 'degraded', 'active',
+					'active', 'ready', 'ok', 'free')
+			`, providerID, credLabel, encrypted)
+		} else {
+			h.db.Exec(ctx, `
+				UPDATE credentials SET
+					secret_ciphertext = $3,
+					status = 'active',
+					pool_group = 'free',
+					updated_at = NOW()
+				WHERE provider_id = $1 AND label = $2
+			`, providerID, credLabel, encrypted)
+		}
 	}
 
 	// Insert model offers

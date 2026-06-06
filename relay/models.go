@@ -12,19 +12,12 @@ import (
 // ModelsHandler serves the /v1/models endpoint.
 // It returns only models that have valid, active credentials.
 type ModelsHandler struct {
-	pythonEndpoint string
-	dbPool         *pgxpool.Pool
-	client         *http.Client
+	dbPool *pgxpool.Pool
 }
 
 // NewModelsHandler creates a new models handler.
-func NewModelsHandler(pythonEndpoint string) *ModelsHandler {
-	return &ModelsHandler{
-		pythonEndpoint: pythonEndpoint,
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
-	}
+func NewModelsHandler() *ModelsHandler {
+	return &ModelsHandler{}
 }
 
 // SetDB sets the database pool for direct model queries.
@@ -33,30 +26,23 @@ func (h *ModelsHandler) SetDB(pool *pgxpool.Pool) {
 }
 
 func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Try to serve from database first (with filtered, normalized models)
-	if h.dbPool != nil {
-		h.serveFromDB(w, r)
+	if h.dbPool == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": map[string]string{
+				"message": "Models service unavailable: no database connection",
+				"type":    "server_error",
+				"code":    "database_unavailable",
+			},
+		})
 		return
 	}
-
-	// Fallback to Python control plane
-	if h.pythonEndpoint != "" {
-		h.serveFromPython(w, r)
-		return
-	}
-
-	// No backend available
-	writeJSON(w, http.StatusOK, map[string]any{
-		"object": "list",
-		"data":   []any{},
-	})
+	h.serveFromDB(w, r)
 }
 
 func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Query models that have at least one active, available credential
 	rows, err := h.dbPool.Query(ctx, `
 		SELECT DISTINCT
 			mc.canonical_name,
@@ -74,15 +60,21 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	`)
 	if err != nil {
 		slog.Error("models: db query failed", "error", err)
-		h.serveFromPython(w, r)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]string{
+				"message": "Failed to query models from database",
+				"type":    "server_error",
+				"code":    "database_query_error",
+			},
+		})
 		return
 	}
 	defer rows.Close()
 
 	type modelEntry struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Family  string `json:"family,omitempty"`
+		ID       string `json:"id"`
+		Object   string `json:"object"`
+		Family   string `json:"family,omitempty"`
 		Modality string `json:"modality,omitempty"`
 	}
 
@@ -108,80 +100,4 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		"object": "list",
 		"data":   models,
 	})
-}
-
-func (h *ModelsHandler) serveFromPython(w http.ResponseWriter, r *http.Request) {
-	if h.pythonEndpoint == "" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"object": "list",
-			"data":   []any{},
-		})
-		return
-	}
-
-	// Clean up endpoint
-	endpoint := h.pythonEndpoint
-	for _, suffix := range []string{"/v1/chat/completions", "/v1/responses", "/v1/completions"} {
-		if len(endpoint) > len(suffix) && endpoint[len(endpoint)-len(suffix):] == suffix {
-			endpoint = endpoint[:len(endpoint)-len(suffix)]
-			break
-		}
-	}
-
-	target := endpoint + "/v1/models"
-	if r.URL.RawQuery != "" {
-		target += "?" + r.URL.RawQuery
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		slog.Error("models: build request failed", "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error": map[string]string{
-				"message": "failed to build models request",
-				"type":    "server_error",
-			},
-		})
-		return
-	}
-
-	for key, vals := range r.Header {
-		for _, val := range vals {
-			switch key {
-			case "X-Client-Profile", "X-Request-Id":
-				req.Header.Add(key, val)
-			}
-		}
-	}
-
-	resp, err := h.client.Do(req)
-	if err != nil {
-		slog.Error("models: upstream request failed", "error", err)
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error": map[string]string{
-				"message": "upstream models request failed",
-				"type":    "server_error",
-			},
-		})
-		return
-	}
-	defer resp.Body.Close()
-
-	// Forward the response
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			w.Write(buf[:n])
-		}
-		if err != nil {
-			break
-		}
-	}
 }
