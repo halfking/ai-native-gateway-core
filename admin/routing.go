@@ -219,7 +219,6 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		SELECT
 			COALESCE(mc.canonical_name, mo.raw_model_name) AS canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
-			COALESCE(mc.tags, '{}'::jsonb) AS tags,
 			mo.raw_model_name,
 			p.id AS provider_id, p.display_name AS provider_name,
 			c.id AS credential_id, c.label AS credential_label,
@@ -234,11 +233,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN LATERAL (
-			SELECT canonical_id FROM model_aliases
-			WHERE lower(raw_name) = lower(mo.raw_model_name) AND status = 'active' LIMIT 1
-		) ma ON TRUE
-		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') = 'active'
 		ORDER BY canonical_name, tier ASC, weight DESC, success_rate DESC
@@ -290,7 +285,6 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 
 	for rows.Next() {
 		var canonicalName, family, rawName string
-		var tagsJSON []byte
 		var provID, credID, tier, weight, p95 int
 		var provName, credLabel, credStatus, availState string
 		var available bool
@@ -298,20 +292,14 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		var currency *string
 		var successRate float64
 
-		if err := rows.Scan(&canonicalName, &family, &tagsJSON, &rawName,
+		if err := rows.Scan(&canonicalName, &family, &rawName,
 			&provID, &provName, &credID, &credLabel, &credStatus, &availState,
 			&available, &tier, &weight, &priceIn, &priceOut, &currency,
 			&successRate, &p95); err != nil {
 			continue
 		}
 
-		var tags map[string]any
-		if len(tagsJSON) > 0 {
-			json.Unmarshal(tagsJSON, &tags)
-		}
-		if tags == nil {
-			tags = map[string]any{}
-		}
+		tags := map[string]any{}
 
 		series, _ := tags["series"].(string)
 		if series == "" {
@@ -569,16 +557,11 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		SELECT mo.raw_model_name, mo.standardized_name,
 		       COUNT(DISTINCT p.id) AS provider_count,
 		       mc.canonical_name, mc.display_name, mc.family, mc.modality,
-		       mc.context_window, mc.parameters_b,
-		       COALESCE(mc.tags, '{}'::jsonb) AS tags
+		       mc.context_window, mc.parameters_b
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN LATERAL (
-			SELECT canonical_id FROM model_aliases
-			WHERE lower(raw_name) = lower(mo.raw_model_name) AND status = 'active' LIMIT 1
-		) ma ON TRUE
-		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE p.tenant_id = 'default'
 		  AND mo.available = TRUE
 		  AND c.status = 'active'
@@ -586,7 +569,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		  AND COALESCE(mc.status, 'active') = 'active'
 		GROUP BY mo.raw_model_name, mo.standardized_name, mc.canonical_name,
 		         mc.display_name, mc.family, mc.modality, mc.context_window,
-		         mc.parameters_b, mc.tags
+		         mc.parameters_b
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -624,12 +607,11 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		var rawName string
 		var stdName, canonName, dispName, family, modality *string
 		var ctxWin, paramsB *int
-		var tagsJSON []byte
 		var provCount int
 
 		if err := rows.Scan(&rawName, &stdName, &provCount,
 			&canonName, &dispName, &family, &modality,
-			&ctxWin, &paramsB, &tagsJSON); err != nil {
+			&ctxWin, &paramsB); err != nil {
 			continue
 		}
 
@@ -653,13 +635,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 				ve.ProviderCount = provCount
 			}
 		} else {
-			var tags map[string]any
-			if len(tagsJSON) > 0 {
-				json.Unmarshal(tagsJSON, &tags)
-			}
-			if tags == nil {
-				tags = map[string]any{}
-			}
+			tags := map[string]any{}
 			dn := cn
 			if dispName != nil && *dispName != "" {
 				dn = *dispName
