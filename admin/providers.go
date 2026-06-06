@@ -246,6 +246,8 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "models/":
+		h.handleProviderModelOffer(w, r, providerID, "")
 	case "query":
 		if r.Method == http.MethodPost || r.Method == http.MethodGet {
 			h.queryProviderModels(w, r, providerID)
@@ -270,6 +272,11 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		if len(subPath) > 12 && subPath[:12] == "credentials/" {
 			credPath := subPath[12:]
 			h.handleProviderCredentials(w, r, providerID, credPath)
+			return
+		}
+		if len(subPath) > 7 && subPath[:7] == "models/" {
+			offerPath := subPath[7:]
+			h.handleProviderModelOffer(w, r, providerID, offerPath)
 			return
 		}
 		http.NotFound(w, r)
@@ -2234,4 +2241,246 @@ func (h *Handler) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
+	if offerPath == "" {
+		writeError(w, http.StatusBadRequest, "offer_id required")
+		return
+	}
+
+	parts := splitPath(offerPath)
+	offerID, err := strconv.Atoi(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid offer_id")
+		return
+	}
+
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "suggestions":
+			h.getModelOfferSuggestions(w, r, providerID, offerID)
+			return
+		case "state":
+			h.toggleModelOfferState(w, r, providerID, offerID)
+			return
+		}
+	}
+
+	if r.Method == http.MethodPatch {
+		h.updateModelOffer(w, r, providerID, offerID)
+	} else {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	var req struct {
+		StandardizedName *string `json:"standardized_name"`
+		CanonicalID      *int    `json:"canonical_id"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var currentID int
+	var rawName string
+	err := h.db.QueryRow(ctx, `
+		SELECT mo.id, mo.raw_model_name FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE mo.id = $1 AND c.provider_id = $2
+	`, offerID, providerID).Scan(&currentID, &rawName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+
+	if req.CanonicalID != nil {
+		var canonName string
+		err := h.db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "canonical model not found")
+			return
+		}
+		h.db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
+		if req.StandardizedName == nil {
+			h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
+		}
+	}
+
+	if req.StandardizedName != nil {
+		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
+	}
+
+	var result struct {
+		ID               int     `json:"id"`
+		RawModelName     string  `json:"raw_model_name"`
+		StandardizedName *string `json:"standardized_name"`
+		CanonicalID      *int    `json:"canonical_id"`
+		CanonicalName    *string `json:"canonical_name"`
+	}
+	h.db.QueryRow(ctx, `
+		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
+		       mc.canonical_name
+		FROM model_offers mo
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		WHERE mo.id = $1
+	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
+		&result.CanonicalID, &result.CanonicalName)
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var rawName string
+	err := h.db.QueryRow(ctx, `
+		SELECT mo.raw_model_name FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE mo.id = $1 AND c.provider_id = $2
+	`, offerID, providerID).Scan(&rawName)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT id, canonical_name, COALESCE(display_name,''), COALESCE(family,'')
+		FROM models_canonical WHERE status = 'active' ORDER BY canonical_name
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type canonicalOption struct {
+		ID            int    `json:"id"`
+		CanonicalName string `json:"canonical_name"`
+		DisplayName   string `json:"display_name"`
+		Family        string `json:"family"`
+	}
+	options := make([]canonicalOption, 0)
+	for rows.Next() {
+		var o canonicalOption
+		if err := rows.Scan(&o.ID, &o.CanonicalName, &o.DisplayName, &o.Family); err != nil {
+			continue
+		}
+		options = append(options, o)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"offer_id":          offerID,
+		"raw_model_name":    rawName,
+		"rule_based":        rawName,
+		"canonical_options": options,
+	})
+}
+
+func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		Available bool `json:"available"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var credID int
+	err := h.db.QueryRow(ctx, `
+		SELECT mo.credential_id FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE mo.id = $1 AND c.provider_id = $2
+	`, offerID, providerID).Scan(&credID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "offer not found")
+		return
+	}
+
+	if req.Available {
+		h.db.Exec(ctx, `
+			UPDATE model_offers SET available = TRUE,
+			unavailable_reason = NULL, unavailable_at = NULL
+			WHERE id = $1
+		`, offerID)
+	} else {
+		h.db.Exec(ctx, `
+			UPDATE model_offers SET available = FALSE,
+			unavailable_reason = 'manual', unavailable_at = now()
+			WHERE id = $1
+		`, offerID)
+	}
+
+	h.db.Exec(ctx, `
+		UPDATE credentials SET availability_state = 'ready',
+		availability_recover_at = NULL, state_reason_code = NULL,
+		state_reason_detail = NULL, state_updated_at = now()
+		WHERE id = $1 AND lifecycle_status = 'active'
+		AND availability_state IN ('cooling', 'rate_limited', 'unreachable')
+	`, credID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "offer state updated",
+		"offer_id":  offerID,
+		"available": req.Available,
+	})
+}
+
+func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	path := r.URL.Path
+	stripPrefix := "/api/providers/credentials/"
+	remaining := path[len(stripPrefix):]
+
+	parts := splitPath(remaining)
+	if len(parts) < 2 || parts[1] != "force-recover" {
+		http.NotFound(w, r)
+		return
+	}
+
+	credID, err := strconv.Atoi(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid credential id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET availability_recover_at = now() - INTERVAL '1 second'
+		WHERE id = $1 AND lifecycle_status = 'active'
+	`, credID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found or not active")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"triggered":     true,
+		"credential_id": credID,
+	})
 }

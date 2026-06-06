@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -146,5 +148,35 @@ func (h *Handler) handleSystemTasks(w http.ResponseWriter, r *http.Request) {
 		"tasks":  tasks,
 		"status": "running",
 		"alive_count": aliveCount,
+	})
+}
+
+func (h *Handler) handleSystemVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	version := os.Getenv("LLM_GATEWAY_VERSION")
+	if version == "" {
+		version = "0.2.0"
+	}
+
+	gitSHA := os.Getenv("GIT_SHA")
+	if gitSHA == "" {
+		gitSHA = "unknown"
+	}
+
+	buildTime := os.Getenv("BUILD_TIME")
+	if buildTime == "" {
+		buildTime = time.Now().Format("20060102")
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":    version,
+		"git_sha":    gitSHA,
+		"build_time": buildTime,
+		"go_version": runtime.Version(),
+		"os":         runtime.GOOS + "/" + runtime.GOARCH,
 	})
 }
