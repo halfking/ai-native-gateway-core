@@ -91,7 +91,7 @@ func IsModelNotFound(kind ErrorKind) bool {
 
 func IsRetryable(kind ErrorKind) bool {
 	switch kind {
-	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindRateLimit, KindConcurrent, KindStreamTimeout:
+	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindConcurrent, KindStreamTimeout:
 		return true
 	default:
 		return false

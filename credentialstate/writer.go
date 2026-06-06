@@ -193,7 +193,8 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	case errorsx.KindConcurrent:
 		return 15 * time.Second
 	case errorsx.KindRateLimit:
-		return 60 * time.Second
+		// 15 minutes cooling for rate limit errors (unless upstream provides retry_after)
+		return 900 * time.Second
 	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindStreamTimeout:
 		return 30 * time.Second
 	case errorsx.KindUpstreamDown:

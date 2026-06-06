@@ -151,7 +151,7 @@ func TestHalfOpenProbeFailure(t *testing.T) {
 func TestRateLimitExponentialBackoff(t *testing.T) {
 	b := New(1, 1)
 
-	// Confirmed rate limit → 30s cooling
+	// Confirmed rate limit → 900s (15 min) cooling
 	b.RecordFailure(KindRateLimit)
 	b.RecordFailure(KindRateLimit)
 	if b.State() != StateOpen {
@@ -161,11 +161,11 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	b.mu.Lock()
 	firstCooling := b.coolingExpires.Sub(time.Now())
 	b.mu.Unlock()
-	if firstCooling < 28*time.Second || firstCooling > 32*time.Second {
-		t.Fatalf("expected ~30s cooling, got %v", firstCooling)
+	if firstCooling < 898*time.Second || firstCooling > 902*time.Second {
+		t.Fatalf("expected ~900s cooling, got %v", firstCooling)
 	}
 
-	// Second rate limit → 60s cooling
+	// Second rate limit → still 900s (at max)
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second) // expire current cooling
 	b.mu.Unlock()
@@ -175,8 +175,8 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	b.mu.Lock()
 	secondCooling := b.coolingExpires.Sub(time.Now())
 	b.mu.Unlock()
-	if secondCooling < 58*time.Second || secondCooling > 62*time.Second {
-		t.Fatalf("expected ~60s cooling, got %v", secondCooling)
+	if secondCooling < 898*time.Second || secondCooling > 902*time.Second {
+		t.Fatalf("expected ~900s cooling, got %v", secondCooling)
 	}
 }
 
