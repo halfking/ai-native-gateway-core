@@ -206,7 +206,211 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"families": []any{}})
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	featuredOnly := queryBool(r, "featured_only")
+
+	var featuredModels []string
+	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, '[]'::jsonb) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			COALESCE(mc.canonical_name, mo.raw_model_name) AS canonical_name,
+			COALESCE(mc.family, 'unknown') AS family,
+			COALESCE(mc.tags, '{}'::jsonb) AS tags,
+			mo.raw_model_name,
+			p.id AS provider_id, p.display_name AS provider_name,
+			c.id AS credential_id, c.label AS credential_label,
+			COALESCE(c.status, 'unknown') AS credential_status,
+			COALESCE(c.availability_state, 'ready') AS availability_state,
+			mo.available,
+			COALESCE(mo.routing_tier, 2) AS tier,
+			COALESCE(mo.weight, 100) AS weight,
+			mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mo.currency,
+			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
+			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN LATERAL (
+			SELECT canonical_id FROM model_aliases
+			WHERE lower(raw_name) = lower(mo.raw_model_name) AND status = 'active' LIMIT 1
+		) ma ON TRUE
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		WHERE p.tenant_id = 'default'
+		  AND COALESCE(mc.status, 'active') = 'active'
+		ORDER BY canonical_name, tier ASC, weight DESC, success_rate DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type credentialEntry struct {
+		CredentialID     int      `json:"credential_id"`
+		CredentialLabel  string   `json:"credential_label"`
+		CredentialStatus string   `json:"credential_status"`
+		ProviderID       int      `json:"provider_id"`
+		ProviderName     string   `json:"provider_name"`
+		Available        bool     `json:"available"`
+		Tier             int      `json:"tier"`
+		Weight           int      `json:"weight"`
+		PriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		PriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		Currency         *string  `json:"currency"`
+		SuccessRate      float64  `json:"success_rate"`
+		P95LatencyMs     int      `json:"p95_latency_ms"`
+		Routable         bool     `json:"runtime_routable"`
+		BlockReason      string   `json:"runtime_block_reason,omitempty"`
+	}
+
+	type variantEntry struct {
+		Variant       string            `json:"variant"`
+		CanonicalName string            `json:"canonical_name"`
+		Tags          map[string]any    `json:"tags"`
+		Credentials   []credentialEntry `json:"credentials"`
+	}
+
+	type generationEntry struct {
+		Generation string         `json:"generation"`
+		Variants   []variantEntry `json:"variants"`
+	}
+
+	type seriesEntry struct {
+		Series      string            `json:"series"`
+		Generations []generationEntry `json:"generations"`
+	}
+
+	// Build tree: series -> generation -> variant -> credentials
+	seriesMap := map[string]*seriesEntry{}
+	var unmapped []map[string]any
+
+	for rows.Next() {
+		var canonicalName, family, rawName string
+		var tagsJSON []byte
+		var provID, credID, tier, weight, p95 int
+		var provName, credLabel, credStatus, availState string
+		var available bool
+		var priceIn, priceOut *float64
+		var currency *string
+		var successRate float64
+
+		if err := rows.Scan(&canonicalName, &family, &tagsJSON, &rawName,
+			&provID, &provName, &credID, &credLabel, &credStatus, &availState,
+			&available, &tier, &weight, &priceIn, &priceOut, &currency,
+			&successRate, &p95); err != nil {
+			continue
+		}
+
+		var tags map[string]any
+		if len(tagsJSON) > 0 {
+			json.Unmarshal(tagsJSON, &tags)
+		}
+		if tags == nil {
+			tags = map[string]any{}
+		}
+
+		series, _ := tags["series"].(string)
+		if series == "" {
+			series = family
+		}
+		generation, _ := tags["generation"].(string)
+		if generation == "" {
+			generation = "default"
+		}
+		variant := canonicalName
+
+		// Check if routable
+		routable := available && credStatus == "active"
+		blockReason := ""
+		if !available {
+			blockReason = "offer_unavailable"
+		} else if credStatus != "active" {
+			blockReason = "credential_" + credStatus
+		}
+
+		cred := credentialEntry{
+			CredentialID:     credID,
+			CredentialLabel:  credLabel,
+			CredentialStatus: credStatus,
+			ProviderID:       provID,
+			ProviderName:     provName,
+			Available:        available,
+			Tier:             tier,
+			Weight:           weight,
+			PriceInPer1M:     priceIn,
+			PriceOutPer1M:    priceOut,
+			Currency:         currency,
+			SuccessRate:      successRate,
+			P95LatencyMs:     p95,
+			Routable:         routable,
+			BlockReason:      blockReason,
+		}
+
+		// Featured filter
+		if featuredOnly && len(featuredModels) > 0 {
+			found := false
+			for _, fm := range featuredModels {
+				if fm == rawName || fm == canonicalName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		// Build tree
+		if _, ok := seriesMap[series]; !ok {
+			seriesMap[series] = &seriesEntry{Series: series, Generations: []generationEntry{}}
+		}
+		se := seriesMap[series]
+
+		var ge *generationEntry
+		for i := range se.Generations {
+			if se.Generations[i].Generation == generation {
+				ge = &se.Generations[i]
+				break
+			}
+		}
+		if ge == nil {
+			se.Generations = append(se.Generations, generationEntry{Generation: generation, Variants: []variantEntry{}})
+			ge = &se.Generations[len(se.Generations)-1]
+		}
+
+		var ve *variantEntry
+		for i := range ge.Variants {
+			if ge.Variants[i].Variant == variant {
+				ve = &ge.Variants[i]
+				break
+			}
+		}
+		if ve == nil {
+			ge.Variants = append(ge.Variants, variantEntry{
+				Variant:       variant,
+				CanonicalName: canonicalName,
+				Tags:          tags,
+				Credentials:   []credentialEntry{},
+			})
+			ve = &ge.Variants[len(ge.Variants)-1]
+		}
+		ve.Credentials = append(ve.Credentials, cred)
+	}
+
+	seriesList := make([]seriesEntry, 0, len(seriesMap))
+	for _, se := range seriesMap {
+		seriesList = append(seriesList, *se)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"featured": featuredModels,
+		"series":   seriesList,
+		"unmapped": unmapped,
+	})
 }
 
 func (h *Handler) handleRoutingPolicy(w http.ResponseWriter, r *http.Request) {
@@ -356,7 +560,154 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"families": []any{}, "total_raw": 0})
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get active offers grouped by canonical
+	rows, err := h.db.Query(ctx, `
+		SELECT mo.raw_model_name, mo.standardized_name,
+		       COUNT(DISTINCT p.id) AS provider_count,
+		       mc.canonical_name, mc.display_name, mc.family, mc.modality,
+		       mc.context_window, mc.parameters_b,
+		       COALESCE(mc.tags, '{}'::jsonb) AS tags
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN LATERAL (
+			SELECT canonical_id FROM model_aliases
+			WHERE lower(raw_name) = lower(mo.raw_model_name) AND status = 'active' LIMIT 1
+		) ma ON TRUE
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		WHERE p.tenant_id = 'default'
+		  AND mo.available = TRUE
+		  AND c.status = 'active'
+		  AND p.enabled = TRUE
+		  AND COALESCE(mc.status, 'active') = 'active'
+		GROUP BY mo.raw_model_name, mo.standardized_name, mc.canonical_name,
+		         mc.display_name, mc.family, mc.modality, mc.context_window,
+		         mc.parameters_b, mc.tags
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type versionEntry struct {
+		CanonicalName  string  `json:"canonical_name"`
+		DisplayName    string  `json:"display_name"`
+		Modality       string  `json:"modality"`
+		ContextWindow  *int    `json:"context_window"`
+		ParametersB    *int    `json:"parameters_b"`
+		RawNames       []string `json:"raw_names"`
+		ProviderCount  int     `json:"provider_count"`
+		Tags           map[string]any `json:"tags"`
+	}
+
+	type familyEntry struct {
+		ID          string         `json:"id"`
+		DisplayName string         `json:"display_name"`
+		Versions    []versionEntry `json:"versions"`
+	}
+
+	// Group by canonical_name
+	type canonKey struct {
+		canonName string
+		family    string
+	}
+	canonMap := map[canonKey]*versionEntry{}
+	familySet := map[string]bool{}
+	familyDisplayMap := map[string]string{}
+
+	for rows.Next() {
+		var rawName string
+		var stdName, canonName, dispName, family, modality *string
+		var ctxWin, paramsB *int
+		var tagsJSON []byte
+		var provCount int
+
+		if err := rows.Scan(&rawName, &stdName, &provCount,
+			&canonName, &dispName, &family, &modality,
+			&ctxWin, &paramsB, &tagsJSON); err != nil {
+			continue
+		}
+
+		cn := ""
+		fm := "Unclassified"
+		if canonName != nil {
+			cn = *canonName
+		}
+		if family != nil && *family != "" {
+			fm = *family
+		}
+
+		if cn == "" {
+			cn = rawName
+		}
+
+		key := canonKey{canonName: cn, family: fm}
+		if ve, ok := canonMap[key]; ok {
+			ve.RawNames = append(ve.RawNames, rawName)
+			if provCount > ve.ProviderCount {
+				ve.ProviderCount = provCount
+			}
+		} else {
+			var tags map[string]any
+			if len(tagsJSON) > 0 {
+				json.Unmarshal(tagsJSON, &tags)
+			}
+			if tags == nil {
+				tags = map[string]any{}
+			}
+			dn := cn
+			if dispName != nil && *dispName != "" {
+				dn = *dispName
+			}
+			md := "text"
+			if modality != nil && *modality != "" {
+				md = *modality
+			}
+			canonMap[key] = &versionEntry{
+				CanonicalName: cn,
+				DisplayName:   dn,
+				Modality:      md,
+				ContextWindow: ctxWin,
+				ParametersB:   paramsB,
+				RawNames:      []string{rawName},
+				ProviderCount: provCount,
+				Tags:          tags,
+			}
+		}
+		familySet[fm] = true
+		if _, ok := familyDisplayMap[fm]; !ok {
+			familyDisplayMap[fm] = fm
+		}
+	}
+
+	// Build families list
+	familyVersions := map[string][]versionEntry{}
+	for key, ve := range canonMap {
+		familyVersions[key.family] = append(familyVersions[key.family], *ve)
+	}
+
+	families := make([]familyEntry, 0, len(familySet))
+	for fm := range familySet {
+		versions := familyVersions[fm]
+		if versions == nil {
+			versions = []versionEntry{}
+		}
+		families = append(families, familyEntry{
+			ID:          fm,
+			DisplayName: familyDisplayMap[fm],
+			Versions:    versions,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"families":   families,
+		"total_raw":  0,
+	})
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
@@ -1114,4 +1465,158 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 		"status":      "registered",
 		"provider_id": providerID,
 	})
+}
+
+func (h *Handler) handleFreePoolModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			mo.id AS offer_id, mo.raw_model_name, mo.standardized_name,
+			COALESCE(mc.canonical_name, '') AS canonical_name,
+			mo.available, COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			COALESCE(mo.routing_tier, 9) AS routing_tier,
+			mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mo.currency,
+			COALESCE(p.catalog_code, '') AS catalog_code,
+			p.display_name AS provider_name, p.protocol, p.base_url,
+			c.id AS credential_id, c.label AS credential_label,
+			COALESCE(c.status, 'unknown') AS credential_status,
+			COALESCE(c.availability_state, 'ready') AS availability_state,
+			COALESCE(c.quota_state, 'ok') AS quota_state
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		WHERE c.pool_group = 'free' AND mo.billing_mode = 'free'
+		ORDER BY mo.raw_model_name ASC, p.display_name ASC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type poolModel struct {
+		OfferID          int      `json:"offer_id"`
+		RawModelName     string   `json:"raw_model_name"`
+		StandardizedName *string  `json:"standardized_name"`
+		CanonicalName    string   `json:"canonical_name"`
+		Available        bool     `json:"available"`
+		BillingMode      string   `json:"billing_mode"`
+		RoutingTier      int      `json:"routing_tier"`
+		PriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		PriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		Currency         *string  `json:"currency"`
+		CatalogCode      string   `json:"catalog_code"`
+		ProviderName     string   `json:"provider_name"`
+		Protocol         string   `json:"protocol"`
+		BaseURL          string   `json:"base_url"`
+		CredentialID     int      `json:"credential_id"`
+		CredentialLabel  string   `json:"credential_label"`
+		CredentialStatus string   `json:"credential_status"`
+		AvailabilityState string  `json:"availability_state"`
+		QuotaState       string   `json:"quota_state"`
+	}
+
+	models := make([]poolModel, 0)
+	routable := 0
+	for rows.Next() {
+		var m poolModel
+		if err := rows.Scan(&m.OfferID, &m.RawModelName, &m.StandardizedName,
+			&m.CanonicalName, &m.Available, &m.BillingMode, &m.RoutingTier,
+			&m.PriceInPer1M, &m.PriceOutPer1M, &m.Currency,
+			&m.CatalogCode, &m.ProviderName, &m.Protocol, &m.BaseURL,
+			&m.CredentialID, &m.CredentialLabel, &m.CredentialStatus,
+			&m.AvailabilityState, &m.QuotaState); err != nil {
+			continue
+		}
+		models = append(models, m)
+		if m.Available && m.CredentialStatus == "active" &&
+			m.AvailabilityState != "rate_limited" && m.AvailabilityState != "cooling" &&
+			m.AvailabilityState != "unreachable" &&
+			m.QuotaState != "exhausted" && m.QuotaState != "balance_exhausted" {
+			routable++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"models":   models,
+		"total":    len(models),
+		"routable": routable,
+	})
+}
+
+func (h *Handler) handleFreePoolCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			p.catalog_code, p.display_name AS provider_name,
+			c.id AS credential_id, c.label AS credential_label,
+			COALESCE(c.status, 'unknown') AS credential_status,
+			COALESCE(c.availability_state, 'ready') AS availability_state,
+			COALESCE(c.quota_state, 'ok') AS quota_state,
+			c.balance_usd,
+			(c.secret_ciphertext IS NOT NULL) AS has_secret,
+			COALESCE(c.acquisition_source, '') AS acquisition_source,
+			COUNT(mo.id) AS total_offers,
+			COUNT(mo.id) FILTER (WHERE mo.available) AS available_offers,
+			COUNT(mo.id) FILTER (WHERE mo.billing_mode = 'free') AS free_offers
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN model_offers mo ON mo.credential_id = c.id
+		WHERE c.pool_group = 'free'
+		GROUP BY p.catalog_code, p.display_name, c.id, c.label,
+		         c.status, c.availability_state, c.quota_state, c.balance_usd,
+		         c.secret_ciphertext, c.acquisition_source
+		ORDER BY p.display_name
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type catalogEntry struct {
+		CatalogCode      string   `json:"catalog_code"`
+		ProviderName     string   `json:"provider_name"`
+		CredentialID     int      `json:"credential_id"`
+		CredentialLabel  string   `json:"credential_label"`
+		CredentialStatus string   `json:"credential_status"`
+		AvailabilityState string  `json:"availability_state"`
+		QuotaState       string   `json:"quota_state"`
+		BalanceUSD       *float64 `json:"balance_usd"`
+		HasSecret        bool     `json:"has_secret"`
+		AcquisitionSource string  `json:"acquisition_source"`
+		TotalOffers      int      `json:"total_offers"`
+		AvailableOffers  int      `json:"available_offers"`
+		FreeOffers       int      `json:"free_offers"`
+	}
+
+	entries := make([]catalogEntry, 0)
+	for rows.Next() {
+		var e catalogEntry
+		if err := rows.Scan(&e.CatalogCode, &e.ProviderName,
+			&e.CredentialID, &e.CredentialLabel, &e.CredentialStatus,
+			&e.AvailabilityState, &e.QuotaState, &e.BalanceUSD,
+			&e.HasSecret, &e.AcquisitionSource,
+			&e.TotalOffers, &e.AvailableOffers, &e.FreeOffers); err != nil {
+			continue
+		}
+		entries = append(entries, e)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"providers": entries})
 }

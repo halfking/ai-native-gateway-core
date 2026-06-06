@@ -136,6 +136,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/keys/apply", h.handleV1KeysApply)
 	mux.HandleFunc("/api/free-pool/status", h.handleFreePoolStatus)
 	mux.HandleFunc("/api/free-pool/register", h.handleFreePoolRegister)
+	mux.HandleFunc("/api/free-pool/models", h.handleFreePoolModels)
+	mux.HandleFunc("/api/free-pool/catalog", h.handleFreePoolCatalog)
+	mux.HandleFunc("/api/pricing/", h.handlePricing)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
