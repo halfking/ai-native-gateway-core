@@ -117,7 +117,7 @@ func TestIsRetryable(t *testing.T) {
 		{KindTimeout, true},
 		{KindNetwork, true},
 		{KindUpstreamDown, true},
-		{KindRateLimit, true},
+		{KindRateLimit, false},
 		{KindAuth, false},
 		{KindQuota, false},
 		{ErrorKind(""), false},
