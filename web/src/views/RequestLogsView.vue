@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getRequestLogs, getRequestLogDetail, getKeys, type RequestLogRow, type RequestLogDetail, type ApiKey } from '../api'
 
 const rows = ref<RequestLogRow[]>([])
@@ -9,12 +9,16 @@ const error = ref<string | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const hours = ref(24)
-const limit = ref(100)
+const limit = ref(50)
+const page = ref(1)
+const total = ref(0)
 
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const detailTab = ref<'request' | 'response'>('request')
+
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit.value)))
 
 async function loadKeys() {
   try {
@@ -30,18 +34,39 @@ async function load() {
   try {
     const end = new Date()
     const start = new Date(end.getTime() - hours.value * 3600 * 1000)
-    rows.value = await getRequestLogs({
+    const result = await getRequestLogs({
       api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
       from: start.toISOString(),
       to: end.toISOString(),
       q: keyword.value.trim() || undefined,
       limit: limit.value,
+      page: page.value,
     })
+    if (result && typeof result === 'object' && 'items' in result) {
+      rows.value = result.items
+      total.value = result.total || 0
+    } else {
+      rows.value = Array.isArray(result) ? result : []
+      total.value = rows.value.length
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
+}
+
+function changePage(delta: number) {
+  const next = page.value + delta
+  if (next >= 1 && next <= totalPages.value) {
+    page.value = next
+    load()
+  }
+}
+
+function resetPageAndLoad() {
+  page.value = 1
+  load()
 }
 
 function fmtTs(ts: string) {
@@ -146,6 +171,24 @@ onMounted(async () => {
         <input v-model="keyword" type="text" placeholder="模型名 / 消息片段" style="flex:1" @keyup.enter="load" />
       </div>
       <button class="btn btn-primary btn-sm" @click="load">查询</button>
+    </div>
+
+    <!-- Pagination -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:12px">
+      <div style="display:flex;gap:12px;align-items:center">
+        <span style="color:var(--muted)">共 {{ total }} 条</span>
+        <span v-if="total > 0">· 第 {{ page }} / {{ totalPages }} 页</span>
+        <select v-model.number="limit" @change="resetPageAndLoad" style="padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+          <option :value="20">20 条/页</option>
+          <option :value="50">50 条/页</option>
+          <option :value="100">100 条/页</option>
+          <option :value="200">200 条/页</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="changePage(1)">下一页</button>
+      </div>
     </div>
 
     <p v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</p>

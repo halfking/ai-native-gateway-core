@@ -18,6 +18,8 @@ import {
   getProviderLogs,
   startDiagnose,
   getDiagnoseResult,
+  resetCredentialAvailability,
+  resetCredentialQuota,
   type Provider,
   type ProviderCredential,
   type CredentialCheckResult,
@@ -322,6 +324,26 @@ async function delCred(c: ProviderCredential) {
   }
 }
 
+async function resetCredAvailability(c: ProviderCredential) {
+  if (!confirm('确认重置该凭据的可用性状态？')) return
+  try {
+    await resetCredentialAvailability(providerId.value, c.id)
+    await loadProvider()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '重置失败'
+  }
+}
+
+async function resetCredQuota(c: ProviderCredential) {
+  if (!confirm('确认重置该凭据的配额？')) return
+  try {
+    await resetCredentialQuota(providerId.value, c.id)
+    await loadProvider()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '重置失败'
+  }
+}
+
 function statusBadge(status: string) {
   if (status === 'active') return 'badge-green'
   if (status === 'disabled' || status === 'quota_expired' || status === 'quarantine') return 'badge-red'
@@ -514,6 +536,8 @@ onMounted(loadProvider)
                     <button class="btn btn-sm" @click="checkCred(c)" :disabled="credChecking[c.id]">
                       {{ credChecking[c.id] ? '检测中' : '检测' }}
                     </button>
+                    <button class="btn btn-ghost btn-sm" @click="resetCredAvailability(c)">重置可用性</button>
+                    <button class="btn btn-ghost btn-sm" @click="resetCredQuota(c)">重置配额</button>
                     <button class="btn btn-sm" @click="delCred(c)">停用</button>
                   </div>
                   <div v-if="credSaveMsgs[c.id]" style="font-size:11px;color:var(--danger);margin-top:4px">{{ credSaveMsgs[c.id] }}</div>
