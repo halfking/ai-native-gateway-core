@@ -511,10 +511,14 @@ func (h *Handler) handleRoutingFeatured(w http.ResponseWriter, r *http.Request) 
 	if r.Method == http.MethodGet {
 		var models []string
 		err := h.db.QueryRow(ctx, `
-			SELECT COALESCE(featured_models, '[]'::jsonb)
+			SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
 			FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1
 		`).Scan(&models)
 		if err != nil {
+			slog.Warn("routing featured: query failed", "error", err.Error())
+			models = []string{}
+		}
+		if models == nil {
 			models = []string{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"featured_models": models})
@@ -530,10 +534,9 @@ func (h *Handler) handleRoutingFeatured(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		modelsJSON, _ := json.Marshal(patch.FeaturedModels)
 		_, err := h.db.Exec(ctx, `
 			UPDATE routing_policy SET featured_models = $1 WHERE tenant_id = 'default'
-		`, modelsJSON)
+		`, patch.FeaturedModels)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "update failed")
 			return
@@ -1543,61 +1546,72 @@ func (h *Handler) handleFreePoolCatalog(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Get registered catalog codes + live models from DB
 	rows, err := h.db.Query(ctx, `
-		SELECT
-			p.catalog_code, p.display_name AS provider_name,
-			c.id AS credential_id, c.label AS credential_label,
-			COALESCE(c.status, 'unknown') AS credential_status,
-			COALESCE(c.availability_state, 'ready') AS availability_state,
-			COALESCE(c.quota_state, 'ok') AS quota_state,
-			c.balance_usd,
-			(c.secret_ciphertext IS NOT NULL) AS has_secret,
-			COALESCE(c.acquisition_source, '') AS acquisition_source,
-			COUNT(mo.id) AS total_offers,
-			COUNT(mo.id) FILTER (WHERE mo.available) AS available_offers,
-			COUNT(mo.id) FILTER (WHERE mo.billing_mode = 'free') AS free_offers
-		FROM credentials c
-		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN model_offers mo ON mo.credential_id = c.id
-		WHERE c.pool_group = 'free'
-		GROUP BY p.catalog_code, p.display_name, c.id, c.label,
-		         c.status, c.availability_state, c.quota_state, c.balance_usd,
-		         c.secret_ciphertext, c.acquisition_source
-		ORDER BY p.display_name
+		SELECT p.catalog_code, COALESCE(mo.raw_model_name, '')
+		FROM providers p
+		LEFT JOIN model_offers mo ON mo.credential_id IN (
+			SELECT id FROM credentials WHERE provider_id = p.id AND pool_group = 'free'
+		)
+		WHERE EXISTS (SELECT 1 FROM credentials c WHERE c.provider_id = p.id AND c.pool_group = 'free')
+		AND p.catalog_code <> ''
 	`)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+	registered := make(map[string][]string)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var code, model string
+			if err := rows.Scan(&code, &model); err == nil && code != "" {
+				if model != "" {
+					registered[code] = append(registered[code], model)
+				}
+			}
+		}
 	}
-	defer rows.Close()
 
 	type catalogEntry struct {
-		CatalogCode      string   `json:"catalog_code"`
-		ProviderName     string   `json:"provider_name"`
-		CredentialID     int      `json:"credential_id"`
-		CredentialLabel  string   `json:"credential_label"`
-		CredentialStatus string   `json:"credential_status"`
-		AvailabilityState string  `json:"availability_state"`
-		QuotaState       string   `json:"quota_state"`
-		BalanceUSD       *float64 `json:"balance_usd"`
-		HasSecret        bool     `json:"has_secret"`
-		AcquisitionSource string  `json:"acquisition_source"`
-		TotalOffers      int      `json:"total_offers"`
-		AvailableOffers  int      `json:"available_offers"`
-		FreeOffers       int      `json:"free_offers"`
+		CatalogCode        string   `json:"catalog_code"`
+		DisplayName        string   `json:"display_name"`
+		BaseURL            string   `json:"base_url"`
+		Models             []string `json:"models"`
+		LiveModels         []string `json:"live_models"`
+		ModelCountTemplate int      `json:"model_count_template"`
+		ModelCountLive     int      `json:"model_count_live"`
+		PoolRegistered     bool     `json:"pool_registered"`
+		RPMLimit           int      `json:"rpm_limit"`
+		SignupURL          string   `json:"signup_url"`
+		EnvVars            []string `json:"env_vars"`
+		AcquisitionMode    string   `json:"acquisition_mode"`
+		NeedsKey           bool     `json:"needs_key"`
+		EnvConfigured      bool     `json:"env_configured"`
 	}
 
-	entries := make([]catalogEntry, 0)
-	for rows.Next() {
-		var e catalogEntry
-		if err := rows.Scan(&e.CatalogCode, &e.ProviderName,
-			&e.CredentialID, &e.CredentialLabel, &e.CredentialStatus,
-			&e.AvailabilityState, &e.QuotaState, &e.BalanceUSD,
-			&e.HasSecret, &e.AcquisitionSource,
-			&e.TotalOffers, &e.AvailableOffers, &e.FreeOffers); err != nil {
-			continue
+	entries := make([]catalogEntry, 0, len(freeProviders))
+	for _, tpl := range freeProviders {
+		live := registered[tpl.catalogCode]
+		envConfigured := false
+		for _, ev := range tpl.envVars {
+			if os.Getenv(ev) != "" {
+				envConfigured = true
+				break
+			}
 		}
-		entries = append(entries, e)
+		entries = append(entries, catalogEntry{
+			CatalogCode:        tpl.catalogCode,
+			DisplayName:        tpl.displayName,
+			BaseURL:            tpl.baseURL,
+			Models:             tpl.models,
+			LiveModels:         live,
+			ModelCountTemplate: len(tpl.models),
+			ModelCountLive:     len(live),
+			PoolRegistered:     len(live) > 0,
+			RPMLimit:           tpl.rpmLimit,
+			SignupURL:          tpl.signupURL,
+			EnvVars:            tpl.envVars,
+			AcquisitionMode:    tpl.acquisitionMode,
+			NeedsKey:           tpl.needsKey,
+			EnvConfigured:      envConfigured,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"providers": entries})
