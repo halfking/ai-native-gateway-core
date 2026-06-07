@@ -51,25 +51,25 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	type candidate struct {
-		CredentialID      int     `json:"credential_id"`
-		ProviderID        int     `json:"provider_id"`
-		BaseURL           string  `json:"base_url"`
-		Protocol          string  `json:"protocol"`
-		Tier              int     `json:"tier"`
-		Weight            int     `json:"weight"`
-		RawModel          string  `json:"raw_model"`
-		StandardizedName  string  `json:"standardized_name"`
-		OutboundModel     string  `json:"outbound_model"`
-		SuccessRate       float64 `json:"success_rate"`
-		P95LatencyMs      int     `json:"p95_latency_ms"`
-		ConcurrencyLimit  *int    `json:"concurrency_limit"`
+		CredentialID      int      `json:"credential_id"`
+		ProviderID        int      `json:"provider_id"`
+		BaseURL           string   `json:"base_url"`
+		Protocol          string   `json:"protocol"`
+		Tier              int      `json:"tier"`
+		Weight            int      `json:"weight"`
+		RawModel          string   `json:"raw_model"`
+		StandardizedName  string   `json:"standardized_name"`
+		OutboundModel     string   `json:"outbound_model"`
+		SuccessRate       float64  `json:"success_rate"`
+		P95LatencyMs      int      `json:"p95_latency_ms"`
+		ConcurrencyLimit  *int     `json:"concurrency_limit"`
 		BalanceUSD        *float64 `json:"balance_usd"`
-		CircuitState      string  `json:"circuit_state"`
-		LifecycleStatus   string  `json:"lifecycle_status"`
-		AvailabilityState string  `json:"availability_state"`
-		QuotaState        string  `json:"quota_state"`
-		RuntimeRoutable   bool    `json:"runtime_routable"`
-		BlockReason       string  `json:"block_reason,omitempty"`
+		CircuitState      string   `json:"circuit_state"`
+		LifecycleStatus   string   `json:"lifecycle_status"`
+		AvailabilityState string   `json:"availability_state"`
+		QuotaState        string   `json:"quota_state"`
+		RuntimeRoutable   bool     `json:"runtime_routable"`
+		BlockReason       string   `json:"block_reason,omitempty"`
 	}
 
 	rawModels := []string{model}
@@ -268,7 +268,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	type variantEntry struct {
 		Variant       string            `json:"variant"`
 		CanonicalName string            `json:"canonical_name"`
-		Tags          map[string]any    `json:"tags"`
+		Tags          []string          `json:"tags"`
 		Credentials   []credentialEntry `json:"credentials"`
 	}
 
@@ -302,16 +302,10 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		tags := map[string]any{}
+		tags := []string{}
 
-		series, _ := tags["series"].(string)
-		if series == "" {
-			series = family
-		}
-		generation, _ := tags["generation"].(string)
-		if generation == "" {
-			generation = "default"
-		}
+		series := family
+		generation := "default"
 		variant := canonicalName
 
 		// Check if routable
@@ -397,6 +391,13 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 		seriesList = append(seriesList, *se)
 	}
 
+	if featuredModels == nil {
+		featuredModels = []string{}
+	}
+	if unmapped == nil {
+		unmapped = []map[string]any{}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"featured": featuredModels,
 		"series":   seriesList,
@@ -410,14 +411,14 @@ func (h *Handler) handleRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		var pol struct {
-			AlgorithmVersion    int      `json:"algorithm_version"`
-			RetryPerCredential  int      `json:"retry_per_credential"`
-			TierFallbackMax     int      `json:"tier_fallback_max"`
-			CircuitOpenSeconds  int      `json:"circuit_open_seconds"`
-			CircuitFailureThreshold int `json:"circuit_failure_threshold"`
-			CircuitMaxOpenSeconds int   `json:"circuit_max_open_seconds"`
-			StickyTTLMilliseconds int   `json:"sticky_ttl_milliseconds"`
-			FeaturedModels      []string `json:"featured_models"`
+			AlgorithmVersion        int      `json:"algorithm_version"`
+			RetryPerCredential      int      `json:"retry_per_credential"`
+			TierFallbackMax         int      `json:"tier_fallback_max"`
+			CircuitOpenSeconds      int      `json:"circuit_open_seconds"`
+			CircuitFailureThreshold int      `json:"circuit_failure_threshold"`
+			CircuitMaxOpenSeconds   int      `json:"circuit_max_open_seconds"`
+			StickyTTLMilliseconds   int      `json:"sticky_ttl_milliseconds"`
+			FeaturedModels          []string `json:"featured_models"`
 		}
 		pol.AlgorithmVersion = 2
 		pol.RetryPerCredential = 1
@@ -584,14 +585,14 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	defer rows.Close()
 
 	type versionEntry struct {
-		CanonicalName  string  `json:"canonical_name"`
-		DisplayName    string  `json:"display_name"`
-		Modality       string  `json:"modality"`
-		ContextWindow  *int    `json:"context_window"`
-		ParametersB    *int    `json:"parameters_b"`
-		RawNames       []string `json:"raw_names"`
-		ProviderCount  int     `json:"provider_count"`
-		Tags           map[string]any `json:"tags"`
+		CanonicalName string         `json:"canonical_name"`
+		DisplayName   string         `json:"display_name"`
+		Modality      string         `json:"modality"`
+		ContextWindow *int           `json:"context_window"`
+		ParametersB   *int           `json:"parameters_b"`
+		RawNames      []string       `json:"raw_names"`
+		ProviderCount int            `json:"provider_count"`
+		Tags          map[string]any `json:"tags"`
 	}
 
 	type familyEntry struct {
@@ -687,8 +688,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"families":   families,
-		"total_raw":  0,
+		"families":  families,
+		"total_raw": 0,
 	})
 }
 
@@ -823,12 +824,12 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type credHealth struct {
-		CredentialID       int     `json:"credential_id"`
-		ProviderID         int     `json:"provider_id"`
-		ProviderName       string  `json:"provider_name"`
-		CircuitState       string  `json:"circuit_state"`
-		ConsecutiveFailures int   `json:"consecutive_failures"`
-		CoolingUntil       *time.Time `json:"cooling_until,omitempty"`
+		CredentialID        int        `json:"credential_id"`
+		ProviderID          int        `json:"provider_id"`
+		ProviderName        string     `json:"provider_name"`
+		CircuitState        string     `json:"circuit_state"`
+		ConsecutiveFailures int        `json:"consecutive_failures"`
+		CoolingUntil        *time.Time `json:"cooling_until,omitempty"`
 	}
 	creds := make([]credHealth, 0)
 	openCount := 0
@@ -844,10 +845,10 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 		creds = append(creds, c)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"credentials":  creds,
-		"total":        len(creds),
-		"open":         openCount,
-		"closed":       len(creds) - openCount,
+		"credentials": creds,
+		"total":       len(creds),
+		"open":        openCount,
+		"closed":      len(creds) - openCount,
 	})
 }
 
@@ -898,10 +899,10 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Model         string       `json:"model"`
+		Model         string           `json:"model"`
 		Messages      []map[string]any `json:"messages"`
-		MaxTokens     int          `json:"max_tokens"`
-		ClientProfile *string      `json:"client_profile"`
+		MaxTokens     int              `json:"max_tokens"`
+		ClientProfile *string          `json:"client_profile"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -963,15 +964,15 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COALESCE(display_name,'') FROM providers WHERE id = $1`, provID).Scan(&provName)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":       true,
-		"provider_id":   provID,
-		"provider_name": provName,
-		"credential_id": credID,
-		"model":         req.Model,
-		"raw_model":     rawModel,
+		"success":        true,
+		"provider_id":    provID,
+		"provider_name":  provName,
+		"credential_id":  credID,
+		"model":          req.Model,
+		"raw_model":      rawModel,
 		"outbound_model": outModel,
 		"client_profile": clientProfile,
-		"message":       "probe resolved provider (actual call not implemented)",
+		"message":        "probe resolved provider (actual call not implemented)",
 	})
 }
 
@@ -1074,21 +1075,21 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 
 	type scoreDetail struct {
-		CredentialID       int     `json:"credential_id"`
-		ProviderID         int     `json:"provider_id"`
-		ProviderName       string  `json:"provider_name"`
-		RawModel           string  `json:"raw_model"`
-		ManualPriority     int     `json:"manual_priority"`
-		PriceIn            float64 `json:"price_in"`
-		PriceOut           float64 `json:"price_out"`
-		BlendedCost        float64 `json:"blended_cost"`
-		ActiveSessions     int     `json:"active_sessions"`
-		ConsecutiveFailures int    `json:"consecutive_failures"`
-		ConcurrencyLimit   *int    `json:"concurrency_limit"`
-		Currency           string  `json:"currency"`
-		NormalizedCost     float64 `json:"normalized_cost"`
-		SessionLoad        float64 `json:"session_load"`
-		CompositeScore     float64 `json:"composite_score"`
+		CredentialID        int     `json:"credential_id"`
+		ProviderID          int     `json:"provider_id"`
+		ProviderName        string  `json:"provider_name"`
+		RawModel            string  `json:"raw_model"`
+		ManualPriority      int     `json:"manual_priority"`
+		PriceIn             float64 `json:"price_in"`
+		PriceOut            float64 `json:"price_out"`
+		BlendedCost         float64 `json:"blended_cost"`
+		ActiveSessions      int     `json:"active_sessions"`
+		ConsecutiveFailures int     `json:"consecutive_failures"`
+		ConcurrencyLimit    *int    `json:"concurrency_limit"`
+		Currency            string  `json:"currency"`
+		NormalizedCost      float64 `json:"normalized_cost"`
+		SessionLoad         float64 `json:"session_load"`
+		CompositeScore      float64 `json:"composite_score"`
 	}
 
 	details := make([]scoreDetail, 0)
@@ -1133,8 +1134,8 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"model":     model,
-		"weights":   weights,
+		"model":      model,
+		"weights":    weights,
 		"candidates": details,
 	})
 }
@@ -1196,9 +1197,9 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 
 func (h *Handler) getScoringWeights(ctx context.Context) map[string]float64 {
 	defaultWeights := map[string]float64{
-		"price":           10,
-		"session_load":    5,
-		"failure_penalty": 20,
+		"price":             10,
+		"session_load":      5,
+		"failure_penalty":   20,
 		"default_price_cny": 5.0,
 		"default_price_usd": 5.0,
 	}
@@ -1304,22 +1305,22 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type poolEntry struct {
-		CatalogCode       string         `json:"catalog_code"`
-		ProviderName      string         `json:"provider_name"`
-		CredentialID      int            `json:"credential_id"`
-		CredentialLabel   string         `json:"credential_label"`
-		CredentialStatus  string         `json:"credential_status"`
-		AvailabilityState string         `json:"availability_state"`
-		QuotaState        string         `json:"quota_state"`
-		BalanceUSD        *float64       `json:"balance_usd"`
-		HasSecret         bool           `json:"has_secret"`
-		AcquisitionSource *string        `json:"acquisition_source"`
-		AcquisitionDetail *string        `json:"acquisition_detail"`
-		TotalOffers       int            `json:"total_offers"`
-		AvailableOffers   int            `json:"available_offers"`
-		FreeOffers        int            `json:"free_offers"`
-		Models            []any          `json:"models"`
-		ModelNames        []string       `json:"model_names"`
+		CatalogCode       string   `json:"catalog_code"`
+		ProviderName      string   `json:"provider_name"`
+		CredentialID      int      `json:"credential_id"`
+		CredentialLabel   string   `json:"credential_label"`
+		CredentialStatus  string   `json:"credential_status"`
+		AvailabilityState string   `json:"availability_state"`
+		QuotaState        string   `json:"quota_state"`
+		BalanceUSD        *float64 `json:"balance_usd"`
+		HasSecret         bool     `json:"has_secret"`
+		AcquisitionSource *string  `json:"acquisition_source"`
+		AcquisitionDetail *string  `json:"acquisition_detail"`
+		TotalOffers       int      `json:"total_offers"`
+		AvailableOffers   int      `json:"available_offers"`
+		FreeOffers        int      `json:"free_offers"`
+		Models            []any    `json:"models"`
+		ModelNames        []string `json:"model_names"`
 	}
 	pool := make([]poolEntry, 0)
 	byCred := map[int][]any{}
@@ -1393,7 +1394,7 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		for modelRows.Next() {
 			var (
 				offerID                                                          int
-				rawModel, stdName, billingMode, catalogCode, providerName         string
+				rawModel, stdName, billingMode, catalogCode, providerName        string
 				protocol, baseURL, credLabel, credStatus, availState, quotaState string
 				currency                                                         string
 				available                                                        bool
@@ -1414,26 +1415,26 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 				availState != "rate_limited" && availState != "cooling" && availState != "unreachable" &&
 				quotaState != "exhausted" && quotaState != "balance_exhausted"
 			item := map[string]any{
-				"offer_id":          offerID,
-				"raw_model_name":    rawModel,
-				"standardized_name": nilOrString(stdName),
-				"canonical_name":    nil,
-				"available":         available,
-				"billing_mode":      billingMode,
-				"routing_tier":      routingTier,
+				"offer_id":              offerID,
+				"raw_model_name":        rawModel,
+				"standardized_name":     nilOrString(stdName),
+				"canonical_name":        nil,
+				"available":             available,
+				"billing_mode":          billingMode,
+				"routing_tier":          routingTier,
 				"unit_price_in_per_1m":  nilIfZeroFloat(priceIn),
 				"unit_price_out_per_1m": nilIfZeroFloat(priceOut),
-				"currency":          nilIfEmptyStr(currency),
-				"catalog_code":      catalogCode,
-				"provider_name":     providerName,
-				"protocol":          protocol,
-				"base_url":          baseURL,
-				"credential_id":     credID,
-				"credential_label":  credLabel,
-				"credential_status": credStatus,
-				"availability_state": availState,
-				"quota_state":       quotaState,
-				"routable":          routable,
+				"currency":              nilIfEmptyStr(currency),
+				"catalog_code":          catalogCode,
+				"provider_name":         providerName,
+				"protocol":              protocol,
+				"base_url":              baseURL,
+				"credential_id":         credID,
+				"credential_label":      credLabel,
+				"credential_status":     credStatus,
+				"availability_state":    availState,
+				"quota_state":           quotaState,
+				"routable":              routable,
 			}
 			models = append(models, item)
 			if available {
@@ -1543,8 +1544,8 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pool":                  pool,
-		"models":                models,
+		"pool":   pool,
+		"models": models,
 		"stats": map[string]any{
 			"total_providers":     len(distinctProviders),
 			"available_providers": len(availableProvidersSet),
@@ -1554,9 +1555,9 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			"catalog_templates":   len(catalog),
 			"catalog_registered":  catalogRegistered,
 		},
-		"active_catalog_codes":  activeCodes,
-		"live_models_by_code":   liveModelsByCode,
-		"catalog":               catalog,
+		"active_catalog_codes": activeCodes,
+		"live_models_by_code":  liveModelsByCode,
+		"catalog":              catalog,
 	})
 }
 
@@ -1587,11 +1588,11 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req struct {
-		CatalogCode string `json:"catalog_code"`
-		DisplayName string `json:"display_name"`
-		BaseURL     string `json:"base_url"`
-		Protocol    string `json:"protocol"`
-		APIKey      string `json:"api_key"`
+		CatalogCode string   `json:"catalog_code"`
+		DisplayName string   `json:"display_name"`
+		BaseURL     string   `json:"base_url"`
+		Protocol    string   `json:"protocol"`
+		APIKey      string   `json:"api_key"`
 		Models      []string `json:"models"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -1726,25 +1727,25 @@ func (h *Handler) handleFreePoolModels(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type poolModel struct {
-		OfferID          int      `json:"offer_id"`
-		RawModelName     string   `json:"raw_model_name"`
-		StandardizedName *string  `json:"standardized_name"`
-		CanonicalName    string   `json:"canonical_name"`
-		Available        bool     `json:"available"`
-		BillingMode      string   `json:"billing_mode"`
-		RoutingTier      int      `json:"routing_tier"`
-		PriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
-		PriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
-		Currency         *string  `json:"currency"`
-		CatalogCode      string   `json:"catalog_code"`
-		ProviderName     string   `json:"provider_name"`
-		Protocol         string   `json:"protocol"`
-		BaseURL          string   `json:"base_url"`
-		CredentialID     int      `json:"credential_id"`
-		CredentialLabel  string   `json:"credential_label"`
-		CredentialStatus string   `json:"credential_status"`
-		AvailabilityState string  `json:"availability_state"`
-		QuotaState       string   `json:"quota_state"`
+		OfferID           int      `json:"offer_id"`
+		RawModelName      string   `json:"raw_model_name"`
+		StandardizedName  *string  `json:"standardized_name"`
+		CanonicalName     string   `json:"canonical_name"`
+		Available         bool     `json:"available"`
+		BillingMode       string   `json:"billing_mode"`
+		RoutingTier       int      `json:"routing_tier"`
+		PriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+		PriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+		Currency          *string  `json:"currency"`
+		CatalogCode       string   `json:"catalog_code"`
+		ProviderName      string   `json:"provider_name"`
+		Protocol          string   `json:"protocol"`
+		BaseURL           string   `json:"base_url"`
+		CredentialID      int      `json:"credential_id"`
+		CredentialLabel   string   `json:"credential_label"`
+		CredentialStatus  string   `json:"credential_status"`
+		AvailabilityState string   `json:"availability_state"`
+		QuotaState        string   `json:"quota_state"`
 	}
 
 	models := make([]poolModel, 0)
@@ -1995,10 +1996,10 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cleanup":  map[string]any{"disabled": cleanupResults},
-		"mirror":   map[string]any{"registered": len(mirrorResults), "results": mirrorResults},
-		"env":      map[string]any{"registered": len(envResults), "results": envResults},
-		"status":   poolStatus,
+		"cleanup": map[string]any{"disabled": cleanupResults},
+		"mirror":  map[string]any{"registered": len(mirrorResults), "results": mirrorResults},
+		"env":     map[string]any{"registered": len(envResults), "results": envResults},
+		"status":  poolStatus,
 	})
 }
 
@@ -2021,13 +2022,13 @@ func (h *Handler) handleFreePoolBridgeOAuth(w http.ResponseWriter, r *http.Reque
 
 	if geminiToken != "" {
 		cfg := freeProviderConfig{
-			catalogCode:      "google-gemini-free",
-			displayName:      "Google Gemini (oauth-bridge)",
-			baseURL:          "https://generativelanguage.googleapis.com/v1beta/openai",
-			protocol:         "openai-completions",
-			apiKey:           geminiToken,
-			models:           []string{"gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"},
-			acquisitionMode:  "oauth",
+			catalogCode:       "google-gemini-free",
+			displayName:       "Google Gemini (oauth-bridge)",
+			baseURL:           "https://generativelanguage.googleapis.com/v1beta/openai",
+			protocol:          "openai-completions",
+			apiKey:            geminiToken,
+			models:            []string{"gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"},
+			acquisitionMode:   "oauth",
 			acquisitionDetail: "env:OAUTH_GEMINI_ACCESS_TOKEN",
 		}
 		result := h.registerFreeProvider(w, r, cfg)
@@ -2118,14 +2119,14 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 		cfg := freeProviderConfig{
-			catalogCode:      req.CatalogCode,
-			displayName:      req.DisplayName,
-			baseURL:          req.BaseURL,
-			protocol:         req.Protocol,
-			apiKey:           key,
-			models:           req.Models,
-			credentialLabel:  fmt.Sprintf("%s-free-key-%d", req.CatalogCode, i+1),
-			acquisitionMode:  "bulk",
+			catalogCode:       req.CatalogCode,
+			displayName:       req.DisplayName,
+			baseURL:           req.BaseURL,
+			protocol:          req.Protocol,
+			apiKey:            key,
+			models:            req.Models,
+			credentialLabel:   fmt.Sprintf("%s-free-key-%d", req.CatalogCode, i+1),
+			acquisitionMode:   "bulk",
 			acquisitionDetail: fmt.Sprintf("bulk-register key %d/%d", i+1, len(req.APIKeys)),
 		}
 		result := h.registerFreeProvider(w, r, cfg)
@@ -2150,14 +2151,14 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 // ── Shared helpers ────────────────────────────────────────────────────────
 
 type freeProviderConfig struct {
-	catalogCode      string
-	displayName      string
-	baseURL          string
-	protocol         string
-	apiKey           string
-	models           []string
-	credentialLabel  string
-	acquisitionMode  string
+	catalogCode       string
+	displayName       string
+	baseURL           string
+	protocol          string
+	apiKey            string
+	models            []string
+	credentialLabel   string
+	acquisitionMode   string
 	acquisitionDetail string
 }
 
@@ -2194,14 +2195,14 @@ func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
 			continue
 		}
 		configs = append(configs, freeProviderConfig{
-			catalogCode:      binding.catalogCode,
-			displayName:      binding.displayName,
-			baseURL:          binding.baseURL,
-			protocol:         "openai-completions",
-			apiKey:           apiKey,
-			models:           binding.models,
-			credentialLabel:  binding.catalogCode + "-free-key",
-			acquisitionMode:  "env",
+			catalogCode:       binding.catalogCode,
+			displayName:       binding.displayName,
+			baseURL:           binding.baseURL,
+			protocol:          "openai-completions",
+			apiKey:            apiKey,
+			models:            binding.models,
+			credentialLabel:   binding.catalogCode + "-free-key",
+			acquisitionMode:   "env",
 			acquisitionDetail: "env:" + binding.envVars[0],
 		})
 	}
