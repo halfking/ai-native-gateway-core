@@ -1,11 +1,24 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { store, clearApiKey } from './store'
 
 const route  = useRoute()
 const router = useRouter()
 const isLoggedIn = computed(() => !!store.apiKey)
+
+const versionInfo = ref<{ version: string; build: string } | null>(null)
+
+async function fetchVersion() {
+  try {
+    const res = await fetch('/api/system/version')
+    if (res.ok) {
+      versionInfo.value = await res.json()
+    }
+  } catch { /* ignore */ }
+}
+
+onMounted(fetchVersion)
 
 const nav = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
@@ -54,6 +67,9 @@ function logout() {
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
+        <div v-if="versionInfo" style="font-size:11px;color:var(--muted);margin-bottom:8px;text-align:center">
+          v{{ versionInfo.version }} ({{ versionInfo.build }})
+        </div>
         <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
       </div>
     </aside>
