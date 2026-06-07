@@ -1310,3 +1310,55 @@ export function registerFreeProvider(data: {
 }) {
   return req<{ status: string; provider_id: number }>('POST', '/api/free-pool/register', data)
 }
+
+export function getFreePoolMethods() {
+  return req<{ methods: any[]; audit_rules: any[]; scheduler: any }>('GET', '/api/free-pool/methods')
+}
+
+export function getFreePoolKeys() {
+  return req<any[]>('GET', '/api/free-pool/keys')
+}
+
+export function addFreePoolKey(data: { catalog_code: string; api_key: string; label?: string }) {
+  return req<{ id: number }>('POST', '/api/free-pool/keys', data)
+}
+
+export function getFreePoolSignupHub() {
+  return req<any>('GET', '/api/free-pool/signup-hub')
+}
+
+export function importFreePoolEnv() {
+  return req<{ imported: number }>('POST', '/api/free-pool/import-env')
+}
+
+export function discoverFreePool() {
+  return req<{ status: string }>('POST', '/api/free-pool/discover')
+}
+
+export function bridgeFreePoolOAuth() {
+  return req<{ status: string }>('POST', '/api/free-pool/bridge-oauth')
+}
+
+export function bootstrapFreePool() {
+  return req<{ status: string }>('POST', '/api/free-pool/bootstrap')
+}
+
+export function probeFreePoolCredential(data: { catalog_code: string; api_key: string }) {
+  return req<any>('POST', '/api/free-pool/probe', data)
+}
+
+export function quickEntryFreePool(data: { catalog_code: string; api_key: string; label?: string }) {
+  return req<{ provider_id: number }>('POST', '/api/free-pool/quick-entry', data)
+}
+
+export function createFreePoolTempEmail() {
+  return req<{ address: string; password: string; token: string; web_url: string }>('POST', '/api/free-pool/temp-email')
+}
+
+export function pollFreePoolTempEmail(token: string) {
+  return req<{ messages: any[] }>('GET', `/api/free-pool/temp-email/poll?token=${token}`)
+}
+
+export function getFreePoolCatalog() {
+  return req<any[]>('GET', '/api/free-pool/catalog')
+}
