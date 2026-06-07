@@ -165,7 +165,10 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		slog.Error("listModels rows.Err", "error", err)
 	}
 	slog.Info("listModels result", "count", len(models))
-	writeJSON(w, http.StatusOK, models)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": len(models),
+		"items": models,
+	})
 }
 
 func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +299,7 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 		}
 		families = append(families, f)
 	}
-	writeJSON(w, http.StatusOK, families)
+	writeJSON(w, http.StatusOK, map[string]any{"items": families})
 }
 
 func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {

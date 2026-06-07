@@ -93,11 +93,30 @@ func (s *Service) Stop() {
 func (s *Service) Status() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	running := map[string]any{}
+	latest := map[string]any{}
+	if s.lastRun != (time.Time{}) {
+		latest["finished_at"] = s.lastRun.Format(time.RFC3339)
+		latest["status"] = "succeeded"
+		latest["discovered"] = s.discovered
+		latest["summary"] = map[string]any{
+			"added":    s.discovered,
+			"updated":  0,
+			"skipped":  0,
+			"failed":   0,
+			"duration_ms": 0,
+		}
+	}
+	if s.running {
+		running["status"] = "running"
+		running["started_at"] = time.Now().Format(time.RFC3339)
+	}
 	return map[string]any{
-		"running":     s.running,
-		"last_run":    s.lastRun.Format(time.RFC3339),
-		"discovered":  s.discovered,
+		"running":     running,
+		"latest":      latest,
 		"interval_s":  int(s.interval.Seconds()),
+		"discovered":  s.discovered,
+		"last_run":    s.lastRun.Format(time.RFC3339),
 	}
 }
 
