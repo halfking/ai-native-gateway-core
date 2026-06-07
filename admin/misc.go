@@ -58,7 +58,7 @@ func (h *Handler) listTags(ctx context.Context, w http.ResponseWriter) {
 	}
 	type namespaceInfo struct {
 		Namespace string    `json:"namespace"`
-		Tags     []tagInfo `json:"tags"`
+		Tags      []tagInfo `json:"tags"`
 	}
 
 	grouped := map[string][]tagInfo{}
@@ -109,9 +109,9 @@ func (h *Handler) createTag(ctx context.Context, w http.ResponseWriter, r *http.
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"tag":      req.Tag,
-		"models":   len(req.Models),
-		"message":  "tag created",
+		"tag":     req.Tag,
+		"models":  len(req.Models),
+		"message": "tag created",
 	})
 }
 
@@ -144,10 +144,31 @@ func (h *Handler) handleSystemTasks(w http.ResponseWriter, r *http.Request) {
 			tasks[i].Status = "not_configured"
 		}
 	}
+	discovery := map[string]any{"alive": false, "running": false}
+	probeLoop := map[string]any{"alive": false}
+	cycler := map[string]any{"alive": false}
+	recovery := map[string]any{"alive": false}
+	for _, t := range tasks {
+		switch t.Name {
+		case "discovery":
+			discovery["alive"] = t.Alive
+			discovery["running"] = t.Alive
+		case "cred_cycler":
+			cycler["alive"] = t.Alive
+		case "cred_recovery":
+			recovery["alive"] = t.Alive
+		case "env_cleaner":
+			probeLoop["alive"] = probeLoop["alive"].(bool) || t.Alive
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tasks":  tasks,
-		"status": "running",
+		"tasks":       tasks,
+		"status":      "running",
 		"alive_count": aliveCount,
+		"discovery":   discovery,
+		"probe_loop":  probeLoop,
+		"cycler":      cycler,
+		"recovery":    recovery,
 	})
 }
 
