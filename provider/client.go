@@ -146,6 +146,7 @@ type cacheEntry[T any] struct {
 type Client struct {
 	dbPool    *pgxpool.Pool
 	fernetKey []byte
+	keyring   *secret.Keyring
 
 	mu        sync.RWMutex
 	candCache map[string]cacheEntry[*resolveResponse]
@@ -172,6 +173,11 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 		c.fernetKey = key
 	} else if pool != nil {
 		slog.Warn("credential fernet key unavailable; reveal will use RPC fallback", "error", err)
+	}
+	if kr, kerr := secret.KeyringFromEnv(secretKey, credentialEncryptionKey); kerr == nil {
+		c.keyring = kr
+	} else if pool != nil {
+		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
 	}
 }
 
@@ -432,6 +438,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
+		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		ORDER BY COALESCE(mo.manual_priority, 99), COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
 	`)
 	if err != nil {
@@ -606,10 +613,10 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 }
 
 func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) (string, error) {
-	if c.dbPool != nil && len(c.fernetKey) == 32 {
+	if c.dbPool != nil && (c.keyring != nil || len(c.fernetKey) == 32) {
 		return c.fetchRevealDB(ctx, providerID, credentialID)
 	}
-	return "", fmt.Errorf("credential reveal not configured (no DB or fernet key)")
+	return "", fmt.Errorf("credential reveal not configured (no DB, keyring, or fernet key)")
 }
 
 func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int) (string, error) {
@@ -628,7 +635,11 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	if len(ciphertext) == 0 {
 		return "", fmt.Errorf("credential %d has no secret", credentialID)
 	}
-	return secret.DecryptFernet(ciphertext, c.fernetKey)
+	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
 }
 
 func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []Candidate {
