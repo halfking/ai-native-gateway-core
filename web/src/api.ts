@@ -138,7 +138,7 @@ export function createProvider(data: { catalog_code: string; display_name?: stri
   return req<{ id: number; message: string }>('POST', '/api/providers', data)
 }
 
-export function updateProvider(id: number, data: { display_name?: string; base_url?: string; protocol?: string; notes?: string }) {
+export function updateProvider(id: number, data: { display_name?: string; base_url?: string; protocol?: string; kind?: string; category?: string; discount_rate?: number; notes?: string }) {
   return req<{ message: string }>('PATCH', `/api/providers/${id}`, data)
 }
 
@@ -148,6 +148,10 @@ export function toggleProvider(id: number) {
 
 export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
+}
+
+export function batchRecoverCredentials(providerId: number) {
+  return req<{ recovered: number }>('POST', `/api/providers/${providerId}/batch-recover`)
 }
 
 export function checkCredential(providerId: number, credId: number) {
