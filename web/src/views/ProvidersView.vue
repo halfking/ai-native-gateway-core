@@ -21,6 +21,47 @@ const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
 
+// Filter state
+const filterSearch = ref('')
+const filterHealth = ref('all')
+const filterFreeModel = ref<'all' | 'yes' | 'no'>('all')
+const healthTabs = [
+  { value: 'all', label: '全部' },
+  { value: 'healthy', label: '可用' },
+  { value: 'warning', label: '警告' },
+  { value: 'unreachable', label: '不可用' },
+]
+const freeModelTabs = [
+  { value: 'all', label: '全部' },
+  { value: 'yes', label: '含免费' },
+  { value: 'no', label: '不含免费' },
+]
+
+let _debounceTimer: ReturnType<typeof setTimeout> | null = null
+function debouncedLoad() {
+  if (_debounceTimer) clearTimeout(_debounceTimer)
+  _debounceTimer = setTimeout(() => loadProviders(), 300)
+}
+
+async function loadProviders() {
+  loading.value = true
+  error.value = ''
+  try {
+    const params: { search?: string; health_status?: string; has_free_model?: boolean } = {}
+    if (filterSearch.value) params.search = filterSearch.value
+    if (filterHealth.value !== 'all') params.health_status = filterHealth.value
+    if (filterFreeModel.value === 'yes') params.has_free_model = true
+    if (filterFreeModel.value === 'no') params.has_free_model = false
+    const [p, c] = await Promise.all([getProviders(params), getCatalog()])
+    providers.value = p
+    catalog.value = c
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
 const bgStatus = ref<BackgroundTasksStatus | null>(null)
 let _bgPollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -393,17 +434,7 @@ async function checkSingleCredential(prov: Provider, cred: { id: number }) {
 
 // ── Load ────────────────────────────────────────────────────────────────────
 async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    const [p, c] = await Promise.all([getProviders(), getCatalog()])
-    providers.value = p
-    catalog.value   = c
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
-  } finally {
-    loading.value = false
-  }
+  await loadProviders()
 }
 
 async function loadBgStatus() {
@@ -428,6 +459,25 @@ onUnmounted(() => {
     <div class="page-header">
       <h2>提供商管理</h2>
       <button class="btn btn-primary" @click="openAdd">+ 添加提供商</button>
+    </div>
+
+    <!-- Filter bar -->
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+      <input class="input" v-model="filterSearch" placeholder="搜索供应商..." style="width:200px" @input="debouncedLoad" />
+      <div style="display:flex;gap:4px">
+        <button v-for="tab in healthTabs" :key="tab.value"
+                :class="['btn btn-ghost btn-sm', { 'btn-primary': filterHealth === tab.value }]"
+                @click="filterHealth = tab.value; loadProviders()">
+          {{ tab.label }}
+        </button>
+      </div>
+      <div style="display:flex;gap:4px">
+        <button v-for="tab in freeModelTabs" :key="tab.value"
+                :class="['btn btn-ghost btn-sm', { 'btn-primary': filterFreeModel === tab.value }]"
+                @click="filterFreeModel = tab.value; loadProviders()">
+          {{ tab.label }}
+        </button>
+      </div>
     </div>
 
     <div class="bg-status-bar" v-if="bgStatus">
