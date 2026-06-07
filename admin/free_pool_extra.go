@@ -1523,6 +1523,47 @@ func envOrEmpty(name string) string {
 	return os.Getenv(name)
 }
 
+// ── Catalog builder (mirrors Python catalog_for_api) ─────────────────────
+
+func buildFreePoolCatalog(registeredCodes map[string]struct{}, liveModelsByCode map[string][]string) []map[string]any {
+	entries := make([]map[string]any, 0, len(freeProviders))
+	for _, tpl := range freeProviders {
+		live := liveModelsByCode[tpl.catalogCode]
+		if live == nil {
+			live = []string{}
+		}
+		envVars := tpl.envVars
+		if envVars == nil {
+			envVars = []string{}
+		}
+		envConfigured := false
+		for _, name := range envVars {
+			if os.Getenv(name) != "" {
+				envConfigured = true
+				break
+			}
+		}
+		_, registered := registeredCodes[tpl.catalogCode]
+		entries = append(entries, map[string]any{
+			"catalog_code":       tpl.catalogCode,
+			"display_name":       tpl.displayName,
+			"base_url":           tpl.baseURL,
+			"models":             tpl.models,
+			"live_models":        live,
+			"model_count_template": len(tpl.models),
+			"model_count_live":   len(live),
+			"pool_registered":    registered,
+			"rpm_limit":          tpl.rpmLimit,
+			"signup_url":         tpl.signupURL,
+			"env_vars":           envVars,
+			"acquisition_mode":   tpl.acquisitionMode,
+			"needs_key":          tpl.needsKey,
+			"env_configured":     envConfigured,
+		})
+	}
+	return entries
+}
+
 // ── Keys router (dispatches /keys and /keys/{sub}) ──────────────────────
 
 func (h *Handler) handleFreePoolKeysRouter(w http.ResponseWriter, r *http.Request) {
