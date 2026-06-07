@@ -12,6 +12,7 @@ import {
   checkCredential,
   updateCredential,
   revealCredentialKey,
+  batchRecoverCredentials,
   type Provider,
   type ProviderCredential,
   type CredentialCheckResult,
@@ -29,7 +30,7 @@ const activeTab = ref<'overview' | 'credentials' | 'models' | 'logs' | 'settings
 
 // Edit modal
 const showEditModal = ref(false)
-const editForm = ref({ display_name: '', base_url: '', protocol: '', notes: '' })
+const editForm = ref({ display_name: '', base_url: '', protocol: '', kind: '', category: '', discount_rate: 1, notes: '' })
 const editSaving = ref(false)
 const editError = ref('')
 
@@ -42,6 +43,10 @@ const addCredError = ref('')
 // Check status
 const checking = ref(false)
 const checkMessage = ref('')
+
+// Batch recover
+const batchRecovering = ref(false)
+const batchRecoverMsg = ref('')
 
 // Credential inline editing
 const credSaving = ref<Record<number, boolean>>({})
@@ -81,6 +86,9 @@ function openEdit() {
     display_name: provider.value.display_name || '',
     base_url: provider.value.base_url || '',
     protocol: provider.value.protocol || '',
+    kind: provider.value.kind || 'cloud',
+    category: provider.value.category || 'official',
+    discount_rate: provider.value.discount_rate || 1,
     notes: provider.value.notes || '',
   }
   editError.value = ''
@@ -122,6 +130,21 @@ async function handleCheck() {
     checkMessage.value = e instanceof Error ? e.message : '检测失败'
   } finally {
     checking.value = false
+  }
+}
+
+async function handleBatchRecover() {
+  if (!confirm('确认批量恢复所有冷却中凭据？')) return
+  batchRecovering.value = true
+  batchRecoverMsg.value = ''
+  try {
+    const result = await batchRecoverCredentials(providerId.value)
+    batchRecoverMsg.value = `恢复 ${result.recovered} 个凭据`
+    await loadProvider()
+  } catch (e: unknown) {
+    batchRecoverMsg.value = e instanceof Error ? e.message : '恢复失败'
+  } finally {
+    batchRecovering.value = false
   }
 }
 
@@ -410,27 +433,83 @@ onMounted(loadProvider)
 
       <!-- Settings Tab -->
       <div v-if="activeTab === 'settings'">
-        <div class="card">
-          <h3 style="margin:0 0 12px">设置</h3>
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="margin:0 0 12px">编辑提供商</h3>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:600px">
             <div class="form-group">
-              <label>显示名称</label>
-              <input class="input" v-model="provider.display_name" disabled />
+              <label>显示名</label>
+              <input class="input" v-model="editForm.display_name" />
             </div>
             <div class="form-group">
               <label>Base URL</label>
-              <input class="input" v-model="provider.base_url" disabled />
+              <input class="input" v-model="editForm.base_url" />
             </div>
             <div class="form-group">
               <label>协议</label>
-              <input class="input" v-model="provider.protocol" disabled />
+              <select class="input" v-model="editForm.protocol">
+                <option value="openai-completions">OpenAI Completions</option>
+                <option value="openai-responses">OpenAI Responses</option>
+                <option value="anthropic-messages">Anthropic Messages</option>
+                <option value="gemini-generate">Gemini Generate</option>
+              </select>
             </div>
             <div class="form-group">
+              <label>类型</label>
+              <select class="input" v-model="editForm.kind">
+                <option value="cloud">Cloud</option>
+                <option value="local">Local</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>分类</label>
+              <select class="input" v-model="editForm.category">
+                <option value="official">Official</option>
+                <option value="official_proxy">Official Proxy</option>
+                <option value="third_party_relay">Third Party Relay</option>
+                <option value="aggregator">Aggregator</option>
+                <option value="self_host">Self Host</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>折扣率</label>
+              <input class="input" type="number" step="0.01" min="0" max="1" v-model.number="editForm.discount_rate" />
+            </div>
+            <div class="form-group" style="grid-column:1/-1">
               <label>备注</label>
-              <input class="input" v-model="provider.notes" disabled />
+              <input class="input" v-model="editForm.notes" placeholder="内部说明" />
             </div>
           </div>
-          <button class="btn btn-primary btn-sm" style="margin-top:16px" @click="openEdit">编辑</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" @click="saveEdit" :disabled="editSaving">
+              {{ editSaving ? '保存中...' : '保存' }}
+            </button>
+            <span v-if="editError" style="color:var(--danger);font-size:13px">{{ editError }}</span>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="margin:0 0 12px">批量操作</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-ghost btn-sm" @click="handleBatchRecover" :disabled="batchRecovering">
+              {{ batchRecovering ? '恢复中...' : '批量恢复冷却凭据' }}
+            </button>
+            <span v-if="batchRecoverMsg" style="color:var(--muted);font-size:13px">{{ batchRecoverMsg }}</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin:0 0 12px">提供商信息</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
+            <div><span style="color:var(--muted)">ID:</span> {{ provider.id }}</div>
+            <div><span style="color:var(--muted)">代码:</span> <code>{{ provider.code }}</code></div>
+            <div><span style="color:var(--muted)">目录代码:</span> <code>{{ provider.catalog_code || '—' }}</code></div>
+            <div><span style="color:var(--muted)">协议:</span> <code>{{ provider.protocol }}</code></div>
+            <div><span style="color:var(--muted)">类型:</span> {{ provider.kind }} / {{ provider.category }}</div>
+            <div><span style="color:var(--muted)">出境配置:</span> {{ provider.egress_profile || '—' }}</div>
+            <div><span style="color:var(--muted)">国产:</span> {{ provider.domestic ? '是' : '否' }}</div>
+            <div><span style="color:var(--muted)">折扣率:</span> {{ provider.discount_rate || '—' }}</div>
+            <div><span style="color:var(--muted)">厂商:</span> {{ provider.vendor_name || '—' }}</div>
+          </div>
         </div>
       </div>
     </template>
@@ -456,6 +535,27 @@ onMounted(loadProvider)
             <option value="anthropic-messages">Anthropic Messages</option>
             <option value="gemini-generate">Gemini Generate</option>
           </select>
+        </div>
+        <div class="form-group">
+          <label>类型</label>
+          <select class="input" v-model="editForm.kind">
+            <option value="cloud">Cloud</option>
+            <option value="local">Local</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>分类</label>
+          <select class="input" v-model="editForm.category">
+            <option value="official">Official</option>
+            <option value="official_proxy">Official Proxy</option>
+            <option value="third_party_relay">Third Party Relay</option>
+            <option value="aggregator">Aggregator</option>
+            <option value="self_host">Self Host</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>折扣率</label>
+          <input class="input" type="number" step="0.01" min="0" max="1" v-model.number="editForm.discount_rate" />
         </div>
         <div class="form-group">
           <label>备注</label>
