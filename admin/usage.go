@@ -15,6 +15,8 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 
 	remaining := r.URL.Path[len("/api/usage/"):]
 	switch {
+	case remaining == "summary":
+		h.usageSummary(w, r)
 	case remaining == "dashboard":
 		h.usageDashboard(w, r)
 	case remaining == "hot-keys":
@@ -27,8 +29,6 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 		h.usageByKey(w, r)
 	case remaining == "by-application":
 		h.usageByApplication(w, r)
-	case remaining == "summary":
-		h.usageDashboard(w, r)
 	default:
 		h.usageKeyDetail(w, r)
 	}
@@ -39,61 +39,195 @@ func (h *Handler) handleUsageSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	h.usageDashboard(w, r)
+	h.usageSummary(w, r)
 }
 
-func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var stats struct {
-		TotalRequests   int     `json:"total_requests"`
-		TotalTokens     int     `json:"total_tokens"`
-		TotalCostUSD    float64 `json:"total_cost_usd"`
-		SuccessRate     float64 `json:"success_rate"`
-		ActiveKeys      int     `json:"active_keys"`
-		ActiveProviders int     `json:"active_providers"`
+	var summary struct {
+		TotalRequests       int     `json:"total_requests"`
+		TotalPromptTokens   int     `json:"total_prompt_tokens"`
+		TotalCompletionTok  int     `json:"total_completion_tokens"`
+		TotalCostUSD        float64 `json:"total_cost_usd"`
+		AvgLatencyMs        float64 `json:"avg_latency_ms"`
+		SuccessRate         float64 `json:"success_rate"`
+	}
+	row := h.db.QueryRow(ctx, `
+		SELECT
+			COUNT(*)                                        AS total_requests,
+			COALESCE(SUM(prompt_tokens), 0)                 AS total_prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0)             AS total_completion_tokens,
+			COALESCE(SUM(cost_usd), 0.0)                    AS total_cost_usd,
+			COALESCE(AVG(latency_ms), 0.0)                  AS avg_latency_ms,
+			COALESCE(
+				SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT
+				/ NULLIF(COUNT(*), 0), 1.0
+			)                                               AS success_rate
+		FROM usage_ledger
+		WHERE tenant_id = 'default'
+		  AND ts >= now() - ($1 * INTERVAL '1 day')
+	`, days)
+	if err := row.Scan(
+		&summary.TotalRequests,
+		&summary.TotalPromptTokens,
+		&summary.TotalCompletionTok,
+		&summary.TotalCostUSD,
+		&summary.AvgLatencyMs,
+		&summary.SuccessRate,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "summary query failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var overview struct {
+		TotalAPIKeys           int `json:"total_api_keys"`
+		ActiveAPIKeys          int `json:"active_api_keys"`
+		ActiveAPIKeysInWindow  int `json:"active_api_keys_in_window"`
+		TotalModels            int `json:"total_models"`
+		ActiveModelsInWindow   int `json:"active_models_in_window"`
+		TotalProviders         int `json:"total_providers"`
+		ActiveProviders        int `json:"active_providers"`
+		OfflineModels          int `json:"offline_models"`
+		OfflineCredentials     int `json:"offline_credentials"`
+		TotalCredentials       int `json:"total_credentials"`
 	}
 
-	h.db.QueryRow(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0),
-		       COALESCE(AVG(CASE WHEN success THEN 1 ELSE 0 END),0)
-		FROM usage_ledger WHERE ts > now() - interval '24 hours'
-	`).Scan(&stats.TotalRequests, &stats.TotalTokens, &stats.TotalCostUSD, &stats.SuccessRate)
-
-	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE enabled = TRUE AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'`).Scan(&stats.ActiveKeys)
-	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE enabled = TRUE AND tenant_id = 'default'`).Scan(&stats.ActiveProviders)
-
-	writeJSON(w, http.StatusOK, stats)
+	row := h.db.QueryRow(ctx, `
+		WITH usage_window AS (
+			SELECT *
+			  FROM usage_ledger
+			 WHERE tenant_id = 'default'
+			   AND ts >= now() - ($1 * INTERVAL '1 day')
+		),
+		active_key_window AS (
+			SELECT COUNT(DISTINCT api_key_id) AS cnt
+			  FROM usage_window
+			 WHERE api_key_id IS NOT NULL
+		),
+		active_model_window AS (
+			SELECT COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)) AS cnt
+			  FROM usage_window
+			 WHERE raw_model_name IS NOT NULL OR canonical_id IS NOT NULL
+		)
+		SELECT
+			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = 'default')                                                  AS total_api_keys,
+			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = 'default' AND enabled = TRUE)                               AS active_api_keys,
+			(SELECT COALESCE(cnt, 0) FROM active_key_window)                                                             AS active_api_keys_in_window,
+			(SELECT COUNT(*) FROM models_canonical)                                                                      AS total_models,
+			(SELECT COALESCE(cnt, 0) FROM active_model_window)                                                           AS active_models_in_window,
+			(SELECT COUNT(*) FROM providers WHERE tenant_id = 'default')                                                  AS total_providers,
+			(SELECT COUNT(*) FROM providers WHERE tenant_id = 'default' AND enabled = TRUE)                              AS active_providers,
+			(SELECT COUNT(*) FROM models_canonical mc WHERE COALESCE(mc.status, 'active') <> 'active')                    AS offline_models,
+			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = 'default' AND COALESCE(c.status, 'active') <> 'active') AS offline_credentials,
+			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = 'default')                                            AS total_credentials
+	`, days)
+	if err := row.Scan(
+		&overview.TotalAPIKeys,
+		&overview.ActiveAPIKeys,
+		&overview.ActiveAPIKeysInWindow,
+		&overview.TotalModels,
+		&overview.ActiveModelsInWindow,
+		&overview.TotalProviders,
+		&overview.ActiveProviders,
+		&overview.OfflineModels,
+		&overview.OfflineCredentials,
+		&overview.TotalCredentials,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "dashboard query failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, overview)
 }
 
 func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
+	limit := queryInt(r, "limit", 10)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 50 {
+		limit = 50
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT api_key_id, COUNT(*) as req_count, SUM(cost_usd)::float8 as total_cost
-		FROM usage_ledger
-		WHERE ts > now() - interval '24 hours'
-		GROUP BY api_key_id
-		ORDER BY req_count DESC
-		LIMIT 20
-	`)
+		SELECT
+			ul.api_key_id,
+			ak.key_prefix,
+			app.code AS application_code,
+			ak.owner_user,
+			COUNT(*)                                         AS request_count,
+			COALESCE(SUM(ul.total_tokens), 0)                AS total_tokens,
+			COALESCE(SUM(ul.cost_usd), 0.0)                  AS total_cost_usd,
+			MAX(ul.ts)                                       AS last_used_at
+		FROM usage_ledger ul
+		LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
+		LEFT JOIN applications app ON app.id = ak.application_id
+		WHERE ul.tenant_id = 'default'
+		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
+		  AND ul.api_key_id IS NOT NULL
+		GROUP BY ul.api_key_id, ak.key_prefix, app.code, ak.owner_user
+		ORDER BY total_tokens DESC, total_cost_usd DESC, request_count DESC
+		LIMIT $2
+	`, days, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
 	type hotKey struct {
-		APIKeyID  *int     `json:"api_key_id"`
-		ReqCount  int      `json:"request_count"`
-		TotalCost *float64 `json:"total_cost_usd"`
+		APIKeyID        *int       `json:"api_key_id"`
+		KeyPrefix       *string    `json:"key_prefix"`
+		ApplicationCode *string    `json:"application_code"`
+		OwnerUser       *string    `json:"owner_user"`
+		RequestCount    int        `json:"request_count"`
+		TotalTokens     int        `json:"total_tokens"`
+		TotalCostUSD    float64    `json:"total_cost_usd"`
+		LastUsedAt      *time.Time `json:"last_used_at"`
 	}
 	keys := make([]hotKey, 0)
 	for rows.Next() {
 		var k hotKey
-		if err := rows.Scan(&k.APIKeyID, &k.ReqCount, &k.TotalCost); err != nil {
+		if err := rows.Scan(
+			&k.APIKeyID,
+			&k.KeyPrefix,
+			&k.ApplicationCode,
+			&k.OwnerUser,
+			&k.RequestCount,
+			&k.TotalTokens,
+			&k.TotalCostUSD,
+			&k.LastUsedAt,
+		); err != nil {
 			continue
 		}
 		keys = append(keys, k)
@@ -102,43 +236,66 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
+	limit := queryInt(r, "limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT p.id, COALESCE(p.display_name, p.code) as provider_name,
-		       COUNT(*) as req_count,
-		       COALESCE(SUM(u.prompt_tokens),0) as prompt_tokens,
-		       COALESCE(SUM(u.completion_tokens),0) as completion_tokens,
-		       COALESCE(SUM(u.cost_usd),0)::float8 as total_cost,
-		       COALESCE(AVG(CASE WHEN u.success THEN 1 ELSE 0 END),0) as success_rate
+		SELECT
+			p.id,
+			COALESCE(p.display_name, p.code)                                              AS provider_name,
+			COALESCE(p.code, 'unknown')                                                   AS provider_code,
+			COUNT(*)                                                                     AS request_count,
+			COALESCE(SUM(u.prompt_tokens), 0)                                            AS prompt_tokens,
+			COALESCE(SUM(u.completion_tokens), 0)                                        AS completion_tokens,
+			COALESCE(SUM(u.cost_usd), 0.0)                                               AS total_cost_usd,
+			COALESCE(AVG(CASE WHEN u.success THEN 1 ELSE 0 END), 0.0)                    AS success_rate
 		FROM usage_ledger u
 		JOIN credentials c ON c.id = u.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE u.ts > now() - interval '24 hours'
+		WHERE u.tenant_id = 'default'
+		  AND u.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY p.id, p.display_name, p.code
-		ORDER BY total_cost DESC
-		LIMIT 50
-	`)
+		ORDER BY total_cost_usd DESC, request_count DESC
+		LIMIT $2
+	`, days, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
 	type providerUsage struct {
-		ProviderID      int      `json:"provider_id"`
-		ProviderName    string   `json:"provider_name"`
-		ReqCount        int      `json:"request_count"`
-		PromptTokens    int      `json:"prompt_tokens"`
+		ProviderID       int     `json:"provider_id"`
+		ProviderName     string  `json:"provider_name"`
+		ProviderCode     string  `json:"provider_code"`
+		RequestCount     int     `json:"request_count"`
+		PromptTokens     int     `json:"prompt_tokens"`
 		CompletionTokens int     `json:"completion_tokens"`
-		TotalCost       float64  `json:"total_cost_usd"`
-		SuccessRate     float64  `json:"success_rate"`
+		TotalCostUSD     float64 `json:"total_cost_usd"`
+		SuccessRate      float64 `json:"success_rate"`
 	}
 	usage := make([]providerUsage, 0)
 	for rows.Next() {
 		var u providerUsage
-		if err := rows.Scan(&u.ProviderID, &u.ProviderName, &u.ReqCount, &u.PromptTokens, &u.CompletionTokens, &u.TotalCost, &u.SuccessRate); err != nil {
+		if err := rows.Scan(
+			&u.ProviderID, &u.ProviderName, &u.ProviderCode,
+			&u.RequestCount, &u.PromptTokens, &u.CompletionTokens,
+			&u.TotalCostUSD, &u.SuccessRate,
+		); err != nil {
 			continue
 		}
 		usage = append(usage, u)
@@ -147,37 +304,65 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
+	limit := queryInt(r, "limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 200 {
+		limit = 200
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT raw_model_name, COUNT(*) as req_count,
-		       SUM(prompt_tokens) as prompt_tokens,
-		       SUM(completion_tokens) as completion_tokens,
-		       SUM(cost_usd)::float8 as total_cost
-		FROM usage_ledger
-		WHERE ts > now() - interval '24 hours'
-		GROUP BY raw_model_name
-		ORDER BY req_count DESC
-		LIMIT 50
-	`)
+		SELECT
+			ul.raw_model_name                                              AS model,
+			COALESCE(p.code, 'unknown')                                    AS provider_code,
+			COUNT(*)                                                       AS total_requests,
+			COALESCE(SUM(ul.total_tokens),
+			         SUM(ul.prompt_tokens) + SUM(ul.completion_tokens), 0) AS total_tokens,
+			COALESCE(SUM(ul.cost_usd), 0.0)                                AS total_cost_usd,
+			COALESCE(AVG(ul.latency_ms), 0.0)                              AS avg_latency_ms
+		FROM usage_ledger ul
+		LEFT JOIN providers p ON p.id = ul.provider_id
+		WHERE ul.tenant_id = 'default'
+		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
+		GROUP BY ul.raw_model_name, p.code
+		ORDER BY total_cost_usd DESC, total_requests DESC
+		LIMIT $2
+	`, days, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
 	type modelUsage struct {
-		Model            string   `json:"model"`
-		ReqCount         int      `json:"request_count"`
-		PromptTokens     *int     `json:"prompt_tokens"`
-		CompletionTokens *int     `json:"completion_tokens"`
-		TotalCost        *float64 `json:"total_cost_usd"`
+		Model         string  `json:"model"`
+		ProviderCode  string  `json:"provider_code"`
+		TotalRequests int     `json:"total_requests"`
+		TotalTokens   int     `json:"total_tokens"`
+		TotalCostUSD  float64 `json:"total_cost_usd"`
+		AvgLatencyMs  float64 `json:"avg_latency_ms"`
 	}
 	usage := make([]modelUsage, 0)
 	for rows.Next() {
 		var u modelUsage
-		if err := rows.Scan(&u.Model, &u.ReqCount, &u.PromptTokens, &u.CompletionTokens, &u.TotalCost); err != nil {
+		if err := rows.Scan(
+			&u.Model,
+			&u.ProviderCode,
+			&u.TotalRequests,
+			&u.TotalTokens,
+			&u.TotalCostUSD,
+			&u.AvgLatencyMs,
+		); err != nil {
 			continue
 		}
 		usage = append(usage, u)
@@ -186,33 +371,53 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 7)
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT api_key_id, COUNT(*) as req_count,
-		       SUM(cost_usd)::float8 as total_cost
-		FROM usage_ledger
-		WHERE ts > now() - interval '24 hours'
-		GROUP BY api_key_id
-		ORDER BY total_cost DESC NULLS LAST
-		LIMIT 50
-	`)
+		SELECT
+			ul.api_key_id,
+			ak.key_prefix,
+			COUNT(*)                                       AS request_count,
+			COALESCE(SUM(ul.cost_usd), 0.0)                AS cost_usd,
+			COALESCE(SUM(ul.prompt_tokens), 0)             AS prompt_tokens,
+			COALESCE(SUM(ul.completion_tokens), 0)         AS completion_tokens
+		FROM usage_ledger ul
+		LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
+		WHERE ul.tenant_id = 'default'
+		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
+		GROUP BY ul.api_key_id, ak.key_prefix
+		ORDER BY cost_usd DESC
+	`, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
 
 	type keyUsage struct {
-		APIKeyID  *int     `json:"api_key_id"`
-		ReqCount  int      `json:"request_count"`
-		TotalCost *float64 `json:"total_cost_usd"`
+		APIKeyID         *int    `json:"api_key_id"`
+		KeyPrefix        *string `json:"key_prefix"`
+		RequestCount     int     `json:"request_count"`
+		CostUSD          float64 `json:"cost_usd"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
 	}
 	usage := make([]keyUsage, 0)
 	for rows.Next() {
 		var u keyUsage
-		if err := rows.Scan(&u.APIKeyID, &u.ReqCount, &u.TotalCost); err != nil {
+		if err := rows.Scan(
+			&u.APIKeyID, &u.KeyPrefix,
+			&u.RequestCount, &u.CostUSD,
+			&u.PromptTokens, &u.CompletionTokens,
+		); err != nil {
 			continue
 		}
 		usage = append(usage, u)
@@ -401,24 +606,15 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 }
 
 func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
+	days := queryInt(r, "days", 30)
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-
-	period := queryString(r, "period")
-	if period == "" {
-		period = "month"
-	}
-
-	intervalMap := map[string]string{
-		"today": "1 day",
-		"week":  "7 days",
-		"month": "30 days",
-		"year":  "365 days",
-	}
-	interval := intervalMap[period]
-	if interval == "" {
-		interval = "30 days"
-	}
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -433,12 +629,12 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 		FROM usage_ledger ul
 		LEFT JOIN applications app ON app.id = ul.application_id
 		WHERE ul.tenant_id = 'default'
-		  AND ul.ts >= now() - ($1::INTERVAL)
+		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY app.code
 		ORDER BY total_cost_usd DESC
-	`, interval)
+	`, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		writeError(w, http.StatusInternalServerError, "by-application query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
