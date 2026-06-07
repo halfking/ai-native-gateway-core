@@ -15,10 +15,12 @@ import {
   batchRecoverCredentials,
   getProviderModels,
   toggleModelOfferState,
+  getProviderLogs,
   type Provider,
   type ProviderCredential,
   type CredentialCheckResult,
   type ModelOffer,
+  type ProviderLogEntry,
 } from '../api'
 
 const route = useRoute()
@@ -55,6 +57,14 @@ const batchRecoverMsg = ref('')
 const modelOffers = ref<ModelOffer[]>([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
+
+// Logs
+const logs = ref<ProviderLogEntry[]>([])
+const logsTotal = ref(0)
+const logsPage = ref(1)
+const logsLoading = ref(false)
+const logsError = ref('')
+const logsKeyword = ref('')
 
 // Credential inline editing
 const credSaving = ref<Record<number, boolean>>({})
@@ -106,6 +116,24 @@ async function toggleModel(offer: ModelOffer) {
     await loadModels()
   } catch (e: unknown) {
     modelsError.value = e instanceof Error ? e.message : '操作失败'
+  }
+}
+
+async function loadLogs() {
+  logsLoading.value = true
+  logsError.value = ''
+  try {
+    const resp = await getProviderLogs(providerId.value, {
+      model: logsKeyword.value.trim() || undefined,
+      page: logsPage.value,
+      page_size: 50,
+    })
+    logs.value = resp.items
+    logsTotal.value = resp.total
+  } catch (e: unknown) {
+    logsError.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    logsLoading.value = false
   }
 }
 
@@ -325,7 +353,7 @@ onMounted(loadProvider)
         <button v-for="tab in (['overview','credentials','models','logs','settings'] as const)"
                 :key="tab"
                 :class="['btn btn-ghost btn-sm', { 'btn-primary': activeTab === tab }]"
-                @click="activeTab = tab; if(tab === 'models') loadModels()">
+                @click="activeTab = tab; if(tab === 'models') loadModels(); if(tab === 'logs') loadLogs()">
           {{ { overview: '概览', credentials: '凭据', models: '模型', logs: '请求日志', settings: '设置' }[tab] }}
         </button>
       </div>
@@ -500,9 +528,56 @@ onMounted(loadProvider)
 
       <!-- Logs Tab -->
       <div v-if="activeTab === 'logs'">
-        <div class="card">
-          <h3 style="margin:0 0 12px">请求日志</h3>
-          <p style="color:var(--muted);font-size:13px">日志筛选功能开发中...</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <input class="input" v-model="logsKeyword" placeholder="搜索模型名..." style="flex:1;max-width:300px" @keyup.enter="logsPage=1;loadLogs()" />
+          <button class="btn btn-primary btn-sm" @click="logsPage=1;loadLogs()" :disabled="logsLoading">
+            {{ logsLoading ? '加载中...' : '查询' }}
+          </button>
+          <span style="color:var(--muted);font-size:12px">共 {{ logsTotal }} 条</span>
+        </div>
+        <div v-if="logsError" class="alert alert-danger" style="margin-bottom:12px">{{ logsError }}</div>
+        <div v-if="logsLoading" style="text-align:center;padding:24px;color:var(--muted)">加载中...</div>
+        <div v-else-if="logs.length === 0" class="card" style="text-align:center;padding:24px;color:var(--muted)">
+          暂无日志
+        </div>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table" style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>凭据</th>
+                <th>客户端模型</th>
+                <th>出站模型</th>
+                <th>成功</th>
+                <th>错误类型</th>
+                <th>Token (入/出)</th>
+                <th>费用</th>
+                <th>延迟</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(l, i) in logs" :key="i">
+                <td style="font-size:11px">{{ fmtTime(l.ts) }}</td>
+                <td style="color:var(--muted)">#{{ l.credential_id }}</td>
+                <td><code style="font-size:11px">{{ l.client_model || '—' }}</code></td>
+                <td><code style="font-size:11px">{{ l.outbound_model || '—' }}</code></td>
+                <td>
+                  <span :class="['badge', l.success ? 'badge-green' : 'badge-red']">
+                    {{ l.success ? 'OK' : 'FAIL' }}
+                  </span>
+                </td>
+                <td style="color:var(--muted)">{{ l.error_kind || '—' }}</td>
+                <td>{{ l.prompt_tokens ?? '—' }} / {{ l.completion_tokens ?? '—' }}</td>
+                <td>{{ l.cost_usd != null ? '$' + Number(l.cost_usd).toFixed(6) : '—' }}</td>
+                <td>{{ l.latency_ms != null ? l.latency_ms + 'ms' : '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="logsTotal > 50" style="display:flex;gap:12px;align-items:center;margin-top:12px">
+          <button class="btn btn-ghost btn-sm" :disabled="logsPage <= 1" @click="logsPage--;loadLogs()">上一页</button>
+          <span style="color:var(--muted)">{{ logsPage }} / {{ Math.ceil(logsTotal / 50) }}</span>
+          <button class="btn btn-ghost btn-sm" :disabled="logsPage >= Math.ceil(logsTotal / 50)" @click="logsPage++;loadLogs()">下一页</button>
         </div>
       </div>
 
