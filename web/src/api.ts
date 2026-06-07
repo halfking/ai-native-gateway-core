@@ -351,6 +351,14 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
+export function resetCredentialAvailability(providerId: number, credId: number) {
+  return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-availability`)
+}
+
+export function resetCredentialQuota(providerId: number, credId: number) {
+  return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-quota`)
+}
+
 // ── Keys ─────────────────────────────────────────────────────────────────
 
 export interface ApiKey {
