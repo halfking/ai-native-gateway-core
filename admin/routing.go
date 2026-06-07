@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -1280,6 +1281,10 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			c.status AS credential_status,
 			c.availability_state,
 			c.quota_state,
+			c.balance_usd,
+			(c.secret_ciphertext IS NOT NULL) AS has_secret,
+			c.acquisition_source,
+			c.acquisition_detail,
 			COUNT(mo.id) AS total_offers,
 			COUNT(mo.id) FILTER (WHERE mo.available) AS available_offers,
 			COUNT(mo.id) FILTER (WHERE mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0) AS free_offers
@@ -1288,7 +1293,8 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN model_offers mo ON mo.credential_id = c.id
 		WHERE c.pool_group = 'free'
 		GROUP BY p.catalog_code, p.display_name, c.id, c.label,
-				 c.status, c.availability_state, c.quota_state
+				 c.status, c.availability_state, c.quota_state, c.balance_usd,
+				 c.secret_ciphertext, c.acquisition_source, c.acquisition_detail
 		ORDER BY p.display_name
 	`)
 	if err != nil {
@@ -1298,49 +1304,281 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type poolEntry struct {
-		CatalogCode       string `json:"catalog_code"`
-		ProviderName      string `json:"provider_name"`
-		CredentialID      int    `json:"credential_id"`
-		CredentialLabel   string `json:"credential_label"`
-		CredentialStatus  string `json:"credential_status"`
-		AvailabilityState string `json:"availability_state"`
-		QuotaState        string `json:"quota_state"`
-		TotalOffers       int    `json:"total_offers"`
-		AvailableOffers   int    `json:"available_offers"`
-		FreeOffers        int    `json:"free_offers"`
+		CatalogCode       string         `json:"catalog_code"`
+		ProviderName      string         `json:"provider_name"`
+		CredentialID      int            `json:"credential_id"`
+		CredentialLabel   string         `json:"credential_label"`
+		CredentialStatus  string         `json:"credential_status"`
+		AvailabilityState string         `json:"availability_state"`
+		QuotaState        string         `json:"quota_state"`
+		BalanceUSD        *float64       `json:"balance_usd"`
+		HasSecret         bool           `json:"has_secret"`
+		AcquisitionSource *string        `json:"acquisition_source"`
+		AcquisitionDetail *string        `json:"acquisition_detail"`
+		TotalOffers       int            `json:"total_offers"`
+		AvailableOffers   int            `json:"available_offers"`
+		FreeOffers        int            `json:"free_offers"`
+		Models            []any          `json:"models"`
+		ModelNames        []string       `json:"model_names"`
 	}
 	pool := make([]poolEntry, 0)
+	byCred := map[int][]any{}
 	for rows.Next() {
 		var e poolEntry
 		if err := rows.Scan(
 			&e.CatalogCode, &e.ProviderName, &e.CredentialID,
 			&e.CredentialLabel, &e.CredentialStatus, &e.AvailabilityState,
-			&e.QuotaState, &e.TotalOffers, &e.AvailableOffers, &e.FreeOffers,
+			&e.QuotaState, &e.BalanceUSD, &e.HasSecret,
+			&e.AcquisitionSource, &e.AcquisitionDetail,
+			&e.TotalOffers, &e.AvailableOffers, &e.FreeOffers,
 		); err != nil {
+			slog.Warn("free-pool status: scan row failed", "error", err.Error())
 			continue
 		}
+		e.Models = []any{}
+		e.ModelNames = []string{}
 		pool = append(pool, e)
+		byCred[e.CredentialID] = []any{}
 	}
 
-	var totalProviders, availableProviders, totalModels, freeModels int
-	for _, e := range pool {
-		totalProviders++
-		if e.CredentialStatus == "active" {
-			availableProviders++
+	// Fetch all free-tier model offers (Python lists billing_mode='free' in models array,
+	// but stats counts ALL model_offers joined to free credentials)
+	modelRows, err := h.db.Query(ctx, `
+		SELECT
+			mo.id AS offer_id,
+			mo.raw_model_name,
+			COALESCE(mo.standardized_name, '') AS standardized_name,
+			mo.available,
+			mo.billing_mode,
+			COALESCE(mo.routing_tier, 9) AS routing_tier,
+			COALESCE(mo.unit_price_in_per_1m, 0) AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, 0) AS unit_price_out_per_1m,
+			COALESCE(mo.currency, '') AS currency,
+			p.catalog_code,
+			p.display_name AS provider_name,
+			p.protocol,
+			p.base_url,
+			c.id AS credential_id,
+			c.label AS credential_label,
+			c.status AS credential_status,
+			c.availability_state,
+			c.quota_state
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.pool_group = 'free' AND mo.billing_mode = 'free'
+		ORDER BY mo.raw_model_name ASC, p.display_name ASC
+	`)
+	if err != nil {
+		slog.Warn("free-pool status: models query failed", "error", err.Error())
+	}
+
+	// Also query for stats: ALL model_offers joined to free credentials (Python semantics)
+	allModelRows, err := h.db.Query(ctx, `
+		SELECT mo.id AS offer_id, mo.billing_mode
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		WHERE c.pool_group = 'free'
+	`)
+	if err != nil {
+		slog.Warn("free-pool status: all-models query failed", "error", err.Error())
+	}
+	models := make([]any, 0)
+	liveModelsByCode := map[string][]string{}
+	// activeCodesSet is built from pool entries (Python semantics: status['pool'] is source of truth)
+	activeCodesSet := map[string]struct{}{}
+	byCodeForCatalog := map[string]struct{}{}
+	if modelRows != nil {
+		defer modelRows.Close()
+		for modelRows.Next() {
+			var (
+				offerID                                                          int
+				rawModel, stdName, billingMode, catalogCode, providerName         string
+				protocol, baseURL, credLabel, credStatus, availState, quotaState string
+				currency                                                         string
+				available                                                        bool
+				routingTier                                                      int
+				priceIn, priceOut                                                float64
+				credID                                                           int
+			)
+			if err := modelRows.Scan(
+				&offerID, &rawModel, &stdName, &available, &billingMode, &routingTier,
+				&priceIn, &priceOut, &currency, &catalogCode, &providerName,
+				&protocol, &baseURL, &credID, &credLabel, &credStatus,
+				&availState, &quotaState,
+			); err != nil {
+				slog.Warn("free-pool status: scan model row failed", "error", err.Error())
+				continue
+			}
+			routable := available && credStatus == "active" &&
+				availState != "rate_limited" && availState != "cooling" && availState != "unreachable" &&
+				quotaState != "exhausted" && quotaState != "balance_exhausted"
+			item := map[string]any{
+				"offer_id":          offerID,
+				"raw_model_name":    rawModel,
+				"standardized_name": nilOrString(stdName),
+				"canonical_name":    nil,
+				"available":         available,
+				"billing_mode":      billingMode,
+				"routing_tier":      routingTier,
+				"unit_price_in_per_1m":  nilIfZeroFloat(priceIn),
+				"unit_price_out_per_1m": nilIfZeroFloat(priceOut),
+				"currency":          nilIfEmptyStr(currency),
+				"catalog_code":      catalogCode,
+				"provider_name":     providerName,
+				"protocol":          protocol,
+				"base_url":          baseURL,
+				"credential_id":     credID,
+				"credential_label":  credLabel,
+				"credential_status": credStatus,
+				"availability_state": availState,
+				"quota_state":       quotaState,
+				"routable":          routable,
+			}
+			models = append(models, item)
+			if available {
+				liveModelsByCode[catalogCode] = append(liveModelsByCode[catalogCode], rawModel)
+			}
+			byCodeForCatalog[catalogCode] = struct{}{}
+			// Attach to pool entry models list
+			if existing, ok := byCred[credID]; ok {
+				byCred[credID] = append(existing, map[string]any{
+					"offer_id":          offerID,
+					"raw_model_name":    rawModel,
+					"standardized_name": nilOrString(stdName),
+					"available":         available,
+					"routable":          routable,
+					"routing_tier":      routingTier,
+				})
+			}
 		}
-		totalModels += e.TotalOffers
-		freeModels += e.FreeOffers
+	}
+
+	// Build active_codes from pool entries (matches Python get_pool_overview)
+	for _, e := range pool {
+		if e.CredentialStatus == "active" {
+			activeCodesSet[e.CatalogCode] = struct{}{}
+		}
+	}
+
+	// Compute stats: total_models = all model_offers (no billing_mode filter),
+	// free_models = model_offers with billing_mode='free'
+	totalModelSet := map[int]struct{}{}
+	freeModelSet := map[int]struct{}{}
+	if allModelRows != nil {
+		defer allModelRows.Close()
+		for allModelRows.Next() {
+			var oid int
+			var bm string
+			if err := allModelRows.Scan(&oid, &bm); err == nil {
+				totalModelSet[oid] = struct{}{}
+				if bm == "free" {
+					freeModelSet[oid] = struct{}{}
+				}
+			}
+		}
+	}
+
+	// Update pool entries with per-credential models and model_names
+	for i := range pool {
+		if ms, ok := byCred[pool[i].CredentialID]; ok {
+			pool[i].Models = ms
+			names := make([]string, 0, len(ms))
+			for _, m := range ms {
+				if mm, ok := m.(map[string]any); ok {
+					if n, ok2 := mm["raw_model_name"].(string); ok2 {
+						names = append(names, n)
+					}
+				}
+			}
+			pool[i].ModelNames = names
+		}
+	}
+
+	// Build catalog list (mirrors Python catalog_for_api)
+	registeredSet := map[string]struct{}{}
+	for code := range activeCodesSet {
+		registeredSet[code] = struct{}{}
+	}
+	catalog := buildFreePoolCatalog(registeredSet, liveModelsByCode)
+	activeCodes := make([]string, 0, len(activeCodesSet))
+	for c := range activeCodesSet {
+		activeCodes = append(activeCodes, c)
+	}
+	sort.Strings(activeCodes)
+
+	// Sort live models by code
+	for c := range liveModelsByCode {
+		sort.Strings(liveModelsByCode[c])
+	}
+
+	// Count routable models
+	routableCount := 0
+	for _, m := range models {
+		if mm, ok := m.(map[string]any); ok {
+			if r, ok2 := mm["routable"].(bool); ok2 && r {
+				routableCount++
+			}
+		}
+	}
+
+	// Use DISTINCT counts to match Python (providers can have multiple credentials)
+	distinctProviders := map[string]struct{}{}
+	availableProvidersSet := map[string]struct{}{}
+	for _, e := range pool {
+		distinctProviders[e.CatalogCode] = struct{}{}
+		if e.CredentialStatus == "active" &&
+			e.AvailabilityState != "rate_limited" && e.AvailabilityState != "cooling" {
+			availableProvidersSet[e.CatalogCode] = struct{}{}
+		}
+	}
+	totalModels := len(totalModelSet)
+	freeModels := len(freeModelSet)
+
+	catalogRegistered := 0
+	for _, c := range catalog {
+		if reg, ok := c["pool_registered"].(bool); ok && reg {
+			catalogRegistered++
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pool": pool,
-		"stats": map[string]int{
-			"total_providers":    totalProviders,
-			"available_providers": availableProviders,
-			"total_models":       totalModels,
-			"free_models":        freeModels,
+		"pool":                  pool,
+		"models":                models,
+		"stats": map[string]any{
+			"total_providers":     len(distinctProviders),
+			"available_providers": len(availableProvidersSet),
+			"total_models":        totalModels,
+			"free_models":         freeModels,
+			"routable_models":     routableCount,
+			"catalog_templates":   len(catalog),
+			"catalog_registered":  catalogRegistered,
 		},
+		"active_catalog_codes":  activeCodes,
+		"live_models_by_code":   liveModelsByCode,
+		"catalog":               catalog,
 	})
+}
+
+func nilIfZeroFloat(p float64) any {
+	if p == 0 {
+		return nil
+	}
+	return p
+}
+
+func nilIfEmptyStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nilOrString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request) {
