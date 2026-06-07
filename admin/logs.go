@@ -77,10 +77,23 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT id, request_id, ts, client_model, credential_id, provider_id,
-		       success, latency_ms, prompt_tokens, completion_tokens, cost_usd::float8
-		FROM request_logs
-		ORDER BY ts DESC
+		SELECT rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
+		       rl.client_model, rl.outbound_model,
+		       rl.credential_id, c.label AS credential_label,
+		       rl.provider_id, p.display_name AS provider_name,
+		       p.code AS provider_code,
+		       rl.client_profile, rl.request_mode,
+		       rl.prompt_tokens, rl.completion_tokens,
+		       rl.cache_read_tokens, rl.cache_write_tokens, rl.total_tokens,
+		       rl.cost_usd::float8, rl.latency_ms, rl.success, rl.error_kind, rl.search_text,
+		       rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
+		       rl.affinity_hit,
+		       rl.stream_first_chunk_ms, rl.stream_chunk_count,
+		       rl.stream_interrupted, NULL::boolean AS stream_done_sent
+		FROM request_logs rl
+		LEFT JOIN providers p ON p.id = rl.provider_id
+		LEFT JOIN credentials c ON c.id = rl.credential_id
+		ORDER BY rl.ts DESC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -90,24 +103,56 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type logEntry struct {
-		ID               int      `json:"id"`
-		RequestID        string   `json:"request_id"`
-		Ts               time.Time `json:"ts"`
-		ClientModel      *string  `json:"client_model"`
-		CredentialID     *int     `json:"credential_id"`
-		ProviderID       *int     `json:"provider_id"`
-		Success          bool     `json:"success"`
-		LatencyMs        *int     `json:"latency_ms"`
-		PromptTokens     *int     `json:"prompt_tokens"`
-		CompletionTokens *int     `json:"completion_tokens"`
-		CostUSD          *float64 `json:"cost_usd"`
+		Ts                 time.Time  `json:"ts"`
+		RequestID          string     `json:"request_id"`
+		APIKeyID           *int       `json:"api_key_id"`
+		EndUserID          *string    `json:"end_user_id"`
+		ClientModel        *string    `json:"client_model"`
+		OutboundModel      *string    `json:"outbound_model"`
+		CredentialID       *int       `json:"credential_id"`
+		CredentialLabel    *string    `json:"credential_label"`
+		ProviderID         *int       `json:"provider_id"`
+		ProviderName       *string    `json:"provider_name"`
+		ProviderCode       *string    `json:"provider_code"`
+		ClientProfile      *string    `json:"client_profile"`
+		RequestMode        *string    `json:"request_mode"`
+		PromptTokens       *int       `json:"prompt_tokens"`
+		CompletionTokens   *int       `json:"completion_tokens"`
+		CacheReadTokens    *int       `json:"cache_read_tokens"`
+		CacheWriteTokens   *int       `json:"cache_write_tokens"`
+		TotalTokens        *int       `json:"total_tokens"`
+		CostUSD            *float64   `json:"cost_usd"`
+		LatencyMs          *int       `json:"latency_ms"`
+		Success            bool       `json:"success"`
+		ErrorKind          *string    `json:"error_kind"`
+		SearchText         *string    `json:"search_text"`
+		IdentityHash       *string    `json:"identity_hash"`
+		VirtualClientID    *string    `json:"virtual_client_id"`
+		VirtualIP          *string    `json:"virtual_ip"`
+		VirtualMAC         *string    `json:"virtual_mac"`
+		AffinityHit        *bool      `json:"affinity_hit"`
+		StreamFirstChunkMs *int       `json:"stream_first_chunk_ms"`
+		StreamChunkCount   *int       `json:"stream_chunk_count"`
+		StreamInterrupted  *bool      `json:"stream_interrupted"`
+		StreamDoneSent     *bool      `json:"stream_done_sent"`
 	}
 	logs := make([]logEntry, 0)
 	for rows.Next() {
 		var l logEntry
-		if err := rows.Scan(&l.ID, &l.RequestID, &l.Ts, &l.ClientModel,
-			&l.CredentialID, &l.ProviderID, &l.Success, &l.LatencyMs,
-			&l.PromptTokens, &l.CompletionTokens, &l.CostUSD); err != nil {
+		if err := rows.Scan(
+			&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
+			&l.ClientModel, &l.OutboundModel,
+			&l.CredentialID, &l.CredentialLabel,
+			&l.ProviderID, &l.ProviderName, &l.ProviderCode,
+			&l.ClientProfile, &l.RequestMode,
+			&l.PromptTokens, &l.CompletionTokens,
+			&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
+			&l.CostUSD, &l.LatencyMs, &l.Success, &l.ErrorKind, &l.SearchText,
+			&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
+			&l.AffinityHit,
+			&l.StreamFirstChunkMs, &l.StreamChunkCount,
+			&l.StreamInterrupted, &l.StreamDoneSent,
+		); err != nil {
 			continue
 		}
 		logs = append(logs, l)
