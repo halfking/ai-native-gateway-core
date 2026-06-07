@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -1079,20 +1080,21 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 			credID, providerID                       int
 			credLabel, credStatus, availState        string
 			quotaState, acqSource, acqDetail, tags   string
-			ciphertext                               *string
+			ciphertext                               []byte
 			createdAt, updatedAt                     time.Time
 			catalogCode, providerName, baseURL       string
 		)
 		if err := rows.Scan(&credID, &credLabel, &credStatus, &availState,
 			&quotaState, &acqSource, &acqDetail, &tags, &ciphertext,
 			&createdAt, &updatedAt, &providerID, &catalogCode, &providerName, &baseURL); err != nil {
+			slog.Warn("free-pool: scan row failed", "error", err.Error(), "label", credLabel)
 			continue
 		}
 
-		hasSecret := ciphertext != nil && *ciphertext != ""
+		hasSecret := len(ciphertext) > 0
 		masked := ""
 		if hasSecret {
-			if pt, derr := h.decryptCredStr(*ciphertext); derr == nil {
+			if pt, derr := h.decryptCredStr(string(ciphertext)); derr == nil {
 				masked = maskAPIKey(pt)
 			} else {
 				masked = "***"
@@ -1483,28 +1485,36 @@ func lookupFreeTemplate(code string) *signupPlatform {
 }
 
 type freeProviderTemplate struct {
-	catalogCode string
-	displayName string
-	baseURL     string
-	protocol    string
-	models      []string
-	needsKey    bool
+	catalogCode     string
+	displayName     string
+	baseURL         string
+	protocol        string
+	models          []string
+	needsKey        bool
+	signupURL       string
+	rpmLimit        int
+	envVars         []string
+	acquisitionMode string
 }
 
 // Static catalog mirroring Python FREE_PROVIDERS for free-pool template lookup.
 var freeProviders = map[string]freeProviderTemplate{
-	"zhipu-free":         {catalogCode: "zhipu-free", displayName: "Zhipu GLM (Free Tier)", baseURL: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai-completions", models: []string{"glm-4-flash"}, needsKey: true},
-	"siliconflow-free":   {catalogCode: "siliconflow-free", displayName: "SiliconFlow (Free Tier)", baseURL: "https://api.siliconflow.cn/v1", protocol: "openai-completions", models: []string{"Qwen/Qwen2.5-7B-Instruct"}, needsKey: true},
-	"groq-free":          {catalogCode: "groq-free", displayName: "Groq (Free Tier)", baseURL: "https://api.groq.com/openai/v1", protocol: "openai-completions", models: []string{"llama-3.3-70b-versatile"}, needsKey: true},
-	"cerebras-free":      {catalogCode: "cerebras-free", displayName: "Cerebras (Free Tier)", baseURL: "https://api.cerebras.ai/v1", protocol: "openai-completions", models: []string{"llama-3.3-70b"}, needsKey: true},
-	"sambanova-free":     {catalogCode: "sambanova-free", displayName: "SambaNova (Free Tier)", baseURL: "https://api.sambanova.ai/v1", protocol: "openai-completions", models: []string{"Meta-Llama-3.3-70B-Instruct"}, needsKey: true},
-	"google-gemini-free": {catalogCode: "google-gemini-free", displayName: "Google Gemini (Free Tier)", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", protocol: "openai-completions", models: []string{"gemini-2.0-flash"}, needsKey: true},
-	"mistral-free":       {catalogCode: "mistral-free", displayName: "Mistral (Free Tier)", baseURL: "https://api.mistral.ai/v1", protocol: "openai-completions", models: []string{"mistral-small-latest"}, needsKey: true},
-	"openrouter-free":    {catalogCode: "openrouter-free", displayName: "OpenRouter (Free Models)", baseURL: "https://openrouter.ai/api/v1", protocol: "openai-completions", models: []string{"meta-llama/llama-3.3-70b-instruct:free"}, needsKey: true},
-	"together-free":      {catalogCode: "together-free", displayName: "Together (Free Tier)", baseURL: "https://api.together.xyz/v1", protocol: "openai-completions", models: []string{"meta-llama/Llama-3.3-70B-Instruct-Turbo"}, needsKey: true},
-	"nvidia-nim-free":    {catalogCode: "nvidia-nim-free", displayName: "NVIDIA NIM (Free Tier)", baseURL: "https://integrate.api.nvidia.com/v1", protocol: "openai-completions", models: []string{"meta/llama-3.3-70b-instruct"}, needsKey: true},
-	"llm7-free":          {catalogCode: "llm7-free", displayName: "LLM7 (No Registration)", baseURL: "https://api.llm7.io/v1", protocol: "openai-completions", models: []string{"gpt-4o-mini"}, needsKey: false},
-	"pollinations-free":  {catalogCode: "pollinations-free", displayName: "Pollinations (No Key)", baseURL: "https://text.pollinations.ai/openai", protocol: "openai-completions", models: []string{"openai"}, needsKey: false},
+	"zhipu-free":         {catalogCode: "zhipu-free", displayName: "Zhipu GLM (Free Tier)", baseURL: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai-completions", models: []string{"GLM-4-Flash", "GLM-4.7-Flash", "GLM-4V-Flash"}, rpmLimit: 5, signupURL: "https://open.bigmodel.cn/usercenter/apikeys", envVars: []string{"ZHIPU_API_KEY", "BIGMODEL_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"siliconflow-free":   {catalogCode: "siliconflow-free", displayName: "SiliconFlow (Free Tier)", baseURL: "https://api.siliconflow.cn/v1", protocol: "openai-completions", models: []string{"Qwen/Qwen2.5-7B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"}, rpmLimit: 10, signupURL: "https://cloud.siliconflow.cn/account/ak", envVars: []string{"SILICONFLOW_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"groq-free":          {catalogCode: "groq-free", displayName: "Groq (Free Tier)", baseURL: "https://api.groq.com/openai/v1", protocol: "openai-completions", models: []string{"llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"}, rpmLimit: 30, signupURL: "https://console.groq.com/keys", envVars: []string{"GROQ_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"cerebras-free":      {catalogCode: "cerebras-free", displayName: "Cerebras (Free Tier)", baseURL: "https://api.cerebras.ai/v1", protocol: "openai-completions", models: []string{"llama-3.3-70b", "llama-3.1-8b"}, rpmLimit: 30, signupURL: "https://cloud.cerebras.ai", envVars: []string{"CEREBRAS_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"sambanova-free":     {catalogCode: "sambanova-free", displayName: "SambaNova (Free Tier)", baseURL: "https://api.sambanova.ai/v1", protocol: "openai-completions", models: []string{"Meta-Llama-3.3-70B-Instruct", "Meta-Llama-3.1-8B-Instruct"}, rpmLimit: 10, signupURL: "https://cloud.sambanova.ai/apis", envVars: []string{"SAMBANOVA_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"google-gemini-free": {catalogCode: "google-gemini-free", displayName: "Google Gemini (Free Tier)", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", protocol: "openai-completions", models: []string{"gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"}, rpmLimit: 15, signupURL: "https://aistudio.google.com/apikey", envVars: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"mistral-free":       {catalogCode: "mistral-free", displayName: "Mistral (Free Tier)", baseURL: "https://api.mistral.ai/v1", protocol: "openai-completions", models: []string{"mistral-small-latest", "open-mistral-7b"}, rpmLimit: 5, signupURL: "https://console.mistral.ai", envVars: []string{"MISTRAL_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"openrouter-free":    {catalogCode: "openrouter-free", displayName: "OpenRouter (Free Models)", baseURL: "https://openrouter.ai/api/v1", protocol: "openai-completions", models: []string{"meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.1-8b-instruct:free"}, rpmLimit: 20, signupURL: "https://openrouter.ai/keys", envVars: []string{"OPENROUTER_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"together-free":      {catalogCode: "together-free", displayName: "Together (Free Tier)", baseURL: "https://api.together.xyz/v1", protocol: "openai-completions", models: []string{"meta-llama/Llama-3.3-70B-Instruct-Turbo", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"}, rpmLimit: 10, signupURL: "https://api.together.xyz", envVars: []string{"TOGETHER_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"nvidia-nim-free":    {catalogCode: "nvidia-nim-free", displayName: "NVIDIA NIM (Free Tier)", baseURL: "https://integrate.api.nvidia.com/v1", protocol: "openai-completions", models: []string{"meta/llama-3.3-70b-instruct", "meta/llama-3.1-8b-instruct"}, rpmLimit: 10, signupURL: "https://build.nvidia.com", envVars: []string{"NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"llm7-free":          {catalogCode: "llm7-free", displayName: "LLM7 (No Registration)", baseURL: "https://api.llm7.io/v1", protocol: "openai-completions", models: []string{"gpt-4o-mini", "deepseek-chat"}, rpmLimit: 60, signupURL: "https://token.llm7.io/", acquisitionMode: "no_key", needsKey: false},
+	"pollinations-free":  {catalogCode: "pollinations-free", displayName: "Pollinations (No Key)", baseURL: "https://text.pollinations.ai/openai", protocol: "openai-completions", models: []string{"openai-fast", "openai"}, rpmLimit: 100, acquisitionMode: "no_key", needsKey: false},
+	"free-chatgpt":       {catalogCode: "free-chatgpt", displayName: "Free ChatGPT API (Community)", baseURL: "https://free.v36.cm/v1", protocol: "openai-completions", models: []string{"gpt-4o-mini", "gpt-3.5-turbo"}, rpmLimit: 96, signupURL: "https://free.v36.cm/", envVars: []string{"FREE_CHATGPT_API_KEY", "V36_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"aigocode-free":      {catalogCode: "aigocode-free", displayName: "AIGoCode (Proxy)", baseURL: "https://api.aigocode.com/v1", protocol: "openai-completions", models: []string{"gpt-4o-mini", "claude-sonnet-4-6", "gemini-2.0-flash"}, rpmLimit: 30, signupURL: "https://docs.aigocode.com/docs/getting-started/base-url", envVars: []string{"AIGOCODE_API_KEY", "AIGOCODE_DEV_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"huggingface-free":   {catalogCode: "huggingface-free", displayName: "HuggingFace Inference", baseURL: "https://router.huggingface.co/v1", protocol: "openai-completions", models: []string{"meta-llama/Llama-3.2-3B-Instruct", "Qwen/Qwen2.5-7B-Instruct"}, rpmLimit: 10, signupURL: "https://huggingface.co/settings/tokens", envVars: []string{"HF_TOKEN", "HUGGINGFACE_API_KEY"}, acquisitionMode: "signup", needsKey: true},
+	"cloudflare-ai-free": {catalogCode: "cloudflare-ai-free", displayName: "Cloudflare Workers AI", baseURL: "https://api.cloudflare.com/client/v4/accounts", protocol: "openai-completions", models: []string{"@cf/meta/llama-3.2-3b-instruct"}, rpmLimit: 10, signupURL: "https://developers.cloudflare.com/workers-ai/", envVars: []string{"CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"}, acquisitionMode: "signup", needsKey: true},
 }
 
 // ── Helper to find env var (used by quick_entry validation) ─────────────

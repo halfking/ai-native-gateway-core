@@ -87,15 +87,17 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 
 	for rows.Next() {
 		var credID int
-		var label, ciphertext, baseURL, protocol string
+		var label, baseURL, protocol string
+		var ciphertext []byte
 		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol); err != nil {
+			slog.Warn("check-provider: scan row failed", "error", err.Error(), "label", label)
 			continue
 		}
 
 		healthStatus := "unknown"
 		errMsg := ""
 
-		decrypted, decErr := h.decryptCredStr(ciphertext)
+		decrypted, decErr := h.decryptCredStr(string(ciphertext))
 		if decErr != nil {
 			healthStatus = "error"
 			errMsg = "decrypt failed"
