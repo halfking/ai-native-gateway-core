@@ -120,6 +120,15 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// GET probe — return 200 for client compatibility checks
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "ok",
+			"message": "Chat completions endpoint is available. Use POST to send requests.",
+		})
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":{"message":"Method not allowed","type":"invalid_request","code":"method_not_allowed"}}`, http.StatusMethodNotAllowed)
 		return
