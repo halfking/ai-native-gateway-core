@@ -934,7 +934,12 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
 		ORDER BY mo.priority NULLS LAST LIMIT 1
 	`, req.Model)
-	if err != nil || !rows.Next() {
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
+		return
+	}
+	defer rows.Close()
+	if !rows.Next() {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
 		return
 	}
@@ -943,7 +948,6 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var baseURL, protocol, rawModel, outModel string
 	var ciphertext []byte
 	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
-	rows.Close()
 
 	_, decErr := h.decryptCredStr(string(ciphertext))
 	if decErr != nil {
