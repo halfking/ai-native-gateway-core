@@ -1360,7 +1360,7 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 	if _, err := h.db.Exec(ctx, `
 		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
 			base_url_template, discovery_strategy, domestic, hidden, notes)
-		VALUES ($1, 'free', $2, 'free_tier', 'custom', $3, $4, 'manifest', true, false, $5)
+		VALUES ($1, 'restricted', $2, 'aggregator', 'cloud', $3, $4, 'manifest', true, false, $5)
 		ON CONFLICT (code) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			base_url_template = EXCLUDED.base_url_template
@@ -1372,7 +1372,7 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 	if _, err := h.db.Exec(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
 			kind, category, protocol, base_url, egress_profile, domestic, enabled)
-		VALUES ('default', $1, $2, $1, false, 'custom', 'free_tier', $3, $4, 'direct', true, true)
+		VALUES ('default', $1, $2, $1, false, 'cloud', 'aggregator', $3, $4, 'direct', true, true)
 		ON CONFLICT (tenant_id, code) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			base_url = EXCLUDED.base_url,
@@ -1404,6 +1404,14 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 
 	var credID int
 	tagsJSON := fmt.Sprintf(`["free-pool","source:%s","catalog:%s"]`, cfg.acquisitionMode, cfg.catalogCode)
+
+	var cipherParam any
+	if ciphertext != "" {
+		cipherParam = []byte(ciphertext)
+	} else {
+		cipherParam = nil
+	}
+
 	err := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND label = $2`, providerID, credLabel).Scan(&credID)
 	if err != nil {
 		// Insert
@@ -1411,22 +1419,22 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 			INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
 				trust_level, status, lifecycle_status, availability_state, quota_state,
 				pool_group, acquisition_source, acquisition_detail, tags)
-			VALUES ($1, 'default', $2, NULLIF($3, ''), 'degraded', 'active',
+			VALUES ($1, 'default', $2, $3, 'degraded', 'active',
 				'active', 'ready', 'ok', 'free', $4, $5, CAST($6 AS jsonb))
 			RETURNING id
-		`, providerID, credLabel, ciphertext, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON).Scan(&credID)
+		`, providerID, credLabel, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON).Scan(&credID)
 		if insertErr != nil {
 			return map[string]any{"status": "error", "message": "credential insert failed: " + insertErr.Error()}
 		}
 	} else {
 		if _, uerr := h.db.Exec(ctx, `
 			UPDATE credentials SET
-				secret_ciphertext = NULLIF($1, ''),
+				secret_ciphertext = $1,
 				status = 'active', pool_group = 'free',
 				acquisition_source = $2, acquisition_detail = $3,
 				tags = CAST($4 AS jsonb), updated_at = NOW()
 			WHERE id = $5
-		`, ciphertext, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, credID); uerr != nil {
+		`, cipherParam, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, credID); uerr != nil {
 			return map[string]any{"status": "error", "message": "credential update failed: " + uerr.Error()}
 		}
 	}
