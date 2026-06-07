@@ -45,53 +45,89 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
-	profile := queryString(r, "client_profile")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	type candidate struct {
-		CredentialID      int      `json:"credential_id"`
-		ProviderID        int      `json:"provider_id"`
-		BaseURL           string   `json:"base_url"`
-		Protocol          string   `json:"protocol"`
-		Tier              int      `json:"tier"`
-		Weight            int      `json:"weight"`
-		RawModel          string   `json:"raw_model"`
-		StandardizedName  string   `json:"standardized_name"`
-		OutboundModel     string   `json:"outbound_model"`
-		SuccessRate       float64  `json:"success_rate"`
-		P95LatencyMs      int      `json:"p95_latency_ms"`
-		ConcurrencyLimit  *int     `json:"concurrency_limit"`
-		BalanceUSD        *float64 `json:"balance_usd"`
-		CircuitState      string   `json:"circuit_state"`
-		LifecycleStatus   string   `json:"lifecycle_status"`
-		AvailabilityState string   `json:"availability_state"`
-		QuotaState        string   `json:"quota_state"`
-		RuntimeRoutable   bool     `json:"runtime_routable"`
-		BlockReason       string   `json:"block_reason,omitempty"`
+		Rank                 int      `json:"rank"`
+		ProviderID           int      `json:"provider_id"`
+		ProviderName         string   `json:"provider_name"`
+		CatalogCode          string   `json:"catalog_code"`
+		Protocol             string   `json:"protocol"`
+		BaseURL              string   `json:"base_url"`
+		ProviderEnabled      bool     `json:"provider_enabled"`
+		CredentialID         int      `json:"credential_id"`
+		CredentialLabel      string   `json:"credential_label"`
+		CredentialStatus     string   `json:"credential_status"`
+		LifecycleStatus      string   `json:"lifecycle_status"`
+		AvailabilityState    string   `json:"availability_state"`
+		AvailabilityRecoverAt *string `json:"availability_recover_at"`
+		QuotaState           string   `json:"quota_state"`
+		QuotaRecoverAt       *string  `json:"quota_recover_at"`
+		ConcurrencyLimit     *int     `json:"concurrency_limit"`
+		EffectiveConcurrency *int     `json:"effective_concurrency"`
+		EffectiveAt          *string  `json:"effective_at"`
+		ExpiresAt            *string  `json:"expires_at"`
+		CredentialInEffect   bool     `json:"credential_in_effect"`
+		BalanceUSD           *float64 `json:"balance_usd"`
+		CircuitState         string   `json:"circuit_state"`
+		CoolingUntil         *string  `json:"cooling_until"`
+		Available            bool     `json:"available"`
+		Tier                 int      `json:"tier"`
+		Weight               int      `json:"weight"`
+		UnitPriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		Currency             string   `json:"currency"`
+		SuccessRate          float64  `json:"success_rate"`
+		P95LatencyMs         int      `json:"p95_latency_ms"`
+		ModelName            string   `json:"model_name"`
+		StandardizedName     string   `json:"standardized_name"`
+		QuotaCapUSD          float64  `json:"quota_cap_usd"`
+		QuotaUsedUSD         float64  `json:"quota_used_usd"`
+		RuntimeRoutable      bool     `json:"runtime_routable"`
+		Routable             bool     `json:"routable"`
+		BlockReason          string   `json:"block_reason,omitempty"`
 	}
 
 	rawModels := []string{model}
 	rows, err := h.db.Query(ctx, `
 		SELECT
-			c.id AS credential_id,
 			p.id AS provider_id,
+			COALESCE(p.display_name, p.code) AS provider_name,
+			COALESCE(p.catalog_code, '') AS catalog_code,
+			COALESCE(p.protocol, 'openai-completions') AS protocol,
 			p.base_url,
-			COALESCE(p.protocol, 'openai-completions'),
-			COALESCE(mo.routing_tier, 2)::int,
-			COALESCE(mo.weight, 100)::int,
-			mo.raw_model_name,
-			mo.standardized_name,
-			COALESCE(mo.outbound_model_name, mo.raw_model_name),
-			COALESCE(mo.success_rate, 0.9)::float8,
-			COALESCE(mo.p95_latency_ms, 9999)::int,
+			p.enabled AS provider_enabled,
+			c.id AS credential_id,
+			COALESCE(c.label, '') AS credential_label,
+			COALESCE(c.status, 'active') AS credential_status,
+			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
+			COALESCE(c.availability_state, 'ready') AS availability_state,
+			c.availability_recover_at::text,
+			COALESCE(c.quota_state, 'ok') AS quota_state,
+			c.quota_recover_at::text,
 			c.concurrency_limit,
+			c.effective_concurrency,
+			c.effective_at::text,
+			c.expires_at::text,
+			(c.effective_at IS NULL OR c.effective_at <= now())
+				AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
 			c.balance_usd::float8,
-			COALESCE(c.circuit_state, 'closed'),
-			COALESCE(c.lifecycle_status, 'active'),
-			COALESCE(c.availability_state, 'ready'),
-			COALESCE(c.quota_state, 'ok')
+			COALESCE(c.circuit_state, 'closed') AS circuit_state,
+			c.cooling_until::text,
+			mo.available,
+			COALESCE(mo.routing_tier, 2) AS tier,
+			COALESCE(mo.weight, 100) AS weight,
+			mo.unit_price_in_per_1m,
+			mo.unit_price_out_per_1m,
+			COALESCE(mo.currency, 'USD') AS currency,
+			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
+			COALESCE(mo.p95_latency_ms, 9999) AS p95_latency_ms,
+			mo.raw_model_name AS model_name,
+			COALESCE(mo.standardized_name, mo.raw_model_name) AS standardized_name,
+			COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
+			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -112,25 +148,55 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(
-			&c.CredentialID, &c.ProviderID, &c.BaseURL, &c.Protocol,
-			&c.Tier, &c.Weight, &c.RawModel, &c.StandardizedName, &c.OutboundModel,
-			&c.SuccessRate, &c.P95LatencyMs, &c.ConcurrencyLimit,
-			&c.BalanceUSD, &c.CircuitState, &c.LifecycleStatus,
-			&c.AvailabilityState, &c.QuotaState,
+			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
+			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
+			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
+			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
+			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
+			&c.CircuitState, &c.CoolingUntil, &c.Available, &c.Tier, &c.Weight,
+			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency, &c.SuccessRate,
+			&c.P95LatencyMs, &c.ModelName, &c.StandardizedName,
+			&c.QuotaCapUSD, &c.QuotaUsedUSD,
 		); err != nil {
 			continue
 		}
 		c.RuntimeRoutable = isRoutable(c)
+		c.Routable = c.RuntimeRoutable
 		if !c.RuntimeRoutable {
 			c.BlockReason = blockReason(c)
 		}
 		candidates = append(candidates, c)
 	}
 
+	// Add rank
+	for i := range candidates {
+		candidates[i].Rank = i + 1
+	}
+
+	// Sort by tier, weight, success rate
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Tier != candidates[j].Tier {
+			return candidates[i].Tier < candidates[j].Tier
+		}
+		if candidates[i].Weight != candidates[j].Weight {
+			return candidates[i].Weight > candidates[j].Weight
+		}
+		return candidates[i].SuccessRate > candidates[j].SuccessRate
+	})
+
+	// Re-assign ranks after sort
+	for i := range candidates {
+		candidates[i].Rank = i + 1
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"model":      model,
-		"profile":    profile,
-		"candidates": candidates,
+		"client_model":    model,
+		"canonical_name":  model,
+		"canonical_id":    nil,
+		"resolution_path": "direct",
+		"raw_models":      []string{model},
+		"plan_order":      []any{},
+		"candidates":      candidates,
 	})
 }
 
