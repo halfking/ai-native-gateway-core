@@ -248,9 +248,13 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	includeRevoked := includeRevokedKeys(r)
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
+		       COALESCE(ak.status, 'active') AS status,
+		       ak.expires_at,
 		       ak.budget_usd::float8, ak.rate_limit_rpm,
 		       app.code AS application_code,
-		       ak.created_at, ak.last_used_at, ak.remark
+		       COALESCE(ak.is_system, FALSE) AS is_system,
+		       app.default_client_profile,
+		       ak.last_used_at, ak.remark
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = 'default'
@@ -265,23 +269,28 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type key struct {
-		ID              int        `json:"id"`
-		KeyPrefix       string     `json:"key_prefix"`
-		OwnerUser       *string    `json:"owner_user"`
-		Enabled         bool       `json:"enabled"`
-		BudgetUSD       *float64   `json:"budget_usd"`
-		RateLimitRPM    *int       `json:"rate_limit_rpm"`
-		ApplicationCode string     `json:"application_code"`
-		CreatedAt       *time.Time `json:"created_at"`
-		LastUsedAt      *time.Time `json:"last_used_at"`
-		Remark          *string    `json:"remark"`
+		ID                   int        `json:"id"`
+		KeyPrefix            string     `json:"key_prefix"`
+		OwnerUser            *string    `json:"owner_user"`
+		Enabled              bool       `json:"enabled"`
+		Status               string     `json:"status"`
+		ExpiresAt            *time.Time `json:"expires_at"`
+		BudgetUSD            *float64   `json:"budget_usd"`
+		RateLimitRPM         *int       `json:"rate_limit_rpm"`
+		ApplicationCode      string     `json:"application_code"`
+		IsSystem             bool       `json:"is_system"`
+		DefaultClientProfile *string    `json:"default_client_profile"`
+		LastUsedAt           *time.Time `json:"last_used_at"`
+		Remark               *string    `json:"remark"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
 		var k key
 		if err := rows.Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
+			&k.Status, &k.ExpiresAt,
 			&k.BudgetUSD, &k.RateLimitRPM, &k.ApplicationCode,
-			&k.CreatedAt, &k.LastUsedAt, &k.Remark); err != nil {
+			&k.IsSystem, &k.DefaultClientProfile,
+			&k.LastUsedAt, &k.Remark); err != nil {
 			continue
 		}
 		keys = append(keys, k)
