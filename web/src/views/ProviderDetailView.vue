@@ -16,11 +16,14 @@ import {
   getProviderModels,
   toggleModelOfferState,
   getProviderLogs,
+  startDiagnose,
+  getDiagnoseResult,
   type Provider,
   type ProviderCredential,
   type CredentialCheckResult,
   type ModelOffer,
   type ProviderLogEntry,
+  type DiagnoseResult,
 } from '../api'
 
 const route = useRoute()
@@ -65,6 +68,12 @@ const logsPage = ref(1)
 const logsLoading = ref(false)
 const logsError = ref('')
 const logsKeyword = ref('')
+
+// Diagnosis
+const diagLoading = ref(false)
+const diagPolling = ref(false)
+const diagResult = ref<DiagnoseResult | null>(null)
+const diagError = ref('')
 
 // Credential inline editing
 const credSaving = ref<Record<number, boolean>>({})
@@ -135,6 +144,45 @@ async function loadLogs() {
   } finally {
     logsLoading.value = false
   }
+}
+
+async function loadDiagResult() {
+  try {
+    const data = await getDiagnoseResult(providerId.value)
+    if (data?.result) diagResult.value = data.result
+  } catch { /* no cached result */ }
+}
+
+async function runDiagnose() {
+  diagLoading.value = true
+  diagError.value = ''
+  try {
+    const { task_id } = await startDiagnose(providerId.value)
+    diagPolling.value = true
+    const deadline = Date.now() + 120000
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000))
+      const data = await getDiagnoseResult(providerId.value)
+      if (data?.result) {
+        diagResult.value = data.result
+        diagPolling.value = false
+        return
+      }
+    }
+    diagPolling.value = false
+    diagError.value = '诊断超时'
+  } catch (e: unknown) {
+    diagError.value = e instanceof Error ? e.message : '诊断失败'
+    diagPolling.value = false
+  } finally {
+    diagLoading.value = false
+  }
+}
+
+function scoreColor(score: number): string {
+  if (score >= 80) return '#4caf50'
+  if (score >= 50) return '#f0b429'
+  return '#f44336'
 }
 
 function openEdit() {
@@ -350,11 +398,11 @@ onMounted(loadProvider)
     <template v-else-if="provider">
       <!-- Tab bar -->
       <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:8px">
-        <button v-for="tab in (['overview','credentials','models','logs','settings'] as const)"
+        <button v-for="tab in (['overview','credentials','models','logs','settings','diagnosis'] as const)"
                 :key="tab"
                 :class="['btn btn-ghost btn-sm', { 'btn-primary': activeTab === tab }]"
-                @click="activeTab = tab; if(tab === 'models') loadModels(); if(tab === 'logs') loadLogs()">
-          {{ { overview: '概览', credentials: '凭据', models: '模型', logs: '请求日志', settings: '设置' }[tab] }}
+                @click="activeTab = tab; if(tab === 'models') loadModels(); if(tab === 'logs') loadLogs(); if(tab === 'diagnosis') loadDiagResult()">
+          {{ { overview: '概览', credentials: '凭据', models: '模型', logs: '请求日志', settings: '设置', diagnosis: '诊断' }[tab] }}
         </button>
       </div>
 
@@ -578,6 +626,194 @@ onMounted(loadProvider)
           <button class="btn btn-ghost btn-sm" :disabled="logsPage <= 1" @click="logsPage--;loadLogs()">上一页</button>
           <span style="color:var(--muted)">{{ logsPage }} / {{ Math.ceil(logsTotal / 50) }}</span>
           <button class="btn btn-ghost btn-sm" :disabled="logsPage >= Math.ceil(logsTotal / 50)" @click="logsPage++;loadLogs()">下一页</button>
+        </div>
+      </div>
+
+      <!-- Settings Tab -->
+      <div v-if="activeTab === 'settings'">
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="margin:0 0 12px">编辑提供商</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:600px">
+            <div class="form-group">
+              <label>显示名</label>
+              <input class="input" v-model="editForm.display_name" />
+            </div>
+            <div class="form-group">
+              <label>Base URL</label>
+              <input class="input" v-model="editForm.base_url" />
+            </div>
+            <div class="form-group">
+              <label>协议</label>
+              <select class="input" v-model="editForm.protocol">
+                <option value="openai-completions">OpenAI Completions</option>
+                <option value="openai-responses">OpenAI Responses</option>
+                <option value="anthropic-messages">Anthropic Messages</option>
+                <option value="gemini-generate">Gemini Generate</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>类型</label>
+              <select class="input" v-model="editForm.kind">
+                <option value="cloud">Cloud</option>
+                <option value="local">Local</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>分类</label>
+              <select class="input" v-model="editForm.category">
+                <option value="official">Official</option>
+                <option value="official_proxy">Official Proxy</option>
+                <option value="third_party_relay">Third Party Relay</option>
+                <option value="aggregator">Aggregator</option>
+                <option value="self_host">Self Host</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>折扣率</label>
+              <input class="input" type="number" step="0.01" min="0" max="1" v-model.number="editForm.discount_rate" />
+            </div>
+            <div class="form-group" style="grid-column:1/-1">
+              <label>备注</label>
+              <input class="input" v-model="editForm.notes" placeholder="内部说明" />
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" @click="saveEdit" :disabled="editSaving">
+              {{ editSaving ? '保存中...' : '保存' }}
+            </button>
+            <span v-if="editError" style="color:var(--danger);font-size:13px">{{ editError }}</span>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="margin:0 0 12px">批量操作</h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-ghost btn-sm" @click="handleBatchRecover" :disabled="batchRecovering">
+              {{ batchRecovering ? '恢复中...' : '批量恢复冷却凭据' }}
+            </button>
+            <span v-if="batchRecoverMsg" style="color:var(--muted);font-size:13px">{{ batchRecoverMsg }}</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin:0 0 12px">提供商信息</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
+            <div><span style="color:var(--muted)">ID:</span> {{ provider.id }}</div>
+            <div><span style="color:var(--muted)">代码:</span> <code>{{ provider.code }}</code></div>
+            <div><span style="color:var(--muted)">目录代码:</span> <code>{{ provider.catalog_code || '—' }}</code></div>
+            <div><span style="color:var(--muted)">协议:</span> <code>{{ provider.protocol }}</code></div>
+            <div><span style="color:var(--muted)">类型:</span> {{ provider.kind }} / {{ provider.category }}</div>
+            <div><span style="color:var(--muted)">出境配置:</span> {{ provider.egress_profile || '—' }}</div>
+            <div><span style="color:var(--muted)">国产:</span> {{ provider.domestic ? '是' : '否' }}</div>
+            <div><span style="color:var(--muted)">折扣率:</span> {{ provider.discount_rate || '—' }}</div>
+            <div><span style="color:var(--muted)">厂商:</span> {{ provider.vendor_name || '—' }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diagnosis Tab -->
+      <div v-if="activeTab === 'diagnosis'">
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">
+          <button class="btn btn-primary" @click="runDiagnose" :disabled="diagLoading">
+            {{ diagLoading ? (diagPolling ? '诊断中...' : '启动中...') : '运行完整诊断' }}
+          </button>
+          <span v-if="diagPolling" style="color:var(--muted);font-size:12px">正在探测凭据，请稍候...</span>
+        </div>
+        <div v-if="diagError" class="alert alert-danger" style="margin-bottom:12px">{{ diagError }}</div>
+
+        <div v-if="diagPolling" style="text-align:center;padding:40px;color:var(--muted)">
+          诊断任务执行中，通常需要 30-60 秒...
+        </div>
+
+        <template v-if="diagResult">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+            <div class="card">
+              <div style="font-size:12px;color:var(--muted)">凭据总数</div>
+              <div style="font-size:20px;font-weight:600">{{ diagResult.summary?.total_credentials ?? 0 }}</div>
+              <div style="font-size:11px;color:var(--muted)">
+                <span style="color:#4caf50">健康 {{ diagResult.summary?.healthy ?? 0 }}</span> ·
+                <span style="color:#f0b429">降级 {{ diagResult.summary?.degraded ?? 0 }}</span> ·
+                <span style="color:#f44336">不可达 {{ diagResult.summary?.unreachable ?? 0 }}</span>
+              </div>
+            </div>
+            <div class="card">
+              <div style="font-size:12px;color:var(--muted)">模型覆盖率</div>
+              <div style="font-size:20px;font-weight:600">{{ (diagResult.summary?.models_coverage_pct ?? 0).toFixed(1) }}%</div>
+            </div>
+            <div class="card">
+              <div style="font-size:12px;color:var(--muted)">平均延迟</div>
+              <div style="font-size:20px;font-weight:600">{{ (diagResult.summary?.avg_latency_ms ?? 0).toFixed(0) }} ms</div>
+            </div>
+          </div>
+
+          <div v-if="diagResult.error_classification" style="margin-bottom:16px">
+            <h4 style="margin:0 0 8px;font-size:14px">24h 错误分类</h4>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+              <span v-if="diagResult.error_classification.auth_errors">认证: {{ diagResult.error_classification.auth_errors }}</span>
+              <span v-if="diagResult.error_classification.rate_limit_errors">限流: {{ diagResult.error_classification.rate_limit_errors }}</span>
+              <span v-if="diagResult.error_classification.timeout_errors">超时: {{ diagResult.error_classification.timeout_errors }}</span>
+              <span v-if="diagResult.error_classification.model_not_found_errors">模型不存在: {{ diagResult.error_classification.model_not_found_errors }}</span>
+              <span v-if="diagResult.error_classification.other_errors">其他: {{ diagResult.error_classification.other_errors }}</span>
+              <span v-if="!diagResult.error_classification.auth_errors && !diagResult.error_classification.rate_limit_errors && !diagResult.error_classification.timeout_errors && !diagResult.error_classification.model_not_found_errors && !diagResult.error_classification.other_errors" style="color:var(--muted)">无错误</span>
+            </div>
+          </div>
+
+          <div v-if="diagResult.health_scores?.length" style="margin-bottom:16px">
+            <h4 style="margin:0 0 8px;font-size:14px">凭据健康分数</h4>
+            <div style="display:flex;gap:12px;flex-wrap:wrap">
+              <div v-for="s in diagResult.health_scores" :key="s.credential_id" style="display:flex;align-items:center;gap:6px;min-width:120px">
+                <span style="color:var(--muted);font-size:11px">#{{ s.credential_id }}</span>
+                <div style="flex:1;height:6px;background:var(--bg-subtle);border-radius:3px;overflow:hidden">
+                  <div :style="{ width: s.score + '%', background: scoreColor(s.score), height: '100%', borderRadius: '3px' }"></div>
+                </div>
+                <span :style="{ color: scoreColor(s.score), fontWeight: 600, fontSize: '13px', minWidth: '24px' }">{{ s.score.toFixed(0) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="diagResult.credentials?.length">
+            <h4 style="margin:0 0 8px;font-size:14px">凭据详细探测</h4>
+            <div style="overflow-x:auto">
+              <table class="data-table" style="width:100%;font-size:12px">
+                <thead>
+                  <tr>
+                    <th>凭据</th>
+                    <th>状态</th>
+                    <th>熔断</th>
+                    <th>Models 探测</th>
+                    <th>Chat 探测</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="cd in diagResult.credentials" :key="cd.credential_id">
+                    <td>#{{ cd.credential_id }} {{ cd.label }}</td>
+                    <td>
+                      <span :class="['badge', cd.status === 'active' ? 'badge-green' : 'badge-red']">{{ cd.status }}</span>
+                    </td>
+                    <td>
+                      <span :class="['badge', cd.circuit_state === 'closed' ? 'badge-green' : 'badge-amber']">{{ cd.circuit_state }}</span>
+                    </td>
+                    <td>
+                      <span v-if="cd.models_probe?.error" class="badge badge-red">失败</span>
+                      <span v-else class="badge" :class="cd.models_probe?.status_code === 200 ? 'badge-green' : 'badge-red'">
+                        {{ cd.models_probe?.status_code || '—' }} · {{ cd.models_probe?.models_count ?? 0 }} 模型 · {{ cd.models_probe?.latency_ms ?? 0 }}ms
+                      </span>
+                    </td>
+                    <td>
+                      <span v-if="cd.chat_probe?.error" class="badge badge-red">失败</span>
+                      <span v-else class="badge" :class="cd.chat_probe?.status_code === 200 ? 'badge-green' : 'badge-red'">
+                        {{ cd.chat_probe?.status_code || '—' }} · {{ cd.chat_probe?.latency_ms ?? 0 }}ms
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+
+        <div v-if="!diagLoading && !diagPolling && !diagResult && !diagError" class="card" style="text-align:center;padding:24px;color:var(--muted)">
+          点击"运行完整诊断"开始探测凭据健康状态
         </div>
       </div>
 

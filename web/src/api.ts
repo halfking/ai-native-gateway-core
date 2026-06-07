@@ -198,6 +198,53 @@ export function getProviderLogs(providerId: number, params: { model?: string; pa
   return req<{ items: ProviderLogEntry[]; total: number }>('GET', `/api/providers/${providerId}/logs${s ? '?' + s : ''}`)
 }
 
+export interface DiagnoseResult {
+  summary: {
+    total_credentials: number
+    healthy: number
+    degraded: number
+    unreachable: number
+    models_coverage_pct: number
+    avg_latency_ms: number
+  }
+  error_classification: {
+    auth_errors: number
+    rate_limit_errors: number
+    timeout_errors: number
+    model_not_found_errors: number
+    other_errors: number
+  }
+  health_scores: Array<{
+    credential_id: number
+    score: number
+  }>
+  credentials: Array<{
+    credential_id: number
+    label: string
+    status: string
+    circuit_state: string
+    models_probe: {
+      status_code: number | null
+      models_count: number
+      latency_ms: number
+      error: string | null
+    } | null
+    chat_probe: {
+      status_code: number | null
+      latency_ms: number
+      error: string | null
+    } | null
+  }>
+}
+
+export function startDiagnose(providerId: number) {
+  return req<{ task_id: number }>('POST', `/api/providers/${providerId}/diagnose`)
+}
+
+export function getDiagnoseResult(providerId: number) {
+  return req<{ result: DiagnoseResult }>('GET', `/api/providers/${providerId}/diagnose`)
+}
+
 export function checkCredential(providerId: number, credId: number) {
   return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
 }
