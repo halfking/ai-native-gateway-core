@@ -175,6 +175,29 @@ export function toggleModelOfferState(providerId: number, offerId: number, data:
   return req<{ message: string }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, data)
 }
 
+export interface ProviderLogEntry {
+  ts: string
+  request_id: string
+  credential_id: number | null
+  client_model: string | null
+  outbound_model: string | null
+  success: boolean
+  error_kind: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  cost_usd: number | null
+  latency_ms: number | null
+}
+
+export function getProviderLogs(providerId: number, params: { model?: string; page?: number; page_size?: number } = {}) {
+  const qs = new URLSearchParams()
+  if (params.model) qs.set('model', params.model)
+  if (params.page) qs.set('page', String(params.page))
+  if (params.page_size) qs.set('page_size', String(params.page_size))
+  const s = qs.toString()
+  return req<{ items: ProviderLogEntry[]; total: number }>('GET', `/api/providers/${providerId}/logs${s ? '?' + s : ''}`)
+}
+
 export function checkCredential(providerId: number, credId: number) {
   return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
 }
