@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   getProviders, createProvider, updateProvider, toggleProvider,
   addCredential, deleteCredential, getCatalog, getProviderCredentials,
@@ -8,6 +9,8 @@ import {
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
   type BackgroundTasksStatus,
 } from '../api'
+
+const router = useRouter()
 
 const providers = ref<Provider[]>([])
 const catalog   = ref<CatalogEntry[]>([])
@@ -480,7 +483,7 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in providers" :key="p.id">
+           <tr v-for="p in providers" :key="p.id" style="cursor:pointer" @click="router.push('/providers/' + p.id)">
             <td>
               <div style="font-weight:500">{{ p.display_name }}</div>
               <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>

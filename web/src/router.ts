@@ -4,6 +4,7 @@ import { store } from './store'
 import LoginView              from './views/LoginView.vue'
 import DashboardView          from './views/DashboardView.vue'
 import ProvidersView          from './views/ProvidersView.vue'
+import ProviderDetailView     from './views/ProviderDetailView.vue'
 import KeysView               from './views/KeysView.vue'
 import KeyDetailView          from './views/KeyDetailView.vue'
 import KeyApplicationsView    from './views/KeyApplicationsView.vue'
@@ -23,6 +24,7 @@ export const router = createRouter({
     { path: '/login',              component: LoginView, meta: { public: true } },
     { path: '/',                   component: DashboardView },
     { path: '/providers',          component: ProvidersView },
+    { path: '/providers/:id',      component: ProviderDetailView },
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
     { path: '/key-applications',   component: KeyApplicationsView },

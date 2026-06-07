@@ -115,6 +115,20 @@ export function getProviders() {
   return req<Provider[]>('GET', '/api/providers')
 }
 
+export function getProviderDetail(id: number) {
+  return req<Provider & {
+    active_cred_count: number
+    healthy_cred_count: number
+    warning_cred_count: number
+    cooling_cred_count: number
+    unreachable_cred_count: number
+    available_model_count: number
+    unavailable_model_count: number
+    error_rate_24h: number
+    created_at: string | null
+  }>('GET', `/api/providers/${id}`)
+}
+
 export function createProvider(data: { catalog_code: string; display_name?: string; base_url?: string; notes?: string; protocol?: string }) {
   return req<{ id: number; message: string }>('POST', '/api/providers', data)
 }
