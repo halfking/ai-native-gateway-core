@@ -154,6 +154,27 @@ export function batchRecoverCredentials(providerId: number) {
   return req<{ recovered: number }>('POST', `/api/providers/${providerId}/batch-recover`)
 }
 
+export interface ModelOffer {
+  id: number
+  credential_id: number
+  canonical_id: number | null
+  raw_model_name: string
+  standardized_name: string | null
+  available: boolean
+  p95_latency_ms: number | null
+  success_rate: number | null
+  last_seen_at: string | null
+  source: string | null
+}
+
+export function getProviderModels(providerId: number) {
+  return req<ModelOffer[]>('GET', `/api/providers/${providerId}/models`)
+}
+
+export function toggleModelOfferState(providerId: number, offerId: number, data: { available: boolean }) {
+  return req<{ message: string }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, data)
+}
+
 export function checkCredential(providerId: number, credId: number) {
   return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
 }
