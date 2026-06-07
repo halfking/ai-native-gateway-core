@@ -43,6 +43,21 @@ const addCredError = ref('')
 const checking = ref(false)
 const checkMessage = ref('')
 
+// Credential inline editing
+const credSaving = ref<Record<number, boolean>>({})
+const credChecking = ref<Record<number, boolean>>({})
+const credCheckMsgs = ref<Record<number, string>>({})
+const credSaveMsgs = ref<Record<number, string>>({})
+
+const credentialStatuses = [
+  { value: 'active', label: '可用' },
+  { value: 'cooling', label: '冷却' },
+  { value: 'degraded', label: '降级' },
+  { value: 'quarantine', label: '隔离' },
+  { value: 'quota_expired', label: '配额耗尽' },
+  { value: 'disabled', label: '停用' },
+]
+
 async function loadProvider() {
   loading.value = true
   error.value = ''
@@ -134,36 +149,85 @@ async function saveAddCred() {
   }
 }
 
-async function handleDeleteCred(credId: number) {
-  if (!confirm('确认停用该凭据？')) return
+async function saveCred(c: ProviderCredential) {
+  credSaving.value = { ...credSaving.value, [c.id]: true }
+  credSaveMsgs.value = { ...credSaveMsgs.value, [c.id]: '' }
   try {
-    await deleteCredential(providerId.value, credId)
+    await updateCredential(providerId.value, c.id, {
+      label: c.label,
+      status: c.status,
+      concurrency_limit: c.concurrency_limit || null,
+      effective_at: c.effective_at,
+      expires_at: c.expires_at,
+      tags: c.tags,
+      notes: c.notes || '',
+    })
     await loadProvider()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '删除失败'
+    credSaveMsgs.value = { ...credSaveMsgs.value, [c.id]: e instanceof Error ? e.message : '保存失败' }
+  } finally {
+    credSaving.value = { ...credSaving.value, [c.id]: false }
   }
 }
 
-async function handleCheckCred(credId: number) {
+async function checkCred(c: ProviderCredential) {
+  credChecking.value = { ...credChecking.value, [c.id]: true }
+  credCheckMsgs.value = { ...credCheckMsgs.value, [c.id]: '' }
   try {
-    await checkCredential(providerId.value, credId)
+    const r = await checkCredential(providerId.value, c.id)
+    credCheckMsgs.value = { ...credCheckMsgs.value, [c.id]: `${r.health_status} · ${r.probe_ok ? '探活通过' : '不可用'}` }
     setTimeout(() => loadProvider(), 3000)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '检测失败'
+    credCheckMsgs.value = { ...credCheckMsgs.value, [c.id]: e instanceof Error ? e.message : '检测失败' }
+  } finally {
+    credChecking.value = { ...credChecking.value, [c.id]: false }
   }
 }
 
-function credStatusClass(status: string) {
-  return status === 'active' ? 'badge-green' : status === 'disabled' || status === 'quota_expired' ? 'badge-red' : status === 'cooling' || status === 'degraded' ? 'badge-amber' : 'badge-gray'
+async function delCred(c: ProviderCredential) {
+  if (!confirm('确认停用该凭据？')) return
+  try {
+    await deleteCredential(providerId.value, c.id)
+    await loadProvider()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '停用失败'
+  }
 }
 
-function healthClass(status: string | null) {
-  return status === 'healthy' ? 'badge-green' : status === 'warning' ? 'badge-amber' : status === 'unreachable' ? 'badge-red' : 'badge-gray'
+function statusBadge(status: string) {
+  if (status === 'active') return 'badge-green'
+  if (status === 'disabled' || status === 'quota_expired' || status === 'quarantine') return 'badge-red'
+  if (status === 'cooling' || status === 'degraded') return 'badge-amber'
+  return 'badge-gray'
+}
+
+function healthBadge(status: string | null) {
+  if (status === 'healthy') return 'badge-green'
+  if (status === 'warning') return 'badge-amber'
+  if (status === 'unreachable') return 'badge-red'
+  return 'badge-gray'
+}
+
+function healthLabel(status: string | null) {
+  if (status === 'healthy') return '正常'
+  if (status === 'warning') return '警示'
+  if (status === 'unreachable') return '不可达'
+  return '未探测'
 }
 
 function fmtTime(ts: string | null) {
   if (!ts) return '—'
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+}
+
+function money(v: number | string | null | undefined) {
+  if (v == null) return '—'
+  const n = typeof v === 'string' ? Number(v) : v
+  return Number.isNaN(n) ? '—' : `$${n.toFixed(4)}`
+}
+
+function asDateInput(v: string | null) {
+  return v ? v.slice(0, 16) : ''
 }
 
 onMounted(loadProvider)
@@ -256,10 +320,10 @@ onMounted(loadProvider)
       <!-- Credentials Tab -->
       <div v-if="activeTab === 'credentials'">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="margin:0">凭据 ({{ credentials.length }})</h3>
+          <h3 style="margin:0">凭据列表 ({{ credentials.length }})</h3>
           <button class="btn btn-primary btn-sm" @click="openAddCred">+ 添加凭据</button>
         </div>
-        <div class="card">
+        <div style="overflow-x:auto">
           <table class="data-table" style="width:100%;font-size:12px">
             <thead>
               <tr>
@@ -274,34 +338,54 @@ onMounted(loadProvider)
               </tr>
             </thead>
             <tbody>
+              <tr v-if="!credentials.length">
+                <td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">暂无凭据</td>
+              </tr>
               <tr v-for="c in credentials" :key="c.id">
                 <td>
-                  <div><code style="font-size:11px">{{ c.label || '—' }}</code></div>
+                  <input v-model="c.label" class="compact-input" placeholder="标签" />
                   <div style="font-size:11px;color:var(--muted)">#{{ c.id }} · {{ c.trust_level || '—' }}</div>
                 </td>
                 <td>
-                  <span :class="['badge', credStatusClass(c.status)]">{{ c.status }}</span>
+                  <select v-model="c.status" class="compact-input">
+                    <option v-for="s in credentialStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
+                  </select>
+                  <span :class="['badge', statusBadge(c.status)]">{{ c.status }}</span>
                 </td>
                 <td>
-                  <span :class="['badge', healthClass(c.health_status)]">{{ c.health_status || '未探测' }}</span>
+                  <span :class="['badge', healthBadge(c.health_status)]">{{ healthLabel(c.health_status) }}</span>
                   <div style="font-size:11px;color:var(--muted)">{{ fmtTime(c.health_checked_at) }}</div>
+                  <div v-if="c.health_error" style="font-size:11px;color:var(--danger);max-width:200px;word-break:break-all">{{ c.health_error }}</div>
                 </td>
-                <td>{{ c.concurrency_limit || '—' }}</td>
-                <td style="font-size:11px">
-                  <div>{{ c.effective_at ? fmtTime(c.effective_at) : '—' }}</div>
-                  <div>{{ c.expires_at ? fmtTime(c.expires_at) : '—' }}</div>
-                </td>
-                <td style="font-size:11px">{{ c.total_requests || 0 }} 次</td>
-                <td style="font-size:11px">{{ c.notes || '—' }}</td>
                 <td>
-                  <div style="display:flex;gap:4px">
-                    <button class="btn btn-ghost btn-sm" @click="handleCheckCred(c.id)" title="检测">检测</button>
-                    <button class="btn btn-ghost btn-sm" @click="handleDeleteCred(c.id)" title="停用">停用</button>
-                  </div>
+                  <input v-model.number="c.concurrency_limit" type="number" min="1" class="compact-input" style="max-width:80px" placeholder="不限" />
                 </td>
-              </tr>
-              <tr v-if="credentials.length === 0">
-                <td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">暂无凭据</td>
+                <td>
+                  <input :value="asDateInput(c.effective_at)" type="datetime-local" class="compact-input"
+                    @input="c.effective_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />
+                  <input :value="asDateInput(c.expires_at)" type="datetime-local" class="compact-input"
+                    @input="c.expires_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />
+                </td>
+                <td>
+                  <div>{{ c.total_requests || 0 }} 次 · {{ money(c.total_cost_usd) }}</div>
+                </td>
+                <td>
+                  <input :value="(c.tags ?? []).join(', ')" class="compact-input" placeholder="tag1, tag2"
+                    @input="c.tags = ($event.target as HTMLInputElement).value.split(',').map((t:string) => t.trim()).filter(Boolean)" />
+                </td>
+                <td>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap">
+                    <button class="btn btn-primary btn-sm" @click="saveCred(c)" :disabled="credSaving[c.id]">
+                      {{ credSaving[c.id] ? '保存中' : '保存' }}
+                    </button>
+                    <button class="btn btn-sm" @click="checkCred(c)" :disabled="credChecking[c.id]">
+                      {{ credChecking[c.id] ? '检测中' : '检测' }}
+                    </button>
+                    <button class="btn btn-sm" @click="delCred(c)">停用</button>
+                  </div>
+                  <div v-if="credSaveMsgs[c.id]" style="font-size:11px;color:var(--danger);margin-top:4px">{{ credSaveMsgs[c.id] }}</div>
+                  <div v-if="credCheckMsgs[c.id]" style="font-size:11px;color:var(--muted);margin-top:4px">{{ credCheckMsgs[c.id] }}</div>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -388,8 +472,8 @@ onMounted(loadProvider)
 
     <!-- Add Credential Modal -->
     <div v-if="showAddCredModal" class="modal-overlay" @click.self="showAddCredModal = false">
-      <div class="modal" style="max-width:500px">
-        <h3>添加凭据</h3>
+      <div class="modal" style="max-width:400px">
+        <h3>添加凭据 — {{ provider?.display_name }}</h3>
         <div v-if="addCredError" class="alert alert-danger">{{ addCredError }}</div>
         <div class="form-group">
           <label>API Key</label>
@@ -402,10 +486,28 @@ onMounted(loadProvider)
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" @click="showAddCredModal = false">取消</button>
           <button class="btn btn-primary" @click="saveAddCred" :disabled="addCredSaving">
-            {{ addCredSaving ? '保存中...' : '添加' }}
+            {{ addCredSaving ? '添加中...' : '添加' }}
           </button>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.compact-input {
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+}
+.compact-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+</style>
