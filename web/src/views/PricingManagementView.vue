@@ -38,7 +38,21 @@ async function fetchData() {
       fetch(`/api/pricing/tree${s ? '?' + s : ''}`).then(r => r.json()),
       fetch('/api/pricing/summary').then(r => r.json()),
     ])
-    pricingTree.value = tree.offers || tree
+    // Flatten families into offers list
+    const families = tree.families || []
+    const allOffers = []
+    for (const family of families) {
+      const offers = family.offers || []
+      for (const offer of offers) {
+        allOffers.push({
+          ...offer,
+          family: family.family,
+          canonical_name: family.canonical_name,
+          modality: family.modality,
+        })
+      }
+    }
+    pricingTree.value = allOffers
     summary.value = sum
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
@@ -171,8 +185,11 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="o in pricingTree" :key="o.id">
-              <td><code style="font-size:11px">{{ o.raw_model_name }}</code></td>
+            <tr v-for="o in pricingTree" :key="o.offer_id">
+              <td>
+                <div><code style="font-size:11px">{{ o.raw_model_name }}</code></div>
+                <div style="font-size:11px;color:var(--muted)">{{ o.canonical_name || '—' }}</div>
+              </td>
               <td>{{ o.provider_name || '—' }}</td>
               <td>{{ o.unit_price_in_per_1m != null ? money(o.unit_price_in_per_1m) : '—' }}</td>
               <td>{{ o.unit_price_out_per_1m != null ? money(o.unit_price_out_per_1m) : '—' }}</td>

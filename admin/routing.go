@@ -1300,6 +1300,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// First get popular models from routing_decision_log
 	rows, err := h.db.Query(ctx, `
 		SELECT model, COUNT(*) as cnt
 		FROM routing_decision_log
@@ -1307,7 +1308,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 		  AND model IS NOT NULL AND model != ''
 		GROUP BY model
 		ORDER BY cnt DESC
-		LIMIT 10
+		LIMIT 30
 	`)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"models": []any{}})
@@ -1316,16 +1317,51 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	defer rows.Close()
 
 	type featuredModel struct {
-		Name  string `json:"name"`
-		Count int    `json:"count"`
+		Name              string `json:"name"`
+		StandardizedName  string `json:"standardized_name"`
+		Count             int    `json:"count"`
+		Source            string `json:"source"`
 	}
 	models := make([]featuredModel, 0)
+	seen := make(map[string]bool)
 	for rows.Next() {
 		var m featuredModel
 		if err := rows.Scan(&m.Name, &m.Count); err != nil {
 			continue
 		}
-		models = append(models, m)
+		m.StandardizedName = m.Name
+		m.Source = "routing"
+		if !seen[m.Name] {
+			models = append(models, m)
+			seen[m.Name] = true
+		}
+	}
+
+	// Also get canonical models from models_canonical
+	canonicalRows, err := h.db.Query(ctx, `
+		SELECT canonical_name
+		FROM models_canonical
+		WHERE status = 'active'
+		ORDER BY canonical_name
+		LIMIT 50
+	`)
+	if err == nil {
+		defer canonicalRows.Close()
+		for canonicalRows.Next() {
+			var name string
+			if err := canonicalRows.Scan(&name); err != nil {
+				continue
+			}
+			if !seen[name] {
+				models = append(models, featuredModel{
+					Name:             name,
+					StandardizedName: name,
+					Count:            0,
+					Source:           "canonical",
+				})
+				seen[name] = true
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
