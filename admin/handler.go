@@ -138,6 +138,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/register", h.handleFreePoolRegister)
 	mux.HandleFunc("/api/free-pool/models", h.handleFreePoolModels)
 	mux.HandleFunc("/api/free-pool/catalog", h.handleFreePoolCatalog)
+	mux.HandleFunc("/api/free-pool/available", h.handleFreePoolAvailable)
+	mux.HandleFunc("/api/free-pool/register-all", h.handleFreePoolRegisterAll)
+	mux.HandleFunc("/api/free-pool/import-env", h.handleFreePoolImportEnv)
+	mux.HandleFunc("/api/free-pool/bootstrap", h.handleFreePoolBootstrap)
+	mux.HandleFunc("/api/free-pool/bridge-oauth", h.handleFreePoolBridgeOAuth)
+	mux.HandleFunc("/api/free-pool/discover", h.handleFreePoolDiscover)
+	mux.HandleFunc("/api/free-pool/bulk-register", h.handleFreePoolBulkRegister)
 	mux.HandleFunc("/api/pricing/", h.handlePricing)
 }
 

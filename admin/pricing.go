@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,8 @@ func (h *Handler) handlePricing(w http.ResponseWriter, r *http.Request) {
 		h.pricingImport(w, r)
 	case remaining == "table":
 		h.pricingTable(w, r)
+	case remaining == "stats/window":
+		h.pricingStatsWindow(w, r)
 	case remaining == "copy":
 		h.pricingCopy(w, r)
 	case remaining == "auto-inherit":
@@ -369,7 +372,175 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "CSV import not yet implemented in Go version")
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Parse multipart form
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+		writeError(w, http.StatusBadRequest, "failed to parse form: "+err.Error())
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing 'file' field")
+		return
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read CSV: "+err.Error())
+		return
+	}
+
+	if len(records) < 2 {
+		writeError(w, http.StatusBadRequest, "CSV must have header + at least one data row")
+		return
+	}
+
+	// Parse header
+	header := records[0]
+	colMap := map[string]int{}
+	for i, h := range header {
+		colMap[strings.TrimSpace(h)] = i
+	}
+
+	offerIDIdx, ok := colMap["offer_id"]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "CSV must have 'offer_id' column")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	updated := 0
+	for _, row := range records[1:] {
+		if offerIDIdx >= len(row) || row[offerIDIdx] == "" {
+			continue
+		}
+		offerID, err := strconv.Atoi(strings.TrimSpace(row[offerIDIdx]))
+		if err != nil {
+			continue
+		}
+
+		setClauses := []string{"pricing_source = 'imported'", "pricing_updated_at = now()"}
+		args := []any{}
+		argIdx := 2
+
+		fields := map[string]string{
+			"unit_price_in_per_1m":  "float",
+			"unit_price_out_per_1m": "float",
+			"cache_read_price_per_1m": "float",
+			"cache_write_price_per_1m": "float",
+			"currency":    "string",
+			"billing_mode": "string",
+		}
+
+		for col, typ := range fields {
+			idx, ok := colMap[col]
+			if !ok || idx >= len(row) || strings.TrimSpace(row[idx]) == "" {
+				continue
+			}
+			val := strings.TrimSpace(row[idx])
+			setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))
+			if typ == "float" {
+				if f, err := strconv.ParseFloat(val, 64); err == nil {
+					args = append(args, f)
+				} else {
+					continue
+				}
+			} else {
+				args = append(args, val)
+			}
+			argIdx++
+		}
+
+		query := fmt.Sprintf("UPDATE model_offers SET %s WHERE id = $1", strings.Join(setClauses, ", "))
+		tag, err := h.db.Exec(ctx, query, append([]any{offerID}, args...)...)
+		if err != nil {
+			continue
+		}
+		if tag.RowsAffected() > 0 {
+			updated++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
+}
+
+func (h *Handler) pricingStatsWindow(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	credFilter := queryString(r, "credential_id")
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			credential_id,
+			raw_model_name,
+			COALESCE(request_count, 0)::int,
+			COALESCE(success_count, 0)::int,
+			COALESCE(failure_count, 0)::int,
+			COALESCE(success_rate, 0.0)::float8,
+			latency_p50_ms,
+			latency_p95_ms,
+			latency_p99_ms,
+			COALESCE(prompt_tokens, 0)::int,
+			COALESCE(completion_tokens, 0)::int,
+			COALESCE(cost_usd, 0.0)::float8
+		FROM credential_model_stats_1m
+		WHERE bucket >= now() - INTERVAL '10 minutes'
+	`)
+	if err != nil {
+		// Table might not exist — return empty
+		writeJSON(w, http.StatusOK, map[string]any{"stats": []any{}, "total": 0})
+		return
+	}
+	defer rows.Close()
+
+	type windowStat struct {
+		CredentialID     int      `json:"credential_id"`
+		RawModel         string   `json:"raw_model"`
+		Requests         int      `json:"requests"`
+		Successes        int      `json:"successes"`
+		Failures         int      `json:"failures"`
+		SuccessRate      float64  `json:"success_rate"`
+		LatencyP50Ms     *int     `json:"latency_p50_ms"`
+		LatencyP95Ms     *int     `json:"latency_p95_ms"`
+		LatencyP99Ms     *int     `json:"latency_p99_ms"`
+		PromptTokens     int      `json:"prompt_tokens"`
+		CompletionTokens int      `json:"completion_tokens"`
+		CostUSD          float64  `json:"cost_usd"`
+	}
+
+	stats := make([]windowStat, 0)
+	credFilterInt := 0
+	if credFilter != "" {
+		credFilterInt, _ = strconv.Atoi(credFilter)
+	}
+
+	for rows.Next() {
+		var s windowStat
+		if err := rows.Scan(&s.CredentialID, &s.RawModel,
+			&s.Requests, &s.Successes, &s.Failures, &s.SuccessRate,
+			&s.LatencyP50Ms, &s.LatencyP95Ms, &s.LatencyP99Ms,
+			&s.PromptTokens, &s.CompletionTokens, &s.CostUSD); err != nil {
+			continue
+		}
+		if credFilterInt > 0 && s.CredentialID != credFilterInt {
+			continue
+		}
+		s.SuccessRate = math.Round(s.SuccessRate*10000) / 10000
+		s.CostUSD = math.Round(s.CostUSD*100000000) / 100000000
+		stats = append(stats, s)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"stats": stats, "total": len(stats)})
 }
 
 func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {

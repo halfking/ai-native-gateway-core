@@ -3,8 +3,10 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -1595,4 +1597,522 @@ func (h *Handler) handleFreePoolCatalog(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"providers": entries})
+}
+
+// ── Free Pool: available (static catalog) ────────────────────────────────
+
+func (h *Handler) handleFreePoolAvailable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Static catalog of known free-tier providers
+	providers := []map[string]any{
+		{"catalog_code": "zhipu-free", "display_name": "Zhipu GLM (Free Tier)", "base_url": "https://open.bigmodel.cn/api/paas/v4", "models": []string{"glm-4-flash", "glm-4.7-flash"}, "rpm_limit": 5, "signup_url": "https://open.bigmodel.cn", "env_vars": []string{"ZHIPU_API_KEY", "BIGMODEL_API_KEY"}, "needs_key": true},
+		{"catalog_code": "siliconflow-free", "display_name": "SiliconFlow (Free Tier)", "base_url": "https://api.siliconflow.cn/v1", "models": []string{"Qwen/Qwen2.5-7B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"}, "rpm_limit": 10, "signup_url": "https://cloud.siliconflow.cn", "env_vars": []string{"SILICONFLOW_API_KEY"}, "needs_key": true},
+		{"catalog_code": "groq-free", "display_name": "Groq (Free Tier)", "base_url": "https://api.groq.com/openai/v1", "models": []string{"llama-3.3-70b-versatile", "mixtral-8x7b-32768"}, "rpm_limit": 30, "signup_url": "https://console.groq.com", "env_vars": []string{"GROQ_API_KEY"}, "needs_key": true},
+		{"catalog_code": "cerebras-free", "display_name": "Cerebras (Free Tier)", "base_url": "https://api.cerebras.ai/v1", "models": []string{"llama-3.3-70b"}, "rpm_limit": 30, "signup_url": "https://cloud.cerebras.ai", "env_vars": []string{"CEREBRAS_API_KEY"}, "needs_key": true},
+		{"catalog_code": "sambanova-free", "display_name": "SambaNova (Free Tier)", "base_url": "https://api.sambanova.ai/v1", "models": []string{"Meta-Llama-3.3-70B-Instruct"}, "rpm_limit": 10, "signup_url": "https://cloud.sambanova.ai", "env_vars": []string{"SAMBANOVA_API_KEY"}, "needs_key": true},
+		{"catalog_code": "google-gemini-free", "display_name": "Google Gemini (Free Tier)", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "models": []string{"gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"}, "rpm_limit": 15, "signup_url": "https://aistudio.google.com", "env_vars": []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, "needs_key": true},
+		{"catalog_code": "mistral-free", "display_name": "Mistral (Free Tier)", "base_url": "https://api.mistral.ai/v1", "models": []string{"mistral-small-latest"}, "rpm_limit": 30, "signup_url": "https://console.mistral.ai", "env_vars": []string{"MISTRAL_API_KEY"}, "needs_key": true},
+		{"catalog_code": "openrouter-free", "display_name": "OpenRouter (Free Models)", "base_url": "https://openrouter.ai/api/v1", "models": []string{"meta-llama/llama-3.3-70b-instruct:free"}, "rpm_limit": 20, "signup_url": "https://openrouter.ai", "env_vars": []string{"OPENROUTER_API_KEY"}, "needs_key": true},
+		{"catalog_code": "together-free", "display_name": "Together (Free Tier)", "base_url": "https://api.together.xyz/v1", "models": []string{"meta-llama/Llama-3.3-70B-Instruct-Turbo"}, "rpm_limit": 60, "signup_url": "https://api.together.xyz", "env_vars": []string{"TOGETHER_API_KEY"}, "needs_key": true},
+		{"catalog_code": "nvidia-nim-free", "display_name": "NVIDIA NIM (Free Tier)", "base_url": "https://integrate.api.nvidia.com/v1", "models": []string{"meta/llama-3.3-70b-instruct"}, "rpm_limit": 10, "signup_url": "https://build.nvidia.com", "env_vars": []string{"NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"}, "needs_key": true},
+		{"catalog_code": "cloudflare-workers-ai-free", "display_name": "Cloudflare Workers AI (Free)", "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1", "models": []string{"@cf/meta/llama-3.3-70b-instruct"}, "rpm_limit": 300, "signup_url": "https://dash.cloudflare.com", "env_vars": []string{"CLOUDFLARE_API_TOKEN", "CF_API_TOKEN"}, "needs_key": true},
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+}
+
+// ── Free Pool: register-all ──────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolRegisterAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Collect env-based provider configs
+	envConfigs := h.collectEnvProviderConfigs()
+
+	// Register each
+	results := make([]map[string]any, 0)
+	for _, cfg := range envConfigs {
+		result := h.registerFreeProvider(w, r, cfg)
+		results = append(results, result)
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+// ── Free Pool: import-env ────────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolImportEnv(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	envConfigs := h.collectEnvProviderConfigs()
+	registered := 0
+	results := make([]map[string]any, 0)
+
+	for _, cfg := range envConfigs {
+		result := h.registerFreeProvider(w, r, cfg)
+		if result["status"] == "registered" {
+			registered++
+		}
+		results = append(results, result)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":       "env",
+		"candidates": len(envConfigs),
+		"registered": registered,
+		"results":    results,
+	})
+}
+
+// ── Free Pool: bootstrap ─────────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// 1. Cleanup disabled oauth-bridge credentials
+	cleanupResults := make([]map[string]any, 0)
+	rows, err := h.db.Query(ctx, `
+		SELECT id, label FROM credentials
+		WHERE pool_group = 'free' AND label LIKE '%oauth-bridge%' AND status = 'disabled'
+	`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id int
+			var label string
+			rows.Scan(&id, &label)
+			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = $1`, id)
+			cleanupResults = append(cleanupResults, map[string]any{"id": id, "label": label})
+		}
+	}
+
+	// 2. Mirror existing keys to free pool
+	mirrorResults := h.mirrorExistingKeys(ctx)
+
+	// 3. Import from env
+	envConfigs := h.collectEnvProviderConfigs()
+	envResults := make([]map[string]any, 0)
+	for _, cfg := range envConfigs {
+		result := h.registerFreeProvider(w, r, cfg)
+		envResults = append(envResults, result)
+	}
+
+	// 4. Get current status
+	statusRows, _ := h.db.Query(ctx, `
+		SELECT p.catalog_code, p.display_name, c.label, c.status,
+		       COUNT(mo.id) AS offers
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN model_offers mo ON mo.credential_id = c.id
+		WHERE c.pool_group = 'free'
+		GROUP BY p.catalog_code, p.display_name, c.label, c.status
+		ORDER BY p.display_name
+	`)
+	poolStatus := make([]map[string]any, 0)
+	if statusRows != nil {
+		defer statusRows.Close()
+		for statusRows.Next() {
+			var code, name, label, status string
+			var offers int
+			statusRows.Scan(&code, &name, &label, &status, &offers)
+			poolStatus = append(poolStatus, map[string]any{
+				"catalog_code": code, "provider_name": name,
+				"label": label, "status": status, "offers": offers,
+			})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cleanup":  map[string]any{"disabled": cleanupResults},
+		"mirror":   map[string]any{"registered": len(mirrorResults), "results": mirrorResults},
+		"env":      map[string]any{"registered": len(envResults), "results": envResults},
+		"status":   poolStatus,
+	})
+}
+
+// ── Free Pool: bridge-oauth ──────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolBridgeOAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Check for OAuth tokens in environment
+	geminiToken := os.Getenv("OAUTH_GEMINI_ACCESS_TOKEN")
+	if geminiToken == "" {
+		geminiToken = os.Getenv("GEMINI_OAUTH_ACCESS_TOKEN")
+	}
+
+	registered := 0
+	results := make([]map[string]any, 0)
+
+	if geminiToken != "" {
+		cfg := freeProviderConfig{
+			catalogCode:      "google-gemini-free",
+			displayName:      "Google Gemini (oauth-bridge)",
+			baseURL:          "https://generativelanguage.googleapis.com/v1beta/openai",
+			protocol:         "openai-completions",
+			apiKey:           geminiToken,
+			models:           []string{"gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"},
+			acquisitionMode:  "oauth",
+			acquisitionDetail: "env:OAUTH_GEMINI_ACCESS_TOKEN",
+		}
+		result := h.registerFreeProvider(w, r, cfg)
+		if result["status"] == "registered" {
+			registered++
+		}
+		results = append(results, result)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":       "oauth_bridge",
+		"candidates": len(results),
+		"registered": registered,
+		"results":    results,
+	})
+}
+
+// ── Free Pool: discover ──────────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolDiscover(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Check capacity
+	var count int
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM credentials WHERE pool_group = 'free' AND status = 'active'`).Scan(&count)
+	if count >= 30 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "skipped",
+			"reason":  "pool_at_capacity",
+			"current": count,
+		})
+		return
+	}
+
+	// Import from env
+	envConfigs := h.collectEnvProviderConfigs()
+	registered := 0
+	for _, cfg := range envConfigs {
+		result := h.registerFreeProvider(w, r, cfg)
+		if result["status"] == "registered" {
+			registered++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "completed",
+		"registered": registered,
+		"total_pool": count + registered,
+	})
+}
+
+// ── Free Pool: bulk-register ─────────────────────────────────────────────
+
+func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		CatalogCode string   `json:"catalog_code"`
+		DisplayName string   `json:"display_name"`
+		BaseURL     string   `json:"base_url"`
+		APIKeys     []string `json:"api_keys"`
+		Models      []string `json:"models"`
+		Protocol    string   `json:"protocol"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Protocol == "" {
+		req.Protocol = "openai-completions"
+	}
+
+	registered := 0
+	errors := 0
+	results := make([]map[string]any, 0)
+
+	for i, key := range req.APIKeys {
+		if key == "" {
+			continue
+		}
+		cfg := freeProviderConfig{
+			catalogCode:      req.CatalogCode,
+			displayName:      req.DisplayName,
+			baseURL:          req.BaseURL,
+			protocol:         req.Protocol,
+			apiKey:           key,
+			models:           req.Models,
+			credentialLabel:  fmt.Sprintf("%s-free-key-%d", req.CatalogCode, i+1),
+			acquisitionMode:  "bulk",
+			acquisitionDetail: fmt.Sprintf("bulk-register key %d/%d", i+1, len(req.APIKeys)),
+		}
+		result := h.registerFreeProvider(w, r, cfg)
+		if result["status"] == "registered" {
+			registered++
+		} else {
+			errors++
+		}
+		result["key_index"] = i
+		results = append(results, result)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"catalog_code": req.CatalogCode,
+		"total_keys":   len(req.APIKeys),
+		"registered":   registered,
+		"errors":       errors,
+		"results":      results,
+	})
+}
+
+// ── Shared helpers ────────────────────────────────────────────────────────
+
+type freeProviderConfig struct {
+	catalogCode      string
+	displayName      string
+	baseURL          string
+	protocol         string
+	apiKey           string
+	models           []string
+	credentialLabel  string
+	acquisitionMode  string
+	acquisitionDetail string
+}
+
+func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
+	envBindings := []struct {
+		catalogCode string
+		displayName string
+		baseURL     string
+		models      []string
+		envVars     []string
+	}{
+		{"zhipu-free", "Zhipu GLM (Free Tier)", "https://open.bigmodel.cn/api/paas/v4", []string{"glm-4-flash", "glm-4.7-flash"}, []string{"ZHIPU_API_KEY", "BIGMODEL_API_KEY"}},
+		{"siliconflow-free", "SiliconFlow (Free Tier)", "https://api.siliconflow.cn/v1", []string{"Qwen/Qwen2.5-7B-Instruct"}, []string{"SILICONFLOW_API_KEY"}},
+		{"groq-free", "Groq (Free Tier)", "https://api.groq.com/openai/v1", []string{"llama-3.3-70b-versatile"}, []string{"GROQ_API_KEY"}},
+		{"cerebras-free", "Cerebras (Free Tier)", "https://api.cerebras.ai/v1", []string{"llama-3.3-70b"}, []string{"CEREBRAS_API_KEY"}},
+		{"sambanova-free", "SambaNova (Free Tier)", "https://api.sambanova.ai/v1", []string{"Meta-Llama-3.3-70B-Instruct"}, []string{"SAMBANOVA_API_KEY"}},
+		{"google-gemini-free", "Google Gemini (Free Tier)", "https://generativelanguage.googleapis.com/v1beta/openai", []string{"gemini-2.0-flash"}, []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}},
+		{"mistral-free", "Mistral (Free Tier)", "https://api.mistral.ai/v1", []string{"mistral-small-latest"}, []string{"MISTRAL_API_KEY"}},
+		{"openrouter-free", "OpenRouter (Free Models)", "https://openrouter.ai/api/v1", []string{"meta-llama/llama-3.3-70b-instruct:free"}, []string{"OPENROUTER_API_KEY"}},
+		{"together-free", "Together (Free Tier)", "https://api.together.xyz/v1", []string{"meta-llama/Llama-3.3-70B-Instruct-Turbo"}, []string{"TOGETHER_API_KEY"}},
+		{"nvidia-nim-free", "NVIDIA NIM (Free Tier)", "https://integrate.api.nvidia.com/v1", []string{"meta/llama-3.3-70b-instruct"}, []string{"NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"}},
+	}
+
+	configs := make([]freeProviderConfig, 0)
+	for _, binding := range envBindings {
+		apiKey := ""
+		for _, envVar := range binding.envVars {
+			if v := os.Getenv(envVar); v != "" {
+				apiKey = v
+				break
+			}
+		}
+		if apiKey == "" {
+			continue
+		}
+		configs = append(configs, freeProviderConfig{
+			catalogCode:      binding.catalogCode,
+			displayName:      binding.displayName,
+			baseURL:          binding.baseURL,
+			protocol:         "openai-completions",
+			apiKey:           apiKey,
+			models:           binding.models,
+			credentialLabel:  binding.catalogCode + "-free-key",
+			acquisitionMode:  "env",
+			acquisitionDetail: "env:" + binding.envVars[0],
+		})
+	}
+	return configs
+}
+
+func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, cfg freeProviderConfig) map[string]any {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// 1. Upsert provider_catalog
+	h.db.Exec(ctx, `
+		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
+			base_url_template, discovery_strategy, domestic, hidden, notes)
+		VALUES ($1, 9, $2, 'aggregator', 'cloud', $3, $4, 'manifest', true, false, 'auto-registered by free pool')
+		ON CONFLICT (code) DO UPDATE SET display_name = EXCLUDED.display_name,
+			base_url_template = EXCLUDED.base_url_template
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL)
+
+	// 2. Upsert provider
+	h.db.Exec(ctx, `
+		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
+			kind, category, protocol, base_url, egress_profile, domestic, enabled)
+		VALUES ('default', $1, $2, $1, false,
+			'cloud', 'aggregator', $3, $4, 'direct', true, true)
+		ON CONFLICT (tenant_id, code) DO UPDATE SET display_name = EXCLUDED.display_name,
+			base_url = EXCLUDED.base_url, enabled = true
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL)
+
+	// 3. Get provider_id
+	var providerID int
+	err := h.db.QueryRow(ctx, `SELECT id FROM providers WHERE tenant_id = 'default' AND catalog_code = $1`, cfg.catalogCode).Scan(&providerID)
+	if err != nil {
+		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "provider not found"}
+	}
+
+	// 4. Encrypt API key
+	encrypted, encErr := h.encryptCred([]byte(cfg.apiKey))
+	if encErr != nil {
+		return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "encryption failed"}
+	}
+
+	// 5. Upsert credential
+	credLabel := cfg.credentialLabel
+	if credLabel == "" {
+		credLabel = cfg.catalogCode + "-free-key"
+	}
+
+	var credID int
+	findErr := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND label = $2`, providerID, credLabel).Scan(&credID)
+	tagsJSON := `["free-pool","source:` + cfg.acquisitionMode + `","catalog:` + cfg.catalogCode + `"]`
+	if findErr != nil {
+		// Insert new
+		err = h.db.QueryRow(ctx, `
+			INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
+				trust_level, status, lifecycle_status, availability_state, quota_state,
+				pool_group, acquisition_source, acquisition_detail, tags)
+			VALUES ($1, 'default', $2, $3, 'degraded', 'active',
+				'active', 'ready', 'ok', 'free', $4, $5, CAST($6 AS jsonb))
+			RETURNING id
+		`, providerID, credLabel, encrypted, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON).Scan(&credID)
+		if err != nil {
+			return map[string]any{"catalog_code": cfg.catalogCode, "status": "error", "message": "credential insert failed"}
+		}
+	} else {
+		// Update existing
+		h.db.Exec(ctx, `
+			UPDATE credentials SET secret_ciphertext = $1, status = 'active',
+				pool_group = 'free', acquisition_source = $2, acquisition_detail = $3,
+				tags = CAST($4 AS jsonb), updated_at = NOW()
+			WHERE id = $5
+		`, encrypted, cfg.acquisitionMode, cfg.acquisitionDetail, tagsJSON, credID)
+	}
+
+	// 6. Insert model offers
+	for _, model := range cfg.models {
+		var canonID *int
+		var cid int
+		if err := h.db.QueryRow(ctx, `SELECT id FROM models_canonical WHERE canonical_name ILIKE $1 LIMIT 1`, model).Scan(&cid); err == nil {
+			canonID = &cid
+		}
+		h.db.Exec(ctx, `
+			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
+				available, routing_tier, billing_mode, currency,
+				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at)
+			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW())
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+				billing_mode = 'free', unit_price_in_per_1m = 0, unit_price_out_per_1m = 0,
+				pricing_source = 'pool_manager', pricing_updated_at = NOW(), available = true
+		`, credID, canonID, model)
+	}
+
+	h.logAudit(r, "free_pool_register", map[string]any{
+		"catalog_code": cfg.catalogCode,
+		"base_url":     cfg.baseURL,
+		"models":       cfg.models,
+		"source":       cfg.acquisitionMode,
+	})
+
+	return map[string]any{
+		"catalog_code":  cfg.catalogCode,
+		"status":        "registered",
+		"provider_id":   providerID,
+		"credential_id": credID,
+		"models":        len(cfg.models),
+	}
+}
+
+func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {
+	// Mirror rules: copy credentials from main providers to free-pool providers
+	mirrorRules := []struct {
+		sourceCatalog string
+		targetCatalog string
+	}{
+		{"nvidia", "nvidia-nim-free"},
+		{"zhipu", "zhipu-free"},
+	}
+
+	results := make([]map[string]any, 0)
+	for _, rule := range mirrorRules {
+		var credID int
+		var label, ciphertext string
+		err := h.db.QueryRow(ctx, `
+			SELECT c.id, c.label, c.secret_ciphertext
+			FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			WHERE p.catalog_code = $1 AND c.secret_ciphertext IS NOT NULL AND c.status = 'active'
+			ORDER BY c.id ASC LIMIT 1
+		`, rule.sourceCatalog).Scan(&credID, &label, &ciphertext)
+		if err != nil {
+			continue
+		}
+
+		// Check if target already has a free credential
+		var existingID int
+		err = h.db.QueryRow(ctx, `
+			SELECT c.id FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			WHERE p.catalog_code = $1 AND c.pool_group = 'free' LIMIT 1
+		`, rule.targetCatalog).Scan(&existingID)
+		if err == nil {
+			// Already exists, skip
+			continue
+		}
+
+		// Get target provider ID
+		var targetProviderID int
+		err = h.db.QueryRow(ctx, `SELECT id FROM providers WHERE catalog_code = $1`, rule.targetCatalog).Scan(&targetProviderID)
+		if err != nil {
+			continue
+		}
+
+		// Create free credential with mirrored key
+		_, err = h.db.Exec(ctx, `
+			INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
+				trust_level, status, lifecycle_status, availability_state, quota_state,
+				pool_group, acquisition_source, acquisition_detail)
+			VALUES ($1, 'default', $2, $3, 'degraded', 'active',
+				'active', 'ready', 'ok', 'free', 'mirror', $4)
+		`, targetProviderID, label+"-mirror", ciphertext, rule.sourceCatalog)
+		if err == nil {
+			results = append(results, map[string]any{
+				"source": rule.sourceCatalog,
+				"target": rule.targetCatalog,
+				"label":  label,
+			})
+		}
+	}
+	return results
 }
