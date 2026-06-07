@@ -13,9 +13,12 @@ import {
   updateCredential,
   revealCredentialKey,
   batchRecoverCredentials,
+  getProviderModels,
+  toggleModelOfferState,
   type Provider,
   type ProviderCredential,
   type CredentialCheckResult,
+  type ModelOffer,
 } from '../api'
 
 const route = useRoute()
@@ -48,6 +51,11 @@ const checkMessage = ref('')
 const batchRecovering = ref(false)
 const batchRecoverMsg = ref('')
 
+// Models
+const modelOffers = ref<ModelOffer[]>([])
+const modelsLoading = ref(false)
+const modelsError = ref('')
+
 // Credential inline editing
 const credSaving = ref<Record<number, boolean>>({})
 const credChecking = ref<Record<number, boolean>>({})
@@ -77,6 +85,27 @@ async function loadProvider() {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadModels() {
+  modelsLoading.value = true
+  modelsError.value = ''
+  try {
+    modelOffers.value = await getProviderModels(providerId.value)
+  } catch (e: unknown) {
+    modelsError.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+async function toggleModel(offer: ModelOffer) {
+  try {
+    await toggleModelOfferState(providerId.value, offer.id, { available: !offer.available })
+    await loadModels()
+  } catch (e: unknown) {
+    modelsError.value = e instanceof Error ? e.message : '操作失败'
   }
 }
 
@@ -253,6 +282,11 @@ function asDateInput(v: string | null) {
   return v ? v.slice(0, 16) : ''
 }
 
+function fmtTimeShort(ts: string | null) {
+  if (!ts) return '—'
+  return new Date(ts).toLocaleString('zh-CN', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 onMounted(loadProvider)
 </script>
 
@@ -291,7 +325,7 @@ onMounted(loadProvider)
         <button v-for="tab in (['overview','credentials','models','logs','settings'] as const)"
                 :key="tab"
                 :class="['btn btn-ghost btn-sm', { 'btn-primary': activeTab === tab }]"
-                @click="activeTab = tab">
+                @click="activeTab = tab; if(tab === 'models') loadModels()">
           {{ { overview: '概览', credentials: '凭据', models: '模型', logs: '请求日志', settings: '设置' }[tab] }}
         </button>
       </div>
@@ -417,9 +451,50 @@ onMounted(loadProvider)
 
       <!-- Models Tab -->
       <div v-if="activeTab === 'models'">
-        <div class="card">
-          <h3 style="margin:0 0 12px">模型列表</h3>
-          <p style="color:var(--muted);font-size:13px">模型管理功能开发中...</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0">模型列表 ({{ modelOffers.length }})</h3>
+          <button class="btn btn-ghost btn-sm" @click="loadModels" :disabled="modelsLoading">刷新</button>
+        </div>
+        <div v-if="modelsError" class="alert alert-danger" style="margin-bottom:12px">{{ modelsError }}</div>
+        <div v-if="modelsLoading" style="text-align:center;padding:24px;color:var(--muted)">加载中...</div>
+        <div v-else-if="modelOffers.length === 0" class="card" style="text-align:center;padding:24px;color:var(--muted)">
+          暂无模型数据
+        </div>
+        <div v-else style="overflow-x:auto">
+          <table class="data-table" style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>模型名称</th>
+                <th>标准化名称</th>
+                <th>状态</th>
+                <th>P95 延迟</th>
+                <th>成功率</th>
+                <th>来源</th>
+                <th>最后可见</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in modelOffers" :key="o.id">
+                <td><code style="font-size:11px">{{ o.raw_model_name }}</code></td>
+                <td><code style="font-size:11px">{{ o.standardized_name || '—' }}</code></td>
+                <td>
+                  <span :class="['badge', o.available ? 'badge-green' : 'badge-gray']">
+                    {{ o.available ? '可用' : '不可用' }}
+                  </span>
+                </td>
+                <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
+                <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
+                <td>{{ o.source || '—' }}</td>
+                <td style="font-size:11px">{{ fmtTimeShort(o.last_seen_at) }}</td>
+                <td>
+                  <button class="btn btn-ghost btn-sm" @click="toggleModel(o)">
+                    {{ o.available ? '禁用' : '启用' }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
