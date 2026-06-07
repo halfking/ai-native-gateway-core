@@ -111,8 +111,13 @@ export interface CredentialCheckResult {
   probe_error: string | null
 }
 
-export function getProviders() {
-  return req<Provider[]>('GET', '/api/providers')
+export function getProviders(params: { search?: string; health_status?: string; has_free_model?: boolean } = {}) {
+  const qs = new URLSearchParams()
+  if (params.search) qs.set('search', params.search)
+  if (params.health_status && params.health_status !== 'all') qs.set('health_status', params.health_status)
+  if (params.has_free_model !== undefined) qs.set('has_free_model', String(params.has_free_model))
+  const s = qs.toString()
+  return req<Provider[]>('GET', `/api/providers${s ? '?' + s : ''}`)
 }
 
 export function getProviderDetail(id: number) {

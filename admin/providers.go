@@ -289,7 +289,20 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
+	// Build dynamic WHERE clauses
+	whereClauses := []string{"p.tenant_id = 'default'"}
+	args := []any{}
+	argIdx := 1
+
+	if search := queryString(r, "search"); search != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf("p.display_name ILIKE $%d", argIdx))
+		args = append(args, search+"%")
+		argIdx++
+	}
+
+	whereSQL := strings.Join(whereClauses, " AND ")
+
+	query := fmt.Sprintf(`
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.catalog_code,
 		       p.is_custom, p.kind, p.category, p.protocol, p.base_url,
 		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled,
@@ -306,10 +319,12 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		LEFT JOIN credentials c ON c.provider_id = p.id
-		WHERE p.tenant_id = 'default'
+		WHERE %s
 		GROUP BY p.id, pc.code, pc.header_profile_code, pc.vendor_name
 		ORDER BY p.display_name ASC NULLS LAST, p.id ASC
-	`)
+	`, whereSQL)
+
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -373,6 +388,14 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			p.HealthStatus = "unknown"
 		}
 		p.FreeModelCount = 0 // TODO: join model_offers when table exists
+
+		// Apply health_status filter (post-query like Python)
+		if hs := queryString(r, "health_status"); hs != "" && hs != "all" {
+			if p.HealthStatus != hs {
+				continue
+			}
+		}
+
 		providers = append(providers, p)
 	}
 	writeJSON(w, http.StatusOK, providers)
