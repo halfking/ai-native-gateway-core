@@ -382,7 +382,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(mo.routing_tier, 2)::int AS tier,
 			COALESCE(mo.weight, 100)::int AS weight,
 			COALESCE(mo.outbound_model_name, mo.raw_model_name) AS model_name,
-			mo.standardized_name,
+			COALESCE(mo.standardized_name, '') AS standardized_name,
 			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
@@ -391,10 +391,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			mo.unit_price_in_per_1m::float8,
-			mo.unit_price_out_per_1m::float8,
-			mo.cache_read_price_per_1m::float8,
-			mo.cache_write_price_per_1m::float8,
+			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
+			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
+			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
 			CASE
 				WHEN mo.available IS NOT TRUE THEN FALSE
 				WHEN c.status NOT IN ('active','cooling','degraded') THEN FALSE
