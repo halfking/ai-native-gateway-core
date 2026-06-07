@@ -291,15 +291,24 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.catalog_code,
-		       p.kind, p.category, p.protocol, p.base_url,
+		       p.is_custom, p.kind, p.category, p.protocol, p.base_url,
 		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled,
 		       COALESCE(p.notes, ''),
+		       p.network_quality_score, p.owner_user,
+		       p.created_at, p.updated_at,
 		       COALESCE(pc.vendor_name, pc.code, '') as vendor_name,
-		       COALESCE(pc.header_profile_code, '') as header_profile_code
+		       COALESCE(pc.header_profile_code, '') as header_profile_code,
+		       COUNT(c.id) FILTER (WHERE c.status = 'active') AS active_credential_count,
+		       COUNT(c.id) FILTER (WHERE c.health_status = 'healthy') AS healthy_credential_count,
+		       COUNT(c.id) FILTER (WHERE c.health_status = 'warning') AS warning_credential_count,
+		       COUNT(c.id) FILTER (WHERE c.health_status = 'unreachable') AS unreachable_credential_count,
+		       MAX(c.health_checked_at) AS health_checked_at
 		FROM providers p
-		LEFT JOIN provider_catalog pc ON pc.code = p.catalog_code
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		LEFT JOIN credentials c ON c.provider_id = p.id
 		WHERE p.tenant_id = 'default'
-		ORDER BY p.id
+		GROUP BY p.id, pc.code, pc.header_profile_code, pc.vendor_name
+		ORDER BY p.display_name ASC NULLS LAST, p.id ASC
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -308,32 +317,62 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type provider struct {
-		ID               int     `json:"id"`
-		TenantID         string  `json:"tenant_id"`
-		Code             string  `json:"code"`
-		DisplayName      string  `json:"display_name"`
-		CatalogCode      *string `json:"catalog_code"`
-		Kind             string  `json:"kind"`
-		Category         string  `json:"category"`
-		Protocol         string  `json:"protocol"`
-		BaseURL          string  `json:"base_url"`
-		EgressProfile    string  `json:"egress_profile"`
-		Domestic         bool    `json:"domestic"`
-		DiscountRate     float64 `json:"discount_rate"`
-		Enabled          bool    `json:"enabled"`
-		Notes            string  `json:"notes"`
-		VendorName       string  `json:"vendor_name"`
-		HeaderProfileCode string `json:"header_profile_code"`
+		ID                     int        `json:"id"`
+		TenantID               string     `json:"tenant_id"`
+		Code                   string     `json:"code"`
+		DisplayName            string     `json:"display_name"`
+		CatalogCode            *string    `json:"catalog_code"`
+		IsCustom               bool       `json:"is_custom"`
+		Kind                   string     `json:"kind"`
+		Category               string     `json:"category"`
+		Protocol               string     `json:"protocol"`
+		BaseURL                string     `json:"base_url"`
+		EgressProfile          string     `json:"egress_profile"`
+		Domestic               bool       `json:"domestic"`
+		DiscountRate           float64    `json:"discount_rate"`
+		Enabled                bool       `json:"enabled"`
+		Notes                  string     `json:"notes"`
+		NetworkQualityScore    *string    `json:"network_quality_score"`
+		OwnerUser              *string    `json:"owner_user"`
+		CreatedAt              *time.Time `json:"created_at"`
+		UpdatedAt              *time.Time `json:"updated_at"`
+		VendorName             string     `json:"vendor_name"`
+		HeaderProfileCode      string     `json:"header_profile_code"`
+		ActiveCredCount        int        `json:"active_credential_count"`
+		HealthyCredCount       int        `json:"healthy_credential_count"`
+		WarningCredCount       int        `json:"warning_credential_count"`
+		UnreachableCredCount   int        `json:"unreachable_credential_count"`
+		HealthCheckedAt        *time.Time `json:"health_checked_at"`
+		FreeModelCount         int        `json:"free_model_count"`
+		HealthStatus           string     `json:"health_status"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
 		var p provider
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.CatalogCode,
-			&p.Kind, &p.Category, &p.Protocol, &p.BaseURL, &p.EgressProfile, &p.Domestic,
-			&p.DiscountRate, &p.Enabled, &p.Notes, &p.VendorName, &p.HeaderProfileCode); err != nil {
+		if err := rows.Scan(
+			&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.CatalogCode,
+			&p.IsCustom, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL,
+			&p.EgressProfile, &p.Domestic, &p.DiscountRate, &p.Enabled,
+			&p.Notes, &p.NetworkQualityScore, &p.OwnerUser,
+			&p.CreatedAt, &p.UpdatedAt,
+			&p.VendorName, &p.HeaderProfileCode,
+			&p.ActiveCredCount, &p.HealthyCredCount, &p.WarningCredCount, &p.UnreachableCredCount,
+			&p.HealthCheckedAt,
+		); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
+		// Compute health_status from counts (same as Python)
+		if p.HealthyCredCount > 0 {
+			p.HealthStatus = "healthy"
+		} else if p.WarningCredCount > 0 {
+			p.HealthStatus = "warning"
+		} else if p.UnreachableCredCount > 0 {
+			p.HealthStatus = "unreachable"
+		} else {
+			p.HealthStatus = "unknown"
+		}
+		p.FreeModelCount = 0 // TODO: join model_offers when table exists
 		providers = append(providers, p)
 	}
 	writeJSON(w, http.StatusOK, providers)
