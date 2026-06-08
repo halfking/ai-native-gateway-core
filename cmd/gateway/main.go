@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -192,12 +193,17 @@ func main() {
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────
+	bgDataPlaneOnly := strings.EqualFold(cfg.BGMode, "data-plane")
 	var discoverySvc *discovery.Service
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
-		discoverySvc = discovery.NewService(dbConn.Pool(), 1*time.Hour)
-		discoverySvc.Start(context.Background())
-		slog.Info("model discovery service enabled")
+		if !bgDataPlaneOnly {
+			discoverySvc = discovery.NewService(dbConn.Pool(), 1*time.Hour)
+			discoverySvc.Start(context.Background())
+			slog.Info("model discovery service enabled")
+		} else {
+			slog.Info("model discovery skipped (bg_mode=data-plane)")
+		}
 	}
 
 	// ── Admin API ───────────────────────────────────────────────────────
@@ -225,18 +231,24 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
-		if fernetKey != nil {
+		if !bgDataPlaneOnly && fernetKey != nil {
 			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
 			credCycler.Start(context.Background())
 			slog.Info("credential cycler started")
+		} else if bgDataPlaneOnly {
+			slog.Info("credential cycler skipped (bg_mode=data-plane)")
 		}
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 		envelopeCleaner.Start(context.Background())
-		taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
-		taxonomySync.Start(context.Background())
-		slog.Info("taxonomy sync started")
+		if !bgDataPlaneOnly {
+			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
+			taxonomySync.Start(context.Background())
+			slog.Info("taxonomy sync started")
+		} else {
+			slog.Info("taxonomy sync skipped (bg_mode=data-plane)")
+		}
 
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)

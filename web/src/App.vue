@@ -7,18 +7,25 @@ const route  = useRoute()
 const router = useRouter()
 const isLoggedIn = computed(() => !!store.apiKey)
 
-const versionInfo = ref<{ version: string; build: string } | null>(null)
+const versionInfo = ref<{
+  version?: string
+  git_sha?: string
+  build_date?: string
+  build_seq?: number
+}>({})
 
-async function fetchVersion() {
+onMounted(async () => {
   try {
-    const res = await fetch('/api/system/version')
-    if (res.ok) {
-      versionInfo.value = await res.json()
+    const resp = await fetch('/api/system/version', {
+      headers: { 'Authorization': `Bearer ${store.apiKey}` },
+    })
+    if (resp.ok) {
+      versionInfo.value = await resp.json()
     }
-  } catch { /* ignore */ }
-}
-
-onMounted(fetchVersion)
+  } catch {
+    // ignore — version display is non-critical
+  }
+})
 
 const nav = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
@@ -33,8 +40,8 @@ const nav = [
   { path: '/routing-policy',    label: '路由策略',  icon: '⚙️' },
   { path: '/routing-decisions', label: '决策日志',  icon: '📜' },
   { path: '/free-pool',         label: '免费资源',  icon: '🎁' },
-  { path: '/pricing',           label: '定价管理',  icon: '💰' },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
+  { path: '/pricing',           label: '定价管理',  icon: '💰' },
 ]
 
 function logout() {
@@ -67,8 +74,10 @@ function logout() {
         </RouterLink>
       </nav>
       <div class="sidebar-footer">
-        <div v-if="versionInfo" style="font-size:11px;color:var(--muted);margin-bottom:8px;text-align:center">
-          v{{ versionInfo.version }} ({{ versionInfo.build }})
+        <div class="version-info" v-if="versionInfo.version">
+          <span class="version-tag">v{{ versionInfo.version }}</span>
+          <span class="version-build" v-if="versionInfo.build_seq != null">build #{{ versionInfo.build_seq }}</span>
+          <span class="version-date" v-if="versionInfo.build_date">{{ versionInfo.build_date }}</span>
         </div>
         <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
       </div>
@@ -133,6 +142,35 @@ function logout() {
 .sidebar-footer {
   padding: 12px;
   border-top: 1px solid var(--border);
+}
+
+.version-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+}
+
+.version-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-h);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.version-build {
+  font-size: 10px;
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  opacity: 0.85;
+}
+
+.version-date {
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .main-content {

@@ -7,12 +7,50 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="chips.length" class="active-filter-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-    <span v-for="chip in chips" :key="chip.key"
-          :class="['chip', chip.className || '']"
-          style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;border-radius:12px;font-size:12px;background:var(--surface-secondary);border:1px solid var(--border)">
-      {{ chip.label }}
-      <button @click="chip.onRemove()" style="background:none;border:none;cursor:pointer;padding:0;font-size:14px;color:var(--muted);line-height:1">×</button>
-    </span>
+  <div v-if="chips.length" class="active-filters">
+    <span class="active-filters-label">已选条件</span>
+    <button
+      v-for="chip in chips"
+      :key="chip.key"
+      type="button"
+      class="active-filter-chip"
+      :class="chip.className"
+      @click="chip.onRemove()"
+      :title="`移除 ${chip.label}`"
+    >
+      {{ chip.label }} <span class="chip-remove">×</span>
+    </button>
   </div>
 </template>
+
+<style scoped>
+.active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.active-filters-label {
+  font-size: 12px;
+  color: var(--text-muted, var(--muted));
+  font-weight: 600;
+}
+
+.active-filter-chip {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip-remove {
+  font-size: 13px;
+  line-height: 1;
+}
+</style>
