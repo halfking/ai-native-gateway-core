@@ -59,6 +59,10 @@ type Config struct {
 	// Background task mode: "full" (default) or "data-plane" (skip loops owned by Python 71)
 	BGMode string `yaml:"bg_mode" env:"LLM_GATEWAY_BG_MODE"`
 
+	// Per-credential virtual fingerprint slot pool (NULL DB limit → default).
+	DefaultCredentialConcurrency int  `yaml:"default_credential_concurrency" env:"LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY"`
+	EnableCredentialFpSlots      bool `yaml:"enable_credential_fp_slots" env:"LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS"`
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
 }
@@ -104,7 +108,9 @@ func Load() *Config {
 		KeepaliveInterval:       15,
 		SessionTTLHours:         168,
 		StreamRetryThreshold:    5, // Default: allow stream failover if < 5 chunks sent
-		PoolGracePeriod:         180, // Default: 3 minutes grace period before marking pool as dead
+		PoolGracePeriod:              180, // Default: 3 minutes grace period before marking pool as dead
+		DefaultCredentialConcurrency: 5,
+		EnableCredentialFpSlots:      true,
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {

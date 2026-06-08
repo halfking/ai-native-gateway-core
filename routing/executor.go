@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/disguise"
@@ -53,6 +54,7 @@ type Executor struct {
 	State         *credentialstate.Writer
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
+	FpSlots          *credentialfpslot.Manager
 
 	StreamTimeout        time.Duration
 	UpstreamTimeout      time.Duration
@@ -142,6 +144,28 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		return nil, &ExecuteError{Tried: 0, Exhausted: true}
 	}
 
+	holder := params.StickyKey
+	if holder == "" {
+		holder = params.R.Header.Get("X-Request-Id")
+	}
+	if e.FpSlots != nil && e.FpSlots.Enabled() {
+		filtered := make([]provider.Candidate, 0, len(candidates))
+		for _, cand := range candidates {
+			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder) {
+				filtered = append(filtered, cand)
+			} else {
+				slog.Info("cred_fp_slot prefilter skip",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+			}
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
+		}
+	}
+
 	tTotal := time.Now()
 	retryPerCred := params.Policy.RetryPerCredential
 	var lastErr error
@@ -150,12 +174,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	for _, cand := range candidates {
 		tried++
 
+		var fpLease *credentialfpslot.Lease
+		if e.FpSlots != nil && e.FpSlots.Enabled() {
+			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder, "default")
+			if !ok {
+				slog.Info("cred_fp_slot saturated",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+				lastErr = fmt.Errorf("cred_fp_slot saturated for credential %d", cand.CredentialID)
+				continue
+			}
+			fpLease = lease
+		}
+
 		if !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
 			slog.Debug("executor: circuit open, skipping candidate",
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 			)
 			lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
+			if fpLease != nil {
+				e.FpSlots.Release(params.R.Context(), fpLease)
+			}
 			continue
 		}
 
@@ -170,11 +211,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"credential_id", cand.CredentialID,
 			)
 			lastErr = acquireErr
+			if fpLease != nil {
+				e.FpSlots.Release(params.R.Context(), fpLease)
+			}
 			continue
 		}
 
-		result, execErr := e.tryCandidate(params, cand, retryPerCred, tTotal)
+		result, execErr := e.tryCandidate(params, cand, retryPerCred, tTotal, fpLease)
 		release()
+		if fpLease != nil {
+			e.FpSlots.Release(params.R.Context(), fpLease)
+		}
 
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
@@ -237,6 +284,7 @@ func (e *Executor) tryCandidate(
 	cand provider.Candidate,
 	maxRetries int,
 	tTotal time.Time,
+	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
@@ -314,9 +362,13 @@ func (e *Executor) tryCandidate(
 				req.Header.Set("Accept", "text/event-stream")
 			}
 			req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
-			req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
-			req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
-			req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+			if fpLease != nil && fpLease.Egress != nil {
+				credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
+			} else {
+				req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
+				req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
+				req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+			}
 
 			if params.Transform != nil {
 				for _, h := range params.Transform.StripHeaders {

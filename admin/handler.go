@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -24,6 +25,7 @@ type Handler struct {
 	envCleaner  *bg.EnvelopeCleaner
 	stickyClean *bg.StickyCleaner
 	taxSync     *bg.TaxonomySync
+	fpSlots     *credentialfpslot.Manager
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -90,6 +92,17 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.envCleaner = envCleaner
 	h.stickyClean = stickyClean
 	h.taxSync = taxSync
+}
+
+func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {
+	h.fpSlots = m
+}
+
+func (h *Handler) fpSlotsDefaultLimit() int {
+	if h.fpSlots == nil {
+		return 5
+	}
+	return h.fpSlots.DefaultLimit()
 }
 
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {

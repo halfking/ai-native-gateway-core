@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -43,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
+	"github.com/redis/go-redis/v9"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -115,14 +117,20 @@ func main() {
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
-	// ── Session Manager ────────────────────────────────────────────────
+	// ── Redis (sessions + credential fp slots) ─────────────────────────
 	var sessionMgr *sessions.Manager
+	var fpSlotRedis *redis.Client
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		if err := redisClient.Ping(context.Background()); err == nil {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
 			sessionMgr = sessions.NewManager(redisClient, ttl)
 			chatHandler.SetSessionGetter(sessionMgr)
+			fpSlotRedis = redis.NewClient(&redis.Options{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+			})
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -130,6 +138,11 @@ func main() {
 	} else {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
+
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{
+		DefaultLimit: cfg.DefaultCredentialConcurrency,
+		Enabled:      cfg.EnableCredentialFpSlots,
+	}, fpSlotRedis)
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
@@ -164,6 +177,7 @@ func main() {
 			exec.DB = dbConn
 			exec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
+		exec.FpSlots = fpSlots
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled")
 	} else {
@@ -253,6 +267,7 @@ func main() {
 
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
+			adminHandler.SetFpSlots(fpSlots)
 		}
 	}
 
