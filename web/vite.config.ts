@@ -10,9 +10,9 @@ export default defineConfig({
   server: {
     port: 5780,
     proxy: {
-      '/api': { target: 'http://localhost:8780', changeOrigin: true },
-      '/v1':  { target: 'http://localhost:8780', changeOrigin: true },
-      '/healthz': { target: 'http://localhost:8780', changeOrigin: true },
+      '/api': { target: 'http://localhost:8781', changeOrigin: true },
+      '/v1':  { target: 'http://localhost:8781', changeOrigin: true },
+      '/healthz': { target: 'http://localhost:8781', changeOrigin: true },
     },
   },
 })

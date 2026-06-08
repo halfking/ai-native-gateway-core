@@ -3,48 +3,83 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
 
-type requestLogDetail struct {
-	Ts                 time.Time `json:"ts"`
-	RequestID          string    `json:"request_id"`
-	APIKeyID           *int      `json:"api_key_id"`
-	EndUserID          *string   `json:"end_user_id"`
-	ClientModel        *string   `json:"client_model"`
-	OutboundModel      *string   `json:"outbound_model"`
-	CredentialID       *int      `json:"credential_id"`
-	CredentialLabel    *string   `json:"credential_label"`
-	ProviderID         *int      `json:"provider_id"`
-	ProviderName       *string   `json:"provider_name"`
-	ProviderCode       *string   `json:"provider_code"`
-	ClientProfile      *string   `json:"client_profile"`
-	RequestMode        *string   `json:"request_mode"`
-	PromptTokens       *int      `json:"prompt_tokens"`
-	CompletionTokens   *int      `json:"completion_tokens"`
-	CacheReadTokens    *int      `json:"cache_read_tokens"`
-	CacheWriteTokens   *int      `json:"cache_write_tokens"`
-	TotalTokens        *int      `json:"total_tokens"`
-	CostUSD            *float64  `json:"cost_usd"`
-	LatencyMs          *int      `json:"latency_ms"`
-	Success            bool      `json:"success"`
-	ErrorKind          *string   `json:"error_kind"`
-	SearchText         *string   `json:"search_text"`
-	IdentityHash       *string   `json:"identity_hash"`
-	VirtualClientID    *string   `json:"virtual_client_id"`
-	VirtualIP          *string   `json:"virtual_ip"`
-	VirtualMAC         *string   `json:"virtual_mac"`
-	AffinityHit        *bool     `json:"affinity_hit"`
-	StreamFirstChunkMs *int      `json:"stream_first_chunk_ms"`
-	StreamChunkCount   *int      `json:"stream_chunk_count"`
-	StreamInterrupted  *bool     `json:"stream_interrupted"`
-	StreamDoneSent     *bool     `json:"stream_done_sent"`
-	RequestBody        any       `json:"request_body"`
-	ResponseBody       any       `json:"response_body"`
+type requestLogRow struct {
+	Ts                 time.Time  `json:"ts"`
+	RequestID          string     `json:"request_id"`
+	APIKeyID           *int       `json:"api_key_id"`
+	EndUserID          *string    `json:"end_user_id"`
+	ClientModel        *string    `json:"client_model"`
+	OutboundModel      *string    `json:"outbound_model"`
+	CredentialID       *int       `json:"credential_id"`
+	CredentialLabel    *string    `json:"credential_label"`
+	ProviderID         *int       `json:"provider_id"`
+	ProviderName       *string    `json:"provider_name"`
+	ProviderCode       *string    `json:"provider_code"`
+	ClientProfile      *string    `json:"client_profile"`
+	RequestMode        *string    `json:"request_mode"`
+	PromptTokens       *int       `json:"prompt_tokens"`
+	CompletionTokens   *int       `json:"completion_tokens"`
+	CacheReadTokens    *int       `json:"cache_read_tokens"`
+	CacheWriteTokens   *int       `json:"cache_write_tokens"`
+	TotalTokens        *int       `json:"total_tokens"`
+	CostUSD            *float64   `json:"cost_usd"`
+	CostDisplay        *float64   `json:"cost_display"`
+	CostCurrency       *string    `json:"cost_currency"`
+	LatencyMs          *int       `json:"latency_ms"`
+	Success            bool       `json:"success"`
+	ErrorKind          *string    `json:"error_kind"`
+	SearchText         *string    `json:"search_text"`
+	IdentityHash       *string    `json:"identity_hash"`
+	VirtualClientID    *string    `json:"virtual_client_id"`
+	VirtualIP          *string    `json:"virtual_ip"`
+	VirtualMAC         *string    `json:"virtual_mac"`
+	AffinityHit        *bool      `json:"affinity_hit"`
+	RequestChecksum    *string    `json:"request_checksum"`
+	ResponseChecksum   *string    `json:"response_checksum"`
+	TransformRuleID    *string    `json:"transform_rule_id"`
+	EgressProtocol     *string    `json:"egress_protocol"`
+	FailureStage       *string    `json:"failure_stage"`
+	FailureDetailCode  *string    `json:"failure_detail_code"`
+	RequestPreview     *string    `json:"request_preview"`
+	TransformSummary   *string    `json:"transform_summary"`
+	ResponsePreview    *string    `json:"response_preview"`
+	StreamFirstChunkMs *int       `json:"stream_first_chunk_ms"`
+	StreamChunkCount   *int       `json:"stream_chunk_count"`
+	StreamDoneReceived *bool      `json:"stream_done_received"`
+	StreamInterrupted  *bool      `json:"stream_interrupted"`
+	StreamDoneSent     *bool      `json:"stream_done_sent"`
 }
+
+type requestLogDetail struct {
+	requestLogRow
+	RequestBody  any `json:"request_body"`
+	ResponseBody any `json:"response_body"`
+}
+
+const requestLogsSelectCols = `
+	rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
+	rl.client_model, rl.outbound_model,
+	rl.credential_id, c.label AS credential_label,
+	rl.provider_id, p.display_name AS provider_name,
+	p.catalog_code AS provider_code,
+	rl.client_profile, rl.request_mode,
+	rl.prompt_tokens, rl.completion_tokens,
+	rl.cache_read_tokens, rl.cache_write_tokens, rl.total_tokens,
+	rl.cost_usd::float8, rl.cost_display::float8, rl.cost_currency, rl.latency_ms, rl.success, rl.error_kind, rl.search_text,
+	rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
+	rl.affinity_hit, rl.request_checksum, rl.response_checksum,
+	rl.transform_rule_id, rl.egress_protocol, rl.failure_stage, rl.failure_detail_code,
+	rl.request_preview, rl.transform_summary, rl.response_preview,
+	rl.stream_first_chunk_ms, rl.stream_chunk_count,
+	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent
+`
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -63,6 +98,29 @@ func (h *Handler) handleLogsRoot(w http.ResponseWriter, r *http.Request) {
 	h.listLogs(w, r)
 }
 
+func scanRequestLogRow(rows interface {
+	Scan(dest ...any) error
+}) (requestLogRow, error) {
+	var l requestLogRow
+	err := rows.Scan(
+		&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
+		&l.ClientModel, &l.OutboundModel,
+		&l.CredentialID, &l.CredentialLabel,
+		&l.ProviderID, &l.ProviderName, &l.ProviderCode,
+		&l.ClientProfile, &l.RequestMode,
+		&l.PromptTokens, &l.CompletionTokens,
+		&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
+		&l.CostUSD, &l.CostDisplay, &l.CostCurrency, &l.LatencyMs, &l.Success, &l.ErrorKind, &l.SearchText,
+		&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
+		&l.AffinityHit, &l.RequestChecksum, &l.ResponseChecksum,
+		&l.TransformRuleID, &l.EgressProtocol, &l.FailureStage, &l.FailureDetailCode,
+		&l.RequestPreview, &l.TransformSummary, &l.ResponsePreview,
+		&l.StreamFirstChunkMs, &l.StreamChunkCount,
+		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
+	)
+	return l, err
+}
+
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -71,93 +129,101 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	limit := queryInt(r, "limit", 50)
-	if limit > 500 {
-		limit = 500
+	now := time.Now().UTC()
+	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
+	end := parseQueryTime(r, "to", now)
+
+	page := queryInt(r, "page", 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := queryInt(r, "page_size", 100)
+	if pageSize < 1 {
+		pageSize = 100
+	}
+	if pageSize > 500 {
+		pageSize = 500
 	}
 
-	rows, err := h.db.Query(ctx, `
-		SELECT rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
-		       rl.client_model, rl.outbound_model,
-		       rl.credential_id, c.label AS credential_label,
-		       rl.provider_id, p.display_name AS provider_name,
-		       p.code AS provider_code,
-		       rl.client_profile, rl.request_mode,
-		       rl.prompt_tokens, rl.completion_tokens,
-		       rl.cache_read_tokens, rl.cache_write_tokens, rl.total_tokens,
-		       rl.cost_usd::float8, rl.latency_ms, rl.success, rl.error_kind, rl.search_text,
-		       rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
-		       rl.affinity_hit,
-		       rl.stream_first_chunk_ms, rl.stream_chunk_count,
-		       rl.stream_interrupted, NULL::boolean AS stream_done_sent
+	clauses := []string{"rl.ts >= $1", "rl.ts <= $2"}
+	args := []any{start, end}
+	argIdx := 3
+
+	addFilter := func(clause string, val any) {
+		clauses = append(clauses, fmt.Sprintf(clause, argIdx))
+		args = append(args, val)
+		argIdx++
+	}
+
+	if v := queryIntPtr(r, "api_key_id"); v != nil {
+		addFilter("rl.api_key_id = $%d", *v)
+	}
+	if v := strings.TrimSpace(queryString(r, "request_id")); v != "" {
+		addFilter("rl.request_id = $%d", v)
+	}
+	if v := queryIntPtr(r, "provider_id"); v != nil {
+		addFilter("rl.provider_id = $%d", *v)
+	}
+	if v := queryIntPtr(r, "credential_id"); v != nil {
+		addFilter("rl.credential_id = $%d", *v)
+	}
+	if v := strings.TrimSpace(queryString(r, "identity_hash")); v != "" {
+		addFilter("rl.identity_hash = $%d", v)
+	}
+	if v := strings.TrimSpace(queryString(r, "q")); v != "" {
+		addFilter("rl.search_text ILIKE $%d", "%"+v+"%")
+	}
+	if v := strings.TrimSpace(queryString(r, "error_kind")); v != "" {
+		addFilter("rl.error_kind = $%d", v)
+	}
+	if v := queryOptionalBool(r, "success"); v != nil {
+		addFilter("rl.success = $%d", *v)
+	}
+	if v := queryIntPtr(r, "canonical_id"); v != nil {
+		addFilter("rl.canonical_id = $%d", *v)
+	}
+
+	where := strings.Join(clauses, " AND ")
+
+	var count int
+	if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs rl WHERE "+where, args...).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	offset := (page - 1) * pageSize
+	listArgs := append(append([]any{}, args...), pageSize, offset)
+	limitIdx := argIdx
+	offsetIdx := argIdx + 1
+
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s
 		FROM request_logs rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		LEFT JOIN credentials c ON c.id = rl.credential_id
+		WHERE %s
 		ORDER BY rl.ts DESC
-		LIMIT $1
-	`, limit)
+		LIMIT $%d OFFSET $%d
+	`, requestLogsSelectCols, where, limitIdx, offsetIdx), listArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()
 
-	type logEntry struct {
-		Ts                 time.Time  `json:"ts"`
-		RequestID          string     `json:"request_id"`
-		APIKeyID           *int       `json:"api_key_id"`
-		EndUserID          *string    `json:"end_user_id"`
-		ClientModel        *string    `json:"client_model"`
-		OutboundModel      *string    `json:"outbound_model"`
-		CredentialID       *int       `json:"credential_id"`
-		CredentialLabel    *string    `json:"credential_label"`
-		ProviderID         *int       `json:"provider_id"`
-		ProviderName       *string    `json:"provider_name"`
-		ProviderCode       *string    `json:"provider_code"`
-		ClientProfile      *string    `json:"client_profile"`
-		RequestMode        *string    `json:"request_mode"`
-		PromptTokens       *int       `json:"prompt_tokens"`
-		CompletionTokens   *int       `json:"completion_tokens"`
-		CacheReadTokens    *int       `json:"cache_read_tokens"`
-		CacheWriteTokens   *int       `json:"cache_write_tokens"`
-		TotalTokens        *int       `json:"total_tokens"`
-		CostUSD            *float64   `json:"cost_usd"`
-		LatencyMs          *int       `json:"latency_ms"`
-		Success            bool       `json:"success"`
-		ErrorKind          *string    `json:"error_kind"`
-		SearchText         *string    `json:"search_text"`
-		IdentityHash       *string    `json:"identity_hash"`
-		VirtualClientID    *string    `json:"virtual_client_id"`
-		VirtualIP          *string    `json:"virtual_ip"`
-		VirtualMAC         *string    `json:"virtual_mac"`
-		AffinityHit        *bool      `json:"affinity_hit"`
-		StreamFirstChunkMs *int       `json:"stream_first_chunk_ms"`
-		StreamChunkCount   *int       `json:"stream_chunk_count"`
-		StreamInterrupted  *bool      `json:"stream_interrupted"`
-		StreamDoneSent     *bool      `json:"stream_done_sent"`
-	}
-	logs := make([]logEntry, 0)
+	items := make([]requestLogRow, 0)
 	for rows.Next() {
-		var l logEntry
-		if err := rows.Scan(
-			&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
-			&l.ClientModel, &l.OutboundModel,
-			&l.CredentialID, &l.CredentialLabel,
-			&l.ProviderID, &l.ProviderName, &l.ProviderCode,
-			&l.ClientProfile, &l.RequestMode,
-			&l.PromptTokens, &l.CompletionTokens,
-			&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
-			&l.CostUSD, &l.LatencyMs, &l.Success, &l.ErrorKind, &l.SearchText,
-			&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
-			&l.AffinityHit,
-			&l.StreamFirstChunkMs, &l.StreamChunkCount,
-			&l.StreamInterrupted, &l.StreamDoneSent,
-		); err != nil {
+		l, err := scanRequestLogRow(rows)
+		if err != nil {
 			continue
 		}
-		logs = append(logs, l)
+		items = append(items, l)
 	}
-	writeJSON(w, http.StatusOK, logs)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"count": count,
+	})
 }
 
 func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
@@ -179,28 +245,15 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	var requestBodyRaw []byte
 	var responseBodyRaw []byte
 
-	err = h.db.QueryRow(ctx, `
-		SELECT rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
-		       rl.client_model, rl.outbound_model,
-		       rl.credential_id, c.label AS credential_label,
-		       rl.provider_id, p.display_name AS provider_name,
-		       p.catalog_code AS provider_code,
-		       rl.client_profile, rl.request_mode,
-		       rl.prompt_tokens, rl.completion_tokens,
-		       rl.cache_read_tokens, rl.cache_write_tokens, rl.total_tokens,
-		       rl.cost_usd::float8, rl.latency_ms, rl.success, rl.error_kind, rl.search_text,
-		       rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
-		       rl.affinity_hit,
-		       rl.stream_first_chunk_ms, rl.stream_chunk_count,
-		       rl.stream_interrupted, NULL::boolean AS stream_done_sent,
-		       rl.request_body::text, rl.response_body::text
+	err = h.db.QueryRow(ctx, fmt.Sprintf(`
+		SELECT %s, rl.request_body::text, rl.response_body::text
 		  FROM request_logs rl
 	 LEFT JOIN providers p ON p.id = rl.provider_id
 	 LEFT JOIN credentials c ON c.id = rl.credential_id
 		 WHERE rl.request_id = $1
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
-	`, requestID).Scan(
+	`, requestLogsSelectCols), requestID).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
@@ -220,6 +273,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CacheWriteTokens,
 		&detail.TotalTokens,
 		&detail.CostUSD,
+		&detail.CostDisplay,
+		&detail.CostCurrency,
 		&detail.LatencyMs,
 		&detail.Success,
 		&detail.ErrorKind,
@@ -229,8 +284,18 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.VirtualIP,
 		&detail.VirtualMAC,
 		&detail.AffinityHit,
+		&detail.RequestChecksum,
+		&detail.ResponseChecksum,
+		&detail.TransformRuleID,
+		&detail.EgressProtocol,
+		&detail.FailureStage,
+		&detail.FailureDetailCode,
+		&detail.RequestPreview,
+		&detail.TransformSummary,
+		&detail.ResponsePreview,
 		&detail.StreamFirstChunkMs,
 		&detail.StreamChunkCount,
+		&detail.StreamDoneReceived,
 		&detail.StreamInterrupted,
 		&detail.StreamDoneSent,
 		&requestBodyRaw,
@@ -238,8 +303,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows") {
-			writeError(w, http.StatusNotFound, "request log not found")
-			return
+		 writeError(w, http.StatusNotFound, "request log not found")
+		 return
 		}
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -248,6 +313,19 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	detail.RequestBody = decodeJSONText(requestBodyRaw)
 	detail.ResponseBody = decodeJSONText(responseBodyRaw)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return def.UTC()
+	}
+	for _, layout := range []string{time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if ts, err := time.Parse(layout, raw); err == nil {
+			return ts.UTC()
+		}
+	}
+	return def.UTC()
 }
 
 func decodeJSONText(raw []byte) any {

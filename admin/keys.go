@@ -245,7 +245,6 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	appCode := queryString(r, "application")
-	includeRevoked := includeRevokedKeys(r)
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
 		       COALESCE(ak.status, 'active') AS status,
@@ -258,10 +257,9 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = 'default'
-		  AND ($1 OR COALESCE(ak.status, 'active') <> 'revoked')
-		  AND ($2 = '' OR app.code = $2)
+		  AND ($1 = '' OR app.code = $1)
 		ORDER BY ak.id DESC
-	`, includeRevoked, appCode)
+	`, appCode)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return

@@ -3,9 +3,11 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -118,14 +120,34 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
+	where := []string{"1=1"}
+	args := []any{}
+	argIdx := 1
+	if status := queryString(r, "status"); status != "" {
+		where = append(where, fmt.Sprintf("mc.status = $%d", argIdx))
+		args = append(args, status)
+		argIdx++
+	}
+	if family := queryString(r, "family"); family != "" {
+		where = append(where, fmt.Sprintf("mc.family = $%d", argIdx))
+		args = append(args, family)
+		argIdx++
+	}
+	if modality := queryString(r, "modality"); modality != "" {
+		where = append(where, fmt.Sprintf("mc.modality = $%d", argIdx))
+		args = append(args, modality)
+		argIdx++
+	}
+
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT mc.id, mc.canonical_name, COALESCE(mc.display_name,''),
 		       COALESCE(mc.modality,'text'), mc.context_window, mc.parameters_b,
 		       COALESCE(mc.status,'active'), COALESCE(mc.tags::text,'[]'),
 		       COALESCE(mc.input_price_cny,0), COALESCE(mc.output_price_cny,0)
 		FROM models_canonical mc
-		ORDER BY mc.canonical_name
-	`)
+		WHERE %s
+		ORDER BY mc.family NULLS LAST, mc.status, mc.canonical_name
+	`, strings.Join(where, " AND ")), args...)
 	if err != nil {
 		slog.Error("listModels query failed", "error", err)
 		writeJSON(w, http.StatusOK, []any{})

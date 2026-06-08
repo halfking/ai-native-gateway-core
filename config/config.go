@@ -50,6 +50,9 @@ type Config struct {
 	// Identity
 	IdentitySalt string `yaml:"identity_salt" env:"LLM_GATEWAY_IDENTITY_SALT"`
 
+	// Background task mode: "full" (default) or "data-plane" (skip loops owned by Python 71)
+	BGMode string `yaml:"bg_mode" env:"LLM_GATEWAY_BG_MODE"`
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
 }
@@ -87,6 +90,7 @@ func Load() *Config {
 		AdminAPIKey:             os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 		UpstreamURL:             envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),
 		IdentitySalt:            os.Getenv("LLM_GATEWAY_IDENTITY_SALT"),
+		BGMode:                  envOrDefault("LLM_GATEWAY_BG_MODE", "full"),
 		UpstreamTimeout:         120,
 		StreamTimeout:           900,
 		StreamChunkTimeout:      300,

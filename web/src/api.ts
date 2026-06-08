@@ -72,19 +72,17 @@ export function getCatalogEntry(code: string) {
 
 export interface Provider {
   id: number
-  code: string
-  catalog_code: string | null
+  catalog_code: string
   display_name: string
   enabled: boolean
   base_url: string | null
-  protocol: string
   header_profile_code?: string | null
-  vendor_name?: string | null
   notes: string | null
   active_credential_count: number
   healthy_credential_count?: number
   warning_credential_count?: number
   unreachable_credential_count?: number
+  free_model_count?: number
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
   created_at: string
@@ -109,29 +107,35 @@ export interface CredentialCheckResult {
   probe_latency_ms: number | null
   models_error: string | null
   probe_error: string | null
+  returned_models?: string[]
+  // v0.81 diagnostic capture (admin UI inspect)
+  request_url: string | null
+  request_method: string
+  request_headers_sanitized: Record<string, string>
+  request_body_preview: string
+  response_status: number | null
+  response_headers: Record<string, string>
+  response_body_preview: string
+  attempt_index: number
+  effective_source: 'api' | 'manifest' | 'manifest_only' | 'none' | string
+  models_endpoint_resolved: string | null
+  models_endpoint_template: string | null
+  discovery_strategy: string | null
 }
 
-export function getProviders(params: { search?: string; health_status?: string; has_free_model?: boolean } = {}) {
-  const qs = new URLSearchParams()
-  if (params.search) qs.set('search', params.search)
-  if (params.health_status && params.health_status !== 'all') qs.set('health_status', params.health_status)
-  if (params.has_free_model !== undefined) qs.set('has_free_model', String(params.has_free_model))
-  const s = qs.toString()
-  return req<Provider[]>('GET', `/api/providers${s ? '?' + s : ''}`)
+export interface DiagnoseProviderResponse {
+  provider_id: number
+  credential_count: number
+  results: CredentialCheckResult[]
 }
 
-export function getProviderDetail(id: number) {
-  return req<Provider & {
-    active_cred_count: number
-    healthy_cred_count: number
-    warning_cred_count: number
-    cooling_cred_count: number
-    unreachable_cred_count: number
-    available_model_count: number
-    unavailable_model_count: number
-    error_rate_24h: number
-    created_at: string | null
-  }>('GET', `/api/providers/${id}`)
+export function getProviders(params?: { search?: string; health_status?: string; has_free_model?: boolean }) {
+  const query = new URLSearchParams()
+  if (params?.search) query.set('search', params.search)
+  if (params?.health_status && params.health_status !== 'all') query.set('health_status', params.health_status)
+  if (params?.has_free_model != null) query.set('has_free_model', String(params.has_free_model))
+  const qs = query.toString()
+  return req<Provider[]>('GET', `/api/providers${qs ? '?' + qs : ''}`)
 }
 
 export function createProvider(data: { catalog_code: string; display_name?: string; base_url?: string; notes?: string; protocol?: string }) {
@@ -150,103 +154,13 @@ export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
 
-export function batchRecoverCredentials(providerId: number) {
-  return req<{ recovered: number }>('POST', `/api/providers/${providerId}/batch-recover`)
-}
-
-export interface ModelOffer {
-  id: number
-  credential_id: number
-  canonical_id: number | null
-  raw_model_name: string
-  standardized_name: string | null
-  available: boolean
-  p95_latency_ms: number | null
-  success_rate: number | null
-  last_seen_at: string | null
-  source: string | null
-}
-
-export function getProviderModels(providerId: number) {
-  return req<ModelOffer[]>('GET', `/api/providers/${providerId}/models`)
-}
-
-export function toggleModelOfferState(providerId: number, offerId: number, data: { available: boolean }) {
-  return req<{ message: string }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, data)
-}
-
-export interface ProviderLogEntry {
-  ts: string
-  request_id: string
-  credential_id: number | null
-  client_model: string | null
-  outbound_model: string | null
-  success: boolean
-  error_kind: string | null
-  prompt_tokens: number | null
-  completion_tokens: number | null
-  cost_usd: number | null
-  latency_ms: number | null
-}
-
-export function getProviderLogs(providerId: number, params: { model?: string; page?: number; page_size?: number } = {}) {
-  const qs = new URLSearchParams()
-  if (params.model) qs.set('model', params.model)
-  if (params.page) qs.set('page', String(params.page))
-  if (params.page_size) qs.set('page_size', String(params.page_size))
-  const s = qs.toString()
-  return req<{ items: ProviderLogEntry[]; total: number }>('GET', `/api/providers/${providerId}/logs${s ? '?' + s : ''}`)
-}
-
-export interface DiagnoseResult {
-  summary: {
-    total_credentials: number
-    healthy: number
-    degraded: number
-    unreachable: number
-    models_coverage_pct: number
-    avg_latency_ms: number
-  }
-  error_classification: {
-    auth_errors: number
-    rate_limit_errors: number
-    timeout_errors: number
-    model_not_found_errors: number
-    other_errors: number
-  }
-  health_scores: Array<{
-    credential_id: number
-    score: number
-  }>
-  credentials: Array<{
-    credential_id: number
-    label: string
-    status: string
-    circuit_state: string
-    models_probe: {
-      status_code: number | null
-      models_count: number
-      latency_ms: number
-      error: string | null
-    } | null
-    chat_probe: {
-      status_code: number | null
-      latency_ms: number
-      error: string | null
-    } | null
-  }>
-}
-
-export function startDiagnose(providerId: number) {
-  return req<{ task_id: number }>('POST', `/api/providers/${providerId}/diagnose`)
-}
-
-export function getDiagnoseResult(providerId: number) {
-  return req<{ result: DiagnoseResult }>('GET', `/api/providers/${providerId}/diagnose`)
-}
-
 export function checkCredential(providerId: number, credId: number) {
   return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
+}
+
+export async function diagnoseProvider(providerId: number) {
+  const { task_id } = await startDiagnose(providerId)
+  return pollTask(task_id)
 }
 
 export function addCredential(providerId: number, data: { api_key: string; label?: string }) {
@@ -288,6 +202,8 @@ export interface ProviderCredential {
   id: number
   provider_id: number
   label: string
+  key_masked?: string | null
+  key_mask_error?: string | null
   status: CredentialStatus
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
@@ -296,6 +212,10 @@ export interface ProviderCredential {
   health_error?: string | null
   health_latency_ms?: number | null
   health_probe_model?: string | null
+  // v0.81: API model-list verification status (null = not yet probed)
+  api_models_ok?: boolean | null
+  api_models_last_checked_at?: string | null
+  api_models_error?: string | null
   trust_level: string
   concurrency_limit: number | null
   effective_at: string | null
@@ -330,6 +250,118 @@ export function getProviderCredentials(providerId: number) {
   return req<ProviderCredential[]>('GET', `/api/providers/${providerId}/credentials`)
 }
 
+// ── GET/POST dual-mode utility ─────────────────────────────────────────────
+
+export async function getOrPost<T>(path: string, getParams?: Record<string, string>, postBody?: any): Promise<T> {
+  try {
+    const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
+    return await req<T>('GET', path + qs)
+  } catch {
+    return req<T>('POST', path, postBody)
+  }
+}
+
+// ── Background task API ───────────────────────────────────────────────────
+
+export interface BackgroundTask {
+  id: number
+  task_type: string
+  status: 'running' | 'succeeded' | 'failed'
+  result?: any
+  error?: string
+  started_at: string
+  finished_at?: string
+}
+
+export function getTask(taskId: number) {
+  return req<BackgroundTask>('GET', `/api/tasks/${taskId}`)
+}
+
+export async function pollTask(taskId: number, maxWaitMs = 120000, intervalMs = 2000): Promise<BackgroundTask> {
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const task = await getTask(taskId)
+    if (task.status !== 'running') return task
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+  throw new Error('Task polling timeout')
+}
+
+// ── Provider Detail ──────────────────────────────────────────────────────
+
+export interface ProviderDetail {
+  id: number
+  code: string
+  display_name: string
+  catalog_code: string | null
+  kind: string
+  category: string
+  protocol: string
+  base_url: string
+  egress_profile: string | null
+  domestic: boolean
+  discount_rate: number
+  enabled: boolean
+  notes: string | null
+  vendor_name: string | null
+  active_cred_count: number
+  healthy_cred_count: number
+  warning_cred_count: number
+  cooling_cred_count: number
+  unreachable_cred_count: number
+  available_model_count: number
+  unavailable_model_count: number
+  error_rate_24h: number
+  created_at: string | null
+}
+
+export function getProviderDetail(id: number) {
+  return req<ProviderDetail>('GET', `/api/providers/${id}`)
+}
+
+export function getProviderModels(providerId: number) {
+  return getOrPost<ModelOffer[]>(
+    `/api/providers/${providerId}/models`,
+    {},
+    {}
+  )
+}
+
+export function toggleModelOfferState(providerId: number, offerId: number, body: { available: boolean }) {
+  return req<{ message: string; available: boolean }>('PATCH', `/api/providers/${providerId}/models/${offerId}/state`, body)
+}
+
+export interface ModelOfferSuggestion {
+  offer_id: number
+  raw_model_name: string
+  rule_based: string
+  canonical_options: Array<{
+    id: number
+    canonical_name: string
+    display_name: string | null
+    family: string | null
+  }>
+}
+
+export function getModelOfferSuggestions(providerId: number, offerId: number) {
+  return req<ModelOfferSuggestion>('GET', `/api/providers/${providerId}/models/${offerId}/suggestions`)
+}
+
+export function updateModelOffer(
+  providerId: number,
+  offerId: number,
+  body: { standardized_name?: string | null; canonical_id?: number | null }
+) {
+  return req<{
+    id: number
+    raw_model_name: string
+    standardized_name: string | null
+    canonical_id: number | null
+    canonical_name: string | null
+    display_name: string | null
+  }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
+}
+
 export function updateCredential(providerId: number, credId: number, data: Partial<{
   label: string
   status: CredentialStatus
@@ -351,12 +383,219 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
+// ── Provider Detail ──────────────────────────────────────────────────────
+
+export interface ProviderDetail {
+  id: number
+  code: string
+  display_name: string
+  catalog_code: string | null
+  kind: string
+  category: string
+  protocol: string
+  base_url: string
+  egress_profile: string | null
+  domestic: boolean
+  discount_rate: number
+  enabled: boolean
+  notes: string | null
+  vendor_name: string | null
+  active_cred_count: number
+  healthy_cred_count: number
+  warning_cred_count: number
+  cooling_cred_count: number
+  unreachable_cred_count: number
+  available_model_count: number
+  unavailable_model_count: number
+  error_rate_24h: number
+  created_at: string | null
+}
+
+export interface ModelOffer {
+  id: number
+  credential_id: number
+  credential_label: string
+  raw_model_name: string
+  standardized_name: string
+  canonical_id: number | null
+  display_name: string
+  available: boolean
+  unavailable_reason: string | null
+  unavailable_at: string | null
+  p95_latency_ms: number | null
+  success_rate: number | null
+  input_price: number | null
+  output_price: number | null
+  last_seen_at: string | null
+  routing_tier: string
+  availability_source: string
+}
+
+export interface QueryModelsResponse {
+  items: ModelOffer[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface ProviderLogEntry {
+  ts: string | null
+  request_id: string | null
+  credential_id: number | null
+  client_model: string | null
+  outbound_model: string | null
+  success: boolean
+  error_kind: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  cost_usd: number | null
+  latency_ms: number | null
+  stream: boolean | null
+}
+
+export interface ProviderLogsResponse {
+  items: ProviderLogEntry[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface DiagnoseModelsProbe {
+  status_code: number
+  latency_ms: number
+  error: string
+  models_count: number
+  sample_models: string[]
+}
+
+export interface DiagnoseChatProbe {
+  status_code: number
+  latency_ms: number
+  error: string
+  model_in_response: string
+}
+
+export interface DiagnoseCredResult {
+  credential_id: number
+  label: string
+  status: string
+  circuit_state: string
+  availability_state: string
+  health_status: string
+  consecutive_failures: number
+  models_probe: DiagnoseModelsProbe
+  chat_probe: DiagnoseChatProbe
+}
+
+export interface DiagnoseErrorClassification {
+  auth_errors: number
+  rate_limit_errors: number
+  timeout_errors: number
+  model_not_found_errors: number
+  other_errors: number
+}
+
+export interface DiagnoseHealthScore {
+  credential_id: number
+  score: number
+}
+
+export interface DiagnoseSummary {
+  total_credentials: number
+  healthy: number
+  degraded: number
+  unreachable: number
+  cooling: number
+  disabled: number
+  models_coverage_pct: number
+  avg_latency_ms: number
+}
+
+export interface FullDiagnoseResponse {
+  provider_id: number
+  provider_code: string
+  enabled: boolean
+  base_url: string
+  protocol: string
+  timestamp: string
+  credentials: DiagnoseCredResult[]
+  summary: DiagnoseSummary
+  error_classification: DiagnoseErrorClassification
+  health_scores: DiagnoseHealthScore[]
+}
+
+export function queryProviderModels(providerId: number, body: {
+  q?: string
+  available?: boolean
+  unavailable_reason?: string
+  credential_id?: number
+  min_success_rate?: number
+  max_p95_latency?: number
+  page?: number
+  page_size?: number
+}) {
+  const getParams: Record<string, string> = {}
+  if (body.q) getParams.q = body.q
+  if (body.available !== undefined) getParams.available = String(body.available)
+  if (body.unavailable_reason) getParams.unavailable_reason = body.unavailable_reason
+  if (body.credential_id) getParams.credential_id = String(body.credential_id)
+  if (body.min_success_rate) getParams.min_success_rate = String(body.min_success_rate)
+  if (body.max_p95_latency) getParams.max_p95_latency = String(body.max_p95_latency)
+  if (body.page) getParams.page = String(body.page)
+  if (body.page_size) getParams.page_size = String(body.page_size)
+  return getOrPost<QueryModelsResponse>(`/api/providers/${providerId}/query`, getParams, body)
+}
+
+export function getProviderLogs(providerId: number, body: {
+  credential_id?: number
+  model?: string
+  from_ts?: string
+  to_ts?: string
+  success?: boolean
+  error_kind?: string
+  page?: number
+  page_size?: number
+} = {}) {
+  const getParams: Record<string, string> = {}
+  if (body.credential_id) getParams.credential_id = String(body.credential_id)
+  if (body.model) getParams.model = body.model
+  if (body.from_ts) getParams.from_ts = body.from_ts
+  if (body.to_ts) getParams.to_ts = body.to_ts
+  if (body.success !== undefined) getParams.success = String(body.success)
+  if (body.error_kind) getParams.error_kind = body.error_kind
+  if (body.page) getParams.page = String(body.page)
+  if (body.page_size) getParams.page_size = String(body.page_size)
+  return getOrPost<ProviderLogsResponse>(`/api/providers/${providerId}/logs`, getParams, body)
+}
+
+export function startDiagnose(providerId: number) {
+  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/diagnose`)
+}
+
+export function getDiagnoseResult(providerId: number) {
+  return req<any>('GET', `/api/providers/${providerId}/diagnose`)
+}
+
+export function startCredentialCheck(providerId: number, credId: number) {
+  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
+}
+
+export function batchRecoverCredentials(providerId: number) {
+  return req<{ recovered: number; message: string }>('POST', `/api/providers/${providerId}/batch-recover`)
+}
+
 export function resetCredentialAvailability(providerId: number, credId: number) {
   return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-availability`)
 }
 
 export function resetCredentialQuota(providerId: number, credId: number) {
   return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-quota`)
+}
+
+export async function checkCredentialHealth(providerId: number, credId: number) {
+  const { task_id } = await startCredentialCheck(providerId, credId)
+  return pollTask(task_id)
 }
 
 // ── Keys ─────────────────────────────────────────────────────────────────
@@ -374,6 +613,7 @@ export interface ApiKey {
   application_code: string
   default_client_profile?: string | null
   is_system?: boolean
+  remark?: string | null
 }
 
 export interface KeyCreatedResponse {
@@ -696,6 +936,7 @@ export interface RoutingTreeCredential {
   quota_cap_usd: number | string | null
   quota_used_usd: number | string | null
   raw_model_name: string
+  standardized_name: string | null
 }
 
 export interface RoutingTreeVariant {
@@ -718,7 +959,7 @@ export interface RoutingTreeSeries {
 export interface RoutingModelTreeResponse {
   featured: string[]
   series: RoutingTreeSeries[]
-  unmapped: Array<{ raw_model_name: string; credential: RoutingTreeCredential }>
+  unmapped: Array<{ raw_model_name: string; standardized_name: string | null; credential: RoutingTreeCredential }>
 }
 
 export function getRoutingModelTree(featuredOnly = false) {
@@ -778,6 +1019,21 @@ export interface RoutingDecision {
   cost_usd: number | string | null
   request_bytes: number | null
   response_bytes: number | null
+  client_model: string | null
+  resolved_raw_model: string | null
+  outbound_model: string | null
+  sticky_hit: boolean | null
+  client_profile: string | null
+  request_mode: string | null
+  identity_hash: string | null
+  transform_rule_id: string | null
+  egress_protocol: string | null
+  failure_stage: string | null
+  failure_detail_code: string | null
+  resolution_path: string | null
+  canonical_model: string | null
+  resolution_raw_models: string[]
+  decision_trace: Record<string, unknown>
 }
 
 export function getDecisions(params: { model?: string; canonical?: string; success?: boolean; since_minutes?: number; limit?: number } = {}) {
@@ -846,6 +1102,8 @@ export interface RequestLogRow {
   cache_write_tokens: number | null
   total_tokens: number | null
   cost_usd: number | string | null
+  cost_display: number | string | null
+  cost_currency: string | null
   latency_ms: number | null
   success: boolean
   error_kind: string | null
@@ -866,6 +1124,11 @@ export interface RequestLogDetail extends RequestLogRow {
   response_body: any | null
 }
 
+export interface RequestLogsResponse {
+  items: RequestLogRow[]
+  count: number
+}
+
 export function getRequestLogs(params: {
   api_key_id?: number
   provider_id?: number
@@ -874,7 +1137,11 @@ export function getRequestLogs(params: {
   from?: string
   to?: string
   q?: string
-  limit?: number
+  error_kind?: string
+  success?: boolean
+  canonical_id?: number
+  page?: number
+  page_size?: number
 } = {}) {
   const qs = new URLSearchParams()
   if (params.api_key_id != null) qs.set('api_key_id', String(params.api_key_id))
@@ -884,9 +1151,13 @@ export function getRequestLogs(params: {
   if (params.from) qs.set('from', params.from)
   if (params.to) qs.set('to', params.to)
   if (params.q) qs.set('q', params.q)
-  if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.error_kind) qs.set('error_kind', params.error_kind)
+  if (params.success != null) qs.set('success', String(params.success))
+  if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
+  if (params.page != null) qs.set('page', String(params.page))
+  if (params.page_size != null) qs.set('page_size', String(params.page_size))
   const s = qs.toString()
-  return req<RequestLogRow[]>('GET', `/api/logs${s ? '?' + s : ''}`)
+  return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }
 
 export function getRequestLogDetail(requestId: string) {
@@ -982,8 +1253,31 @@ export interface ModelFamily {
   model_count: number
 }
 
+export interface ModelOffer {
+  provider_id: number
+  provider_name: string
+  catalog_code: string
+  base_url: string | null
+  provider_enabled: boolean
+  credential_id: number
+  credential_label: string
+  credential_status: string
+  health_status: string | null
+  concurrency_limit: number | null
+  raw_model_name: string
+  standardized_name: string | null
+  p95_latency_ms: number | null
+  success_rate: number | null
+  available: boolean
+  input_price: number | null
+  output_price: number | null
+  cache_read_price: number | null
+  cache_write_price: number | null
+}
+
 export interface ModelDetail extends ModelCanonical {
   aliases: ModelAlias[]
+  offers: ModelOffer[]
   created_at: string
 }
 
@@ -1272,6 +1566,7 @@ export function updateScoringWeights(weights: Partial<ScoringWeights>) {
 
 export interface FeaturedModel {
   name: string
+  standardized_name: string
   count: number
 }
 
@@ -1280,6 +1575,35 @@ export function getFeaturedModelsDynamic() {
 }
 
 // ── Free Pool ────────────────────────────────────────────────────────────
+
+export interface FreePoolModelEntry {
+  offer_id: number
+  raw_model_name: string
+  standardized_name?: string | null
+  canonical_name?: string | null
+  available: boolean
+  billing_mode: string
+  routing_tier: number
+  catalog_code: string
+  provider_name: string
+  protocol: string
+  base_url: string
+  credential_id: number
+  credential_label: string
+  credential_status: string
+  availability_state: string
+  quota_state: string
+  routable: boolean
+}
+
+export interface FreePoolProviderModel {
+  offer_id: number
+  raw_model_name: string
+  standardized_name?: string | null
+  available: boolean
+  routable: boolean
+  routing_tier: number
+}
 
 export interface FreePoolEntry {
   catalog_code: string
@@ -1292,15 +1616,26 @@ export interface FreePoolEntry {
   total_offers: number
   available_offers: number
   free_offers: number
+  has_secret?: boolean
+  balance_usd?: number | null
+  models?: FreePoolProviderModel[]
+  model_names?: string[]
 }
 
 export interface FreePoolStatusResponse {
   pool: FreePoolEntry[]
+  models: FreePoolModelEntry[]
+  catalog: FreePoolCatalogEntry[]
+  active_catalog_codes: string[]
+  live_models_by_code: Record<string, string[]>
   stats: {
     total_providers: number
     available_providers: number
     total_models: number
     free_models: number
+    routable_models: number
+    catalog_templates: number
+    catalog_registered: number
   }
 }
 
@@ -1315,58 +1650,211 @@ export function registerFreeProvider(data: {
   protocol?: string
   api_key?: string
   models?: string[]
+  no_api_key_required?: boolean
 }) {
   return req<{ status: string; provider_id: number }>('POST', '/api/free-pool/register', data)
 }
 
-export function getFreePoolMethods() {
-  return req<{ methods: any[]; audit_rules: any[]; scheduler: any }>('GET', '/api/free-pool/methods')
+export interface FreePoolCatalogEntry {
+  catalog_code: string
+  display_name: string
+  base_url: string
+  models: string[] | null
+  live_models: string[]
+  model_count_template: number
+  model_count_live: number
+  pool_registered: boolean
+  rpm_limit: number
+  signup_url: string
+  env_vars: string[]
+  acquisition_mode: string
+  needs_key: boolean
+  env_configured: boolean
 }
 
-export function getFreePoolKeys() {
-  return req<any[]>('GET', '/api/free-pool/keys')
-}
-
-export function addFreePoolKey(data: { catalog_code: string; api_key: string; label?: string }) {
-  return req<{ id: number }>('POST', '/api/free-pool/keys', data)
-}
-
-export function getFreePoolSignupHub() {
-  return req<any>('GET', '/api/free-pool/signup-hub')
-}
-
-export function importFreePoolEnv() {
-  return req<{ imported: number }>('POST', '/api/free-pool/import-env')
-}
-
-export function discoverFreePool() {
-  return req<{ status: string }>('POST', '/api/free-pool/discover')
-}
-
-export function bridgeFreePoolOAuth() {
-  return req<{ status: string }>('POST', '/api/free-pool/bridge-oauth')
-}
-
-export function bootstrapFreePool() {
-  return req<{ status: string }>('POST', '/api/free-pool/bootstrap')
-}
-
-export function probeFreePoolCredential(data: { catalog_code: string; api_key: string }) {
-  return req<any>('POST', '/api/free-pool/probe', data)
-}
-
-export function quickEntryFreePool(data: { catalog_code: string; api_key: string; label?: string }) {
-  return req<{ provider_id: number }>('POST', '/api/free-pool/quick-entry', data)
-}
-
-export function createFreePoolTempEmail() {
-  return req<{ address: string; password: string; token: string; web_url: string }>('POST', '/api/free-pool/temp-email')
-}
-
-export function pollFreePoolTempEmail(token: string) {
-  return req<{ messages: any[] }>('GET', `/api/free-pool/temp-email/poll?token=${token}`)
+export function getFreePoolModels() {
+  return req<{ models: FreePoolModelEntry[]; total: number; routable: number }>(
+    'GET',
+    '/api/free-pool/models',
+  )
 }
 
 export function getFreePoolCatalog() {
-  return req<any[]>('GET', '/api/free-pool/catalog')
+  return req<{ providers: FreePoolCatalogEntry[] }>('GET', '/api/free-pool/catalog')
+}
+
+export function importFreePoolEnv() {
+  return req<{ mode: string; registered: number; results: unknown[] }>('POST', '/api/free-pool/import-env')
+}
+
+export function bridgeFreePoolOAuth() {
+  return req<{ mode: string; registered: number; results: unknown[] }>('POST', '/api/free-pool/bridge-oauth')
+}
+
+export function discoverFreePool() {
+  return req<{ registered: number; acquisition: unknown }>('POST', '/api/free-pool/discover')
+}
+
+export function bootstrapFreePool() {
+  return req<{ cleanup: unknown; mirror: unknown; discover: unknown; status: FreePoolStatusResponse }>(
+    'POST',
+    '/api/free-pool/bootstrap',
+  )
+}
+
+export interface FreePoolMethod {
+  mode: string
+  title: string
+  summary: string
+  steps: string[]
+  risk: string
+  automated: boolean
+}
+
+export interface FreePoolAuditRule {
+  id: string
+  title: string
+  status: string
+  detail: string
+}
+
+export interface FreePoolKeyEntry {
+  credential_id: number
+  credential_label: string
+  credential_status: string
+  availability_state: string
+  quota_state: string
+  acquisition_source: string | null
+  acquisition_detail: string | null
+  tags: string[] | null
+  has_secret: boolean
+  key_masked: string | null
+  provider_id: number
+  catalog_code: string
+  provider_name: string
+  base_url: string
+  created_at?: string
+  updated_at?: string
+}
+
+export function getFreePoolKeys() {
+  return req<{ keys: FreePoolKeyEntry[]; total: number }>('GET', '/api/free-pool/keys')
+}
+
+export function addFreePoolKey(data: {
+  catalog_code: string
+  api_key: string
+  source?: string
+  source_detail?: string
+  label?: string
+  display_name?: string
+  base_url?: string
+  models?: string[]
+}) {
+  return req<{ status: string; credential_id?: number }>('POST', '/api/free-pool/keys', data)
+}
+
+export function addFreePoolKeysBulk(keys: Array<{
+  catalog_code: string
+  api_key: string
+  source?: string
+  source_detail?: string
+  label?: string
+}>) {
+  return req<{ registered: number; results: unknown[] }>('POST', '/api/free-pool/keys/bulk', { keys })
+}
+
+export function getFreePoolMethods() {
+  return req<{
+    methods: FreePoolMethod[]
+    audit_rules: FreePoolAuditRule[]
+    scheduler: { enabled: boolean; interval_sec: number; last_result: Record<string, unknown> }
+  }>('GET', '/api/free-pool/methods')
+}
+
+export interface SignupPlatformEntry {
+  id: string
+  name: string
+  category: string
+  signup_url: string
+  api_key_url: string
+  base_url: string
+  catalog_code: string
+  display_name: string
+  models_hint: string
+  notes: string
+  difficulty: string
+  needs_email: boolean
+  env_vars: string[]
+  tags: string[]
+  pool_registered: boolean
+}
+
+export interface SignupToolEntry {
+  id: string
+  name: string
+  tool_type: string
+  url: string
+  description: string
+  builtin: boolean
+}
+
+export interface SignupHubResponse {
+  platforms: SignupPlatformEntry[]
+  tools: SignupToolEntry[]
+  workflow: Array<{ step: number; title: string; detail: string }>
+  categories: Array<{ id: string; label: string; description: string }>
+}
+
+export function getFreePoolSignupHub() {
+  return req<SignupHubResponse>('GET', '/api/free-pool/signup-hub')
+}
+
+export function probeFreePoolCredential(data: { base_url: string; api_key?: string }) {
+  return req<{ probe: Record<string, unknown> }>('POST', '/api/free-pool/probe', data)
+}
+
+export function quickEntryFreePool(data: {
+  signup_url?: string
+  base_url: string
+  api_key?: string
+  display_name?: string
+  catalog_code?: string
+  models?: string[]
+  source?: string
+  source_detail?: string
+  label?: string
+  platform_id?: string
+  probe_first?: boolean
+  save?: boolean
+  no_api_key_required?: boolean
+}) {
+  return req<{
+    status: string
+    probe?: Record<string, unknown>
+    catalog_code?: string
+    credential_id?: number
+    provider_id?: number
+    error?: string
+  }>('POST', '/api/free-pool/quick-entry', data)
+}
+
+export function createFreePoolTempEmail() {
+  return req<{
+    ok: boolean
+    address?: string
+    password?: string
+    token?: string
+    web_url?: string
+    expires_hint?: string
+    error?: string
+  }>('POST', '/api/free-pool/temp-email')
+}
+
+export function pollFreePoolTempEmail(token: string) {
+  return req<{ ok: boolean; messages?: Array<{ id: string; from?: string; subject?: string; intro?: string }>; total?: number; error?: string }>(
+    'POST',
+    '/api/free-pool/temp-email/poll',
+    { token },
+  )
 }

@@ -4,63 +4,43 @@ import { useRouter } from 'vue-router'
 import {
   getProviders, createProvider, updateProvider, toggleProvider,
   addCredential, deleteCredential, getCatalog, getProviderCredentials,
-  updateCredential, checkProvider, checkCredential,
+  updateCredential, checkProvider, checkCredential, diagnoseProvider,
   getBackgroundTasksStatus,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
-  type BackgroundTasksStatus,
+  type BackgroundTasksStatus, type CredentialCheckResult,
 } from '../api'
-
-const router = useRouter()
 
 const providers = ref<Provider[]>([])
 const catalog   = ref<CatalogEntry[]>([])
 const loading   = ref(false)
 const error     = ref('')
+const router = useRouter()
 const credentialsByProvider = ref<Record<number, ProviderCredential[]>>({})
 const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
 
-// Filter state
+// ── Filter & sort state ──────────────────────────────────────────────────────
 const filterSearch = ref('')
-const filterHealth = ref('all')
+// Default to "available" (healthy) on entry — operators mostly care about
+// what is actually usable.  The "全部" tab in the filter bar lets users
+// widen the view on demand.
+const filterHealthStatus = ref('healthy')
 const filterFreeModel = ref<'all' | 'yes' | 'no'>('all')
-const healthTabs = [
+let _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const healthStatusOptions = [
   { value: 'all', label: '全部' },
   { value: 'healthy', label: '可用' },
   { value: 'warning', label: '警告' },
   { value: 'unreachable', label: '不可用' },
 ]
-const freeModelTabs = [
+
+const freeModelOptions = [
   { value: 'all', label: '全部' },
   { value: 'yes', label: '含免费' },
-  { value: 'no', label: '不含免费' },
+  { value: 'no',  label: '不含免费' },
 ]
-
-let _debounceTimer: ReturnType<typeof setTimeout> | null = null
-function debouncedLoad() {
-  if (_debounceTimer) clearTimeout(_debounceTimer)
-  _debounceTimer = setTimeout(() => loadProviders(), 300)
-}
-
-async function loadProviders() {
-  loading.value = true
-  error.value = ''
-  try {
-    const params: { search?: string; health_status?: string; has_free_model?: boolean } = {}
-    if (filterSearch.value) params.search = filterSearch.value
-    if (filterHealth.value !== 'all') params.health_status = filterHealth.value
-    if (filterFreeModel.value === 'yes') params.has_free_model = true
-    if (filterFreeModel.value === 'no') params.has_free_model = false
-    const [p, c] = await Promise.all([getProviders(params), getCatalog()])
-    providers.value = p
-    catalog.value = c
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
-  } finally {
-    loading.value = false
-  }
-}
 
 const bgStatus = ref<BackgroundTasksStatus | null>(null)
 let _bgPollTimer: ReturnType<typeof setInterval> | null = null
@@ -432,9 +412,103 @@ async function checkSingleCredential(prov: Provider, cred: { id: number }) {
   }
 }
 
+// ── Diagnose (deep probe: request URL / method / sanitized headers / response) ──
+const diagnoseProviderId = ref<number | null>(null)
+const diagnoseLoading = ref(false)
+const diagnoseResult = ref<{ provider_id: number; credential_count: number; results: CredentialCheckResult[] } | null>(null)
+const diagnoseError = ref('')
+const expandedCredId = ref<number | null>(null)
+
+async function openDiagnose(prov: Provider) {
+  diagnoseProviderId.value = prov.id
+  diagnoseError.value = ''
+  diagnoseResult.value = null
+  expandedCredId.value = null
+  diagnoseLoading.value = true
+  try {
+    const r = await diagnoseProvider(prov.id, { force: true })
+    diagnoseResult.value = r
+  } catch (e: unknown) {
+    diagnoseError.value = e instanceof Error ? e.message : '诊断失败'
+  } finally {
+    diagnoseLoading.value = false
+  }
+}
+
+function closeDiagnose() {
+  diagnoseProviderId.value = null
+  diagnoseResult.value = null
+  diagnoseError.value = ''
+  expandedCredId.value = null
+}
+
+function sourceBadgeClass(source: string | null | undefined): string {
+  switch (source) {
+    case 'api':           return 'badge badge-green'
+    case 'manifest':      return 'badge badge-amber'
+    case 'manifest_only': return 'badge badge-amber'
+    case 'none':          return 'badge badge-red'
+    default:              return 'badge'
+  }
+}
+
+function sourceLabel(source: string | null | undefined): string {
+  switch (source) {
+    case 'api':           return 'API 绿'
+    case 'manifest':      return 'Manifest 黄'
+    case 'manifest_only': return '仅 Manifest'
+    case 'none':          return '未验证'
+    default:              return source || '未验证'
+  }
+}
+
+function asJson(v: unknown): string {
+  try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+function toggleCredDetail(credId: number) {
+  expandedCredId.value = expandedCredId.value === credId ? null : credId
+}
+
 // ── Load ────────────────────────────────────────────────────────────────────
 async function load() {
-  await loadProviders()
+  loading.value = true
+  error.value = ''
+  try {
+    const hasFreeParam =
+      filterFreeModel.value === 'all'
+        ? undefined
+        : filterFreeModel.value === 'yes'
+    const [p, c] = await Promise.all([
+      getProviders({
+        search: filterSearch.value || undefined,
+        health_status: filterHealthStatus.value || undefined,
+        has_free_model: hasFreeParam,
+      }),
+      getCatalog(),
+    ])
+    providers.value = p
+    catalog.value   = c
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+function onSearchInput() {
+  if (_searchDebounceTimer) clearTimeout(_searchDebounceTimer)
+  _searchDebounceTimer = setTimeout(() => load(), 300)
+}
+
+function onHealthStatusChange(status: string) {
+  filterHealthStatus.value = status
+  load()
+}
+
+function onFreeModelChange(value: 'all' | 'yes' | 'no') {
+  filterFreeModel.value = value
+  load()
 }
 
 async function loadBgStatus() {
@@ -459,25 +533,6 @@ onUnmounted(() => {
     <div class="page-header">
       <h2>提供商管理</h2>
       <button class="btn btn-primary" @click="openAdd">+ 添加提供商</button>
-    </div>
-
-    <!-- Filter bar -->
-    <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-      <input class="input" v-model="filterSearch" placeholder="搜索供应商..." style="width:200px" @input="debouncedLoad" />
-      <div style="display:flex;gap:4px">
-        <button v-for="tab in healthTabs" :key="tab.value"
-                :class="['btn btn-ghost btn-sm', { 'btn-primary': filterHealth === tab.value }]"
-                @click="filterHealth = tab.value; loadProviders()">
-          {{ tab.label }}
-        </button>
-      </div>
-      <div style="display:flex;gap:4px">
-        <button v-for="tab in freeModelTabs" :key="tab.value"
-                :class="['btn btn-ghost btn-sm', { 'btn-primary': filterFreeModel === tab.value }]"
-                @click="filterFreeModel = tab.value; loadProviders()">
-          {{ tab.label }}
-        </button>
-      </div>
     </div>
 
     <div class="bg-status-bar" v-if="bgStatus">
@@ -518,6 +573,39 @@ onUnmounted(() => {
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="loading" class="empty">加载中…</div>
 
+    <!-- ── Filter Bar ────────────────────────────────────────────────────── -->
+    <div class="filter-bar" v-if="!loading">
+      <div class="filter-search">
+        <input
+          v-model="filterSearch"
+          @input="onSearchInput"
+          placeholder="搜索显示名…"
+          class="filter-input"
+        />
+        <span class="filter-search-icon">🔍</span>
+      </div>
+      <div class="filter-tabs">
+        <button
+          v-for="opt in healthStatusOptions"
+          :key="opt.value"
+          class="filter-tab"
+          :class="{ active: filterHealthStatus === opt.value }"
+          @click="onHealthStatusChange(opt.value)"
+        >{{ opt.label }}</button>
+      </div>
+      <div class="filter-divider" aria-hidden="true"></div>
+      <div class="filter-tabs">
+        <span class="filter-tab-label">免费模型</span>
+        <button
+          v-for="opt in freeModelOptions"
+          :key="opt.value"
+          class="filter-tab"
+          :class="{ active: filterFreeModel === opt.value }"
+          @click="onFreeModelChange(opt.value as 'all' | 'yes' | 'no')"
+        >{{ opt.label }}</button>
+      </div>
+    </div>
+
     <div class="card" v-if="!loading">
       <table>
         <thead>
@@ -527,13 +615,16 @@ onUnmounted(() => {
             <th>Header Profile</th>
             <th>Base URL</th>
             <th>凭据数</th>
+            <th>可用模型</th>
+            <th>免费模型</th>
+            <th>24h 错误率</th>
             <th>系统健康</th>
             <th>状态</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-           <tr v-for="p in providers" :key="p.id" style="cursor:pointer" @click="router.push('/providers/' + p.id)">
+          <tr v-for="p in providers" :key="p.id" @click="router.push('/providers/' + p.id)" style="cursor:pointer">
             <td>
               <div style="font-weight:500">{{ p.display_name }}</div>
               <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>
@@ -549,6 +640,19 @@ onUnmounted(() => {
               <span class="badge" :class="p.active_credential_count > 0 ? 'badge-green' : 'badge-red'">
                 {{ p.active_credential_count }}
               </span>
+            </td>
+            <td>
+              <span style="font-size:12px">{{ (p as any).available_model_count ?? '—' }}</span>
+            </td>
+            <td>
+              <span
+                class="badge"
+                :class="(p.free_model_count ?? 0) > 0 ? 'badge-green' : 'badge-gray'"
+                :title="(p.free_model_count ?? 0) > 0 ? '该供应商存在免费 (billing_mode=free) 的模型' : '该供应商没有免费模型'"
+              >{{ p.free_model_count ?? 0 }}</span>
+            </td>
+            <td>
+              <span style="font-size:12px">{{ (p as any).error_rate_24h != null ? Number((p as any).error_rate_24h).toFixed(1) + '%' : '—' }}</span>
             </td>
             <td>
               <span class="badge" :class="healthBadgeClass(p.health_status)">
@@ -735,6 +839,7 @@ onUnmounted(() => {
                 <th>凭据</th>
                 <th>状态</th>
                 <th>系统探活</th>
+                <th>模型清单</th>
                 <th>并发</th>
                 <th>有效期</th>
                 <th>用量 / 余额</th>
@@ -761,6 +866,17 @@ onUnmounted(() => {
                   <div class="muted" v-if="c.health_probe_model">Probe {{ c.health_probe_model }}</div>
                   <div class="muted health-error" v-if="c.health_error">{{ c.health_error }}</div>
                 </td>
+                <td>
+                  <div>
+                    <span
+                      class="badge"
+                      :class="c.api_models_ok === true ? 'badge badge-green' : c.api_models_ok === false ? 'badge badge-red' : 'badge'"
+                      :title="c.api_models_ok === true ? '模型清单 API 验证通过' : c.api_models_ok === false ? 'API 验证失败: ' + (c.api_models_error || '') : '尚未验证'"
+                    >{{ c.api_models_ok === true ? 'API 绿' : c.api_models_ok === false ? 'API 红' : '未验证' }}</span>
+                  </div>
+                  <div class="muted" v-if="c.api_models_last_checked_at">检查 {{ timeText(c.api_models_last_checked_at) }}</div>
+                  <div class="muted health-error" v-if="c.api_models_error">{{ c.api_models_error }}</div>
+                </td>
                 <td><input v-model.number="c.concurrency_limit" type="number" min="1" class="compact-input number" placeholder="不限" /></td>
                 <td>
                   <input :value="asDateInput(c.effective_at)" type="datetime-local" class="compact-input" @input="setDateInputFromEvent(c, 'effective_at', $event)" />
@@ -785,6 +901,7 @@ onUnmounted(() => {
                     :disabled="checkingCredential[c.id]"
                     title="对此凭据执行一次健康检测"
                   >{{ checkingCredential[c.id] ? '检测中' : '检测' }}</button>
+                  <button class="btn btn-ghost btn-sm" @click="openDiagnose(manageProvider)">诊断</button>
                   <button class="btn btn-ghost btn-sm" @click="delCred(manageProvider, c.id)">停用</button>
                   <div v-if="credentialCheckResults[c.id]" style="font-size:11px;color:var(--muted);margin-top:4px">
                     {{ credentialCheckResults[c.id] }}
@@ -794,6 +911,115 @@ onUnmounted(() => {
             </tbody>
           </table>
           <div v-if="!(credentialsByProvider[manageProvider.id] || []).length" class="empty">暂无凭据，点击「+ 凭据」添加</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Diagnose Modal ───────────────────────────────────────────────── -->
+    <div class="modal-overlay modal-overlay-stacked" v-if="diagnoseProviderId !== null" @click.self="closeDiagnose">
+      <div class="modal modal-wide">
+        <h3>供应商诊断 — 实际请求/响应抓包 <span class="muted" style="font-size:12px">(凭据已脱敏)</span></h3>
+        <div v-if="diagnoseLoading" class="muted">诊断中…</div>
+        <div v-else-if="diagnoseError" class="alert alert-danger">{{ diagnoseError }}</div>
+        <div v-else-if="diagnoseResult">
+          <div class="muted" style="margin-bottom:12px">
+            共 {{ diagnoseResult.credential_count }} 个凭据，点击行展开详细请求/响应抓包
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>凭据</th>
+                <th>模型源</th>
+                <th>系统健康</th>
+                <th>状态码</th>
+                <th>延迟</th>
+                <th>Endpoint 模板</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="r in diagnoseResult.results" :key="r.credential_id">
+                <tr>
+                  <td>
+                    <div>#{{ r.credential_id }}</div>
+                    <div class="muted" v-if="r.effective_source === 'manifest_only'">manifest-only supplier</div>
+                  </td>
+                  <td>
+                    <span class="badge" :class="sourceBadgeClass(r.effective_source)">
+                      {{ sourceLabel(r.effective_source) }}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="badge" :class="healthBadgeClass(r.health_status)">
+                      {{ healthLabel(r.health_status) }}
+                    </span>
+                    <div class="muted" v-if="r.health_warning_code">{{ healthWarningLabel(r.health_warning_code) }}</div>
+                  </td>
+                  <td>
+                    <span v-if="r.response_status" :class="r.response_status === 200 ? 'badge badge-green' : 'badge badge-red'">
+                      {{ r.response_status }}
+                    </span>
+                    <span v-else class="muted">—</span>
+                    <div class="muted" v-if="r.attempt_index > 0">第 {{ r.attempt_index + 1 }} 次（probe fallback）</div>
+                  </td>
+                  <td>
+                    <span v-if="r.health_latency_ms !== null">{{ r.health_latency_ms }} ms</span>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td>
+                    <code style="font-size:11px">{{ r.models_endpoint_template || '(auto)' }}</code>
+                    <div class="muted" v-if="r.models_endpoint_resolved">
+                      → <code style="font-size:11px">{{ r.models_endpoint_resolved }}</code>
+                    </div>
+                  </td>
+                  <td>
+                    <button class="btn btn-ghost btn-sm" @click="toggleCredDetail(r.credential_id)">
+                      {{ expandedCredId === r.credential_id ? '收起' : '展开' }}
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="expandedCredId === r.credential_id">
+                  <td colspan="7" style="background:rgba(0,0,0,0.2);padding:12px">
+                    <div class="diag-section">
+                      <h4>📤 请求</h4>
+                      <div><strong>URL:</strong> <code style="font-size:12px">{{ r.request_url || '(未发出)' }}</code></div>
+                      <div><strong>Method:</strong> <code>{{ r.request_method }}</code></div>
+                      <div><strong>Headers (脱敏):</strong>
+                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ asJson(r.request_headers_sanitized) }}</pre>
+                      </div>
+                      <div v-if="r.request_body_preview"><strong>Body:</strong>
+                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ r.request_body_preview }}</pre>
+                      </div>
+                    </div>
+                    <div class="diag-section" style="margin-top:12px">
+                      <h4>📥 响应</h4>
+                      <div><strong>Status:</strong> <code>{{ r.response_status || '(no response)' }}</code></div>
+                      <div v-if="r.response_headers && Object.keys(r.response_headers).length"><strong>Headers:</strong>
+                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto">{{ asJson(r.response_headers) }}</pre>
+                      </div>
+                      <div v-if="r.response_body_preview"><strong>Body (2KB):</strong>
+                        <pre style="margin:4px 0;padding:8px;background:rgba(0,0,0,0.3);border-radius:4px;font-size:11px;overflow-x:auto;max-height:200px">{{ r.response_body_preview }}</pre>
+                      </div>
+                    </div>
+                    <div v-if="r.health_error" class="diag-section" style="margin-top:12px">
+                      <h4>⚠️ 错误</h4>
+                      <pre style="margin:4px 0;padding:8px;background:rgba(180,40,40,0.2);border-radius:4px;font-size:11px;overflow-x:auto">{{ r.health_error }}</pre>
+                    </div>
+                    <div v-if="r.returned_models && r.returned_models.length" class="diag-section" style="margin-top:12px">
+                      <h4>✅ 解析到的模型 ({{ r.returned_models.length }})</h4>
+                      <div style="font-size:11px;line-height:1.6">
+                        <code v-for="m in r.returned_models.slice(0, 30)" :key="m" style="margin-right:6px;display:inline-block;padding:2px 6px;background:rgba(0,255,128,0.1);border-radius:3px">{{ m }}</code>
+                        <span v-if="r.returned_models.length > 30" class="muted">… 共 {{ r.returned_models.length }} 个</span>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-primary" @click="closeDiagnose">关闭</button>
         </div>
       </div>
     </div>
@@ -823,6 +1049,83 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── Filter Bar ─────────────────────────────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.filter-search {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+  max-width: 320px;
+}
+.filter-input {
+  width: 100%;
+  padding: 8px 12px 8px 32px;
+  font-size: 13px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.filter-input:focus {
+  border-color: var(--accent);
+}
+.filter-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  pointer-events: none;
+  opacity: 0.5;
+}
+.filter-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-subtle);
+  border-radius: 6px;
+  padding: 3px;
+}
+.filter-tab {
+  padding: 6px 14px;
+  font-size: 13px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.filter-tab:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.05);
+}
+.filter-tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+.filter-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  opacity: 0.5;
+  margin: 0 4px;
+}
+.filter-tab-label {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 8px 6px 4px;
+  white-space: nowrap;
+}
+
 .modal-wide {
   max-width: min(1200px, 92vw);
   width: 100%;
@@ -898,6 +1201,16 @@ onUnmounted(() => {
 .badge-amber {
   background: rgba(210,153,34,.18);
   color: #f0b429;
+}
+.diag-section h4 {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.diag-section pre {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .bg-status-bar {
   display: flex;

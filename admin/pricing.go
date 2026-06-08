@@ -220,24 +220,40 @@ func (h *Handler) pricingSummary(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var summary struct {
-		TotalOffers      int `json:"total_offers"`
-		PricedIn         int `json:"priced_in"`
-		PricedOut        int `json:"priced_out"`
-		FreeOffers       int `json:"free_offers"`
-		CNYOffers        int `json:"cny_offers"`
-		USDOffers        int `json:"usd_offers"`
+		TotalOffers       int `json:"total_offers"`
+		PricedIn          int `json:"priced_in"`
+		PricedOut         int `json:"priced_out"`
+		PricedCacheRead   int `json:"priced_cache_read"`
+		PricedCacheWrite  int `json:"priced_cache_write"`
+		CNYOffers         int `json:"cny_offers"`
+		USDOffers         int `json:"usd_offers"`
+		FreeOffers        int `json:"free_offers"`
+		CanonicalCovered  int `json:"canonical_covered"`
+		TotalCanonical    int `json:"total_canonical"`
+		FreeCredentials   int `json:"free_credentials"`
 	}
 	h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(DISTINCT mo.id),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.unit_price_in_per_1m IS NOT NULL),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.unit_price_out_per_1m IS NOT NULL),
-			COUNT(DISTINCT mo.id) FILTER (WHERE mo.billing_mode = 'free'),
+			COUNT(DISTINCT mo.id) FILTER (WHERE mo.cache_read_price_per_1m IS NOT NULL),
+			COUNT(DISTINCT mo.id) FILTER (WHERE mo.cache_write_price_per_1m IS NOT NULL),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'CNY'),
-			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'USD')
+			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'USD'),
+			COUNT(DISTINCT mo.id) FILTER (WHERE mo.billing_mode = 'free'),
+			COUNT(DISTINCT mo.canonical_id),
+			COUNT(DISTINCT mc.id) FILTER (WHERE mc.id IS NOT NULL),
+			COUNT(DISTINCT c.id) FILTER (WHERE c.pool_group = 'free')
 		FROM model_offers mo
-	`).Scan(&summary.TotalOffers, &summary.PricedIn, &summary.PricedOut,
-		&summary.FreeOffers, &summary.CNYOffers, &summary.USDOffers)
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		LEFT JOIN credentials c ON c.id = mo.credential_id
+	`).Scan(
+		&summary.TotalOffers, &summary.PricedIn, &summary.PricedOut,
+		&summary.PricedCacheRead, &summary.PricedCacheWrite,
+		&summary.CNYOffers, &summary.USDOffers, &summary.FreeOffers,
+		&summary.CanonicalCovered, &summary.TotalCanonical, &summary.FreeCredentials,
+	)
 
 	writeJSON(w, http.StatusOK, summary)
 }

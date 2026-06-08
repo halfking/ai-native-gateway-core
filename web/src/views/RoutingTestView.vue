@@ -57,6 +57,14 @@ async function loadFeaturedModels() {
   }
 }
 
+function displayName(m: FeaturedModel): string {
+  return m.standardized_name || m.name
+}
+
+function clickModel(m: FeaturedModel) {
+  selectModel(displayName(m))
+}
+
 async function selectModel(name: string) {
   modelInput.value = name
   await doResolve()
@@ -226,11 +234,12 @@ function dateWindow(c: RoutingCandidate): string {
           v-for="m in featuredModels"
           :key="m.name"
           class="btn btn-ghost btn-sm"
-          :class="{ active: modelInput === m.name }"
-          @click="selectModel(m.name)"
+          :class="{ active: modelInput === displayName(m) }"
+          :title="m.name !== displayName(m) ? `原始: ${m.name}` : undefined"
+          @click="clickModel(m)"
           style="font-size:12px;padding:4px 10px"
         >
-          {{ m.name }} <span style="color:var(--muted);font-size:10px">({{ m.count }})</span>
+          {{ displayName(m) }} <span style="color:var(--muted);font-size:10px">({{ m.count }})</span>
         </button>
       </div>
     </div>
@@ -383,7 +392,7 @@ function dateWindow(c: RoutingCandidate): string {
       </div>
       <div v-if="probeResult.reply" style="margin-top:16px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">模型回复：</div>
-        <pre style="background:var(--surface-alt,#f4f4f5);border-radius:6px;padding:12px;font-size:13px;margin:0;white-space:pre-wrap">{{ probeResult.reply }}</pre>
+        <pre style="background:var(--bg-subtle,#161b22);border:1px solid var(--border,#30363d);border-radius:6px;padding:12px;font-size:13px;margin:0;white-space:pre-wrap;color:var(--text,#e6edf3)">{{ probeResult.reply }}</pre>
       </div>
       <div v-if="probeResult.error" class="alert alert-danger" style="margin-top:12px">
         {{ probeResult.error }}

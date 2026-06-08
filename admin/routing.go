@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -223,51 +224,166 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
+	var featured []string
+	_ = h.db.QueryRow(ctx, `
+		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
+		FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1
+	`).Scan(&featured)
+	if featured == nil {
+		featured = []string{}
+	}
+
+	featuredOnly := queryBool(r, "featured_only")
+	sql := `
 		SELECT
-			mo.raw_model_name,
-			mo.outbound_model_name,
-			c.id,
-			p.id,
-			p.display_name,
-			COALESCE(mo.routing_tier, 2)::int,
-			COALESCE(mo.success_rate, 0.9)::float8,
-			COALESCE(c.circuit_state, 'closed'),
-			c.status
+			mo.raw_model_name AS model_name,
+			p.id AS provider_id,
+			p.display_name AS provider_name,
+			p.catalog_code,
+			p.protocol,
+			p.base_url,
+			p.enabled AS provider_enabled,
+			c.id AS credential_id,
+			c.label AS credential_label,
+			c.status AS credential_status,
+			c.lifecycle_status,
+			c.availability_state,
+			c.availability_recover_at,
+			c.quota_state,
+			c.quota_recover_at,
+			c.balance_usd::float8,
+			c.effective_at,
+			c.expires_at,
+			c.circuit_state,
+			c.cooling_until,
+			mo.available,
+			COALESCE(mo.routing_tier, 2)::int AS tier,
+			COALESCE(mo.weight, 100)::int AS weight,
+			mo.unit_price_in_per_1m,
+			mo.unit_price_out_per_1m,
+			mo.currency,
+			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
+			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
+			mo.standardized_name
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE p.tenant_id = 'default' AND mo.available IS TRUE
-		ORDER BY mo.raw_model_name, COALESCE(mo.routing_tier, 2)
-	`)
+		WHERE p.tenant_id = 'default'
+	`
+	args := []any{}
+	if featuredOnly && len(featured) > 0 {
+		sql += ` AND mo.raw_model_name = ANY($1)`
+		args = append(args, featured)
+	}
+	sql += ` ORDER BY mo.raw_model_name, tier ASC, weight DESC, success_rate DESC`
+
+	rows, err := h.db.Query(ctx, sql, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 	defer rows.Close()
 
-	type entry struct {
-		RawModel      string  `json:"raw_model"`
-		OutboundModel string  `json:"outbound_model"`
-		CredentialID  int     `json:"credential_id"`
-		ProviderID    int     `json:"provider_id"`
-		ProviderName  string  `json:"provider_name"`
-		Tier          int     `json:"tier"`
-		SuccessRate   float64 `json:"success_rate"`
-		CircuitState  string  `json:"circuit_state"`
-		Status        string  `json:"status"`
-	}
-	entries := make([]entry, 0)
+	outRows := make([]map[string]any, 0)
 	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.RawModel, &e.OutboundModel, &e.CredentialID,
-			&e.ProviderID, &e.ProviderName, &e.Tier, &e.SuccessRate,
-			&e.CircuitState, &e.Status); err != nil {
+		var (
+			modelName, providerName, catalogCode, protocol, baseURL string
+			credentialLabel, credentialStatus, lifecycleStatus      string
+			availabilityState, quotaState, circuitState             string
+			currency, standardizedName                                *string
+			providerID, credentialID, tier, weight, p95               int
+			providerEnabled, available                                bool
+			successRate, balanceUSD                                   *float64
+			availabilityRecoverAt, quotaRecoverAt                     *time.Time
+			effectiveAt, expiresAt, coolingUntil                      *time.Time
+			priceIn, priceOut                                         *float64
+		)
+		if err := rows.Scan(
+			&modelName, &providerID, &providerName, &catalogCode, &protocol, &baseURL,
+			&providerEnabled, &credentialID, &credentialLabel, &credentialStatus,
+			&lifecycleStatus, &availabilityState, &availabilityRecoverAt,
+			&quotaState, &quotaRecoverAt, &balanceUSD, &effectiveAt, &expiresAt,
+			&circuitState, &coolingUntil, &available, &tier, &weight,
+			&priceIn, &priceOut, &currency, &successRate, &p95, &standardizedName,
+		); err != nil {
 			continue
 		}
-		entries = append(entries, e)
+		runtimeRoutable := available &&
+			credentialStatus == "active" &&
+			lifecycleStatus == "active" &&
+			availabilityState == "ready" &&
+			quotaState == "ok" &&
+			circuitState != "open"
+		row := map[string]any{
+			"model_name":              modelName,
+			"provider_id":             providerID,
+			"provider_name":           providerName,
+			"catalog_code":            catalogCode,
+			"protocol":                protocol,
+			"base_url":                baseURL,
+			"provider_enabled":        providerEnabled,
+			"credential_id":           credentialID,
+			"credential_label":        credentialLabel,
+			"credential_status":       credentialStatus,
+			"lifecycle_status":        lifecycleStatus,
+			"availability_state":      availabilityState,
+			"availability_recover_at": availabilityRecoverAt,
+			"quota_state":             quotaState,
+			"quota_recover_at":        quotaRecoverAt,
+			"balance_usd":             balanceUSD,
+			"effective_at":            effectiveAt,
+			"expires_at":              expiresAt,
+			"circuit_state":           circuitState,
+			"cooling_until":           coolingUntil,
+			"available":               available,
+			"tier":                    tier,
+			"weight":                  weight,
+			"unit_price_in_per_1m":    priceIn,
+			"unit_price_out_per_1m":   priceOut,
+			"currency":                currency,
+			"success_rate":            successRate,
+			"p95_latency_ms":          p95,
+			"standardized_name":       standardizedName,
+			"runtime_routable":        runtimeRoutable,
+			"routable":                runtimeRoutable,
+		}
+		if !runtimeRoutable {
+			row["runtime_block_reason"] = routingBlockReason(
+				available, credentialStatus, lifecycleStatus, availabilityState, quotaState, circuitState,
+			)
+		}
+		outRows = append(outRows, row)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": entries})
+	if outRows == nil {
+		outRows = []map[string]any{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"featured": featured,
+		"rows":     outRows,
+	})
+}
+
+func routingBlockReason(available bool, credStatus, lifecycle, availability, quota, circuit string) string {
+	if !available {
+		return "offer_unavailable"
+	}
+	if credStatus != "active" {
+		return "credential_" + credStatus
+	}
+	if lifecycle != "active" {
+		return "lifecycle_" + lifecycle
+	}
+	if availability != "ready" {
+		return "availability_" + availability
+	}
+	if quota != "ok" {
+		return "quota_" + quota
+	}
+	if circuit == "open" {
+		return "circuit_open"
+	}
+	return "unknown"
 }
 
 func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request) {
@@ -476,43 +592,21 @@ func (h *Handler) handleRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if r.Method == http.MethodGet {
-		var pol struct {
-			AlgorithmVersion        int      `json:"algorithm_version"`
-			RetryPerCredential      int      `json:"retry_per_credential"`
-			TierFallbackMax         int      `json:"tier_fallback_max"`
-			CircuitOpenSeconds      int      `json:"circuit_open_seconds"`
-			CircuitFailureThreshold int      `json:"circuit_failure_threshold"`
-			CircuitMaxOpenSeconds   int      `json:"circuit_max_open_seconds"`
-			StickyTTLMilliseconds   int      `json:"sticky_ttl_milliseconds"`
-			FeaturedModels          []string `json:"featured_models"`
+		row := h.db.QueryRow(ctx, `
+			SELECT row_to_json(rp)::text
+			FROM routing_policy rp
+			WHERE tenant_id = 'default'
+			ORDER BY id LIMIT 1
+		`)
+		var raw string
+		if err := row.Scan(&raw); err != nil || raw == "" {
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
 		}
-		pol.AlgorithmVersion = 2
-		pol.RetryPerCredential = 1
-		pol.TierFallbackMax = 3
-		pol.CircuitOpenSeconds = 300
-		pol.CircuitFailureThreshold = 5
-		pol.CircuitMaxOpenSeconds = 1800
-		pol.StickyTTLMilliseconds = 1800
-
-		err := h.db.QueryRow(ctx, `
-			SELECT
-				COALESCE(algorithm_version, 2)::int,
-				COALESCE(retry_per_credential, 1)::int,
-				COALESCE(tier_fallback_max, 3)::int,
-				COALESCE(circuit_open_seconds, 300)::int,
-				COALESCE(circuit_failure_threshold, 5)::int,
-				COALESCE(circuit_max_open_seconds, 1800)::int,
-				COALESCE(sticky_ttl_seconds, 1800)::int * 1000,
-				COALESCE(featured_models, '[]'::jsonb)
-			FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1
-		`).Scan(
-			&pol.AlgorithmVersion, &pol.RetryPerCredential, &pol.TierFallbackMax,
-			&pol.CircuitOpenSeconds, &pol.CircuitFailureThreshold,
-			&pol.CircuitMaxOpenSeconds, &pol.StickyTTLMilliseconds,
-			&pol.FeaturedModels,
-		)
-		if err != nil {
-			pol.FeaturedModels = []string{}
+		var pol map[string]any
+		if err := json.Unmarshal([]byte(raw), &pol); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed")
+			return
 		}
 		writeJSON(w, http.StatusOK, pol)
 		return
@@ -800,30 +894,56 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	sinceMin := queryInt(r, "since_minutes", 60)
+	sinceMin := queryInt(r, "since_minutes", 30)
 	limit := queryInt(r, "limit", 100)
-	if limit > 1000 {
-		limit = 1000
+	if limit > 500 {
+		limit = 500
 	}
-	model := queryString(r, "model")
+	model := strings.TrimSpace(queryString(r, "model"))
+	canonical := strings.TrimSpace(queryString(r, "canonical"))
 
-	q := `
-		SELECT ts, request_id, model, chosen_credential_id, chosen_provider_id,
-		       tier, candidates_tried, latency_ms, success, error_class,
-		       prompt_tokens, completion_tokens, cost_usd, client_model,
-		       outbound_model, sticky_hit, client_profile, request_mode
-		FROM routing_decision_log
-		WHERE ts > now() - interval '` + strconv.Itoa(sinceMin) + ` minutes'
-	`
-	args := []any{}
-	i := 1
+	clauses := []string{"rdl.ts >= NOW() - make_interval(mins => $1)"}
+	args := []any{sinceMin}
+	argIdx := 2
+
 	if model != "" {
-		q += ` AND (model = $` + strconv.Itoa(i) + ` OR client_model = $` + strconv.Itoa(i) + `)`
-		args = append(args, model)
-		i++
+		clauses = append(clauses, fmt.Sprintf("(rdl.model ILIKE $%d OR rdl.client_model ILIKE $%d OR rdl.outbound_model ILIKE $%d)", argIdx, argIdx, argIdx))
+		args = append(args, "%"+model+"%")
+		argIdx++
 	}
-	q += ` ORDER BY ts DESC LIMIT $` + strconv.Itoa(i)
+	if canonical != "" {
+		clauses = append(clauses, fmt.Sprintf("rdl.canonical_model ILIKE $%d", argIdx))
+		args = append(args, "%"+canonical+"%")
+		argIdx++
+	}
+	if v := queryOptionalBool(r, "success"); v != nil {
+		clauses = append(clauses, fmt.Sprintf("rdl.success = $%d", argIdx))
+		args = append(args, *v)
+		argIdx++
+	}
+	where := strings.Join(clauses, " AND ")
 	args = append(args, limit)
+
+	q := fmt.Sprintf(`
+		SELECT rdl.ts, rdl.request_id::text AS request_id, rdl.idempotency_key,
+		       rdl.tenant_id, rdl.api_key_id, rdl.model,
+		       rdl.chosen_credential_id, rdl.chosen_provider_id, rdl.tier,
+		       rdl.candidates_tried, rdl.latency_ms, rdl.success, rdl.error_class,
+		       rdl.prompt_tokens, rdl.completion_tokens,
+		       COALESCE(rdl.cost_usd, 0)::float8 AS cost_usd,
+		       rdl.request_bytes, rdl.response_bytes,
+		       rdl.client_model, rdl.resolved_raw_model, rdl.outbound_model,
+		       rdl.sticky_hit, rdl.client_profile, rdl.request_mode,
+		       rdl.identity_hash, rdl.transform_rule_id, rdl.egress_protocol,
+		       rdl.failure_stage, rdl.failure_detail_code,
+		       rdl.resolution_path, rdl.canonical_model,
+		       COALESCE(rdl.resolution_raw_models, '[]'::jsonb) AS resolution_raw_models,
+		       COALESCE(rdl.decision_trace, '{}'::jsonb) AS decision_trace
+		FROM routing_decision_log rdl
+		WHERE %s
+		ORDER BY rdl.ts DESC
+		LIMIT $%d
+	`, where, argIdx)
 
 	rows, err := h.db.Query(ctx, q, args...)
 	if err != nil {
@@ -836,33 +956,74 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var ts time.Time
 		var reqID, mdl string
-		var credID, provID *int
-		var tier *int
-		var tried int
-		var latency int
+		var idempotencyKey, tenantID, clientModel, resolvedRawModel, outboundModel *string
+		var clientProfile, requestMode, identityHash, transformRuleID, egressProtocol *string
+		var failureStage, failureDetailCode, resolutionPath, canonicalModel, errorClass *string
+		var apiKeyID, credID, provID, tier, tried, latency, pTok, cTok, reqBytes, respBytes *int
 		var success bool
-		var errClass *string
-		var pTok, cTok *int
-		var cost *float64
-		var clientModel, outModel *string
+		var cost float64
 		var stickyHit *bool
-		var profile, reqMode *string
-		if err := rows.Scan(&ts, &reqID, &mdl, &credID, &provID, &tier, &tried,
-			&latency, &success, &errClass, &pTok, &cTok, &cost, &clientModel,
-			&outModel, &stickyHit, &profile, &reqMode); err != nil {
+		var resolutionRawModels, decisionTrace []byte
+		if err := rows.Scan(
+			&ts, &reqID, &idempotencyKey, &tenantID, &apiKeyID, &mdl,
+			&credID, &provID, &tier, &tried, &latency, &success, &errorClass,
+			&pTok, &cTok, &cost, &reqBytes, &respBytes,
+			&clientModel, &resolvedRawModel, &outboundModel,
+			&stickyHit, &clientProfile, &requestMode,
+			&identityHash, &transformRuleID, &egressProtocol,
+			&failureStage, &failureDetailCode, &resolutionPath, &canonicalModel,
+			&resolutionRawModels, &decisionTrace,
+		); err != nil {
 			continue
 		}
+		var rawModels any = []string{}
+		if len(resolutionRawModels) > 0 {
+			_ = json.Unmarshal(resolutionRawModels, &rawModels)
+		}
+		var trace any = map[string]any{}
+		if len(decisionTrace) > 0 {
+			_ = json.Unmarshal(decisionTrace, &trace)
+		}
 		decisions = append(decisions, map[string]any{
-			"ts": ts, "request_id": reqID, "model": mdl,
-			"chosen_credential_id": credID, "chosen_provider_id": provID,
-			"tier": tier, "candidates_tried": tried, "latency_ms": latency,
-			"success": success, "error_class": errClass,
-			"prompt_tokens": pTok, "completion_tokens": cTok, "cost_usd": cost,
-			"client_model": clientModel, "outbound_model": outModel,
-			"sticky_hit": stickyHit, "client_profile": profile, "request_mode": reqMode,
+			"ts":                     ts,
+			"request_id":             reqID,
+			"idempotency_key":        idempotencyKey,
+			"tenant_id":              tenantID,
+			"api_key_id":             apiKeyID,
+			"model":                  mdl,
+			"chosen_credential_id":   credID,
+			"chosen_provider_id":     provID,
+			"tier":                   tier,
+			"candidates_tried":       tried,
+			"latency_ms":             latency,
+			"success":                success,
+			"error_class":            errorClass,
+			"prompt_tokens":          pTok,
+			"completion_tokens":      cTok,
+			"cost_usd":               cost,
+			"request_bytes":          reqBytes,
+			"response_bytes":         respBytes,
+			"client_model":           clientModel,
+			"resolved_raw_model":     resolvedRawModel,
+			"outbound_model":         outboundModel,
+			"sticky_hit":             stickyHit,
+			"client_profile":         clientProfile,
+			"request_mode":           requestMode,
+			"identity_hash":          identityHash,
+			"transform_rule_id":      transformRuleID,
+			"egress_protocol":        egressProtocol,
+			"failure_stage":          failureStage,
+			"failure_detail_code":    failureDetailCode,
+			"resolution_path":        resolutionPath,
+			"canonical_model":        canonicalModel,
+			"resolution_raw_models":  rawModels,
+			"decision_trace":         trace,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"decisions": decisions})
+	if decisions == nil {
+		decisions = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, decisions)
 }
 
 func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
@@ -874,14 +1035,16 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT c.id, c.provider_id, p.display_name,
+		SELECT c.id, c.label, c.status,
 		       COALESCE(c.circuit_state, 'closed'),
 		       COALESCE(c.consecutive_failures, 0),
-		       c.cooling_until
+		       COALESCE(c.circuit_open_count_window, 0),
+		       c.cooling_until,
+		       p.display_name, p.catalog_code
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		WHERE p.tenant_id = 'default' AND c.status != 'disabled'
-		ORDER BY c.id
+		WHERE p.tenant_id = 'default'
+		ORDER BY (c.circuit_state = 'open') DESC, c.consecutive_failures DESC
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -890,19 +1053,23 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type credHealth struct {
-		CredentialID        int        `json:"credential_id"`
-		ProviderID          int        `json:"provider_id"`
-		ProviderName        string     `json:"provider_name"`
-		CircuitState        string     `json:"circuit_state"`
-		ConsecutiveFailures int        `json:"consecutive_failures"`
-		CoolingUntil        *time.Time `json:"cooling_until,omitempty"`
+		CredentialID            int        `json:"credential_id"`
+		Label                   string     `json:"label"`
+		Status                  string     `json:"status"`
+		CircuitState            string     `json:"circuit_state"`
+		ConsecutiveFailures     int        `json:"consecutive_failures"`
+		CircuitOpenCountWindow  int        `json:"circuit_open_count_window"`
+		CoolingUntil            *time.Time `json:"cooling_until"`
+		ProviderName            string     `json:"provider_name"`
+		CatalogCode             *string    `json:"catalog_code"`
 	}
 	creds := make([]credHealth, 0)
 	openCount := 0
 	for rows.Next() {
 		var c credHealth
-		if err := rows.Scan(&c.CredentialID, &c.ProviderID, &c.ProviderName,
-			&c.CircuitState, &c.ConsecutiveFailures, &c.CoolingUntil); err != nil {
+		if err := rows.Scan(&c.CredentialID, &c.Label, &c.Status,
+			&c.CircuitState, &c.ConsecutiveFailures, &c.CircuitOpenCountWindow,
+			&c.CoolingUntil, &c.ProviderName, &c.CatalogCode); err != nil {
 			continue
 		}
 		if c.CircuitState == "open" {
@@ -912,9 +1079,11 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"credentials": creds,
-		"total":       len(creds),
-		"open":        openCount,
-		"closed":      len(creds) - openCount,
+		"summary": map[string]any{
+			"total":  len(creds),
+			"open":   openCount,
+			"closed": len(creds) - openCount,
+		},
 	})
 }
 
