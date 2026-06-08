@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { getCatalog, type CatalogEntry } from '../api'
+import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+import { useFilterChips } from '../composables/useFilterChips'
 
 const entries  = ref<CatalogEntry[]>([])
 const loading  = ref(false)
@@ -19,12 +21,20 @@ const tierLabel: Record<string, string> = {
   tier4: 'Tier 4',
 }
 
+function clearTierFilter() {
+  if (tierFilter.value === 'all') return
+  tierFilter.value = 'all'
+}
+
+function clearSearchFilter() {
+  search.value = ''
+}
+
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const tier = tierFilter.value === 'all' ? undefined : tierFilter.value
-    entries.value = await getCatalog(tier)
+    entries.value = await getCatalog()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -32,7 +42,7 @@ async function load() {
   }
 }
 
-const filtered = computed(() => {
+const searchFiltered = computed(() => {
   const q = search.value.toLowerCase()
   if (!q) return entries.value
   return entries.value.filter(e =>
@@ -42,6 +52,49 @@ const filtered = computed(() => {
     e.category.toLowerCase().includes(q)
   )
 })
+
+const tierCounts = computed(() => {
+  const counts = new Map<string, number>()
+  for (const tier of tiers) counts.set(tier, 0)
+  counts.set('all', searchFiltered.value.length)
+  for (const entry of searchFiltered.value) {
+    counts.set(entry.tier, (counts.get(entry.tier) ?? 0) + 1)
+  }
+  return counts
+})
+
+const filtered = computed(() => {
+  if (tierFilter.value === 'all') return searchFiltered.value
+  return searchFiltered.value.filter((entry) => entry.tier === tierFilter.value)
+})
+
+const tierOptions = computed(() => tiers.map((tier) => ({
+  value: tier,
+  count: tierCounts.value.get(tier) ?? 0,
+  disabled: tier !== tierFilter.value && (tierCounts.value.get(tier) ?? 0) === 0,
+})))
+
+function selectTier(tier: string) {
+  if (tier === tierFilter.value) return
+  const option = tierOptions.value.find((item) => item.value === tier)
+  if (option?.disabled) return
+  tierFilter.value = tier
+}
+
+const activeFilterChips = useFilterChips(() => [
+  tierFilter.value !== 'all' ? {
+    key: `tier:${tierFilter.value}`,
+    label: `层级: ${tierLabel[tierFilter.value]}`,
+    onRemove: clearTierFilter,
+    className: tierBadge(tierFilter.value),
+  } : null,
+  search.value.trim() ? {
+    key: `search:${search.value.trim()}`,
+    label: `搜索: ${search.value.trim()}`,
+    onRemove: clearSearchFilter,
+    className: 'badge-gray',
+  } : null,
+])
 
 function tierBadge(tier: string) {
   const map: Record<string, string> = {
@@ -83,14 +136,18 @@ onMounted(load)
     <div class="filter-bar">
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button
-          v-for="t in tiers" :key="t"
+          v-for="option in tierOptions" :key="option.value"
           class="btn btn-sm"
-          :class="tierFilter === t ? 'btn-primary' : 'btn-ghost'"
-          @click="tierFilter = t; load()"
-        >{{ tierLabel[t] }}</button>
+          :class="tierFilter === option.value ? 'btn-primary' : 'btn-ghost'"
+          :disabled="option.disabled"
+          @click="selectTier(option.value)"
+          :title="option.disabled ? '当前搜索条件下无匹配提供商' : `${option.count} 个提供商`"
+        >{{ tierLabel[option.value] }} <span class="tier-count">{{ option.count }}</span></button>
       </div>
       <input v-model="search" placeholder="搜索提供商…" style="max-width:220px" />
     </div>
+
+    <ActiveFilterChips :chips="activeFilterChips" style="margin-bottom:20px" />
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div v-if="loading" class="empty">加载中…</div>
@@ -134,6 +191,10 @@ onMounted(load)
   gap: 12px;
   margin-bottom: 20px;
   flex-wrap: wrap;
+}
+.tier-count {
+  font-size: 11px;
+  opacity: .8;
 }
 .catalog-grid {
   display: grid;

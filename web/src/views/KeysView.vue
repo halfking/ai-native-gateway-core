@@ -62,6 +62,7 @@ const newApp = ref('')
 const newOwner = ref('')
 const newBudget = ref('')
 const newRpm = ref('')
+const newRemark = ref('')
 const newSaving = ref(false)
 const newErr = ref('')
 const createdKey = ref<KeyCreatedResponse | null>(null)
@@ -105,6 +106,7 @@ function openNew() {
   newOwner.value = ''
   newBudget.value = ''
   newRpm.value = ''
+  newRemark.value = ''
   newErr.value = ''
   createdKey.value = null
   showNew.value = true
@@ -120,6 +122,7 @@ async function submitNew() {
       owner_user: newOwner.value || undefined,
       budget_usd: newBudget.value ? Number(newBudget.value) : undefined,
       rate_limit_rpm: newRpm.value ? Number(newRpm.value) : undefined,
+      remark: newRemark.value || undefined,
     })
     createdKey.value = resp
     await load()
@@ -308,6 +311,7 @@ onBeforeUnmount(() => {
             <th>速率限制</th>
             <th>到期</th>
             <th>最后使用</th>
+            <th>备注</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -347,6 +351,9 @@ onBeforeUnmount(() => {
             <td>{{ k.rate_limit_rpm != null ? k.rate_limit_rpm + ' RPM' : '无限制' }}</td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.expires_at) }}</td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
+            <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
+              {{ k.remark || '—' }}
+            </td>
             <td>
               <div class="action-cell">
                 <button
@@ -440,6 +447,10 @@ onBeforeUnmount(() => {
           <div class="form-group">
             <label>每分钟请求数限制（可选）</label>
             <input v-model="newRpm" type="number" placeholder="留空不限制" />
+          </div>
+          <div class="form-group">
+            <label>备注（必填，说明创建原因）</label>
+            <input v-model="newRemark" placeholder="如: 测试使用、正式环境密钥" maxlength="512" />
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
             <button class="btn btn-ghost" @click="showNew = false">取消</button>

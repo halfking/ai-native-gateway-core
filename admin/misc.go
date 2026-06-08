@@ -2,13 +2,17 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const llmGatewayVersionFile = "VERSION"
+const llmGatewayDeploySeqFile = ".deploy_seq"
 
 func (h *Handler) handleTags(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
@@ -120,55 +124,122 @@ func (h *Handler) handleSystemTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
 
-	type taskStatus struct {
-		Name    string `json:"name"`
-		Alive   bool   `json:"alive"`
-		Status  string `json:"status,omitempty"`
-		Started string `json:"started_at,omitempty"`
+	var discStatus *string
+	var discStarted, discFinished, discHeartbeat *time.Time
+	var discTrigger, discError *string
+	var discSummary []byte
+	_ = h.db.QueryRow(ctx, `
+		SELECT status, started_at, finished_at, heartbeat_at, trigger, summary_json, error
+		FROM model_discovery_runs
+		WHERE tenant_id = 'default'
+		ORDER BY started_at DESC LIMIT 1
+	`).Scan(&discStatus, &discStarted, &discFinished, &discHeartbeat, &discTrigger, &discSummary, &discError)
+
+	isDiscoveryRunning := discStatus != nil && *discStatus == "running"
+	now := time.Now().UTC()
+
+	var discStatusVal any
+	if discStatus != nil {
+		discStatusVal = *discStatus
 	}
-	tasks := []taskStatus{
-		{Name: "discovery", Alive: h.discSvc != nil},
-		{Name: "cred_cycler", Alive: h.credCycler != nil},
-		{Name: "cred_recovery", Alive: h.credRecov != nil},
-		{Name: "env_cleaner", Alive: h.envCleaner != nil},
-		{Name: "sticky_clean", Alive: h.stickyClean != nil},
-		{Name: "tax_sync", Alive: h.taxSync != nil},
+	var discTriggerVal any
+	if discTrigger != nil {
+		discTriggerVal = *discTrigger
 	}
-	aliveCount := 0
-	for i := range tasks {
-		if tasks[i].Alive {
-			tasks[i].Status = "running"
-			aliveCount++
-		} else {
-			tasks[i].Status = "not_configured"
+	var discStartedVal any
+	if discStarted != nil {
+		discStartedVal = discStarted.UTC().Format(time.RFC3339)
+	}
+	var discFinishedVal any
+	if discFinished != nil {
+		discFinishedVal = discFinished.UTC().Format(time.RFC3339)
+	}
+	var discHeartbeatVal any
+	if discHeartbeat != nil {
+		discHeartbeatVal = discHeartbeat.UTC().Format(time.RFC3339)
+	}
+	var discErrorVal any
+	if discError != nil {
+		discErrorVal = *discError
+	}
+	var discSummaryVal any
+	if len(discSummary) > 0 {
+		var summary any
+		if json.Unmarshal(discSummary, &summary) == nil {
+			discSummaryVal = summary
 		}
 	}
-	discovery := map[string]any{"alive": false, "running": false}
-	probeLoop := map[string]any{"alive": false}
-	cycler := map[string]any{"alive": false}
-	recovery := map[string]any{"alive": false}
-	for _, t := range tasks {
-		switch t.Name {
-		case "discovery":
-			discovery["alive"] = t.Alive
-			discovery["running"] = t.Alive
-		case "cred_cycler":
-			cycler["alive"] = t.Alive
-		case "cred_recovery":
-			recovery["alive"] = t.Alive
-		case "env_cleaner":
-			probeLoop["alive"] = probeLoop["alive"].(bool) || t.Alive
-		}
+
+	var elapsedSeconds any
+	if discStarted != nil && isDiscoveryRunning {
+		elapsedSeconds = int(now.Sub(discStarted.UTC()).Seconds())
 	}
+	var sinceLastSeconds any
+	if discFinished != nil {
+		sinceLastSeconds = int(now.Sub(discFinished.UTC()).Seconds())
+	}
+
+	discovery := map[string]any{
+		"alive":              h.discSvc != nil,
+		"running":            isDiscoveryRunning,
+		"status":             discStatusVal,
+		"trigger":            discTriggerVal,
+		"started_at":         discStartedVal,
+		"finished_at":        discFinishedVal,
+		"heartbeat_at":       discHeartbeatVal,
+		"error":              discErrorVal,
+		"summary":            discSummaryVal,
+		"elapsed_seconds":    elapsedSeconds,
+		"since_last_seconds": sinceLastSeconds,
+	}
+
+	var lastProbeAt *time.Time
+	var checksLast10m int
+	_ = h.db.QueryRow(ctx, `
+		SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > now() - interval '10 minutes')
+		FROM credential_health_checks
+	`).Scan(&lastProbeAt, &checksLast10m)
+	var lastProbeVal any
+	if lastProbeAt != nil {
+		lastProbeVal = lastProbeAt.UTC().Format(time.RFC3339)
+	}
+	probeLoop := map[string]any{
+		"alive":           h.credCycler != nil,
+		"last_check_at":   lastProbeVal,
+		"checks_last_10m": checksLast10m,
+	}
+
+	var lastCyclerAt *time.Time
+	_ = h.db.QueryRow(ctx, `
+		SELECT chc.created_at
+		FROM credential_health_checks chc
+		JOIN model_discovery_runs mdr ON mdr.id = chc.run_id
+		WHERE mdr.trigger = 'scheduled'
+		ORDER BY chc.created_at DESC LIMIT 1
+	`).Scan(&lastCyclerAt)
+	var lastCyclerVal any
+	if lastCyclerAt != nil {
+		lastCyclerVal = lastCyclerAt.UTC().Format(time.RFC3339)
+	}
+	cycler := map[string]any{
+		"alive":         h.credCycler != nil,
+		"last_check_at": lastCyclerVal,
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tasks":       tasks,
-		"status":      "running",
-		"alive_count": aliveCount,
-		"discovery":   discovery,
-		"probe_loop":  probeLoop,
-		"cycler":      cycler,
-		"recovery":    recovery,
+		"discovery":     discovery,
+		"probe_loop":    probeLoop,
+		"cycler":        cycler,
+		"recovery":      map[string]any{"alive": h.credRecov != nil},
+		"telemetry":     map[string]any{"alive": true},
+		"load_balancer": map[string]any{},
 	})
 }
 
@@ -178,26 +249,114 @@ func (h *Handler) handleSystemVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version := os.Getenv("LLM_GATEWAY_VERSION")
-	if version == "" {
-		version = "0.2.0"
+	info := loadVersionInfo()
+	writeJSON(w, http.StatusOK, info)
+}
+
+func loadVersionInfo() map[string]any {
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION")); raw != "" {
+		return parseVersionString(raw)
+	}
+	for _, path := range versionFileCandidates() {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if content := strings.TrimSpace(string(raw)); content != "" {
+			return parseVersionString(content)
+		}
 	}
 
-	gitSHA := os.Getenv("GIT_SHA")
-	if gitSHA == "" {
-		gitSHA = "unknown"
+	sha := strings.TrimSpace(os.Getenv("GIT_SHA"))
+	if sha == "" {
+		sha = "unknown"
 	}
-
-	buildTime := os.Getenv("BUILD_TIME")
-	if buildTime == "" {
-		buildTime = time.Now().Format("20060102")
+	now := time.Now().UTC()
+	return map[string]any{
+		"version":    "0.1.0",
+		"git_sha":    sha,
+		"build_time": now.Format("20060102"),
+		"build_date": now.Format("2006-01-02"),
+		"build_seq":  loadDeploySeq(),
 	}
+}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+func versionFileCandidates() []string {
+	candidates := []string{
+		llmGatewayVersionFile,
+		"services/llm-gateway-go/" + llmGatewayVersionFile,
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates,
+			wd+"/"+llmGatewayVersionFile,
+			wd+"/services/llm-gateway-go/"+llmGatewayVersionFile,
+		)
+	}
+	return candidates
+}
+
+func loadDeploySeq() int {
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_BUILD_SEQ")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	for _, path := range deploySeqFileCandidates() {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func deploySeqFileCandidates() []string {
+	candidates := []string{
+		llmGatewayDeploySeqFile,
+		"services/llm-gateway-go/" + llmGatewayDeploySeqFile,
+	}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates,
+			wd+"/"+llmGatewayDeploySeqFile,
+			wd+"/services/llm-gateway-go/"+llmGatewayDeploySeqFile,
+		)
+	}
+	return candidates
+}
+
+func parseVersionString(raw string) map[string]any {
+	parts := strings.SplitN(raw, "-", 3)
+	version := parts[0]
+	gitSHA := ""
+	buildDate := ""
+	if len(parts) > 1 {
+		gitSHA = parts[1]
+	}
+	if len(parts) > 2 {
+		buildDate = parts[2]
+	}
+	if envSHA := strings.TrimSpace(os.Getenv("GIT_SHA")); envSHA != "" {
+		gitSHA = envSHA
+	}
+	if buildDate == "" {
+		if bt := strings.TrimSpace(os.Getenv("BUILD_TIME")); bt != "" {
+			buildDate = bt
+		} else {
+			buildDate = time.Now().UTC().Format("20060102")
+		}
+	}
+	displayDate := buildDate
+	if len(buildDate) == 8 && buildDate[0] >= '0' && buildDate[0] <= '9' {
+		displayDate = buildDate[0:4] + "-" + buildDate[4:6] + "-" + buildDate[6:8]
+	}
+	return map[string]any{
 		"version":    version,
 		"git_sha":    gitSHA,
-		"build_time": buildTime,
-		"go_version": runtime.Version(),
-		"os":         runtime.GOOS + "/" + runtime.GOARCH,
-	})
+		"build_time": buildDate,
+		"build_date": displayDate,
+		"build_seq":  loadDeploySeq(),
+	}
 }

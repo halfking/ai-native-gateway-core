@@ -182,7 +182,7 @@ onMounted(load)
       <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
         综合得分公式：值越小，候选越优先。<strong>免费模型（价格=0）得分固定为 0，最高优先。</strong>
       </p>
-      <div style="background:var(--surface-alt,#f4f4f5);padding:12px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px">
+      <div style="background:var(--bg-subtle,#161b22);border:1px solid var(--border,#30363d);padding:12px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px;color:var(--text,#e6edf3)">
         {{ formulaPreview }}
       </div>
       <div class="weights-grid">

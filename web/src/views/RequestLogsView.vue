@@ -1,24 +1,25 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { getRequestLogs, getRequestLogDetail, getKeys, type RequestLogRow, type RequestLogDetail, type ApiKey } from '../api'
+import { ref, onMounted } from 'vue'
+import { getRequestLogs, getRequestLogDetail, getKeys, listModels, type RequestLogRow, type RequestLogDetail, type ApiKey, type ModelListResponse, type RequestLogsResponse } from '../api'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
+const models = ref<ModelListResponse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const hours = ref(24)
-const limit = ref(50)
+const successFilter = ref<'' | 'success' | 'failure'>('')
+
 const page = ref(1)
+const pageSize = ref(50)
 const total = ref(0)
 
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const detailTab = ref<'request' | 'response'>('request')
-
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / limit.value)))
 
 async function loadKeys() {
   try {
@@ -28,27 +29,41 @@ async function loadKeys() {
   }
 }
 
+async function loadModels() {
+  try {
+    models.value = await listModels({ status: 'active' })
+  } catch {
+    models.value = null
+  }
+}
+
+function setCanonicalFilter(canonicalId: number | null) {
+  canonicalFilter.value = canonicalId
+  page.value = 1
+  load()
+}
+
+const canonicalFilter = ref<number | null>(null)
+
 async function load() {
   loading.value = true
   error.value = null
   try {
     const end = new Date()
     const start = new Date(end.getTime() - hours.value * 3600 * 1000)
-    const result = await getRequestLogs({
+    const successParam = successFilter.value === '' ? undefined : successFilter.value === 'success'
+    const resp: RequestLogsResponse = await getRequestLogs({
       api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
       from: start.toISOString(),
       to: end.toISOString(),
       q: keyword.value.trim() || undefined,
-      limit: limit.value,
+      success: successParam,
+      canonical_id: canonicalFilter.value ?? undefined,
       page: page.value,
+      page_size: pageSize.value,
     })
-    if (result && typeof result === 'object' && 'items' in result) {
-      rows.value = result.items
-      total.value = result.total || 0
-    } else {
-      rows.value = Array.isArray(result) ? result : []
-      total.value = rows.value.length
-    }
+    rows.value = resp.items
+    total.value = resp.count
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -57,11 +72,11 @@ async function load() {
 }
 
 function changePage(delta: number) {
+  const max = Math.max(1, Math.ceil(total.value / pageSize.value))
   const next = page.value + delta
-  if (next >= 1 && next <= totalPages.value) {
-    page.value = next
-    load()
-  }
+  if (next < 1 || next > max) return
+  page.value = next
+  load()
 }
 
 function resetPageAndLoad() {
@@ -75,6 +90,12 @@ function fmtTs(ts: string) {
 
 function token(v: number | null | undefined) {
   return v == null ? '—' : v.toLocaleString()
+}
+
+function costDisplay(v: number | string | null | undefined, currency: string | null | undefined) {
+  if (v == null) return currency ? `待定价(${currency})` : '待定价'
+  const amount = Number(v).toFixed(6)
+  return currency ? `${amount} ${currency}` : amount
 }
 
 function shortHash(v: string | null | undefined) {
@@ -137,7 +158,7 @@ function roleColor(role: string): string {
 }
 
 onMounted(async () => {
-  await loadKeys()
+  await Promise.all([loadKeys(), loadModels()])
   await load()
 })
 </script>
@@ -166,28 +187,44 @@ onMounted(async () => {
           <option :value="168">7 天</option>
         </select>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px">
-        <label style="font-size:13px;white-space:nowrap">关键词</label>
-        <input v-model="keyword" type="text" placeholder="模型名 / 消息片段" style="flex:1" @keyup.enter="load" />
-      </div>
-      <button class="btn btn-primary btn-sm" @click="load">查询</button>
-    </div>
-
-    <!-- Pagination -->
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:12px">
-      <div style="display:flex;gap:12px;align-items:center">
-        <span style="color:var(--muted)">共 {{ total }} 条</span>
-        <span v-if="total > 0">· 第 {{ page }} / {{ totalPages }} 页</span>
-        <select v-model.number="limit" @change="resetPageAndLoad" style="padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
-          <option :value="20">20 条/页</option>
-          <option :value="50">50 条/页</option>
-          <option :value="100">100 条/页</option>
-          <option :value="200">200 条/页</option>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:13px;white-space:nowrap">状态</label>
+        <select v-model="successFilter" style="min-width:110px">
+          <option value="">全部</option>
+          <option value="success">成功</option>
+          <option value="failure">失败</option>
         </select>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="changePage(1)">下一页</button>
+      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px">
+        <label style="font-size:13px;white-space:nowrap">关键词</label>
+        <input v-model="keyword" type="text" placeholder="模型名 / 消息片段" style="flex:1" @keyup.enter="resetPageAndLoad" />
+      </div>
+      <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
+    </div>
+
+    <div v-if="models && models.items.length" class="card" style="margin-bottom:16px;padding:12px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:13px;color:var(--muted)">按模型过滤</span>
+        <span style="color:var(--muted);font-size:11px">点击切换</span>
+      </div>
+      <div class="model-chip-row">
+        <button
+          type="button"
+          class="model-chip"
+          :class="{ active: canonicalFilter === null }"
+          @click="setCanonicalFilter(null)"
+        >全部</button>
+        <button
+          v-for="m in models.items"
+          :key="m.id"
+          type="button"
+          class="model-chip"
+          :class="{ active: canonicalFilter === m.id }"
+          :title="`${m.canonical_name} · ${m.family || '未分类'}`"
+          @click="setCanonicalFilter(m.id)"
+        >
+          <span>{{ m.display_name || m.canonical_name }}</span>
+        </button>
       </div>
     </div>
 
@@ -252,13 +289,30 @@ onMounted(async () => {
             <td>{{ token(r.completion_tokens) }}</td>
             <td>{{ token(r.cache_read_tokens) }}</td>
             <td>{{ token(r.cache_write_tokens) }}</td>
-            <td>{{ r.cost_usd != null ? Number(r.cost_usd).toFixed(6) : '—' }}</td>
+            <td>{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
             <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }">{{ r.success ? '成功' : (r.error_kind ?? '失败') }}</td>
             <td><button class="btn btn-sm" @click.stop="showDetail(r.request_id)">查看</button></td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="!loading" style="display:flex;gap:12px;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px">
+        <span>共 {{ total }} 条</span>
+        <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+        <select v-model.number="pageSize" @change="resetPageAndLoad" style="padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+          <option :value="50">50 / 页</option>
+          <option :value="100">100 / 页</option>
+          <option :value="200">200 / 页</option>
+          <option :value="500">500 / 页</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
+      </div>
     </div>
 
     <!-- Detail Modal -->
@@ -338,6 +392,31 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.model-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.model-chip {
+  border: 1px solid var(--border, #30363d);
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.model-chip:hover {
+  border-color: var(--accent, #6366f1);
+}
+.model-chip.active {
+  background: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+  color: #fff;
+}
 .modal-overlay {
   position: fixed;
   top: 0;

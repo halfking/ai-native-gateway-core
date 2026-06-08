@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -72,7 +73,19 @@ func (h *Handler) listCatalog(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `SELECT `+catalogColumns+` FROM provider_catalog ORDER BY code`)
+	sql := `SELECT ` + catalogColumns + ` FROM provider_catalog WHERE 1=1`
+	args := []any{}
+	argIdx := 1
+	if tier := queryString(r, "tier"); tier != "" {
+		sql += fmt.Sprintf(` AND tier = $%d`, argIdx)
+		args = append(args, tier)
+		argIdx++
+	}
+	if !queryBool(r, "include_hidden") {
+		sql += ` AND hidden = FALSE`
+	}
+	sql += ` ORDER BY tier, code`
+	rows, err := h.db.Query(ctx, sql, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
