@@ -158,6 +158,7 @@ func main() {
 		)
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
+		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		if dbConn != nil && dbConn.Enabled() {
 			exec.State = credentialstate.NewWriter(dbConn.Pool())
 			exec.DB = dbConn
