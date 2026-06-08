@@ -47,6 +47,12 @@ type Config struct {
 	FirstByteTimeout    int `yaml:"first_byte_timeout_seconds" env:"LLM_GATEWAY_FIRST_BYTE_TIMEOUT"`
 	KeepaliveInterval   int `yaml:"keepalive_interval_seconds" env:"LLM_GATEWAY_KEEPALIVE_INTERVAL"`
 
+	// Stream failover
+	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
+
+	// Pool grace period (seconds)
+	PoolGracePeriod int `yaml:"pool_grace_period_seconds" env:"LLM_GATEWAY_POOL_GRACE_PERIOD"`
+
 	// Identity
 	IdentitySalt string `yaml:"identity_salt" env:"LLM_GATEWAY_IDENTITY_SALT"`
 
@@ -97,6 +103,8 @@ func Load() *Config {
 		FirstByteTimeout:        30,
 		KeepaliveInterval:       15,
 		SessionTTLHours:         168,
+		StreamRetryThreshold:    5, // Default: allow stream failover if < 5 chunks sent
+		PoolGracePeriod:         180, // Default: 3 minutes grace period before marking pool as dead
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {

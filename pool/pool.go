@@ -32,6 +32,7 @@ const (
 	poolMaxPools        = 256
 	poolEvictInterval   = 30 * time.Second
 	poolMaxActiveConns  = 32
+	defaultGracePeriod  = 3 * time.Minute // Grace period before marking as dead
 )
 
 var ErrPoolClosed = errors.New("pool closed")
@@ -41,14 +42,17 @@ type PoolState int32
 
 const (
 	PoolActive   PoolState = 0
-	PoolDegraded PoolState = 1
-	PoolDead     PoolState = 2
+	PoolDraining PoolState = 1 // Grace period before marking as dead
+	PoolDegraded PoolState = 2
+	PoolDead     PoolState = 3
 )
 
 func (s PoolState) String() string {
 	switch s {
 	case PoolActive:
 		return "active"
+	case PoolDraining:
+		return "draining"
 	case PoolDegraded:
 		return "degraded"
 	case PoolDead:
@@ -80,15 +84,17 @@ type Pool struct {
 	client    *http.Client
 	probeURL  string
 
-	state        atomic.Int32
-	failCount    atomic.Int32
-	successCount atomic.Int32
-	lastUsed     atomic.Int64
-	mu           sync.Mutex
-	stopCh       chan struct{}
-	closed       atomic.Bool
-	wg           sync.WaitGroup
-	activeConns  chan struct{}
+	state         atomic.Int32
+	failCount     atomic.Int32
+	successCount  atomic.Int32
+	lastUsed      atomic.Int64
+	drainingSince atomic.Int64 // Unix timestamp when pool entered draining state
+	mu            sync.Mutex
+	stopCh        chan struct{}
+	closed        atomic.Bool
+	wg            sync.WaitGroup
+	activeConns   chan struct{}
+	gracePeriod   time.Duration // Grace period before marking as dead
 }
 
 // NewPool creates a new connection pool.
@@ -106,12 +112,13 @@ func NewPool(key PoolKey, probeURL string) *Pool {
 	}
 
 	p := &Pool{
-		key:       key,
-		transport: transport,
-		client:    &http.Client{Transport: transport, Timeout: 120 * time.Second},
-		probeURL:  probeURL,
-		stopCh:    make(chan struct{}),
+		key:         key,
+		transport:   transport,
+		client:      &http.Client{Transport: transport, Timeout: 120 * time.Second},
+		probeURL:    probeURL,
+		stopCh:      make(chan struct{}),
 		activeConns: make(chan struct{}, poolMaxActiveConns),
+		gracePeriod: defaultGracePeriod,
 	}
 	p.state.Store(int32(PoolActive))
 	return p
@@ -125,6 +132,10 @@ func (p *Pool) State() PoolState { return PoolState(p.state.Load()) }
 
 func (p *Pool) Acquire(ctx context.Context) error {
 	if p.closed.Load() {
+		return ErrPoolClosed
+	}
+	// Don't allow new connections from dead pools
+	if p.State() == PoolDead {
 		return ErrPoolClosed
 	}
 	select {
@@ -187,12 +198,14 @@ func (p *Pool) RecordFailure() {
 
 	currentState := p.State()
 
-	// Transition to dead if consecutive failures exceed dead threshold
-	if count >= deadThreshold && currentState != PoolDead {
-		p.state.Store(int32(PoolDead))
-		slog.Warn("pool marked dead",
+	// Transition to draining if consecutive failures exceed dead threshold
+	if count >= deadThreshold && currentState != PoolDead && currentState != PoolDraining {
+		p.state.Store(int32(PoolDraining))
+		p.drainingSince.Store(time.Now().UnixMilli())
+		slog.Warn("pool marked draining (grace period started)",
 			"key", p.key.String(),
 			"failures", count,
+			"grace_period", p.gracePeriod,
 		)
 		return
 	}
@@ -214,13 +227,15 @@ func (p *Pool) RecordSuccess() {
 
 	currentState := p.State()
 
-	// Recover from degraded to active after enough consecutive successes
-	if currentState == PoolDegraded && n >= successThreshold {
+	// Recover from degraded or draining to active after enough consecutive successes
+	if (currentState == PoolDegraded || currentState == PoolDraining) && n >= successThreshold {
 		p.state.Store(int32(PoolActive))
 		p.successCount.Store(0)
+		p.drainingSince.Store(0)
 		slog.Info("pool recovered to active",
 			"key", p.key.String(),
 			"successes", n,
+			"from_state", currentState.String(),
 		)
 	}
 }
@@ -249,9 +264,12 @@ func (p *Pool) healthLoop() {
 		select {
 		case <-ticker.C:
 			p.probe()
-			// Speed up probing when degraded: check every 10s instead of 30s
+			// Check if draining grace period has expired
+			p.checkDrainingGracePeriod()
+			// Speed up probing when degraded or draining: check every 10s instead of 30s
 			newInterval := healthCheckInterval
-			if p.State() == PoolDegraded {
+			state := p.State()
+			if state == PoolDegraded || state == PoolDraining {
 				newInterval = 10 * time.Second
 			}
 			if newInterval != interval {
@@ -285,6 +303,29 @@ func (p *Pool) probe() {
 	}
 	resp.Body.Close()
 	p.RecordSuccess()
+}
+
+// checkDrainingGracePeriod checks if the draining grace period has expired
+// and transitions the pool to dead if it has.
+func (p *Pool) checkDrainingGracePeriod() {
+	if p.State() != PoolDraining {
+		return
+	}
+
+	drainingSince := p.drainingSince.Load()
+	if drainingSince == 0 {
+		return
+	}
+
+	elapsed := time.Since(time.UnixMilli(drainingSince))
+	if elapsed >= p.gracePeriod {
+		p.state.Store(int32(PoolDead))
+		slog.Warn("pool grace period expired, marked dead",
+			"key", p.key.String(),
+			"draining_duration", elapsed,
+			"grace_period", p.gracePeriod,
+		)
+	}
 }
 
 // ---------------------------------------------------------------------------

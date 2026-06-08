@@ -33,6 +33,8 @@ type NormalizerFunc func(chunk []byte, isStream bool) []byte
 type StreamOutcome = struct {
 	Interrupted bool
 	Reason      string
+	Resumable   bool // Whether the stream can be resumed with a different credential
+	ChunkCount  int  // Number of chunks sent before interruption
 }
 
 type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
@@ -52,8 +54,9 @@ type Executor struct {
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
 
-	StreamTimeout   time.Duration
-	UpstreamTimeout time.Duration
+	StreamTimeout        time.Duration
+	UpstreamTimeout      time.Duration
+	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
 }
 
 func NewExecutor(
@@ -83,6 +86,7 @@ func NewExecutor(
 		Auditor:         auditor,
 		StreamTimeout:   900 * time.Second,
 		UpstreamTimeout: 120 * time.Second,
+		StreamRetryThreshold: 5, // Default: allow stream failover if < 5 chunks sent
 	}
 }
 
@@ -187,17 +191,33 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if sie, ok := execErr.(*streamInterruptedError); ok {
 			kind := errorsx.KindStreamTimeout
 			e.recordStickyFailure(params, cand.CredentialID, kind)
-			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
-			if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-				e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+			
+			if sie.resumable {
+				// Stream is resumable (few chunks sent) - try next candidate
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+				}
+				lastErr = execErr
+				slog.Warn("candidate stream interrupted (resumable), trying next",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"reason", sie.reason,
+				)
+				continue
+			} else {
+				// Stream is not resumable (too many chunks sent) - return error
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+				}
+				slog.Warn("candidate stream interrupted (non-resumable), returning error",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"reason", sie.reason,
+				)
+				return nil, execErr
 			}
-			lastErr = execErr
-			slog.Warn("candidate stream interrupted, trying next",
-				"credential_id", cand.CredentialID,
-				"provider_id", cand.ProviderID,
-				"reason", sie.reason,
-			)
-			continue
 		}
 
 		lastErr = execErr
@@ -427,17 +447,31 @@ func (e *Executor) tryCandidate(
 					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
 				}
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					slog.Warn("executor: stream interrupted, recording failure",
+					// Check if stream is resumable (chunk count below threshold)
+					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
+					
+					slog.Warn("executor: stream interrupted",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"reason", streamOutcome.Reason,
+						"chunk_count", streamOutcome.ChunkCount,
+						"resumable", isResumable,
 					)
+					
+					if isResumable {
+						// Mark credential as cooling for stream timeout
+						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout)
+						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout) {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindStreamTimeout, fmt.Errorf("stream %s", streamOutcome.Reason))
+						}
+					}
+					
 					return &ExecuteResult{
 						Response:    resp,
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
-					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID}
+					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable}
 				}
 				return &ExecuteResult{
 					Response:    resp,
@@ -628,6 +662,7 @@ func (e *modelNotFoundError) Error() string {
 type streamInterruptedError struct {
 	reason       string
 	credentialID int
+	resumable    bool // Whether the stream can be resumed with a different credential
 }
 
 func (e *streamInterruptedError) Error() string {
