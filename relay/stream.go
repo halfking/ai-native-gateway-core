@@ -22,6 +22,8 @@ const (
 type StreamOutcome struct {
 	Interrupted bool
 	Reason      string
+	Resumable   bool // Whether the stream can be resumed with a different credential
+	ChunkCount  int  // Number of chunks sent before interruption
 }
 
 func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
@@ -59,6 +61,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 	reader := bufio.NewReaderSize(resp.Body, streamBufSize)
 	discoveredUpstream := ""
 	lastSend := time.Now()
+	chunkCount := 0 // Track number of chunks sent
 
 	if clientModel != "" && outboundModel != "" && clientModel != outboundModel {
 		slog.Debug("upstream model diff",
@@ -78,6 +81,8 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		safeFlush(flusher)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
+		outcome.Resumable = true // First-byte timeout is resumable (no chunks sent)
+		outcome.ChunkCount = 0
 		return outcome
 	}
 
@@ -106,6 +111,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		safeWriteSSE(w, firstLine)
 		safeFlush(flusher)
 		lastSend = time.Now()
+		chunkCount++ // Count first chunk
 	}
 
 	// ── Main streaming loop with keep-alive ─────────────────────────
@@ -130,6 +136,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				if capture != nil {
 					capture.ObservePayload("[DONE]", "", true)
 				}
+				outcome.ChunkCount = chunkCount // H-4: record chunks sent on normal EOF
 			case streamReadCanceled:
 				slog.Debug("stream cancelled by client")
 				if capture != nil {
@@ -137,6 +144,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.ChunkCount = chunkCount
 			case streamReadTimeout:
 				slog.Warn("stream read timeout, sending error chunk")
 				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
@@ -146,6 +154,8 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Resumable = true // Timeout is resumable
+				outcome.ChunkCount = chunkCount
 			default:
 				slog.Warn("stream read error", "error", readResult.err)
 				if capture != nil {
@@ -153,6 +163,8 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Resumable = true // Read error is resumable
+				outcome.ChunkCount = chunkCount
 			}
 			return outcome
 		}
@@ -186,6 +198,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		safeWriteSSE(w, line)
 		safeFlush(flusher)
 		lastSend = time.Now()
+		chunkCount++ // Track chunks sent
 	}
 }
 

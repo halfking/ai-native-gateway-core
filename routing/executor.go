@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/disguise"
@@ -33,6 +34,8 @@ type NormalizerFunc func(chunk []byte, isStream bool) []byte
 type StreamOutcome = struct {
 	Interrupted bool
 	Reason      string
+	Resumable   bool // Whether the stream can be resumed with a different credential
+	ChunkCount  int  // Number of chunks sent before interruption
 }
 
 type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
@@ -51,9 +54,11 @@ type Executor struct {
 	State         *credentialstate.Writer
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
+	FpSlots          *credentialfpslot.Manager
 
-	StreamTimeout   time.Duration
-	UpstreamTimeout time.Duration
+	StreamTimeout        time.Duration
+	UpstreamTimeout      time.Duration
+	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
 }
 
 func NewExecutor(
@@ -83,6 +88,7 @@ func NewExecutor(
 		Auditor:         auditor,
 		StreamTimeout:   900 * time.Second,
 		UpstreamTimeout: 120 * time.Second,
+		StreamRetryThreshold: 5, // Default: allow stream failover if < 5 chunks sent
 	}
 }
 
@@ -138,6 +144,28 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		return nil, &ExecuteError{Tried: 0, Exhausted: true}
 	}
 
+	holder := params.StickyKey
+	if holder == "" {
+		holder = params.R.Header.Get("X-Request-Id")
+	}
+	if e.FpSlots != nil && e.FpSlots.Enabled() {
+		filtered := make([]provider.Candidate, 0, len(candidates))
+		for _, cand := range candidates {
+			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder) {
+				filtered = append(filtered, cand)
+			} else {
+				slog.Info("cred_fp_slot prefilter skip",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+			}
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
+		}
+	}
+
 	tTotal := time.Now()
 	retryPerCred := params.Policy.RetryPerCredential
 	var lastErr error
@@ -146,12 +174,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	for _, cand := range candidates {
 		tried++
 
+		var fpLease *credentialfpslot.Lease
+		if e.FpSlots != nil && e.FpSlots.Enabled() {
+			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder, "default")
+			if !ok {
+				slog.Info("cred_fp_slot saturated",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+				)
+				lastErr = fmt.Errorf("cred_fp_slot saturated for credential %d", cand.CredentialID)
+				continue
+			}
+			fpLease = lease
+		}
+
 		if !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
 			slog.Debug("executor: circuit open, skipping candidate",
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 			)
 			lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
+			if fpLease != nil {
+				e.FpSlots.Release(params.R.Context(), fpLease)
+			}
 			continue
 		}
 
@@ -166,11 +211,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"credential_id", cand.CredentialID,
 			)
 			lastErr = acquireErr
+			if fpLease != nil {
+				e.FpSlots.Release(params.R.Context(), fpLease)
+			}
 			continue
 		}
 
-		result, execErr := e.tryCandidate(params, cand, retryPerCred, tTotal)
+		result, execErr := e.tryCandidate(params, cand, retryPerCred, tTotal, fpLease)
 		release()
+		if fpLease != nil {
+			e.FpSlots.Release(params.R.Context(), fpLease)
+		}
 
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
@@ -187,17 +238,33 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if sie, ok := execErr.(*streamInterruptedError); ok {
 			kind := errorsx.KindStreamTimeout
 			e.recordStickyFailure(params, cand.CredentialID, kind)
-			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
-			if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-				e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+			
+			if sie.resumable {
+				// Stream is resumable (few chunks sent) - try next candidate
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+				}
+				lastErr = execErr
+				slog.Warn("candidate stream interrupted (resumable), trying next",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"reason", sie.reason,
+				)
+				continue
+			} else {
+				// Stream is not resumable (too many chunks sent) - return error
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+				}
+				slog.Warn("candidate stream interrupted (non-resumable), returning error",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"reason", sie.reason,
+				)
+				return nil, execErr
 			}
-			lastErr = execErr
-			slog.Warn("candidate stream interrupted, trying next",
-				"credential_id", cand.CredentialID,
-				"provider_id", cand.ProviderID,
-				"reason", sie.reason,
-			)
-			continue
 		}
 
 		lastErr = execErr
@@ -217,6 +284,7 @@ func (e *Executor) tryCandidate(
 	cand provider.Candidate,
 	maxRetries int,
 	tTotal time.Time,
+	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
@@ -294,9 +362,13 @@ func (e *Executor) tryCandidate(
 				req.Header.Set("Accept", "text/event-stream")
 			}
 			req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
-			req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
-			req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
-			req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+			if fpLease != nil && fpLease.Egress != nil {
+				credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
+			} else {
+				req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
+				req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
+				req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+			}
 
 			if params.Transform != nil {
 				for _, h := range params.Transform.StripHeaders {
@@ -332,8 +404,8 @@ func (e *Executor) tryCandidate(
 				httpClient = http.DefaultClient
 			} else if err := reqPool.Acquire(params.R.Context()); err != nil {
 				return nil, err
-			}
-			if reqPool != nil {
+			} else {
+				// C-2: only defer Release if we actually Acquired
 				defer reqPool.Release()
 			}
 
@@ -374,10 +446,15 @@ func (e *Executor) tryCandidate(
 				return nil, &retryableError{err: uErr}
 			}
 
-			if resp != nil && resp.StatusCode >= 400 {
-				defer resp.Body.Close()
-				body := make([]byte, 4096)
-				n, _ := resp.Body.Read(body)
+		if resp != nil && resp.StatusCode >= 400 {
+			defer resp.Body.Close()
+			// Read up to 4 KiB for error classification, then drain the remainder
+			// so that the underlying TCP connection can be reused by the HTTP
+			// transport (Go will discard the connection if the body is not fully
+			// consumed before Close).
+			body := make([]byte, 4096)
+			n, _ := resp.Body.Read(body)
+			_, _ = io.Copy(io.Discard, resp.Body) // drain remainder
 				errKind := errorsx.ClassifyError(nil, resp)
 
 				if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
@@ -427,17 +504,31 @@ func (e *Executor) tryCandidate(
 					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
 				}
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					slog.Warn("executor: stream interrupted, recording failure",
+					// Check if stream is resumable (chunk count below threshold)
+					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
+					
+					slog.Warn("executor: stream interrupted",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"reason", streamOutcome.Reason,
+						"chunk_count", streamOutcome.ChunkCount,
+						"resumable", isResumable,
 					)
+					
+					if isResumable {
+						// Mark credential as cooling for stream timeout
+						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout)
+						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout) {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindStreamTimeout, fmt.Errorf("stream %s", streamOutcome.Reason))
+						}
+					}
+					
 					return &ExecuteResult{
 						Response:    resp,
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
-					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID}
+					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable}
 				}
 				return &ExecuteResult{
 					Response:    resp,
@@ -590,7 +681,7 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
 		return
 	}
-	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Second
+	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Millisecond // M-6: was * time.Second — field is in milliseconds
 	if stickyTTL < time.Minute {
 		stickyTTL = time.Minute
 	}
@@ -628,6 +719,7 @@ func (e *modelNotFoundError) Error() string {
 type streamInterruptedError struct {
 	reason       string
 	credentialID int
+	resumable    bool // Whether the stream can be resumed with a different credential
 }
 
 func (e *streamInterruptedError) Error() string {

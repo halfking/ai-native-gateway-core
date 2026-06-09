@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 )
 
 func extractID(path string) (int, bool) {
@@ -886,6 +888,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		Notes                   string     `json:"notes"`
 		KeyMasked               *string    `json:"key_masked"`
 		KeyMaskError            *string    `json:"key_mask_error"`
+		FpSlotLimit             *int       `json:"fp_slot_limit"`
+		FpSlotsUsed             *int       `json:"fp_slots_used"`
+		FpSlotsFree             *int       `json:"fp_slots_free"`
+		EffectiveFpSlotLimit    *int       `json:"effective_fp_slot_limit"`
 		CreatedAt               *time.Time `json:"created_at"`
 		UpdatedAt               *time.Time `json:"updated_at"`
 	}
@@ -948,6 +954,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 				masked := maskAPIKey(plaintext)
 				c.KeyMasked = &masked
 			}
+		}
+		if h.fpSlots != nil {
+			c.FpSlotLimit, c.FpSlotsUsed, c.FpSlotsFree = h.fpSlots.Stats(ctx, c.ID, c.ConcurrencyLimit)
+			c.EffectiveFpSlotLimit = credentialfpslot.EffectiveLimit(c.ConcurrencyLimit, h.fpSlotsDefaultLimit())
 		}
 		creds = append(creds, c)
 	}

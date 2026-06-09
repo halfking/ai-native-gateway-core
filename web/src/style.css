@@ -195,3 +195,28 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
 }
 .background-tasks-banner strong { color: var(--warning); }
 .background-tasks-hint { color: var(--warning); font-size: 12px; }
+
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tabs .tab-btn {
+  padding: 8px 16px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+.tabs .tab-btn:hover {
+  color: var(--text);
+}
+.tabs .tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
