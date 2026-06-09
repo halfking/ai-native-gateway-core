@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,9 +24,13 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	defer cancel()
 
 	detailsJSON, _ := json.Marshal(details)
-	actor := r.Header.Get("X-Actor")
+	// Do NOT use X-Actor header as the authoritative identity — any client that
+	// can reach the admin API can forge it. Use the verified remote address as
+	// a tamper-evident fallback. If a proper auth layer (JWT, mTLS) is added
+	// later, extract the principal from that context instead.
+	actor := r.RemoteAddr
 	if actor == "" {
-		actor = "admin"
+		actor = "unknown"
 	}
 
 	h.db.Exec(ctx, `
@@ -651,46 +654,30 @@ func (h *Handler) handleRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		fields := map[string]any{}
-		if v, ok := patch["algorithm_version"]; ok {
-			fields["algorithm_version"] = v
-		}
-		if v, ok := patch["retry_per_credential"]; ok {
-			fields["retry_per_credential"] = v
-		}
-		if v, ok := patch["tier_fallback_max"]; ok {
-			fields["tier_fallback_max"] = v
-		}
-		if v, ok := patch["circuit_open_seconds"]; ok {
-			fields["circuit_open_seconds"] = v
-		}
-		if v, ok := patch["circuit_failure_threshold"]; ok {
-			fields["circuit_failure_threshold"] = v
-		}
-		if v, ok := patch["circuit_max_open_seconds"]; ok {
-			fields["circuit_max_open_seconds"] = v
-		}
-		if v, ok := patch["actor"]; ok {
-			fields["actor"] = v
-		}
-
-		if len(fields) > 0 {
-			setClauses := ""
-			args := []any{}
-			i := 1
-			for k, v := range fields {
-				if setClauses != "" {
-					setClauses += ", "
-				}
-				setClauses += k + " = $" + strconv.Itoa(i)
-				args = append(args, v)
-				i++
-			}
-			q := "UPDATE routing_policy SET " + setClauses + " WHERE tenant_id = 'default'"
-			if _, err := h.db.Exec(ctx, q, args...); err != nil {
-				writeError(w, http.StatusInternalServerError, "update failed")
-				return
-			}
+		// Use a static parameterised UPDATE with COALESCE so that only
+		// explicitly-listed columns can ever be touched — no dynamic SQL
+		// construction that could become an injection vector if fields were
+		// ever expanded carelessly. "actor" is intentionally excluded: it is
+		// an audit identity field, not a configuration value.
+		if _, err := h.db.Exec(ctx, `
+			UPDATE routing_policy SET
+				algorithm_version         = COALESCE($1, algorithm_version),
+				retry_per_credential      = COALESCE($2, retry_per_credential),
+				tier_fallback_max         = COALESCE($3, tier_fallback_max),
+				circuit_open_seconds      = COALESCE($4, circuit_open_seconds),
+				circuit_failure_threshold = COALESCE($5, circuit_failure_threshold),
+				circuit_max_open_seconds  = COALESCE($6, circuit_max_open_seconds)
+			WHERE tenant_id = 'default'
+		`,
+			patch["algorithm_version"],
+			patch["retry_per_credential"],
+			patch["tier_fallback_max"],
+			patch["circuit_open_seconds"],
+			patch["circuit_failure_threshold"],
+			patch["circuit_max_open_seconds"],
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed")
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return

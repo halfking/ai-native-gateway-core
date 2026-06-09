@@ -160,10 +160,14 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
 			}
-			slog.Warn("key verification RPC failed, proceeding without auth", "error", verifyErr)
-		} else {
-			keyInfo = ki
+			// Auth RPC failed — fail-closed. Silently downgrading to anonymous would
+			// bypass rate limiting, budget checks, and user isolation.
+			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
+			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
+			return
 		}
+		keyInfo = ki
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
@@ -221,7 +225,13 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 				return
 			}
-			go h.sessionGetter.Touch(context.Background(), sessionID)
+			go func() {
+				// Use a bounded context so a slow DB/cache call cannot leak this
+				// goroutine indefinitely.
+				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer touchCancel()
+				h.sessionGetter.Touch(touchCtx, sessionID)
+			}()
 			ctx = sessions.SessionFromContextWith(ctx, sessionInfo)
 		}
 	}
