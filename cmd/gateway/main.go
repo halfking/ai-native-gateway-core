@@ -232,6 +232,17 @@ func main() {
 			fernetKey = nil
 		}
 		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+		// Initialize AES-256-GCM keyring so that credential decryption works
+		// for v1-envelope ciphertexts. Without this, decryptCredStr falls
+		// through to the legacy Fernet path and fails on AES-GCM envelopes.
+		if cfg.CredentialEncryptionKey != "" {
+			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
+				slog.Warn("admin API: AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
+			} else {
+				adminHandler.SetKeyring(kr)
+				slog.Info("admin API: AES-GCM keyring initialized")
+			}
+		}
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
