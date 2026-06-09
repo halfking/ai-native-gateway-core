@@ -1,8 +1,0 @@
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 1001 llmgw
-WORKDIR /opt/llm-gateway-go
-COPY llm-gateway-go-linux /usr/local/bin/llm-gateway-go
-COPY web/dist ./web/dist
-USER llmgw
-EXPOSE 8781
-ENTRYPOINT ["/usr/local/bin/llm-gateway-go"]
