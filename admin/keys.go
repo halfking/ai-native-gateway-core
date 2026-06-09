@@ -157,6 +157,17 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.NotFound(w, r)
 		}
+	case "limits":
+		if r.Method == http.MethodPatch {
+			id, err := strconv.Atoi(idStr)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid id")
+				return
+			}
+			h.updateKeyLimits(w, r, id)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
 		if subPath == "" {
 			id, err := strconv.Atoi(idStr)
@@ -853,5 +864,72 @@ func (h *Handler) patchApplicationProfile(w http.ResponseWriter, r *http.Request
 		"id":                     id,
 		"code":                   retCode,
 		"default_client_profile": retProfile,
+	})
+}
+
+func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, keyID int) {
+	var req struct {
+		RateLimitRPM       *int `json:"rate_limit_rpm"`
+		RateLimitConcurrent *int `json:"rate_limit_concurrent"`
+		RateLimitTPM       *int `json:"rate_limit_tpm"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Build dynamic UPDATE query
+	setClauses := []string{}
+	args := []any{}
+	argIdx := 1
+
+	if req.RateLimitRPM != nil {
+		setClauses = append(setClauses, fmt.Sprintf("rate_limit_rpm = $%d", argIdx))
+		args = append(args, *req.RateLimitRPM)
+		argIdx++
+	}
+	if req.RateLimitConcurrent != nil {
+		setClauses = append(setClauses, fmt.Sprintf("rate_limit_concurrent = $%d", argIdx))
+		args = append(args, *req.RateLimitConcurrent)
+		argIdx++
+	}
+	if req.RateLimitTPM != nil {
+		setClauses = append(setClauses, fmt.Sprintf("rate_limit_tpm = $%d", argIdx))
+		args = append(args, *req.RateLimitTPM)
+		argIdx++
+	}
+
+	if len(setClauses) == 0 {
+		writeError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+
+	setClauses = append(setClauses, "updated_at = now()")
+	args = append(args, keyID)
+
+	query := fmt.Sprintf(`
+		UPDATE api_keys
+		SET %s
+		WHERE id = $%d
+		RETURNING id, rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm
+	`, strings.Join(setClauses, ", "), argIdx)
+
+	var id int
+	var rpm, conc, tpm *int
+	err := h.db.QueryRow(ctx, query, args...).Scan(&id, &rpm, &conc, &tpm)
+	if err != nil {
+		slog.Error("updateKeyLimits failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update key limits")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"rate_limit_rpm":        rpm,
+		"rate_limit_concurrent": conc,
+		"rate_limit_tpm":        tpm,
 	})
 }
