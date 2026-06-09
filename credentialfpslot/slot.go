@@ -148,13 +148,40 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	}
 	if m.client != nil {
 		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
-		cur, err := m.client.Get(ctx, key).Result()
-		if err == nil && cur == lease.Holder {
-			_ = m.client.Del(ctx, key).Err()
+		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
+		released, err := releaseSlotScript.Run(ctx, m.client,
+			[]string{key, pinKey},
+			lease.Holder,
+		).Bool()
+		if err != nil {
+			slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
+		}
+		if !released {
+			slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
 		}
 	}
 	m.releaseMemory(lease.CredentialID, lease.SlotIndex, lease.Holder)
 }
+
+var releaseSlotScript = redis.NewScript(`
+	local slotKey = KEYS[1]
+	local pinKey = KEYS[2]
+	local holder = ARGV[1]
+	
+	-- Check if slot is owned by this holder
+	local current = redis.call('GET', slotKey)
+	if current ~= holder then
+		return false
+	end
+	
+	-- Delete slot and pin
+	redis.call('DEL', slotKey)
+	if pinKey ~= "" then
+		redis.call('DEL', pinKey)
+	end
+	
+	return true
+`)
 
 // Stats returns occupancy snapshot for admin dashboards.
 func (m *Manager) Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int) {
@@ -229,9 +256,17 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 			}
 		}
 	}
+
 	for slot := 0; slot < limit; slot++ {
-		if m.tryRedisLock(ctx, credentialID, slot, holder) {
-			_ = m.client.SetEx(ctx, pinKey, fmt.Sprintf("%d", slot), time.Duration(sessionPinTTLSeconds)*time.Second).Err()
+		acquired, err := acquireSlotScript.Run(ctx, m.client,
+			[]string{slotRedisKey(credentialID, slot), pinKey},
+			holder, slotTTLSeconds, sessionPinTTLSeconds, slot,
+		).Bool()
+		if err != nil {
+			slog.Debug("cred_fp_slot redis acquire failed", "cred", credentialID, "slot", slot, "error", err)
+			continue
+		}
+		if acquired {
 			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
 			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 		}
@@ -240,13 +275,38 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 }
 
 func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool {
-	ok, err := m.client.SetNX(ctx, slotRedisKey(credentialID, slot), holder, time.Duration(slotTTLSeconds)*time.Second).Result()
+	acquired, err := acquireSlotScript.Run(ctx, m.client,
+		[]string{slotRedisKey(credentialID, slot), ""},
+		holder, slotTTLSeconds, 0, slot,
+	).Bool()
 	if err != nil {
 		slog.Debug("cred_fp_slot redis lock failed", "cred", credentialID, "error", err)
 		return false
 	}
-	return ok
+	return acquired
 }
+
+var acquireSlotScript = redis.NewScript(`
+	local slotKey = KEYS[1]
+	local pinKey = KEYS[2]
+	local holder = ARGV[1]
+	local slotTTL = tonumber(ARGV[2])
+	local pinTTL = tonumber(ARGV[3])
+	local slotIndex = tonumber(ARGV[4])
+	
+	-- Try to acquire slot lock
+	local acquired = redis.call('SET', slotKey, holder, 'NX', 'EX', slotTTL)
+	if not acquired then
+		return false
+	end
+	
+	-- Set pin if pinKey provided
+	if pinKey ~= "" and pinTTL > 0 then
+		redis.call('SET', pinKey, tostring(slotIndex), 'EX', pinTTL)
+	end
+	
+	return true
+`)
 
 func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string) (*Lease, bool) {
 	m.mu.Lock()
