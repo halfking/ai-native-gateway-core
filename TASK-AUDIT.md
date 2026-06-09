@@ -49,14 +49,23 @@
 - [ ] 确认 `api_keys` 表是否包含 `rate_limit_rpm`, `rate_limit_concurrent`, `rate_limit_tpm` 字段
 
 ### 4. 部署与验证测试
-- [ ] 编译 Go 版本确认无错误
-- [ ] 部署到测试环境
+- [ ] ~~编译 Go 版本~~ - 网络问题，无法下载依赖
+- [ ] 部署到测试环境 - Docker build 失败（网络问题）
 - [ ] 使用 browser-use 逐页面验证功能
 - [ ] 对比两个项目的页面展示
 
+**部署障碍**:
+- Docker build 需要下载 go modules，网络超时
+- SSH 连接服务器不稳定，超时
+
+**替代方案**:
+- 代码已推送远程仓库 (commit: 8c375616)
+- 服务器可从 codeup.aliyun.com 拉取最新代码
+- 需要手动在服务器上执行: `cd /root/kaixuan/llm-gateway-go && git pull && docker build`
+
 ### 5. 代码提交与推送
-- [ ] Git 提交代码变更
-- [ ] 推送到远程仓库
+- [x] Git 提交代码变更
+- [x] 推送到远程仓库 (已推送)
 
 ## 发现的其他差异
 
