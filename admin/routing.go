@@ -132,7 +132,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = ANY($1)
+		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
 		  AND mo.available IS TRUE
 		  AND c.status IN ('active','cooling','degraded')
 		  AND p.enabled IS TRUE
@@ -1127,7 +1127,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = lower($1)
+		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND mo.available IS TRUE
 		ORDER BY mo.manual_priority NULLS LAST
 	`
