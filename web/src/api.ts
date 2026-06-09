@@ -218,6 +218,10 @@ export interface ProviderCredential {
   api_models_error?: string | null
   trust_level: string
   concurrency_limit: number | null
+  effective_fp_slot_limit?: number | null
+  fp_slot_limit?: number | null
+  fp_slots_used?: number | null
+  fp_slots_free?: number | null
   effective_at: string | null
   expires_at: string | null
   tags: string[]
