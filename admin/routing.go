@@ -1210,10 +1210,16 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var ciphertext []byte
 	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
 
-	apiKey, decErr := h.decryptCredStr(string(ciphertext))
-	if decErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
-		return
+	// Decrypt credential key. Some free-pool credentials have NULL ciphertext
+	// (no API key required); in that case proceed with an empty key.
+	var apiKey string
+	if len(ciphertext) > 0 {
+		var decErr error
+		apiKey, decErr = h.decryptCredStr(string(ciphertext))
+		if decErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
+			return
+		}
 	}
 
 	var provName string
