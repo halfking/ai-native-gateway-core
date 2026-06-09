@@ -205,13 +205,34 @@ func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *i
 		return 0, nil
 	}
 	if m.client != nil {
-		used := 0
-		for slot := 0; slot < *eff; slot++ {
-			if err := m.client.Get(ctx, slotRedisKey(credentialID, slot)).Err(); err == nil {
-				used++
+		result, err := availableCountScript.Run(ctx, m.client,
+			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+			*eff,
+		).Int()
+		if err != nil {
+			slog.Debug("cred_fp_slot available_count script failed", "cred", credentialID, "error", err)
+			// fallback: count via pipeline
+			pipe := m.client.Pipeline()
+			cmds := make([]*redis.StringCmd, *eff)
+			for slot := 0; slot < *eff; slot++ {
+				cmds[slot] = pipe.Get(ctx, slotRedisKey(credentialID, slot))
 			}
+			if _, pipeErr := pipe.Exec(ctx); pipeErr != nil && pipeErr != redis.Nil {
+				return *eff, pipeErr
+			}
+			used := 0
+			for _, cmd := range cmds {
+				if cmd.Err() == nil {
+					used++
+				}
+			}
+			free := *eff - used
+			if free < 0 {
+				free = 0
+			}
+			return free, nil
 		}
-		free := *eff - used
+		free := result
 		if free < 0 {
 			free = 0
 		}
@@ -234,6 +255,22 @@ func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *i
 	return free, nil
 }
 
+// availableCountScript counts free slots atomically via Lua.
+// KEYS[1] = prefix "llmgw:cred_fp_slot:{credentialID}"
+// ARGV[1] = limit
+var availableCountScript = redis.NewScript(`
+	local prefix = KEYS[1]
+	local limit = tonumber(ARGV[1])
+	local used = 0
+	for slot = 0, limit - 1 do
+		local key = prefix .. ':' .. tostring(slot)
+		if redis.call('EXISTS', key) == 1 then
+			used = used + 1
+		end
+	end
+	return limit - used
+`)
+
 func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) bool {
 	if m.client != nil {
 		_, err := m.client.Get(ctx, pinRedisKey(holder, credentialID)).Result()
@@ -250,7 +287,14 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	if pinned, err := m.client.Get(ctx, pinKey).Result(); err == nil {
 		slot, parseErr := strconv.Atoi(strings.TrimSpace(pinned))
 		if parseErr == nil && slot >= 0 && slot < limit {
-			if m.tryRedisLock(ctx, credentialID, slot, holder) {
+			// Re-use pinned slot: acquire via Lua (will also refresh the pin TTL)
+			acquired, err := acquireSlotScript.Run(ctx, m.client,
+				[]string{slotRedisKey(credentialID, slot), pinKey},
+				holder, slotTTLSeconds, sessionPinTTLSeconds, slot,
+			).Bool()
+			if err != nil {
+				slog.Debug("cred_fp_slot redis pin-reuse failed", "cred", credentialID, "slot", slot, "error", err)
+			} else if acquired {
 				eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
 				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 			}
