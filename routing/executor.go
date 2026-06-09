@@ -446,10 +446,15 @@ func (e *Executor) tryCandidate(
 				return nil, &retryableError{err: uErr}
 			}
 
-			if resp != nil && resp.StatusCode >= 400 {
-				defer resp.Body.Close()
-				body := make([]byte, 4096)
-				n, _ := resp.Body.Read(body)
+		if resp != nil && resp.StatusCode >= 400 {
+			defer resp.Body.Close()
+			// Read up to 4 KiB for error classification, then drain the remainder
+			// so that the underlying TCP connection can be reused by the HTTP
+			// transport (Go will discard the connection if the body is not fully
+			// consumed before Close).
+			body := make([]byte, 4096)
+			n, _ := resp.Body.Read(body)
+			_, _ = io.Copy(io.Discard, resp.Body) // drain remainder
 				errKind := errorsx.ClassifyError(nil, resp)
 
 				if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
