@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/discovery"
 )
 
 type routingHandler struct {
@@ -50,6 +52,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
+	// Normalize model name to match stored model_offers (remove date suffixes like -20250514)
+	normalizedModel := discovery.NormalizeModelName(model)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -95,7 +99,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BlockReason          string   `json:"block_reason,omitempty"`
 	}
 
-	rawModels := []string{model}
+	rawModels := []string{normalizedModel}
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			p.id AS provider_id,
@@ -1332,6 +1336,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
+	// Normalize model name to match stored model_offers (remove date suffixes like -20250514)
+	normalizedModel := discovery.NormalizeModelName(model)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1363,8 +1370,8 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		  AND mo.available IS TRUE
 		ORDER BY mo.manual_priority NULLS LAST
 	`
-	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model)
-	rows, err := h.db.Query(ctx, sqlQuery, model)
+	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model, "normalizedModel", normalizedModel)
+	rows, err := h.db.Query(ctx, sqlQuery, normalizedModel)
 	if err != nil {
 		slog.Error("score-details query failed", "error", err, "model", model)
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
