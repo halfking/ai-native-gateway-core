@@ -136,6 +136,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 				if capture != nil {
 					capture.ObservePayload("[DONE]", "", true)
 				}
+				outcome.ChunkCount = chunkCount // H-4: record chunks sent on normal EOF
 			case streamReadCanceled:
 				slog.Debug("stream cancelled by client")
 				if capture != nil {

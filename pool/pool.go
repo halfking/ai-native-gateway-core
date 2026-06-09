@@ -294,11 +294,14 @@ func (p *Pool) probe() {
 		return
 	}
 	resp, err := p.client.Do(req)
-	if err != nil || resp.StatusCode >= 500 {
+	if err != nil {
+		// L-5: resp may be nil when err != nil; check err first to avoid nil-deref on resp.StatusCode
 		p.RecordFailure()
-		if resp != nil {
-			resp.Body.Close()
-		}
+		return
+	}
+	if resp.StatusCode >= 500 {
+		p.RecordFailure()
+		resp.Body.Close()
 		return
 	}
 	resp.Body.Close()
