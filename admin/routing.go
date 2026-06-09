@@ -1186,11 +1186,10 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		SELECT c.id, c.provider_id, p.base_url, COALESCE(p.protocol,'openai'),
 		       c.secret_ciphertext, COALESCE(mo.raw_model_name, $1), COALESCE(mo.outbound_model_name, $1)
 		FROM model_offers mo
-		JOIN model_aliases ma ON lower(ma.raw_name) = lower($1)
-		JOIN models_canonical mc ON mc.id = ma.canonical_id AND mo.canonical_id = mc.id
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
 		WHERE mo.available = TRUE
+		  AND lower(mo.raw_model_name) = lower($1)
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
 		ORDER BY mo.priority NULLS LAST LIMIT 1
