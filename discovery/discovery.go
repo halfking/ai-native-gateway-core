@@ -174,7 +174,7 @@ type credential struct {
 	BaseURL      string
 	Protocol     string
 	CatalogCode  string
-	SecretCipher string
+	SecretCipher []byte // bytea in DB, must be []byte for pgx scan
 }
 
 func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
@@ -222,7 +222,7 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) (i
 	}
 
 	// Fetch models from provider
-	models, err := s.fetchModels(ctx, modelsURL, cred.SecretCipher)
+	models, err := s.fetchModels(ctx, modelsURL, string(cred.SecretCipher))
 	if err != nil {
 		return 0, err
 	}
