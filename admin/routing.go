@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1209,7 +1210,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var ciphertext []byte
 	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
 
-	_, decErr := h.decryptCredStr(string(ciphertext))
+	apiKey, decErr := h.decryptCredStr(string(ciphertext))
 	if decErr != nil {
 		writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
 		return
@@ -1218,8 +1219,44 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var provName string
 	h.db.QueryRow(ctx, `SELECT COALESCE(display_name,'') FROM providers WHERE id = $1`, provID).Scan(&provName)
 
+	// ── Actually probe the provider with a lightweight request ───────────
+	// Send a minimal completion request to verify the key works and the
+	// provider is reachable. Use a short-lived context so the probe doesn't
+	// hang on slow/dead endpoints.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer probeCancel()
+
+	probeBody, _ := json.Marshal(map[string]any{
+		"model":      outModel,
+		"messages":   req.Messages,
+		"max_tokens": req.MaxTokens,
+		"stream":     false,
+	})
+	probeURL := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+	probeReq, _ := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, strings.NewReader(string(probeBody)))
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	probeResp, probeErr := http.DefaultClient.Do(probeReq)
+	var probeOK bool
+	var probeStatus int
+	var probeMsg string
+	if probeErr != nil {
+		probeMsg = fmt.Sprintf("probe request failed: %v", probeErr)
+	} else {
+		defer probeResp.Body.Close()
+		probeStatus = probeResp.StatusCode
+		probeOK = probeStatus >= 200 && probeStatus < 300
+		if !probeOK {
+			respBody, _ := io.ReadAll(io.LimitReader(probeResp.Body, 2048))
+			probeMsg = fmt.Sprintf("probe returned HTTP %d: %s", probeStatus, string(respBody))
+		} else {
+			probeMsg = "probe succeeded"
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":        true,
+		"success":        probeOK,
 		"provider_id":    provID,
 		"provider_name":  provName,
 		"credential_id":  credID,
@@ -1227,7 +1264,8 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		"raw_model":      rawModel,
 		"outbound_model": outModel,
 		"client_profile": clientProfile,
-		"message":        "probe resolved provider (actual call not implemented)",
+		"probe_status":   probeStatus,
+		"message":        probeMsg,
 	})
 }
 
