@@ -41,6 +41,14 @@ type Event struct {
 	StreamTTFBMs   int       `json:"stream_ttfb_ms,omitempty"`
 	StreamDone     bool      `json:"stream_done,omitempty"`
 	StreamInterrupted bool   `json:"stream_interrupted,omitempty"`
+	// Link layer event fields
+	EventType      string    `json:"event_type,omitempty"`      // Event type (e.g., "credential_switch", "pool_state_change")
+	FromCredential int       `json:"from_credential,omitempty"` // Previous credential ID
+	ToCredential   int       `json:"to_credential,omitempty"`   // New credential ID
+	Reason         string    `json:"reason,omitempty"`          // Reason for state change
+	ChunkCount     int       `json:"chunk_count,omitempty"`     // Chunks sent before interruption
+	FromState      string    `json:"from_state,omitempty"`      // Previous state
+	ToState        string    `json:"to_state,omitempty"`        // New state
 }
 
 type StreamCapture struct {
@@ -160,6 +168,86 @@ func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	}
 }
 
+// Link layer event types
+const (
+	EventTypeCredentialSwitch = "credential_switch" // Credential switched during stream
+	EventTypePoolStateChange  = "pool_state_change" // Pool state changed
+	EventTypeFailover         = "failover"          // Failover to next candidate
+	EventTypeGracePeriod      = "grace_period"      // Grace period event
+	EventTypeTunnelStatus     = "tunnel_status"     // NPS tunnel status
+)
+
+// EmitCredentialSwitch emits a credential switch event.
+func EmitCredentialSwitch(sink Sink, requestID string, fromCred, toCred int, reason string, chunkCount int) {
+	if sink == nil {
+		return
+	}
+	event := Event{
+		RequestID:    requestID,
+		Timestamp:    time.Now(),
+		EventType:    EventTypeCredentialSwitch,
+		FromCredential: fromCred,
+		ToCredential: toCred,
+		Reason:       reason,
+		ChunkCount:   chunkCount,
+	}
+	sink.Emit(context.Background(), event)
+	slog.Info("audit: credential switch",
+		"event", EventTypeCredentialSwitch,
+		"request_id", requestID,
+		"from_credential", fromCred,
+		"to_credential", toCred,
+		"reason", reason,
+		"chunk_count", chunkCount,
+	)
+}
+
+// EmitPoolStateChange emits a pool state change event.
+func EmitPoolStateChange(sink Sink, poolKey string, fromState, toState string, failCount int) {
+	if sink == nil {
+		return
+	}
+	event := Event{
+		RequestID: fmt.Sprintf("pool-%d", time.Now().UnixMilli()),
+		Timestamp: time.Now(),
+		EventType: EventTypePoolStateChange,
+		FromState: fromState,
+		ToState:   toState,
+		Reason:    fmt.Sprintf("failures=%d", failCount),
+	}
+	sink.Emit(context.Background(), event)
+	slog.Info("audit: pool state change",
+		"event", EventTypePoolStateChange,
+		"pool_key", poolKey,
+		"from_state", fromState,
+		"to_state", toState,
+		"fail_count", failCount,
+	)
+}
+
+// EmitFailover emits a failover event.
+func EmitFailover(sink Sink, requestID string, fromCred, toCred int, reason string) {
+	if sink == nil {
+		return
+	}
+	event := Event{
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventTypeFailover,
+		FromCredential: fromCred,
+		ToCredential:   toCred,
+		Reason:         reason,
+	}
+	sink.Emit(context.Background(), event)
+	slog.Info("audit: failover",
+		"event", EventTypeFailover,
+		"request_id", requestID,
+		"from_credential", fromCred,
+		"to_credential", toCred,
+		"reason", reason,
+	)
+}
+
 func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -265,6 +353,39 @@ type Sink interface {
 type LogSink struct{}
 
 func (s *LogSink) Emit(_ context.Context, event Event) {
+	// Handle link layer events separately
+	if event.EventType != "" {
+		attrs := []any{
+			"audit", "link",
+			"event_type", event.EventType,
+			"timestamp", event.Timestamp,
+		}
+		if event.RequestID != "" {
+			attrs = append(attrs, "request_id", event.RequestID)
+		}
+		if event.FromCredential > 0 {
+			attrs = append(attrs, "from_credential", event.FromCredential)
+		}
+		if event.ToCredential > 0 {
+			attrs = append(attrs, "to_credential", event.ToCredential)
+		}
+		if event.Reason != "" {
+			attrs = append(attrs, "reason", event.Reason)
+		}
+		if event.ChunkCount > 0 {
+			attrs = append(attrs, "chunk_count", event.ChunkCount)
+		}
+		if event.FromState != "" {
+			attrs = append(attrs, "from_state", event.FromState)
+		}
+		if event.ToState != "" {
+			attrs = append(attrs, "to_state", event.ToState)
+		}
+		slog.Info("audit: link event", attrs...)
+		return
+	}
+
+	// Handle request events
 	attrs := []any{
 		"audit", "request",
 		"request_id", event.RequestID,

@@ -207,6 +207,7 @@ onMounted(load)
                   <span>余额 {{ quotaRemaining(cred) }}</span>
                 </div>
                 <div class="raw-name">{{ cred.raw_model_name }}</div>
+                <div v-if="cred.standardized_name" class="raw-name" style="color:var(--accent)">{{ cred.standardized_name }}</div>
               </article>
             </div>
           </div>

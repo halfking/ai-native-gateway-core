@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
@@ -42,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
+	"github.com/redis/go-redis/v9"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -114,14 +117,20 @@ func main() {
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
-	// ── Session Manager ────────────────────────────────────────────────
+	// ── Redis (sessions + credential fp slots) ─────────────────────────
 	var sessionMgr *sessions.Manager
+	var fpSlotRedis *redis.Client
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		if err := redisClient.Ping(context.Background()); err == nil {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
 			sessionMgr = sessions.NewManager(redisClient, ttl)
 			chatHandler.SetSessionGetter(sessionMgr)
+			fpSlotRedis = redis.NewClient(&redis.Options{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+			})
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -129,6 +138,11 @@ func main() {
 	} else {
 		slog.Warn("session manager disabled (no LLM_GATEWAY_REDIS_ADDR)")
 	}
+
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{
+		DefaultLimit: cfg.DefaultCredentialConcurrency,
+		Enabled:      cfg.EnableCredentialFpSlots,
+	}, fpSlotRedis)
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
@@ -157,11 +171,13 @@ func main() {
 		)
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
+		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		if dbConn != nil && dbConn.Enabled() {
 			exec.State = credentialstate.NewWriter(dbConn.Pool())
 			exec.DB = dbConn
 			exec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
+		exec.FpSlots = fpSlots
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled")
 	} else {
@@ -192,12 +208,17 @@ func main() {
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────
+	bgDataPlaneOnly := strings.EqualFold(cfg.BGMode, "data-plane")
 	var discoverySvc *discovery.Service
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
-		discoverySvc = discovery.NewService(dbConn.Pool(), 1*time.Hour)
-		discoverySvc.Start(context.Background())
-		slog.Info("model discovery service enabled")
+		if !bgDataPlaneOnly {
+			discoverySvc = discovery.NewService(dbConn.Pool(), 1*time.Hour)
+			discoverySvc.Start(context.Background())
+			slog.Info("model discovery service enabled")
+		} else {
+			slog.Info("model discovery skipped (bg_mode=data-plane)")
+		}
 	}
 
 	// ── Admin API ───────────────────────────────────────────────────────
@@ -211,6 +232,17 @@ func main() {
 			fernetKey = nil
 		}
 		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+		// Initialize AES-256-GCM keyring so that credential decryption works
+		// for v1-envelope ciphertexts. Without this, decryptCredStr falls
+		// through to the legacy Fernet path and fails on AES-GCM envelopes.
+		if cfg.CredentialEncryptionKey != "" {
+			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
+				slog.Warn("admin API: AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
+			} else {
+				adminHandler.SetKeyring(kr)
+				slog.Info("admin API: AES-GCM keyring initialized")
+			}
+		}
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
@@ -225,21 +257,28 @@ func main() {
 	if dbConn != nil && dbConn.Enabled() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
-		if fernetKey != nil {
+		if !bgDataPlaneOnly && fernetKey != nil {
 			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
 			credCycler.Start(context.Background())
 			slog.Info("credential cycler started")
+		} else if bgDataPlaneOnly {
+			slog.Info("credential cycler skipped (bg_mode=data-plane)")
 		}
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 		envelopeCleaner.Start(context.Background())
-		taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
-		taxonomySync.Start(context.Background())
-		slog.Info("taxonomy sync started")
+		if !bgDataPlaneOnly {
+			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
+			taxonomySync.Start(context.Background())
+			slog.Info("taxonomy sync started")
+		} else {
+			slog.Info("taxonomy sync skipped (bg_mode=data-plane)")
+		}
 
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
+			adminHandler.SetFpSlots(fpSlots)
 		}
 	}
 
