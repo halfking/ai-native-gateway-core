@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/discovery"
 )
 
 type routingHandler struct {
@@ -50,6 +52,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
+	// Normalize model name to match stored model_offers (remove date suffixes like -20250514)
+	normalizedModel := discovery.NormalizeModelName(model)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -95,7 +99,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BlockReason          string   `json:"block_reason,omitempty"`
 	}
 
-	rawModels := []string{model}
+	rawModels := []string{normalizedModel}
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			p.id AS provider_id,
@@ -137,7 +141,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = ANY($1)
+		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
 		  AND mo.available IS TRUE
 		  AND c.status IN ('active','cooling','degraded')
 		  AND p.enabled IS TRUE
@@ -1209,8 +1213,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		  AND lower(mo.raw_model_name) = lower($1)
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
-		ORDER BY COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
-		LIMIT 1
+		ORDER BY mo.manual_priority NULLS LAST LIMIT 1
 	`, req.Model)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
@@ -1353,6 +1356,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
+	// Normalize model name to match stored model_offers (remove date suffixes like -20250514)
+	normalizedModel := discovery.NormalizeModelName(model)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -1380,12 +1386,12 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = lower($1)
+		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND mo.available IS TRUE
 		ORDER BY mo.manual_priority NULLS LAST
 	`
-	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model)
-	rows, err := h.db.Query(ctx, sqlQuery, model)
+	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model, "normalizedModel", normalizedModel)
+	rows, err := h.db.Query(ctx, sqlQuery, normalizedModel)
 	if err != nil {
 		slog.Error("score-details query failed", "error", err, "model", model)
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
