@@ -237,9 +237,13 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		result.Status = "healthy"
 		c.updateHealth(ctx, credID, "healthy", "")
 	} else {
-		result.Status = "unreachable"
+		status := "unreachable"
+		if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") {
+			status = "auth_failed"
+		}
+		result.Status = status
 		result.Error = errMsg
-		c.updateHealth(ctx, credID, result.Status, errMsg)
+		c.updateHealth(ctx, credID, status, errMsg)
 	}
 	return result
 }
