@@ -637,7 +637,7 @@ export function getKey(id: number) {
 }
 
 export function getKeyDetail(id: number) {
-  return req<ApiKey>('GET', `/api/keys/detail/${id}`)
+  return req<ApiKey>('GET', `/api/keys/${id}`)
 }
 
 export function createKey(data: { application_code: string; owner_user?: string; budget_usd?: number; rate_limit_rpm?: number }) {
