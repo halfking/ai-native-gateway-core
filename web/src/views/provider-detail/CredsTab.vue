@@ -183,7 +183,15 @@ async function delCred(c: ProviderCredential) {
               <div style="font-size:11px;color:var(--muted)">{{ timeText(c.health_checked_at) }}</div>
               <div v-if="c.health_error" style="font-size:11px;color:var(--danger);max-width:200px;word-break:break-all">{{ c.health_error }}</div>
             </td>
-            <td><input v-model.number="c.concurrency_limit" type="number" min="1" class="compact-input" style="max-width:80px" placeholder="不限" /></td>
+            <td>
+              <input v-model.number="c.concurrency_limit" type="number" min="0" class="compact-input" style="max-width:80px" placeholder="默认5" />
+              <div v-if="c.fp_slot_limit != null" style="font-size:11px;color:var(--muted);margin-top:4px">
+                槽 {{ c.fp_slots_used ?? 0 }}/{{ c.fp_slot_limit }}
+                <span v-if="(c.fp_slots_free ?? 0) === 0" style="color:var(--danger)">已满</span>
+                <span v-else>余 {{ c.fp_slots_free }}</span>
+              </div>
+              <div v-else style="font-size:11px;color:var(--muted);margin-top:4px">无限（0=不限）</div>
+            </td>
             <td>
               <input :value="asDateInput(c.effective_at)" type="datetime-local" class="compact-input" @input="c.effective_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />
               <input :value="asDateInput(c.expires_at)" type="datetime-local" class="compact-input" @input="c.expires_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />

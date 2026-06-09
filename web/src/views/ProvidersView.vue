@@ -877,7 +877,15 @@ onUnmounted(() => {
                   <div class="muted" v-if="c.api_models_last_checked_at">检查 {{ timeText(c.api_models_last_checked_at) }}</div>
                   <div class="muted health-error" v-if="c.api_models_error">{{ c.api_models_error }}</div>
                 </td>
-                <td><input v-model.number="c.concurrency_limit" type="number" min="1" class="compact-input number" placeholder="不限" /></td>
+                <td>
+                  <input v-model.number="c.concurrency_limit" type="number" min="0" class="compact-input number" placeholder="默认5" />
+                  <div v-if="c.fp_slot_limit != null" class="muted" style="font-size:11px;margin-top:4px">
+                    槽 {{ c.fp_slots_used ?? 0 }}/{{ c.fp_slot_limit }}
+                    <span v-if="(c.fp_slots_free ?? 0) === 0" style="color:var(--danger)">已满</span>
+                    <span v-else>余 {{ c.fp_slots_free }}</span>
+                  </div>
+                  <div v-else class="muted" style="font-size:11px;margin-top:4px">无限（0=不限）</div>
+                </td>
                 <td>
                   <input :value="asDateInput(c.effective_at)" type="datetime-local" class="compact-input" @input="setDateInputFromEvent(c, 'effective_at', $event)" />
                   <input :value="asDateInput(c.expires_at)" type="datetime-local" class="compact-input" @input="setDateInputFromEvent(c, 'expires_at', $event)" />
