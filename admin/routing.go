@@ -169,10 +169,27 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			continue
 		}
-		c.RuntimeRoutable = isRoutable(c)
+		c.RuntimeRoutable = c.Available &&
+			c.CredentialStatus == "active" &&
+			c.LifecycleStatus == "active" &&
+			c.AvailabilityState == "ready" &&
+			c.QuotaState == "ok" &&
+			c.CircuitState != "open"
 		c.Routable = c.RuntimeRoutable
 		if !c.RuntimeRoutable {
-			c.BlockReason = blockReason(c)
+			if c.LifecycleStatus != "active" {
+				c.BlockReason = "lifecycle_" + c.LifecycleStatus
+			} else if c.CircuitState == "open" {
+				c.BlockReason = "circuit_open"
+			} else if c.QuotaState != "" && c.QuotaState != "ok" {
+				c.BlockReason = "quota_" + c.QuotaState
+			} else if c.AvailabilityState != "" && c.AvailabilityState != "ready" {
+				c.BlockReason = "availability_" + c.AvailabilityState
+			} else if !c.Available {
+				c.BlockReason = "offer_unavailable"
+			} else {
+				c.BlockReason = "unknown"
+			}
 		}
 		candidates = append(candidates, c)
 	}
@@ -1211,7 +1228,10 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var credID, provID int
 	var baseURL, protocol, rawModel, outModel string
 	var ciphertext []byte
-	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
+	if err := rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel); err != nil {
+		writeError(w, http.StatusInternalServerError, "probe: scan failed")
+		return
+	}
 
 	// Decrypt credential key. Some free-pool credentials have NULL ciphertext
 	// (no API key required); in that case proceed with an empty key.
