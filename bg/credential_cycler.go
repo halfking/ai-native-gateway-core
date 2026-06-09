@@ -88,14 +88,15 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	for rows.Next() {
 		var credID int
-		var label, ciphertext, baseURL, protocol string
+		var label, baseURL, protocol string
+		var ciphertext []byte // bytea in DB, must be []byte for pgx scan
 		var healthStatus, availState, quotaState *string
 
 		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState); err != nil {
 			continue
 		}
 
-		decrypted, decErr := decryptCred(ciphertext, c.encKey)
+		decrypted, decErr := decryptCred(string(ciphertext), c.encKey)
 		if decErr != nil {
 			c.updateHealth(ctx, credID, "error", "decrypt failed")
 			continue
@@ -216,7 +217,8 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	var ciphertext, baseURL, protocol string
+	var ciphertext []byte // bytea in DB, must be []byte for pgx scan
+	var baseURL, protocol string
 	err := c.db.QueryRow(execCtx, `
 		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions')
 		FROM credentials c
@@ -227,7 +229,7 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "not found"}
 	}
 
-	decrypted, decErr := decryptCred(ciphertext, c.encKey)
+	decrypted, decErr := decryptCred(string(ciphertext), c.encKey)
 	if decErr != nil {
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "decrypt failed"}
 	}
@@ -237,9 +239,13 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		result.Status = "healthy"
 		c.updateHealth(ctx, credID, "healthy", "")
 	} else {
-		result.Status = "unreachable"
+		status := "unreachable"
+		if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") {
+			status = "auth_failed"
+		}
+		result.Status = status
 		result.Error = errMsg
-		c.updateHealth(ctx, credID, result.Status, errMsg)
+		c.updateHealth(ctx, credID, status, errMsg)
 	}
 	return result
 }

@@ -343,7 +343,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}
-	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{strings.ToLower(model)}}, nil
+	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{modelname.NormalizeRouteKey(model)}}, nil
 }
 
 func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile string) ([]string, error) {

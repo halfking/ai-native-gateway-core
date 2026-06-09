@@ -82,6 +82,17 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 	idStr := route.idPart
 	subPath := route.subPath
 
+	// Handle /api/keys/detail/{id} where idPart="detail" and subPath is the numeric ID
+	if idStr == "detail" && subPath != "" {
+		id, err := strconv.Atoi(subPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		h.getKeyDetail(w, r, id)
+		return
+	}
+
 	switch subPath {
 	case "reveal":
 		id, err := strconv.Atoi(idStr)
@@ -112,6 +123,16 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		h.setKeyEnabled(w, r, id, true)
 	case "detail":
+		// idPart is "detail", actual ID is in subPath (e.g. /api/keys/detail/146)
+		if subPath != "" {
+			id, err := strconv.Atoi(subPath)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid id")
+				return
+			}
+			h.getKeyDetail(w, r, id)
+			return
+		}
 		rest := ""
 		for i, c := range idStr {
 			if c == '/' {

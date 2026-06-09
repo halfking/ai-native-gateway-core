@@ -336,6 +336,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { store } from '../store'
 
 const API = '/api/pricing'
 
@@ -426,7 +427,7 @@ const inheritPreview = ref<any>({})
 const inheriting = ref(false)
 
 const authHeaders = () => {
-  const key = localStorage.getItem('admin_api_key') || ''
+  const key = store.apiKey
   return { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }
 }
 
@@ -733,7 +734,7 @@ async function importCsv() {
     fd.append('file', importFile.value)
     const res = await fetch(`${API}/import`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${localStorage.getItem('admin_api_key') || ''}` },
+      headers: { 'Authorization': `Bearer ${store.apiKey}`, 'Content-Type': 'application/json' },
       body: fd,
     })
     const data = await res.json()
