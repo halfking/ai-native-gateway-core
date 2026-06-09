@@ -1192,7 +1192,8 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		  AND lower(mo.raw_model_name) = lower($1)
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
-		ORDER BY mo.priority NULLS LAST LIMIT 1
+		ORDER BY COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
+		LIMIT 1
 	`, req.Model)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
