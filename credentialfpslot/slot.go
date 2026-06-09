@@ -388,6 +388,9 @@ func (m *Manager) releaseMemory(credentialID, slotIndex int, holder string) {
 	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
 	if cur, ok := m.memSlots[key]; ok && cur.holder == holder {
 		delete(m.memSlots, key)
+		// H-5: also remove the session pin so the holder isn't re-pinned to a
+		// stale slot on the next Acquire (mirrors Python _release_memory fix)
+		delete(m.memPins, pinRedisKey(holder, credentialID))
 	}
 }
 

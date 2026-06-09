@@ -201,19 +201,52 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// isRoutable and blockReason work on the anonymous candidate struct via an
+// interface — the struct is defined locally inside handleListCandidates.
+// L-3: replaced the stubs that always returned true / "state check".
+
+type routableCandidate interface {
+	getAvailable() bool
+	getLifecycleStatus() string
+	getAvailabilityState() string
+	getQuotaState() string
+	getCircuitState() string
+}
+
 func isRoutable(c interface{}) bool {
-	type routable interface {
-		getLifecycleStatus() string
-		getAvailabilityState() string
-		getQuotaState() string
-		getCircuitState() string
-		getBalanceUSD() *float64
+	if rc, ok := c.(routableCandidate); ok {
+		return rc.getAvailable()
 	}
-	return true
+	// Fallback: use struct field reflection via type assertion on concrete type
+	type hasAvailable interface{ getAvailable() bool }
+	if ha, ok := c.(hasAvailable); ok {
+		return ha.getAvailable()
+	}
+	return true // unknown type, optimistic
 }
 
 func blockReason(c interface{}) string {
-	return "state check"
+	type hasFields interface {
+		getLifecycleStatus() string
+		getCircuitState() string
+		getQuotaState() string
+		getAvailabilityState() string
+	}
+	if f, ok := c.(hasFields); ok {
+		if f.getLifecycleStatus() != "active" {
+			return "lifecycle_" + f.getLifecycleStatus()
+		}
+		if f.getCircuitState() == "open" {
+			return "circuit_open"
+		}
+		if s := f.getQuotaState(); s != "" && s != "ok" {
+			return "quota_" + s
+		}
+		if s := f.getAvailabilityState(); s != "" && s != "available" {
+			return "availability_" + s
+		}
+	}
+	return "unavailable"
 }
 
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {

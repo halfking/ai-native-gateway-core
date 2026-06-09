@@ -404,8 +404,8 @@ func (e *Executor) tryCandidate(
 				httpClient = http.DefaultClient
 			} else if err := reqPool.Acquire(params.R.Context()); err != nil {
 				return nil, err
-			}
-			if reqPool != nil {
+			} else {
+				// C-2: only defer Release if we actually Acquired
 				defer reqPool.Release()
 			}
 
@@ -676,7 +676,7 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
 		return
 	}
-	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Second
+	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Millisecond // M-6: was * time.Second — field is in milliseconds
 	if stickyTTL < time.Minute {
 		stickyTTL = time.Minute
 	}
