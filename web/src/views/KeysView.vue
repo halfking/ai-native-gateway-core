@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchApplicationProfile, type ApiKey, type KeyCreatedResponse } from '../api'
+import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchApplicationProfile, getDefaultLimits, setDefaultLimits, type ApiKey, type KeyCreatedResponse, type DefaultLimits } from '../api'
 import { store, clearApiKey } from '../store'
 
 const router = useRouter()
@@ -66,6 +66,13 @@ const newRemark = ref('')
 const newSaving = ref(false)
 const newErr = ref('')
 const createdKey = ref<KeyCreatedResponse | null>(null)
+
+// Default limits config
+const defaultLimits = ref<DefaultLimits>({ rate_limit_rpm: 12, rate_limit_concurrent: 6, rate_limit_tpm: null })
+const showDefaultLimits = ref(false)
+const limitsSaving = ref(false)
+const limitsErr = ref('')
+const limitsSuccess = ref('')
 
 // Copy feedback
 const copiedId = ref<string | null>(null)
@@ -268,7 +275,55 @@ function setTab(next: 'all' | 'active' | 'pending' | 'closed') {
   activeTab.value = next
 }
 
-onMounted(load)
+function rateLimitLabel(k: ApiKey): string {
+  const rpm = k.rate_limit_rpm
+  const conc = k.rate_limit_concurrent
+  if (rpm == null && conc == null) {
+    const d = defaultLimits.value
+    const parts: string[] = ['默认配置']
+    if (d.rate_limit_rpm) parts.push(`${d.rate_limit_rpm} RPM`)
+    if (d.rate_limit_concurrent) parts.push(`${d.rate_limit_concurrent} 并发`)
+    return parts.join(' (') + (parts.length > 1 ? ')' : '')
+  }
+  const parts: string[] = []
+  if (rpm != null) parts.push(`${rpm} RPM`)
+  if (conc != null) parts.push(`${conc} 并发`)
+  return parts.join(' / ')
+}
+
+async function loadDefaultLimits() {
+  try {
+    defaultLimits.value = await getDefaultLimits()
+  } catch { /* use hardcoded fallback */ }
+}
+
+async function saveDefaultLimits() {
+  limitsErr.value = ''
+  limitsSuccess.value = ''
+  limitsSaving.value = true
+  try {
+    const data = { ...defaultLimits.value }
+    if (data.rate_limit_tpm === 0 || isNaN(data.rate_limit_tpm as number)) {
+      data.rate_limit_tpm = null
+    }
+    await setDefaultLimits(data as DefaultLimits)
+    limitsSuccess.value = '默认限制已保存，将在 15 秒内生效'
+    showDefaultLimits.value = false
+  } catch (e: unknown) {
+    limitsErr.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    limitsSaving.value = false
+  }
+}
+
+function openDefaultLimits() {
+  limitsErr.value = ''
+  limitsSuccess.value = ''
+  showDefaultLimits.value = true
+  loadDefaultLimits()
+}
+
+onMounted(() => { load(); loadDefaultLimits() })
 onBeforeUnmount(() => {
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
 })
@@ -278,7 +333,10 @@ onBeforeUnmount(() => {
   <div>
     <div class="page-header">
       <h2>API 密钥管理</h2>
-      <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost" @click="openDefaultLimits">⚙ 默认限制</button>
+        <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
+      </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
@@ -348,7 +406,7 @@ onBeforeUnmount(() => {
               <span v-if="(k as any).is_system" class="badge badge-system">系统</span>
             </td>
             <td>{{ k.budget_usd != null ? fmtCost(k.budget_usd) : '无限制' }}</td>
-            <td>{{ k.rate_limit_rpm != null ? k.rate_limit_rpm + ' RPM' : '无限制' }}</td>
+            <td>{{ rateLimitLabel(k) }}</td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.expires_at) }}</td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
@@ -459,6 +517,37 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </template>
+      </div>
+    </div>
+
+    <!-- Default Limits Config Modal -->
+    <div class="modal-overlay" v-if="showDefaultLimits" @click.self="showDefaultLimits = false">
+      <div class="modal" style="max-width:440px">
+        <h3>默认速率限制配置</h3>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
+          当密钥未设置自定义限制时，将使用以下默认值。
+          修改后保存到 Redis，所有实例在 15 秒内生效。
+        </p>
+        <div v-if="limitsErr" class="alert alert-danger">{{ limitsErr }}</div>
+        <div v-if="limitsSuccess" class="alert alert-success">{{ limitsSuccess }}</div>
+        <div class="form-group">
+          <label>默认 RPM（每分钟请求数）</label>
+          <input v-model.number="defaultLimits.rate_limit_rpm" type="number" min="0" placeholder="0=不限制" />
+        </div>
+        <div class="form-group">
+          <label>默认并发数</label>
+          <input v-model.number="defaultLimits.rate_limit_concurrent" type="number" min="0" placeholder="0=不限制" />
+        </div>
+        <div class="form-group">
+          <label>默认 TPM（每分钟 token 数）</label>
+          <input v-model.number="defaultLimits.rate_limit_tpm" type="number" min="0" placeholder="0=不限制" />
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-ghost" @click="showDefaultLimits = false">取消</button>
+          <button class="btn btn-primary" @click="saveDefaultLimits" :disabled="limitsSaving">
+            {{ limitsSaving ? '保存中…' : '保存' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
