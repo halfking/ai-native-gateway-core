@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -219,8 +221,8 @@ func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) b
 func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
 	pinKey := pinRedisKey(holder, credentialID)
 	if pinned, err := m.client.Get(ctx, pinKey).Result(); err == nil {
-		var slot int
-		if _, scanErr := fmt.Sscanf(pinned, "%d", &slot); scanErr == nil {
+		slot, parseErr := strconv.Atoi(strings.TrimSpace(pinned))
+		if parseErr == nil && slot >= 0 && slot < limit {
 			if m.tryRedisLock(ctx, credentialID, slot, holder) {
 				eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
 				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
