@@ -668,6 +668,32 @@ export function applyForKey(data: { application_code: string; owner_user?: strin
   return req<{ id: number; key_prefix: string; application_code: string; status: string; message: string }>('POST', '/api/keys/apply', data)
 }
 
+export interface UpdateKeyLimitsRequest {
+  rate_limit_rpm: number | null
+  rate_limit_concurrent: number | null
+  rate_limit_tpm: number | null
+}
+
+export function updateKeyLimits(id: number, data: UpdateKeyLimitsRequest) {
+  return req<{ status: string } & UpdateKeyLimitsRequest>('PATCH', `/api/keys/${id}/limits`, data)
+}
+
+// ── Configuration ─────────────────────────────────────────────────────────
+
+export interface DefaultLimits {
+  rate_limit_rpm: number
+  rate_limit_concurrent: number
+  rate_limit_tpm: number | null
+}
+
+export function getDefaultLimits() {
+  return req<DefaultLimits>('GET', '/api/config/default-limits')
+}
+
+export function setDefaultLimits(data: DefaultLimits) {
+  return req<DefaultLimits & { status: string }>('PUT', '/api/config/default-limits', data)
+}
+
 // ── Usage ─────────────────────────────────────────────────────────────────
 
 export interface UsageSummary {

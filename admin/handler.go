@@ -1,11 +1,13 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
@@ -175,6 +177,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys", admin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", admin(h.handleFreePoolKeysSubRouter))
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
+	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -234,4 +237,84 @@ func queryOptionalBool(r *http.Request, key string) *bool {
 	}
 	v := strings.EqualFold(raw, "true") || raw == "1"
 	return &v
+}
+
+// handleDefaultLimits handles GET and PUT /api/config/default-limits
+// It stores the default limits in the database (app_settings table).
+func (h *Handler) handleDefaultLimits(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		h.getDefaultLimits(w, r)
+	} else if r.Method == http.MethodPut {
+		h.setDefaultLimits(w, r)
+	} else {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) getDefaultLimits(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var rateLimitRPM, rateLimitConcurrent *int
+	var rateLimitTPM *int
+
+	err := h.db.QueryRow(ctx, `
+		SELECT rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm
+		FROM app_settings
+		WHERE tenant_id = 'default' AND app_id = 'gateway'
+	`).Scan(&rateLimitRPM, &rateLimitConcurrent, &rateLimitTPM)
+
+	if err != nil {
+		// Return hardcoded defaults if not found
+		writeJSON(w, http.StatusOK, map[string]any{
+			"rate_limit_rpm":        60,
+			"rate_limit_concurrent": 20,
+			"rate_limit_tpm":        nil,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rate_limit_rpm":        rateLimitRPM,
+		"rate_limit_concurrent": rateLimitConcurrent,
+		"rate_limit_tpm":        rateLimitTPM,
+	})
+}
+
+func (h *Handler) setDefaultLimits(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RateLimitRPM        *int `json:"rate_limit_rpm"`
+		RateLimitConcurrent *int `json:"rate_limit_concurrent"`
+		RateLimitTPM        *int `json:"rate_limit_tpm"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO app_settings (tenant_id, app_id, rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm, updated_at)
+		VALUES ('default', 'gateway', $1, $2, $3, now())
+		ON CONFLICT (tenant_id, app_id) DO UPDATE SET
+			rate_limit_rpm = EXCLUDED.rate_limit_rpm,
+			rate_limit_concurrent = EXCLUDED.rate_limit_concurrent,
+			rate_limit_tpm = EXCLUDED.rate_limit_tpm,
+			updated_at = now()
+	`, req.RateLimitRPM, req.RateLimitConcurrent, req.RateLimitTPM)
+
+	if err != nil {
+		slog.Error("setDefaultLimits failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to save default limits")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"rate_limit_rpm":        req.RateLimitRPM,
+		"rate_limit_concurrent": req.RateLimitConcurrent,
+		"rate_limit_tpm":        req.RateLimitTPM,
+	})
 }
