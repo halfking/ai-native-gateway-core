@@ -1003,7 +1003,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		WHERE mo.available = TRUE
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
-		ORDER BY mo.priority NULLS LAST LIMIT 1
+		ORDER BY mo.manual_priority NULLS LAST LIMIT 1
 	`, req.Model)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
