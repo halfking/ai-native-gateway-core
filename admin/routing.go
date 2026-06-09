@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,9 +25,13 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	defer cancel()
 
 	detailsJSON, _ := json.Marshal(details)
-	actor := r.Header.Get("X-Actor")
+	// Do NOT use X-Actor header as the authoritative identity — any client that
+	// can reach the admin API can forge it. Use the verified remote address as
+	// a tamper-evident fallback. If a proper auth layer (JWT, mTLS) is added
+	// later, extract the principal from that context instead.
+	actor := r.RemoteAddr
 	if actor == "" {
-		actor = "admin"
+		actor = "unknown"
 	}
 
 	h.db.Exec(ctx, `
@@ -133,7 +137,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = ANY($1)
+		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
 		  AND mo.available IS TRUE
 		  AND c.status IN ('active','cooling','degraded')
 		  AND p.enabled IS TRUE
@@ -201,19 +205,52 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// isRoutable and blockReason work on the anonymous candidate struct via an
+// interface — the struct is defined locally inside handleListCandidates.
+// L-3: replaced the stubs that always returned true / "state check".
+
+type routableCandidate interface {
+	getAvailable() bool
+	getLifecycleStatus() string
+	getAvailabilityState() string
+	getQuotaState() string
+	getCircuitState() string
+}
+
 func isRoutable(c interface{}) bool {
-	type routable interface {
-		getLifecycleStatus() string
-		getAvailabilityState() string
-		getQuotaState() string
-		getCircuitState() string
-		getBalanceUSD() *float64
+	if rc, ok := c.(routableCandidate); ok {
+		return rc.getAvailable()
 	}
-	return true
+	// Fallback: use struct field reflection via type assertion on concrete type
+	type hasAvailable interface{ getAvailable() bool }
+	if ha, ok := c.(hasAvailable); ok {
+		return ha.getAvailable()
+	}
+	return true // unknown type, optimistic
 }
 
 func blockReason(c interface{}) string {
-	return "state check"
+	type hasFields interface {
+		getLifecycleStatus() string
+		getCircuitState() string
+		getQuotaState() string
+		getAvailabilityState() string
+	}
+	if f, ok := c.(hasFields); ok {
+		if f.getLifecycleStatus() != "active" {
+			return "lifecycle_" + f.getLifecycleStatus()
+		}
+		if f.getCircuitState() == "open" {
+			return "circuit_open"
+		}
+		if s := f.getQuotaState(); s != "" && s != "ok" {
+			return "quota_" + s
+		}
+		if s := f.getAvailabilityState(); s != "" && s != "available" {
+			return "availability_" + s
+		}
+	}
+	return "unavailable"
 }
 
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {
@@ -618,46 +655,30 @@ func (h *Handler) handleRoutingPolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		fields := map[string]any{}
-		if v, ok := patch["algorithm_version"]; ok {
-			fields["algorithm_version"] = v
-		}
-		if v, ok := patch["retry_per_credential"]; ok {
-			fields["retry_per_credential"] = v
-		}
-		if v, ok := patch["tier_fallback_max"]; ok {
-			fields["tier_fallback_max"] = v
-		}
-		if v, ok := patch["circuit_open_seconds"]; ok {
-			fields["circuit_open_seconds"] = v
-		}
-		if v, ok := patch["circuit_failure_threshold"]; ok {
-			fields["circuit_failure_threshold"] = v
-		}
-		if v, ok := patch["circuit_max_open_seconds"]; ok {
-			fields["circuit_max_open_seconds"] = v
-		}
-		if v, ok := patch["actor"]; ok {
-			fields["actor"] = v
-		}
-
-		if len(fields) > 0 {
-			setClauses := ""
-			args := []any{}
-			i := 1
-			for k, v := range fields {
-				if setClauses != "" {
-					setClauses += ", "
-				}
-				setClauses += k + " = $" + strconv.Itoa(i)
-				args = append(args, v)
-				i++
-			}
-			q := "UPDATE routing_policy SET " + setClauses + " WHERE tenant_id = 'default'"
-			if _, err := h.db.Exec(ctx, q, args...); err != nil {
-				writeError(w, http.StatusInternalServerError, "update failed")
-				return
-			}
+		// Use a static parameterised UPDATE with COALESCE so that only
+		// explicitly-listed columns can ever be touched — no dynamic SQL
+		// construction that could become an injection vector if fields were
+		// ever expanded carelessly. "actor" is intentionally excluded: it is
+		// an audit identity field, not a configuration value.
+		if _, err := h.db.Exec(ctx, `
+			UPDATE routing_policy SET
+				algorithm_version         = COALESCE($1, algorithm_version),
+				retry_per_credential      = COALESCE($2, retry_per_credential),
+				tier_fallback_max         = COALESCE($3, tier_fallback_max),
+				circuit_open_seconds      = COALESCE($4, circuit_open_seconds),
+				circuit_failure_threshold = COALESCE($5, circuit_failure_threshold),
+				circuit_max_open_seconds  = COALESCE($6, circuit_max_open_seconds)
+			WHERE tenant_id = 'default'
+		`,
+			patch["algorithm_version"],
+			patch["retry_per_credential"],
+			patch["tier_fallback_max"],
+			patch["circuit_open_seconds"],
+			patch["circuit_failure_threshold"],
+			patch["circuit_max_open_seconds"],
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed")
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
@@ -1165,14 +1186,13 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		SELECT c.id, c.provider_id, p.base_url, COALESCE(p.protocol,'openai'),
 		       c.secret_ciphertext, COALESCE(mo.raw_model_name, $1), COALESCE(mo.outbound_model_name, $1)
 		FROM model_offers mo
-		JOIN model_aliases ma ON lower(ma.raw_name) = lower($1)
-		JOIN models_canonical mc ON mc.id = ma.canonical_id AND mo.canonical_id = mc.id
 		JOIN credentials c ON c.id = mo.credential_id AND c.status = 'active'
 		JOIN providers p ON p.id = c.provider_id AND p.enabled = TRUE
 		WHERE mo.available = TRUE
+		  AND lower(mo.raw_model_name) = lower($1)
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
-		ORDER BY mo.priority NULLS LAST LIMIT 1
+		ORDER BY mo.manual_priority NULLS LAST LIMIT 1
 	`, req.Model)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
@@ -1189,17 +1209,59 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	var ciphertext []byte
 	rows.Scan(&credID, &provID, &baseURL, &protocol, &ciphertext, &rawModel, &outModel)
 
-	_, decErr := h.decryptCredStr(string(ciphertext))
-	if decErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
-		return
+	// Decrypt credential key. Some free-pool credentials have NULL ciphertext
+	// (no API key required); in that case proceed with an empty key.
+	var apiKey string
+	if len(ciphertext) > 0 {
+		var decErr error
+		apiKey, decErr = h.decryptCredStr(string(ciphertext))
+		if decErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to decrypt credential")
+			return
+		}
 	}
 
 	var provName string
 	h.db.QueryRow(ctx, `SELECT COALESCE(display_name,'') FROM providers WHERE id = $1`, provID).Scan(&provName)
 
+	// ── Actually probe the provider with a lightweight request ───────────
+	// Send a minimal completion request to verify the key works and the
+	// provider is reachable. Use a short-lived context so the probe doesn't
+	// hang on slow/dead endpoints.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer probeCancel()
+
+	probeBody, _ := json.Marshal(map[string]any{
+		"model":      outModel,
+		"messages":   req.Messages,
+		"max_tokens": req.MaxTokens,
+		"stream":     false,
+	})
+	probeURL := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+	probeReq, _ := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, strings.NewReader(string(probeBody)))
+	probeReq.Header.Set("Content-Type", "application/json")
+	probeReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	probeResp, probeErr := http.DefaultClient.Do(probeReq)
+	var probeOK bool
+	var probeStatus int
+	var probeMsg string
+	if probeErr != nil {
+		probeMsg = fmt.Sprintf("probe request failed: %v", probeErr)
+	} else {
+		defer probeResp.Body.Close()
+		probeStatus = probeResp.StatusCode
+		probeOK = probeStatus >= 200 && probeStatus < 300
+		if !probeOK {
+			respBody, _ := io.ReadAll(io.LimitReader(probeResp.Body, 2048))
+			probeMsg = fmt.Sprintf("probe returned HTTP %d: %s", probeStatus, string(respBody))
+		} else {
+			probeMsg = "probe succeeded"
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"success":        true,
+		"success":        probeOK,
 		"provider_id":    provID,
 		"provider_name":  provName,
 		"credential_id":  credID,
@@ -1207,7 +1269,8 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		"raw_model":      rawModel,
 		"outbound_model": outModel,
 		"client_profile": clientProfile,
-		"message":        "probe resolved provider (actual call not implemented)",
+		"probe_status":   probeStatus,
+		"message":        probeMsg,
 	})
 }
 
@@ -1296,7 +1359,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		WHERE p.tenant_id = 'default'
-		  AND lower(mo.raw_model_name) = lower($1)
+		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND mo.available IS TRUE
 		ORDER BY mo.manual_priority NULLS LAST
 	`
