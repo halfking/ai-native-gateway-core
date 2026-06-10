@@ -614,6 +614,9 @@ export interface ApiKey {
   last_used_at: string | null
   budget_usd: number | null
   rate_limit_rpm: number | null
+  rate_limit_concurrent?: number | null
+  rate_limit_tpm?: number | null
+  key_tier?: string
   application_code: string
   default_client_profile?: string | null
   is_system?: boolean
@@ -662,6 +665,16 @@ export function disableKey(id: number) {
 
 export function enableKey(id: number) {
   return req<{ message: string }>('PATCH', `/api/keys/${id}/enable`)
+}
+
+export interface UpdateKeyLimitsRequest {
+  rate_limit_rpm: number | null
+  rate_limit_concurrent: number | null
+  rate_limit_tpm: number | null
+}
+
+export function updateKeyLimits(id: number, data: UpdateKeyLimitsRequest) {
+  return req<{ status: string } & UpdateKeyLimitsRequest>('PATCH', `/api/keys/${id}/limits`, data)
 }
 
 export function applyForKey(data: { application_code: string; owner_user?: string; description?: string }) {
