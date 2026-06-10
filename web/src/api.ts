@@ -1134,6 +1134,7 @@ export interface RequestLogRow {
   stream_chunk_count: number | null
   stream_interrupted: boolean | null
   stream_done_sent: boolean | null
+  usage_source: 'llm' | 'estimated' | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
@@ -1157,6 +1158,7 @@ export function getRequestLogs(params: {
   error_kind?: string
   success?: boolean
   canonical_id?: number
+  usage_source?: 'llm' | 'estimated'
   page?: number
   page_size?: number
 } = {}) {
@@ -1171,6 +1173,7 @@ export function getRequestLogs(params: {
   if (params.error_kind) qs.set('error_kind', params.error_kind)
   if (params.success != null) qs.set('success', String(params.success))
   if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
+  if (params.usage_source) qs.set('usage_source', params.usage_source)
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
   const s = qs.toString()

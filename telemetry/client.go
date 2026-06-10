@@ -75,9 +75,16 @@ type RequestLogEntry struct {
 	CacheReadTokens    *int     `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens   *int     `json:"cache_write_tokens,omitempty"`
 	CostUSD            *float64 `json:"cost_usd,omitempty"`
+	CostDisplay        *float64 `json:"cost_display,omitempty"`
+	CostCurrency       *string  `json:"cost_currency,omitempty"`
 	LatencyMs          *int     `json:"latency_ms,omitempty"`
 	Success            bool     `json:"success"`
 	ErrorKind          *string  `json:"error_kind,omitempty"`
+	// UsageSource indicates where the token counts came from:
+	//   "llm"       — extracted from upstream response.usage block
+	//   "estimated" — computed locally from request/response text (fallback)
+	//   ""          — not available (request failed before parsing)
+	UsageSource        *string  `json:"usage_source,omitempty"`
 	IdentityHash       *string  `json:"identity_hash,omitempty"`
 	StreamFirstChunkMs *int     `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int     `json:"stream_chunk_count,omitempty"`
@@ -309,13 +316,15 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			client_profile, request_mode,
 			prompt_tokens, completion_tokens,
 			cache_read_tokens, cache_write_tokens, total_tokens,
-			cost_usd, latency_ms, success, error_kind, search_text,
+			cost_usd, cost_display, cost_currency,
+			latency_ms, success, error_kind, search_text,
 			identity_hash, response_checksum,
 			transform_rule_id, egress_protocol, failure_detail_code,
 			request_preview, transform_summary, response_preview,
 			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-			stream_interrupted
+			stream_interrupted,
+			usage_source
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -323,13 +332,13 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$11, $12,
 			$13, $14,
 			$15, $16, $17,
-			$18, $19, $20, $21, $22,
-			$23, $24,
-			$25, $26, $27,
-			$28, $29, $30,
-			CAST($31 AS jsonb), CAST($32 AS jsonb),
-			$33, $34, $35,
-			$36
+			$18, $19, $20,
+			$21, $22, $23, $24,
+			$25, $26,
+			$27, $28, $29,
+			$30, $31, $32,
+			$33, $34, $35, $36,
+			$37
 		)
 	`,
 		entry.RequestID,
@@ -350,6 +359,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.CacheWriteTokens,
 		totalTokens,
 		entry.CostUSD,
+		entry.CostDisplay,
+		entry.CostCurrency,
 		entry.LatencyMs,
 		entry.Success,
 		entry.ErrorKind,
@@ -368,6 +379,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.StreamChunkCount,
 		entry.StreamDoneReceived,
 		entry.StreamInterrupted,
+		entry.UsageSource,
 	)
 	if err != nil {
 		return err
