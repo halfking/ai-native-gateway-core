@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -114,6 +115,69 @@ func (h *Handler) listCatalog(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Err(); err != nil {
 		slog.Warn("listCatalog rows error", "error", err)
 	}
+
+	if queryBool(r, "grouped") {
+		type tierEntry struct {
+			Code        string `json:"code"`
+			Tier        string `json:"tier"`
+			DisplayName string `json:"display_name"`
+			Protocol    string `json:"protocol"`
+			Category    string `json:"category"`
+		}
+		type vendorGroup struct {
+			Vendor        string      `json:"vendor"`
+			DisplayName   string      `json:"display_name"`
+			DisplayNameEn string      `json:"display_name_en"`
+			Tiers         []tierEntry `json:"tiers"`
+		}
+		vendors := map[string]*vendorGroup{}
+		for _, e := range entries {
+			vendor := e.VendorName
+			if vendor == "" {
+				vendor = e.Code
+			}
+			if vendor == "" {
+				vendor = "unknown"
+			}
+			vg, ok := vendors[vendor]
+			if !ok {
+				dn := e.VendorName
+				if dn == "" {
+					dn = e.DisplayName
+				}
+				if dn == "" {
+					dn = vendor
+				}
+				dnEn := e.DisplayNameEn
+				vg = &vendorGroup{
+					Vendor:        vendor,
+					DisplayName:   dn,
+					DisplayNameEn: dnEn,
+					Tiers:         []tierEntry{},
+				}
+				vendors[vendor] = vg
+			}
+			vg.Tiers = append(vg.Tiers, tierEntry{
+				Code:        e.Code,
+				Tier:        e.Tier,
+				DisplayName: e.DisplayName,
+				Protocol:    e.Protocol,
+				Category:    e.Category,
+			})
+		}
+		grouped := make([]vendorGroup, 0, len(vendors))
+		keys := make([]string, 0, len(vendors))
+		for k := range vendors {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			grouped = append(grouped, *vendors[k])
+		}
+		writeJSON(w, http.StatusOK, grouped)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, entries)
 }
 
