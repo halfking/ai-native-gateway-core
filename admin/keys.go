@@ -991,6 +991,7 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 
 	sets = append(sets, "updated_at = now()")
 	args = append(args, id)
+	argIdx++
 
 	query := fmt.Sprintf(
 		"UPDATE api_keys SET %s WHERE id = $%d AND tenant_id = 'default'",
