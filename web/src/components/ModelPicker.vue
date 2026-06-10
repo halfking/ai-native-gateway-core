@@ -200,8 +200,11 @@ function toggle() {
   open.value = !open.value
 }
 
+function onInputFocus() {
+  open.value = true
+}
+
 function closeOnBlur(e: FocusEvent) {
-  // Close panel when focus leaves the wrapper
   const next = e.relatedTarget as Node | null
   const wrapper = (e.currentTarget as HTMLElement)
   if (next && wrapper.contains(next)) return
@@ -227,7 +230,7 @@ function closeOnBlur(e: FocusEvent) {
             :placeholder="multiValues.length ? '' : placeholder"
             :disabled="disabled"
             @keyup.enter="submitFreeText"
-            @focus="open = true"
+            @focus="onInputFocus"
           />
           <button
             v-else
@@ -249,7 +252,7 @@ function closeOnBlur(e: FocusEvent) {
           class="mp-single-input"
           :placeholder="placeholder"
           :disabled="disabled"
-          @focus="open = true"
+          @focus="onInputFocus"
           @keyup.enter="submitFreeText"
         />
         <button
