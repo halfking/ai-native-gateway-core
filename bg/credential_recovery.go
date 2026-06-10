@@ -82,4 +82,36 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("credential quota recovered", "count", tag.RowsAffected())
 	}
+
+	tag, err = r.db.Exec(timeoutCtx, `
+		UPDATE credentials
+		SET circuit_state = 'closed',
+		    cooling_until = NULL,
+		    consecutive_failures = 0,
+		    state_updated_at = now()
+		WHERE circuit_state = 'open'
+		  AND (cooling_until IS NULL OR cooling_until <= now())
+		  AND lifecycle_status = 'active'
+	`)
+	if err != nil {
+		slog.Warn("circuit breaker recovery failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("circuit breakers closed", "count", tag.RowsAffected())
+	}
+
+	tag, err = r.db.Exec(timeoutCtx, `
+		UPDATE credentials
+		SET consecutive_failures = 0,
+		    state_updated_at = now()
+		WHERE consecutive_failures > 0
+		  AND last_used_at < now() - INTERVAL '1 hour'
+		  AND circuit_state = 'closed'
+		  AND availability_state = 'ready'
+		  AND lifecycle_status = 'active'
+	`)
+	if err != nil {
+		slog.Warn("failure counter clear failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("stale failure counters cleared", "count", tag.RowsAffected())
+	}
 }
