@@ -454,11 +454,17 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE api_key_id = $1`, req.APIKeyID).Scan(&spent)
 
 	exceeded := budgetUSD != nil && spent >= *budgetUSD
+	var remainingUSD *float64
+	if budgetUSD != nil {
+		r := *budgetUSD - spent
+		remainingUSD = &r
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"api_key_id": req.APIKeyID,
-		"budget_usd": budgetUSD,
-		"spent_usd":  spent,
-		"exceeded":   exceeded,
+		"api_key_id":    req.APIKeyID,
+		"budget_usd":    budgetUSD,
+		"spent_usd":     spent,
+		"remaining_usd": remainingUSD,
+		"exceeded":      exceeded,
 	})
 }
 
