@@ -11,6 +11,7 @@ const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const hours = ref(24)
 const successFilter = ref<'' | 'success' | 'failure'>('')
+const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -59,6 +60,7 @@ async function load() {
       q: keyword.value.trim() || undefined,
       success: successParam,
       canonical_id: canonicalFilter.value ?? undefined,
+      usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -88,8 +90,22 @@ function fmtTs(ts: string) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })
 }
 
-function token(v: number | null | undefined) {
-  return v == null ? '—' : v.toLocaleString()
+function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' | null) {
+  if (v == null) return '—'
+  const formatted = v.toLocaleString()
+  // Mark estimated values with a tilde prefix + tooltip to distinguish from
+  // upstream-reported counts. Estimated values come from local text heuristics
+  // when the provider (e.g. minimax) does not return a usage block.
+  if (usageSource === 'estimated') {
+    return `~${formatted}`
+  }
+  return formatted
+}
+
+function tokenTitle(usageSource?: 'llm' | 'estimated' | null): string {
+  if (usageSource === 'estimated') return '估算值（上游未返回 usage，本地按字符/单词启发式估算）'
+  if (usageSource === 'llm') return 'LLM 返回值'
+  return ''
 }
 
 function costDisplay(v: number | string | null | undefined, currency: string | null | undefined) {
@@ -195,6 +211,14 @@ onMounted(async () => {
           <option value="failure">失败</option>
         </select>
       </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <label style="font-size:13px;white-space:nowrap">Token 来源</label>
+        <select v-model="usageSourceFilter" style="min-width:130px" title="estimated = 本地按字符/单词启发式估算（上游未返回 usage）">
+          <option value="">全部</option>
+          <option value="llm">LLM 返回</option>
+          <option value="estimated">本地估算</option>
+        </select>
+      </div>
       <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px">
         <label style="font-size:13px;white-space:nowrap">关键词</label>
         <input v-model="keyword" type="text" placeholder="模型名 / 消息片段" style="flex:1" @keyup.enter="resetPageAndLoad" />
@@ -285,11 +309,11 @@ onMounted(async () => {
               </div>
               <span v-if="r.stream_chunk_count == null">—</span>
             </td>
-            <td>{{ token(r.prompt_tokens) }}</td>
-            <td>{{ token(r.completion_tokens) }}</td>
-            <td>{{ token(r.cache_read_tokens) }}</td>
-            <td>{{ token(r.cache_write_tokens) }}</td>
-            <td>{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
+            <td :title="tokenTitle(r.usage_source)">{{ token(r.prompt_tokens, r.usage_source) }}</td>
+            <td :title="tokenTitle(r.usage_source)">{{ token(r.completion_tokens, r.usage_source) }}</td>
+            <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_read_tokens, r.usage_source) }}</td>
+            <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_write_tokens, r.usage_source) }}</td>
+            <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
             <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }">{{ r.success ? '成功' : (r.error_kind ?? '失败') }}</td>
             <td><button class="btn btn-sm" @click.stop="showDetail(r.request_id)">查看</button></td>

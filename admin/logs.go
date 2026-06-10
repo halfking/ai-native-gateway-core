@@ -55,6 +55,7 @@ type requestLogRow struct {
 	StreamDoneReceived *bool      `json:"stream_done_received"`
 	StreamInterrupted  *bool      `json:"stream_interrupted"`
 	StreamDoneSent     *bool      `json:"stream_done_sent"`
+	UsageSource        *string    `json:"usage_source"`
 }
 
 type requestLogDetail struct {
@@ -78,7 +79,8 @@ const requestLogsSelectCols = `
 	rl.transform_rule_id, rl.egress_protocol, rl.failure_stage, rl.failure_detail_code,
 	rl.request_preview, rl.transform_summary, rl.response_preview,
 	rl.stream_first_chunk_ms, rl.stream_chunk_count,
-	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent
+	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent,
+	rl.usage_source
 `
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +119,7 @@ func scanRequestLogRow(rows interface {
 		&l.RequestPreview, &l.TransformSummary, &l.ResponsePreview,
 		&l.StreamFirstChunkMs, &l.StreamChunkCount,
 		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
+		&l.UsageSource,
 	)
 	return l, err
 }
@@ -181,6 +184,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := queryIntPtr(r, "canonical_id"); v != nil {
 		addFilter("rl.canonical_id = $%d", *v)
+	}
+	if v := strings.TrimSpace(queryString(r, "usage_source")); v != "" {
+		if v != "llm" && v != "estimated" {
+			writeError(w, http.StatusBadRequest, "usage_source must be 'llm' or 'estimated'")
+			return
+		}
+		addFilter("rl.usage_source = $%d", v)
 	}
 
 	where := strings.Join(clauses, " AND ")
@@ -298,6 +308,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.StreamDoneReceived,
 		&detail.StreamInterrupted,
 		&detail.StreamDoneSent,
+		&detail.UsageSource,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)
