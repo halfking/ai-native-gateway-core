@@ -69,8 +69,8 @@ async function refreshModels(force = false) {
   loadErr.value = ''
   try {
     const data = await loadCached()
-    families.value = data.families
-    unmapped.value = data.unmapped
+    families.value = data.families || []
+    unmapped.value = data.unmapped || []
   } catch (e: unknown) {
     loadErr.value = e instanceof Error ? e.message : '加载模型失败'
   } finally {
@@ -173,14 +173,14 @@ const filteredFamilies = computed<AvailableFamily[]>(() => {
       const matchesFamily = (
         f.id.toLowerCase().includes(q) ||
         f.display_name.toLowerCase().includes(q) ||
-        f.vendor.toLowerCase().includes(q)
+        (f.vendor || '').toLowerCase().includes(q)
       )
       const versions = f.versions.filter((v) =>
         matchesFamily ||
         v.canonical_name.toLowerCase().includes(q) ||
         v.display_name.toLowerCase().includes(q) ||
-        v.raw_names.some((r) => r.toLowerCase().includes(q)) ||
-        v.aliases.some((a) => a.toLowerCase().includes(q))
+        (v.raw_names || []).some((r) => r.toLowerCase().includes(q)) ||
+        (v.aliases || []).some((a) => a.toLowerCase().includes(q))
       )
       return { ...f, versions }
     })
@@ -190,7 +190,9 @@ const filteredFamilies = computed<AvailableFamily[]>(() => {
 // Sort: featured first within each family
 function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
   return [...vs].sort((a, b) => {
-    if (a.featured !== b.featured) return a.featured ? -1 : 1
+    const af = a.featured || false
+    const bf = b.featured || false
+    if (af !== bf) return af ? -1 : 1
     return a.canonical_name.localeCompare(b.canonical_name)
   })
 }
