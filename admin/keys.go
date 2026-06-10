@@ -999,7 +999,8 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 
 	cmd, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
+		slog.Error("patchKey SQL failed", "query", query, "args", args, "error", err)
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
 	if cmd.RowsAffected() == 0 {
