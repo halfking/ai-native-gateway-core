@@ -990,11 +990,11 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	}
 
 	args = append(args, id)
-	argIdx++
+	idIdx := len(args)
 
 	query := fmt.Sprintf(
 		"UPDATE api_keys SET %s WHERE id = $%d AND tenant_id = 'default'",
-		strings.Join(sets, ", "), argIdx,
+		strings.Join(sets, ", "), idIdx,
 	)
 
 	cmd, err := h.db.Exec(ctx, query, args...)
