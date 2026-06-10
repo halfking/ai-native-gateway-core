@@ -263,6 +263,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	endUser := resolveEndUser(reqBody.User, r)
 	clientID := identity.BuildIdentityFromRequest(r, "default", nil, nil, "")
 	identityHash := clientID.ShortID()
+	startTime := time.Now()
 
 	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).
@@ -285,10 +286,16 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if err != nil {
 		slog.Error("failed to get candidates from provider", "error", err)
+		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
+			fmt.Sprintf("no available provider for model '%s'", clientModel),
+			int(time.Since(startTime).Milliseconds()), bodyBytes)
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
 	}
 	if len(candidates) == 0 {
+		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
+			fmt.Sprintf("no available provider for model '%s'", clientModel),
+			int(time.Since(startTime).Milliseconds()), bodyBytes)
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
 	}
@@ -357,12 +364,24 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 			"error", execErr,
 			"model", clientModel,
 		)
+		var providerID, credentialID *int
+		if len(candidates) > 0 {
+			providerID = intPtr(candidates[0].ProviderID)
+			credentialID = intPtr(candidates[0].CredentialID)
+		}
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
+			h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
+				"model_not_found",
+				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErr.Tried),
+				int(time.Since(startTime).Milliseconds()), bodyBytes)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErr.Tried),
 				"server_error", "model_not_found")
 			return
 		}
+		h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
+			"provider_error", execErr.Error(),
+			int(time.Since(startTime).Milliseconds()), bodyBytes)
 		writeErrorJSON(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error")
 		return
 	}
@@ -409,6 +428,36 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	var responseBodyText *string
 	if len(responseBody) > 0 {
 		v := string(responseBody)
+		// For streaming responses, the last SSE chunk sent to the client (and captured
+		// in result.ResponseBody) often does NOT include the usage block. Merge the
+		// stream-captured usage values into the response_body JSON so the persisted
+		// row contains a complete `usage` block for downstream auditors/queries.
+		if capture != nil {
+			m := capture.SummaryAsMap()
+			var pt, ct, crt, cwt int
+			if val, ok := m["prompt_tokens"].(int); ok {
+				pt = val
+			}
+			if val, ok := m["completion_tokens"].(int); ok {
+				ct = val
+			}
+			if val, ok := m["cache_read_tokens"].(int); ok {
+				crt = val
+			}
+			if val, ok := m["cache_write_tokens"].(int); ok {
+				cwt = val
+			}
+			if pt > 0 || ct > 0 {
+				v = string(injectUsageIntoResponseBody([]byte(v), pt, ct, crt, cwt))
+			}
+		} else if len(responseBody) > 0 {
+			// Non-streaming: ensure we always pull whatever usage is in the body
+			// (this is the primary path; capture==nil branch below is a fallback).
+			ept, ect, ecrt, ecwt := extractTokensFromResponseBody(responseBody)
+			if ept > 0 || ect > 0 {
+				v = string(injectUsageIntoResponseBody([]byte(v), ept, ect, ecrt, ecwt))
+			}
+		}
 		responseBodyText = &v
 	}
 	requestPreviewText := requestPreview(requestBody)
@@ -508,6 +557,35 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		reqLog.CostUSD = cost
 	}
 
+	h.telemetryClient.EmitRequestLog(reqLog)
+}
+
+// recordFailedRequest persists a request_logs row for a request that failed before
+// reaching the streaming/non-streaming executor success path. This ensures the
+// /request-logs page shows failed requests (auth failures, no candidates, all
+// providers exhausted, upstream errors, etc.) with a full request body snapshot.
+func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) {
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	var requestBodyText *string
+	if len(requestBody) > 0 {
+		v := string(requestBody)
+		requestBodyText = &v
+	}
+	latency := latencyMs
+	reqLog := &telemetry.RequestLogEntry{
+		RequestID:     requestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(clientModel),
+		OutboundModel: strPtr(outboundModel),
+		ProviderID:    providerID,
+		CredentialID:  credentialID,
+		LatencyMs:     &latency,
+		Success:       false,
+		ErrorKind:     strPtr(errCode),
+		RequestBody:   requestBodyText,
+	}
 	h.telemetryClient.EmitRequestLog(reqLog)
 }
 
@@ -721,39 +799,109 @@ func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens,
 	}
 	usageRaw, ok := data["usage"]
 	if !ok {
-		return 0, 0, 0, 0
+		// Fallback: some providers (e.g. minimax) may return usage at top level
+		usageRaw = data
 	}
 	usage, ok := usageRaw.(map[string]any)
 	if !ok {
 		return 0, 0, 0, 0
 	}
+	// prompt_tokens / input_tokens (Anthropic native)
 	if v, ok := usage["prompt_tokens"].(float64); ok {
 		promptTokens = int(v)
+	} else if v, ok := usage["input_tokens"].(float64); ok {
+		promptTokens = int(v)
 	}
+	// completion_tokens / output_tokens (Anthropic native)
 	if v, ok := usage["completion_tokens"].(float64); ok {
 		completionTokens = int(v)
+	} else if v, ok := usage["output_tokens"].(float64); ok {
+		completionTokens = int(v)
 	}
-	if v, ok := usage["cache_read_tokens"].(float64); ok {
+	// cache_read: try 4 variants
+	if v, ok := usage["cache_read_input_tokens"].(float64); ok {
 		cacheRead = int(v)
-	}
-	if v, ok := usage["cache_write_tokens"].(float64); ok {
-		cacheWrite = int(v)
-	}
-	if pt := usage["prompt_tokens_details"]; pt != nil {
+	} else if v, ok := usage["cache_read_tokens"].(float64); ok {
+		cacheRead = int(v)
+	} else if pt := usage["prompt_tokens_details"]; pt != nil {
 		if details, ok := pt.(map[string]any); ok {
 			if v, ok := details["cached_tokens"].(float64); ok && cacheRead == 0 {
 				cacheRead = int(v)
 			}
 		}
-	}
-	if pt := usage["input_token_details"]; pt != nil {
+	} else if pt := usage["input_token_details"]; pt != nil {
 		if details, ok := pt.(map[string]any); ok {
 			if v, ok := details["cache_read"].(float64); ok && cacheRead == 0 {
 				cacheRead = int(v)
 			}
 		}
 	}
+	// cache_write: try 3 variants
+	if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+		cacheWrite = int(v)
+	} else if v, ok := usage["cache_write_tokens"].(float64); ok {
+		cacheWrite = int(v)
+	} else if pt := usage["input_token_details"]; pt != nil {
+		if details, ok := pt.(map[string]any); ok {
+			if v, ok := details["cache_creation"].(float64); ok && cacheWrite == 0 {
+				cacheWrite = int(v)
+			}
+		}
+	}
+	// total_tokens fallback: if we have total but missing prompt/completion, infer them
+	if promptTokens == 0 || completionTokens == 0 {
+		if total, ok := usage["total_tokens"].(float64); ok && int(total) > 0 {
+			totalInt := int(total)
+			if promptTokens == 0 && completionTokens > 0 && totalInt > completionTokens {
+				promptTokens = totalInt - completionTokens
+			} else if completionTokens == 0 && promptTokens > 0 && totalInt > promptTokens {
+				completionTokens = totalInt - promptTokens
+			}
+		}
+	}
 	return
+}
+
+// injectUsageIntoResponseBody augments a response body JSON with usage data extracted
+// from the stream capture. This ensures request_logs.response_body always contains a
+// `usage` block even when the upstream's last SSE chunk does not include one.
+func injectUsageIntoResponseBody(body []byte, pt, ct, crt, cwt int) []byte {
+	if pt <= 0 && ct <= 0 {
+		return body
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body
+	}
+	usageRaw, ok := data["usage"]
+	if !ok {
+		usageRaw = map[string]any{}
+	}
+	usage, ok := usageRaw.(map[string]any)
+	if !ok {
+		usage = map[string]any{}
+	}
+	if pt > 0 {
+		usage["prompt_tokens"] = pt
+	}
+	if ct > 0 {
+		usage["completion_tokens"] = ct
+	}
+	if crt > 0 {
+		usage["cache_read_tokens"] = crt
+	}
+	if cwt > 0 {
+		usage["cache_write_tokens"] = cwt
+	}
+	if pt > 0 && ct > 0 {
+		usage["total_tokens"] = pt + ct
+	}
+	data["usage"] = usage
+	result, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return result
 }
 
 func intPtr(v int) *int { return &v }
