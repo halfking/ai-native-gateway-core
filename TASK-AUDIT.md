@@ -49,19 +49,40 @@
 - [ ] 确认 `api_keys` 表是否包含 `rate_limit_rpm`, `rate_limit_concurrent`, `rate_limit_tpm` 字段
 
 ### 4. 部署与验证测试
-- [ ] ~~编译 Go 版本~~ - 网络问题，无法下载依赖
-- [ ] 部署到测试环境 - Docker build 失败（网络问题）
-- [ ] 使用 browser-use 逐页面验证功能
-- [ ] 对比两个项目的页面展示
+- [x] Docker 镜像构建成功（使用服务器本地镜像）
+- [ ] ~~部署验证~~ - SSH 连接不稳定，rsync 超时
 
 **部署障碍**:
-- Docker build 需要下载 go modules，网络超时
-- SSH 连接服务器不稳定，超时
+- SSH 连接服务器超时频繁（网络不稳定）
+- 需要完整的代码同步（包含 go.mod/go.sum 等）
 
-**替代方案**:
-- 代码已推送远程仓库 (commit: 8c375616)
-- 服务器可从 codeup.aliyun.com 拉取最新代码
-- 需要手动在服务器上执行: `cd /root/kaixuan/llm-gateway-go && git pull && docker build`
+**手动部署步骤**（需要在服务器上执行）：
+
+```bash
+# 在 14.103.112.184 服务器上执行：
+
+# 1. 同步完整代码（如果 git pull 失败，用以下方式）
+cd /root/kaixuan/llm-gateway-go
+rm -rf admin/ keys.go handler.go web/src/api.ts web/src/views/KeysView.vue web/src/views/KeyDetailView.vue  # 清理旧文件
+
+# 2. 重新传输所有修改的文件
+# 从本地通过 scp 或其他方式同步以下目录：
+# - admin/keys.go
+# - admin/handler.go
+# - web/src/api.ts
+# - web/src/views/KeysView.vue
+# - web/src/views/KeyDetailView.vue
+
+# 3. 重新构建镜像
+docker build --platform linux/amd64 -t kx-llm-gateway-go:latest .
+
+# 4. 重启 deployment
+kubectl -n pms-test rollout restart deployment/llm-gateway-go-deployment
+
+# 5. 验证
+curl http://127.0.0.1:10023/healthz
+curl http://127.0.0.1:10023/api/config/default-limits
+```
 
 ### 5. 代码提交与推送
 - [x] Git 提交代码变更
