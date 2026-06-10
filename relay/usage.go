@@ -33,12 +33,20 @@ func ExtractUsageFromChunk(payload string) UsageData {
 
 	result := UsageData{}
 
+	// prompt_tokens / input_tokens (Anthropic native)
 	if v, err := intValue(usage, "prompt_tokens"); err == nil {
 		result.PromptTokens = &v
+	} else if v, err := intValue(usage, "input_tokens"); err == nil {
+		result.PromptTokens = &v
 	}
+	// completion_tokens / output_tokens (Anthropic native)
 	if v, err := intValue(usage, "completion_tokens"); err == nil {
 		result.CompletionTokens = &v
+	} else if v, err := intValue(usage, "output_tokens"); err == nil {
+		result.CompletionTokens = &v
 	}
+
+	// cache_read: try 4 field name variants
 	if v, err := intValue(usage, "cache_read_input_tokens"); err == nil {
 		result.CacheReadTokens = &v
 	} else if v, err := intValue(usage, "cache_read_tokens"); err == nil {
@@ -54,6 +62,7 @@ func ExtractUsageFromChunk(payload string) UsageData {
 			}
 		}
 	}
+	// cache_write: try 3 field name variants
 	if v, err := intValue(usage, "cache_creation_input_tokens"); err == nil {
 		result.CacheWriteTokens = &v
 	} else if v, err := intValue(usage, "cache_write_tokens"); err == nil {
@@ -62,6 +71,18 @@ func ExtractUsageFromChunk(payload string) UsageData {
 		if detail, err := objVal(usage, "input_token_details"); err == nil {
 			if v, err := intValue(detail, "cache_creation"); err == nil {
 				result.CacheWriteTokens = &v
+			}
+		}
+	}
+
+	// total_tokens fallback: if we have total but missing prompt/completion, infer them
+	if (result.PromptTokens == nil || result.CompletionTokens == nil) && result.PromptTokens == nil {
+		if total, err := intValue(usage, "total_tokens"); err == nil && total > 0 {
+			if result.CompletionTokens != nil {
+				pt := total - *result.CompletionTokens
+				if pt >= 0 {
+					result.PromptTokens = &pt
+				}
 			}
 		}
 	}
