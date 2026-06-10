@@ -43,6 +43,11 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 select option { background: var(--sidebar); }
 
+input[type="radio"], input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
