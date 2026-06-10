@@ -543,6 +543,22 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 	}
 
+	// Fallback: if upstream did not return a usage block (e.g. minimax, certain
+	// volcengine pass-through responses), estimate tokens locally from the
+	// request/response text and mark the row so the UI can distinguish the
+	// estimated value from a real LLM-reported count.
+	if reqLog.PromptTokens == nil && reqLog.CompletionTokens == nil {
+		estPrompt := estimatePromptTokens(result.RequestBody)
+		estCompletion := estimateCompletionTokens(result.ResponseBody)
+		if estPrompt > 0 || estCompletion > 0 {
+			reqLog.PromptTokens = &estPrompt
+			reqLog.CompletionTokens = &estCompletion
+			reqLog.UsageSource = strPtr(UsageSourceEstimated)
+		}
+	} else if reqLog.UsageSource == nil {
+		reqLog.UsageSource = strPtr(UsageSourceLLM)
+	}
+
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
 		cost := CalcCost(CostInput{
 			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
@@ -555,15 +571,28 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
 		})
 		reqLog.CostUSD = cost
+		// For CNY-priced providers (cost_usd is intentionally nil) record the
+		// native-currency value in cost_display so /request-logs can show it.
+		if cost == nil && result.Candidate.Currency != "" && result.Candidate.Currency != "USD" {
+			cnyCost := CalcCost(CostInput{
+				PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
+				CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
+				CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
+				CacheWriteTokens:  floatPtrFromInt(reqLog.CacheWriteTokens),
+				PriceIn:          result.Candidate.PriceInPer1M,
+				PriceOut:         result.Candidate.PriceOutPer1M,
+				CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
+				CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
+			})
+			reqLog.CostDisplay = cnyCost
+			curr := result.Candidate.Currency
+			reqLog.CostCurrency = &curr
+		}
 	}
 
 	h.telemetryClient.EmitRequestLog(reqLog)
 }
 
-// recordFailedRequest persists a request_logs row for a request that failed before
-// reaching the streaming/non-streaming executor success path. This ensures the
-// /request-logs page shows failed requests (auth failures, no candidates, all
-// providers exhausted, upstream errors, etc.) with a full request body snapshot.
 func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
