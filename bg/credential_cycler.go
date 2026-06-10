@@ -131,7 +131,7 @@ func (c *CredentialCycler) updateHealth(ctx context.Context, credID int, status,
 	defer cancel()
 	c.db.Exec(execCtx, `
 		UPDATE credentials
-		SET health_status = $1, health_error = $2, health_checked_at = NOW()
+		SET health_status = $1, health_error = $2, health_checked_at = NOW(), health_source = 'probe'
 		WHERE id = $3
 	`, status, errMsg, credID)
 }
