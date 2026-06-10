@@ -101,19 +101,25 @@ const multiValues = computed<string[]>(() =>
   Array.isArray(props.modelValue) ? props.modelValue : []
 )
 
-function isChosen(raw: string): boolean {
-  if (props.mode === 'multi') return multiValues.value.includes(raw)
-  return singleValue.value === raw
+function pickPreferredName(v: AvailableVersion): string {
+  return v.canonical_name
 }
 
-function pick(raw: string) {
+function isChosen(name: string): boolean {
+  if (props.mode === 'multi') return multiValues.value.includes(name)
+  return singleValue.value === name
+}
+
+function pick(name: string) {
   if (props.mode === 'multi') {
     const cur = new Set(multiValues.value)
-    if (cur.has(raw)) cur.delete(raw)
-    else cur.add(raw)
+    if (cur.has(name)) cur.delete(name)
+    else cur.add(name)
     emit('update:modelValue', Array.from(cur))
+    freeText.value = ''
+    search.value = ''
   } else {
-    emit('update:modelValue', raw)
+    emit('update:modelValue', name)
     open.value = false
     search.value = ''
   }
@@ -134,6 +140,11 @@ function clear() {
 function submitFreeText() {
   const v = freeText.value.trim()
   if (!v) return
+  const first = filteredFamilies.value.flatMap((f) => sortedVersions(f.versions))[0]
+  if (first) {
+    pick(pickPreferredName(first))
+    return
+  }
   if (props.mode === 'multi') {
     if (!multiValues.value.includes(v)) {
       emit('update:modelValue', [...multiValues.value, v])
@@ -155,7 +166,7 @@ watch(() => props.modelValue, (v) => {
 
 // ── Filtered families based on search ──────────────────────────────────
 const filteredFamilies = computed<AvailableFamily[]>(() => {
-  const q = search.value.trim().toLowerCase()
+  const q = (props.mode === 'multi' && props.allowFreeText ? freeText.value : search.value).trim().toLowerCase()
   if (!q) return families.value
   return families.value
     .map((f) => {
@@ -182,12 +193,6 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
     if (a.featured !== b.featured) return a.featured ? -1 : 1
     return a.canonical_name.localeCompare(b.canonical_name)
   })
-}
-
-function pickPreferredRaw(v: AvailableVersion): string {
-  // Prefer the canonical name itself if it's a real raw_name; else first raw.
-  if (v.raw_names.includes(v.canonical_name)) return v.canonical_name
-  return v.raw_names[0] ?? v.canonical_name
 }
 
 function toggle() {
@@ -304,9 +309,9 @@ function closeOnBlur(e: FocusEvent) {
               :key="v.canonical_name"
               type="button"
               class="mp-version"
-              :class="{ chosen: isChosen(pickPreferredRaw(v)) }"
+              :class="{ chosen: isChosen(pickPreferredName(v)) }"
               :title="`${v.canonical_name} · ${v.provider_count} 个供应商 · ${v.raw_names.join(', ')}`"
-              @click="pick(pickPreferredRaw(v))"
+              @click="pick(pickPreferredName(v))"
             >
               <span class="mp-star" v-if="v.featured">★</span>
               <span class="mp-name">{{ v.display_name || v.canonical_name }}</span>
