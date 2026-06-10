@@ -989,7 +989,6 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
-	sets = append(sets, "updated_at = now()")
 	args = append(args, id)
 	argIdx++
 
