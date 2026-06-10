@@ -2191,50 +2191,16 @@ func (h *Handler) handleFreePoolCatalog(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	type catalogEntry struct {
-		CatalogCode        string   `json:"catalog_code"`
-		DisplayName        string   `json:"display_name"`
-		BaseURL            string   `json:"base_url"`
-		Models             []string `json:"models"`
-		LiveModels         []string `json:"live_models"`
-		ModelCountTemplate int      `json:"model_count_template"`
-		ModelCountLive     int      `json:"model_count_live"`
-		PoolRegistered     bool     `json:"pool_registered"`
-		RPMLimit           int      `json:"rpm_limit"`
-		SignupURL          string   `json:"signup_url"`
-		EnvVars            []string `json:"env_vars"`
-		AcquisitionMode    string   `json:"acquisition_mode"`
-		NeedsKey           bool     `json:"needs_key"`
-		EnvConfigured      bool     `json:"env_configured"`
+	registeredSet := make(map[string]struct{})
+	liveModelsByCode := make(map[string][]string)
+	for code, models := range registered {
+		registeredSet[code] = struct{}{}
+		if models != nil {
+			liveModelsByCode[code] = models
+		}
 	}
 
-	entries := make([]catalogEntry, 0, len(freeProviders))
-	for _, tpl := range freeProviders {
-		live := registered[tpl.catalogCode]
-		envConfigured := false
-		for _, ev := range tpl.envVars {
-			if os.Getenv(ev) != "" {
-				envConfigured = true
-				break
-			}
-		}
-		entries = append(entries, catalogEntry{
-			CatalogCode:        tpl.catalogCode,
-			DisplayName:        tpl.displayName,
-			BaseURL:            tpl.baseURL,
-			Models:             tpl.models,
-			LiveModels:         live,
-			ModelCountTemplate: len(tpl.models),
-			ModelCountLive:     len(live),
-			PoolRegistered:     len(live) > 0,
-			RPMLimit:           tpl.rpmLimit,
-			SignupURL:          tpl.signupURL,
-			EnvVars:            tpl.envVars,
-			AcquisitionMode:    tpl.acquisitionMode,
-			NeedsKey:           tpl.needsKey,
-			EnvConfigured:      envConfigured,
-		})
-	}
+	entries := buildFreePoolCatalog(registeredSet, liveModelsByCode)
 
 	writeJSON(w, http.StatusOK, map[string]any{"providers": entries})
 }
