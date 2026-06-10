@@ -84,6 +84,50 @@ function copyCode(key: string, text: string) {
   setTimeout(() => { copied.value = null }, 2000)
 }
 
+const testing = ref<string | null>(null)
+const testResult = ref<{ status: number; body: string; latency: number; error?: string } | null>(null)
+const testVisible = ref(false)
+
+async function testRequest() {
+  testing.value = 'chat'
+  testResult.value = null
+  testVisible.value = true
+  const start = performance.now()
+  try {
+    const resp = await fetch(`${baseUrl.value}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey.value}`,
+      },
+      body: JSON.stringify({
+        model: selectedModel.value,
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: 'Hello!' },
+        ],
+        max_tokens: 256,
+      }),
+    })
+    const latency = Math.round(performance.now() - start)
+    const text = await resp.text()
+    testResult.value = {
+      status: resp.status,
+      body: text.slice(0, 500),
+      latency,
+    }
+  } catch (err: any) {
+    testResult.value = {
+      status: 0,
+      body: '',
+      latency: Math.round(performance.now() - start),
+      error: err.message || String(err),
+    }
+  } finally {
+    testing.value = null
+  }
+}
+
 onMounted(async () => {
   try {
     providers.value = await getProviders()
@@ -122,9 +166,14 @@ onMounted(async () => {
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — Chat Completions</h4>
-        <button class="btn btn-ghost btn-sm" @click="copyCode('curl', curlExample)">
-          {{ copied === 'curl' ? '已复制!' : '复制' }}
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" @click="copyCode('curl', curlExample)">
+            {{ copied === 'curl' ? '已复制!' : '复制' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="testRequest()" :disabled="testing !== null">
+            {{ testing ? '测试中...' : '测试' }}
+          </button>
+        </div>
       </div>
       <pre class="code-block">{{ curlExample }}</pre>
     </div>
@@ -133,9 +182,14 @@ onMounted(async () => {
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python (openai SDK)</h4>
-        <button class="btn btn-ghost btn-sm" @click="copyCode('python', pythonExample)">
-          {{ copied === 'python' ? '已复制!' : '复制' }}
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" @click="copyCode('python', pythonExample)">
+            {{ copied === 'python' ? '已复制!' : '复制' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="testRequest()" :disabled="testing !== null">
+            {{ testing ? '测试中...' : '测试' }}
+          </button>
+        </div>
       </div>
       <pre class="code-block">{{ pythonExample }}</pre>
     </div>
@@ -144,9 +198,14 @@ onMounted(async () => {
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python — 流式输出 (Streaming)</h4>
-        <button class="btn btn-ghost btn-sm" @click="copyCode('stream', streamExample)">
-          {{ copied === 'stream' ? '已复制!' : '复制' }}
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" @click="copyCode('stream', streamExample)">
+            {{ copied === 'stream' ? '已复制!' : '复制' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="testRequest()" :disabled="testing !== null">
+            {{ testing ? '测试中...' : '测试' }}
+          </button>
+        </div>
       </div>
       <pre class="code-block">{{ streamExample }}</pre>
     </div>
@@ -155,9 +214,14 @@ onMounted(async () => {
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">JavaScript / TypeScript (openai SDK)</h4>
-        <button class="btn btn-ghost btn-sm" @click="copyCode('js', jsExample)">
-          {{ copied === 'js' ? '已复制!' : '复制' }}
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" @click="copyCode('js', jsExample)">
+            {{ copied === 'js' ? '已复制!' : '复制' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="testRequest()" :disabled="testing !== null">
+            {{ testing ? '测试中...' : '测试' }}
+          </button>
+        </div>
       </div>
       <pre class="code-block">{{ jsExample }}</pre>
     </div>
@@ -166,11 +230,30 @@ onMounted(async () => {
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — 列出可用模型</h4>
-        <button class="btn btn-ghost btn-sm" @click="copyCode('models', listModelsExample)">
-          {{ copied === 'models' ? '已复制!' : '复制' }}
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" @click="copyCode('models', listModelsExample)">
+            {{ copied === 'models' ? '已复制!' : '复制' }}
+          </button>
+          <button class="btn btn-primary btn-sm" @click="testRequest()" :disabled="testing !== null">
+            {{ testing ? '测试中...' : '测试' }}
+          </button>
+        </div>
       </div>
       <pre class="code-block">{{ listModelsExample }}</pre>
+    </div>
+
+    <!-- Test result panel -->
+    <div v-if="testVisible && testResult" class="card" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h4 style="margin:0">测试结果</h4>
+        <button class="btn btn-ghost btn-sm" @click="testVisible = false">关闭</button>
+      </div>
+      <div style="display:flex;gap:16px;margin-bottom:8px;font-size:13px">
+        <div><span class="cell-muted">状态：</span><span :class="testResult.status >= 200 && testResult.status < 300 ? 'badge badge-green' : 'badge badge-red'">{{ testResult.status }}</span></div>
+        <div><span class="cell-muted">延迟：</span>{{ testResult.latency }}ms</div>
+      </div>
+      <div v-if="testResult.error" class="alert alert-danger" style="margin:0">{{ testResult.error }}</div>
+      <pre v-else class="code-block" style="max-height:300px;overflow:auto;font-size:12px">{{ testResult.body }}</pre>
     </div>
   </div>
 </template>

@@ -248,23 +248,11 @@ function dateWindow(c: RoutingCandidate): string {
 
     <div class="card" v-if="resolution" style="margin-bottom:20px">
       <h4 style="margin:0 0 12px">模型解析</h4>
-      <div class="stat-grid">
-        <div class="stat-card">
-          <div class="stat-label">客户端模型</div>
-          <div class="stat-value" style="font-size:14px"><code>{{ resolution.client_model }}</code></div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">解析路径</div>
-          <div class="stat-value" style="font-size:14px">{{ resolution.resolution_path }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Canonical</div>
-          <div class="stat-value" style="font-size:14px">{{ resolution.canonical_name || '—' }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Raw 扩展</div>
-          <div class="stat-value" style="font-size:12px">{{ resolution.raw_models.join(', ') }}</div>
-        </div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px;align-items:baseline">
+        <div><span class="cell-muted">客户端模型：</span><code>{{ resolution.client_model }}</code></div>
+        <div><span class="cell-muted">解析路径：</span>{{ resolution.resolution_path }}</div>
+        <div><span class="cell-muted">Canonical：</span>{{ resolution.canonical_name || '—' }}</div>
+        <div><span class="cell-muted">Raw 扩展：</span><code style="font-size:11px">{{ resolution.raw_models.join(', ') }}</code></div>
       </div>
       <div v-if="resolution.plan_order.length" style="margin-top:12px;font-size:12px;color:var(--muted)">
         执行顺序（P2C+粘性）：
@@ -285,8 +273,8 @@ function dateWindow(c: RoutingCandidate): string {
       <div v-if="candidates.length === 0" class="alert alert-danger" style="margin:0">
         该模型暂无凭据配置，无法路由
       </div>
-      <div v-else-if="resolution?.plan_order.length === 0 && !showUnavailable" class="alert alert-danger" style="margin:0">
-        该模型暂无可用凭据 — 所有 {{ candidates.length }} 个候选均不可用（凭据限流/冷却/余额不足）
+      <div v-else-if="filteredCandidates.length === 0 && !showUnavailable" class="alert alert-danger" style="margin:0">
+        该模型暂无可用凭据 — {{ unavailableCount }} 个候选不可用（凭据限流/冷却/余额不足）
       </div>
       <table v-else-if="filteredCandidates.length > 0">
         <thead>
