@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -243,28 +244,166 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var m struct {
-		ID            int             `json:"id"`
-		CanonicalName string          `json:"canonical_name"`
-		DisplayName   string          `json:"display_name"`
-		Modality      string          `json:"modality"`
-		Status        string          `json:"status"`
-		Tags          json.RawMessage `json:"tags"`
-		InputPriceCNY float64         `json:"input_price_cny"`
-		OutputPriceCNY float64        `json:"output_price_cny"`
+	type modelRow struct {
+		ID             int             `json:"id"`
+		CanonicalName  string          `json:"canonical_name"`
+		DisplayName    string          `json:"display_name"`
+		Family         *string         `json:"family"`
+		Modality       string          `json:"modality"`
+		ContextWindow  *int            `json:"context_window"`
+		ParametersB    *float64        `json:"parameters_b"`
+		Notes          *string         `json:"notes"`
+		Status         string          `json:"status"`
+		DisabledReason *string         `json:"disabled_reason"`
+		Source         *string         `json:"source"`
+		Tags           json.RawMessage `json:"tags"`
+		TagsLocked     *bool           `json:"tags_locked"`
+		TagsUpdatedAt  *time.Time      `json:"tags_updated_at"`
+		CreatedAt      *time.Time      `json:"created_at"`
+		UpdatedAt      *time.Time      `json:"updated_at"`
+		InputPriceCNY  float64         `json:"input_price_cny"`
+		OutputPriceCNY float64         `json:"output_price_cny"`
 	}
+	m := modelRow{}
 	err := h.db.QueryRow(ctx, `
-		SELECT id, canonical_name, COALESCE(display_name,''), COALESCE(modality,'text'),
-		       COALESCE(status,'active'), COALESCE(tags,'[]'::jsonb),
+		SELECT id, canonical_name, COALESCE(display_name,''), family,
+		       COALESCE(modality,'text'), context_window, parameters_b,
+		       notes, COALESCE(status,'active'), disabled_reason, source,
+		       COALESCE(tags,'[]'::jsonb), tags_locked, tags_updated_at,
+		       created_at, updated_at,
 		       COALESCE(input_price_cny,0), COALESCE(output_price_cny,0)
 		FROM models_canonical WHERE id = $1
-	`, id).Scan(&m.ID, &m.CanonicalName, &m.DisplayName, &m.Modality, &m.Status, &m.Tags,
-		&m.InputPriceCNY, &m.OutputPriceCNY)
+	`, id).Scan(&m.ID, &m.CanonicalName, &m.DisplayName, &m.Family, &m.Modality,
+		&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason,
+		&m.Source, &m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.CreatedAt,
+		&m.UpdatedAt, &m.InputPriceCNY, &m.OutputPriceCNY)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "model not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, m)
+
+	type aliasRow struct {
+		ID           int       `json:"id"`
+		RawName      string    `json:"raw_name"`
+		Quantization *string   `json:"quantization"`
+		Surface      *string   `json:"surface"`
+		Status       string    `json:"status"`
+		Notes        *string   `json:"notes"`
+		UpdatedAt    time.Time `json:"updated_at"`
+	}
+	aliases := make([]aliasRow, 0)
+	aliasRows, err := h.db.Query(ctx, `
+		SELECT id, raw_name, quantization, surface, COALESCE(status,'active'),
+		       notes, COALESCE(updated_at, NOW())
+		FROM model_aliases WHERE canonical_id = $1
+		ORDER BY status, raw_name
+	`, id)
+	if err != nil {
+		slog.Warn("getModel aliases query failed", "error", err, "id", id)
+	} else {
+		for aliasRows.Next() {
+			var a aliasRow
+			if err := aliasRows.Scan(&a.ID, &a.RawName, &a.Quantization, &a.Surface,
+				&a.Status, &a.Notes, &a.UpdatedAt); err != nil {
+				continue
+			}
+			aliases = append(aliases, a)
+		}
+		aliasRows.Close()
+	}
+
+	type offerRow struct {
+		ProviderID        int      `json:"provider_id"`
+		ProviderName      string   `json:"provider_name"`
+		CatalogCode       *string  `json:"catalog_code"`
+		BaseURL           *string  `json:"base_url"`
+		ProviderEnabled   bool     `json:"provider_enabled"`
+		CredentialID      int      `json:"credential_id"`
+		CredentialLabel   *string  `json:"credential_label"`
+		CredentialStatus  *string  `json:"credential_status"`
+		HealthStatus      *string  `json:"health_status"`
+		ConcurrencyLimit  *int     `json:"concurrency_limit"`
+		RawModelName      string   `json:"raw_model_name"`
+		StandardizedName  *string  `json:"standardized_name"`
+		P95LatencyMs      *float64 `json:"p95_latency_ms"`
+		SuccessRate       *float64 `json:"success_rate"`
+		Available         *bool    `json:"available"`
+		InputPrice        *float64 `json:"input_price"`
+		OutputPrice       *float64 `json:"output_price"`
+		CacheReadPrice    *float64 `json:"cache_read_price"`
+		CacheWritePrice   *float64 `json:"cache_write_price"`
+	}
+	offers := make([]offerRow, 0)
+	offerRows, err := h.db.Query(ctx, `
+		SELECT DISTINCT
+		    p.id AS provider_id,
+		    COALESCE(p.display_name, '') AS provider_name,
+		    p.catalog_code,
+		    p.base_url,
+		    COALESCE(p.enabled, FALSE) AS provider_enabled,
+		    c.id AS credential_id,
+		    c.label AS credential_label,
+		    c.status AS credential_status,
+		    c.health_status,
+		    c.concurrency_limit,
+		    COALESCE(mo.raw_model_name, '') AS raw_model_name,
+		    mo.standardized_name,
+		    mo.p95_latency_ms,
+		    mo.success_rate,
+		    mo.available,
+		    COALESCE(mo.unit_price_in_per_1m, mc.input_price_cny) AS input_price,
+		    COALESCE(mo.unit_price_out_per_1m, mc.output_price_cny) AS output_price,
+		    mo.cache_read_price_per_1m,
+		    mo.cache_write_price_per_1m
+		FROM model_offers mo
+		JOIN credentials c ON c.id = mo.credential_id
+		JOIN providers   p ON p.id = c.provider_id
+		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		WHERE mo.canonical_id = $1
+		   OR mo.raw_model_name IN (SELECT raw_name FROM model_aliases WHERE canonical_id = $1)
+		ORDER BY provider_name, credential_id
+	`, id)
+	if err != nil {
+		slog.Warn("getModel offers query failed", "error", err, "id", id)
+	} else {
+		for offerRows.Next() {
+			var o offerRow
+			if err := offerRows.Scan(&o.ProviderID, &o.ProviderName, &o.CatalogCode,
+				&o.BaseURL, &o.ProviderEnabled, &o.CredentialID, &o.CredentialLabel,
+				&o.CredentialStatus, &o.HealthStatus, &o.ConcurrencyLimit,
+				&o.RawModelName, &o.StandardizedName, &o.P95LatencyMs, &o.SuccessRate,
+				&o.Available, &o.InputPrice, &o.OutputPrice, &o.CacheReadPrice,
+				&o.CacheWritePrice); err != nil {
+				continue
+			}
+			offers = append(offers, o)
+		}
+		offerRows.Close()
+	}
+
+	resp := map[string]any{
+		"id":              m.ID,
+		"canonical_name":  m.CanonicalName,
+		"display_name":    m.DisplayName,
+		"family":          m.Family,
+		"modality":        m.Modality,
+		"context_window":  m.ContextWindow,
+		"parameters_b":    m.ParametersB,
+		"notes":           m.Notes,
+		"status":          m.Status,
+		"disabled_reason": m.DisabledReason,
+		"source":          m.Source,
+		"tags":            m.Tags,
+		"tags_locked":     m.TagsLocked,
+		"tags_updated_at": m.TagsUpdatedAt,
+		"created_at":      m.CreatedAt,
+		"updated_at":      m.UpdatedAt,
+		"input_price_cny": m.InputPriceCNY,
+		"output_price_cny": m.OutputPriceCNY,
+		"aliases":         aliases,
+		"offers":          offers,
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
@@ -288,40 +427,144 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
+var knownFamilyMetadata = map[string]struct {
+	DisplayName string
+	Vendor      string
+}{
+	"openai-gpt":       {"OpenAI GPT", "OpenAI"},
+	"anthropic-claude": {"Anthropic Claude", "Anthropic"},
+	"google-gemini":    {"Google Gemini", "Google"},
+	"deepseek":         {"DeepSeek", "DeepSeek"},
+	"qwen":             {"Qwen (通义千问)", "Alibaba"},
+	"doubao":           {"Doubao (豆包)", "ByteDance"},
+	"zhipu-glm":        {"Zhipu GLM", "Zhipu AI"},
+	"meta-llama":       {"Meta Llama", "Meta"},
+	"minimax":          {"MiniMax", "MiniMax"},
+	"xiaomi-mimo":      {"Xiaomi MiMo", "小米"},
+}
+
+func familyDisplayAndVendor(familyID string) (string, string) {
+	if familyID == "" {
+		return "", ""
+	}
+	if m, ok := knownFamilyMetadata[familyID]; ok {
+		return m.DisplayName, m.Vendor
+	}
+	display := familyID
+	parts := strings.SplitN(familyID, "-", 2)
+	if len(parts) == 2 {
+		display = parts[0] + " " + titleWord(parts[1])
+	} else {
+		display = titleWord(familyID)
+	}
+	return display, ""
+}
+
+func titleWord(s string) string {
+	if s == "" {
+		return s
+	}
+	upper := strings.ToUpper(s[:1])
+	if len(s) == 1 {
+		return upper
+	}
+	return upper + s[1:]
+}
+
 func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	type family struct {
+		ID          string  `json:"id"`
+		DisplayName string  `json:"display_name"`
+		Vendor      string  `json:"vendor"`
+		Status      string  `json:"status"`
+		Source      string  `json:"source"`
+		Notes       *string `json:"notes"`
+		ModelCount  int     `json:"model_count"`
+	}
+	items := make(map[string]*family)
+
 	rows, err := h.db.Query(ctx, `
 		SELECT mf.id, mf.display_name, COALESCE(mf.vendor,''),
-		       COUNT(DISTINCT mc.id) AS model_count
+		       COALESCE(mf.status,'active'), COALESCE(mf.source,'registered'),
+		       mf.notes,
+		       COUNT(mc.id) AS model_count
 		FROM model_families mf
-		LEFT JOIN models_canonical mc ON mc.family = mf.id AND mc.status = 'active'
-		WHERE mf.status = 'active'
-		GROUP BY mf.id, mf.display_name, mf.vendor
-		ORDER BY mf.display_name
+		LEFT JOIN models_canonical mc ON mc.family = mf.id
+		GROUP BY mf.id, mf.display_name, mf.vendor, mf.status, mf.source, mf.notes
+		ORDER BY mf.status, mf.display_name
 	`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("listModelFamilies query failed", "error", err)
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
 		return
 	}
-	defer rows.Close()
-
-	type family struct {
-		ID          string `json:"id"`
-		DisplayName string `json:"display_name"`
-		Vendor      string `json:"vendor"`
-		ModelCount  int    `json:"model_count"`
-	}
-	families := make([]family, 0)
 	for rows.Next() {
 		var f family
-		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.ModelCount); err != nil {
+		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.Status, &f.Source, &f.Notes, &f.ModelCount); err != nil {
+			slog.Warn("listModelFamilies scan failed", "error", err)
 			continue
 		}
-		families = append(families, f)
+		items[f.ID] = &f
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": families})
+	rows.Close()
+
+	derivedRows, err := h.db.Query(ctx, `
+		SELECT mc.family AS id, COUNT(mc.id) AS model_count
+		FROM models_canonical mc
+		LEFT JOIN model_families mf ON mf.id = mc.family
+		WHERE mc.family IS NOT NULL
+		  AND mc.family <> ''
+		  AND mf.id IS NULL
+		GROUP BY mc.family
+	`)
+	if err != nil {
+		slog.Warn("listModelFamilies derived query failed", "error", err)
+	} else {
+		for derivedRows.Next() {
+			var id string
+			var modelCount int
+			if err := derivedRows.Scan(&id, &modelCount); err != nil {
+				continue
+			}
+			display, vendor := familyDisplayAndVendor(id)
+			if display == "" {
+				display = id
+			}
+			items[id] = &family{
+				ID:          id,
+				DisplayName: display,
+				Vendor:      vendor,
+				Status:      "active",
+				Source:      "derived",
+				Notes:       nil,
+				ModelCount:  modelCount,
+			}
+		}
+		derivedRows.Close()
+	}
+
+	list := make([]*family, 0, len(items))
+	for _, v := range items {
+		list = append(list, v)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		si, sj := list[i].Status, list[j].Status
+		if si != sj {
+			return si < sj
+		}
+		di, dj := list[i].DisplayName, list[j].DisplayName
+		if di == "" {
+			di = list[i].ID
+		}
+		if dj == "" {
+			dj = list[j].ID
+		}
+		return di < dj
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"items": list})
 }
 
 func (h *Handler) getTagMatrix(w http.ResponseWriter, r *http.Request) {
