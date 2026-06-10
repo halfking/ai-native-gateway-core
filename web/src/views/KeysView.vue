@@ -196,6 +196,22 @@ function fmtCost(n: number | string | null | undefined): string {
   return '$' + Number(n).toFixed(2)
 }
 
+function formatTokens(n: number | string | null | undefined): string {
+  if (n == null) return '0'
+  const v = Number(n)
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M'
+  if (v >= 1_000) return (v / 1_000).toFixed(1) + 'k'
+  return String(v)
+}
+
+function formatRequests(n: number | string | null | undefined): string {
+  if (n == null) return '0'
+  const v = Number(n)
+  if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M'
+  if (v >= 1_000) return (v / 1_000).toFixed(1) + 'k'
+  return String(v)
+}
+
 async function copyText(val: string): Promise<void> {
   if (navigator.clipboard?.writeText && window.isSecureContext) {
     await navigator.clipboard.writeText(val)
@@ -427,6 +443,9 @@ onBeforeUnmount(() => {
             <th>状态</th>
             <th>预算</th>
             <th>速率限制</th>
+            <th>总请求</th>
+            <th>总 Token</th>
+            <th>累计费用</th>
             <th>到期</th>
             <th>最后使用</th>
             <th>备注</th>
@@ -474,6 +493,13 @@ onBeforeUnmount(() => {
             </td>
             <td>{{ k.budget_usd != null ? fmtCost(k.budget_usd) : '无限制' }}</td>
             <td>{{ rateLimitLabel(k) }}</td>
+            <td style="font-size:12px;color:var(--muted);text-align:right">{{ formatRequests(k.total_requests) }}</td>
+            <td style="font-size:12px;color:var(--muted);text-align:right" :title="`入 ${formatTokens(k.total_prompt_tokens)} / 出 ${formatTokens(k.total_completion_tokens)}`">
+              {{ formatTokens(k.total_prompt_tokens + k.total_completion_tokens) }}
+            </td>
+            <td style="font-size:12px;text-align:right" :class="{ 'has-cost': k.total_cost_usd > 0 }">
+              {{ k.total_cost_usd > 0 ? fmtCost(k.total_cost_usd) : '—' }}
+            </td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.expires_at) }}</td>
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
@@ -698,6 +724,11 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 4px;
   align-items: center;
+}
+
+.has-cost {
+  color: var(--accent, #d4a017);
+  font-weight: 600;
 }
 
 .key-display {
