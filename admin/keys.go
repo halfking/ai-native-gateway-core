@@ -122,6 +122,17 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.setKeyEnabled(w, r, id, true)
+	case "limits":
+		if r.Method != http.MethodPatch {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid id")
+			return
+		}
+		h.updateKeyLimits(w, r, id)
 	case "detail":
 		// idPart is "detail", actual ID is in subPath (e.g. /api/keys/detail/146)
 		if subPath != "" {
@@ -156,17 +167,6 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 			h.patchApplicationProfile(w, r, idStr)
 		} else {
 			http.NotFound(w, r)
-		}
-	case "limits":
-		if r.Method == http.MethodPatch {
-			id, err := strconv.Atoi(idStr)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid id")
-				return
-			}
-			h.updateKeyLimits(w, r, id)
-		} else {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	default:
 		if subPath == "" {
@@ -387,6 +387,75 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
+func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int) {
+	var body struct {
+		RateLimitRPM        *int `json:"rate_limit_rpm"`
+		RateLimitConcurrent *int `json:"rate_limit_concurrent"`
+		RateLimitTPM        *int `json:"rate_limit_tpm"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var exists bool
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_keys WHERE id = $1)`, id).Scan(&exists); err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "api_key not found")
+		return
+	}
+
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	argIdx := 1
+	if body.RateLimitRPM != nil {
+		sets = append(sets, fmt.Sprintf("rate_limit_rpm = $%d", argIdx))
+		args = append(args, *body.RateLimitRPM)
+		argIdx++
+	}
+	if body.RateLimitConcurrent != nil {
+		sets = append(sets, fmt.Sprintf("rate_limit_concurrent = $%d", argIdx))
+		args = append(args, *body.RateLimitConcurrent)
+		argIdx++
+	}
+	if body.RateLimitTPM != nil {
+		sets = append(sets, fmt.Sprintf("rate_limit_tpm = $%d", argIdx))
+		args = append(args, *body.RateLimitTPM)
+		argIdx++
+	}
+	if len(sets) == 0 {
+		writeError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+
+	args = append(args, id)
+	if _, err := h.db.Exec(ctx,
+		fmt.Sprintf("UPDATE api_keys SET %s WHERE id = $%d", strings.Join(sets, ", "), argIdx),
+		args...,
+	); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+
+	resp := map[string]any{"status": "ok", "id": id}
+	if body.RateLimitRPM != nil {
+		resp["rate_limit_rpm"] = *body.RateLimitRPM
+	}
+	if body.RateLimitConcurrent != nil {
+		resp["rate_limit_concurrent"] = *body.RateLimitConcurrent
+	}
+	if body.RateLimitTPM != nil {
+		resp["rate_limit_tpm"] = *body.RateLimitTPM
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		APIKey string `json:"api_key"`
@@ -465,11 +534,17 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE api_key_id = $1`, req.APIKeyID).Scan(&spent)
 
 	exceeded := budgetUSD != nil && spent >= *budgetUSD
+	var remainingUSD *float64
+	if budgetUSD != nil {
+		r := *budgetUSD - spent
+		remainingUSD = &r
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"api_key_id": req.APIKeyID,
-		"budget_usd": budgetUSD,
-		"spent_usd":  spent,
-		"exceeded":   exceeded,
+		"api_key_id":    req.APIKeyID,
+		"budget_usd":    budgetUSD,
+		"spent_usd":     spent,
+		"remaining_usd": remainingUSD,
+		"exceeded":      exceeded,
 	})
 }
 
@@ -479,23 +554,29 @@ func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
 	includeRevoked := includeRevokedKeys(r)
 
 	var k struct {
-		ID              int      `json:"id"`
-		KeyPrefix       string   `json:"key_prefix"`
-		OwnerUser       *string  `json:"owner_user"`
-		Enabled         bool     `json:"enabled"`
-		BudgetUSD       *float64 `json:"budget_usd"`
-		RateLimitRPM    *int     `json:"rate_limit_rpm"`
-		ApplicationCode string   `json:"application_code"`
+		ID                   int      `json:"id"`
+		KeyPrefix            string   `json:"key_prefix"`
+		OwnerUser            *string  `json:"owner_user"`
+		Enabled              bool     `json:"enabled"`
+		BudgetUSD            *float64 `json:"budget_usd"`
+		RateLimitRPM         *int     `json:"rate_limit_rpm"`
+		RateLimitConcurrent  *int     `json:"rate_limit_concurrent"`
+		RateLimitTPM         *int     `json:"rate_limit_tpm"`
+		ApplicationCode      string   `json:"application_code"`
 	}
 	err := h.db.QueryRow(ctx, `
 		SELECT ak.id, COALESCE(ak.key_prefix,''), ak.owner_user, ak.enabled,
-		       ak.budget_usd::float8, ak.rate_limit_rpm, app.code
+		       ak.budget_usd::float8, ak.rate_limit_rpm,
+		       ak.rate_limit_concurrent, ak.rate_limit_tpm,
+		       app.code
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.id = $1 AND ak.tenant_id = 'default'
 		  AND ($2 OR COALESCE(ak.status, 'active') <> 'revoked')
 	`, id, includeRevoked).Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
-		&k.BudgetUSD, &k.RateLimitRPM, &k.ApplicationCode)
+		&k.BudgetUSD, &k.RateLimitRPM,
+		&k.RateLimitConcurrent, &k.RateLimitTPM,
+		&k.ApplicationCode)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
@@ -867,69 +948,3 @@ func (h *Handler) patchApplicationProfile(w http.ResponseWriter, r *http.Request
 	})
 }
 
-func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, keyID int) {
-	var req struct {
-		RateLimitRPM       *int `json:"rate_limit_rpm"`
-		RateLimitConcurrent *int `json:"rate_limit_concurrent"`
-		RateLimitTPM       *int `json:"rate_limit_tpm"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	// Build dynamic UPDATE query
-	setClauses := []string{}
-	args := []any{}
-	argIdx := 1
-
-	if req.RateLimitRPM != nil {
-		setClauses = append(setClauses, fmt.Sprintf("rate_limit_rpm = $%d", argIdx))
-		args = append(args, *req.RateLimitRPM)
-		argIdx++
-	}
-	if req.RateLimitConcurrent != nil {
-		setClauses = append(setClauses, fmt.Sprintf("rate_limit_concurrent = $%d", argIdx))
-		args = append(args, *req.RateLimitConcurrent)
-		argIdx++
-	}
-	if req.RateLimitTPM != nil {
-		setClauses = append(setClauses, fmt.Sprintf("rate_limit_tpm = $%d", argIdx))
-		args = append(args, *req.RateLimitTPM)
-		argIdx++
-	}
-
-	if len(setClauses) == 0 {
-		writeError(w, http.StatusBadRequest, "no fields to update")
-		return
-	}
-
-	setClauses = append(setClauses, "updated_at = now()")
-	args = append(args, keyID)
-
-	query := fmt.Sprintf(`
-		UPDATE api_keys
-		SET %s
-		WHERE id = $%d
-		RETURNING id, rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm
-	`, strings.Join(setClauses, ", "), argIdx)
-
-	var id int
-	var rpm, conc, tpm *int
-	err := h.db.QueryRow(ctx, query, args...).Scan(&id, &rpm, &conc, &tpm)
-	if err != nil {
-		slog.Error("updateKeyLimits failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to update key limits")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                "ok",
-		"rate_limit_rpm":        rpm,
-		"rate_limit_concurrent": conc,
-		"rate_limit_tpm":        tpm,
-	})
-}

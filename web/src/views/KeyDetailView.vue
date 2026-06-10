@@ -271,36 +271,36 @@ watch(keyId, async () => {
 
             <div class="form-group">
               <label>RPM（每分钟请求数）</label>
-              <select v-model="rpmMode" class="input">
-                <option value="default">继承默认</option>
-                <option value="unlimited">不限制</option>
-                <option value="custom">自定义</option>
-              </select>
-              <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="0" class="input" style="margin-top:4px" />
+<div class="limit-options">
+                <label><input type="radio" v-model="rpmMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="rpmMode" value="unlimited"> 无限制</label>
+                <label><input type="radio" v-model="rpmMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" placeholder="输入 RPM">
             </div>
 
             <div class="form-group">
-              <label>并发数</label>
-              <select v-model="concurrentMode" class="input">
-                <option value="default">继承默认</option>
-                <option value="unlimited">不限制</option>
-                <option value="custom">自定义</option>
-              </select>
-              <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="0" class="input" style="margin-top:4px" />
+              <label>并发（同时请求数）</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="concurrentMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="concurrentMode" value="unlimited"> 无限制</label>
+                <label><input type="radio" v-model="concurrentMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" placeholder="输入并发数">
             </div>
 
             <div class="form-group">
-              <label>TPM（每分钟 token 数）</label>
-              <select v-model="tpmMode" class="input">
-                <option value="default">继承默认</option>
-                <option value="unlimited">不限制</option>
-                <option value="custom">自定义</option>
-              </select>
-              <input v-if="tpmMode === 'custom'" v-model.number="limitsForm.rate_limit_tpm" type="number" min="0" class="input" style="margin-top:4px" />
+              <label>TPM（每分钟 Token 数）</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="tpmMode" value="default"> 不限制</label>
+                <label><input type="radio" v-model="tpmMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="tpmMode === 'custom'" v-model.number="limitsForm.rate_limit_tpm" type="number" min="1" placeholder="输入 TPM">
             </div>
 
             <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-              <button class="btn btn-ghost" @click="showLimitsEditor = false">取消</button>
+              <button class="btn btn-ghost" @click="showLimitsEditor = false" :disabled="limitsSaving">取消</button>
+
               <button class="btn btn-primary" @click="saveLimits" :disabled="limitsSaving">
                 {{ limitsSaving ? '保存中…' : '保存' }}
               </button>
@@ -686,5 +686,36 @@ watch(keyId, async () => {
 .empty.small {
   padding: 24px;
   font-size: 13px;
+}
+
+.key-info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.key-info-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.limit-options {
+  display: flex;
+  gap: 16px;
+  flex-wrap: nowrap;
+  margin-bottom: 8px;
+}
+
+.limit-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.limit-options input[type="radio"] {
+  width: auto;
 }
 </style>
