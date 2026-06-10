@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,34 +13,38 @@ import (
 )
 
 type decisionLogInput struct {
-	RequestID          string   `json:"request_id"`
-	IdempotencyKey     *string  `json:"idempotency_key,omitempty"`
-	TenantID           string   `json:"tenant_id"`
-	APIKeyID           *int     `json:"api_key_id,omitempty"`
-	Model              string   `json:"model"`
-	ChosenCredentialID *int     `json:"chosen_credential_id,omitempty"`
-	ChosenProviderID   *int     `json:"chosen_provider_id,omitempty"`
-	Tier               *int     `json:"tier,omitempty"`
-	CandidatesTried    int      `json:"candidates_tried"`
-	LatencyMs          int      `json:"latency_ms"`
-	Success            bool     `json:"success"`
-	ErrorClass         *string  `json:"error_class,omitempty"`
-	PromptTokens       *int     `json:"prompt_tokens,omitempty"`
-	CompletionTokens   *int     `json:"completion_tokens,omitempty"`
-	CostUSD            *float64 `json:"cost_usd,omitempty"`
-	RequestBytes       *int     `json:"request_bytes,omitempty"`
-	ResponseBytes      *int     `json:"response_bytes,omitempty"`
-	ClientModel        *string  `json:"client_model,omitempty"`
-	ResolvedRawModel   *string  `json:"resolved_raw_model,omitempty"`
-	OutboundModel      *string  `json:"outbound_model,omitempty"`
-	StickyHit          *bool    `json:"sticky_hit,omitempty"`
-	ClientProfile      *string  `json:"client_profile,omitempty"`
-	RequestMode        *string  `json:"request_mode,omitempty"`
-	IdentityHash       *string  `json:"identity_hash,omitempty"`
-	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
-	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
-	FailureStage       *string  `json:"failure_stage,omitempty"`
-	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
+	RequestID           string          `json:"request_id"`
+	IdempotencyKey      *string         `json:"idempotency_key,omitempty"`
+	TenantID            string          `json:"tenant_id"`
+	APIKeyID            *int            `json:"api_key_id,omitempty"`
+	Model               string          `json:"model"`
+	ChosenCredentialID  *int            `json:"chosen_credential_id,omitempty"`
+	ChosenProviderID    *int            `json:"chosen_provider_id,omitempty"`
+	Tier                *int            `json:"tier,omitempty"`
+	CandidatesTried     int             `json:"candidates_tried"`
+	LatencyMs           int             `json:"latency_ms"`
+	Success             bool            `json:"success"`
+	ErrorClass          *string         `json:"error_class,omitempty"`
+	PromptTokens        *int            `json:"prompt_tokens,omitempty"`
+	CompletionTokens    *int            `json:"completion_tokens,omitempty"`
+	CostUSD             *float64        `json:"cost_usd,omitempty"`
+	RequestBytes        *int            `json:"request_bytes,omitempty"`
+	ResponseBytes       *int            `json:"response_bytes,omitempty"`
+	ClientModel         *string         `json:"client_model,omitempty"`
+	ResolvedRawModel    *string         `json:"resolved_raw_model,omitempty"`
+	OutboundModel       *string         `json:"outbound_model,omitempty"`
+	StickyHit           *bool           `json:"sticky_hit,omitempty"`
+	ClientProfile       *string         `json:"client_profile,omitempty"`
+	RequestMode         *string         `json:"request_mode,omitempty"`
+	IdentityHash        *string         `json:"identity_hash,omitempty"`
+	TransformRuleID     *string         `json:"transform_rule_id,omitempty"`
+	EgressProtocol      *string         `json:"egress_protocol,omitempty"`
+	FailureStage        *string         `json:"failure_stage,omitempty"`
+	FailureDetailCode   *string         `json:"failure_detail_code,omitempty"`
+	ResolutionPath      *string         `json:"resolution_path,omitempty"`
+	CanonicalModel      *string         `json:"canonical_model,omitempty"`
+	ResolutionRawModels []string        `json:"resolution_raw_models,omitempty"`
+	DecisionTrace       json.RawMessage `json:"decision_trace,omitempty"`
 }
 
 type requestLogInput struct {
@@ -157,6 +162,8 @@ func (t *telemetryIngester) flush(batch []any) {
 }
 
 func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) {
+	rawModelsJSON, _ := json.Marshal(coalesceRawModels(e.ResolutionRawModels))
+	traceJSON := coalesceTrace(e.DecisionTrace)
 	_, err := t.db.Exec(ctx, `
 		INSERT INTO routing_decision_log (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
@@ -166,7 +173,8 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 			request_bytes, response_bytes,
 			client_model, resolved_raw_model, sticky_hit, client_profile,
 			outbound_model, request_mode, identity_hash, transform_rule_id,
-			egress_protocol, failure_stage, failure_detail_code
+			egress_protocol, failure_stage, failure_detail_code,
+			resolution_path, canonical_model, resolution_raw_models, decision_trace
 		) VALUES (
 			now(), $1::uuid, $2, $3, $4,
 			$5, $6, $7, $8,
@@ -175,7 +183,8 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 			$16, $17,
 			$18, $19, $20, $21,
 			$22, $23, $24, $25,
-			$26, $27, $28
+			$26, $27, $28,
+			$29, $30, CAST($31 AS jsonb), CAST($32 AS jsonb)
 		)
 	`,
 		e.RequestID, e.IdempotencyKey, nonEmptyDefault(e.TenantID), e.APIKeyID,
@@ -186,6 +195,7 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 		e.ClientModel, e.ResolvedRawModel, e.StickyHit, e.ClientProfile,
 		e.OutboundModel, e.RequestMode, e.IdentityHash, e.TransformRuleID,
 		e.EgressProtocol, e.FailureStage, e.FailureDetailCode,
+		e.ResolutionPath, e.CanonicalModel, rawModelsJSON, traceJSON,
 	)
 	if err != nil {
 		slog.Warn("telemetry ingest decision log failed", "error", err)
@@ -305,6 +315,8 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 	} else if h.db != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		rawModelsJSON, _ := json.Marshal(coalesceRawModels(entry.ResolutionRawModels))
+		traceJSON := coalesceTrace(entry.DecisionTrace)
 		_, err := h.db.Exec(ctx, `
 			INSERT INTO routing_decision_log (
 				ts, request_id, idempotency_key, tenant_id, api_key_id,
@@ -314,7 +326,8 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 				request_bytes, response_bytes,
 				client_model, resolved_raw_model, sticky_hit, client_profile,
 				outbound_model, request_mode, identity_hash, transform_rule_id,
-				egress_protocol, failure_stage, failure_detail_code
+				egress_protocol, failure_stage, failure_detail_code,
+				resolution_path, canonical_model, resolution_raw_models, decision_trace
 			) VALUES (
 				now(), $1::uuid, $2, $3, $4,
 				$5, $6, $7, $8,
@@ -323,7 +336,8 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 				$16, $17,
 				$18, $19, $20, $21,
 				$22, $23, $24, $25,
-				$26, $27, $28
+				$26, $27, $28,
+				$29, $30, CAST($31 AS jsonb), CAST($32 AS jsonb)
 			)
 		`,
 			entry.RequestID, entry.IdempotencyKey, nonEmptyDefault(entry.TenantID), entry.APIKeyID,
@@ -334,6 +348,7 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 			entry.ClientModel, entry.ResolvedRawModel, entry.StickyHit, entry.ClientProfile,
 			entry.OutboundModel, entry.RequestMode, entry.IdentityHash, entry.TransformRuleID,
 			entry.EgressProtocol, entry.FailureStage, entry.FailureDetailCode,
+			entry.ResolutionPath, entry.CanonicalModel, rawModelsJSON, traceJSON,
 		)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "insert failed")
@@ -419,6 +434,20 @@ func nonEmptyDefault(s string) string {
 		return "default"
 	}
 	return s
+}
+
+func coalesceRawModels(models []string) []string {
+	if models == nil {
+		return []string{}
+	}
+	return models
+}
+
+func coalesceTrace(trace json.RawMessage) []byte {
+	if len(trace) == 0 {
+		return []byte("{}")
+	}
+	return trace
 }
 
 func calcTotal(a, b *int) *int {
