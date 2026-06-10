@@ -499,16 +499,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 
 	if capture != nil {
 		m := capture.SummaryAsMap()
-		if v, ok := m["prompt_tokens"].(int); ok {
+		// Only set pointers when the captured value is non-zero. Some providers
+		// (e.g. minimax) include `"usage": null` in every SSE chunk, so the
+		// stream summary may have the keys present with value 0. Setting a
+		// non-nil *int to 0 would otherwise suppress the estimator fallback
+		// below (because the nil-check would be false).
+		if v, ok := m["prompt_tokens"].(int); ok && v > 0 {
 			reqLog.PromptTokens = &v
 		}
-		if v, ok := m["completion_tokens"].(int); ok {
+		if v, ok := m["completion_tokens"].(int); ok && v > 0 {
 			reqLog.CompletionTokens = &v
 		}
-		if v, ok := m["cache_read_tokens"].(int); ok {
+		if v, ok := m["cache_read_tokens"].(int); ok && v > 0 {
 			reqLog.CacheReadTokens = &v
 		}
-		if v, ok := m["cache_write_tokens"].(int); ok {
+		if v, ok := m["cache_write_tokens"].(int); ok && v > 0 {
 			reqLog.CacheWriteTokens = &v
 		}
 		if v, ok := m["stream_first_chunk_ms"].(int); ok {
@@ -547,7 +552,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	// volcengine pass-through responses), estimate tokens locally from the
 	// request/response text and mark the row so the UI can distinguish the
 	// estimated value from a real LLM-reported count.
-	if reqLog.PromptTokens == nil && reqLog.CompletionTokens == nil {
+	// Check both nil AND zero: providers like minimax emit `"usage": null` in
+	// every SSE chunk, which results in stream-captured pointers to 0 that
+	// would otherwise suppress this fallback.
+	promptZero := reqLog.PromptTokens == nil || *reqLog.PromptTokens == 0
+	completionZero := reqLog.CompletionTokens == nil || *reqLog.CompletionTokens == 0
+	if promptZero && completionZero {
 		estPrompt := estimatePromptTokens(result.RequestBody)
 		estCompletion := estimateCompletionTokens(result.ResponseBody)
 		if estPrompt > 0 || estCompletion > 0 {
