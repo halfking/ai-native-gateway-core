@@ -3,6 +3,7 @@ import { computed, ref, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, type ApiKey, type KeyCreatedResponse, type DefaultLimits } from '../api'
 import { store, clearApiKey } from '../store'
+import FilterInput from '../components/FilterInput.vue'
 
 const router = useRouter()
 
@@ -14,6 +15,7 @@ const error = ref('')
 const activeTab = ref<'all' | 'active' | 'pending' | 'closed'>('active')
 const filterApp = ref('')
 const filterProfile = ref('')
+const filterOwner = ref('')
 
 function isExpired(k: ApiKey): boolean {
   if (!k.expires_at) return false
@@ -64,6 +66,10 @@ const filteredKeys = computed(() => {
   if (filterProfile.value) {
     list = list.filter((k) => (k.default_client_profile || '') === filterProfile.value)
   }
+  if (filterOwner.value) {
+    const q = filterOwner.value.trim().toLowerCase()
+    list = list.filter((k) => (k.owner_user || '').toLowerCase().includes(q))
+  }
   return list
 })
 
@@ -74,6 +80,11 @@ const uniqueApps = computed(() => {
 
 const uniqueProfiles = computed(() => {
   const s = new Set(keys.value.map((k) => k.default_client_profile || ''))
+  return [...s].filter(Boolean).sort()
+})
+
+const uniqueOwners = computed(() => {
+  const s = new Set(keys.value.map((k) => k.owner_user || ''))
   return [...s].filter(Boolean).sort()
 })
 
@@ -383,15 +394,26 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="filter-bar">
-        <select v-model="filterApp" class="input filter-select">
-          <option value="">全部应用</option>
-          <option v-for="app in uniqueApps" :key="app" :value="app">{{ app }}</option>
-        </select>
-        <select v-model="filterProfile" class="input filter-select">
-          <option value="">全部 Profile</option>
-          <option v-for="p in uniqueProfiles" :key="p" :value="p">{{ p }}</option>
-        </select>
-        <button v-if="filterApp || filterProfile" class="btn btn-ghost btn-xs" @click="filterApp = ''; filterProfile = ''">清除过滤</button>
+        <FilterInput
+          v-model="filterApp"
+          :options="uniqueApps"
+          placeholder="按应用过滤"
+        />
+        <FilterInput
+          v-model="filterProfile"
+          :options="uniqueProfiles"
+          placeholder="按 Client Profile 过滤"
+        />
+        <FilterInput
+          v-model="filterOwner"
+          :options="uniqueOwners"
+          placeholder="按归属用户过滤"
+        />
+        <button
+          v-if="filterApp || filterProfile || filterOwner"
+          class="btn btn-ghost btn-xs"
+          @click="filterApp = ''; filterProfile = ''; filterOwner = ''"
+        >清除全部</button>
       </div>
 
       <table>
@@ -622,11 +644,12 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
-.filter-select {
-  min-width: 140px;
-  padding: 6px 8px;
+.filter-bar :deep(.input) {
+  min-width: 180px;
+  padding: 6px 10px;
   font-size: 13px;
 }
 
