@@ -287,7 +287,9 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		       app.code AS application_code,
 		       COALESCE(ak.is_system, FALSE) AS is_system,
 		       COALESCE(ak.default_client_profile, app.default_client_profile),
-		       ak.last_used_at, ak.remark
+		       ak.last_used_at, ak.remark,
+		       ak.total_requests, ak.total_prompt_tokens, ak.total_completion_tokens,
+		       COALESCE(ak.total_cost_usd, 0)::float8, ak.last_request_at
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.tenant_id = 'default'
@@ -314,6 +316,11 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		DefaultClientProfile *string    `json:"default_client_profile"`
 		LastUsedAt           *time.Time `json:"last_used_at"`
 		Remark               *string    `json:"remark"`
+		TotalRequests        int64      `json:"total_requests"`
+		TotalPromptTokens    int64      `json:"total_prompt_tokens"`
+		TotalCompletionTokens int64     `json:"total_completion_tokens"`
+		TotalCostUSD         float64    `json:"total_cost_usd"`
+		LastRequestAt        *time.Time `json:"last_request_at"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
@@ -322,7 +329,9 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 			&k.Status, &k.ExpiresAt,
 			&k.BudgetUSD, &k.RateLimitRPM, &k.ApplicationCode,
 			&k.IsSystem, &k.DefaultClientProfile,
-			&k.LastUsedAt, &k.Remark); err != nil {
+			&k.LastUsedAt, &k.Remark,
+			&k.TotalRequests, &k.TotalPromptTokens, &k.TotalCompletionTokens,
+			&k.TotalCostUSD, &k.LastRequestAt); err != nil {
 			continue
 		}
 		keys = append(keys, k)

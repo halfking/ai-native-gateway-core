@@ -621,6 +621,11 @@ export interface ApiKey {
   default_client_profile?: string | null
   is_system?: boolean
   remark?: string | null
+  total_requests: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_cost_usd: number
+  last_request_at: string | null
 }
 
 export interface KeyCreatedResponse {
