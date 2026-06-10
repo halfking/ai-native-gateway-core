@@ -110,7 +110,7 @@ const hubPlatforms = computed(() => {
       p.name.toLowerCase().includes(q)
       || p.catalog_code.toLowerCase().includes(q)
       || p.notes.toLowerCase().includes(q)
-      || p.tags.some(t => t.toLowerCase().includes(q))
+      || (p.tags && p.tags.some(t => t.toLowerCase().includes(q)))
     )
   })
 })
