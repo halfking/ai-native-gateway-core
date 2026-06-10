@@ -1696,7 +1696,7 @@ export interface FreePoolCatalogEntry {
   catalog_code: string
   display_name: string
   base_url: string
-  models: string[] | null
+  models: string[]
   live_models: string[]
   model_count_template: number
   model_count_live: number
@@ -1704,6 +1704,7 @@ export interface FreePoolCatalogEntry {
   rpm_limit: number
   signup_url: string
   env_vars: string[]
+  tags: string[]
   acquisition_mode: string
   needs_key: boolean
   env_configured: boolean

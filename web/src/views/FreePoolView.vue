@@ -780,7 +780,7 @@ onMounted(load)
               <code class="model-code" style="display:block;margin:6px 0">{{ p.base_url }}</code>
               <p v-if="p.notes" class="cell-muted" style="margin:0 0 8px">{{ p.notes }}</p>
               <div v-if="p.models_hint" class="cell-muted">模型：{{ p.models_hint }}</div>
-              <div v-if="p.tags.length" class="tag-row">
+              <div v-if="p.tags && p.tags.length" class="tag-row">
                 <span v-for="tag in p.tags" :key="tag" class="model-tag template">{{ tag }}</span>
               </div>
               <div class="platform-actions">
@@ -928,7 +928,7 @@ onMounted(load)
               </td>
               <td>
                 <span class="acq-pill">{{ acquisitionLabel(tpl.acquisition_mode) }}</span>
-                <div v-if="tpl.needs_key && tpl.env_vars.length" class="cell-muted">
+                <div v-if="tpl.needs_key && tpl.env_vars && tpl.env_vars.length" class="cell-muted">
                   {{ tpl.env_vars.join(' / ') }}
                 </div>
                 <div v-if="tpl.rpm_limit" class="cell-muted">~{{ tpl.rpm_limit }} RPM</div>
@@ -939,7 +939,7 @@ onMounted(load)
                 </div>
               </td>
               <td>
-                <div v-if="tpl.live_models.length" class="model-tags">
+                <div v-if="tpl.live_models && tpl.live_models.length" class="model-tags">
                   <span v-for="name in tpl.live_models" :key="name" class="model-tag routable">{{ name }}</span>
                 </div>
                 <span v-else class="cell-muted">—</span>

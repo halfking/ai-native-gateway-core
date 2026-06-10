@@ -1494,6 +1494,7 @@ type freeProviderTemplate struct {
 	signupURL       string
 	rpmLimit        int
 	envVars         []string
+	tags            []string
 	acquisitionMode string
 }
 
@@ -1536,6 +1537,14 @@ func buildFreePoolCatalog(registeredCodes map[string]struct{}, liveModelsByCode 
 		if envVars == nil {
 			envVars = []string{}
 		}
+		tags := tpl.tags
+		if tags == nil {
+			tags = []string{}
+		}
+		models := tpl.models
+		if models == nil {
+			models = []string{}
+		}
 		envConfigured := false
 		for _, name := range envVars {
 			if os.Getenv(name) != "" {
@@ -1545,20 +1554,21 @@ func buildFreePoolCatalog(registeredCodes map[string]struct{}, liveModelsByCode 
 		}
 		_, registered := registeredCodes[tpl.catalogCode]
 		entries = append(entries, map[string]any{
-			"catalog_code":       tpl.catalogCode,
-			"display_name":       tpl.displayName,
-			"base_url":           tpl.baseURL,
-			"models":             tpl.models,
-			"live_models":        live,
-			"model_count_template": len(tpl.models),
-			"model_count_live":   len(live),
-			"pool_registered":    registered,
-			"rpm_limit":          tpl.rpmLimit,
-			"signup_url":         tpl.signupURL,
-			"env_vars":           envVars,
-			"acquisition_mode":   tpl.acquisitionMode,
-			"needs_key":          tpl.needsKey,
-			"env_configured":     envConfigured,
+			"catalog_code":         tpl.catalogCode,
+			"display_name":         tpl.displayName,
+			"base_url":             tpl.baseURL,
+			"models":               models,
+			"live_models":          live,
+			"model_count_template": len(models),
+			"model_count_live":     len(live),
+			"pool_registered":      registered,
+			"rpm_limit":            tpl.rpmLimit,
+			"signup_url":           tpl.signupURL,
+			"env_vars":             envVars,
+			"tags":                 tags,
+			"acquisition_mode":     tpl.acquisitionMode,
+			"needs_key":            tpl.needsKey,
+			"env_configured":       envConfigured,
 		})
 	}
 	return entries
