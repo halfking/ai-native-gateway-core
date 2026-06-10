@@ -386,6 +386,33 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+
+	if entry.APIKeyID != nil && *entry.APIKeyID > 0 {
+		var promptAdd, completionAdd int64
+		if entry.PromptTokens != nil {
+			promptAdd = int64(*entry.PromptTokens)
+		}
+		if entry.CompletionTokens != nil {
+			completionAdd = int64(*entry.CompletionTokens)
+		}
+		var costAdd float64
+		if entry.CostUSD != nil {
+			costAdd = *entry.CostUSD
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE api_keys SET
+				total_requests = total_requests + 1,
+				total_prompt_tokens = total_prompt_tokens + $2,
+				total_completion_tokens = total_completion_tokens + $3,
+				total_cost_usd = total_cost_usd + $4,
+				last_request_at = now()
+			WHERE id = $1
+		`, *entry.APIKeyID, promptAdd, completionAdd, costAdd)
+		if err != nil {
+			return err
+		}
+	}
+
 	return tx.Commit(ctx)
 }
 
