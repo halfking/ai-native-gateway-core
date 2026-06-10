@@ -36,10 +36,13 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 		actor = "unknown"
 	}
 
+	// Schema (sql/030_routing_v2.sql): id, ts, actor, action, target_type, target_id,
+	// before_json, after_json. Use action as target_type so logAudit stays a
+	// single-call helper; structured details go into after_json.
 	h.db.Exec(ctx, `
-		INSERT INTO routing_audit_log (actor, action, details)
-		VALUES ($1, $2, $3)
-	`, actor, action, detailsJSON)
+		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
+		VALUES ($1, $2, $3, $4)
+	`, actor, action, action, detailsJSON)
 }
 
 func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
@@ -1143,31 +1146,50 @@ func (h *Handler) handleRoutingAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT ts, COALESCE(actor,''), COALESCE(action,''), COALESCE(details::text,'{}')
+		SELECT id, ts, COALESCE(actor,''), COALESCE(action,''),
+		       target_type, target_id, before_json, after_json
 		FROM routing_audit_log
 		ORDER BY ts DESC LIMIT $1
 	`, limit)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"audits": []any{}, "error": err.Error()})
+		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
 	defer rows.Close()
 
 	audits := make([]map[string]any, 0)
 	for rows.Next() {
+		var id int64
 		var ts time.Time
 		var actor, action string
-		var detailsStr string
-		if err := rows.Scan(&ts, &actor, &action, &detailsStr); err != nil {
+		var targetType *string
+		var targetID *int64
+		var beforeJSON, afterJSON []byte
+		if err := rows.Scan(&id, &ts, &actor, &action, &targetType, &targetID, &beforeJSON, &afterJSON); err != nil {
 			continue
 		}
-		var d any
-		json.Unmarshal([]byte(detailsStr), &d)
+		var before, after any
+		if len(beforeJSON) > 0 {
+			_ = json.Unmarshal(beforeJSON, &before)
+		}
+		if len(afterJSON) > 0 {
+			_ = json.Unmarshal(afterJSON, &after)
+		}
 		audits = append(audits, map[string]any{
-			"ts": ts, "actor": actor, "action": action, "details": d,
+			"id":          id,
+			"ts":          ts,
+			"actor":       actor,
+			"action":      action,
+			"target_type": targetType,
+			"target_id":   targetID,
+			"before_json": before,
+			"after_json":  after,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audits": audits})
+	if audits == nil {
+		audits = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, audits)
 }
 
 func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
