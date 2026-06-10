@@ -1,0 +1,20 @@
+# Incremental build: only replace binary and web assets
+# Use existing gitsha-9a6debb as base (has all system deps)
+FROM kx-llm-gateway-go:gitsha-9a6debb
+
+# Stage new binary and web assets from build context
+COPY llm-gateway-go /tmp/llm-gateway-go-new
+COPY web/dist /tmp/web-dist-new/
+
+# Replace binary (need root for /usr/local/bin/)
+USER root
+RUN cp /tmp/llm-gateway-go-new /usr/local/bin/llm-gateway-go && \
+    chmod +x /usr/local/bin/llm-gateway-go && \
+    rm -rf /opt/llm-gateway-go/web/dist && \
+    mkdir -p /opt/llm-gateway-go/web/dist && \
+    cp -r /tmp/web-dist-new/* /opt/llm-gateway-go/web/dist/ && \
+    chown -R llmgw:llmgw /opt/llm-gateway-go/web/dist && \
+    rm -rf /tmp/llm-gateway-go-new /tmp/web-dist-new
+
+# Restore non-root user
+USER llmgw
