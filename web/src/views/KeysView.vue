@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchApplicationProfile, getDefaultLimits, setDefaultLimits, type ApiKey, type KeyCreatedResponse, type DefaultLimits } from '../api'
+import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, type ApiKey, type KeyCreatedResponse, type DefaultLimits } from '../api'
 import { store, clearApiKey } from '../store'
 
 const router = useRouter()
 
 const keys = ref<ApiKey[]>([])
-const profileEdit = ref<{ code: string; profile: string } | null>(null)
+const profileEdit = ref<{ keyId: number; profile: string; ownerUser: string } | null>(null)
 const profileSaving = ref(false)
 const loading = ref(false)
 const error = ref('')
 const activeTab = ref<'all' | 'active' | 'pending' | 'closed'>('active')
+const filterApp = ref('')
+const filterProfile = ref('')
 
 function isExpired(k: ApiKey): boolean {
   if (!k.expires_at) return false
@@ -52,8 +54,27 @@ const statusTabs = computed(() => {
 })
 
 const filteredKeys = computed(() => {
-  if (activeTab.value === 'all') return keys.value
-  return keys.value.filter((k) => keyState(k) === activeTab.value)
+  let list = keys.value
+  if (activeTab.value !== 'all') {
+    list = list.filter((k) => keyState(k) === activeTab.value)
+  }
+  if (filterApp.value) {
+    list = list.filter((k) => k.application_code === filterApp.value)
+  }
+  if (filterProfile.value) {
+    list = list.filter((k) => (k.default_client_profile || '') === filterProfile.value)
+  }
+  return list
+})
+
+const uniqueApps = computed(() => {
+  const s = new Set(keys.value.map((k) => k.application_code))
+  return [...s].sort()
+})
+
+const uniqueProfiles = computed(() => {
+  const s = new Set(keys.value.map((k) => k.default_client_profile || ''))
+  return [...s].filter(Boolean).sort()
 })
 
 // New key modal
@@ -79,18 +100,22 @@ const copiedId = ref<string | null>(null)
 const copyNotice = ref('')
 let copyNoticeTimer: number | undefined
 
-async function saveAppProfile() {
+async function saveKeyProfile() {
   if (!profileEdit.value) return
   profileSaving.value = true
   try {
-    await patchApplicationProfile(
-      profileEdit.value.code,
-      profileEdit.value.profile.trim() || null,
-    )
+    const updates: Record<string, string> = {}
+    if (profileEdit.value.profile !== undefined) {
+      updates.default_client_profile = profileEdit.value.profile.trim()
+    }
+    if (profileEdit.value.ownerUser !== undefined) {
+      updates.owner_user = profileEdit.value.ownerUser.trim()
+    }
+    await patchKeyProfile(profileEdit.value.keyId, updates)
     profileEdit.value = null
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '保存 profile 失败'
+    error.value = e instanceof Error ? e.message : '保存失败'
   } finally {
     profileSaving.value = false
   }
@@ -357,9 +382,22 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <div class="filter-bar">
+        <select v-model="filterApp" class="input filter-select">
+          <option value="">全部应用</option>
+          <option v-for="app in uniqueApps" :key="app" :value="app">{{ app }}</option>
+        </select>
+        <select v-model="filterProfile" class="input filter-select">
+          <option value="">全部 Profile</option>
+          <option v-for="p in uniqueProfiles" :key="p" :value="p">{{ p }}</option>
+        </select>
+        <button v-if="filterApp || filterProfile" class="btn btn-ghost btn-xs" @click="filterApp = ''; filterProfile = ''">清除过滤</button>
+      </div>
+
       <table>
         <thead>
           <tr>
+            <th style="width:40px">ID</th>
             <th>前缀</th>
             <th>应用</th>
             <th>Client Profile</th>
@@ -375,6 +413,7 @@ onBeforeUnmount(() => {
         </thead>
         <tbody>
           <tr v-for="k in filteredKeys" :key="k.id">
+            <td style="font-size:11px;color:var(--muted);font-family:monospace">{{ k.id }}</td>
             <td>
               <div class="key-cell">
                 <code style="font-size:12px">{{ k.key_prefix }}***</code>
@@ -393,10 +432,16 @@ onBeforeUnmount(() => {
               <code style="font-size:11px">{{ k.default_client_profile || '—' }}</code>
               <button
                 class="btn btn-ghost btn-xs"
-                @click="profileEdit = { code: k.application_code, profile: k.default_client_profile || '' }"
+                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '' }"
               >编辑</button>
             </td>
-            <td>{{ k.owner_user ?? '—' }}</td>
+            <td>
+              <span style="font-size:12px">{{ k.owner_user ?? '—' }}</span>
+              <button
+                class="btn btn-ghost btn-xs"
+                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '' }"
+              >编辑</button>
+            </td>
             <td>
               <span class="badge"
                 :class="keyStateBadgeClass(k)"
@@ -443,18 +488,29 @@ onBeforeUnmount(() => {
       <div v-if="!loading && filteredKeys.length === 0" class="empty">当前状态下没有密钥</div>
     </div>
 
-    <!-- New Key Modal -->
+    <!-- Edit Key Modal -->
     <div v-if="profileEdit" class="modal-overlay" @click.self="profileEdit = null">
       <div class="modal card" style="max-width:420px">
-        <h3>应用 Client Profile — {{ profileEdit.code }}</h3>
-        <input
-          v-model="profileEdit.profile"
-          class="input"
-          placeholder="cursor / roocode / cline"
-        />
+        <h3>编辑 Key #{{ profileEdit.keyId }}</h3>
+        <div class="form-group">
+          <label>Client Profile</label>
+          <input
+            v-model="profileEdit.profile"
+            class="input"
+            placeholder="cursor / roocode / cline"
+          />
+        </div>
+        <div class="form-group">
+          <label>归属用户</label>
+          <input
+            v-model="profileEdit.ownerUser"
+            class="input"
+            placeholder="用户名"
+          />
+        </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
           <button class="btn btn-ghost" @click="profileEdit = null">取消</button>
-          <button class="btn btn-primary" @click="saveAppProfile" :disabled="profileSaving">
+          <button class="btn btn-primary" @click="saveKeyProfile" :disabled="profileSaving">
             {{ profileSaving ? '保存中…' : '保存' }}
           </button>
         </div>
@@ -559,6 +615,19 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
+}
+
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.filter-select {
+  min-width: 140px;
+  padding: 6px 8px;
+  font-size: 13px;
 }
 
 .status-tab {
