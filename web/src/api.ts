@@ -931,6 +931,10 @@ export function patchApplicationProfile(applicationCode: string, default_client_
   )
 }
 
+export function patchKeyProfile(keyId: number, fields: Record<string, string>) {
+  return req<{ message: string }>('PATCH', `/api/keys/${keyId}`, fields)
+}
+
 export function getRoutingOverview(featuredOnly = false) {
   const qs = featuredOnly ? '?featured_only=true' : ''
   return req<RoutingOverviewResponse>('GET', `/api/routing/overview${qs}`)

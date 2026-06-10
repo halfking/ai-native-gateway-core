@@ -179,6 +179,8 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 				h.deleteKey(w, r, id)
 			} else if r.Method == http.MethodGet {
 				h.getKeyDetail(w, r, id)
+			} else if r.Method == http.MethodPatch {
+				h.patchKey(w, r, id)
 			} else {
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
@@ -284,7 +286,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		       ak.budget_usd::float8, ak.rate_limit_rpm,
 		       app.code AS application_code,
 		       COALESCE(ak.is_system, FALSE) AS is_system,
-		       app.default_client_profile,
+		       COALESCE(ak.default_client_profile, app.default_client_profile),
 		       ak.last_used_at, ak.remark
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
@@ -486,7 +488,7 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 	var budget *float64
 	err := h.db.QueryRow(ctx, `
 		SELECT ak.id, ak.tenant_id, ak.application_id, app.code,
-		       app.default_client_profile, ak.owner_user,
+		       COALESCE(ak.default_client_profile, app.default_client_profile), ak.owner_user,
 		       ak.rate_limit_rpm, ak.budget_usd
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
@@ -946,5 +948,64 @@ func (h *Handler) patchApplicationProfile(w http.ResponseWriter, r *http.Request
 		"code":                   retCode,
 		"default_client_profile": retProfile,
 	})
+}
+
+func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
+	var req struct {
+		DefaultClientProfile *string `json:"default_client_profile"`
+		OwnerUser            *string `json:"owner_user"`
+		Remark               *string `json:"remark"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var sets []string
+	var args []any
+	argIdx := 1
+
+	if req.DefaultClientProfile != nil {
+		sets = append(sets, fmt.Sprintf("default_client_profile = $%d", argIdx))
+		args = append(args, *req.DefaultClientProfile)
+		argIdx++
+	}
+	if req.OwnerUser != nil {
+		sets = append(sets, fmt.Sprintf("owner_user = $%d", argIdx))
+		args = append(args, *req.OwnerUser)
+		argIdx++
+	}
+	if req.Remark != nil {
+		sets = append(sets, fmt.Sprintf("remark = $%d", argIdx))
+		args = append(args, *req.Remark)
+		argIdx++
+	}
+
+	if len(sets) == 0 {
+		writeError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+
+	sets = append(sets, "updated_at = now()")
+	args = append(args, id)
+
+	query := fmt.Sprintf(
+		"UPDATE api_keys SET %s WHERE id = $%d AND tenant_id = 'default'",
+		strings.Join(sets, ", "), argIdx,
+	)
+
+	cmd, err := h.db.Exec(ctx, query, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if cmd.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
