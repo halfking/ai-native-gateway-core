@@ -1,10 +1,25 @@
+# Hidden dot-directories (IDE/editor/tooling caches)
+/.codegraph/
+.idea/
+.vscode/
+.DS_Store
+.git/
+*.swp
+*.swo
+*~
+
+# Build artifacts
 /gateway
-.codegraph/
 bin/
 dist/
 build/
 coverage/
+
+# Test artifacts
 *.test
 *.out
+
+# Local binaries and build files
 llm-gateway-go-linux
+llm-gateway-go-bin
 Dockerfile.local
