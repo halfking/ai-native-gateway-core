@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getKeyDetail, type ApiKey } from '../api'
+import { getKeyDetail, updateKeyLimits, type ApiKey, type UpdateKeyLimitsRequest } from '../api'
 import {
   getKeyUsage,
   getKeyUsageByModel,
@@ -26,6 +26,69 @@ const keyModels = ref<ModelUsageForKey[]>([])
 const keyTrend = ref<TrendEntry[]>([])
 const detailLoading = ref(false)
 const detailError = ref('')
+
+// ── Limit editing ──────────────────────────────────────────────────────────
+const showLimitsEditor = ref(false)
+const limitsForm = ref<UpdateKeyLimitsRequest>({
+  rate_limit_rpm: null,
+  rate_limit_concurrent: null,
+  rate_limit_tpm: null,
+})
+const limitsSaving = ref(false)
+const limitsErr = ref('')
+const limitsSuccess = ref('')
+
+type LimitMode = 'default' | 'unlimited' | 'custom'
+const rpmMode = ref<LimitMode>('default')
+const concurrentMode = ref<LimitMode>('default')
+const tpmMode = ref<LimitMode>('default')
+
+function initLimitsForm() {
+  const k = keyInfo.value
+  if (!k) return
+  limitsForm.value = {
+    rate_limit_rpm: k.rate_limit_rpm,
+    rate_limit_concurrent: k.rate_limit_concurrent ?? null,
+    rate_limit_tpm: k.rate_limit_tpm ?? null,
+  }
+  rpmMode.value = k.rate_limit_rpm == null ? 'default' : k.rate_limit_rpm === 0 ? 'unlimited' : 'custom'
+  concurrentMode.value = k.rate_limit_concurrent == null ? 'default' : k.rate_limit_concurrent === 0 ? 'unlimited' : 'custom'
+  tpmMode.value = k.rate_limit_tpm == null ? 'default' : k.rate_limit_tpm === 0 ? 'unlimited' : 'custom'
+  limitsErr.value = ''
+  limitsSuccess.value = ''
+}
+
+function openLimitsEditor() {
+  initLimitsForm()
+  showLimitsEditor.value = true
+}
+
+function modeToValue(mode: LimitMode, current: number | null | undefined): number | null {
+  if (mode === 'default') return null
+  if (mode === 'unlimited') return 0
+  return current ?? 0
+}
+
+async function saveLimits() {
+  limitsErr.value = ''
+  limitsSuccess.value = ''
+  limitsSaving.value = true
+  try {
+    const data: UpdateKeyLimitsRequest = {
+      rate_limit_rpm: modeToValue(rpmMode.value, limitsForm.value.rate_limit_rpm),
+      rate_limit_concurrent: modeToValue(concurrentMode.value, limitsForm.value.rate_limit_concurrent),
+      rate_limit_tpm: modeToValue(tpmMode.value, limitsForm.value.rate_limit_tpm),
+    }
+    await updateKeyLimits(keyId.value, data)
+    limitsSuccess.value = '限制已保存'
+    showLimitsEditor.value = false
+    await loadKey()
+  } catch (e: unknown) {
+    limitsErr.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    limitsSaving.value = false
+  }
+}
 
 // Time range
 type PeriodType = 'day' | 'week' | 'month'
@@ -158,6 +221,10 @@ watch(keyId, async () => {
     <template v-if="keyInfo && !loading">
       <!-- Key info card -->
       <div class="card key-info-card">
+        <div class="key-info-header">
+          <span class="key-info-title">密钥信息</span>
+          <button class="btn btn-sm" @click="openLimitsEditor">⚙ 编辑限制</button>
+        </div>
         <div class="key-info-row">
           <div class="key-info-item">
             <span class="key-info-label">应用</span>
@@ -178,12 +245,65 @@ watch(keyId, async () => {
             <span class="key-info-value">{{ keyInfo.budget_usd != null ? fmtCost(keyInfo.budget_usd) : '无限制' }}</span>
           </div>
           <div class="key-info-item">
-            <span class="key-info-label">速率限制</span>
-            <span class="key-info-value">{{ keyInfo.rate_limit_rpm != null ? keyInfo.rate_limit_rpm + ' RPM' : '无限制' }}</span>
+            <span class="key-info-label">RPM</span>
+            <span class="key-info-value">{{ keyInfo.rate_limit_rpm != null ? keyInfo.rate_limit_rpm + ' RPM' : '默认' }}</span>
+          </div>
+          <div class="key-info-item">
+            <span class="key-info-label">并发</span>
+            <span class="key-info-value">{{ keyInfo.rate_limit_concurrent != null ? keyInfo.rate_limit_concurrent : '默认' }}</span>
+          </div>
+          <div class="key-info-item">
+            <span class="key-info-label">TPM</span>
+            <span class="key-info-value">{{ keyInfo.rate_limit_tpm != null ? fmtNum(keyInfo.rate_limit_tpm) + ' TPM' : '不限制' }}</span>
           </div>
           <div class="key-info-item">
             <span class="key-info-label">最后使用</span>
             <span class="key-info-value">{{ fmtDate(keyInfo.last_used_at) }}</span>
+          </div>
+        </div>
+
+        <!-- Limit editor modal -->
+        <div v-if="showLimitsEditor" class="modal-overlay" @click.self="showLimitsEditor = false">
+          <div class="modal" style="max-width:450px">
+            <h3>编辑速率限制</h3>
+            <div v-if="limitsErr" class="alert alert-danger">{{ limitsErr }}</div>
+            <div v-if="limitsSuccess" class="alert alert-success">{{ limitsSuccess }}</div>
+
+            <div class="form-group">
+              <label>RPM（每分钟请求数）</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="rpmMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="rpmMode" value="unlimited"> 无限制</label>
+                <label><input type="radio" v-model="rpmMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" placeholder="输入 RPM">
+            </div>
+
+            <div class="form-group">
+              <label>并发（同时请求数）</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="concurrentMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="concurrentMode" value="unlimited"> 无限制</label>
+                <label><input type="radio" v-model="concurrentMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" placeholder="输入并发数">
+            </div>
+
+            <div class="form-group">
+              <label>TPM（每分钟 Token 数）</label>
+              <div class="limit-options">
+                <label><input type="radio" v-model="tpmMode" value="default"> 不限制</label>
+                <label><input type="radio" v-model="tpmMode" value="custom"> 自定义</label>
+              </div>
+              <input v-if="tpmMode === 'custom'" v-model.number="limitsForm.rate_limit_tpm" type="number" min="1" placeholder="输入 TPM">
+            </div>
+
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+              <button class="btn btn-ghost" @click="showLimitsEditor = false" :disabled="limitsSaving">取消</button>
+              <button class="btn btn-primary" @click="saveLimits" :disabled="limitsSaving">
+                {{ limitsSaving ? '保存中…' : '保存' }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -553,5 +673,36 @@ watch(keyId, async () => {
 .empty.small {
   padding: 24px;
   font-size: 13px;
+}
+
+.key-info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.key-info-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.limit-options {
+  display: flex;
+  gap: 16px;
+  flex-wrap: nowrap;
+  margin-bottom: 8px;
+}
+
+.limit-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.limit-options input[type="radio"] {
+  width: auto;
 }
 </style>
