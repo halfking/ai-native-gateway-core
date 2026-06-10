@@ -770,7 +770,7 @@ export function getKeyUsage(keyId: number, params: { days?: number; start?: stri
   if (params.start) qs.set('start', params.start)
   if (params.end) qs.set('end', params.end)
   const s = qs.toString()
-  return req<KeyUsageSummary>('GET', `/api/usage/key/${keyId}${s ? '?' + s : ''}`)
+  return req<KeyUsageSummary>('GET', `/api/usage/${keyId}${s ? '?' + s : ''}`)
 }
 
 export function getKeyUsageByModel(keyId: number, params: { days?: number; start?: string; end?: string; limit?: number } = {}) {
@@ -780,11 +780,11 @@ export function getKeyUsageByModel(keyId: number, params: { days?: number; start
   if (params.end) qs.set('end', params.end)
   if (params.limit) qs.set('limit', String(params.limit))
   const s = qs.toString()
-  return req<ModelUsageForKey[]>('GET', `/api/usage/key/${keyId}/models${s ? '?' + s : ''}`)
+  return req<ModelUsageForKey[]>('GET', `/api/usage/${keyId}/models${s ? '?' + s : ''}`)
 }
 
 export function getKeyUsageTrend(keyId: number, period: 'day' | 'week' | 'month' = 'day', days = 30) {
-  return req<TrendEntry[]>('GET', `/api/usage/key/${keyId}/trend?period=${period}&days=${days}`)
+  return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?period=${period}&days=${days}`)
 }
 
 // ── Routing ──────────────────────────────────────────────────────────────
