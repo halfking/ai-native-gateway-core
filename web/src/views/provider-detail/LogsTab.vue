@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getProviderLogs, type ProviderLogEntry } from '../../api'
+import { ref, onMounted, watch } from 'vue'
+import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
 
 const props = defineProps<{ providerId: number }>()
 const logs = ref<ProviderLogEntry[]>([])
+const credentials = ref<ProviderCredential[]>([])
 const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
 const error = ref('')
 const keyword = ref('')
+const credentialId = ref<number | ''>('')
+const successFilter = ref<'all' | 'true' | 'false'>('all')
+const errorKindFilter = ref('')
 
 async function load() {
   loading.value = true
@@ -16,6 +20,9 @@ async function load() {
   try {
     const resp = await getProviderLogs(props.providerId, {
       model: keyword.value.trim() || undefined,
+      credential_id: credentialId.value === '' ? undefined : Number(credentialId.value),
+      success: successFilter.value === 'all' ? undefined : successFilter.value === 'true',
+      error_kind: errorKindFilter.value.trim() || undefined,
       page: page.value,
       page_size: 50,
     })
@@ -28,18 +35,50 @@ async function load() {
   }
 }
 
+async function loadCredentials() {
+  try {
+    credentials.value = await listProviderCredentials(props.providerId)
+  } catch (e) {
+    console.warn('Failed to load credentials for filter:', e)
+    credentials.value = []
+  }
+}
+
+function resetFilters() {
+  keyword.value = ''
+  credentialId.value = ''
+  successFilter.value = 'all'
+  errorKindFilter.value = ''
+  page.value = 1
+  load()
+}
+
 function fmtTs(ts: string | null) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—' }
 function token(v: number | null | undefined) { return v == null ? '—' : v.toLocaleString() }
 
-onMounted(load)
+onMounted(() => { loadCredentials(); load() })
+watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
 </script>
 
 <template>
   <div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-      <input v-model="keyword" placeholder="搜索模型名..." style="padding:4px 8px;flex:1;max-width:300px" @keyup.enter="page=1;load()" />
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <input v-model="keyword" placeholder="搜索模型名..." style="padding:4px 8px;width:180px" @keyup.enter="page=1;load()" />
+      <select v-model="credentialId" style="padding:4px 8px;max-width:200px" @change="page=1;load()">
+        <option value="">所有凭据</option>
+        <option v-for="c in credentials" :key="c.id" :value="c.id">
+          #{{ c.id }} {{ c.label || '—' }}{{ c.status !== 'active' ? ' (' + c.status + ')' : '' }}
+        </option>
+      </select>
+      <select v-model="successFilter" style="padding:4px 8px" @change="page=1;load()">
+        <option value="all">全部状态</option>
+        <option value="true">成功</option>
+        <option value="false">失败</option>
+      </select>
+      <input v-model="errorKindFilter" placeholder="错误类型..." style="padding:4px 8px;width:140px" @keyup.enter="page=1;load()" />
       <button class="btn btn-primary btn-sm" @click="page=1;load()" :disabled="loading">{{ loading ? '加载中...' : '查询' }}</button>
-      <span style="color:var(--muted);font-size:12px">共 {{ total }} 条</span>
+      <button class="btn btn-ghost btn-sm" @click="resetFilters" :disabled="loading">重置</button>
+      <span style="color:var(--muted);font-size:12px;margin-left:auto">共 {{ total }} 条</span>
     </div>
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <table v-if="logs.length" style="width:100%;border-collapse:collapse;font-size:12px">
