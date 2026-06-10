@@ -614,6 +614,9 @@ export interface ApiKey {
   last_used_at: string | null
   budget_usd: number | null
   rate_limit_rpm: number | null
+  rate_limit_concurrent?: number | null
+  rate_limit_tpm?: number | null
+  key_tier?: string
   application_code: string
   default_client_profile?: string | null
   is_system?: boolean
@@ -664,10 +667,6 @@ export function enableKey(id: number) {
   return req<{ message: string }>('PATCH', `/api/keys/${id}/enable`)
 }
 
-export function applyForKey(data: { application_code: string; owner_user?: string; description?: string }) {
-  return req<{ id: number; key_prefix: string; application_code: string; status: string; message: string }>('POST', '/api/keys/apply', data)
-}
-
 export interface UpdateKeyLimitsRequest {
   rate_limit_rpm: number | null
   rate_limit_concurrent: number | null
@@ -677,6 +676,11 @@ export interface UpdateKeyLimitsRequest {
 export function updateKeyLimits(id: number, data: UpdateKeyLimitsRequest) {
   return req<{ status: string } & UpdateKeyLimitsRequest>('PATCH', `/api/keys/${id}/limits`, data)
 }
+
+export function applyForKey(data: { application_code: string; owner_user?: string; description?: string }) {
+  return req<{ id: number; key_prefix: string; application_code: string; status: string; message: string }>('POST', '/api/keys/apply', data)
+}
+
 
 // ── Configuration ─────────────────────────────────────────────────────────
 
@@ -796,7 +800,7 @@ export function getKeyUsage(keyId: number, params: { days?: number; start?: stri
   if (params.start) qs.set('start', params.start)
   if (params.end) qs.set('end', params.end)
   const s = qs.toString()
-  return req<KeyUsageSummary>('GET', `/api/usage/key/${keyId}${s ? '?' + s : ''}`)
+  return req<KeyUsageSummary>('GET', `/api/usage/${keyId}${s ? '?' + s : ''}`)
 }
 
 export function getKeyUsageByModel(keyId: number, params: { days?: number; start?: string; end?: string; limit?: number } = {}) {
@@ -806,11 +810,11 @@ export function getKeyUsageByModel(keyId: number, params: { days?: number; start
   if (params.end) qs.set('end', params.end)
   if (params.limit) qs.set('limit', String(params.limit))
   const s = qs.toString()
-  return req<ModelUsageForKey[]>('GET', `/api/usage/key/${keyId}/models${s ? '?' + s : ''}`)
+  return req<ModelUsageForKey[]>('GET', `/api/usage/${keyId}/models${s ? '?' + s : ''}`)
 }
 
 export function getKeyUsageTrend(keyId: number, period: 'day' | 'week' | 'month' = 'day', days = 30) {
-  return req<TrendEntry[]>('GET', `/api/usage/key/${keyId}/trend?period=${period}&days=${days}`)
+  return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?period=${period}&days=${days}`)
 }
 
 // ── Routing ──────────────────────────────────────────────────────────────
@@ -1147,6 +1151,7 @@ export interface RequestLogRow {
   stream_chunk_count: number | null
   stream_interrupted: boolean | null
   stream_done_sent: boolean | null
+  usage_source: 'llm' | 'estimated' | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
@@ -1170,6 +1175,7 @@ export function getRequestLogs(params: {
   error_kind?: string
   success?: boolean
   canonical_id?: number
+  usage_source?: 'llm' | 'estimated'
   page?: number
   page_size?: number
 } = {}) {
@@ -1184,6 +1190,7 @@ export function getRequestLogs(params: {
   if (params.error_kind) qs.set('error_kind', params.error_kind)
   if (params.success != null) qs.set('success', String(params.success))
   if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
+  if (params.usage_source) qs.set('usage_source', params.usage_source)
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
   const s = qs.toString()

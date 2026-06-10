@@ -269,7 +269,7 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		SELECT id, canonical_name, COALESCE(display_name,''), family,
 		       COALESCE(modality,'text'), context_window, parameters_b,
 		       notes, COALESCE(status,'active'), disabled_reason, source,
-		       COALESCE(tags,'[]'::jsonb), tags_locked, tags_updated_at,
+		       COALESCE(array_to_json(tags)::jsonb, '[]'::jsonb), tags_locked, tags_updated_at,
 		       created_at, updated_at,
 		       COALESCE(input_price_cny,0), COALESCE(output_price_cny,0)
 		FROM models_canonical WHERE id = $1
