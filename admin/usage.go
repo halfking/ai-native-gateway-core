@@ -508,6 +508,13 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	var keyExists int
+	err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(raw_model_name,'unknown'), COUNT(*),
 		       COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
