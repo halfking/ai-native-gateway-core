@@ -64,6 +64,7 @@ var (
 	KindQuota          = errorsx.KindQuota
 	KindUpstreamDown   = errorsx.KindUpstreamDown
 	KindStreamTimeout  = errorsx.KindStreamTimeout
+	KindConcurrent     = errorsx.KindConcurrent
 )
 
 const (
@@ -103,6 +104,13 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	KindQuota:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
 	KindUpstreamDown:   {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindStreamTimeout:  {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	// KindConcurrent: upstream reports "service overloaded / too many
+	// concurrent requests". Apply a fixed 5-minute cooling window so the
+	// credential is taken out of rotation long enough for the upstream's
+	// concurrency window to clear. Auto-recovery (one probe at the end
+	// of cooling) is the right policy because concurrent overload is
+	// typically a transient platform-level condition.
+	errorsx.KindConcurrent: {InitialCooling: 5 * time.Minute, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
 
 // ---------------------------------------------------------------------------

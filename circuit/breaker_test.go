@@ -372,3 +372,42 @@ func TestUpstreamDownExponentialBackoff(t *testing.T) {
 		t.Fatalf("expected ~60s cooling for second upstream_down, got %v", c2)
 	}
 }
+
+func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
+	// KindConcurrent represents "service overloaded / too many concurrent
+	// requests". The credential should be taken out of rotation for
+	// 5 minutes to let the upstream's concurrency window clear.
+	// RecoveryAuto uses autoRecoveryFailureThreshold=3, so we record
+	// three failures to confirm the circuit opening.
+	b := New(1, 1)
+	b.RecordFailure(KindConcurrent)
+	b.RecordFailure(KindConcurrent)
+	b.RecordFailure(KindConcurrent)
+	if b.State() != StateOpen {
+		t.Fatalf("expected open after 3 confirmed concurrent failures, got %s", b.State())
+	}
+
+	b.mu.Lock()
+	cooling := b.coolingExpires.Sub(time.Now())
+	b.mu.Unlock()
+	if cooling < 298*time.Second || cooling > 302*time.Second {
+		t.Fatalf("expected ~5min cooling for concurrent overload, got %v", cooling)
+	}
+
+	// After cooling expires, a single probe should be allowed.
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+	if !b.Allow() {
+		t.Fatal("should allow probe after cooling expires")
+	}
+	if b.State() != StateHalfOpen {
+		t.Fatalf("expected half_open for probe, got %s", b.State())
+	}
+
+	// Probe success closes the circuit.
+	b.RecordSuccess()
+	if b.State() != StateClosed {
+		t.Fatalf("expected closed after probe success, got %s", b.State())
+	}
+}

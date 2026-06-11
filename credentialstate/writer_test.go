@@ -13,7 +13,12 @@ func TestCoolingDurationMatchesPythonDefaults(t *testing.T) {
 		kind errorsx.ErrorKind
 		want time.Duration
 	}{
-		{errorsx.KindConcurrent, 15 * time.Second},
+		// KindConcurrent now uses 5-minute cooling (was 15s) so that
+		// the credential stays out of rotation long enough for the
+		// upstream's concurrency window to clear. Without this, the
+		// same credential would be re-picked and re-fail in a tight
+		// loop, masking the actual provider outage.
+		{errorsx.KindConcurrent, 5 * time.Minute},
 		{errorsx.KindRateLimit, 900 * time.Second},
 		{errorsx.KindTransient, 30 * time.Second},
 		{errorsx.KindTimeout, 30 * time.Second},
