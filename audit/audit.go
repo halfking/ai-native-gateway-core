@@ -39,6 +39,7 @@ type Event struct {
 	RequestChecksum string   `json:"request_checksum,omitempty"`
 	StreamChunkCount int     `json:"stream_chunk_count,omitempty"`
 	StreamTTFBMs   int       `json:"stream_ttfb_ms,omitempty"`
+	DecisionTrace  any       `json:"decision_trace,omitempty"`
 	StreamDone     bool      `json:"stream_done,omitempty"`
 	StreamInterrupted bool   `json:"stream_interrupted,omitempty"`
 	// Link layer event fields
@@ -50,6 +51,14 @@ type Event struct {
 	FromState      string    `json:"from_state,omitempty"`      // Previous state
 	ToState        string    `json:"to_state,omitempty"`        // New state
 }
+
+// maxTextContentBytes caps the reconstructed stream text per request. The
+// reconstructed body is emitted into request_logs.response_body so downstream
+// auditors/queries can inspect the full assistant message. 128 KiB is large
+// enough for the longest completions seen in production (max observed
+// completion_tokens in 24h ≈ 4500 ≈ 18 KiB) and still keeps per-request
+// memory bounded under high concurrency (100 concurrent captures ≈ 12 MiB).
+const maxTextContentBytes = 128 * 1024
 
 type StreamCapture struct {
 	mu               sync.Mutex
@@ -103,6 +112,23 @@ func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted b
 	return sc.chunkCount, sc.firstChunkMs, sc.doneReceived, sc.interrupted, hex.EncodeToString(sc.checksum[:])
 }
 
+// appendText appends s to textContent, truncating s if it would push the
+// total beyond maxTextContentBytes. This guarantees strict adherence to the
+// cap regardless of chunk size.
+func (sc *StreamCapture) appendText(s string) {
+	if s == "" {
+		return
+	}
+	remaining := maxTextContentBytes - len(sc.textContent)
+	if remaining <= 0 {
+		return
+	}
+	if len(s) > remaining {
+		s = s[:remaining]
+	}
+	sc.textContent = append(sc.textContent, s...)
+}
+
 func (sc *StreamCapture) ObservePayload(payload string, finishReason string, done bool) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -136,12 +162,12 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 		sc.preview = append(sc.preview, payload...)
 	}
 	text := extractDeltaText(payload)
-	if text != "" && len(sc.textContent) < 65536 {
-		sc.textContent = append(sc.textContent, text...)
+	if text != "" {
+		sc.appendText(text)
 	}
 	toolText := extractDeltaToolText(payload)
-	if toolText != "" && len(sc.textContent) < 65536 {
-		sc.textContent = append(sc.textContent, toolText...)
+	if toolText != "" {
+		sc.appendText(toolText)
 	}
 	if finishReason != "" {
 		sc.finalFinish = finishReason
@@ -313,6 +339,7 @@ func (b *EventBuilder) ClientModel(m string) *EventBuilder     { b.event.ClientM
 func (b *EventBuilder) OutboundModel(m string) *EventBuilder   { b.event.OutboundModel = m; return b }
 func (b *EventBuilder) ResolutionPath(p string) *EventBuilder  { b.event.ResolutionPath = p; return b }
 func (b *EventBuilder) CanonicalName(n string) *EventBuilder   { b.event.CanonicalName = n; return b }
+func (b *EventBuilder) DecisionTrace(t any) *EventBuilder     { b.event.DecisionTrace = t; return b }
 func (b *EventBuilder) IdentityHash(h string) *EventBuilder    { b.event.IdentityHash = h; return b }
 func (b *EventBuilder) ClientProfile(p string) *EventBuilder   { b.event.ClientProfile = p; return b }
 func (b *EventBuilder) Stream(s bool) *EventBuilder            { b.event.Stream = s; return b }
