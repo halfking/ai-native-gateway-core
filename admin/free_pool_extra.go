@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
 )
 
 // ── Static Catalog (mirrors Python free_pool_signup_hub.py) ────────────────
@@ -711,7 +713,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 
 	candidates := []string{
 		normalized + "/models",
-		normalized + "/v1/models",
+		urlutil.CleanBaseURL(normalized) + "/v1/models",
 	}
 	if strings.HasSuffix(normalized, "/v1") {
 		root := strings.TrimRight(normalized, "/v1")
