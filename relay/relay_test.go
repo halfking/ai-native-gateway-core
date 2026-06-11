@@ -369,7 +369,7 @@ func TestHealthEndpoint(t *testing.T) {
 	lim := limiter.New()
 	defer lim.Stop()
 
-	handler := NewHealthHandler(cm, lim)
+	handler := NewHealthHandler(cm, lim, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -398,7 +398,7 @@ func TestHealthEndpointFull(t *testing.T) {
 	lim := limiter.New()
 	defer lim.Stop()
 
-	handler := NewHealthHandler(cm, lim)
+	handler := NewHealthHandler(cm, lim, nil)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
