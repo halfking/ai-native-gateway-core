@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Event struct {
@@ -138,6 +139,11 @@ func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted b
 // appendText appends s to textContent, truncating s if it would push the
 // total beyond maxTextContentBytes. This guarantees strict adherence to the
 // cap regardless of chunk size.
+//
+// The truncation is rune-aware: cutting in the middle of a multi-byte UTF-8
+// sequence (e.g. Chinese / emoji) would produce invalid bytes that PostgreSQL
+// rejects with SQLSTATE 22021, dropping the entire request_logs row.  See
+// incident 2026-06-11.
 func (sc *StreamCapture) appendText(s string) {
 	if s == "" {
 		return
@@ -147,9 +153,31 @@ func (sc *StreamCapture) appendText(s string) {
 		return
 	}
 	if len(s) > remaining {
-		s = s[:remaining]
+		s = safeTruncateUTF8(s, remaining)
 	}
 	sc.textContent = append(sc.textContent, s...)
+}
+
+// safeTruncateUTF8 returns the longest valid-UTF-8 prefix of s whose byte
+// length is <= limit.  Never returns an invalid byte sequence; may return ""
+// when limit is smaller than the first rune.
+func safeTruncateUTF8(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	cut := 0
+	for i, r := range s {
+		next := i + utf8.RuneLen(r)
+		if next > limit {
+			cut = i
+			break
+		}
+		cut = next
+	}
+	return s[:cut]
 }
 
 func (sc *StreamCapture) ObservePayload(payload string, finishReason string, done bool) {
@@ -180,7 +208,7 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 	if len(sc.preview) < 2048 {
 		remaining := 2048 - len(sc.preview)
 		if len(payload) > remaining {
-			payload = payload[:remaining]
+			payload = safeTruncateUTF8(payload, remaining)
 		}
 		sc.preview = append(sc.preview, payload...)
 	}
@@ -571,7 +599,7 @@ func MessageDigest(messages []byte) (checksum string, preview string) {
 	var msgs []map[string]json.RawMessage
 	if json.Unmarshal(messages, &msgs) != nil {
 		if len(messages) > 200 {
-			preview = string(messages[:200])
+			preview = safeTruncateUTF8(string(messages), 200)
 		} else {
 			preview = string(messages)
 		}
@@ -587,13 +615,13 @@ func MessageDigest(messages []byte) (checksum string, preview string) {
 		raw, _ := json.Marshal(msgs[i])
 		s := string(raw)
 		if len(s) > 200 {
-			s = s[:200]
+			s = safeTruncateUTF8(s, 200)
 		}
 		parts = append(parts, s)
 	}
 	preview = strings.Join(parts, "\n")
 	if len(preview) > 4096 {
-		preview = preview[:4096]
+		preview = safeTruncateUTF8(preview, 4096)
 	}
 	return
 }

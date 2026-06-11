@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
@@ -192,15 +193,45 @@ func compactJSON(body []byte) string {
 	return normalizeWhitespace(string(body))
 }
 
+// truncateText returns a UTF-8 safe truncation of s to at most `limit` bytes.
+// It is critical that the result is valid UTF-8 because the caller writes the
+// string into PostgreSQL columns with encoding=UTF8; an invalid byte sequence
+// (e.g. a multi-byte rune split mid-character) causes the INSERT to fail with
+// SQLSTATE 22021 and the entire request_logs row is dropped.  Prior versions
+// used s[:limit-1] which silently produced invalid sequences for Chinese /
+// emoji content, manifesting as missing rows for glm-5.1 / minimax / doubao
+// traffic.  See incident 2026-06-11.
 func truncateText(s string, limit int) string {
 	s = normalizeWhitespace(s)
 	if len(s) <= limit {
 		return s
 	}
-	if limit <= 1 {
-		return s[:limit]
+	const ellipsis = "…" // 3 bytes in UTF-8
+	budget := limit - len(ellipsis)
+	if budget <= 0 {
+		// Caller asked for an absurdly small cap; return the first whole rune
+		// that fits, no ellipsis, rather than emit invalid bytes.
+		for i, r := range s {
+			if i+utf8.RuneLen(r) > limit {
+				return s[:i]
+			}
+		}
+		return s
 	}
-	return s[:limit-1] + "…"
+	// Walk runes until adding the next one would exceed the byte budget.
+	cut := 0
+	for i, r := range s {
+		next := i + utf8.RuneLen(r)
+		if next > budget {
+			cut = i
+			break
+		}
+		cut = next
+	}
+	if cut == 0 {
+		return ""
+	}
+	return s[:cut] + ellipsis
 }
 
 func normalizeWhitespace(s string) string {

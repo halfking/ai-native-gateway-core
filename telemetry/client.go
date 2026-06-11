@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -262,6 +263,15 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if c.dbPool == nil {
 		return errNoTelemetryDB
 	}
+	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
+	// before INSERT.  PostgreSQL rejects invalid bytes with SQLSTATE 22021,
+	// which (because we wrap usage_ledger + request_logs + api_keys updates
+	// in a single transaction) causes the entire row to be dropped — exactly
+	// the symptom reported in the 2026-06-11 incident where glm-5.1 calls
+	// succeeded for the client but no request_logs row was written.  Even
+	// after fixing the upstream truncation sites, this layer guarantees that
+	// no future regression can silently lose rows.
+	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -480,15 +490,67 @@ func searchText(entry *RequestLogEntry) *string {
 		}
 	}
 	if len(parts) == 0 {
-		// Return a non-nil pointer to an empty string so the NOT NULL
-		// constraint on search_text is satisfied.  Prior to this fix,
-		// nil was returned and the INSERT silently failed (the error
-		// was logged at slog.Debug level, invisible at production
-		// log level=info), causing the request to vanish from
-		// request_logs.
 		empty := ""
 		return &empty
 	}
 	joined := strings.Join(parts, " ")
 	return &joined
+}
+
+// sanitizeUTF8 returns a copy of s with every invalid UTF-8 byte sequence
+// replaced by the Unicode replacement character (U+FFFD).  The result is
+// always valid UTF-8 and safe for PostgreSQL columns with encoding=UTF8.
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/10)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteString("\uFFFD")
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+func sanitizeStringPtr(p **string) {
+	if *p == nil {
+		return
+	}
+	clean := sanitizeUTF8(**p)
+	*p = &clean
+}
+
+func sanitizeRequestLogEntry(e *RequestLogEntry) {
+	sanitizeStringPtr(&e.ClientModel)
+	sanitizeStringPtr(&e.OutboundModel)
+	sanitizeStringPtr(&e.ClientProfile)
+	sanitizeStringPtr(&e.RequestMode)
+	sanitizeStringPtr(&e.ErrorKind)
+	sanitizeStringPtr(&e.UsageSource)
+	sanitizeStringPtr(&e.IdentityHash)
+	sanitizeStringPtr(&e.ResponseChecksum)
+	sanitizeStringPtr(&e.TransformRuleID)
+	sanitizeStringPtr(&e.EgressProtocol)
+	sanitizeStringPtr(&e.FailureDetailCode)
+	sanitizeStringPtr(&e.RequestPreview)
+	sanitizeStringPtr(&e.TransformSummary)
+	sanitizeStringPtr(&e.ResponsePreview)
+	sanitizeStringPtr(&e.RequestBody)
+	sanitizeStringPtr(&e.ResponseBody)
+	e.RequestID = sanitizeUTF8(e.RequestID)
+	e.TenantID = sanitizeUTF8(e.TenantID)
+	if e.EndUserID != nil {
+		clean := sanitizeUTF8(*e.EndUserID)
+		e.EndUserID = &clean
+	}
+	if e.CostCurrency != nil {
+		clean := sanitizeUTF8(*e.CostCurrency)
+		e.CostCurrency = &clean
+	}
 }
