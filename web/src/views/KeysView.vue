@@ -8,7 +8,7 @@ import FilterInput from '../components/FilterInput.vue'
 const router = useRouter()
 
 const keys = ref<ApiKey[]>([])
-const profileEdit = ref<{ keyId: number; profile: string; ownerUser: string } | null>(null)
+const profileEdit = ref<{ keyId: number; profile: string; ownerUser: string; keyAlias: string } | null>(null)
 const profileSaving = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -16,6 +16,7 @@ const activeTab = ref<'all' | 'active' | 'pending' | 'closed'>('active')
 const filterApp = ref('')
 const filterProfile = ref('')
 const filterOwner = ref('')
+const filterTenant = ref('')
 
 function isExpired(k: ApiKey): boolean {
   if (!k.expires_at) return false
@@ -70,6 +71,9 @@ const filteredKeys = computed(() => {
     const q = filterOwner.value.trim().toLowerCase()
     list = list.filter((k) => (k.owner_user || '').toLowerCase().includes(q))
   }
+  if (filterTenant.value) {
+    list = list.filter((k) => k.tenant_id === filterTenant.value)
+  }
   return list
 })
 
@@ -88,9 +92,16 @@ const uniqueOwners = computed(() => {
   return [...s].filter(Boolean).sort()
 })
 
+const uniqueTenants = computed(() => {
+  const s = new Set(keys.value.map((k) => k.tenant_id))
+  return [...s].sort()
+})
+
 // New key modal
 const showNew = ref(false)
 const newApp = ref('')
+const newTenant = ref('')
+const newKeyAlias = ref('')
 const newOwner = ref('')
 const newBudget = ref('')
 const newRpm = ref('')
@@ -122,6 +133,9 @@ async function saveKeyProfile() {
     if (profileEdit.value.ownerUser !== undefined) {
       updates.owner_user = profileEdit.value.ownerUser.trim()
     }
+    if (profileEdit.value.keyAlias !== undefined) {
+      updates.key_alias = profileEdit.value.keyAlias.trim()
+    }
     await patchKeyProfile(profileEdit.value.keyId, updates)
     profileEdit.value = null
     await load()
@@ -146,6 +160,8 @@ async function load() {
 
 function openNew() {
   newApp.value = 'default'
+  newTenant.value = 'default'
+  newKeyAlias.value = ''
   newOwner.value = ''
   newBudget.value = ''
   newRpm.value = ''
@@ -157,11 +173,14 @@ function openNew() {
 
 async function submitNew() {
   if (!newApp.value) { newErr.value = '请填写应用代码'; return }
+  if (!newKeyAlias.value.trim()) { newErr.value = '请填写密钥别名'; return }
   newSaving.value = true
   newErr.value = ''
   try {
     const resp = await createKey({
       application_code: newApp.value,
+      tenant_id: newTenant.value || undefined,
+      key_alias: newKeyAlias.value.trim(),
       owner_user: newOwner.value || undefined,
       budget_usd: newBudget.value ? Number(newBudget.value) : undefined,
       rate_limit_rpm: newRpm.value ? Number(newRpm.value) : undefined,
@@ -411,6 +430,11 @@ onBeforeUnmount(() => {
 
       <div class="filter-bar">
         <FilterInput
+          v-model="filterTenant"
+          :options="uniqueTenants"
+          placeholder="按租户过滤"
+        />
+        <FilterInput
           v-model="filterApp"
           :options="uniqueApps"
           placeholder="按应用过滤"
@@ -426,9 +450,9 @@ onBeforeUnmount(() => {
           placeholder="按归属用户过滤"
         />
         <button
-          v-if="filterApp || filterProfile || filterOwner"
+          v-if="filterTenant || filterApp || filterProfile || filterOwner"
           class="btn btn-ghost btn-xs"
-          @click="filterApp = ''; filterProfile = ''; filterOwner = ''"
+          @click="filterTenant = ''; filterApp = ''; filterProfile = ''; filterOwner = ''"
         >清除全部</button>
       </div>
 
@@ -437,7 +461,9 @@ onBeforeUnmount(() => {
           <tr>
             <th style="width:40px">ID</th>
             <th>前缀</th>
+            <th>租户</th>
             <th>应用</th>
+            <th>别名</th>
             <th>Client Profile</th>
             <th>归属用户</th>
             <th>状态</th>
@@ -468,19 +494,21 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </td>
+            <td><code style="font-size:11px">{{ k.tenant_id }}</code></td>
             <td>{{ k.application_code }}</td>
+            <td><code style="font-size:11px">{{ k.key_alias || '—' }}</code></td>
             <td>
               <code style="font-size:11px">{{ k.default_client_profile || '—' }}</code>
               <button
                 class="btn btn-ghost btn-xs"
-                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '' }"
+                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '', keyAlias: k.key_alias || '' }"
               >编辑</button>
             </td>
             <td>
               <span style="font-size:12px">{{ k.owner_user ?? '—' }}</span>
               <button
                 class="btn btn-ghost btn-xs"
-                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '' }"
+                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '', keyAlias: k.key_alias || '' }"
               >编辑</button>
             </td>
             <td>
@@ -556,6 +584,14 @@ onBeforeUnmount(() => {
             placeholder="用户名"
           />
         </div>
+        <div class="form-group">
+          <label>密钥别名</label>
+          <input
+            v-model="profileEdit.keyAlias"
+            class="input"
+            placeholder="如: prod, dev, zhangsan-cli"
+          />
+        </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
           <button class="btn btn-ghost" @click="profileEdit = null">取消</button>
           <button class="btn btn-primary" @click="saveKeyProfile" :disabled="profileSaving">
@@ -595,8 +631,16 @@ onBeforeUnmount(() => {
         <template v-else>
           <div v-if="newErr" class="alert alert-danger">{{ newErr }}</div>
           <div class="form-group">
+            <label>租户（默认 default）</label>
+            <input v-model="newTenant" placeholder="default" />
+          </div>
+          <div class="form-group">
             <label>应用代码 *</label>
             <input v-model="newApp" placeholder="如: default, portal, agent" />
+          </div>
+          <div class="form-group">
+            <label>密钥别名 *（同一租户+应用下的唯一标识）</label>
+            <input v-model="newKeyAlias" placeholder="如: prod, dev, zhangsan-cli" />
           </div>
           <div class="form-group">
             <label>归属用户（可选）</label>
@@ -611,7 +655,7 @@ onBeforeUnmount(() => {
             <input v-model="newRpm" type="number" placeholder="留空不限制" />
           </div>
           <div class="form-group">
-            <label>备注（必填，说明创建原因）</label>
+            <label>备注（说明创建原因）</label>
             <input v-model="newRemark" placeholder="如: 测试使用、正式环境密钥" maxlength="512" />
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">

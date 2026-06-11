@@ -29,6 +29,10 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 		h.usageByKey(w, r)
 	case remaining == "by-application":
 		h.usageByApplication(w, r)
+	case remaining == "by-tenant":
+		h.usageByTenant(w, r)
+	case remaining == "tenants":
+		h.listTenants(w, r)
 	default:
 		h.usageKeyDetail(w, r)
 	}
@@ -711,4 +715,96 @@ func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyI
 		"remaining_usd": remainingUSD,
 		"quota_ok":      quotaOK,
 	})
+}
+
+func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
+	tenantID := queryString(r, "tenant")
+	if tenantID == "" {
+		writeError(w, http.StatusBadRequest, "tenant parameter required")
+		return
+	}
+	days := queryInt(r, "days", 30)
+	if days < 1 {
+		days = 1
+	}
+	if days > 365 {
+		days = 365
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	type tenantUsage struct {
+		TenantID         string  `json:"tenant_id"`
+		TotalRequests    int     `json:"total_requests"`
+		TotalPromptTok   int     `json:"total_prompt_tokens"`
+		TotalCompTok     int     `json:"total_completion_tokens"`
+		TotalCostUSD     float64 `json:"total_cost_usd"`
+		UniqueKeys       int     `json:"unique_keys"`
+		UniqueModels     int     `json:"unique_models"`
+		UniqueApps       int     `json:"unique_applications"`
+	}
+
+	var u tenantUsage
+	err := h.db.QueryRow(ctx, `
+		SELECT
+			$1::text,
+			COUNT(*),
+			COALESCE(SUM(ul.prompt_tokens), 0),
+			COALESCE(SUM(ul.completion_tokens), 0),
+			COALESCE(SUM(ul.cost_usd), 0.0),
+			COUNT(DISTINCT ul.api_key_id),
+			COUNT(DISTINCT ul.canonical_id),
+			COUNT(DISTINCT ul.application_id)
+		FROM usage_ledger ul
+		WHERE ul.tenant_id = $1
+		  AND ul.ts >= now() - ($2 * INTERVAL '1 day')
+	`, tenantID, days).Scan(
+		&u.TenantID, &u.TotalRequests, &u.TotalPromptTok, &u.TotalCompTok,
+		&u.TotalCostUSD, &u.UniqueKeys, &u.UniqueModels, &u.UniqueApps,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "tenant usage query failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
+func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			ak.tenant_id,
+			COUNT(*) AS key_count,
+			COALESCE(SUM(ak.total_requests), 0) AS total_requests,
+			COALESCE(SUM(ak.total_prompt_tokens + ak.total_completion_tokens), 0) AS total_tokens,
+			COALESCE(SUM(ak.total_cost_usd), 0)::float8 AS total_cost_usd
+		FROM api_keys ak
+		GROUP BY ak.tenant_id
+		ORDER BY total_cost_usd DESC
+	`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type tenantSummary struct {
+		TenantID     string  `json:"tenant_id"`
+		KeyCount     int     `json:"key_count"`
+		TotalReqs    int64   `json:"total_requests"`
+		TotalTokens  int64   `json:"total_tokens"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	tenants := make([]tenantSummary, 0)
+	for rows.Next() {
+		var t tenantSummary
+		if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+			continue
+		}
+		tenants = append(tenants, t)
+	}
+	writeJSON(w, http.StatusOK, tenants)
 }
