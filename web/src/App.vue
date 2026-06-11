@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { store, clearApiKey } from './store'
 
@@ -14,7 +14,8 @@ const versionInfo = ref<{
   build_seq?: number
 }>({})
 
-onMounted(async () => {
+async function loadVersion() {
+  if (!store.apiKey) return
   try {
     const resp = await fetch('/api/system/version', {
       headers: { 'Authorization': `Bearer ${store.apiKey}` },
@@ -25,7 +26,11 @@ onMounted(async () => {
   } catch {
     // ignore — version display is non-critical
   }
-})
+}
+
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) loadVersion()
+}, { immediate: true })
 
 const nav = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },

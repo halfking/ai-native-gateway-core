@@ -24,6 +24,11 @@ RUN cd /src/web && npm run build
 
 COPY . .
 
+# Version injection — populated by deploy scripts or manual --build-arg.
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ARG BUILD_SEQ="0"
+
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
     go build -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
 
@@ -37,6 +42,14 @@ WORKDIR /opt/llm-gateway-go
 
 COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
 COPY --from=builder /src/web/dist ./web/dist
+
+# Write VERSION file so /api/system/version returns real build metadata.
+# Format: version-gitSHA-buildDate (parsed by admin/misc.go:parseVersionString)
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ARG BUILD_SEQ="0"
+RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > VERSION && \
+    echo "${BUILD_SEQ}" > .deploy_seq
 
 USER llmgw
 
