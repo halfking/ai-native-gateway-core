@@ -1428,7 +1428,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		apiKey, decErr := h.decryptCredStr(ciphertext)
+	apiKey, decErr := h.decryptCredStr(string(ciphertext))
 		if decErr != nil {
 			cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
 			cd.ChatProbe = chatProbe{Error: "decrypt failed"}
@@ -1711,7 +1711,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			apiKey, decErr := h.decryptCredStr(ciphertext)
+	apiKey, decErr := h.decryptCredStr(string(ciphertext))
 			if decErr != nil {
 				cd.ModelsProbe = modelsProbe{Error: "decrypt failed"}
 				cd.ChatProbe = chatProbe{Error: "decrypt failed"}
@@ -2107,7 +2107,8 @@ func (h *Handler) runHealthCheck(providerID, credID int, taskID int64) {
 }
 
 func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (map[string]any, error) {
-	var label, ciphertext, baseURL string
+	var label, baseURL string
+	var ciphertext []byte
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(c.label,''), c.secret_ciphertext, COALESCE(p.base_url,'')
 		FROM credentials c JOIN providers p ON p.id = c.provider_id
@@ -2117,7 +2118,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		return nil, fmt.Errorf("query credential: %w", err)
 	}
 
-	apiKey, decErr := h.decryptCredStr(ciphertext)
+	apiKey, decErr := h.decryptCredStr(string(ciphertext))
 	probeOk := false
 	var healthStatus, healthError string
 	var healthLatencyMs int
@@ -2174,7 +2175,8 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var label, ciphertext, baseURL string
+	var label, baseURL string
+	var ciphertext []byte
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(c.label,''), c.secret_ciphertext, COALESCE(p.base_url,'')
 		FROM credentials c
@@ -2186,7 +2188,7 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	apiKey, decErr := h.decryptCredStr(ciphertext)
+	apiKey, decErr := h.decryptCredStr(string(ciphertext))
 	probeOk := false
 	var healthStatus, healthError string
 	var healthLatencyMs int
