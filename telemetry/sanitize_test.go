@@ -28,6 +28,34 @@ func TestSanitizeUTF8_PassthroughValid(t *testing.T) {
 	}
 }
 
+func TestSanitizeUTF8_EscapesBackslashes(t *testing.T) {
+	// Backslashes must be escaped to prevent SQLSTATE 22P05
+	// "unsupported Unicode escape sequence" when PostgreSQL
+	// misinterprets \uXXXX-like sequences.
+	in := `hello\u4e2d\u世界的\d`
+	out := sanitizeUTF8(in)
+	// Every backslash must be doubled
+	if !strings.Contains(out, "\\\\u") {
+		t.Errorf("expected escaped backslash in %q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("result is invalid UTF-8: %q", out)
+	}
+}
+
+func TestSanitizeUTF8_InvalidBytesPlusBackslash(t *testing.T) {
+	// Invalid UTF-8 bytes followed by a backslash: both the invalid
+	// bytes and the backslash must be handled correctly.
+	invalid := string([]byte{0xe5, 0xbc, 0xe2}) + `\u`
+	out := sanitizeUTF8(invalid)
+	if !utf8.ValidString(out) {
+		t.Errorf("result is invalid UTF-8: %q (bytes %x)", out, []byte(out))
+	}
+	if !strings.Contains(out, "\\\\") {
+		t.Errorf("expected escaped backslash in %q", out)
+	}
+}
+
 func TestSanitizeRequestLogEntry_ScrubsAllStringFields(t *testing.T) {
 	invalid := string([]byte{0xE5, 0xBC, 0xE2, 0x80, 0xA6})
 	mkPtr := func(s string) *string { return &s }
