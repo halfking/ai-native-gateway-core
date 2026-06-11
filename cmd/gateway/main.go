@@ -109,15 +109,13 @@ func main() {
 		audit.NewJSONSink(10000),
 	)
 
-	pools := pool.NewPoolManager()
-
 	upClient := upstream.New()
-	if cfg.BGMode != "data-plane" {
-		slog.Info("upstream proxy resolver initialised",
-			"proxy_configured", upClient.ProxyStatus()["proxy"] != "",
-			"domestic_hosts", len(upClient.ProxyStatus()["domestic"].([]string)),
-		)
-	}
+	slog.Info("upstream proxy resolver initialised",
+		"proxy_configured", upClient.ProxyStatus()["proxy"] != "",
+		"domestic_hosts", len(upClient.ProxyStatus()["domestic"].([]string)),
+	)
+
+	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
 	healthHandler := relay.NewHealthHandler(cm, lim, upClient.Proxy())
