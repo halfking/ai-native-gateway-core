@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
 )
 
 type ModelInfo struct {
@@ -70,14 +72,12 @@ func New() *Client {
 }
 
 func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
-	baseURL = strings.TrimRight(baseURL, "/")
-	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
-		if strings.HasSuffix(baseURL, suffix) {
-			baseURL = baseURL[:len(baseURL)-len(suffix)]
-			break
-		}
+	// BuildModelsURL with empty template would return ""; fall back to legacy
+	// /v1/models probe so this client stays usable in non-catalog contexts.
+	modelsURL := urlutil.BuildModelsURL(baseURL, "")
+	if modelsURL == "" {
+		modelsURL = urlutil.CleanBaseURL(baseURL) + "/v1/models"
 	}
-	modelsURL := baseURL + "/v1/models"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
 	if err != nil {
