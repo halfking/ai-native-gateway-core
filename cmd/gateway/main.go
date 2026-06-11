@@ -111,8 +111,16 @@ func main() {
 
 	pools := pool.NewPoolManager()
 
+	upClient := upstream.New()
+	if cfg.BGMode != "data-plane" {
+		slog.Info("upstream proxy resolver initialised",
+			"proxy_configured", upClient.ProxyStatus()["proxy"] != "",
+			"domestic_hosts", len(upClient.ProxyStatus()["domestic"].([]string)),
+		)
+	}
+
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
-	healthHandler := relay.NewHealthHandler(cm, lim)
+	healthHandler := relay.NewHealthHandler(cm, lim, upClient.Proxy())
 	modelsHandler := relay.NewModelsHandler()
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
@@ -163,7 +171,6 @@ func main() {
 		}
 		router := routing.NewRouter(stickyCache, lim)
 		norm := relay.NewNormalizer()
-		upClient := upstream.New()
 		exec := routing.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
@@ -398,6 +405,7 @@ func main() {
 	lim.Stop()
 	pools.Stop()
 	pools.CloseAll()
+	upClient.Stop()
 
 	// 3. Stop background services last
 	if discoverySvc != nil {
