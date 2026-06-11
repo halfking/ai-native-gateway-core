@@ -10,6 +10,8 @@ const sinceMinutes = ref(30)
 const filterModel = ref('')
 const filterSuccess = ref<'' | 'true' | 'false'>('')
 const limit = ref(50)
+const offset = ref(0)
+const total = ref(0)
 
 // Detail panel
 const selectedRow = ref<RoutingDecision | null>(null)
@@ -33,7 +35,10 @@ async function load() {
     }
     if (filterModel.value.trim()) params.model = filterModel.value.trim()
     if (filterSuccess.value !== '') params.success = filterSuccess.value === 'true'
-    rows.value = await getDecisions(params)
+    params.offset = offset.value
+    const resp = await getDecisions(params)
+    rows.value = resp.decisions
+    total.value = resp.total
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -57,6 +62,11 @@ function traceList(v: unknown): string {
       return `p${provider}/c${credential} ${reason}`.trim()
     })
     .join(' | ')
+}
+
+function resetAndLoad() {
+  offset.value = 0
+  load()
 }
 
 onMounted(() => {
@@ -84,13 +94,13 @@ onUnmounted(() => {
             v-model="filterModel"
             :allow-free-text="true"
             placeholder="选择或输入模型"
-            @update:modelValue="load"
+            @update:modelValue="resetAndLoad"
           />
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <label style="font-size:13px;white-space:nowrap">状态</label>
-        <select v-model="filterSuccess" @change="load" style="width:100px">
+        <select v-model="filterSuccess" @change="resetAndLoad" style="width:100px">
           <option value="">全部</option>
           <option value="true">成功</option>
           <option value="false">失败</option>
@@ -98,7 +108,7 @@ onUnmounted(() => {
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <label style="font-size:13px;white-space:nowrap">最近</label>
-        <select v-model="sinceMinutes" @change="load" style="width:100px">
+        <select v-model="sinceMinutes" @change="resetAndLoad" style="width:100px">
           <option :value="10">10 分钟</option>
           <option :value="30">30 分钟</option>
           <option :value="60">1 小时</option>
@@ -108,7 +118,7 @@ onUnmounted(() => {
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <label style="font-size:13px;white-space:nowrap">条数</label>
-        <select v-model="limit" @change="load" style="width:80px">
+        <select v-model="limit" @change="resetAndLoad" style="width:80px">
           <option :value="20">20</option>
           <option :value="50">50</option>
           <option :value="100">100</option>
@@ -181,6 +191,17 @@ onUnmounted(() => {
       </table>
     </div>
     <div v-if="loading" style="text-align:center;padding:8px;font-size:12px;color:var(--muted)">加载中…</div>
+
+    <!-- Pagination -->
+    <div v-if="total > 0" class="card" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
+      <div style="color:var(--muted)">
+        共 <strong>{{ total }}</strong> 条，当前 {{ offset + 1 }} - {{ Math.min(offset + limit, total) }}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">← 上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">下一页 →</button>
+      </div>
+    </div>
 
     <!-- Row detail modal -->
     <Teleport to="body">
