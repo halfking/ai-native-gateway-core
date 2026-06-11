@@ -342,3 +342,140 @@ func TestEventBuilder_AllFields(t *testing.T) {
 		t.Fatal("round-trip client_model mismatch")
 	}
 }
+
+func TestExtractDeltaText(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "content delta",
+			payload: `{"choices":[{"index":0,"delta":{"content":"hello","role":"assistant"}}]}`,
+			want:    "hello",
+		},
+		{
+			name:    "role only (no content)",
+			payload: `{"choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+			want:    "",
+		},
+		{
+			name:    "empty content",
+			payload: `{"choices":[{"index":0,"delta":{"content":"","role":"assistant"}}]}`,
+			want:    "",
+		},
+		{
+			name:    "not data line",
+			payload: `not json`,
+			want:    "",
+		},
+		{
+			name:    "no choices",
+			payload: `{"model":"x"}`,
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractDeltaText(tc.payload); got != tc.want {
+				t.Errorf("extractDeltaText(%q) = %q, want %q", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractDeltaToolText(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "single tool call with name and args",
+			payload: `{"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"BJ\"}"}}]}}]}`,
+			want:    "[tool:get_weather] {\"city\":\"BJ\"}",
+		},
+		{
+			name:    "tool call with args only (subsequent chunk)",
+			payload: `{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"foo\""}}]}}]}`,
+			want:    "\"foo\"",
+		},
+		{
+			name:    "no tool calls",
+			payload: `{"choices":[{"index":0,"delta":{"content":"hi"}}]}`,
+			want:    "",
+		},
+		{
+			name:    "empty tool_calls array",
+			payload: `{"choices":[{"index":0,"delta":{"tool_calls":[]}}]}`,
+			want:    "",
+		},
+		{
+			name:    "tool call without function name",
+			payload: `{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"x","function":{"arguments":"{}"}}]}}]}`,
+			want:    "{}",
+		},
+		{
+			name:    "invalid json",
+			payload: `{`,
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractDeltaToolText(tc.payload); got != tc.want {
+				t.Errorf("extractDeltaToolText(%q) = %q, want %q", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStreamCapture_ToolCalls ensures that function-calling responses (which
+// have delta.tool_calls but no delta.content) still produce a non-empty
+// stream_text_content. This is the regression case for minimax-m3 sessions.
+func TestStreamCapture_ToolCalls(t *testing.T) {
+	sc := NewStreamCapture()
+	// Chunk 1: tool call start (name + first args)
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"terminal","arguments":"{\"command\":"}}]}}]}`,
+		"", false)
+	// Chunk 2: tool call args continuation
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\""}}]}}]}`,
+		"", false)
+	// Chunk 3: done
+	sc.ObservePayload("[DONE]", "", true)
+
+	m := sc.SummaryAsMap()
+	text, ok := m["stream_text_content"].(string)
+	if !ok || text == "" {
+		t.Fatalf("expected non-empty stream_text_content for tool_calls, got %v", m["stream_text_content"])
+	}
+	if !strings.Contains(text, "[tool:terminal]") {
+		t.Errorf("expected tool name in textContent, got %q", text)
+	}
+	if !strings.Contains(text, "ls") {
+		t.Errorf("expected args in textContent, got %q", text)
+	}
+	if m["stream_done_received"].(bool) != true {
+		t.Error("expected done_received=true")
+	}
+}
+
+// TestStreamCapture_LongStreamContent verifies that textContent can grow
+// beyond 8192 bytes (the previous limit), up to 65536 bytes. This handles
+// long streaming responses that previously got truncated.
+func TestStreamCapture_LongStreamContent(t *testing.T) {
+	sc := NewStreamCapture()
+	chunk := strings.Repeat("a", 500)
+	for i := 0; i < 200; i++ {
+		sc.ObservePayload(
+			`{"choices":[{"index":0,"delta":{"content":"`+chunk+`"}}]}`,
+			"", false)
+	}
+	m := sc.SummaryAsMap()
+	text := m["stream_text_content"].(string)
+	if len(text) < 65536 {
+		t.Errorf("expected textContent to reach 65536 bytes, got %d", len(text))
+	}
+}

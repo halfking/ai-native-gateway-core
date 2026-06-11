@@ -944,6 +944,10 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	if limit > 500 {
 		limit = 500
 	}
+	offset := queryInt(r, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
 	model := strings.TrimSpace(queryString(r, "model"))
 	canonical := strings.TrimSpace(queryString(r, "canonical"))
 
@@ -967,7 +971,14 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 		argIdx++
 	}
 	where := strings.Join(clauses, " AND ")
-	args = append(args, limit)
+
+	var total int
+	countQ := fmt.Sprintf("SELECT COUNT(*) FROM routing_decision_log rdl WHERE %s", where)
+	if err := h.db.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
+		total = 0
+	}
+
+	args = append(args, limit, offset)
 
 	q := fmt.Sprintf(`
 		SELECT rdl.ts, rdl.request_id::text AS request_id, rdl.idempotency_key,
@@ -987,8 +998,8 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 		FROM routing_decision_log rdl
 		WHERE %s
 		ORDER BY rdl.ts DESC
-		LIMIT $%d
-	`, where, argIdx)
+		LIMIT $%d OFFSET $%d
+	`, where, argIdx, argIdx+1)
 
 	rows, err := h.db.Query(ctx, q, args...)
 	if err != nil {
@@ -1068,7 +1079,12 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	if decisions == nil {
 		decisions = []map[string]any{}
 	}
-	writeJSON(w, http.StatusOK, decisions)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"decisions": decisions,
+	})
 }
 
 func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {

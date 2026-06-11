@@ -1110,15 +1110,23 @@ export interface RoutingDecision {
   decision_trace: Record<string, unknown>
 }
 
-export function getDecisions(params: { model?: string; canonical?: string; success?: boolean; since_minutes?: number; limit?: number } = {}) {
+export interface DecisionsResponse {
+  total: number
+  offset: number
+  limit: number
+  decisions: RoutingDecision[]
+}
+
+export function getDecisions(params: { model?: string; canonical?: string; success?: boolean; since_minutes?: number; limit?: number; offset?: number } = {}) {
   const qs = new URLSearchParams()
   if (params.model) qs.set('model', params.model)
   if (params.canonical) qs.set('canonical', params.canonical)
   if (params.success !== undefined) qs.set('success', String(params.success))
   if (params.since_minutes !== undefined) qs.set('since_minutes', String(params.since_minutes))
   if (params.limit !== undefined) qs.set('limit', String(params.limit))
+  if (params.offset !== undefined) qs.set('offset', String(params.offset))
   const s = qs.toString()
-  return req<RoutingDecision[]>('GET', `/api/routing/decisions${s ? '?' + s : ''}`)
+  return req<DecisionsResponse>('GET', `/api/routing/decisions${s ? '?' + s : ''}`)
 }
 
 export interface CircuitInfo {
