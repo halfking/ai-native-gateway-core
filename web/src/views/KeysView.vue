@@ -190,9 +190,9 @@ async function runServerLookup() {
 watch(
   () => [newApp.value, newTenant.value, newKeyAlias.value],
   () => {
-    // Reset stale server result so we don't briefly show an outdated one
-    // while the new request is in flight.
-    serverConflict.value = null
+    // Don't eagerly null-out the last server result.  Keep it visible
+    // while the next request is in-flight so the user never sees a
+    // false-negative "no conflict" flash between keystrokes.
     scheduleServerLookup()
   },
 )

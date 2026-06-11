@@ -61,7 +61,9 @@ func findActiveKeyConflict(ctx context.Context, db keyConflictQuerier, appID int
 		      (enabled = TRUE
 		        AND COALESCE(status, 'active') = 'active'
 		        AND (expires_at IS NULL OR expires_at > now()))
-		      OR COALESCE(is_system, FALSE) = TRUE
+		      OR (COALESCE(is_system, FALSE) = TRUE
+		        AND enabled = TRUE
+		        AND (expires_at IS NULL OR expires_at > now()))
 		  )
 		ORDER BY id ASC
 		LIMIT 1
@@ -303,16 +305,20 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if existing != nil {
+		prefix := existing.Prefix
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
 		if existing.IsSystem {
 			writeError(w, http.StatusConflict, fmt.Sprintf(
-				"该租户+应用+别名组合已存在有效的系统密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有系统密钥。",
-				existing.ID, existing.Prefix[:8],
+				"该租户+应用+别名组合已存在有效的系统密钥 (id=%d)，请勿重复创建。如需新建，请先禁用或吊销现有系统密钥。",
+				existing.ID,
 			))
 			return
 		}
 		writeError(w, http.StatusConflict, fmt.Sprintf(
 			"该租户+应用+别名组合已有可用密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有密钥。",
-			existing.ID, existing.Prefix[:8],
+			existing.ID, prefix,
 		))
 		return
 	}
@@ -407,9 +413,16 @@ func (h *Handler) lookupKeyConflict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hydrate the conflict with the user-visible columns (status, expires_at)
-	// so the UI can render an "expired" / "disabled" badge correctly when
-	// the system-flag short-circuits the active-key predicate.
+	conflictResp := map[string]any{
+		"id":         existing.ID,
+		"key_prefix": existing.Prefix,
+		"is_system":  existing.IsSystem,
+		"status":     "active",
+		"enabled":    true,
+		"expires_at": nil,
+		"owner_user": "",
+	}
+
 	var (
 		status    *string
 		enabled   *bool
@@ -422,19 +435,16 @@ func (h *Handler) lookupKeyConflict(w http.ResponseWriter, r *http.Request) {
 		WHERE id = $1
 	`, existing.ID).Scan(&status, &enabled, &expiresAt, &owner)
 	if err != nil {
-		slog.Warn("lookupKeyConflict: hydrate conflict row failed", "error", err, "id", existing.ID)
+		slog.Warn("lookupKeyConflict: hydrate conflict row failed, using defaults", "error", err, "id", existing.ID)
+	} else {
+		conflictResp["status"] = derefStr(status)
+		conflictResp["enabled"] = derefBool(enabled)
+		conflictResp["expires_at"] = expiresAt
+		conflictResp["owner_user"] = derefStr(owner)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"conflict": map[string]any{
-			"id":         existing.ID,
-			"key_prefix": existing.Prefix,
-			"is_system":  existing.IsSystem,
-			"status":     derefStr(status),
-			"enabled":    derefBool(enabled),
-			"expires_at": expiresAt,
-			"owner_user": derefStr(owner),
-		},
+		"conflict":         conflictResp,
 		"application_code": appCode,
 		"tenant_id":        tenantID,
 		"key_alias":        alias,
