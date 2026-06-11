@@ -61,6 +61,7 @@ type StreamCapture struct {
 	checksum         [32]byte
 	finalFinish      string
 	preview          []byte
+	textContent      []byte
 	promptTokens     *int
 	completionTokens *int
 	cacheReadTokens  *int
@@ -133,6 +134,10 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 			payload = payload[:remaining]
 		}
 		sc.preview = append(sc.preview, payload...)
+	}
+	text := extractDeltaText(payload)
+	if text != "" && len(sc.textContent) < 8192 {
+		sc.textContent = append(sc.textContent, text...)
 	}
 	if finishReason != "" {
 		sc.finalFinish = finishReason
@@ -263,6 +268,9 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if len(sc.preview) > 0 {
 		m["response_preview"] = string(sc.preview)
+	}
+	if len(sc.textContent) > 0 {
+		m["stream_text_content"] = string(sc.textContent)
 	}
 	if sc.finalFinish != "" {
 		m["failure_detail_code"] = sc.finalFinish
@@ -525,4 +533,25 @@ func MessageDigest(messages []byte) (checksum string, preview string) {
 		preview = preview[:4096]
 	}
 	return
+}
+
+func extractDeltaText(payload string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return ""
+	}
+	choicesRaw, ok := obj["choices"]
+	if !ok {
+		return ""
+	}
+	var choices []map[string]any
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil || len(choices) == 0 {
+		return ""
+	}
+	delta, ok := choices[0]["delta"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	content, _ := delta["content"].(string)
+	return content
 }

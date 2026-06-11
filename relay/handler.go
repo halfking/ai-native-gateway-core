@@ -459,6 +459,33 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			}
 		}
 		responseBodyText = &v
+	} else if capture != nil {
+		m := capture.SummaryAsMap()
+		var textContent string
+		if v, ok := m["stream_text_content"].(string); ok && v != "" {
+			textContent = v
+		}
+		if textContent != "" {
+			var pt, ct int
+			if v, ok := m["prompt_tokens"].(int); ok {
+				pt = v
+			}
+			if v, ok := m["completion_tokens"].(int); ok {
+				ct = v
+			}
+			pseudoBody := map[string]any{
+				"choices": []map[string]any{
+					{"message": map[string]any{"role": "assistant", "content": textContent}, "finish_reason": "stop"},
+				},
+			}
+			if pt > 0 || ct > 0 {
+				pseudoBody["usage"] = map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}
+			}
+			if b, err := json.Marshal(pseudoBody); err == nil {
+				v := string(b)
+				responseBodyText = &v
+			}
+		}
 	}
 	requestPreviewText := requestPreview(requestBody)
 	transformSummaryText := transformSummary(txResult, evt.OutboundModel)
