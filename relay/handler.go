@@ -286,6 +286,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if err != nil {
 		slog.Error("failed to get candidates from provider", "error", err)
+		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", int(time.Since(startTime).Milliseconds()))
 		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
 			int(time.Since(startTime).Milliseconds()), bodyBytes)
@@ -293,6 +294,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if len(candidates) == 0 {
+		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", int(time.Since(startTime).Milliseconds()))
 		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
 			int(time.Since(startTime).Milliseconds()), bodyBytes)
@@ -365,15 +367,20 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 			"model", clientModel,
 		)
 		var providerID, credentialID *int
+		var tried int
 		if len(candidates) > 0 {
 			providerID = intPtr(candidates[0].ProviderID)
 			credentialID = intPtr(candidates[0].CredentialID)
 		}
+		errCode := "provider_error"
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
+			errCode = "model_not_found"
+			tried = execErr.Tried
 			h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
 				"model_not_found",
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErr.Tried),
 				int(time.Since(startTime).Milliseconds()), bodyBytes)
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, int(time.Since(startTime).Milliseconds()))
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErr.Tried),
 				"server_error", "model_not_found")
@@ -382,6 +389,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
 			"provider_error", execErr.Error(),
 			int(time.Since(startTime).Milliseconds()), bodyBytes)
+		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, int(time.Since(startTime).Milliseconds()))
 		writeErrorJSON(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error")
 		return
 	}
@@ -402,13 +410,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		tenantID = keyInfo.TenantID
 	}
 
-	h.telemetryClient.EmitDecisionLog(&telemetry.DecisionLogEntry{
+	dl := &telemetry.DecisionLogEntry{
 		RequestID:          evt.RequestID,
 		TenantID:           tenantID,
 		APIKeyID:           apiKeyID,
 		Model:              evt.ClientModel,
 		ChosenCredentialID: intPtr(result.Candidate.CredentialID),
 		ChosenProviderID:   intPtr(result.Candidate.ProviderID),
+		Tier:               intPtr(result.Candidate.Tier),
 		CandidatesTried:    1,
 		LatencyMs:          result.LatencyMs,
 		Success:            true,
@@ -418,7 +427,20 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		RequestMode:        strPtr(requestMode),
 		IdentityHash:       strPtr(evt.IdentityHash),
 		TransformRuleID:    strPtr(evt.TransformRule),
-	})
+	}
+	if evt.ResolutionPath != "" {
+		dl.ResolutionPath = strPtr(evt.ResolutionPath)
+	}
+	if evt.CanonicalName != "" {
+		dl.CanonicalModel = strPtr(evt.CanonicalName)
+	}
+	if result.Candidate.Protocol != "" {
+		dl.EgressProtocol = strPtr(result.Candidate.Protocol)
+	}
+	if txResult != nil && txResult.OutboundModel != "" {
+		dl.OutboundModel = strPtr(txResult.OutboundModel)
+	}
+	h.telemetryClient.EmitDecisionLog(dl)
 
 	var requestBodyText *string
 	if len(requestBody) > 0 {
@@ -485,6 +507,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 				v := string(b)
 				responseBodyText = &v
 			}
+		} else if previewStr, ok := m["response_preview"].(string); ok && previewStr != "" {
+			// Fallback: textContent is empty (e.g. function-calling responses
+			// that only carry `delta.tool_calls` and no `delta.content`, or
+			// request_logs that are stored for audit even when no parsed text
+			// was collected). Persist the raw SSE preview as the body so the
+			// row is non-empty and downstream auditors/queries can still
+			// inspect the wire format.
+			responseBodyText = strPtr(previewStr)
 		}
 	}
 	requestPreviewText := requestPreview(requestBody)
@@ -653,6 +683,47 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 		RequestBody:   requestBodyText,
 	}
 	h.telemetryClient.EmitRequestLog(reqLog)
+}
+
+func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyInfo *auth.KeyInfo, clientID identity.ClientIdentity, candidatesTried int, modelResolution *resolve.Resolution, txResult *transform.TransformResult, errCode string, latencyMs int) {
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	var apiKeyID *int
+	var tenantID string = "default"
+	if keyInfo != nil {
+		apiKeyID = &keyInfo.ID
+		tenantID = keyInfo.TenantID
+	}
+	dl := &telemetry.DecisionLogEntry{
+		RequestID:        requestID,
+		TenantID:         tenantID,
+		APIKeyID:         apiKeyID,
+		Model:            clientModel,
+		CandidatesTried:  candidatesTried,
+		LatencyMs:        latencyMs,
+		Success:          false,
+		ErrorClass:       strPtr(errCode),
+		FailureDetailCode: strPtr(errCode),
+		ClientModel:      strPtr(clientModel),
+		IdentityHash:     strPtr(clientID.IdentityHash),
+	}
+	if modelResolution != nil {
+		dl.ResolutionPath = strPtr(modelResolution.ResolutionPath)
+		if modelResolution.CanonicalName != nil {
+			dl.CanonicalModel = strPtr(*modelResolution.CanonicalName)
+		}
+		if len(modelResolution.RawModels) > 0 {
+			dl.ResolutionRawModels = modelResolution.RawModels
+		}
+	}
+	if txResult != nil {
+		dl.OutboundModel = strPtr(txResult.OutboundModel)
+		if txResult.MatchedRule != "" {
+			dl.TransformRuleID = strPtr(txResult.MatchedRule)
+		}
+	}
+	h.telemetryClient.EmitDecisionLog(dl)
 }
 
 func (h *ChatHandler) serveFallback(w http.ResponseWriter, r *http.Request) {

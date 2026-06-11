@@ -136,8 +136,12 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 		sc.preview = append(sc.preview, payload...)
 	}
 	text := extractDeltaText(payload)
-	if text != "" && len(sc.textContent) < 8192 {
+	if text != "" && len(sc.textContent) < 65536 {
 		sc.textContent = append(sc.textContent, text...)
+	}
+	toolText := extractDeltaToolText(payload)
+	if toolText != "" && len(sc.textContent) < 65536 {
+		sc.textContent = append(sc.textContent, toolText...)
 	}
 	if finishReason != "" {
 		sc.finalFinish = finishReason
@@ -554,4 +558,57 @@ func extractDeltaText(payload string) string {
 	}
 	content, _ := delta["content"].(string)
 	return content
+}
+
+// extractDeltaToolText returns the concatenated arguments of tool_calls in a
+// streaming delta. Function-calling responses (e.g. minimax-m3) emit
+// `delta.tool_calls[].function.arguments` across multiple chunks; without this
+// the reconstructed response_body would be empty for those requests.
+func extractDeltaToolText(payload string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return ""
+	}
+	choicesRaw, ok := obj["choices"]
+	if !ok {
+		return ""
+	}
+	var choices []map[string]any
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil || len(choices) == 0 {
+		return ""
+	}
+	delta, ok := choices[0]["delta"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	raw, ok := delta["tool_calls"]
+	if !ok {
+		return ""
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return ""
+	}
+	var b strings.Builder
+	for i, item := range arr {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := call["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if i == 0 {
+			if name, _ := fn["name"].(string); name != "" {
+				b.WriteString("[tool:")
+				b.WriteString(name)
+				b.WriteString("] ")
+			}
+		}
+		if args, _ := fn["arguments"].(string); args != "" {
+			b.WriteString(args)
+		}
+	}
+	return b.String()
 }
