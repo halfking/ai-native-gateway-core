@@ -26,6 +26,9 @@ type Service struct {
 	stopCh      chan struct{}
 	mu          sync.RWMutex
 	running     bool
+	trigger     string
+	startedAt   time.Time
+	heartbeatAt time.Time
 	lastRun     time.Time
 	discovered  int
 }
@@ -53,6 +56,9 @@ func (s *Service) Start(ctx context.Context) {
 		return
 	}
 	s.running = true
+	s.trigger = "scheduled"
+	s.startedAt = time.Now()
+	s.heartbeatAt = time.Now()
 	s.mu.Unlock()
 
 	slog.Info("model discovery service starting", "interval", s.interval)
@@ -99,6 +105,8 @@ func (s *Service) Status() map[string]any {
 		latest["finished_at"] = s.lastRun.Format(time.RFC3339)
 		latest["status"] = "succeeded"
 		latest["discovered"] = s.discovered
+		latest["trigger"] = s.trigger
+		latest["started_at"] = s.startedAt.Format(time.RFC3339)
 		latest["summary"] = map[string]any{
 			"added":    s.discovered,
 			"updated":  0,
@@ -109,7 +117,10 @@ func (s *Service) Status() map[string]any {
 	}
 	if s.running {
 		running["status"] = "running"
-		running["started_at"] = time.Now().Format(time.RFC3339)
+		running["trigger"] = s.trigger
+		running["started_at"] = s.startedAt.Format(time.RFC3339)
+		running["heartbeat_at"] = s.heartbeatAt.Format(time.RFC3339)
+		running["id"] = 0
 	}
 	return map[string]any{
 		"running":     running,
@@ -122,6 +133,11 @@ func (s *Service) Status() map[string]any {
 
 // RunOnce triggers a single discovery run.
 func (s *Service) RunOnce(ctx context.Context) error {
+	s.mu.Lock()
+	s.trigger = "manual"
+	s.startedAt = time.Now()
+	s.heartbeatAt = time.Now()
+	s.mu.Unlock()
 	return s.runDiscovery(ctx)
 }
 
@@ -141,6 +157,9 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+		s.mu.Lock()
+		s.heartbeatAt = time.Now()
+		s.mu.Unlock()
 		count, err := s.discoverForCredential(ctx, cred)
 		if err != nil {
 			slog.Warn("discovery failed for credential",
@@ -156,6 +175,7 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 	s.mu.Lock()
 	s.lastRun = time.Now()
 	s.discovered = totalDiscovered
+	s.heartbeatAt = time.Now()
 	s.mu.Unlock()
 
 	slog.Info("model discovery completed",
