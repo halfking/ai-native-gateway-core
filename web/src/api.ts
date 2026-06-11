@@ -688,6 +688,40 @@ export function applyForKey(data: { application_code: string; owner_user?: strin
   return req<{ id: number; key_prefix: string; application_code: string; status: string; message: string }>('POST', '/api/keys/apply', data)
 }
 
+// ── Key conflict lookup ─────────────────────────────────────────────
+// Server-side guard for the "签发新密钥" form: returns the live key (if any)
+// that already occupies the (tenant, application, alias) tuple the user is
+// about to submit.  The endpoint is mounted under adminMiddleware, so this
+// call reuses the same admin bearer token as getKeys().
+export interface KeyConflict {
+  id: number
+  key_prefix: string
+  is_system: boolean
+  status: string
+  enabled: boolean
+  expires_at: string | null
+  owner_user: string
+}
+
+export interface KeyConflictResponse {
+  conflict: KeyConflict | null
+  application_code: string
+  tenant_id: string
+  key_alias: string
+}
+
+export function getKeyConflict(params: {
+  application_code: string
+  tenant_id?: string
+  key_alias: string
+}): Promise<KeyConflictResponse> {
+  const qs = new URLSearchParams()
+  qs.set('application_code', params.application_code)
+  if (params.tenant_id) qs.set('tenant_id', params.tenant_id)
+  qs.set('key_alias', params.key_alias)
+  return req<KeyConflictResponse>('GET', `/api/keys/lookup?${qs.toString()}`)
+}
+
 // ── Tenants ─────────────────────────────────────────────────────────
 
 export interface TenantSummary {
