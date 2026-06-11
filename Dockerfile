@@ -14,11 +14,14 @@ RUN apk add --no-cache git ca-certificates nodejs npm
 WORKDIR /src
 COPY go.mod go.sum ./
 ARG GOTOOLCHAIN=auto
-RUN GOTOOLCHAIN=auto go mod download
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV GOPROXY=${GOPROXY}
+RUN GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download
 
 # Build the Vue SPA first so we know web/dist/ is always fresh.
 COPY web/package.json web/package-lock.json* web/
-RUN cd /src/web && npm ci --no-audit --no-fund
+RUN cd /src/web && npm config set registry "${NPM_REGISTRY}" && npm ci --no-audit --no-fund
 COPY web/ /src/web/
 RUN cd /src/web && npm run build
 
