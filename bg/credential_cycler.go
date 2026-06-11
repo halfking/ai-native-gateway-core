@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -67,11 +68,9 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	rows, err := c.db.Query(timeoutCtx, `
 		SELECT c.id, c.label, c.secret_ciphertext, p.base_url, p.protocol,
-		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state,
-		       COALESCE(pc.models_endpoint_template, '')
+		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.status = 'active'
 		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
 		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
@@ -91,11 +90,11 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	for rows.Next() {
 		var credID int
-		var label, baseURL, protocol, modelsTemplate string
+		var label, baseURL, protocol string
 		var ciphertext []byte // bytea in DB, must be []byte for pgx scan
 		var healthStatus, availState, quotaState *string
 
-		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState, &modelsTemplate); err != nil {
+		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState); err != nil {
 			continue
 		}
 
@@ -105,7 +104,7 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 			continue
 		}
 
-		ok, errMsg := probeCredential(ctx, baseURL, modelsTemplate, decrypted)
+		ok, errMsg := probeCredential(ctx, baseURL, decrypted)
 		checked++
 		if ok {
 			healthy++
@@ -157,36 +156,51 @@ func decryptCred(ciphertext string, encKey []byte) (string, error) {
 	return secret.DecryptFernet([]byte(ciphertext), encKey)
 }
 
-func probeCredential(ctx context.Context, baseURL, modelsTemplate, apiKey string) (bool, string) {
+func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string) {
 	if baseURL == "" {
 		return false, "empty base URL"
 	}
 
-	probeURL := urlutil.BuildModelsURL(baseURL, modelsTemplate)
-	if probeURL == "" {
-		// manifest-only supplier: cannot verify via /models; trust provider catalog
+	hasKey := strings.TrimSpace(apiKey) != ""
+	urls := urlutil.ModelsURLCandidates(baseURL)
+	if len(urls) == 0 {
 		return true, "manifest-only, skipped probe"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
-	if err != nil {
-		return false, err.Error()
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	var lastErr error
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if hasKey {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err.Error()
-	}
-	defer resp.Body.Close()
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		return true, ""
+		switch {
+		case resp.StatusCode == 200:
+			return true, ""
+		case resp.StatusCode == 401 || resp.StatusCode == 403:
+			// Endpoint exists, but auth was rejected.
+			return false, httpStatusToMsg(resp.StatusCode, string(body))
+		}
+		lastErr = fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-	return false, httpStatusToMsg(resp.StatusCode, string(body))
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no candidate URLs")
+	}
+	return false, lastErr.Error()
 }
 
 func httpStatusToMsg(statusCode int, body string) string {
@@ -218,15 +232,13 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 	defer cancel()
 
 	var ciphertext []byte // bytea in DB, must be []byte for pgx scan
-	var baseURL, protocol, modelsTemplate string
+	var baseURL, protocol string
 	err := c.db.QueryRow(execCtx, `
-		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions'),
-		       COALESCE(pc.models_endpoint_template, '')
+		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.id = $1 AND c.status = 'active'
-	`, credID).Scan(&ciphertext, &baseURL, &protocol, &modelsTemplate)
+	`, credID).Scan(&ciphertext, &baseURL, &protocol)
 	if err != nil {
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "not found"}
 	}
@@ -236,7 +248,7 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "decrypt failed"}
 	}
 
-	ok, errMsg := probeCredential(ctx, baseURL, modelsTemplate, decrypted)
+	ok, errMsg := probeCredential(ctx, baseURL, decrypted)
 	if ok {
 		result.Status = "healthy"
 		c.updateHealth(ctx, credID, "healthy", "")
