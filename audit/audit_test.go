@@ -463,19 +463,41 @@ func TestStreamCapture_ToolCalls(t *testing.T) {
 }
 
 // TestStreamCapture_LongStreamContent verifies that textContent can grow
-// beyond 8192 bytes (the previous limit), up to 65536 bytes. This handles
-// long streaming responses that previously got truncated.
+// up to maxTextContentBytes (128 KiB) and that exceeding it is capped
+// gracefully. The previous 8 KiB cap truncated long completions like
+// deepseek-reasoner reasoning chains.
 func TestStreamCapture_LongStreamContent(t *testing.T) {
 	sc := NewStreamCapture()
 	chunk := strings.Repeat("a", 500)
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 400; i++ {
 		sc.ObservePayload(
 			`{"choices":[{"index":0,"delta":{"content":"`+chunk+`"}}]}`,
 			"", false)
 	}
 	m := sc.SummaryAsMap()
 	text := m["stream_text_content"].(string)
-	if len(text) < 65536 {
-		t.Errorf("expected textContent to reach 65536 bytes, got %d", len(text))
+	if len(text) > maxTextContentBytes {
+		t.Errorf("textContent should be capped at %d bytes, got %d", maxTextContentBytes, len(text))
+	}
+	// 200 chunks × 500 bytes = 100 KiB — should be stored fully.
+	if len(text) < 100*1024 {
+		t.Errorf("expected textContent to reach >=100 KiB, got %d bytes", len(text))
+	}
+}
+
+// TestStreamCapture_CapEnforced verifies that pushing well past the cap
+// does not grow textContent beyond maxTextContentBytes (no unbounded growth).
+func TestStreamCapture_CapEnforced(t *testing.T) {
+	sc := NewStreamCapture()
+	chunk := strings.Repeat("x", 1000)
+	for i := 0; i < 1000; i++ {
+		sc.ObservePayload(
+			`{"choices":[{"index":0,"delta":{"content":"`+chunk+`"}}]}`,
+			"", false)
+	}
+	m := sc.SummaryAsMap()
+	text := m["stream_text_content"].(string)
+	if len(text) != maxTextContentBytes {
+		t.Errorf("expected textContent to be capped at exactly %d bytes, got %d", maxTextContentBytes, len(text))
 	}
 }
