@@ -1,16 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getProviders, type Provider } from '../api'
+import { resolveRouting, getAvailableModels, type AvailableModelsResponse } from '../api'
 import { store } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 
-const providers = ref<Provider[]>([])
-const selectedModel = ref('gpt-4o-mini')
+const selectedModel = ref('glm-4-flash')
 const apiKey = computed(() => store.apiKey || '<YOUR_API_KEY>')
-
-const baseUrl = computed(() => {
-  return window.location.origin + '/v1'
-})
+const baseUrl = computed(() => window.location.origin + '/v1')
 
 const curlExample = computed(() => `curl ${baseUrl.value}/chat/completions \\
   -H "Content-Type: application/json" \\
@@ -63,7 +59,7 @@ const jsExample = computed(() => `import OpenAI from "openai";
 const client = new OpenAI({
   apiKey: "${apiKey.value}",
   baseURL: "${baseUrl.value}",
-  dangerouslyAllowBrowser: true,  // only for demo
+  dangerouslyAllowBrowser: true,
 });
 
 const response = await client.chat.completions.create({
@@ -84,94 +80,144 @@ function copyCode(key: string, text: string) {
   setTimeout(() => { copied.value = null }, 2000)
 }
 
+type ExampleId = 'curl' | 'python' | 'stream' | 'js' | 'models'
 type TestKind = 'chat' | 'stream' | 'models'
-type TestResult = { status: number; body: string; latency: number; error?: string }
 
-const testing = ref<TestKind | null>(null)
-const testResult = ref<TestResult | null>(null)
-const testKind = ref<TestKind | null>(null)
+interface DrawerState {
+  open: boolean
+  exampleId: ExampleId
+  testKind: TestKind
+  loading: boolean
+  status: number
+  latency: number
+  error: string
+  requestBody: string
+  responseBody: string
+  routing: string
+}
 
-async function testRequest(kind: TestKind) {
-  testing.value = kind
-  testResult.value = null
-  testKind.value = kind
+const emptyDrawer = (exampleId: ExampleId, testKind: TestKind): DrawerState => ({
+  open: false,
+  exampleId,
+  testKind,
+  loading: false,
+  status: 0,
+  latency: 0,
+  error: '',
+  requestBody: '',
+  responseBody: '',
+  routing: '',
+})
+
+const drawers = ref<Record<ExampleId, DrawerState>>({
+  curl: emptyDrawer('curl', 'chat'),
+  python: emptyDrawer('python', 'chat'),
+  stream: emptyDrawer('stream', 'stream'),
+  js: emptyDrawer('js', 'chat'),
+  models: emptyDrawer('models', 'models'),
+})
+
+async function runTest(exampleId: ExampleId) {
+  const d = drawers.value[exampleId]
+  d.open = true
+  d.loading = true
+  d.status = 0
+  d.latency = 0
+  d.error = ''
+  d.responseBody = ''
+  d.routing = ''
+  d.requestBody = ''
+
+  let reqBody: Record<string, unknown> | null = null
+  let url = `${baseUrl.value}/chat/completions`
+  let method = 'POST'
+  let headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey.value}`,
+  }
+
+  if (d.testKind === 'models') {
+    url = `${baseUrl.value}/models`
+    method = 'GET'
+    headers = { 'Authorization': `Bearer ${apiKey.value}` }
+    d.requestBody = `GET ${url}`
+  } else {
+    const isStream = d.testKind === 'stream'
+    const msgs = isStream
+      ? [{ role: 'user', content: 'Count to 5.' }]
+      : [
+          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'user', content: 'Hello!' },
+        ]
+    reqBody = {
+      model: selectedModel.value,
+      messages: msgs,
+      max_tokens: isStream ? 64 : 256,
+      ...(isStream ? { stream: true } : {}),
+    }
+    d.requestBody = JSON.stringify(reqBody, null, 2)
+  }
+
   const start = performance.now()
   try {
-    let resp: Response
-    if (kind === 'models') {
-      resp = await fetch(`${baseUrl.value}/models`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${apiKey.value}` },
-      })
-    } else if (kind === 'stream') {
-      resp = await fetch(`${baseUrl.value}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey.value}`,
-        },
-        body: JSON.stringify({
-          model: selectedModel.value,
-          messages: [{ role: 'user', content: 'Count to 5.' }],
-          max_tokens: 64,
-          stream: true,
-        }),
-      })
-    } else {
-      resp = await fetch(`${baseUrl.value}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey.value}`,
-        },
-        body: JSON.stringify({
-          model: selectedModel.value,
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant.' },
-            { role: 'user', content: 'Hello!' },
-          ],
-          max_tokens: 256,
-        }),
-      })
-    }
-    const latency = Math.round(performance.now() - start)
+    const resp = await fetch(url, {
+      method,
+      headers,
+      body: reqBody ? JSON.stringify(reqBody) : undefined,
+    })
+    d.latency = Math.round(performance.now() - start)
+    d.status = resp.status
     const text = await resp.text()
-    testResult.value = {
-      status: resp.status,
-      body: text.slice(0, 4000),
-      latency,
+
+    if (d.testKind === 'stream') {
+      const lines = text.split('\n').filter(l => l.startsWith('data: '))
+      let full = ''
+      for (const line of lines) {
+        const json = line.slice(6).trim()
+        if (json === '[DONE]') break
+        try {
+          const obj = JSON.parse(json)
+          const delta = obj?.choices?.[0]?.delta?.content
+          if (delta) full += delta
+        } catch { /* skip */ }
+      }
+      d.responseBody = full || text.slice(0, 2000)
+    } else {
+      try {
+        const parsed = JSON.parse(text)
+        d.responseBody = JSON.stringify(parsed, null, 2).slice(0, 4000)
+      } catch {
+        d.responseBody = text.slice(0, 4000)
+      }
+    }
+
+    if (store.apiKey && store.apiKey !== '<YOUR_API_KEY>') {
+      try {
+        const route = await resolveRouting(selectedModel.value)
+        d.routing = `模型: ${route.client_model}\n标准名: ${route.canonical_name || '未映射'}\n路径: ${route.resolution_path}\n候选数: ${route.candidates?.length || 0}\n原始模型: ${route.raw_models?.join(', ') || '无'}`
+      } catch {
+        d.routing = '路由信息获取失败'
+      }
     }
   } catch (err: any) {
-    testResult.value = {
-      status: 0,
-      body: '',
-      latency: Math.round(performance.now() - start),
-      error: err.message || String(err),
-    }
+    d.latency = Math.round(performance.now() - start)
+    d.error = err.message || String(err)
   } finally {
-    testing.value = null
+    d.loading = false
   }
 }
 
-function closeTest() {
-  testResult.value = null
-  testKind.value = null
+function closeDrawer(exampleId: ExampleId) {
+  drawers.value[exampleId].open = false
 }
 
-const testTitle = computed(() => {
-  switch (testKind.value) {
-    case 'chat': return 'Chat Completions 测试结果'
-    case 'stream': return 'Streaming 测试结果'
-    case 'models': return 'List Models 测试结果'
-    default: return '测试结果'
-  }
-})
-
-onMounted(async () => {
-  try {
-    providers.value = await getProviders()
-  } catch { /* ignore */ }
-})
+const exampleTitle: Record<ExampleId, string> = {
+  curl: 'cURL Chat 测试',
+  python: 'Python Chat 测试',
+  stream: '流式输出测试',
+  js: 'JavaScript Chat 测试',
+  models: '列出模型测试',
+}
 </script>
 
 <template>
@@ -184,11 +230,10 @@ onMounted(async () => {
       网关兼容 OpenAI API 协议。将 <code>base_url</code> 指向此网关即可使用任意支持的模型。
     </p>
 
-    <!-- Model selector -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
         <div style="font-weight:500;white-space:nowrap">选择示例模型：</div>
-        <div style="max-width:320px;flex:1;min-width:240px">
+        <div style="max-width:360px;flex:1;min-width:240px">
           <ModelPicker
             v-model="selectedModel"
             :allow-free-text="true"
@@ -196,12 +241,14 @@ onMounted(async () => {
           />
         </div>
         <div style="font-size:12px;color:var(--muted)">
+          当前模型: <code style="color:var(--accent)">{{ selectedModel }}</code>
+        </div>
+        <div style="font-size:12px;color:var(--muted)">
           Base URL: <code>{{ baseUrl }}</code>
         </div>
       </div>
     </div>
 
-    <!-- cURL -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — Chat Completions</h4>
@@ -209,15 +256,14 @@ onMounted(async () => {
           <button class="btn btn-ghost btn-sm" @click="copyCode('curl', curlExample)">
             {{ copied === 'curl' ? '已复制!' : '复制' }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="testRequest('chat')" :disabled="testing !== null">
-            {{ testing === 'chat' ? '测试中...' : '测试' }}
+          <button class="btn btn-primary btn-sm" @click="runTest('curl')" :disabled="drawers.curl.loading">
+            {{ drawers.curl.loading ? '测试中...' : '测试' }}
           </button>
         </div>
       </div>
       <pre class="code-block">{{ curlExample }}</pre>
     </div>
 
-    <!-- Python -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python (openai SDK)</h4>
@@ -225,15 +271,14 @@ onMounted(async () => {
           <button class="btn btn-ghost btn-sm" @click="copyCode('python', pythonExample)">
             {{ copied === 'python' ? '已复制!' : '复制' }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="testRequest('chat')" :disabled="testing !== null">
-            {{ testing === 'chat' ? '测试中...' : '测试' }}
+          <button class="btn btn-primary btn-sm" @click="runTest('python')" :disabled="drawers.python.loading">
+            {{ drawers.python.loading ? '测试中...' : '测试' }}
           </button>
         </div>
       </div>
       <pre class="code-block">{{ pythonExample }}</pre>
     </div>
 
-    <!-- Python streaming -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">Python — 流式输出 (Streaming)</h4>
@@ -241,15 +286,14 @@ onMounted(async () => {
           <button class="btn btn-ghost btn-sm" @click="copyCode('stream', streamExample)">
             {{ copied === 'stream' ? '已复制!' : '复制' }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="testRequest('stream')" :disabled="testing !== null">
-            {{ testing === 'stream' ? '测试中...' : '测试' }}
+          <button class="btn btn-primary btn-sm" @click="runTest('stream')" :disabled="drawers.stream.loading">
+            {{ drawers.stream.loading ? '测试中...' : '测试' }}
           </button>
         </div>
       </div>
       <pre class="code-block">{{ streamExample }}</pre>
     </div>
 
-    <!-- JavaScript -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">JavaScript / TypeScript (openai SDK)</h4>
@@ -257,15 +301,14 @@ onMounted(async () => {
           <button class="btn btn-ghost btn-sm" @click="copyCode('js', jsExample)">
             {{ copied === 'js' ? '已复制!' : '复制' }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="testRequest('chat')" :disabled="testing !== null">
-            {{ testing === 'chat' ? '测试中...' : '测试' }}
+          <button class="btn btn-primary btn-sm" @click="runTest('js')" :disabled="drawers.js.loading">
+            {{ drawers.js.loading ? '测试中...' : '测试' }}
           </button>
         </div>
       </div>
       <pre class="code-block">{{ jsExample }}</pre>
     </div>
 
-    <!-- List models -->
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <h4 style="margin:0">cURL — 列出可用模型</h4>
@@ -273,30 +316,68 @@ onMounted(async () => {
           <button class="btn btn-ghost btn-sm" @click="copyCode('models', listModelsExample)">
             {{ copied === 'models' ? '已复制!' : '复制' }}
           </button>
-          <button class="btn btn-primary btn-sm" @click="testRequest('models')" :disabled="testing !== null">
-            {{ testing === 'models' ? '测试中...' : '测试' }}
+          <button class="btn btn-primary btn-sm" @click="runTest('models')" :disabled="drawers.models.loading">
+            {{ drawers.models.loading ? '测试中...' : '测试' }}
           </button>
         </div>
       </div>
       <pre class="code-block">{{ listModelsExample }}</pre>
     </div>
 
-    <!-- Test result modal -->
-    <div v-if="testResult" class="modal-overlay" @click.self="closeTest">
-      <div class="modal card" style="max-width:780px;width:90vw;max-height:85vh;display:flex;flex-direction:column">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h4 style="margin:0">{{ testTitle }}</h4>
-          <button class="btn btn-ghost btn-sm" @click="closeTest">关闭</button>
+    <template v-for="eid in (['curl','python','stream','js','models'] as ExampleId[])" :key="eid">
+      <div v-if="drawers[eid].open" class="drawer-backdrop" @click="closeDrawer(eid)">
+        <div class="drawer-panel card" @click.stop>
+          <div class="drawer-header">
+            <h4 style="margin:0">{{ exampleTitle[eid] }}</h4>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="font-size:13px;color:var(--muted)">模型: <code>{{ selectedModel }}</code></span>
+              <button class="btn btn-ghost btn-sm" @click="closeDrawer(eid)">关闭 ✕</button>
+            </div>
+          </div>
+
+          <div v-if="drawers[eid].loading" class="drawer-loading">
+            <div class="spinner"></div>
+            <span>请求中...</span>
+          </div>
+
+          <template v-else>
+            <div class="drawer-meta">
+              <div class="meta-item">
+                <span class="meta-label">状态</span>
+                <span :class="drawers[eid].status >= 200 && drawers[eid].status < 300 ? 'badge badge-green' : 'badge badge-red'">{{ drawers[eid].status || '—' }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">延迟</span>
+                <span>{{ drawers[eid].latency }}ms</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">类型</span>
+                <code>{{ drawers[eid].testKind }}</code>
+              </div>
+            </div>
+
+            <div v-if="drawers[eid].error" class="alert alert-danger" style="margin:0 0 12px">
+              {{ drawers[eid].error }}
+            </div>
+
+            <div v-if="drawers[eid].requestBody" class="drawer-section">
+              <div class="section-title">请求内容</div>
+              <pre class="code-block compact">{{ drawers[eid].requestBody }}</pre>
+            </div>
+
+            <div v-if="drawers[eid].responseBody" class="drawer-section">
+              <div class="section-title">响应内容</div>
+              <pre class="code-block compact">{{ drawers[eid].responseBody }}</pre>
+            </div>
+
+            <div v-if="drawers[eid].routing" class="drawer-section">
+              <div class="section-title">路由信息</div>
+              <pre class="code-block compact">{{ drawers[eid].routing }}</pre>
+            </div>
+          </template>
         </div>
-        <div style="display:flex;gap:16px;margin-bottom:8px;font-size:13px;flex-wrap:wrap">
-          <div><span class="cell-muted">状态：</span><span :class="testResult.status >= 200 && testResult.status < 300 ? 'badge badge-green' : 'badge badge-red'">{{ testResult.status }}</span></div>
-          <div><span class="cell-muted">延迟：</span>{{ testResult.latency }}ms</div>
-          <div><span class="cell-muted">Kind：</span><code>{{ testKind }}</code></div>
-        </div>
-        <div v-if="testResult.error" class="alert alert-danger" style="margin:0">{{ testResult.error }}</div>
-        <pre v-else class="code-block" style="max-height:60vh;overflow:auto;font-size:12px;flex:1;margin:0">{{ testResult.body }}</pre>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -311,5 +392,98 @@ onMounted(async () => {
   line-height: 1.6;
   white-space: pre;
   margin: 0;
+}
+.code-block.compact {
+  padding: 12px;
+  font-size: 12px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-panel {
+  width: 520px;
+  max-width: 90vw;
+  height: 100vh;
+  overflow-y: auto;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  animation: slide-in 0.2s ease-out;
+}
+
+@keyframes slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 0;
+  color: var(--muted);
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.drawer-meta {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.meta-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-label {
+  color: var(--muted);
+}
+
+.drawer-section {
+  margin-bottom: 16px;
+}
+
+.section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 8px;
 }
 </style>
