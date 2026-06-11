@@ -713,7 +713,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 
 	candidates := []string{
 		normalized + "/models",
-		urlutil.CleanBaseURL(normalized) + "/v1/models",
+		urlutil.ModelsURL(normalized),
 	}
 	if strings.HasSuffix(normalized, "/v1") {
 		root := strings.TrimRight(normalized, "/v1")

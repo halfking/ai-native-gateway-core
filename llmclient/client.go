@@ -72,66 +72,54 @@ func New() *Client {
 }
 
 func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
-	// BuildModelsURL with empty template would return ""; fall back to legacy
-	// /v1/models probe so this client stays usable in non-catalog contexts.
-	modelsURL := urlutil.BuildModelsURL(baseURL, "")
-	if modelsURL == "" {
-		modelsURL = urlutil.CleanBaseURL(baseURL) + "/v1/models"
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-
-	var mresp ModelsResponse
-	if err := json.Unmarshal(body, &mresp); err == nil {
-		var ids []string
-		for _, m := range mresp.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
+	hasKey := strings.TrimSpace(apiKey) != ""
+	var lastErr error
+	for _, modelsURL := range urlutil.ModelsURLCandidates(baseURL) {
+		req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		return ids, nil
-	}
-
-	var bare []string
-	if err := json.Unmarshal(body, &bare); err == nil && len(bare) > 0 {
-		return bare, nil
-	}
-
-	var objArray []map[string]any
-	if err := json.Unmarshal(body, &objArray); err == nil && len(objArray) > 0 {
-		var ids []string
-		for _, m := range objArray {
-			if id, ok := m["id"].(string); ok && id != "" {
-				ids = append(ids, id)
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				ids = append(ids, name)
-			}
+		if hasKey {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
-		return ids, nil
-	}
+		req.Header.Set("Content-Type", "application/json")
 
-	return nil, fmt.Errorf("unrecognized models response format")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			var mresp ModelsResponse
+			if err := json.Unmarshal(body, &mresp); err == nil {
+				var ids []string
+				for _, m := range mresp.Data {
+					if m.ID != "" {
+						ids = append(ids, m.ID)
+					}
+				}
+				if ids == nil {
+					ids = []string{}
+				}
+				return ids, nil
+			}
+			lastErr = fmt.Errorf("status 200 but invalid JSON from %s", modelsURL)
+			continue
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			lastErr = fmt.Errorf("status %d (auth required)", resp.StatusCode)
+			continue
+		}
+		lastErr = fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no candidate URLs for %s", baseURL)
+	}
+	return nil, lastErr
 }
 
 func (c *Client) Chat(ctx context.Context, baseURL, apiKey string, req ChatRequest) (*ChatResponse, error) {
