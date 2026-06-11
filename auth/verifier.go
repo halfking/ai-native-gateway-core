@@ -37,6 +37,7 @@ type KeyInfo struct {
 	BudgetUSD            *float64 `json:"budget_usd"`
 	Status               string   `json:"status"`
 	IsInternal           bool     `json:"is_internal"`
+	KeyAlias             *string  `json:"key_alias"`
 }
 
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
@@ -145,7 +146,8 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			ak.rate_limit_tpm,
 			COALESCE(ak.key_tier, 'default') AS key_tier,
 			ak.budget_usd::float8,
-			COALESCE(ak.status, 'active') AS status
+			COALESCE(ak.status, 'active') AS status,
+			ak.key_alias
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -165,6 +167,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.KeyTier,
 		&info.BudgetUSD,
 		&info.Status,
+		&info.KeyAlias,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {

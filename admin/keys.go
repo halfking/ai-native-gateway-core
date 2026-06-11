@@ -203,6 +203,8 @@ func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ApplicationCode string   `json:"application_code"`
+		TenantID        string   `json:"tenant_id"`
+		KeyAlias        string   `json:"key_alias"`
 		OwnerUser       *string  `json:"owner_user"`
 		BudgetUSD       *float64 `json:"budget_usd"`
 		RateLimitRPM    *int     `json:"rate_limit_rpm"`
@@ -215,6 +217,9 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.ApplicationCode == "" {
 		req.ApplicationCode = "default"
 	}
+	if req.TenantID == "" {
+		req.TenantID = "default"
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -226,19 +231,20 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for existing available key (prevent duplicate)
+	alias := req.KeyAlias
 	var existingID int
 	var existingPrefix string
 	err = h.db.QueryRow(ctx, `
 		SELECT id, key_prefix FROM api_keys
-		WHERE application_id = $1 AND tenant_id = 'default'
+		WHERE application_id = $1 AND tenant_id = $2
+		  AND COALESCE(key_alias, '') = COALESCE($3, '')
 		  AND enabled = TRUE AND COALESCE(status, 'active') = 'active'
 		  AND (expires_at IS NULL OR expires_at > now())
 		ORDER BY id ASC LIMIT 1
-	`, appID).Scan(&existingID, &existingPrefix)
+	`, appID, req.TenantID, alias).Scan(&existingID, &existingPrefix)
 	if err == nil {
 		writeError(w, http.StatusConflict, fmt.Sprintf(
-			"该应用已有可用密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有密钥。",
+			"该租户+应用+别名组合已有可用密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有密钥。",
 			existingID, existingPrefix[:8],
 		))
 		return
@@ -252,10 +258,10 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark)
-		VALUES ($1, 'default', $2, $3, $4, $5, TRUE, $6, $7, 'active', $8)
+		INSERT INTO api_keys (application_id, tenant_id, key_hash, key_prefix, key_ciphertext, owner_user, enabled, budget_usd, rate_limit_rpm, status, remark, key_alias)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, 'active', $9, $10)
 		RETURNING id
-	`, appID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM, remark).Scan(&id)
+	`, appID, req.TenantID, keyHash, keyPrefix, keyCiphertext, req.OwnerUser, req.BudgetUSD, req.RateLimitRPM, remark, alias).Scan(&id)
 	if err != nil {
 		slog.Error("createKey insert failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -279,6 +285,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	appCode := queryString(r, "application")
+	tenantFilter := queryString(r, "tenant")
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
 		       COALESCE(ak.status, 'active') AS status,
@@ -289,13 +296,14 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(ak.default_client_profile, app.default_client_profile),
 		       ak.last_used_at, ak.remark,
 		       ak.total_requests, ak.total_prompt_tokens, ak.total_completion_tokens,
-		       COALESCE(ak.total_cost_usd, 0)::float8, ak.last_request_at
+		       COALESCE(ak.total_cost_usd, 0)::float8, ak.last_request_at,
+		       ak.tenant_id, ak.key_alias
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
-		WHERE ak.tenant_id = 'default'
-		  AND ($1 = '' OR app.code = $1)
+		WHERE ($1 = '' OR app.code = $1)
+		  AND ($2 = '' OR ak.tenant_id = $2)
 		ORDER BY ak.id DESC
-	`, appCode)
+	`, appCode, tenantFilter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -321,6 +329,8 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 		TotalCompletionTokens int64     `json:"total_completion_tokens"`
 		TotalCostUSD         float64    `json:"total_cost_usd"`
 		LastRequestAt        *time.Time `json:"last_request_at"`
+		TenantID             string     `json:"tenant_id"`
+		KeyAlias             *string    `json:"key_alias"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
@@ -331,7 +341,8 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 			&k.IsSystem, &k.DefaultClientProfile,
 			&k.LastUsedAt, &k.Remark,
 			&k.TotalRequests, &k.TotalPromptTokens, &k.TotalCompletionTokens,
-			&k.TotalCostUSD, &k.LastRequestAt); err != nil {
+			&k.TotalCostUSD, &k.LastRequestAt,
+			&k.TenantID, &k.KeyAlias); err != nil {
 			continue
 		}
 		keys = append(keys, k)
@@ -345,7 +356,7 @@ func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
 	cmd, err := h.db.Exec(ctx, `
 		UPDATE api_keys
 		SET status = 'revoked', enabled = FALSE
-		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
+		WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'
 	`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "delete failed")
@@ -365,7 +376,7 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 	var ciphertext string
 	err := h.db.QueryRow(ctx, `
 		SELECT key_ciphertext FROM api_keys
-		WHERE id = $1 AND tenant_id = 'default' AND COALESCE(status, 'active') <> 'revoked'
+		WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'
 	`, id).Scan(&ciphertext)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")
@@ -489,22 +500,23 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 		OwnerUser            *string  `json:"owner_user,omitempty"`
 		RateLimitRPM         *int     `json:"rate_limit_rpm,omitempty"`
 		BudgetUSD            *float64 `json:"budget_usd,omitempty"`
+		KeyAlias             *string  `json:"key_alias,omitempty"`
 	}
 	var id, appID int
 	var tenantID, appCode string
-	var dcp, owner *string
+	var dcp, owner, keyAlias *string
 	var rpm *int
 	var budget *float64
 	err := h.db.QueryRow(ctx, `
 		SELECT ak.id, ak.tenant_id, ak.application_id, app.code,
 		       COALESCE(ak.default_client_profile, app.default_client_profile), ak.owner_user,
-		       ak.rate_limit_rpm, ak.budget_usd
+		       ak.rate_limit_rpm, ak.budget_usd, ak.key_alias
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1 AND ak.enabled = TRUE
 		  AND COALESCE(ak.status, 'active') <> 'revoked'
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
-	`, keyHash).Scan(&id, &tenantID, &appID, &appCode, &dcp, &owner, &rpm, &budget)
+	`, keyHash).Scan(&id, &tenantID, &appID, &appCode, &dcp, &owner, &rpm, &budget, &keyAlias)
 	if err == nil {
 		result.Valid = true
 		result.KeyID = &id
@@ -515,6 +527,7 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 		result.OwnerUser = owner
 		result.RateLimitRPM = rpm
 		result.BudgetUSD = budget
+		result.KeyAlias = keyAlias
 		h.db.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE id = $1`, id)
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -574,20 +587,22 @@ func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
 		RateLimitConcurrent  *int     `json:"rate_limit_concurrent"`
 		RateLimitTPM         *int     `json:"rate_limit_tpm"`
 		ApplicationCode      string   `json:"application_code"`
+		TenantID             string   `json:"tenant_id"`
+		KeyAlias             *string  `json:"key_alias"`
 	}
 	err := h.db.QueryRow(ctx, `
 		SELECT ak.id, COALESCE(ak.key_prefix,''), ak.owner_user, ak.enabled,
 		       ak.budget_usd::float8, ak.rate_limit_rpm,
 		       ak.rate_limit_concurrent, ak.rate_limit_tpm,
-		       app.code
+		       app.code, ak.tenant_id, ak.key_alias
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
-		WHERE ak.id = $1 AND ak.tenant_id = 'default'
+		WHERE ak.id = $1
 		  AND ($2 OR COALESCE(ak.status, 'active') <> 'revoked')
 	`, id, includeRevoked).Scan(&k.ID, &k.KeyPrefix, &k.OwnerUser, &k.Enabled,
 		&k.BudgetUSD, &k.RateLimitRPM,
 		&k.RateLimitConcurrent, &k.RateLimitTPM,
-		&k.ApplicationCode)
+		&k.ApplicationCode, &k.TenantID, &k.KeyAlias)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
@@ -964,6 +979,7 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 		DefaultClientProfile *string `json:"default_client_profile"`
 		OwnerUser            *string `json:"owner_user"`
 		Remark               *string `json:"remark"`
+		KeyAlias             *string `json:"key_alias"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -992,6 +1008,11 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 		args = append(args, *req.Remark)
 		argIdx++
 	}
+	if req.KeyAlias != nil {
+		sets = append(sets, fmt.Sprintf("key_alias = $%d", argIdx))
+		args = append(args, *req.KeyAlias)
+		argIdx++
+	}
 
 	if len(sets) == 0 {
 		writeError(w, http.StatusBadRequest, "no fields to update")
@@ -1002,7 +1023,7 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	idIdx := len(args)
 
 	query := fmt.Sprintf(
-		"UPDATE api_keys SET %s WHERE id = $%d AND tenant_id = 'default'",
+		"UPDATE api_keys SET %s WHERE id = $%d",
 		strings.Join(sets, ", "), idIdx,
 	)
 

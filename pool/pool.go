@@ -14,6 +14,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,10 +98,15 @@ type Pool struct {
 	gracePeriod   time.Duration // Grace period before marking as dead
 }
 
-// NewPool creates a new connection pool.
-func NewPool(key PoolKey, probeURL string) *Pool {
+// NewPool creates a new connection pool. If proxyFunc is non-nil it
+// overrides http.ProxyFromEnvironment for all outbound requests from this pool.
+func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.URL, error)) *Pool {
+	proxy := proxyFunc
+	if proxy == nil {
+		proxy = http.ProxyFromEnvironment
+	}
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: proxy,
 		MaxIdleConns:        maxConnsPerHost,
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
@@ -337,17 +343,21 @@ func (p *Pool) checkDrainingGracePeriod() {
 
 // PoolManager manages all connection pools keyed by (identity, provider, credential).
 type PoolManager struct {
-	mu      sync.RWMutex
-	pools   map[PoolKey]*Pool
-	stopCh  chan struct{}
-	stopped atomic.Bool
-	wg      sync.WaitGroup
+	mu        sync.RWMutex
+	pools     map[PoolKey]*Pool
+	stopCh    chan struct{}
+	stopped   atomic.Bool
+	wg        sync.WaitGroup
+	proxyFunc func(*http.Request) (*url.URL, error)
 }
 
-func NewPoolManager() *PoolManager {
+func NewPoolManager(proxyFunc ...func(*http.Request) (*url.URL, error)) *PoolManager {
 	pm := &PoolManager{
 		pools:  make(map[PoolKey]*Pool),
 		stopCh: make(chan struct{}),
+	}
+	if len(proxyFunc) > 0 {
+		pm.proxyFunc = proxyFunc[0]
 	}
 	pm.wg.Add(1)
 	go pm.evictLoop()
@@ -379,7 +389,7 @@ func (pm *PoolManager) GetOrCreate(key PoolKey, probeURL string) *Pool {
 		pm.evictOldestLocked()
 	}
 
-	p = NewPool(key, probeURL)
+	p = NewPool(key, probeURL, pm.proxyFunc)
 	p.touch()
 	p.StartHealthCheck()
 	pm.pools[key] = p

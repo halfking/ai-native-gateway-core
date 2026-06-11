@@ -626,6 +626,8 @@ export interface ApiKey {
   total_completion_tokens: number
   total_cost_usd: number
   last_request_at: string | null
+  tenant_id: string
+  key_alias: string | null
 }
 
 export interface KeyCreatedResponse {
@@ -648,7 +650,7 @@ export function getKeyDetail(id: number) {
   return req<ApiKey>('GET', `/api/keys/${id}`)
 }
 
-export function createKey(data: { application_code: string; owner_user?: string; budget_usd?: number; rate_limit_rpm?: number }) {
+export function createKey(data: { application_code: string; tenant_id?: string; key_alias?: string; owner_user?: string; budget_usd?: number; rate_limit_rpm?: number; remark?: string }) {
   return req<KeyCreatedResponse>('POST', '/api/keys', data)
 }
 
@@ -684,6 +686,35 @@ export function updateKeyLimits(id: number, data: UpdateKeyLimitsRequest) {
 
 export function applyForKey(data: { application_code: string; owner_user?: string; description?: string }) {
   return req<{ id: number; key_prefix: string; application_code: string; status: string; message: string }>('POST', '/api/keys/apply', data)
+}
+
+// ── Tenants ─────────────────────────────────────────────────────────
+
+export interface TenantSummary {
+  tenant_id: string
+  key_count: number
+  total_requests: number
+  total_tokens: number
+  total_cost_usd: number
+}
+
+export interface TenantUsage {
+  tenant_id: string
+  total_requests: number
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_cost_usd: number
+  unique_keys: number
+  unique_models: number
+  unique_applications: number
+}
+
+export function getTenants() {
+  return req<TenantSummary[]>('GET', '/api/usage/tenants')
+}
+
+export function getTenantUsage(tenant: string, days = 30) {
+  return req<TenantUsage>('GET', `/api/usage/by-tenant?tenant=${encodeURIComponent(tenant)}&days=${days}`)
 }
 
 
