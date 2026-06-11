@@ -541,7 +541,7 @@ func TestExtractDeltaReasoningText(t *testing.T) {
 }
 
 // TestStreamCapture_ReasoningContent verifies that reasoning chains are
-// captured with [reasoning]...[/reasoning] markers so downstream auditors
+// captured with <reasoning>...</reasoning> markers so downstream auditors
 // can distinguish the reasoning trace from the final answer.
 func TestStreamCapture_ReasoningContent(t *testing.T) {
 	sc := NewStreamCapture()
@@ -554,11 +554,11 @@ func TestStreamCapture_ReasoningContent(t *testing.T) {
 
 	m := sc.SummaryAsMap()
 	text := m["stream_text_content"].(string)
-	if !strings.Contains(text, "[reasoning]") {
-		t.Errorf("expected [reasoning] marker in textContent, got %q", text)
+	if !strings.Contains(text, "<reasoning>") {
+		t.Errorf("expected <reasoning> marker in textContent, got %q", text)
 	}
-	if !strings.Contains(text, "[/reasoning]") {
-		t.Errorf("expected [/reasoning] marker in textContent, got %q", text)
+	if !strings.Contains(text, "</reasoning>") {
+		t.Errorf("expected </reasoning> marker in textContent, got %q", text)
 	}
 	if !strings.Contains(text, "Step 1: I should think.") {
 		t.Errorf("expected reasoning text, got %q", text)

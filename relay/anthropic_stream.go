@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("anthropic stream panic recovered", "panic", r, "request_id", requestID)
+			slog.Error("anthropic stream panic recovered", "panic", r, "stack", string(debug.Stack()), "request_id", requestID)
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_panic")
 			}

@@ -154,7 +154,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/catalog/", admin(h.handleCatalog))
 	mux.HandleFunc("/api/tags", admin(h.handleTags))
 	mux.HandleFunc("/api/system/background-tasks", admin(h.handleSystemTasks))
-	mux.HandleFunc("/api/system/version", h.handleSystemVersion)
+	mux.HandleFunc("/api/system/version", admin(h.handleSystemVersion))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", admin(h.handleFreePoolRegister))
