@@ -633,7 +633,7 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 		return "", err
 	}
 	if len(ciphertext) == 0 {
-		return "", fmt.Errorf("credential %d has no secret", credentialID)
+		return "", nil
 	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {
