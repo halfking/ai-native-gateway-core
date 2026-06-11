@@ -32,6 +32,7 @@ const nav = [
   { path: '/providers',         label: '提供商',   icon: '🔌' },
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
   { path: '/key-applications',  label: '密钥申请', icon: '📬' },
+  { path: '/tenants',           label: '租户管理', icon: '👥' },
   { path: '/catalog',           label: '模型目录',  icon: '📋' },
   { path: '/models',            label: '模型与标签', icon: '🏷️' },
   { path: '/examples',          label: '请求示例',  icon: '📝' },
