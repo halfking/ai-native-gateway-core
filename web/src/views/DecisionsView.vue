@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
@@ -12,6 +12,7 @@ const filterSuccess = ref<'' | 'true' | 'false'>('')
 const limit = ref(50)
 const offset = ref(0)
 const total = ref(0)
+const autoRefresh = ref(false)
 
 // Detail panel
 const selectedRow = ref<RoutingDecision | null>(null)
@@ -24,6 +25,28 @@ function closeDetail() {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  if (autoRefresh.value) {
+    timer = setInterval(load, 5000)
+  }
+}
+
+function stopAutoRefresh() {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+}
+
+watch(autoRefresh, (newVal) => {
+  if (newVal) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
 
 async function load() {
   loading.value = true
@@ -71,10 +94,10 @@ function resetAndLoad() {
 
 onMounted(() => {
   load()
-  timer = setInterval(load, 5000)
+  startAutoRefresh()
 })
 onUnmounted(() => {
-  if (timer) clearInterval(timer)
+  stopAutoRefresh()
 })
 </script>
 
@@ -82,7 +105,12 @@ onUnmounted(() => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">路由决策日志</h2>
-      <div style="font-size:12px;color:var(--muted)">每 5 秒自动刷新</div>
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+          <input type="checkbox" v-model="autoRefresh" style="cursor:pointer">
+          自动刷新 (5秒)
+        </label>
+      </div>
     </div>
 
     <!-- Filters -->
