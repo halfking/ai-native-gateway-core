@@ -56,6 +56,40 @@ func TestSanitizeUTF8_InvalidBytesPlusBackslash(t *testing.T) {
 	}
 }
 
+func TestSanitizeUTF8JSON_PreservesBackslashesInJSON(t *testing.T) {
+	// JSONB fields must NOT have backslashes escaped — that would corrupt the JSON.
+	json := `{"content":"hello\nworld"}`
+	out := sanitizeUTF8JSON(json)
+	if out != json {
+		t.Errorf("JSON backslash was escaped: got %q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("result is invalid UTF-8: %q", out)
+	}
+}
+
+func TestSanitizeRequestLogEntry_JSONBFieldsNotEscaped(t *testing.T) {
+	// JSONB fields should keep their backslashes; text fields should escape them.
+	jsonBody := `{"content":"a\nb"}`
+	backslashField := `hello\u4e2d`
+	mkPtr := func(s string) *string { return &s }
+	entry := &RequestLogEntry{
+		RequestBody:    mkPtr(jsonBody),
+		ResponseBody:   mkPtr(jsonBody),
+		ClientModel:    mkPtr(backslashField),
+	}
+	sanitizeRequestLogEntry(entry)
+	if *entry.RequestBody != jsonBody {
+		t.Errorf("RequestBody backslash was escaped: got %q", *entry.RequestBody)
+	}
+	if *entry.ResponseBody != jsonBody {
+		t.Errorf("ResponseBody backslash was escaped: got %q", *entry.ResponseBody)
+	}
+	if !strings.Contains(*entry.ClientModel, "\\\\") {
+		t.Errorf("ClientModel backslash was NOT escaped: got %q", *entry.ClientModel)
+	}
+}
+
 func TestSanitizeRequestLogEntry_ScrubsAllStringFields(t *testing.T) {
 	invalid := string([]byte{0xE5, 0xBC, 0xE2, 0x80, 0xA6})
 	mkPtr := func(s string) *string { return &s }
