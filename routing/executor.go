@@ -118,12 +118,34 @@ type ExecuteResult struct {
 	LatencyMs int
 	RequestBody []byte
 	ResponseBody []byte
+	Trace     *Trace
 }
 
 type ExecuteError struct {
 	LastErr   error
 	Tried     int
 	Exhausted bool
+	Trace     *Trace
+}
+
+// Trace records the per-candidate decision points during routing/execution.
+// It is rendered as the `decision_trace` jsonb column in routing_decision_log
+// so the admin UI can show planned candidates, blocked candidates, and the
+// final chosen credential.
+type Trace struct {
+	PlannedCandidates []TraceCandidate `json:"planned_candidates,omitempty"`
+	BlockedCandidates []TraceCandidate `json:"blocked_candidates,omitempty"`
+	Chosen            *TraceCandidate  `json:"chosen,omitempty"`
+	FailureReason     string           `json:"failure_reason,omitempty"`
+}
+
+type TraceCandidate struct {
+	ProviderID   int    `json:"provider_id"`
+	CredentialID int    `json:"credential_id"`
+	ProviderName string `json:"provider_name,omitempty"`
+	RawModel     string `json:"raw_model,omitempty"`
+	Tier         int    `json:"tier,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 func (e *ExecuteError) Error() string {
@@ -140,8 +162,24 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		params.Policy,
 		egressPref(params.Transform),
 	)
+	trace := &Trace{
+		PlannedCandidates: make([]TraceCandidate, 0, len(params.Candidates)),
+		BlockedCandidates: []TraceCandidate{},
+	}
+	for _, c := range params.Candidates {
+		trace.PlannedCandidates = append(trace.PlannedCandidates, TraceCandidate{
+			ProviderID:   c.ProviderID,
+			CredentialID: c.CredentialID,
+			RawModel:     c.RawModel,
+			Tier:         c.Tier,
+		})
+	}
 	if len(candidates) == 0 {
-		return nil, &ExecuteError{Tried: 0, Exhausted: true}
+		trace.FailureReason = "no_candidates_from_router"
+		if params.AuditBuilder != nil {
+			params.AuditBuilder.DecisionTrace(trace)
+		}
+		return nil, &ExecuteError{Tried: 0, Exhausted: true, Trace: trace}
 	}
 
 	holder := params.StickyKey
@@ -226,6 +264,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
 			e.recordStickySuccess(params, cand.CredentialID)
+			trace.Chosen = &TraceCandidate{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Tier:         cand.Tier,
+				Reason:       "succeeded",
+			}
+			result.Trace = trace
+			if params.AuditBuilder != nil {
+				params.AuditBuilder.DecisionTrace(trace)
+			}
 			return result, nil
 		}
 
@@ -271,12 +320,23 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		kind := errorsx.ClassifyError(execErr, nil)
 		e.recordStickyFailure(params, cand.CredentialID, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+			ProviderID:   cand.ProviderID,
+			CredentialID: cand.CredentialID,
+			RawModel:     cand.RawModel,
+			Tier:         cand.Tier,
+			Reason:       fmt.Sprintf("request_failed:%s", kind),
+		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
 		}
 	}
 
-	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true}
+	trace.FailureReason = "all_candidates_failed"
+	if params.AuditBuilder != nil {
+		params.AuditBuilder.DecisionTrace(trace)
+	}
+	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace}
 }
 
 func (e *Executor) tryCandidate(
