@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
 )
 
 func extractID(path string) (int, bool) {
@@ -137,15 +138,7 @@ func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool,
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
-		if strings.HasSuffix(baseURL, suffix) {
-			baseURL = baseURL[:len(baseURL)-len(suffix)]
-			break
-		}
-	}
-
-	modelsURL := baseURL + "/v1/models"
+	modelsURL := urlutil.CleanBaseURL(baseURL) + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
 	if err != nil {
 		return false, err
@@ -1456,9 +1449,13 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		cleanURL := cleanBaseURL(baseURL)
+		cleanURL := urlutil.CleanBaseURL(baseURL)
+		template := h.fetchModelsEndpointTemplate(ctx, providerID)
+		modelsURL := urlutil.BuildModelsURL(baseURL, template)
+		if modelsURL == "" {
+			modelsURL = cleanURL + "/v1/models"
+		}
 
-		modelsURL := cleanURL + "/v1/models"
 		start := time.Now()
 		modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
 		modelsLatency := int(time.Since(start).Milliseconds())
@@ -1740,8 +1737,12 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			cleanURL := cleanBaseURL(baseURL)
-			modelsURL := cleanURL + "/v1/models"
+			cleanURL := urlutil.CleanBaseURL(baseURL)
+			template := h.fetchModelsEndpointTemplate(ctx, providerID)
+			modelsURL := urlutil.BuildModelsURL(baseURL, template)
+			if modelsURL == "" {
+				modelsURL = cleanURL + "/v1/models"
+			}
 			start := time.Now()
 			modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
 			modelsLatency := int(time.Since(start).Milliseconds())
@@ -1836,15 +1837,22 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	}
 }
 
-func cleanBaseURL(baseURL string) string {
-	baseURL = strings.TrimRight(baseURL, "/")
-	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
-		if strings.HasSuffix(baseURL, suffix) {
-			baseURL = baseURL[:len(baseURL)-len(suffix)]
-			break
-		}
+// fetchModelsEndpointTemplate returns the catalog-supplied models-endpoint
+// template for the given provider, joined via providers.catalog_code. Returns
+// "" if the provider has no catalog row, no template, or the lookup fails.
+// Callers should pass the result to urlutil.BuildModelsURL; an empty string
+// signals "manifest-only, skip API probing".
+func (h *Handler) fetchModelsEndpointTemplate(ctx context.Context, providerID int) string {
+	var tmpl *string
+	if err := h.db.QueryRow(ctx, `
+		SELECT pc.models_endpoint_template
+		FROM providers p
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code,''), p.code)
+		WHERE p.id = $1
+	`, providerID).Scan(&tmpl); err != nil || tmpl == nil {
+		return ""
 	}
-	return baseURL
+	return *tmpl
 }
 
 type probeResult struct {
@@ -2103,22 +2111,28 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		cleanURL := cleanBaseURL(baseURL)
-		modelsURL := cleanURL + "/v1/models"
-		start := time.Now()
-		result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
-		healthLatencyMs = int(time.Since(start).Milliseconds())
-		if probeErr != nil {
-			healthStatus = "unreachable"
-			healthError = probeErr.Error()
-		} else if result.statusCode != 200 {
-			healthStatus = "unhealthy"
-			healthError = fmt.Sprintf("status %d", result.statusCode)
-		} else {
+		template := h.fetchModelsEndpointTemplate(ctx, providerID)
+		modelsURL := urlutil.BuildModelsURL(baseURL, template)
+		if modelsURL == "" {
 			healthStatus = "healthy"
-			probeOk = true
-			modelsCount = result.modelCount
-			sampleModels = result.sampleModels
+			healthError = "manifest-only, skipped probe"
+			healthLatencyMs = 0
+		} else {
+			start := time.Now()
+			result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
+			healthLatencyMs = int(time.Since(start).Milliseconds())
+			if probeErr != nil {
+				healthStatus = "unreachable"
+				healthError = probeErr.Error()
+			} else if result.statusCode != 200 {
+				healthStatus = "unhealthy"
+				healthError = fmt.Sprintf("status %d", result.statusCode)
+			} else {
+				healthStatus = "healthy"
+				probeOk = true
+				modelsCount = result.modelCount
+				sampleModels = result.sampleModels
+			}
 		}
 	}
 
@@ -2163,23 +2177,29 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		cleanURL := cleanBaseURL(baseURL)
-		modelsURL := cleanURL + "/v1/models"
-		start := time.Now()
-		result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
-		healthLatencyMs = int(time.Since(start).Milliseconds())
-
-		if probeErr != nil {
-			healthStatus = "unreachable"
-			healthError = probeErr.Error()
-		} else if result.statusCode != 200 {
-			healthStatus = "unhealthy"
-			healthError = fmt.Sprintf("status %d", result.statusCode)
-		} else {
+		template := h.fetchModelsEndpointTemplate(ctx, providerID)
+		modelsURL := urlutil.BuildModelsURL(baseURL, template)
+		if modelsURL == "" {
 			healthStatus = "healthy"
-			probeOk = true
-			modelsCount = result.modelCount
-			sampleModels = result.sampleModels
+			healthError = "manifest-only, skipped probe"
+			healthLatencyMs = 0
+		} else {
+			start := time.Now()
+			result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
+			healthLatencyMs = int(time.Since(start).Milliseconds())
+
+			if probeErr != nil {
+				healthStatus = "unreachable"
+				healthError = probeErr.Error()
+			} else if result.statusCode != 200 {
+				healthStatus = "unhealthy"
+				healthError = fmt.Sprintf("status %d", result.statusCode)
+			} else {
+				healthStatus = "healthy"
+				probeOk = true
+				modelsCount = result.modelCount
+				sampleModels = result.sampleModels
+			}
 		}
 	}
 
