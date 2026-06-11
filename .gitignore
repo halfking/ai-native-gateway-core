@@ -23,3 +23,61 @@ coverage/
 llm-gateway-go-linux
 llm-gateway-go-bin
 Dockerfile.local
+# ─────────────────────────────────────────────────────────────
+# 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)
+# 涵盖: 编译产物 / 本地配置 / 缓存 / IDE / OS / 日志 / 临时文件
+# ─────────────────────────────────────────────────────────────
+
+# 工具生成的本地缓存与索引
+.codegraph/
+.cache/
+.runtime/
+.playwright-mcp/
+
+# 编译产物 / 构建输出
+node_modules/
+dist/
+build/
+out/
+__pycache__/
+*.pyc
+*.pyo
+*.class
+*.o
+*.obj
+target/
+coverage/
+.nyc_output/
+*.egg-info/
+
+# 本地配置 / 环境变量 / 凭据
+.env
+.env.local
+.env.*.local
+.env.*.user
+*.local
+secrets.json
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/rules/
+.cursor/skills/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志 / 临时文件
+*.log
+*.log.*
+logs/
+*.tmp
+*.temp
+*.pid
+*.bak
+*.backup
