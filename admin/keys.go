@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -19,13 +21,69 @@ type keyActionRoute struct {
 	subPath string
 }
 
+// keyConflictQuerier is the minimum surface area of *pgxpool.Pool needed by
+// findActiveKeyConflict.  Defined as an interface so unit tests can supply a
+// stub without spinning up Postgres.
+type keyConflictQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// existingKeyConflict describes an api_keys row that already represents a
+// "valid, active, non-expired" key for the (application, tenant, alias) group
+// — i.e. one that the new key creation must refuse to duplicate.
+type existingKeyConflict struct {
+	ID       int
+	Prefix   string
+	IsSystem bool
+}
+
+// findActiveKeyConflict returns the lowest-id api_keys row matching the given
+// (application_id, tenant_id, key_alias) group that is currently enabled,
+// non-revoked, and not expired — *or* a system key regardless of the alias
+// match.  Returns (nil, nil) when no conflict exists; only returns a non-nil
+// error for unexpected DB failures (pgx.ErrNoRows is collapsed to "no
+// conflict").
+//
+// The function is the single source of truth for the "is this createKey call
+// going to duplicate an existing valid key?" check, and is intentionally
+// conservative: any live system key in the same group blocks the creation
+// even if its alias differs, because the frontend groups by (tenant, app,
+// alias) and an attacker re-using an admin alias must not be able to slip
+// past by giving an empty/different alias.
+func findActiveKeyConflict(ctx context.Context, db keyConflictQuerier, appID int, tenantID, alias string) (*existingKeyConflict, error) {
+	const sqlText = `
+		SELECT id, key_prefix, COALESCE(is_system, FALSE)
+		FROM api_keys
+		WHERE application_id = $1
+		  AND tenant_id = $2
+		  AND COALESCE(key_alias, '') = COALESCE($3, '')
+		  AND (
+		      (enabled = TRUE
+		        AND COALESCE(status, 'active') = 'active'
+		        AND (expires_at IS NULL OR expires_at > now()))
+		      OR COALESCE(is_system, FALSE) = TRUE
+		  )
+		ORDER BY id ASC
+		LIMIT 1
+	`
+	var c existingKeyConflict
+	err := db.QueryRow(ctx, sqlText, appID, tenantID, alias).Scan(&c.ID, &c.Prefix, &c.IsSystem)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
 func parseKeyActionRoute(remaining string) keyActionRoute {
 	if remaining == "" {
 		return keyActionRoute{kind: "root"}
 	}
 
 	switch remaining {
-	case "verify", "budget-check", "apply":
+	case "verify", "budget-check", "apply", "lookup":
 		return keyActionRoute{kind: "action", subPath: remaining}
 	}
 
@@ -76,6 +134,13 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+		return
+	case "lookup":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.lookupKeyConflict(w, r)
 		return
 	}
 
@@ -232,20 +297,22 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	alias := req.KeyAlias
-	var existingID int
-	var existingPrefix string
-	err = h.db.QueryRow(ctx, `
-		SELECT id, key_prefix FROM api_keys
-		WHERE application_id = $1 AND tenant_id = $2
-		  AND COALESCE(key_alias, '') = COALESCE($3, '')
-		  AND enabled = TRUE AND COALESCE(status, 'active') = 'active'
-		  AND (expires_at IS NULL OR expires_at > now())
-		ORDER BY id ASC LIMIT 1
-	`, appID, req.TenantID, alias).Scan(&existingID, &existingPrefix)
-	if err == nil {
+	existing, err := findActiveKeyConflict(ctx, h.db, appID, req.TenantID, alias)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if existing != nil {
+		if existing.IsSystem {
+			writeError(w, http.StatusConflict, fmt.Sprintf(
+				"该租户+应用+别名组合已存在有效的系统密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有系统密钥。",
+				existing.ID, existing.Prefix[:8],
+			))
+			return
+		}
 		writeError(w, http.StatusConflict, fmt.Sprintf(
 			"该租户+应用+别名组合已有可用密钥 (id=%d, prefix=%s****)，请勿重复创建。如需新建，请先禁用或吊销现有密钥。",
-			existingID, existingPrefix[:8],
+			existing.ID, existing.Prefix[:8],
 		))
 		return
 	}
@@ -274,6 +341,141 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		"key_prefix": keyPrefix,
 		"message":    "ok",
 	})
+}
+
+// lookupKeyConflict answers GET /api/keys/lookup?application_code=&tenant_id=&key_alias=
+// with the active (or system) key already occupying that group, if any.
+// It is a read-only probe intended for the Keys management UI: the frontend
+// calls it while the user is typing the (tenant, application, alias) tuple
+// of a new key, so the user can see WHICH key is in the way before clicking
+// "签发".  The route is mounted under admin() in handler.go, so the request
+// must present a valid admin api key (Authorization: Bearer …) — there is no
+// anonymous / unauthenticated path to this endpoint.
+//
+// Response shape:
+//   - 200 + {conflict: null} when no row matches the guard
+//   - 200 + {conflict: {id, key_prefix, is_system, ...}} when a row matches
+//   - 400 when alias is empty or application_code is missing
+//   - 404 when application_code is unknown
+func (h *Handler) lookupKeyConflict(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	appCode, tenantID, alias, vErr := extractLookupParams(r.URL.Query())
+	if vErr != nil {
+		writeError(w, http.StatusBadRequest, vErr.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var appID int
+	err := h.db.QueryRow(ctx,
+		`SELECT id FROM applications WHERE code = $1 AND tenant_id = 'default'`,
+		appCode,
+	).Scan(&appID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "application not found")
+			return
+		}
+		slog.Error("lookupKeyConflict: applications lookup failed", "error", err, "code", appCode)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	existing, err := findActiveKeyConflict(ctx, h.db, appID, tenantID, alias)
+	if err != nil {
+		slog.Error("lookupKeyConflict: findActiveKeyConflict failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	if existing == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"conflict":         nil,
+			"application_code": appCode,
+			"tenant_id":        tenantID,
+			"key_alias":        alias,
+		})
+		return
+	}
+
+	// Hydrate the conflict with the user-visible columns (status, expires_at)
+	// so the UI can render an "expired" / "disabled" badge correctly when
+	// the system-flag short-circuits the active-key predicate.
+	var (
+		status    *string
+		enabled   *bool
+		expiresAt *time.Time
+		owner     *string
+	)
+	err = h.db.QueryRow(ctx, `
+		SELECT COALESCE(status, 'active'), enabled, expires_at, owner_user
+		FROM api_keys
+		WHERE id = $1
+	`, existing.ID).Scan(&status, &enabled, &expiresAt, &owner)
+	if err != nil {
+		slog.Warn("lookupKeyConflict: hydrate conflict row failed", "error", err, "id", existing.ID)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"conflict": map[string]any{
+			"id":         existing.ID,
+			"key_prefix": existing.Prefix,
+			"is_system":  existing.IsSystem,
+			"status":     derefStr(status),
+			"enabled":    derefBool(enabled),
+			"expires_at": expiresAt,
+			"owner_user": derefStr(owner),
+		},
+		"application_code": appCode,
+		"tenant_id":        tenantID,
+		"key_alias":        alias,
+	})
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func derefBool(b *bool) bool {
+	if b == nil {
+		return false
+	}
+	return *b
+}
+
+// extractLookupParams pulls (application_code, tenant_id, key_alias) out of a
+// url.Values, normalises whitespace, fills in the default tenant, and
+// surfaces a descriptive error when a required field is missing.
+//
+// Kept as a pure function so the validation contract is unit-testable
+// without spinning up Postgres.
+func extractLookupParams(q url.Values) (appCode, tenantID, alias string, err error) {
+	appCode = strings.TrimSpace(q.Get("application_code"))
+	tenantID = strings.TrimSpace(q.Get("tenant_id"))
+	alias = strings.TrimSpace(q.Get("key_alias"))
+
+	switch {
+	case appCode == "":
+		return "", "", "", errors.New("application_code is required")
+	case alias == "":
+		return "", "", "", errors.New("key_alias is required")
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return appCode, tenantID, alias, nil
 }
 
 func includeRevokedKeys(r *http.Request) bool {
