@@ -505,6 +505,8 @@ func searchText(entry *RequestLogEntry) *string {
 // escape sequence" (SQLSTATE 22P05) errors when a string contains sequences
 // that PostgreSQL interprets as Unicode escapes (e.g. \uXXXX, \UXXXXXXXX,
 // or lone \ followed by non-hex chars).  See incident 2026-06-11.
+//
+// Use sanitizeUTF8JSON instead for strings stored in JSONB columns.
 func sanitizeUTF8(s string) string {
 	if utf8.ValidString(s) {
 		return strings.ReplaceAll(s, "\\", "\\\\")
@@ -520,8 +522,28 @@ func sanitizeUTF8(s string) string {
 		}
 		i += size
 	}
-	// Backslash-escape the result so PostgreSQL never sees a bare backslash.
 	return strings.ReplaceAll(b.String(), "\\", "\\\\")
+}
+
+// sanitizeUTF8JSON is like sanitizeUTF8 but does NOT escape backslashes.
+// It is only for strings stored in JSONB columns: escaping backslashes
+// would corrupt the JSON content (e.g. \n becoming \\n with different meaning).
+func sanitizeUTF8JSON(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + len(s)/10)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteString("\uFFFD")
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 func sanitizeStringPtr(p **string) {
@@ -547,8 +569,6 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.RequestPreview)
 	sanitizeStringPtr(&e.TransformSummary)
 	sanitizeStringPtr(&e.ResponsePreview)
-	sanitizeStringPtr(&e.RequestBody)
-	sanitizeStringPtr(&e.ResponseBody)
 	e.RequestID = sanitizeUTF8(e.RequestID)
 	e.TenantID = sanitizeUTF8(e.TenantID)
 	if e.EndUserID != nil {
@@ -558,5 +578,13 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	if e.CostCurrency != nil {
 		clean := sanitizeUTF8(*e.CostCurrency)
 		e.CostCurrency = &clean
+	}
+	if e.RequestBody != nil {
+		v := sanitizeUTF8JSON(*e.RequestBody)
+		e.RequestBody = &v
+	}
+	if e.ResponseBody != nil {
+		v := sanitizeUTF8JSON(*e.ResponseBody)
+		e.ResponseBody = &v
 	}
 }
