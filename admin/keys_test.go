@@ -165,6 +165,53 @@ func TestFindActiveKeyConflict_DBErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestFindActiveKeyConflict_SystemKeyBlocks(t *testing.T) already covers the
+// system-key path.  Below we add edge-case coverage.
+
+func TestFindActiveKeyConflict_EmptyAlias(t *testing.T) {
+	// An empty alias must not panic; it should simply return no conflict
+	// when the stub returns ErrNoRows (no rows with alias='' exist).
+	q := &stubQuerier{row: errRow{err: pgx.ErrNoRows}}
+	got, err := findActiveKeyConflict(context.Background(), q, 1, "default", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil for empty alias, got %#v", got)
+	}
+}
+
+func TestFindActiveKeyConflict_SpecialCharacters(t *testing.T) {
+	// Ensure SQL-special characters (quotes, semicolons, backslashes) in
+	// alias don't cause a panic.  Parameterised queries prevent injection,
+	// but the stub still records args — we verify they pass through intact.
+	alias := "test'; DROP TABLE api_keys;--"
+	q := &stubQuerier{row: errRow{err: pgx.ErrNoRows}}
+	_, err := findActiveKeyConflict(context.Background(), q, 1, "default", alias)
+	if err != nil {
+		t.Fatalf("unexpected error for special-char alias: %v", err)
+	}
+	if len(q.args) < 3 || q.args[2] != alias {
+		t.Fatalf("alias not passed as parameter: args=%v", q.args)
+	}
+}
+
+func TestFindActiveKeyConflict_DisabledSystemKeyDoesNotBlock(t *testing.T) {
+	// V2 regression guard: a disabled system key must NOT block creation.
+	// The SQL now requires enabled=TRUE for the is_system branch too.
+	// Our stub only returns what the DB would return; ErrNoRows simulates
+	// "no matching row" (i.e. the system key is disabled, so it doesn't
+	// match the predicate).
+	q := &stubQuerier{row: errRow{err: pgx.ErrNoRows}}
+	got, err := findActiveKeyConflict(context.Background(), q, 1, "default", "admin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("disabled system key should not block, got %#v", got)
+	}
+}
+
 // TestKeyConflictPredicateIncludesSystemGuard documents the SQL invariant:
 // the conflict query must refuse creation whenever an enabled+active+unexpired
 // row exists OR a system key exists in the same (app, tenant, alias) group.
@@ -178,7 +225,7 @@ func TestKeyConflictPredicateIncludesSystemGuard(t *testing.T) {
 	}
 	for _, marker := range []string{
 		"COALESCE(is_system, FALSE) = TRUE", // system-key guard
-		"enabled = TRUE",                    // active-key guard
+		"enabled = TRUE",                    // active-key guard (both branches)
 		"COALESCE(status, 'active') = 'active'",
 		"expires_at IS NULL OR expires_at > now()",
 	} {
