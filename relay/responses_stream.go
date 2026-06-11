@@ -13,9 +13,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome {
+func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	defer resp.Body.Close()
-	outcome := StreamOutcome{}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("responses stream panic recovered", "panic", r, "request_id", requestID)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_panic")
+			}
+			outcome.Interrupted = true
+			outcome.Reason = "stream_panic"
+		}
+	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)

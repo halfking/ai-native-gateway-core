@@ -106,6 +106,29 @@ func (sc *StreamCapture) MarkInterrupted() {
 	sc.interrupted = true
 }
 
+// Reset clears all accumulated state so the capture can be reused for a
+// fresh stream attempt. Used by the executor when failing over to a new
+// credential mid-request — without Reset, the new attempt's textContent
+// would be appended to the previous attempt's textContent and the
+// interrupted/done flags would carry over (logical inconsistency).
+func (sc *StreamCapture) Reset() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.startTime = time.Now()
+	sc.chunkCount = 0
+	sc.firstChunkMs = 0
+	sc.doneReceived = false
+	sc.interrupted = false
+	sc.checksum = [32]byte{}
+	sc.finalFinish = ""
+	sc.preview = sc.preview[:0]
+	sc.textContent = sc.textContent[:0]
+	sc.promptTokens = nil
+	sc.completionTokens = nil
+	sc.cacheReadTokens = nil
+	sc.cacheWriteTokens = nil
+}
+
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -160,6 +183,15 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 			payload = payload[:remaining]
 		}
 		sc.preview = append(sc.preview, payload...)
+	}
+	// Capture reasoning chain and final answer with markers so downstream
+	// auditors can distinguish the two sections. The reasoning block comes
+	// first because reasoning models emit it before the final answer.
+	reasoning := extractDeltaReasoningText(payload)
+	if reasoning != "" {
+		sc.appendText("[reasoning]\n")
+		sc.appendText(reasoning)
+		sc.appendText("\n[/reasoning]\n")
 	}
 	text := extractDeltaText(payload)
 	if text != "" {
@@ -564,6 +596,32 @@ func MessageDigest(messages []byte) (checksum string, preview string) {
 		preview = preview[:4096]
 	}
 	return
+}
+
+// extractDeltaReasoningText returns the reasoning chain text from a streaming
+// delta. Reasoning models (DeepSeek-R1, Qwen3-Thinking, etc.) emit their
+// chain-of-thought in `delta.reasoning_content` (separate from the final
+// answer in `delta.content`). Without this helper, the audit row would
+// capture only the final answer, losing the reasoning trace entirely.
+func extractDeltaReasoningText(payload string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return ""
+	}
+	choicesRaw, ok := obj["choices"]
+	if !ok {
+		return ""
+	}
+	var choices []map[string]any
+	if err := json.Unmarshal(choicesRaw, &choices); err != nil || len(choices) == 0 {
+		return ""
+	}
+	delta, ok := choices[0]["delta"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	reasoning, _ := delta["reasoning_content"].(string)
+	return reasoning
 }
 
 func extractDeltaText(payload string) string {

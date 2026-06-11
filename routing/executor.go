@@ -212,6 +212,16 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	for _, cand := range candidates {
 		tried++
 
+		// Reset the stream capture for this candidate so textContent, chunk
+		// count, checksum, and the done/interrupted flags from a prior
+		// failed attempt do not leak into this attempt's metrics. Without
+		// this reset, a credential failover mid-stream would produce an
+		// audit row with merged data from both credentials and logically
+		// inconsistent flags (interrupted=true && done=true).
+		if params.IsStream && params.Capture != nil && tried > 1 {
+			params.Capture.Reset()
+		}
+
 		var fpLease *credentialfpslot.Lease
 		if e.FpSlots != nil && e.FpSlots.Enabled() {
 			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder, "default")
