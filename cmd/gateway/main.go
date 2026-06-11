@@ -122,7 +122,10 @@ func main() {
 	var fpSlotRedis *redis.Client
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
-		if err := redisClient.Ping(context.Background()); err == nil {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pingErr := redisClient.Ping(pingCtx)
+		pingCancel()
+		if pingErr == nil {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
 			sessionMgr = sessions.NewManager(redisClient, ttl)
 			chatHandler.SetSessionGetter(sessionMgr)
