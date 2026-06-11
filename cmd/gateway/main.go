@@ -172,11 +172,12 @@ func main() {
 		exec := routing.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
-			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture) routing.StreamOutcome {
-				return relay.StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, capture)
+			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
+				return relay.StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, toolsRequested)
 			},
 			auditSink,
 		)
+		exec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold

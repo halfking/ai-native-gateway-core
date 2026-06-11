@@ -13,6 +13,14 @@ var (
 	xmlParamRE    = regexp.MustCompile(`(?s)<parameter=([A-Za-z_][\w.-]*)>(.*?)</parameter>`)
 )
 
+// CoerceXMLToolCallsInChatResponse is the exported alias used by
+// cmd/gateway/main.go to wire XML tool-call coercion into the routing
+// executor's non-streaming response post-processor.  See
+// coerceXMLToolCallsInChatResponse for the implementation.
+func CoerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
+	return coerceXMLToolCallsInChatResponse(body, toolsRequested)
+}
+
 func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 	if !toolsRequested || !strings.Contains(string(body), "<tool_call>") {
 		return body
