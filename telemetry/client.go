@@ -181,11 +181,11 @@ func (c *Client) flush(batch []any) {
 		switch v := item.(type) {
 		case *DecisionLogEntry:
 			if err := c.insertDecisionLog(v); err != nil {
-				slog.Debug("telemetry decision db insert failed", "request_id", v.RequestID, "error", err)
+				slog.Warn("telemetry decision db insert failed", "request_id", v.RequestID, "error", err)
 			}
 		case *RequestLogEntry:
 			if err := c.insertRequestLog(v); err != nil {
-				slog.Debug("telemetry request db insert failed", "request_id", v.RequestID, "error", err)
+				slog.Warn("telemetry request db insert failed", "request_id", v.RequestID, "error", err)
 			}
 		}
 	}
@@ -381,7 +381,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.StreamChunkCount,
 		entry.StreamDoneReceived,
 		entry.StreamInterrupted,
-		entry.UsageSource,
+		nonEmptyPtr(entry.UsageSource, "llm"),
 	)
 	if err != nil {
 		return err
@@ -426,6 +426,13 @@ func nonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func nonEmptyPtr(p *string, fallback string) string {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return fallback
+	}
+	return *p
 }
 
 func coalesceRawModels(models []string) []string {
@@ -473,7 +480,14 @@ func searchText(entry *RequestLogEntry) *string {
 		}
 	}
 	if len(parts) == 0 {
-		return nil
+		// Return a non-nil pointer to an empty string so the NOT NULL
+		// constraint on search_text is satisfied.  Prior to this fix,
+		// nil was returned and the INSERT silently failed (the error
+		// was logged at slog.Debug level, invisible at production
+		// log level=info), causing the request to vanish from
+		// request_logs.
+		empty := ""
+		return &empty
 	}
 	joined := strings.Join(parts, " ")
 	return &joined
