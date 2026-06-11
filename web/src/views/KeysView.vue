@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, onBeforeUnmount, onMounted } from 'vue'
+import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, type ApiKey, type KeyCreatedResponse, type DefaultLimits } from '../api'
+import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
 import { store, clearApiKey } from '../store'
 import FilterInput from '../components/FilterInput.vue'
 
@@ -107,6 +107,95 @@ const newBudget = ref('')
 const newRpm = ref('')
 const newRemark = ref('')
 const newSaving = ref(false)
+
+// Live conflict detection: mirrors the server-side guard so users see
+// "this (tenant, application, alias) group already has a valid key" before
+// submitting.  Two layers, front-end first for instant feedback, then
+// confirmed by GET /api/keys/lookup (adminMiddleware-protected) on debounced
+// input.  A conflict is defined as: an existing api_keys row with the same
+// (tenant_id, application_code, key_alias) tuple that is either
+// status=active+enabled+non-expired OR is_system=true.  This matches
+// admin.findActiveKeyConflict on the Go side.
+const newConflictLocal = computed<{ id: number; prefix: string; isSystem: boolean } | null>(() => {
+  const app = newApp.value.trim()
+  const tenant = newTenant.value.trim() || 'default'
+  const alias = newKeyAlias.value.trim()
+  if (!app || !alias) return null
+  const hit = keys.value.find((k) =>
+    k.application_code === app &&
+    k.tenant_id === tenant &&
+    (k.key_alias || '').trim() === alias &&
+    ((k as any).is_system === true ||
+      (k.status === 'active' && !isExpired(k) && k.enabled))
+  )
+  if (!hit) return null
+  return { id: hit.id, prefix: hit.key_prefix, isSystem: (hit as any).is_system === true }
+})
+
+// Server-confirmed conflict: hit the live /api/keys/lookup endpoint so the
+// UI is honest even if the cached getKeys() list is stale (e.g. another
+// admin just created a key in the same group).  Debounced 350ms.
+const serverConflict = ref<KeyConflict | null>(null)
+const serverConflictLoading = ref(false)
+let serverConflictReq: { cancelled: boolean } = { cancelled: true }
+let serverConflictTimer: number | undefined
+const newConflict = computed<{ id: number; prefix: string; isSystem: boolean; status?: string; expiresAt?: string | null; ownerUser?: string } | null>(() => {
+  // Server wins: it has the freshest view of the DB.
+  if (serverConflict.value) {
+    return {
+      id: serverConflict.value.id,
+      prefix: serverConflict.value.key_prefix,
+      isSystem: serverConflict.value.is_system,
+      status: serverConflict.value.status,
+      expiresAt: serverConflict.value.expires_at,
+      ownerUser: serverConflict.value.owner_user,
+    }
+  }
+  return newConflictLocal.value
+})
+
+function scheduleServerLookup() {
+  if (serverConflictTimer) window.clearTimeout(serverConflictTimer)
+  serverConflictTimer = window.setTimeout(runServerLookup, 350)
+}
+
+async function runServerLookup() {
+  // Cancel any in-flight request from a previous keystroke.
+  serverConflictReq.cancelled = true
+  const myReq = { cancelled: false }
+  serverConflictReq = myReq
+
+  const app = newApp.value.trim()
+  const tenant = newTenant.value.trim() || 'default'
+  const alias = newKeyAlias.value.trim()
+  if (!app || !alias) {
+    serverConflict.value = null
+    return
+  }
+  serverConflictLoading.value = true
+  try {
+    const resp = await getKeyConflict({ application_code: app, tenant_id: tenant, key_alias: alias })
+    if (myReq.cancelled) return
+    serverConflict.value = resp.conflict
+  } catch {
+    // Network/permission error: silently fall back to local heuristic.
+    // The submit-time 409 from the backend is the real safety net.
+    if (myReq.cancelled) return
+    serverConflict.value = null
+  } finally {
+    if (!myReq.cancelled) serverConflictLoading.value = false
+  }
+}
+
+watch(
+  () => [newApp.value, newTenant.value, newKeyAlias.value],
+  () => {
+    // Reset stale server result so we don't briefly show an outdated one
+    // while the new request is in flight.
+    serverConflict.value = null
+    scheduleServerLookup()
+  },
+)
 const newErr = ref('')
 const createdKey = ref<KeyCreatedResponse | null>(null)
 
@@ -168,12 +257,21 @@ function openNew() {
   newRemark.value = ''
   newErr.value = ''
   createdKey.value = null
+  serverConflict.value = null
   showNew.value = true
+  // First server lookup happens after the user types an alias; until then
+  // the local heuristic covers the "default/default" placeholder.
 }
 
 async function submitNew() {
   if (!newApp.value) { newErr.value = '请填写应用代码'; return }
   if (!newKeyAlias.value.trim()) { newErr.value = '请填写密钥别名'; return }
+  if (newConflict.value) {
+    newErr.value = newConflict.value.isSystem
+      ? `系统密钥 #${newConflict.value.id} (${newConflict.value.prefix}****) 已占用该租户+应用+别名，请先禁用或吊销后再签发。`
+      : `密钥 #${newConflict.value.id} (${newConflict.value.prefix}****) 已占用该租户+应用+别名，请先禁用或吊销后再签发。`
+    return
+  }
   newSaving.value = true
   newErr.value = ''
   try {
@@ -397,6 +495,8 @@ function openDefaultLimits() {
 onMounted(() => { load(); loadDefaultLimits() })
 onBeforeUnmount(() => {
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
+  if (serverConflictTimer) window.clearTimeout(serverConflictTimer)
+  serverConflictReq.cancelled = true
 })
 </script>
 
@@ -630,6 +730,31 @@ onBeforeUnmount(() => {
         <!-- Create form -->
         <template v-else>
           <div v-if="newErr" class="alert alert-danger">{{ newErr }}</div>
+          <div
+            v-if="newConflict"
+            class="alert alert-warning"
+            data-testid="key-conflict-warning"
+          >
+            <template v-if="newConflict.isSystem">
+              ⚠ 系统密钥 #{{ newConflict.id }}
+              (<code>{{ newConflict.prefix }}****</code>) 已占用该 (租户 + 应用 + 别名) 组合。
+              <strong>请先在列表中禁用或吊销该系统密钥</strong>，再签发新密钥。
+            </template>
+            <template v-else>
+              ⚠ 已有可用密钥 #{{ newConflict.id }}
+              (<code>{{ newConflict.prefix }}****</code>) 使用同一 (租户 + 应用 + 别名) 组合。
+              <strong>请先禁用或吊销该密钥</strong>，再签发新密钥。
+            </template>
+            <div
+              v-if="newConflict.status || newConflict.expiresAt || newConflict.ownerUser"
+              class="conflict-meta"
+            >
+              <span v-if="newConflict.status">状态: <code>{{ newConflict.status }}</code></span>
+              <span v-if="newConflict.expiresAt">到期: <code>{{ fmtDate(newConflict.expiresAt) }}</code></span>
+              <span v-if="newConflict.ownerUser">归属: <code>{{ newConflict.ownerUser }}</code></span>
+            </div>
+            <div v-if="serverConflictLoading" class="conflict-loading">正在向服务器确认…</div>
+          </div>
           <div class="form-group">
             <label>租户（默认 default）</label>
             <input v-model="newTenant" placeholder="default" />
@@ -660,8 +785,12 @@ onBeforeUnmount(() => {
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
             <button class="btn btn-ghost" @click="showNew = false">取消</button>
-            <button class="btn btn-primary" @click="submitNew" :disabled="newSaving">
-              {{ newSaving ? '签发中…' : '签发' }}
+            <button
+              class="btn btn-primary"
+              @click="submitNew"
+              :disabled="newSaving || newConflict !== null"
+            >
+              {{ newSaving ? '签发中…' : (newConflict ? '存在重复，无法签发' : '签发') }}
             </button>
           </div>
         </template>
@@ -820,5 +949,21 @@ onBeforeUnmount(() => {
 
 .copy-toast.error {
   background: var(--danger);
+}
+
+.conflict-meta {
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.conflict-loading {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
 }
 </style>
