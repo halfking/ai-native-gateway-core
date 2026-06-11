@@ -18,6 +18,8 @@ import ModelsView             from './views/ModelsView.vue'
 import ProviderDetailView     from './views/ProviderDetailView.vue'
 import PricingManagementView  from './views/PricingManagementView.vue'
 import FreePoolView           from './views/FreePoolView.vue'
+import TenantsView            from './views/TenantsView.vue'
+import TenantDetailView       from './views/TenantDetailView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -39,6 +41,8 @@ export const router = createRouter({
     { path: '/free-pool',          component: FreePoolView },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/pricing',            component: PricingManagementView },
+    { path: '/tenants',            component: TenantsView },
+    { path: '/tenants/:tenantId',  component: TenantDetailView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
