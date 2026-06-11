@@ -182,6 +182,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Policy:        policy,
 		AuditBuilder:  auditBuilder,
 		Capture:       streamCapture,
+		// Anthropic messages endpoint speaks native tool_use; XML coercion
+		// is only relevant for chat completions (handler.go).
+		ToolsRequested: false,
 		StreamWrapper: anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
 		StickyKey:     buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
 	})

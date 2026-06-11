@@ -357,6 +357,7 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		Policy:        policy,
 		AuditBuilder:  auditBuilder,
 		Capture:       streamCapture,
+		ToolsRequested: requestHasTools(bodyBytes),
 		SessionKey:    sessionKey,
 		StickyKey:     stickyKey,
 	})

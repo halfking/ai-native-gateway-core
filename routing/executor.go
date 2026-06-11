@@ -38,9 +38,16 @@ type StreamOutcome = struct {
 	ChunkCount  int  // Number of chunks sent before interruption
 }
 
-type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
+type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
 
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
+
+// XMLCoerceNonStreamFunc transforms a non-streaming chat response body,
+// rewriting any `<tool_call><function=...>` XML embedded in assistant
+// `content` into structured OpenAI `tool_calls` entries.  The second
+// argument is true when the original request body supplied a `tools` array.
+// Implementations are expected to be no-ops when toolsRequested is false.
+type XMLCoerceNonStreamFunc func(body []byte, toolsRequested bool) []byte
 
 type Executor struct {
 	Router        *Router
@@ -50,6 +57,11 @@ type Executor struct {
 	Upstream      *upstreampkg.Client
 	Normalize     NormalizerFunc
 	StreamChat    StreamHandler
+	// XMLCoerceNonStream post-processes a non-stream chat response body to
+	// turn XML-style tool calls into structured tool_calls. Wired from
+	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
+	// package does not need to import relay.
+	XMLCoerceNonStream XMLCoerceNonStreamFunc
 	Auditor       audit.Sink
 	State         *credentialstate.Writer
 	DB            *db.DB
@@ -108,6 +120,15 @@ type ExecParams struct {
 	AuditBuilder  *audit.EventBuilder
 	Capture       *audit.StreamCapture
 	StreamWrapper StreamWrapperFunc
+	// ToolsRequested indicates the upstream request body carried a non-empty
+	// `tools` array. Some providers (Xiaomi MiMo, MiniMax M2.7) cannot emit
+	// structured `tool_calls` and instead fall back to embedding
+	// `<tool_call><function=...>...</tool_call>` XML inside the assistant
+	// `content`. With this flag set, the stream and non-stream response
+	// post-processors will coerce the XML into real `tool_calls` entries so
+	// downstream agents (which only inspect the structured field) recognise
+	// the call and dispatch the tool.
+	ToolsRequested bool
 	SessionKey    string
 	StickyKey     string
 }
@@ -571,7 +592,7 @@ func (e *Executor) tryCandidate(
 				if params.StreamWrapper != nil {
 					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
 				} else if e.StreamChat != nil {
-					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture)
+					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture, params.ToolsRequested)
 				}
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
 					// Check if stream is resumable (chunk count below threshold)
@@ -618,6 +639,14 @@ func (e *Executor) tryCandidate(
 			}
 			if params.ClientModel != "" {
 				respBody = replaceModelInResponseBody(respBody, params.ClientModel)
+			}
+			// Coerce XML-style `<tool_call><function=...>` tool calls embedded
+			// in assistant `content` (emitted by Xiaomi MiMo / MiniMax M2.7
+			// when their native tool_use is unavailable) into structured
+			// tool_calls so downstream agents dispatch the tool instead of
+			// treating the XML as a plain-text todo list.
+			if e.XMLCoerceNonStream != nil {
+				respBody = e.XMLCoerceNonStream(respBody, params.ToolsRequested)
 			}
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
