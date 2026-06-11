@@ -316,13 +316,25 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if sie, ok := execErr.(*streamInterruptedError); ok {
-			kind := errorsx.KindStreamTimeout
+			kind := sie.kind
+			if kind == "" {
+				kind = errorsx.KindStreamTimeout
+			}
 			e.recordStickyFailure(params, cand.CredentialID, kind)
-			
+
 			if sie.resumable {
-				// Stream is resumable (few chunks sent) - try next candidate
+				// Stream is resumable (few chunks sent) - try next candidate.
+				// The inner tryCandidate already wrote the credential state
+				// with the correct kind; here we just record the failure on
+				// the circuit to keep the counter consistent. For
+				// KindConcurrent we also re-affirm by writing state again
+				// because the executor's outer loop now drives the failover
+				// to the next candidate, and we want the DB state to be
+				// authoritative before that next lookup.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
-				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
+				if kind == errorsx.KindConcurrent {
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
 				}
 				lastErr = execErr
@@ -330,10 +342,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
 					"reason", sie.reason,
+					"kind", kind,
 				)
 				continue
 			} else {
-				// Stream is not resumable (too many chunks sent) - return error
+				// Stream is not resumable (too many chunks sent) - return error.
+				// The inner tryCandidate already wrote the credential state
+				// with the correct kind; this branch keeps the circuit counter
+				// consistent and ensures the kind is recorded.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
@@ -342,6 +358,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
 					"reason", sie.reason,
+					"kind", kind,
 				)
 				return nil, execErr
 			}
@@ -546,43 +563,67 @@ func (e *Executor) tryCandidate(
 			body := make([]byte, 4096)
 			n, _ := resp.Body.Read(body)
 			_, _ = io.Copy(io.Discard, resp.Body) // drain remainder
-				errKind := errorsx.ClassifyError(nil, resp)
+			// Pass the (status, body) pair through the body-aware classifier so
+			// overload-shaped payloads (e.g. 429 with "concurrent limit
+			// exceeded" body) are upgraded to KindConcurrent — which gets a
+			// 5-minute cooling and immediate failover to the next candidate
+			// rather than the short quota-style cooling for plain 429s.
+			errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-				if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
-					slog.Info("model_not_found skip offer",
-						"credential_id", cand.CredentialID,
-						"model", cand.RawModel,
-						"status", resp.StatusCode,
-						"body_preview", string(body[:min(n, 120)]),
-					)
-					return nil, &modelNotFoundError{
-						credentialID: cand.CredentialID,
-						rawModel:     cand.RawModel,
-						body:         string(body[:n]),
-					}
+			if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
+				slog.Info("model_not_found skip offer",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"status", resp.StatusCode,
+					"body_preview", string(body[:min(n, 120)]),
+				)
+				return nil, &modelNotFoundError{
+					credentialID: cand.CredentialID,
+					rawModel:     cand.RawModel,
+					body:         string(body[:n]),
 				}
-
-				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
-					resp.StatusCode != 429 && resp.StatusCode != 401 &&
-					resp.StatusCode != 403 && resp.StatusCode != 402 {
-					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-				} else if errKind == errorsx.KindRateLimit {
-					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
-				}
-				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
-					for k, vs := range resp.Header {
-						for _, v := range vs {
-							params.W.Header().Add(k, v)
-						}
-					}
-					params.W.WriteHeader(resp.StatusCode)
-					if n > 0 {
-						params.W.Write(body[:n])
-					}
-					return nil, fmt.Errorf("upstream %d", resp.StatusCode)
-				}
-				return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
 			}
+
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+				resp.StatusCode != 429 && resp.StatusCode != 401 &&
+				resp.StatusCode != 403 && resp.StatusCode != 402 &&
+				errKind != errorsx.KindConcurrent {
+				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+			} else if errKind == errorsx.KindRateLimit {
+				e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+			} else if errKind == errorsx.KindConcurrent {
+				// Concurrent-overload: mark the circuit open and write the
+				// credential state immediately (5-minute cooling). The
+				// executor's outer loop will then route to the next candidate
+				// instead of retrying this overloaded credential. We bypass
+				// shouldWriteCredentialStateOnConfirmedFailure's threshold
+				// check because concurrent overload is a definitive signal
+				// — a single occurrence is enough to take the credential
+				// out of rotation.
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
+				e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
+					fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+				slog.Warn("credential concurrent-overload, failing over to next candidate",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"status", resp.StatusCode,
+					"body_preview", string(body[:min(n, 120)]),
+				)
+			}
+			if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+				for k, vs := range resp.Header {
+					for _, v := range vs {
+						params.W.Header().Add(k, v)
+					}
+				}
+				params.W.WriteHeader(resp.StatusCode)
+				if n > 0 {
+					params.W.Write(body[:n])
+				}
+				return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+			}
+			return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+		}
 
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 			latencyMs := int(time.Since(tTotal).Milliseconds())
@@ -597,29 +638,52 @@ func (e *Executor) tryCandidate(
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
 					// Check if stream is resumable (chunk count below threshold)
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
-					
+
+					// Classify the interruption. eof_without_done is the
+					// dominant pattern seen for MiniMax / similar providers
+					// under concurrent overload — they close the SSE
+					// connection instead of returning a 5xx, so we have to
+					// infer the cause from the absence-of-done signal.
+					// Route the failure through KindConcurrent (5-minute
+					// cooling) when the reason matches the overload pattern
+					// so the credential is taken out of rotation long
+					// enough for the upstream to clear.
+					streamKind := errorsx.KindStreamTimeout
+					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
+						streamKind = errorsx.KindConcurrent
+					}
+
 					slog.Warn("executor: stream interrupted",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"reason", streamOutcome.Reason,
 						"chunk_count", streamOutcome.ChunkCount,
 						"resumable", isResumable,
+						"classified_as", streamKind,
 					)
-					
+
 					if isResumable {
-						// Mark credential as cooling for stream timeout
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout)
-						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, errorsx.KindStreamTimeout) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindStreamTimeout, fmt.Errorf("stream %s", streamOutcome.Reason))
+						// Mark credential as cooling for the classified kind.
+						// For KindConcurrent we bypass the
+						// shouldWriteCredentialStateOnConfirmedFailure
+						// threshold — a single eof_without_done under load
+						// is enough to take the credential out of rotation
+						// for 5 minutes.
+						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						if streamKind == errorsx.KindConcurrent {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
+						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 						}
 					}
-					
+
 					return &ExecuteResult{
 						Response:    resp,
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
-					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable}
+					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 				}
 				return &ExecuteResult{
 					Response:    resp,
@@ -819,6 +883,7 @@ type streamInterruptedError struct {
 	reason       string
 	credentialID int
 	resumable    bool // Whether the stream can be resumed with a different credential
+	kind         errorsx.ErrorKind // Errorsx kind to record on the circuit (defaults to KindStreamTimeout)
 }
 
 func (e *streamInterruptedError) Error() string {

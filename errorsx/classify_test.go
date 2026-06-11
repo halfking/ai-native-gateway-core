@@ -108,6 +108,95 @@ func TestClassifyError_200(t *testing.T) {
 	}
 }
 
+func TestClassifyError_503_Overloaded(t *testing.T) {
+	resp := &http.Response{StatusCode: 503}
+	kind := ClassifyError(nil, resp)
+	if kind != KindConcurrent {
+		t.Errorf("expected KindConcurrent for 503, got %q", kind)
+	}
+}
+
+func TestClassifyError_529_Overloaded(t *testing.T) {
+	resp := &http.Response{StatusCode: 529}
+	kind := ClassifyError(nil, resp)
+	if kind != KindConcurrent {
+		t.Errorf("expected KindConcurrent for 529, got %q", kind)
+	}
+}
+
+func TestClassifyErrorWithBody_429_Overload(t *testing.T) {
+	// 429 + "concurrent limit exceeded" body must escalate to KindConcurrent,
+	// not stay as the quota-style KindRateLimit.
+	body := []byte(`{"error":{"type":"rate_limit_error","message":"concurrent limit exceeded for this account"}}`)
+	kind := ClassifyErrorWithBody(429, body)
+	if kind != KindConcurrent {
+		t.Errorf("expected KindConcurrent for 429+overload body, got %q", kind)
+	}
+}
+
+func TestClassifyErrorWithBody_429_Plain(t *testing.T) {
+	// 429 with a plain body stays as KindRateLimit (quota-style).
+	kind := ClassifyErrorWithBody(429, []byte(`{"error":"rate limit"}`))
+	if kind != KindRateLimit {
+		t.Errorf("expected KindRateLimit for plain 429, got %q", kind)
+	}
+}
+
+func TestClassifyErrorWithBody_503_Overload(t *testing.T) {
+	kind := ClassifyErrorWithBody(503, []byte(`{"error":"server overloaded"}`))
+	if kind != KindConcurrent {
+		t.Errorf("expected KindConcurrent for 503+overload, got %q", kind)
+	}
+}
+
+func TestClassifyError_ConcurrentErrMessage(t *testing.T) {
+	tests := []string{
+		"concurrent limit exceeded",
+		"too many concurrent requests",
+		"server overloaded, try again later",
+		"engine busy, please slow down",
+		"并发请求超限",
+		"服务繁忙，请稍后重试",
+		"upstream sent EOF without [DONE] (eof_without_done)",
+	}
+	for _, msg := range tests {
+		kind := ClassifyError(errors.New(msg), nil)
+		if kind != KindConcurrent {
+			t.Errorf("expected KindConcurrent for %q, got %q", msg, kind)
+		}
+	}
+}
+
+func TestClassifyResponseBody_ConcurrentOverload(t *testing.T) {
+	tests := []struct {
+		body string
+		kind ErrorKind
+	}{
+		{`{"error":"concurrent limit reached"}`, KindConcurrent},
+		{`upstream: too many requests, slow down`, KindConcurrent},
+		{`并发过大，达到上限`, KindConcurrent},
+		{`eof_without_done`, KindStreamTimeout},
+	}
+	for _, tc := range tests {
+		kind := ClassifyResponseBody([]byte(tc.body))
+		if kind != tc.kind {
+			t.Errorf("for %q expected %q, got %q", tc.body, tc.kind, kind)
+		}
+	}
+}
+
+func TestIsConcurrentOverload(t *testing.T) {
+	if !IsConcurrentOverload("eof_without_done") {
+		t.Fatal("eof_without_done should be treated as concurrent overload")
+	}
+	if !IsConcurrentOverload("concurrent limit exceeded") {
+		t.Fatal("concurrent limit exceeded should be treated as concurrent overload")
+	}
+	if IsConcurrentOverload("") {
+		t.Fatal("empty reason should not be treated as concurrent overload")
+	}
+}
+
 func TestIsRetryable(t *testing.T) {
 	tests := []struct {
 		kind     ErrorKind
