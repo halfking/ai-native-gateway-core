@@ -194,7 +194,6 @@ type credential struct {
 	BaseURL      string
 	Protocol     string
 	CatalogCode  string
-	ModelsTemplate string // provider_catalog.models_endpoint_template for this cred
 	SecretCipher []byte // bytea in DB, must be []byte for pgx scan
 }
 
@@ -203,18 +202,16 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		SELECT
 			c.id,
 			p.id AS provider_id,
-			p.display_name AS provider_name,
-			p.base_url,
-			p.protocol,
-			p.catalog_code,
-			COALESCE(pc.models_endpoint_template, ''),
-			c.secret_ciphertext
-		FROM credentials c
-		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.status = 'active'
-		  AND c.trust_level NOT IN ('quarantine')
-		  AND p.enabled = TRUE
+		p.display_name AS provider_name,
+		p.base_url,
+		p.protocol,
+		p.catalog_code,
+		c.secret_ciphertext
+	FROM credentials c
+	JOIN providers p ON p.id = c.provider_id
+	WHERE c.status = 'active'
+	  AND c.trust_level NOT IN ('quarantine')
+	  AND p.enabled = TRUE
 	`)
 	if err != nil {
 		return nil, err
@@ -224,7 +221,7 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 	var creds []credential
 	for rows.Next() {
 		var c credential
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.ModelsTemplate, &c.SecretCipher); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher); err != nil {
 			continue
 		}
 		creds = append(creds, c)
@@ -238,10 +235,10 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) (i
 		return 0, nil
 	}
 
-	// Build models endpoint URL using per-credential catalog template.
-	modelsURL := urlutil.BuildModelsURL(cred.BaseURL, cred.ModelsTemplate)
+	// Build models endpoint URL.
+	modelsURL := urlutil.ModelsURL(cred.BaseURL)
 	if modelsURL == "" {
-		return 0, fmt.Errorf("cannot build models URL for %s (template=%q)", cred.BaseURL, cred.ModelsTemplate)
+		return 0, fmt.Errorf("cannot build models URL for %s", cred.BaseURL)
 	}
 
 	// Fetch models from provider
