@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/identity"
@@ -46,34 +47,76 @@ func NewMessagesHandler(ch *ChatHandler) *MessagesHandler {
 
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+
+	// ── requestAttempt safety-net: every Anthropic /v1/messages
+	//    request must produce exactly one request_logs row.  See
+	//    ChatHandler.ServeHTTP for the rationale.  attemptLogged
+	//    and the attempt-state fields are shared with the inner
+	//    blocks via Go's closure capture (pointer-typed for slices
+	//    / strings so writes propagate back).
+	var (
+		attemptLoggedFlag   bool
+		attemptKeyInfo     *auth.KeyInfo
+		attemptClientModel string
+		attemptErrCode     string
+		attemptErrMsg      string
+		attemptProviderID  *int
+		attemptCredentialID *int
+	)
+	attemptLogged := &attemptLoggedFlag
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = uuid.NewString()
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	startTime := time.Now()
+	_, _ = &attemptErrCode, &attemptErrMsg
+	defer func() {
+		if attemptErrCode != "" && !*attemptLogged {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+		}
+	}()
+
 	if r.Method != http.MethodPost {
+		attemptErrCode = "method_not_allowed"
+		attemptErrMsg = "method not allowed"
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
 		return
 	}
-
-	requestID := r.Header.Get("X-Request-Id")
 
 	var keyInfo *auth.KeyInfo
 	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
+			attemptErrCode = "missing_key"
+			attemptErrMsg = "missing api key"
 			writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Missing API key")
 			return
 		}
 		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+				attemptErrCode = "invalid_key"
+				attemptErrMsg = "invalid or expired api key"
 				writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Invalid or expired API key")
 				return
 			}
+			attemptErrCode = "auth_unavailable"
+			attemptErrMsg = "authentication service temporarily unavailable"
 			slog.Warn("messages: key verification RPC failed", "error", verifyErr)
 		} else {
 			keyInfo = ki
+			attemptKeyInfo = ki
 		}
 	}
 
 	if keyInfo != nil && h.chatHandler.rateLimiter != nil && keyInfo.RateLimitRPM != nil && *keyInfo.RateLimitRPM > 0 {
 		if !h.chatHandler.rateLimiter.CheckRPM(keyInfo.ID, *keyInfo.RateLimitRPM) {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
 			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
 			return
 		}
@@ -81,24 +124,36 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
+		attemptErrCode = "body_read_error"
+		attemptErrMsg = "failed to read request body"
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Failed to read request body")
 		return
 	}
 	if len(bodyBytes) > maxBodySize {
+		attemptErrCode = "body_too_large"
+		attemptErrMsg = "request body too large"
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
 
 	var reqBody messagesRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		attemptErrCode = "json_parse_error"
+		attemptErrMsg = "invalid JSON in request body"
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON in request body")
 		return
 	}
 	if reqBody.Model == "" {
+		attemptErrCode = "missing_model"
+		attemptErrMsg = "model is required"
+		attemptClientModel = "<unknown>"
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
 	if reqBody.MaxTokens <= 0 {
+		attemptErrCode = "missing_max_tokens"
+		attemptErrMsg = "max_tokens must be > 0"
+		attemptClientModel = reqBody.Model
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "max_tokens must be > 0")
 		return
 	}
@@ -106,9 +161,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chatBody := h.convertToChatBody(&reqBody)
 	chatBodyBytes, err := json.Marshal(chatBody)
 	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Internal conversion error")
 		return
 	}
+	attemptClientModel = reqBody.Model
 
 	clientModel := reqBody.Model
 	isStream := reqBody.Stream
@@ -141,8 +200,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if candErr != nil || len(candidates) == 0 {
+		attemptErrCode = "no_candidate"
+		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo)
+		*attemptLogged = true
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("No available provider for model '%s'", clientModel))
 		return
+	}
+	if len(candidates) > 0 {
+		pid := candidates[0].ProviderID
+		cid := candidates[0].CredentialID
+		attemptProviderID = &pid
+		attemptCredentialID = &cid
 	}
 
 	var modelResolution *resolve.Resolution
@@ -190,6 +261,18 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if execErr != nil {
+		errCode := "provider_error"
+		errMsg := execErr.Error()
+		if ee, ok := execErr.(*routing.ExecuteError); ok && ee.Exhausted {
+			errCode = "model_not_found"
+			errMsg = "all providers unavailable"
+		}
+		attemptErrCode = errCode
+		attemptErrMsg = errMsg
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo)
+		*attemptLogged = true
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
 			return
@@ -206,6 +289,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.RequestBody, responseBody)
+	*attemptLogged = true
 }
 
 func (h *MessagesHandler) convertToChatBody(req *messagesRequestBody) map[string]any {
