@@ -13,9 +13,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome {
+func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	defer resp.Body.Close()
-	outcome := StreamOutcome{}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("anthropic stream panic recovered", "panic", r, "request_id", requestID)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_panic")
+			}
+			outcome.Interrupted = true
+			outcome.Reason = "stream_panic"
+		}
+	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
@@ -262,7 +271,13 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 	writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
 
-	if capture != nil {
+	// Only mark the capture as "done" if the stream was NOT interrupted.
+	// If we received an interruption (e.g. stream_timeout, read_error,
+	// client cancel), MarkInterruptedWithReason has already set
+	// interrupted=true and finalFinish to the failure reason — calling
+	// ObservePayload with done=true here would clobber the failure reason
+	// and produce contradictory flags (interrupted=true && done=true).
+	if capture != nil && !outcome.Interrupted {
 		capture.ObservePayload(`{"type":"message_stop"}`, finalFinishReason, true)
 	}
 	return outcome

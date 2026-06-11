@@ -34,9 +34,22 @@ func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientMod
 	return StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false)
 }
 
-func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome {
+func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool) (outcome StreamOutcome) {
 	defer resp.Body.Close()
-	outcome := StreamOutcome{}
+	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
+	// failure, write to a closed connection) does not skip the deferred
+	// audit emit in the caller and lose the request_logs row entirely.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("stream panic recovered", "panic", r, "client_model", clientModel)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_panic")
+			}
+			outcome.Interrupted = true
+			outcome.Reason = "stream_panic"
+		}
+	}()
+
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
@@ -115,6 +128,12 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 	}
 
 	// ── Main streaming loop with keep-alive ─────────────────────────
+	// upstreamDoneReceived tracks whether the upstream sent the literal
+	// "data: [DONE]\n\n" terminator. If the stream ended by EOF without
+	// [DONE] (e.g. upstream crashed mid-response), we do NOT want to
+	// mark the capture as doneReceived=true — that would misreport an
+	// interruption as a clean completion.
+	upstreamDoneReceived := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,6 +142,8 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "client_cancel"
+			outcome.ChunkCount = chunkCount
+			outcome.Resumable = false
 			return outcome
 		default:
 		}
@@ -131,12 +152,26 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadEOF:
+				// If upstream closed before sending [DONE], still send
+				// the terminator to the client (clients expect a
+				// well-formed stream) but mark the capture as
+				// interrupted with reason "eof_without_done" so audit
+				// queries can distinguish a clean completion from a
+				// premature close.
+				if !upstreamDoneReceived {
+					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
+					if capture != nil {
+						capture.MarkInterruptedWithReason("eof_without_done")
+					}
+					outcome.Interrupted = true
+					outcome.Reason = "eof_without_done"
+				}
 				safeWriteSSE(w, "data: [DONE]\n\n")
 				safeFlush(flusher)
-				if capture != nil {
+				if capture != nil && upstreamDoneReceived {
 					capture.ObservePayload("[DONE]", "", true)
 				}
-				outcome.ChunkCount = chunkCount // H-4: record chunks sent on normal EOF
+				outcome.ChunkCount = chunkCount
 			case streamReadCanceled:
 				slog.Debug("stream cancelled by client")
 				if capture != nil {
@@ -185,6 +220,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 			finishReason := ExtractFinishReason(payload)
 			usage := ExtractUsageFromChunk(payload)
 			isDone := payload == "[DONE]"
+			if isDone {
+				upstreamDoneReceived = true
+			}
 			capture.ObservePayload(payload, finishReason, isDone)
 			if usage.PromptTokens != nil || usage.CompletionTokens != nil {
 				capture.ObserveUsage(usage.PromptTokens, usage.CompletionTokens, usage.CacheReadTokens, usage.CacheWriteTokens)
