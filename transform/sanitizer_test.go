@@ -155,3 +155,38 @@ func TestIsToolUseCapable(t *testing.T) {
 		t.Error("volcengine should NOT be tool-use capable")
 	}
 }
+
+// TestIsToolUseCapable_ProtocolFallback guards the protocol heuristic
+// introduced to match the Python gateway's is_tool_use_capable():
+// openai-completions and anthropic-messages carry the standard tool
+// definition block, so any provider speaking one of those wire formats
+// is treated as tool-capable regardless of catalog code.  This is what
+// makes Xiaomi MiMo (catalog_code="xiaomi", protocol="openai-completions")
+// work — without it the Go gateway would fold MiMo's prior tool history
+// into "[调用工具 ...]" text, breaking the 50+ turn audit tasks the
+// agent runs on this model (see request_logs id 27998 from 2026-06-10).
+func TestIsToolUseCapable_ProtocolFallback(t *testing.T) {
+	cases := []struct {
+		catalog string
+		proto   string
+		want    bool
+	}{
+		// Protocol fallback turns on for OpenAI/Anthropic wire formats.
+		{"xiaomi", "openai-completions", true},
+		{"volcengine", "openai-completions", true},
+		{"deepseek", "openai-completions", true},
+		{"custom-anything", "anthropic-messages", true},
+		// Other protocols keep the old behaviour.
+		{"volcengine", "ollama-native", false},
+		{"volcengine", "gemini-generate", false},
+		{"volcengine", "", false},
+		// No protocol arg → backwards-compatible single-arg call.
+		{"xiaomi", "", false},
+	}
+	for _, tc := range cases {
+		got := IsToolUseCapable(tc.catalog, tc.proto)
+		if got != tc.want {
+			t.Errorf("IsToolUseCapable(%q, %q) = %v, want %v", tc.catalog, tc.proto, got, tc.want)
+		}
+	}
+}
