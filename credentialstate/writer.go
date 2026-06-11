@@ -191,7 +191,13 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	}
 	switch kind {
 	case errorsx.KindConcurrent:
-		return 15 * time.Second
+		// 5 minutes cooling for concurrent-overload errors. Upstream
+		// concurrency windows (e.g. MiniMax "engine busy") typically
+		// clear on a multi-minute scale; 15s was too short and caused
+		// the same credential to be re-selected and re-fail in tight
+		// loops. Five minutes lets the upstream clear and lets the
+		// executor route to a different candidate.
+		return 5 * time.Minute
 	case errorsx.KindRateLimit:
 		// 15 minutes cooling for rate limit errors (unless upstream provides retry_after)
 		return 900 * time.Second
