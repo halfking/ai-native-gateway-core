@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/identity"
@@ -59,34 +60,72 @@ func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
 
 func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+
+	// ── requestAttempt safety-net: every OpenAI /v1/responses
+	//    request must produce exactly one request_logs row.  See
+	//    ChatHandler.ServeHTTP for the full rationale.
+	var (
+		attemptLoggedFlag   bool
+		attemptKeyInfo     *auth.KeyInfo
+		attemptClientModel string
+		attemptErrCode     string
+		attemptErrMsg      string
+		attemptProviderID  *int
+		attemptCredentialID *int
+	)
+	attemptLogged := &attemptLoggedFlag
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = uuid.NewString()
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	startTime := time.Now()
+	defer func() {
+		if attemptErrCode != "" && !*attemptLogged {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+		}
+	}()
+
 	if r.Method != http.MethodPost {
+		attemptErrCode = "method_not_allowed"
+		attemptErrMsg = "method not allowed"
 		writeResponsesError(w, http.StatusMethodNotAllowed, "Method not allowed", "invalid_request", "method_not_allowed")
 		return
 	}
-
-	requestID := r.Header.Get("X-Request-Id")
 
 	var keyInfo *auth.KeyInfo
 	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
+			attemptErrCode = "missing_key"
+			attemptErrMsg = "missing api key"
 			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
 		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+				attemptErrCode = "invalid_key"
+				attemptErrMsg = "invalid or expired api key"
 				writeResponsesError(w, http.StatusUnauthorized, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
 			}
+			attemptErrCode = "auth_unavailable"
+			attemptErrMsg = "authentication service temporarily unavailable"
 			slog.Warn("responses: key verification RPC failed", "error", verifyErr)
 		} else {
 			keyInfo = ki
+			attemptKeyInfo = ki
 		}
 	}
 
 	if keyInfo != nil && h.chatHandler.rateLimiter != nil && keyInfo.RateLimitRPM != nil && *keyInfo.RateLimitRPM > 0 {
 		if !h.chatHandler.rateLimiter.CheckRPM(keyInfo.ID, *keyInfo.RateLimitRPM) {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}
@@ -94,20 +133,29 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
+		attemptErrCode = "body_read_error"
+		attemptErrMsg = "failed to read request body"
 		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
 		return
 	}
 	if len(bodyBytes) > maxBodySize {
+		attemptErrCode = "body_too_large"
+		attemptErrMsg = "request body too large"
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
 		return
 	}
 
 	var reqBody responsesRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		attemptErrCode = "json_parse_error"
+		attemptErrMsg = "invalid JSON in request body"
 		writeResponsesError(w, http.StatusBadRequest, "Invalid JSON in request body", "invalid_request", "json_parse_error")
 		return
 	}
 	if reqBody.Model == "" {
+		attemptErrCode = "missing_model"
+		attemptErrMsg = "model is required"
+		attemptClientModel = "<unknown>"
 		writeResponsesError(w, http.StatusBadRequest, "model is required", "invalid_request", "missing_model")
 		return
 	}
@@ -115,9 +163,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	chatBody := convertResponsesToChatBody(&reqBody)
 	chatBodyBytes, err := json.Marshal(chatBody)
 	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
 		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
 		return
 	}
+	attemptClientModel = reqBody.Model
 
 	clientModel := reqBody.Model
 	isStream := reqBody.Stream
@@ -145,8 +197,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if candErr != nil || len(candidates) == 0 {
+		attemptErrCode = "no_candidate"
+		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo)
+		*attemptLogged = true
 		writeResponsesError(w, http.StatusServiceUnavailable, fmt.Sprintf("No available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
+	}
+	if len(candidates) > 0 {
+		pid := candidates[0].ProviderID
+		cid := candidates[0].CredentialID
+		attemptProviderID = &pid
+		attemptCredentialID = &cid
 	}
 
 	var modelResolution *resolve.Resolution
@@ -194,6 +258,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if execErr != nil {
+		errCode := "provider_error"
+		errMsg := execErr.Error()
+		if ee, ok := execErr.(*routing.ExecuteError); ok && ee.Exhausted {
+			errCode = "model_not_found"
+			errMsg = "all providers unavailable"
+		}
+		attemptErrCode = errCode
+		attemptErrMsg = errMsg
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo)
+		*attemptLogged = true
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
 			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
 			return
@@ -210,6 +286,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.RequestBody, responseBody)
+	*attemptLogged = true
 }
 
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {

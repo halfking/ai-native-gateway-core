@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
@@ -83,6 +84,11 @@ type ChatHandler struct {
 	keyVerifier     *auth.KeyVerifier
 	rateLimiter     ratelimit.RPMLimiter
 	telemetryClient *telemetry.Client
+	// requestLogHook is an optional test sink.  When set, every
+	// request_logs row the gateway emits is also passed to the hook
+	// function so unit tests can assert on the safety-net coverage.
+	// See SetRequestLogHook.
+	requestLogHook func(*telemetry.RequestLogEntry)
 	sessionGetter   interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
@@ -111,6 +117,20 @@ func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetryClient = tc
 }
 
+// SetRequestLogHook installs an in-memory sink that records every
+// request_logs row the safety-net (or the success path) emits.  It is
+// used by unit tests in this package to assert that every error exit
+// path still produces a row.  Passing nil clears the hook (the
+// default is nil; production callers should never set a hook).
+//
+// The hook is best-effort: if it is set and the entry is nil, the
+// hook does nothing.  Concurrent appends are guarded by a mutex so
+// tests that fire many requests in parallel can inspect the
+// collected slice without racing.
+func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
+	h.requestLogHook = hook
+}
+
 func (h *ChatHandler) SetSessionGetter(sg interface {
 	Get(ctx context.Context, id string) (*sessions.Session, error)
 	Touch(ctx context.Context, id string) error
@@ -120,6 +140,56 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// ── requestAttempt safety-net: every request that reaches this
+	//    handler must produce exactly one request_logs row, regardless
+	//    of which early-return path it takes.  attemptErrCode is
+	//    populated by the inner functions when they exit without
+	//    writing a row themselves; the deferred block at the end
+	//    of this function writes the row using those fields.  The
+	//    *attemptLogged bool is shared with the inner functions via
+	//    pointer so success / explicit-failure paths can mark the
+	//    row as already-written to avoid double-logging.
+	var (
+		attemptLoggedFlag   bool
+		attemptKeyInfo      *auth.KeyInfo
+		attemptClientModel  string
+		attemptErrCode      string
+		attemptErrMsg       string
+		attemptProviderID   *int
+		attemptCredentialID *int
+	)
+	attemptLogged := &attemptLoggedFlag
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = generateRequestID()
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	startTime := time.Now()
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("chat handler panic", "panic", rec, "request_id", requestID)
+			attemptErrCode = "internal_panic"
+			attemptErrMsg = "internal server error"
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
+			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg,
+				int(time.Since(startTime).Milliseconds()),
+				nil, attemptKeyInfo)
+			if !*attemptLogged {
+				writeErrorJSON(w, http.StatusInternalServerError, requestID,
+					"internal server error", "server_error", "internal_panic")
+			}
+		} else if attemptErrCode != "" && !*attemptLogged {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+		}
+	}()
+
 	// GET probe — return 200 for client compatibility checks
 	if r.Method == http.MethodGet {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -128,34 +198,78 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
 	if r.Method != http.MethodPost {
+		attemptErrCode = "method_not_allowed"
+		attemptErrMsg = "method not allowed"
 		http.Error(w, `{"error":{"message":"Method not allowed","type":"invalid_request","code":"method_not_allowed"}}`, http.StatusMethodNotAllowed)
 		return
 	}
 
 	if h.executor != nil && h.provider != nil && h.provider.Enabled() {
-		h.serveWithExecutor(w, r)
+		// serveWithExecutor shares the outer-scope attempt state via
+		// Go's closure capture: any field it writes is visible to the
+		// deferred safety-net below.  attemptLogged is passed as
+		// *bool so the inner function can mark the row as already
+		// written and avoid a duplicate emit.
+		h.serveWithExecutor(w, r, attemptLogged, &attemptKeyInfo, &attemptClientModel,
+			&attemptErrCode, &attemptErrMsg, &attemptProviderID, &attemptCredentialID,
+			requestID, startTime)
 		return
 	}
+	// No executor / provider — record a 503 row so the request still
+	// shows up in the admin request-logs UI.
+	attemptErrCode = "executor_unavailable"
+	attemptErrMsg = "routing executor not available; database connection required"
+	h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+		attemptProviderID, attemptCredentialID,
+		attemptErrCode, attemptErrMsg,
+		int(time.Since(startTime).Milliseconds()),
+		nil, attemptKeyInfo)
+	*attemptLogged = true
 	h.serveFallback(w, r)
 }
 
-func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) {
+// serveWithExecutor is the main chat-completions / completions pipeline.
+// It receives pointers to the safety-net attempt state from ServeHTTP
+// so that any exit path can populate them and the deferred logger in
+// the caller will record exactly one request_logs row.  attemptLogged
+// is set to true by any inner function that has already recorded the
+// row (e.g. via recordFailedRequest or emitTelemetry on the success
+// path) so the deferred safety net does not duplicate it.
+func (h *ChatHandler) serveWithExecutor(
+	w http.ResponseWriter,
+	r *http.Request,
+	attemptLogged *bool,
+	attemptKeyInfo **auth.KeyInfo,
+	attemptClientModel *string,
+	attemptErrCode *string,
+	attemptErrMsg *string,
+	attemptProviderID **int,
+	attemptCredentialID **int,
+	requestID string,
+	startTime time.Time,
+) {
 	defer r.Body.Close()
-	requestID := r.Header.Get("X-Request-Id")
+
+	// Helper to mark this request as already-recorded, so the deferred
+	// safety net in ServeHTTP does not write a duplicate row.
+	markLogged := func() { *attemptLogged = true }
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *auth.KeyInfo
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
+			*attemptErrCode = "missing_key"
+			*attemptErrMsg = "missing api key"
 			writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+				*attemptErrCode = "invalid_key"
+				*attemptErrMsg = "invalid or expired api key"
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
@@ -163,15 +277,20 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 			// Auth RPC failed — fail-closed. Silently downgrading to anonymous would
 			// bypass rate limiting, budget checks, and user isolation.
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
+			*attemptErrCode = "auth_unavailable"
+			*attemptErrMsg = "authentication service temporarily unavailable"
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
 		}
 		keyInfo = ki
+		*attemptKeyInfo = ki
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
+		*attemptErrCode = "key_throttled"
+		*attemptErrMsg = "api key throttled due to anomalous usage"
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -186,6 +305,8 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rpmLimit))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 			w.Header().Set("Retry-After", "60")
+			*attemptErrCode = "rate_limit_exceeded"
+			*attemptErrMsg = "rate limit exceeded"
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
 		}
@@ -195,6 +316,8 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
+				*attemptErrCode = "budget_exhausted"
+				*attemptErrMsg = "budget exhausted"
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
 			}
@@ -215,6 +338,8 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
 			if err == sessions.ErrSessionNotFound {
+				*attemptErrCode = "session_invalid"
+				*attemptErrMsg = "invalid session id"
 				writeErrorJSON(w, http.StatusBadRequest, requestID, "invalid session", "session_error", "SESSION_INVALID")
 				return
 			}
@@ -222,6 +347,8 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		} else {
 			sessionInfo = si
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
+				*attemptErrCode = "session_forbidden"
+				*attemptErrMsg = "session not owned by this api key"
 				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 				return
 			}
@@ -238,20 +365,26 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
+		*attemptErrCode = "body_read_error"
+		*attemptErrMsg = "failed to read request body"
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "failed to read request body", "type": "invalid_request", "code": "body_read_error"},
 		})
 		return
 	}
 	if len(bodyBytes) > maxBodySize {
+		*attemptErrCode = "body_too_large"
+		*attemptErrMsg = "request body exceeds 32 MiB limit"
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
-			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too_large"},
+			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
 		})
 		return
 	}
 
 	var reqBody chatRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		*attemptErrCode = "json_parse_error"
+		*attemptErrMsg = "invalid JSON in request body"
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "invalid JSON in request body", "type": "invalid_request", "code": "json_parse_error"},
 		})
@@ -259,11 +392,15 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	}
 
 	clientModel := reqBody.Model
+	*attemptClientModel = clientModel
 	isStream := reqBody.Stream
 	endUser := resolveEndUser(reqBody.User, r)
 	clientID := identity.BuildIdentityFromRequest(r, "default", nil, nil, "")
 	identityHash := clientID.ShortID()
-	startTime := time.Now()
+	// startTime is the outer-watcher time; executor tracks per-candidate
+	// latency internally.  We re-use the safety-net's startTime (the
+	// one from the function parameter) for the audit latency.
+	_ = startTime
 
 	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).
@@ -287,19 +424,30 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		slog.Error("failed to get candidates from provider", "error", err)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
+		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
 	}
 	if len(candidates) == 0 {
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		h.recordFailedRequest(requestID, clientModel, "", nil, nil, "no_candidate",
+		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
+	}
+	if len(candidates) > 0 {
+		// Stash the first candidate so the safety net can attribute
+		// the failure to a specific provider / credential when the
+		// executor itself fails.
+		pid := candidates[0].ProviderID
+		cid := candidates[0].CredentialID
+		*attemptProviderID = &pid
+		*attemptCredentialID = &cid
 	}
 
 	var modelResolution *resolve.Resolution
@@ -381,26 +529,29 @@ func (h *ChatHandler) serveWithExecutor(w http.ResponseWriter, r *http.Request) 
 		errCode := "provider_error"
 		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok && execErrTyped.Exhausted {
 			errCode = "model_not_found"
-			h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
+			h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
 				"model_not_found",
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				int(time.Since(startTime).Milliseconds()), bodyBytes)
+				int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
+			markLogged()
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				"server_error", "model_not_found")
 			return
 		}
-		h.recordFailedRequest(requestID, clientModel, explicitOutbound, providerID, credentialID,
+		h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
 			"provider_error", execErr.Error(),
-			int(time.Since(startTime).Milliseconds()), bodyBytes)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
+		markLogged()
 		writeErrorJSON(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error")
 		return
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody)
+	markLogged()
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transform.TransformResult, requestBody []byte, responseBody []byte) {
@@ -674,21 +825,48 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 
 	h.telemetryClient.EmitRequestLog(reqLog)
+	if h.requestLogHook != nil {
+		h.requestLogHook(reqLog)
+	}
 }
 
+// recordFailedRequest writes a request_logs row for any non-success
+// request exit (auth, rate-limit, budget, validation, candidate,
+// executor, panic, …).  It is the safety net that guarantees
+// every request that reaches any of the three handlers
+// (chat completions, anthropic messages, openai responses) shows
+// up in the admin request-logs UI, even when the request never
+// makes it as far as the routing executor.
+//
+// Callers may set keyInfo to attach api_key_id / tenant_id; the
+// rest of the row is filled in from the supplied error metadata.
+// The caller is expected to call EmitRequestLog exactly once;
+// recordFailedRequest never duplicates the entry.
 func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) {
-	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
-		return
-	}
+	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil)
+}
+
+// recordFailedRequestWithKey is the full-fat version.  When keyInfo is
+// non-nil we attach api_key_id + tenant_id so the row is queryable
+// from the admin UI in the same way as success rows.
+func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo) {
 	var requestBodyText *string
 	if len(requestBody) > 0 {
 		v := string(requestBody)
 		requestBodyText = &v
 	}
 	latency := latencyMs
+	tenantID := "default"
+	var apiKeyID *int
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+		kid := keyInfo.ID
+		apiKeyID = &kid
+	}
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:     requestID,
-		TenantID:      "default",
+		TenantID:      tenantID,
+		APIKeyID:      apiKeyID,
 		ClientModel:   strPtr(clientModel),
 		OutboundModel: strPtr(outboundModel),
 		ProviderID:    providerID,
@@ -697,6 +875,15 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 		Success:       false,
 		ErrorKind:     strPtr(errCode),
 		RequestBody:   requestBodyText,
+	}
+	// Test hook fires regardless of whether the production telemetry
+	// sink is configured, so unit tests can assert the safety net
+	// without standing up a database.
+	if h.requestLogHook != nil {
+		h.requestLogHook(reqLog)
+	}
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
 	}
 	h.telemetryClient.EmitRequestLog(reqLog)
 }
@@ -1096,6 +1283,13 @@ func canonicalOrClient(canonical, client string) string {
 		return canonical
 	}
 	return client
+}
+
+// generateRequestID returns a stable per-request UUID used both as the
+// X-Request-Id response header and as the request_logs row's request_id
+// column.  Always non-empty so the safety-net logger can find a row.
+func generateRequestID() string {
+	return uuid.NewString()
 }
 
 func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
