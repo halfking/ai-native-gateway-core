@@ -219,7 +219,7 @@ async function delCred(c: ProviderCredential) {
 
     <!-- Add Credential Modal -->
     <div class="modal-overlay" v-if="showAddCred" @click.self="showAddCred = false">
-      <div class="modal" style="max-width:400px">
+      <div class="modal" style="max-width:400px" @click.stop>
         <h3>添加凭据 — {{ provider?.display_name }}</h3>
         <div v-if="addCredErr" class="alert alert-danger">{{ addCredErr }}</div>
         <div class="form-group">

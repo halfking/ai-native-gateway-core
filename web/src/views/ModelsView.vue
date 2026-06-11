@@ -631,13 +631,13 @@ onMounted(async () => {
     </div>
 
     <!-- 模型详情弹层 -->
-    <div v-if="detail" class="modal-overlay" @click.self="detail = null">
-      <div class="modal-content detail-modal">
-        <div class="modal-header">
+    <div v-if="detail" class="drawer-backdrop" @click="detail = null">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
           <h3>{{ detail.canonical_name }}</h3>
           <button class="btn btn-ghost btn-sm" @click="detail = null">关闭</button>
         </div>
-        <div class="modal-body">
+        <div class="drawer-body">
           <div v-if="detailLoading" class="muted">加载中…</div>
 
           <!-- 基础信息 -->
@@ -812,7 +812,7 @@ onMounted(async () => {
 
     <!-- 新增模型弹层 -->
     <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
-      <div class="modal-content create-modal">
+      <div class="modal-content create-modal" @click.stop>
         <div class="modal-header">
           <h3>新增模型</h3>
           <button class="btn btn-ghost btn-sm" @click="showCreateModal = false">关闭</button>
@@ -1013,7 +1013,49 @@ onMounted(async () => {
 .discovery-card { margin-bottom: 12px; }
 .summary-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 
-/* 弹层样式 */
+.drawer-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.drawer-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 680px;
+  max-width: 90vw;
+  border-radius: 0;
+  overflow-y: auto;
+  z-index: 1001;
+}
+
+.drawer-panel-wide {
+  width: 860px;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.drawer-body {
+  padding: 24px;
+}
+
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -1029,7 +1071,7 @@ onMounted(async () => {
   overflow-y: auto;
 }
 
-.modal-content {
+.create-modal {
   background: var(--bg);
   border-radius: 12px;
   width: 100%;
@@ -1198,7 +1240,9 @@ onMounted(async () => {
 @media (max-width: 900px) {
   .form-grid, .alias-add { grid-template-columns: 1fr; }
   .span-2 { grid-column: span 1; }
-  .modal-content { margin: 20px; }
+  .create-modal { margin: 20px; }
+  .drawer-panel { width: 95vw; }
+  .drawer-panel-wide { width: 95vw; }
   .filter-card .card-header { align-items: flex-start; }
   .filter-heading { width: 100%; }
   .filter-header-actions { width: 100%; justify-content: flex-start; }

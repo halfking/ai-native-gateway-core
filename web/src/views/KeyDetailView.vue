@@ -264,7 +264,7 @@ watch(keyId, async () => {
 
         <!-- Limit editor modal -->
         <div v-if="showLimitsEditor" class="modal-overlay" @click.self="showLimitsEditor = false">
-          <div class="modal" style="max-width:450px">
+          <div class="modal" style="max-width:450px" @click.stop>
             <h3>编辑速率限制</h3>
             <div v-if="limitsErr" class="alert alert-danger">{{ limitsErr }}</div>
             <div v-if="limitsSuccess" class="alert alert-success">{{ limitsSuccess }}</div>

@@ -184,17 +184,17 @@ onUnmounted(() => {
 
     <!-- Row detail modal -->
     <Teleport to="body">
-      <div v-if="selectedRow" class="detail-overlay" @click.self="closeDetail">
-        <div class="detail-panel">
-          <div class="detail-header">
+      <div v-if="selectedRow" class="drawer-backdrop" @click="closeDetail">
+        <div class="drawer-panel card" @click.stop>
+          <div class="drawer-header">
             <span style="font-size:14px;font-weight:600">决策详情</span>
             <button class="btn btn-ghost btn-sm" @click="closeDetail">✕ 关闭</button>
           </div>
           <div class="detail-body">
 
             <!-- Basic -->
-            <div class="detail-section">
-              <div class="detail-section-title">基本信息</div>
+            <div class="drawer-section">
+              <div class="drawer-section-title">基本信息</div>
               <div class="detail-grid">
                 <span class="dk">时间</span><span class="dv">{{ selectedRow.ts }}</span>
                 <span class="dk">Request ID</span><span class="dv mono">{{ selectedRow.request_id }}</span>
@@ -216,8 +216,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Resolution -->
-            <div class="detail-section">
-              <div class="detail-section-title">模型解析</div>
+            <div class="drawer-section">
+              <div class="drawer-section-title">模型解析</div>
               <div class="detail-grid">
                 <span class="dk">Resolution Path</span><span class="dv mono">{{ selectedRow.resolution_path ?? '—' }}</span>
                 <span class="dk">Canonical Model</span><span class="dv mono">{{ selectedRow.canonical_model ?? '—' }}</span>
@@ -229,8 +229,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Routing -->
-            <div class="detail-section">
-              <div class="detail-section-title">路由决策</div>
+            <div class="drawer-section">
+              <div class="drawer-section-title">路由决策</div>
               <div class="detail-grid">
                 <span class="dk">供应商 ID</span><span class="dv">{{ selectedRow.chosen_provider_id ?? '—' }}</span>
                 <span class="dk">凭据 ID</span><span class="dv">{{ selectedRow.chosen_credential_id ?? '—' }}</span>
@@ -240,8 +240,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Tokens & Cost -->
-            <div class="detail-section">
-              <div class="detail-section-title">Token 与费用</div>
+            <div class="drawer-section">
+              <div class="drawer-section-title">Token 与费用</div>
               <div class="detail-grid">
                 <span class="dk">Prompt Tokens</span><span class="dv">{{ selectedRow.prompt_tokens ?? '—' }}</span>
                 <span class="dk">Completion Tokens</span><span class="dv">{{ selectedRow.completion_tokens ?? '—' }}</span>
@@ -253,8 +253,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Error -->
-            <div v-if="!selectedRow.success" class="detail-section">
-              <div class="detail-section-title" style="color:var(--danger)">错误信息</div>
+            <div v-if="!selectedRow.success" class="drawer-section">
+              <div class="drawer-section-title" style="color:var(--danger)">错误信息</div>
               <div class="detail-grid">
                 <span class="dk">Error Class</span><span class="dv" style="color:var(--danger)">{{ selectedRow.error_class ?? '—' }}</span>
                 <span class="dk">Failure Stage</span><span class="dv">{{ selectedRow.failure_stage ?? '—' }}</span>
@@ -263,8 +263,8 @@ onUnmounted(() => {
             </div>
 
             <!-- Decision Trace -->
-            <div class="detail-section">
-              <div class="detail-section-title">Decision Trace</div>
+            <div class="drawer-section">
+              <div class="drawer-section-title">Decision Trace</div>
               <pre class="trace-json">{{ JSON.stringify(selectedRow.decision_trace, null, 2) }}</pre>
             </div>
 
@@ -304,32 +304,6 @@ onUnmounted(() => {
 .row-clickable { cursor: pointer; }
 .row-clickable:hover td { background: rgba(var(--accent-rgb, 99,102,241), .06); }
 
-/* Detail Modal */
-.detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, .5);
-  z-index: 1000;
-  display: flex;
-  justify-content: flex-end;
-}
-.detail-panel {
-  width: min(600px, 95vw);
-  height: 100vh;
-  background: var(--bg-card, #1e1e2e);
-  display: flex;
-  flex-direction: column;
-  box-shadow: -4px 0 24px rgba(0, 0, 0, .4);
-  overflow: hidden;
-}
-.detail-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
 .detail-body {
   flex: 1;
   overflow-y: auto;
@@ -338,12 +312,12 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 20px;
 }
-.detail-section {
+.drawer-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.detail-section-title {
+.drawer-section-title {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: .06em;

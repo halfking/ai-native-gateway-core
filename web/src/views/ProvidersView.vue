@@ -693,7 +693,7 @@ onUnmounted(() => {
 
     <!-- ── Add Provider Modal ─────────────────────────────────────────────── -->
     <div class="modal-overlay" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal" style="max-width:500px">
+      <div class="modal" style="max-width:500px" @click.stop>
         <h3>添加提供商</h3>
         <div v-if="addErr" class="alert alert-danger">{{ addErr }}</div>
 
@@ -765,7 +765,7 @@ onUnmounted(() => {
 
     <!-- ── Edit Provider Modal ───────────────────────────────────────────── -->
     <div class="modal-overlay" v-if="showEdit" @click.self="showEdit = false">
-      <div class="modal" style="max-width:500px">
+      <div class="modal" style="max-width:500px" @click.stop>
         <h3>编辑提供商 — {{ editProvider?.display_name }}</h3>
         <div v-if="editErr" class="alert alert-danger">{{ editErr }}</div>
         <div class="form-group">
@@ -811,8 +811,8 @@ onUnmounted(() => {
     </div>
 
     <!-- ── Manage Credentials Modal ───────────────────────────────────────── -->
-    <div class="modal-overlay" v-if="showManageCred && manageProvider" @click.self="closeManageCred">
-      <div class="modal modal-wide" @click.stop>
+    <div class="drawer-backdrop" v-if="showManageCred && manageProvider" @click="closeManageCred">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="credential-toolbar">
           <div>
             <h3 style="margin:0">管理凭据 — {{ manageProvider.display_name }}</h3>
@@ -924,8 +924,8 @@ onUnmounted(() => {
     </div>
 
     <!-- ── Diagnose Modal ───────────────────────────────────────────────── -->
-    <div class="modal-overlay modal-overlay-stacked" v-if="diagnoseProviderId !== null" @click.self="closeDiagnose">
-      <div class="modal modal-wide">
+    <div class="drawer-backdrop" style="z-index:110" v-if="diagnoseProviderId !== null" @click="closeDiagnose">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <h3>供应商诊断 — 实际请求/响应抓包 <span class="muted" style="font-size:12px">(凭据已脱敏)</span></h3>
         <div v-if="diagnoseLoading" class="muted">诊断中…</div>
         <div v-else-if="diagnoseError" class="alert alert-danger">{{ diagnoseError }}</div>
@@ -1033,8 +1033,8 @@ onUnmounted(() => {
     </div>
 
     <!-- ── Add Credential Modal ──────────────────────────────────────────── -->
-    <div class="modal-overlay modal-overlay-stacked" v-if="showCred" @click.self="showCred = false">
-      <div class="modal">
+    <div class="modal-overlay" style="z-index:110" v-if="showCred" @click.self="showCred = false">
+      <div class="modal" @click.stop>
         <h3>添加凭据 — {{ credProvider?.display_name }}</h3>
         <div v-if="credErr" class="alert alert-danger">{{ credErr }}</div>
         <div class="form-group">
@@ -1134,17 +1134,6 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.modal-wide {
-  max-width: min(1200px, 92vw);
-  width: 100%;
-  max-height: 88vh;
-  display: flex;
-  flex-direction: column;
-  padding: 20px 24px;
-}
-.modal-overlay-stacked {
-  z-index: 110;
-}
 .credential-toolbar {
   display: flex;
   justify-content: space-between;

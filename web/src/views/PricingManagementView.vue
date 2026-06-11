@@ -298,7 +298,7 @@
 
     <!-- Import Modal -->
     <div v-if="showImport" class="modal-overlay" @click.self="showImport = false">
-      <div class="modal">
+      <div class="modal" @click.stop>
         <h3>Import Pricing CSV</h3>
         <p>CSV columns: offer_id, unit_price_in_per_1m, unit_price_out_per_1m, currency, billing_mode</p>
         <input type="file" accept=".csv" @change="onFileChange" />
@@ -314,7 +314,7 @@
 
     <!-- Auto Inherit Modal -->
     <div v-if="showInheritPreview" class="modal-overlay" @click.self="showInheritPreview = false">
-      <div class="modal">
+      <div class="modal" @click.stop>
         <h3>Auto Inherit Pricing</h3>
         <p>{{ inheritPreview.would_inherit }} offers will inherit pricing from same provider+model.</p>
         <div class="inherit-details" v-if="inheritPreview.details">
@@ -855,8 +855,7 @@ onMounted(fetchData)
 .btn-xs { padding: 2px 6px; font-size: 11px; }
 
 /* Modals */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { background: #1e1e2e; border: 1px solid #444; border-radius: 8px; padding: 24px; width: 480px; max-height: 80vh; overflow-y: auto; }
+
 .modal h3 { margin-top: 0; color: #fff; }
 .inherit-details { max-height: 300px; overflow-y: auto; margin: 12px 0; }
 .inherit-row { padding: 4px 0; font-size: 13px; color: #888; }
