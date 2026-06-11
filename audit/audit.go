@@ -189,9 +189,9 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 	// first because reasoning models emit it before the final answer.
 	reasoning := extractDeltaReasoningText(payload)
 	if reasoning != "" {
-		sc.appendText("[reasoning]\n")
+		sc.appendText("<reasoning>\n")
 		sc.appendText(reasoning)
-		sc.appendText("\n[/reasoning]\n")
+		sc.appendText("\n</reasoning>\n")
 	}
 	text := extractDeltaText(payload)
 	if text != "" {
