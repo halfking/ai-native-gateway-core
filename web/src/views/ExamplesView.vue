@@ -400,41 +400,6 @@ const exampleTitle: Record<ExampleId, string> = {
   overflow: auto;
 }
 
-.drawer-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.4);
-  z-index: 100;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.drawer-panel {
-  width: 520px;
-  max-width: 90vw;
-  height: 100vh;
-  overflow-y: auto;
-  border-radius: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 20px;
-  animation: slide-in 0.2s ease-out;
-}
-
-@keyframes slide-in {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
-
-.drawer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
 .drawer-loading {
   display: flex;
   align-items: center;
@@ -473,17 +438,5 @@ const exampleTitle: Record<ExampleId, string> = {
 
 .meta-label {
   color: var(--muted);
-}
-
-.drawer-section {
-  margin-bottom: 16px;
-}
-
-.section-title {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 8px;
 }
 </style>

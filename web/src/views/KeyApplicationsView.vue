@@ -239,10 +239,10 @@ onMounted(load)
     <!-- Review modal -->
     <div
       v-if="reviewing"
-      style="position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100"
+      class="modal-overlay"
       @click.self="closeReview"
     >
-      <div class="card" style="width:480px;padding:24px">
+      <div class="card" style="width:480px;padding:24px" @click.stop>
         <h3 style="margin:0 0 16px">
           {{ reviewAction === 'approve' ? '✅ 通过申请' : '❌ 拒绝申请' }}
         </h3>
