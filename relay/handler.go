@@ -166,6 +166,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	startTime := time.Now()
 	defer func() {
+		slog.Info("safety_net_defer_fired",
+			"request_id", requestID,
+			"attempt_err_code", attemptErrCode,
+			"attempt_logged", *attemptLogged)
 		if rec := recover(); rec != nil {
 			slog.Error("chat handler panic", "panic", rec, "request_id", requestID)
 			attemptErrCode = "internal_panic"
@@ -183,6 +187,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"internal server error", "server_error", "internal_panic")
 			}
 		} else if attemptErrCode != "" && !*attemptLogged {
+			slog.Info("safety_net: recording failed request",
+				"request_id", requestID,
+				"error_kind", attemptErrCode,
+				"client_model", attemptClientModel)
 			latency := int(time.Since(startTime).Milliseconds())
 			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
