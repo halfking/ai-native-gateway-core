@@ -538,7 +538,7 @@ onBeforeUnmount(() => {
 
     <!-- Edit Key Modal -->
     <div v-if="profileEdit" class="modal-overlay" @click.self="profileEdit = null">
-      <div class="modal card" style="max-width:420px">
+      <div class="modal card" style="max-width:420px" @click.stop>
         <h3>编辑 Key #{{ profileEdit.keyId }}</h3>
         <div class="form-group">
           <label>Client Profile</label>
@@ -566,7 +566,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="modal-overlay" v-if="showNew" @click.self="() => { if (!createdKey) showNew = false }">
-      <div class="modal">
+      <div class="modal" @click.stop>
         <h3>签发新密钥</h3>
 
         <!-- Show created key with copy button -->
@@ -626,7 +626,7 @@ onBeforeUnmount(() => {
 
     <!-- Default Limits Config Modal -->
     <div class="modal-overlay" v-if="showDefaultLimits" @click.self="showDefaultLimits = false">
-      <div class="modal" style="max-width:440px">
+      <div class="modal" style="max-width:440px" @click.stop>
         <h3>默认速率限制配置</h3>
         <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
           当密钥未设置自定义限制时，将使用以下默认值。

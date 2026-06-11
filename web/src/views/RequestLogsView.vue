@@ -340,9 +340,9 @@ onMounted(async () => {
     </div>
 
     <!-- Detail Modal -->
-    <div v-if="detailVisible" class="modal-overlay" @click.self="closeDetail">
-      <div class="modal-content" style="max-width:900px;max-height:85vh;display:flex;flex-direction:column">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+    <div v-if="detailVisible" class="drawer-backdrop" @click="closeDetail">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
           <h3 style="margin:0">请求详情</h3>
           <button class="btn btn-sm" @click="closeDetail">关闭</button>
         </div>
@@ -350,23 +350,27 @@ onMounted(async () => {
         <div v-if="detailLoading" style="text-align:center;padding:40px">加载中…</div>
 
         <template v-else-if="detail">
-          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px">
-            <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
-            <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
-            <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
-            <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
-            <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
-            <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : (detail.error_kind ?? '失败') }}</span></span>
-            <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
-            <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
+          <div class="drawer-section">
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px">
+              <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
+              <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
+              <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
+              <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
+              <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
+              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : (detail.error_kind ?? '失败') }}</span></span>
+              <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
+              <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
+            </div>
           </div>
 
-          <div style="display:flex;gap:8px;margin-bottom:12px">
-            <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'request' }" @click="detailTab = 'request'">请求消息</button>
-            <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
+          <div class="drawer-section">
+            <div style="display:flex;gap:8px;margin-bottom:12px">
+              <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'request' }" @click="detailTab = 'request'">请求消息</button>
+              <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
+            </div>
           </div>
 
-          <div style="flex:1;overflow:auto;border:1px solid var(--border, #333);border-radius:6px;padding:12px;background:var(--surface-secondary, #1a1a2e);font-size:12px">
+          <div class="drawer-section" style="flex:1;overflow:auto;border:1px solid var(--border, #333);border-radius:6px;padding:12px;background:var(--surface-secondary, #1a1a2e);font-size:12px">
             <template v-if="detailTab === 'request'">
               <template v-if="extractMessagesFromBody(detail.request_body).length">
                 <div v-for="(msg, i) in extractMessagesFromBody(detail.request_body)" :key="i" style="margin-bottom:12px">
@@ -440,24 +444,5 @@ onMounted(async () => {
   background: var(--accent, #6366f1);
   border-color: var(--accent, #6366f1);
   color: #fff;
-}
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-.modal-content {
-  background: var(--surface-primary, #16213e);
-  border-radius: 8px;
-  padding: 20px;
-  width: 90%;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 </style>
