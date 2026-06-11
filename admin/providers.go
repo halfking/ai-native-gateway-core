@@ -138,24 +138,11 @@ func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool,
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
 	}
-	modelsURL := urlutil.CleanBaseURL(baseURL) + "/v1/models"
-	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
+	result, err := doProbeRequest(ctx, urlutil.ModelsURLCandidates(baseURL), apiKey)
 	if err != nil {
 		return false, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return true, nil
-	}
-	return false, fmt.Errorf("status %d", resp.StatusCode)
+	return result.statusCode == http.StatusOK, nil
 }
 
 func (h *Handler) handleProvidersRoot(w http.ResponseWriter, r *http.Request) {
@@ -1449,15 +1436,10 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		cleanURL := urlutil.CleanBaseURL(baseURL)
-		template := h.fetchModelsEndpointTemplate(ctx, providerID)
-		modelsURL := urlutil.BuildModelsURL(baseURL, template)
-		if modelsURL == "" {
-			modelsURL = cleanURL + "/v1/models"
-		}
+		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
 
 		start := time.Now()
-		modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
+		modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
 		modelsLatency := int(time.Since(start).Milliseconds())
 		totalLatencyMs += modelsLatency
 		latencyCount++
@@ -1487,7 +1469,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			testModel = "gpt-4o-mini"
 		}
 
-		chatURL := cleanURL + "/v1/chat/completions"
+		chatURL := urlutil.ChatCompletionsURL(baseURL)
 		start = time.Now()
 		chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
 		chatLatency := int(time.Since(start).Milliseconds())
@@ -1737,14 +1719,9 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			cleanURL := urlutil.CleanBaseURL(baseURL)
-			template := h.fetchModelsEndpointTemplate(ctx, providerID)
-			modelsURL := urlutil.BuildModelsURL(baseURL, template)
-			if modelsURL == "" {
-				modelsURL = cleanURL + "/v1/models"
-			}
+			modelsURLs := urlutil.ModelsURLCandidates(baseURL)
 			start := time.Now()
-			modelsResp, modelsErr := doProbeRequest(ctx, modelsURL, apiKey)
+			modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
 			modelsLatency := int(time.Since(start).Milliseconds())
 			totalLatencyMs += modelsLatency
 			latencyCount++
@@ -1759,7 +1736,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			h.db.QueryRow(ctx, `SELECT mo.raw_model_name FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE c.provider_id = $1 AND mo.available = TRUE LIMIT 1`, providerID).Scan(&testModel)
 			if testModel == "" { testModel = "gpt-4o-mini" }
 
-			chatURL := cleanURL + "/v1/chat/completions"
+			chatURL := urlutil.ChatCompletionsURL(baseURL)
 			start = time.Now()
 			chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
 			chatLatency := int(time.Since(start).Milliseconds())
@@ -1837,66 +1814,103 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	}
 }
 
-// fetchModelsEndpointTemplate returns the catalog-supplied models-endpoint
-// template for the given provider, joined via providers.catalog_code. Returns
-// "" if the provider has no catalog row, no template, or the lookup fails.
-// Callers should pass the result to urlutil.BuildModelsURL; an empty string
-// signals "manifest-only, skip API probing".
-func (h *Handler) fetchModelsEndpointTemplate(ctx context.Context, providerID int) string {
-	var tmpl *string
-	if err := h.db.QueryRow(ctx, `
-		SELECT pc.models_endpoint_template
-		FROM providers p
-		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code,''), p.code)
-		WHERE p.id = $1
-	`, providerID).Scan(&tmpl); err != nil || tmpl == nil {
-		return ""
-	}
-	return *tmpl
-}
-
 type probeResult struct {
 	statusCode   int
 	modelCount   int
 	sampleModels []string
+	authOK       bool   // whether the credential is authoritative for this base
+	probeURL     string // which URL candidate succeeded
 }
 
-func doProbeRequest(ctx context.Context, url, apiKey string) (*probeResult, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+// isAcceptableStatus mirrors the Python probe loop: 200/401/403 indicate
+// the endpoint exists and responds. 401/403 are accepted (auth needed);
+// the caller's apiKey presence determines whether that means "ok".
+func isAcceptableStatus(code int) bool {
+	return code == http.StatusOK || code == http.StatusUnauthorized || code == http.StatusForbidden
+}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+// doProbeRequest tries each candidate URL in turn and returns the first
+// one whose response is 200/401/403. Mirrors free_pool_probe.probe_openai_compatible_base
+// in the Python llm-gateway. Returns the last transport error if all
+// candidates fail.
+//
+// authOK semantics:
+//   - response 200 + non-empty apiKey         → true
+//   - response 200 + empty apiKey              → true  (endpoint reachable, no auth challenge)
+//   - response 401/403 + non-empty apiKey     → false (endpoint exists, but credential rejected)
+//   - response 401/403 + empty apiKey         → true  (endpoint exists, requires auth)
+func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeResult, error) {
+	var lastErr error
+	hasKey := strings.TrimSpace(apiKey) != ""
 
-	body, _ := io.ReadAll(resp.Body)
-	result := &probeResult{statusCode: resp.StatusCode}
-
-	if resp.StatusCode == http.StatusOK {
-		var modelsResp struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
+	for _, u := range urls {
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-		if json.Unmarshal(body, &modelsResp) == nil {
-			result.modelCount = len(modelsResp.Data)
-			limit := 3
-			if len(modelsResp.Data) < limit {
-				limit = len(modelsResp.Data)
+		if hasKey {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+
+		if !isAcceptableStatus(resp.StatusCode) {
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			continue
+		}
+
+		result := &probeResult{
+			statusCode: resp.StatusCode,
+			probeURL:   u,
+		}
+		if resp.StatusCode == http.StatusOK {
+			// Parse models list (tolerate alternative shapes like {models:[...]})
+			var modelsResp struct {
+				Data   []map[string]any `json:"data"`
+				Models []map[string]any `json:"models"`
 			}
-			for i := 0; i < limit; i++ {
-				result.sampleModels = append(result.sampleModels, modelsResp.Data[i].ID)
+			if json.Unmarshal(body, &modelsResp) == nil {
+				rows := modelsResp.Data
+				if len(rows) == 0 {
+					rows = modelsResp.Models
+				}
+				result.modelCount = len(rows)
+				limit := 3
+				if len(rows) < limit {
+					limit = len(rows)
+				}
+				for i := 0; i < limit; i++ {
+					if id, ok := rows[i]["id"].(string); ok {
+						result.sampleModels = append(result.sampleModels, id)
+					} else if name, ok := rows[i]["name"].(string); ok {
+						result.sampleModels = append(result.sampleModels, name)
+					}
+				}
 			}
 		}
-	}
 
-	return result, nil
+		// authOK
+		switch resp.StatusCode {
+		case http.StatusOK:
+			result.authOK = true
+		case http.StatusUnauthorized, http.StatusForbidden:
+			result.authOK = !hasKey // requires auth but no key supplied = expected
+		}
+		return result, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no candidate URLs")
+	}
+	return nil, lastErr
 }
 
 type chatResult struct {
@@ -2083,22 +2097,25 @@ func (h *Handler) runHealthCheck(providerID, credID int, taskID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := h.doHealthCheck(ctx, providerID, credID)
-	if result == nil {
-		failBackgroundTask(ctx, h.db, taskID, "health check failed")
+	result, err := h.doHealthCheck(ctx, providerID, credID)
+	if err != nil {
+		slog.Error("health check failed", "provider_id", providerID, "credential_id", credID, "error", err)
+		failBackgroundTask(ctx, h.db, taskID, "health check failed: "+err.Error())
 		return
 	}
 	completeBackgroundTask(ctx, h.db, taskID, result)
 }
 
-func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map[string]any {
+func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (map[string]any, error) {
 	var label, ciphertext, baseURL string
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(c.label,''), c.secret_ciphertext, COALESCE(p.base_url,'')
 		FROM credentials c JOIN providers p ON p.id = c.provider_id
 		WHERE c.id = $1 AND c.provider_id = $2
 	`, credID, providerID).Scan(&label, &ciphertext, &baseURL)
-	if err != nil { return nil }
+	if err != nil {
+		return nil, fmt.Errorf("query credential: %w", err)
+	}
 
 	apiKey, decErr := h.decryptCredStr(ciphertext)
 	probeOk := false
@@ -2111,28 +2128,31 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		template := h.fetchModelsEndpointTemplate(ctx, providerID)
-		modelsURL := urlutil.BuildModelsURL(baseURL, template)
-		if modelsURL == "" {
+		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+		start := time.Now()
+		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
+		healthLatencyMs = int(time.Since(start).Milliseconds())
+		if probeErr != nil {
+			healthStatus = "unreachable"
+			healthError = probeErr.Error()
+		} else if result.statusCode == http.StatusOK {
 			healthStatus = "healthy"
-			healthError = "manifest-only, skipped probe"
-			healthLatencyMs = 0
-		} else {
-			start := time.Now()
-			result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
-			healthLatencyMs = int(time.Since(start).Milliseconds())
-			if probeErr != nil {
-				healthStatus = "unreachable"
-				healthError = probeErr.Error()
-			} else if result.statusCode != 200 {
+			probeOk = true
+			modelsCount = result.modelCount
+			sampleModels = result.sampleModels
+		} else if result.statusCode == http.StatusUnauthorized || result.statusCode == http.StatusForbidden {
+			// 401/403: endpoint exists. With a key it's an auth failure; without
+			// a key it just means auth is required (endpoint is reachable).
+			if strings.TrimSpace(apiKey) != "" {
 				healthStatus = "unhealthy"
-				healthError = fmt.Sprintf("status %d", result.statusCode)
+				healthError = fmt.Sprintf("status %d (auth rejected)", result.statusCode)
 			} else {
 				healthStatus = "healthy"
-				probeOk = true
-				modelsCount = result.modelCount
-				sampleModels = result.sampleModels
+				healthError = fmt.Sprintf("status %d (auth required)", result.statusCode)
 			}
+		} else {
+			healthStatus = "unhealthy"
+			healthError = fmt.Sprintf("status %d", result.statusCode)
 		}
 	}
 
@@ -2147,7 +2167,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) map
 		"credential_id": credID, "health_status": healthStatus, "probe_ok": probeOk,
 		"health_latency_ms": healthLatencyMs, "health_error": healthError,
 		"models_count": modelsCount, "sample_models": sampleModels,
-	}
+	}, nil
 }
 
 func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
@@ -2177,29 +2197,30 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		template := h.fetchModelsEndpointTemplate(ctx, providerID)
-		modelsURL := urlutil.BuildModelsURL(baseURL, template)
-		if modelsURL == "" {
-			healthStatus = "healthy"
-			healthError = "manifest-only, skipped probe"
-			healthLatencyMs = 0
-		} else {
-			start := time.Now()
-			result, probeErr := doProbeRequest(ctx, modelsURL, apiKey)
-			healthLatencyMs = int(time.Since(start).Milliseconds())
+		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+		start := time.Now()
+		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
+		healthLatencyMs = int(time.Since(start).Milliseconds())
 
-			if probeErr != nil {
-				healthStatus = "unreachable"
-				healthError = probeErr.Error()
-			} else if result.statusCode != 200 {
+		if probeErr != nil {
+			healthStatus = "unreachable"
+			healthError = probeErr.Error()
+		} else if result.statusCode == http.StatusOK {
+			healthStatus = "healthy"
+			probeOk = true
+			modelsCount = result.modelCount
+			sampleModels = result.sampleModels
+		} else if result.statusCode == http.StatusUnauthorized || result.statusCode == http.StatusForbidden {
+			if strings.TrimSpace(apiKey) != "" {
 				healthStatus = "unhealthy"
-				healthError = fmt.Sprintf("status %d", result.statusCode)
+				healthError = fmt.Sprintf("status %d (auth rejected)", result.statusCode)
 			} else {
 				healthStatus = "healthy"
-				probeOk = true
-				modelsCount = result.modelCount
-				sampleModels = result.sampleModels
+				healthError = fmt.Sprintf("status %d (auth required)", result.statusCode)
 			}
+		} else {
+			healthStatus = "unhealthy"
+			healthError = fmt.Sprintf("status %d", result.statusCode)
 		}
 	}
 
