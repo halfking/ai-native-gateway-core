@@ -11,6 +11,18 @@ import (
 var (
 	xmlToolCallRE = regexp.MustCompile(`(?s)<tool_call>\s*<function=([A-Za-z_][\w.-]*)>(.*?)</function>\s*</tool_call>`)
 	xmlParamRE    = regexp.MustCompile(`(?s)<parameter=([A-Za-z_][\w.-]*)>(.*?)</parameter>`)
+
+	// minimaxStyleRE matches the MiniMax M2.7 tool-call XML shape:
+	//   <minimax:tool_call>
+	//   <invoke name="func">
+	//   <parameter name="arg">value</parameter>
+	//   </invoke>
+	//   </minimax:tool_call>
+	// We saw this in production request_logs id 30089 (2026-06-11) when
+	// MiniMax M2.7 falls back to XML when its native tool_use wire format
+	// is unavailable.
+	minimaxToolCallRE = regexp.MustCompile(`(?s)<minimax:tool_call>\s*<invoke\s+name="([A-Za-z_][\w.-]*)">(.*?)</invoke>\s*</minimax:tool_call>`)
+	minimaxParamRE    = regexp.MustCompile(`(?s)<parameter\s+name="([A-Za-z_][\w.-]*)">(.*?)</parameter>`)
 )
 
 // CoerceXMLToolCallsInChatResponse is the exported alias used by
@@ -22,7 +34,14 @@ func CoerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 }
 
 func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
-	if !toolsRequested || !strings.Contains(string(body), "<tool_call>") {
+	// Match either the Xiaomi MiMo/generic <tool_call><function=...> shape
+	// or the MiniMax M2.7 <minimax:tool_call> shape before doing any
+	// JSON parsing — the per-shape regex itself only runs in parseXMLToolCalls.
+	if !toolsRequested {
+		return body
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "<tool_call>") && !strings.Contains(bodyStr, "<minimax:tool_call>") {
 		return body
 	}
 	var resp map[string]any
@@ -71,7 +90,10 @@ func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 }
 
 func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
-	if !toolsRequested || !strings.HasPrefix(line, "data: ") || !strings.Contains(line, "<tool_call>") {
+	if !toolsRequested || !strings.HasPrefix(line, "data: ") {
+		return line
+	}
+	if !strings.Contains(line, "<tool_call>") && !strings.Contains(line, "<minimax:tool_call>") {
 		return line
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -127,10 +149,26 @@ func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
 }
 
 func parseXMLToolCalls(text string) (string, []map[string]any) {
-	if !strings.Contains(text, "<tool_call>") || !strings.Contains(text, "<function=") {
-		return text, nil
+	// Try the Xiaomi MiMo / generic shape first.
+	if strings.Contains(text, "<tool_call>") && strings.Contains(text, "<function=") {
+		if remaining, calls := parseXMLWith(text, xmlToolCallRE, xmlParamRE); len(calls) > 0 {
+			return remaining, calls
+		}
 	}
-	matches := xmlToolCallRE.FindAllStringSubmatchIndex(text, -1)
+	// Fall back to the MiniMax M2.7 shape: <minimax:tool_call>...<invoke name="X">...</invoke>...</minimax:tool_call>.
+	if strings.Contains(text, "<minimax:tool_call>") && strings.Contains(text, "<invoke ") {
+		if remaining, calls := parseXMLWith(text, minimaxToolCallRE, minimaxParamRE); len(calls) > 0 {
+			return remaining, calls
+		}
+	}
+	return text, nil
+}
+
+// parseXMLWith runs the supplied tool-call + parameter regexes against
+// text and returns the leading/trailing free text plus the parsed calls.
+// It is the shared inner loop for parseXMLToolCalls.
+func parseXMLWith(text string, callRE, paramRE *regexp.Regexp) (string, []map[string]any) {
+	matches := callRE.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return text, nil
 	}
@@ -143,7 +181,7 @@ func parseXMLToolCalls(text string) (string, []map[string]any) {
 		name := strings.TrimSpace(text[match[2]:match[3]])
 		body := text[match[4]:match[5]]
 		params := map[string]any{}
-		for _, pm := range xmlParamRE.FindAllStringSubmatchIndex(body, -1) {
+		for _, pm := range paramRE.FindAllStringSubmatchIndex(body, -1) {
 			key := strings.TrimSpace(body[pm[2]:pm[3]])
 			value := strings.TrimSpace(html.UnescapeString(body[pm[4]:pm[5]]))
 			params[key] = value
