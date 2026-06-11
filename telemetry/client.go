@@ -500,9 +500,14 @@ func searchText(entry *RequestLogEntry) *string {
 // sanitizeUTF8 returns a copy of s with every invalid UTF-8 byte sequence
 // replaced by the Unicode replacement character (U+FFFD).  The result is
 // always valid UTF-8 and safe for PostgreSQL columns with encoding=UTF8.
+//
+// Additionally, backslashes are escaped to prevent "unsupported Unicode
+// escape sequence" (SQLSTATE 22P05) errors when a string contains sequences
+// that PostgreSQL interprets as Unicode escapes (e.g. \uXXXX, \UXXXXXXXX,
+// or lone \ followed by non-hex chars).  See incident 2026-06-11.
 func sanitizeUTF8(s string) string {
 	if utf8.ValidString(s) {
-		return s
+		return strings.ReplaceAll(s, "\\", "\\\\")
 	}
 	var b strings.Builder
 	b.Grow(len(s) + len(s)/10)
@@ -515,7 +520,8 @@ func sanitizeUTF8(s string) string {
 		}
 		i += size
 	}
-	return b.String()
+	// Backslash-escape the result so PostgreSQL never sees a bare backslash.
+	return strings.ReplaceAll(b.String(), "\\", "\\\\")
 }
 
 func sanitizeStringPtr(p **string) {
