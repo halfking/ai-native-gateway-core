@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -66,9 +67,11 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	rows, err := c.db.Query(timeoutCtx, `
 		SELECT c.id, c.label, c.secret_ciphertext, p.base_url, p.protocol,
-		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state
+		       COALESCE(c.health_status, 'unknown'), c.availability_state, c.quota_state,
+		       COALESCE(pc.models_endpoint_template, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.status = 'active'
 		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
 		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
@@ -88,11 +91,11 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 
 	for rows.Next() {
 		var credID int
-		var label, baseURL, protocol string
+		var label, baseURL, protocol, modelsTemplate string
 		var ciphertext []byte // bytea in DB, must be []byte for pgx scan
 		var healthStatus, availState, quotaState *string
 
-		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState); err != nil {
+		if err := rows.Scan(&credID, &label, &ciphertext, &baseURL, &protocol, &healthStatus, &availState, &quotaState, &modelsTemplate); err != nil {
 			continue
 		}
 
@@ -102,7 +105,7 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 			continue
 		}
 
-		ok, errMsg := probeCredential(ctx, baseURL, protocol, decrypted)
+		ok, errMsg := probeCredential(ctx, baseURL, modelsTemplate, decrypted)
 		checked++
 		if ok {
 			healthy++
@@ -154,20 +157,17 @@ func decryptCred(ciphertext string, encKey []byte) (string, error) {
 	return secret.DecryptFernet([]byte(ciphertext), encKey)
 }
 
-func probeCredential(ctx context.Context, baseURL, protocol, apiKey string) (bool, string) {
+func probeCredential(ctx context.Context, baseURL, modelsTemplate, apiKey string) (bool, string) {
 	if baseURL == "" {
 		return false, "empty base URL"
 	}
 
-	baseURL = strings.TrimRight(baseURL, "/")
-	for _, suffix := range []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages"} {
-		if strings.HasSuffix(baseURL, suffix) {
-			baseURL = baseURL[:len(baseURL)-len(suffix)]
-			break
-		}
+	probeURL := urlutil.BuildModelsURL(baseURL, modelsTemplate)
+	if probeURL == "" {
+		// manifest-only supplier: cannot verify via /models; trust provider catalog
+		return true, "manifest-only, skipped probe"
 	}
 
-	probeURL := baseURL + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
 	if err != nil {
 		return false, err.Error()
@@ -218,13 +218,15 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 	defer cancel()
 
 	var ciphertext []byte // bytea in DB, must be []byte for pgx scan
-	var baseURL, protocol string
+	var baseURL, protocol, modelsTemplate string
 	err := c.db.QueryRow(execCtx, `
-		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions')
+		SELECT c.secret_ciphertext, p.base_url, COALESCE(p.protocol,'openai-completions'),
+		       COALESCE(pc.models_endpoint_template, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.id = $1 AND c.status = 'active'
-	`, credID).Scan(&ciphertext, &baseURL, &protocol)
+	`, credID).Scan(&ciphertext, &baseURL, &protocol, &modelsTemplate)
 	if err != nil {
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "not found"}
 	}
@@ -234,7 +236,7 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "decrypt failed"}
 	}
 
-	ok, errMsg := probeCredential(ctx, baseURL, protocol, decrypted)
+	ok, errMsg := probeCredential(ctx, baseURL, modelsTemplate, decrypted)
 	if ok {
 		result.Status = "healthy"
 		c.updateHealth(ctx, credID, "healthy", "")
