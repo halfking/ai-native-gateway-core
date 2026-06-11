@@ -396,7 +396,7 @@ func (e *Executor) tryCandidate(
 			params.Transform.StripRequestFields,
 		)
 	}
-	if !transform.IsToolUseCapable(cand.CatalogCode) && transform.NeedsToolCollapse(bodyBytes) {
+	if !transform.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transform.NeedsToolCollapse(bodyBytes) {
 		bodyBytes = transform.CollapseToolHistory(bodyBytes)
 	}
 	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
