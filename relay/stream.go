@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 	// audit emit in the caller and lose the request_logs row entirely.
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("stream panic recovered", "panic", r, "client_model", clientModel)
+			slog.Error("stream panic recovered", "panic", r, "stack", string(debug.Stack()), "client_model", clientModel)
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_panic")
 			}
