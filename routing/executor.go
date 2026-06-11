@@ -676,6 +676,25 @@ func (e *Executor) tryCandidate(
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
 							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 						}
+					} else if streamKind == errorsx.KindConcurrent {
+						// Non-resumable stream interruption: the executor
+						// cannot try the next candidate (the client already
+						// received partial bytes), so we have to surface
+						// the error to the caller. But we still want the
+						// credential out of rotation for 5 minutes, so
+						// record the circuit failure and write the
+						// credential state immediately. This avoids the
+						// pathological "same credential retried forever"
+						// loop that the original code fell into.
+						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
+						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
+							"credential_id", cand.CredentialID,
+							"provider_id", cand.ProviderID,
+							"reason", streamOutcome.Reason,
+							"chunk_count", streamOutcome.ChunkCount,
+						)
 					}
 
 					return &ExecuteResult{
