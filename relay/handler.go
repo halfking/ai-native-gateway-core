@@ -764,21 +764,23 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	Status      string `json:"status"`
-	Version     string `json:"version"`
-	Circuit     any    `json:"circuit,omitempty"`
-	Concurrency any    `json:"concurrency,omitempty"`
+	Status      string         `json:"status"`
+	Version     string         `json:"version"`
+	Circuit     any            `json:"circuit,omitempty"`
+	Concurrency any            `json:"concurrency,omitempty"`
+	Proxy       map[string]any `json:"proxy,omitempty"`
 }
 
 // HealthHandler returns health information including circuit breaker and limiter stats.
 type HealthHandler struct {
 	circuit *circuit.Manager
 	limiter *limiter.Limiter
+	proxy   *upstreampkg.ProxyResolver
 }
 
 // NewHealthHandler creates a new health handler.
-func NewHealthHandler(cm *circuit.Manager, l *limiter.Limiter) *HealthHandler {
-	return &HealthHandler{circuit: cm, limiter: l}
+func NewHealthHandler(cm *circuit.Manager, l *limiter.Limiter, proxy *upstreampkg.ProxyResolver) *HealthHandler {
+	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy}
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -790,6 +792,12 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("full") == "true" {
 		resp.Circuit = h.circuit.Stats()
 		resp.Concurrency = h.limiter.Stats()
+	}
+
+	if h.proxy != nil {
+		if status := h.proxy.Status(); status != nil {
+			resp.Proxy = status
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

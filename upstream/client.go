@@ -49,15 +49,19 @@ type Client struct {
 	hc          *http.Client
 	maxRetries  int
 	baseDelay   time.Duration
+	proxy       *ProxyResolver
 }
 
-// New creates a new upstream client with sensible defaults.
+// New creates a new upstream client with sensible defaults. The proxy
+// behaviour is controlled by a ProxyResolver that decides per-host whether
+// to use HTTP_PROXY or go direct (see NewProxyResolver).
 func New() *Client {
+	proxy := NewProxyResolver()
 	return &Client{
 		hc: &http.Client{
 			Timeout: defaultTimeout,
 			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
+				Proxy: proxy.ProxyFunc(),
 				IdleConnTimeout: 90 * time.Second,
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
@@ -69,6 +73,29 @@ func New() *Client {
 		},
 		maxRetries: maxRetries,
 		baseDelay:  retryBaseDelay,
+		proxy:      proxy,
+	}
+}
+
+// ProxyStatus returns a snapshot of the proxy resolver state.
+func (c *Client) ProxyStatus() map[string]any {
+	if c.proxy == nil {
+		return map[string]any{"healthy": false, "proxy": ""}
+	}
+	return c.proxy.Status()
+}
+
+// Proxy returns the underlying ProxyResolver so other handlers (e.g. healthz)
+// can read its state. May return nil if the client was constructed without a
+// resolver.
+func (c *Client) Proxy() *ProxyResolver {
+	return c.proxy
+}
+
+// Stop releases the background probe goroutine.
+func (c *Client) Stop() {
+	if c.proxy != nil {
+		c.proxy.Stop()
 	}
 }
 

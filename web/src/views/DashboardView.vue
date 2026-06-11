@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   getUsageSummary,
@@ -7,11 +7,13 @@ import {
   getDashboardOverview,
   getHotApiKeys,
   getModelDiscoveryStatus,
+  getHealth,
   type UsageSummary,
   type ModelUsage,
   type DashboardOverview,
   type HotApiKeyEntry,
   type ModelDiscoveryStatusResponse,
+  type HealthResponse,
 } from '../api'
 
 const days    = ref(7)
@@ -20,9 +22,30 @@ const overview = ref<DashboardOverview | null>(null)
 const models  = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
 const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
+const health = ref<HealthResponse | null>(null)
 const loading = ref(false)
 const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
+let healthPollTimer: ReturnType<typeof setInterval> | null = null
+
+const proxyWarning = computed(() => {
+  const p = health.value?.proxy
+  if (!p) return null
+  if (!p.proxy) return null
+  if (p.health_done && p.healthy === false) {
+    return {
+      proxy: p.proxy,
+      detail: '已自动降级为直连，国外模型（Anthropic / OpenAI / OpenRouter / GitHub Copilot 等）可能失败',
+    }
+  }
+  if (!p.health_done) {
+    return {
+      proxy: p.proxy,
+      detail: '正在做初始连通性检查…',
+    }
+  }
+  return null
+})
 
 async function load() {
   loading.value = true
@@ -75,6 +98,14 @@ async function loadDiscoveryStatus() {
   }
 }
 
+async function loadHealth() {
+  try {
+    health.value = await getHealth()
+  } catch {
+    /* non-blocking */
+  }
+}
+
 function scheduleDiscoveryPoll() {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   discoveryPollTimer = setInterval(() => {
@@ -82,14 +113,24 @@ function scheduleDiscoveryPoll() {
   }, 15000)
 }
 
+function scheduleHealthPoll() {
+  if (healthPollTimer) clearInterval(healthPollTimer)
+  healthPollTimer = setInterval(() => {
+    void loadHealth()
+  }, 30000)
+}
+
 onMounted(() => {
   void load()
   void loadDiscoveryStatus()
+  void loadHealth()
   scheduleDiscoveryPoll()
+  scheduleHealthPoll()
 })
 
 onUnmounted(() => {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
+  if (healthPollTimer) clearInterval(healthPollTimer)
 })
 </script>
 
@@ -109,6 +150,15 @@ onUnmounted(() => {
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <div
+      v-if="proxyWarning"
+      class="proxy-warning-banner"
+    >
+      <strong>⚠ 出口代理不可达</strong>
+      <span>已配置代理 <code>{{ proxyWarning.proxy }}</code> 探测失败，{{ proxyWarning.detail }}</span>
+      <span class="proxy-warning-hint">代理恢复后系统将自动重新启用</span>
+    </div>
 
     <div
       v-if="discoveryStatus?.running"
@@ -247,5 +297,33 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 16px;
+}
+
+.proxy-warning-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: rgba(248, 81, 73, 0.10);
+  border: 1px solid rgba(248, 81, 73, 0.45);
+  color: var(--text);
+}
+.proxy-warning-banner strong {
+  color: var(--danger);
+}
+.proxy-warning-banner code {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.proxy-warning-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
 }
 </style>

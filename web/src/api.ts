@@ -1905,3 +1905,20 @@ export function pollFreePoolTempEmail(token: string) {
     { token },
   )
 }
+
+// ── System health ─────────────────────────────────────────────────────────
+
+export interface HealthResponse {
+  status: string
+  version: string
+  proxy?: {
+    proxy: string
+    healthy: boolean
+    health_done: boolean
+    domestic: string[]
+  }
+}
+
+export function getHealth(full = false) {
+  return req<HealthResponse>('GET', `/healthz${full ? '?full=true' : ''}`)
+}
