@@ -501,3 +501,115 @@ func TestStreamCapture_CapEnforced(t *testing.T) {
 		t.Errorf("expected textContent to be capped at exactly %d bytes, got %d", maxTextContentBytes, len(text))
 	}
 }
+
+// TestExtractDeltaReasoningText verifies that reasoning_content deltas
+// are captured alongside regular content deltas.
+func TestExtractDeltaReasoningText(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "reasoning_content present",
+			payload: `{"choices":[{"index":0,"delta":{"reasoning_content":"Let me think about this."}}]}`,
+			want:    "Let me think about this.",
+		},
+		{
+			name:    "no reasoning_content",
+			payload: `{"choices":[{"index":0,"delta":{"content":"answer"}}]}`,
+			want:    "",
+		},
+		{
+			name:    "both content and reasoning",
+			payload: `{"choices":[{"index":0,"delta":{"reasoning_content":"reasoning","content":"answer"}}]}`,
+			want:    "reasoning",
+		},
+		{
+			name:    "empty reasoning",
+			payload: `{"choices":[{"index":0,"delta":{"reasoning_content":""}}]}`,
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractDeltaReasoningText(tc.payload); got != tc.want {
+				t.Errorf("extractDeltaReasoningText(%q) = %q, want %q", tc.payload, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStreamCapture_ReasoningContent verifies that reasoning chains are
+// captured with [reasoning]...[/reasoning] markers so downstream auditors
+// can distinguish the reasoning trace from the final answer.
+func TestStreamCapture_ReasoningContent(t *testing.T) {
+	sc := NewStreamCapture()
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"reasoning_content":"Step 1: I should think."}}]}`,
+		"", false)
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"content":"The answer is 42."}}]}`,
+		"", false)
+
+	m := sc.SummaryAsMap()
+	text := m["stream_text_content"].(string)
+	if !strings.Contains(text, "[reasoning]") {
+		t.Errorf("expected [reasoning] marker in textContent, got %q", text)
+	}
+	if !strings.Contains(text, "[/reasoning]") {
+		t.Errorf("expected [/reasoning] marker in textContent, got %q", text)
+	}
+	if !strings.Contains(text, "Step 1: I should think.") {
+		t.Errorf("expected reasoning text, got %q", text)
+	}
+	if !strings.Contains(text, "The answer is 42.") {
+		t.Errorf("expected answer text, got %q", text)
+	}
+}
+
+// TestStreamCapture_Reset verifies that Reset() clears all accumulated
+// state. Used by the executor when failing over to a new credential.
+func TestStreamCapture_Reset(t *testing.T) {
+	sc := NewStreamCapture()
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"content":"first attempt"}}]}`,
+		"", false)
+	pt := 100
+	ct := 50
+	sc.ObserveUsage(&pt, &ct, nil, nil)
+	sc.MarkInterruptedWithReason("stream_timeout")
+
+	m := sc.SummaryAsMap()
+	if m["stream_chunk_count"].(int) != 1 {
+		t.Errorf("expected 1 chunk before reset, got %v", m["stream_chunk_count"])
+	}
+	if _, ok := m["stream_text_content"]; !ok {
+		t.Error("expected textContent before reset")
+	}
+
+	sc.Reset()
+
+	m2 := sc.SummaryAsMap()
+	if m2["stream_chunk_count"].(int) != 0 {
+		t.Errorf("expected 0 chunks after reset, got %v", m2["stream_chunk_count"])
+	}
+	if _, ok := m2["stream_text_content"]; ok {
+		t.Error("expected no textContent after reset")
+	}
+	if m2["stream_interrupted"].(bool) != false {
+		t.Error("expected interrupted=false after reset")
+	}
+	if m2["stream_done_received"].(bool) != false {
+		t.Error("expected done_received=false after reset")
+	}
+
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"content":"second attempt"}}]}`,
+		"", false)
+	m3 := sc.SummaryAsMap()
+	text := m3["stream_text_content"].(string)
+	if !strings.Contains(text, "second attempt") {
+		t.Errorf("expected textContent after reset+observe, got %q", text)
+	}
+}
