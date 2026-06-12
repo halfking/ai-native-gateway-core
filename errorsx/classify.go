@@ -26,6 +26,14 @@ const (
 	KindQuotaPermanent  ErrorKind = "quota_permanent"
 	KindModelNotFound   ErrorKind = "model_not_found"
 	KindStreamTimeout   ErrorKind = "stream_timeout"
+	// KindToolCallIdMismatch: client echoed a tool_call_id that the
+	// upstream did not recognise. The most common cause is the agent
+	// framework losing the id field during streaming accumulation of
+	// `delta.tool_calls` chunks, or generating a placeholder id when
+	// the upstream response didn't carry one. Reported as a distinct
+	// non-fatal, non-retryable kind so the gateway does not punish
+	// the credential (this is a client bug, not an upstream failure).
+	KindToolCallIdMismatch ErrorKind = "tool_call_id_mismatch"
 )
 
 var modelNotFoundRe = regexp.MustCompile(
@@ -73,6 +81,17 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 // overload — upstream silently dropping connections under load.
 var eofWithoutDoneRe = regexp.MustCompile(
 	`(?i)(eof without|eof_without_done|stream closed before|premature close|unexpected eof)`,
+)
+
+// toolCallIdMismatchRe matches the upstream error payload for the
+// "client echoed a tool_call_id the upstream did not recognise"
+// scenario. MiniMax surfaces this as a 4xx body with code 2013
+// and a message containing "tool call id" / "tool id" /
+// "tool_result's tool id". Anthropic's equivalent would be a
+// 4xx with "tool_use_id" — the regex below is permissive about
+// the exact noun so it can flag both vendors without future edits.
+var toolCallIdMismatchRe = regexp.MustCompile(
+	`(?i)(tool[_ ]?(call[_ ]?id|use[_ ]?id|result.*tool[_ ]?id).{0,40}(not found|not exist|invalid|unknown|unknown id|does not exist|unrecogn)|2013)`,
 )
 
 func ClassifyError(err error, resp *http.Response) ErrorKind {
@@ -157,6 +176,9 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
 			return KindModelNotFound
 		}
+		if toolCallIdMismatchRe.Match(body) {
+			return KindToolCallIdMismatch
+		}
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
 }
@@ -175,6 +197,9 @@ func ClassifyResponseBody(body []byte) ErrorKind {
 		}
 		if eofWithoutDoneRe.Match(body) {
 			return KindStreamTimeout
+		}
+		if toolCallIdMismatchRe.Match(body) {
+			return KindToolCallIdMismatch
 		}
 	}
 	return ""
@@ -210,6 +235,21 @@ func IsRetryable(kind ErrorKind) bool {
 func IsCredentialFatal(kind ErrorKind) bool {
 	switch kind {
 	case KindAuth, KindAuthRevoked, KindQuota, KindQuotaPeriodic, KindQuotaBalance, KindQuotaPermanent:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsClientBug returns true when the kind signals a client-side bug
+// (e.g. KindToolCallIdMismatch) where writing credential cooling state
+// would only punish the credential for the caller's mistake. The
+// gateway should still surface the error to the caller and log the
+// detail, but must NOT open a circuit or write availability_recover_at
+// in the credentials table.
+func IsClientBug(kind ErrorKind) bool {
+	switch kind {
+	case KindToolCallIdMismatch, KindModelNotFound, KindCanceled:
 		return true
 	default:
 		return false
