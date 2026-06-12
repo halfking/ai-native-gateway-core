@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, type ProviderCredential, type DiagnoseProviderResponse } from '../api'
+import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse } from '../api'
 import OverviewCards from './provider-detail/OverviewCards.vue'
 import CredsTab from './provider-detail/CredsTab.vue'
 import ModelsTab from './provider-detail/ModelsTab.vue'
@@ -46,6 +46,20 @@ async function toggle() {
   }
 }
 
+// 900-series: provider-level manual disable (spec §6.2)
+async function toggleProviderManual() {
+  if (!provider.value) return
+  const next = !provider.value.manual_disabled
+  const reason = prompt(`手工${next ? '禁用' : '启用'}提供商 ${provider.value.display_name} 的原因：`, '') ?? ''
+  if (reason === null) return
+  try {
+    await setProviderManualDisabled(provider.value.id, next, reason)
+    provider.value.manual_disabled = next
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '操作失败'
+  }
+}
+
 async function runDiagnose() {
   diagLoading.value = true
   diagError.value = ''
@@ -70,8 +84,16 @@ onMounted(load)
       <div style="display:flex;align-items:center;gap:12px">
         <button class="btn btn-ghost" @click="back">&larr; 返回</button>
         <h2 style="margin:0">{{ provider?.display_name || '...' }}</h2>
+        <span v-if="provider?.manual_disabled" class="badge badge-red" title="提供商级手工禁用 — 整个 provider 不可路由">🔒 手工已禁用</span>
+        <span v-else-if="!provider?.enabled" class="badge badge-gray">已禁用</span>
       </div>
       <div style="display:flex;gap:8px">
+        <button
+          class="btn btn-ghost btn-sm"
+          :style="provider?.manual_disabled ? 'color:var(--danger);border-color:var(--danger)' : ''"
+          @click="toggleProviderManual"
+          :title="provider?.manual_disabled ? '取消手工禁用 (恢复自动)' : '手工禁用整个 provider'"
+        >{{ provider?.manual_disabled ? '解除手工禁用' : '手工禁用' }}</button>
         <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? '禁用' : '启用' }}</button>
         <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
       </div>

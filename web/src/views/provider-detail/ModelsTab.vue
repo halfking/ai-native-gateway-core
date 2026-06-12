@@ -5,6 +5,7 @@ import {
   toggleModelOfferState,
   getModelOfferSuggestions,
   updateModelOffer,
+  getRoutableSummary,
   type ModelOffer,
   type ModelOfferSuggestion,
 } from '../../api'
@@ -14,6 +15,16 @@ const props = defineProps<{ providerId: number }>()
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
 const error = ref('')
+
+// 900-series: routable summary from VIEW
+const routable = ref<{
+  total_bindings: number
+  routable_bindings: number
+  unavailable_bindings: number
+  unavailable_breakdown: Record<string, number>
+  routable_ratio: number
+} | null>(null)
+const routableLoading = ref(false)
 
 // Per-row edit state keyed by offer.id
 interface EditDraft {
@@ -33,6 +44,14 @@ async function load() {
   error.value = ''
   try {
     offers.value = await getProviderModels(props.providerId)
+    routableLoading.value = true
+    try {
+      routable.value = await getRoutableSummary(props.providerId)
+    } catch {
+      routable.value = null
+    } finally {
+      routableLoading.value = false
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -154,6 +173,30 @@ load()
       <h4 style="margin:0">模型清单 ({{ offers.length }})</h4>
       <button class="btn btn-sm" @click="load" :disabled="loading">{{ loading ? '加载中…' : '刷新' }}</button>
     </div>
+
+    <!-- 900-series: routable binding summary -->
+    <div v-if="routable" class="card" style="margin-bottom:12px;background:rgba(99,102,241,0.04)">
+      <h5 style="margin:0 0 8px 0">可路由性摘要 (v_routable_credential_models)</h5>
+      <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);gap:8px">
+        <div class="metric">
+          <b>{{ routable.routable_bindings }} / {{ routable.total_bindings }}</b>
+          <span>可路由 (routable_ratio: {{ (routable.routable_ratio * 100).toFixed(0) }}%)</span>
+        </div>
+        <div class="metric">
+          <b>{{ routable.unavailable_bindings }}</b>
+          <span>不可路由</span>
+        </div>
+        <div class="metric" v-if="Object.keys(routable.unavailable_breakdown).length > 0">
+          <b>细分</b>
+          <div style="font-size:10px;text-align:left;max-height:80px;overflow-y:auto">
+            <div v-for="(count, code) in routable.unavailable_breakdown" :key="code">
+              <code>{{ code }}</code>: {{ count }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div class="card" style="overflow-x:auto">
       <table class="data-table" style="width:100%;font-size:12px">
@@ -191,12 +234,12 @@ load()
                         <span class="suggest-label">规则推荐</span>
                         <span v-if="draft[o.id].loadingSuggest" class="suggest-loading">计算中…</span>
                         <button
-                          v-else-if="draft[o.id].suggest && draft[o.id].suggest.rule_based"
+                          v-else-if="draft[o.id].suggest && draft[o.id].suggest?.rule_based"
                           type="button"
                           class="suggest-chip"
                           :title="`基于规则 standardize_name(${o.raw_model_name})`"
                           @click="applyRuleBased(o)"
-                        >{{ draft[o.id].suggest.rule_based }}</button>
+                        >{{ draft[o.id].suggest?.rule_based }}</button>
                         <span v-else class="suggest-empty">—</span>
                       </div>
                       <div class="suggest-row">
