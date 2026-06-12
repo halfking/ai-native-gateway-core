@@ -262,7 +262,7 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 			p.display_name AS provider_name,
 			p.base_url,
 			p.protocol,
-			p.catalog_code,
+			COALESCE(p.catalog_code, ''),
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
@@ -289,11 +289,7 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 			slog.Warn("loadCredentials scan failed", "error", err)
 			continue
 		}
-		slog.Info("loadCredentials loaded", "cred_id", c.ID, "provider", c.ProviderName, "strategy", c.DiscoveryStrategy)
 		creds = append(creds, c)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("loadCredentials rows.Err", "error", err)
 	}
 	return creds, nil
 }
@@ -303,13 +299,6 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return nil, 0, nil
 	}
 
-	slog.Info("discovery: evaluating credential",
-		"credential_id", cred.ID,
-		"provider_name", cred.ProviderName,
-		"base_url", cred.BaseURL,
-		"discovery_strategy", cred.DiscoveryStrategy,
-		"manifest_empty", cred.ModelsManifestJSON == nil || *cred.ModelsManifestJSON == "" || *cred.ModelsManifestJSON == "[]",
-	)
 	if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 		return s.discoverFromManifest(ctx, cred)
 	}
