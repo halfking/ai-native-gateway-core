@@ -18,7 +18,7 @@ function timeText(v?: string | null) {
 </script>
 
 <template>
-  <div class="overview-grid">
+  <div class="overview-grid provider-detail-grid">
     <div class="card">
       <h4>基础信息</h4>
       <dl>
@@ -54,13 +54,7 @@ function timeText(v?: string | null) {
 
 <style scoped>
 .overview-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
   margin-bottom: 20px;
-}
-@media (max-width: 960px) {
-  .overview-grid { grid-template-columns: 1fr; }
 }
 .overview-grid dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 8px 0; }
 .overview-grid dt { color: var(--muted, #94a3b8); white-space: nowrap; }

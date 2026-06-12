@@ -97,7 +97,7 @@ async function runHealthCheck() {
 </script>
 
 <template>
-  <div class="settings-tab">
+  <div class="settings-tab provider-detail-grid">
     <section class="card settings-section settings-section--edit">
       <h3 class="section-title">编辑提供商</h3>
       <div class="settings-form">
@@ -209,13 +209,6 @@ async function runHealthCheck() {
 </template>
 
 <style scoped>
-.settings-tab {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 280px));
-  gap: 16px;
-  align-items: start;
-}
-
 .settings-section {
   margin: 0;
   min-width: 0;
@@ -303,9 +296,6 @@ async function runHealthCheck() {
 }
 
 @media (max-width: 960px) {
-  .settings-tab {
-    grid-template-columns: 1fr;
-  }
   .info-item--wide {
     grid-column: auto;
   }

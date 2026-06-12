@@ -286,6 +286,17 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   font-weight: 600;
 }
 
+/* Provider detail: top overview + settings tab share the same 3-column card row */
+.provider-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .provider-detail-grid { grid-template-columns: 1fr; }
+}
+
 /* Horizontal compact filter bar (overrides global input/select width:100%) */
 .compact-filter-bar {
   display: flex;
