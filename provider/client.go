@@ -48,7 +48,12 @@ type Candidate struct {
 	CompositeScore      float64  `json:"composite_score"`
 	Currency            string   `json:"currency"`
 	BillingMode         string   `json:"billing_mode"`
-	APIKey              string   `json:"-"`
+	// ContextWindow is the upstream model's context window in tokens, read
+	// from models_canonical.context_window. Used by the Q1/Q2/Q3 client-side
+	// context trim path (transform.CompressMessagesIfNeeded). nil means
+	// "unknown" — in which case the trim path is a no-op.
+	ContextWindow *int `json:"context_window,omitempty"`
+	APIKey        string `json:"-"`
 }
 
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
@@ -448,7 +453,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'token') AS billing_mode,
-			mo.raw_model_name
+			mo.raw_model_name,
+			mc.context_window
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -529,6 +535,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			&cand.Currency,
 			&cand.BillingMode,
 			&offerRawModel,
+			&cand.ContextWindow,
 		); err != nil {
 			return nil, err
 		}
