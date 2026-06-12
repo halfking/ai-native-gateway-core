@@ -13,6 +13,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -158,6 +159,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Q2 vs Q4 dispatch happens after candidate selection below:
+	// if the first candidate's upstream speaks Anthropic, the
+	// original Anthropic body bytes are forwarded unchanged (Q4
+	// passthrough). Otherwise the body is converted to OpenAI chat
+	// format (Q2 path). We precompute the converted body here so
+	// the conversion-error path stays in one place; the Q4 path
+	// discards it later via selectUpstreamBodyBytes.
 	chatBody := h.convertToChatBody(&reqBody)
 	chatBodyBytes, err := json.Marshal(chatBody)
 	if err != nil {
@@ -216,6 +224,14 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptCredentialID = &cid
 	}
 
+	// Q2 vs Q4 dispatch: when the chosen upstream candidate speaks
+	// Anthropic, forward the original body bytes unchanged. Otherwise
+	// use the pre-converted OpenAI chat body. The pre-conversion
+	// above is wasted work in the Q4 case but it lets us keep the
+	// conversion-error path in one place; for the Q4 fast-path the
+	// cost is a single in-memory json.Marshal on a small body.
+	upstreamBody := selectUpstreamBodyBytes(candidates, bodyBytes, chatBodyBytes)
+
 	var modelResolution *resolve.Resolution
 	if h.chatHandler.resolver != nil {
 		modelResolution = h.chatHandler.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
@@ -241,7 +257,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
 		W:             w,
 		R:             r,
-		BodyBytes:     chatBodyBytes,
+		BodyBytes:     upstreamBody,
 		IsStream:      isStream,
 		SuppressSuccessWrite: !isStream,
 		ClientModel:   clientModel,
@@ -271,7 +287,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg = errMsg
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo)
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo)
 		*attemptLogged = true
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
@@ -348,6 +364,36 @@ func (h *MessagesHandler) convertToChatBody(req *messagesRequestBody) map[string
 	}
 
 	return chatBody
+}
+
+// selectUpstreamBodyBytes is the Q2 vs Q4 dispatch for /v1/messages.
+//
+// Q4 (anthropic→anthropic, e.g. minimax's /anthropic compatible
+// endpoint or the anthropic provider): the original Anthropic body
+// is forwarded unchanged. No re-shaping, no tool-collapsing, no
+// stream_options injection — the upstream speaks the same protocol
+// the client used.
+//
+// Q2 (anthropic→openai-completions / openai-responses): the
+// pre-converted OpenAI chat body is forwarded. The conversion
+// itself is done by convertToChatBody in the caller (kept in one
+// place so the conversion-error path is uniform across all
+// candidates); this function only picks which of the two byte
+// slices to return.
+//
+// Behavior matrix:
+//   - candidates[0].Protocol == "anthropic-messages" → originalBody
+//   - candidates[0].Protocol == "openai-completions" /
+//     "openai-responses" / "" (unknown) → convertedBody
+//   - len(candidates) == 0 → convertedBody (defensive; should not
+//     happen in practice because GetCandidates returns 503 when
+//     no candidate exists, but guards against a future caller
+//     forgetting the empty-slice check)
+func selectUpstreamBodyBytes(candidates []provider.Candidate, originalBody, convertedBody []byte) []byte {
+	if len(candidates) > 0 && candidates[0].Protocol == "anthropic-messages" {
+		return originalBody
+	}
+	return convertedBody
 }
 
 func convertAnthropicMessage(msg map[string]any) map[string]any {
