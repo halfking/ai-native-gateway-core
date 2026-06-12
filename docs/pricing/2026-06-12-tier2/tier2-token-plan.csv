@@ -1,0 +1,6 @@
+offer_id,unit_price_in_per_1m,unit_price_out_per_1m,cache_read_price_per_1m,cache_write_price_per_1m,currency,billing_mode,pricing_source
+34,10.0,30.0,,,USD,token_plan,tier1_or_official_forwarded
+37,15.0,60.0,,,USD,token_plan,tier1_or_official_forwarded
+45,2.0,8.0,,,USD,token_plan,tier1_or_official_forwarded
+46,1.1,4.4,,,USD,token_plan,tier1_or_official_forwarded
+47,1.1,4.4,,,USD,token_plan,tier1_or_official_forwarded
