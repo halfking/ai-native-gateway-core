@@ -78,6 +78,8 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
 		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
 		  AND c.availability_state = 'ready'
 		  AND p.enabled = TRUE
@@ -145,6 +147,7 @@ func (c *CredentialCycler) updateHealth(ctx context.Context, credID int, status,
 		UPDATE credentials
 		SET health_status = $1, health_error = $2, health_checked_at = NOW(), health_source = 'probe'
 		WHERE id = $3
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
 	`, status, errMsg, credID)
 }
 
