@@ -434,7 +434,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
-		      AND v.provider_model_id = mo.provider_model_id
+		      AND v.raw_model_name = mo.raw_model_name
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
