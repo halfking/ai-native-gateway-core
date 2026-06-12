@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 // ── Helper: start a test postgres  ────────────────────────────────────────
@@ -54,7 +54,7 @@ func TestModelsURL_XiaomiMiMo(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := urlutil.ModelsURL(tt.baseURL)
+			got := upstreamurl.ModelsURL(tt.baseURL)
 			if got != tt.want {
 				t.Errorf("ModelsURL(%q) = %q, want %q", tt.baseURL, got, tt.want)
 			}
@@ -193,7 +193,7 @@ func TestXiaomiMiMo_LiveIntegration(t *testing.T) {
 		baseURL = "https://token-plan-cn.xiaomimimo.com/v1"
 	}
 
-	modelsURL := urlutil.ModelsURL(baseURL)
+	modelsURL := upstreamurl.ModelsURL(baseURL)
 	t.Logf("models URL: %s", modelsURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -292,7 +292,7 @@ func TestFetchModels_XiaomiMiMo_MockServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	modelsURL := urlutil.ModelsURL(srv.URL)
+	modelsURL := upstreamurl.ModelsURL(srv.URL)
 	req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
 	if err != nil {
 		t.Fatalf("create request: %v", err)
@@ -333,7 +333,7 @@ func TestFetchModels_XiaomiMiMo_MockServer(t *testing.T) {
 	}
 }
 
-// ── Verify Go urlutil matches Python discovery_utils._models_endpoint ──────
+// ── Verify Go upstreamurl matches Python discovery_utils._models_endpoint ──
 
 func TestModelsURL_PythonParity(t *testing.T) {
 	// Python: _models_endpoint("https://token-plan-cn.xiaomimimo.com/v1", template="/models")
@@ -342,8 +342,8 @@ func TestModelsURL_PythonParity(t *testing.T) {
 	// Python template-based: base + "/models" = base/models
 	pythonResult := base + "/models"
 
-	// Go: urlutil.ModelsURL (strips /vN then appends /v1/models)
-	goResult := urlutil.ModelsURL(base)
+	// Go: upstreamurl.ModelsURL (strips /vN then appends /v1/models)
+	goResult := upstreamurl.ModelsURL(base)
 
 	if goResult != pythonResult {
 		t.Errorf("URL mismatch:\n  Python: %s\n  Go:     %s\n  Fix: Go must support models_endpoint_template from provider_catalog",
