@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 )
 
-var alwaysKeepFields = map[string]bool{
+// alwaysKeepFieldsOpenAI is the set of fields the gateway passes through
+// unchanged for OpenAI Chat Completions requests. These are the canonical
+// "do not strip" fields for the OpenAI wire format; everything else is
+// subject to the per-route passthrough/strip lists.
+var alwaysKeepFieldsOpenAI = map[string]bool{
 	"model":       true,
 	"messages":    true,
 	"stream":      true,
@@ -13,6 +17,43 @@ var alwaysKeepFields = map[string]bool{
 	"top_p":       true,
 	"n":           true,
 	"stop":        true,
+}
+
+// alwaysKeepFieldsAnthropic is the set of fields the gateway passes through
+// unchanged for Anthropic Messages API requests. It mirrors the OpenAI set
+// but adds Anthropic-only top-level fields (system, stop_sequences, top_k,
+// tools, tool_choice, metadata) and drops the OpenAI-only ones (n, stop).
+var alwaysKeepFieldsAnthropic = map[string]bool{
+	"model":          true,
+	"messages":       true,
+	"system":         true,
+	"stream":         true,
+	"max_tokens":     true,
+	"temperature":    true,
+	"top_p":          true,
+	"top_k":          true,
+	"stop_sequences": true,
+	"tools":          true,
+	"tool_choice":    true,
+	"metadata":       true,
+}
+
+// AllowListForProtocol returns the always-keep allow-list appropriate for
+// the given upstream protocol. Empty or unknown protocols fall back to
+// the OpenAI set for backwards compatibility with callers that have not
+// yet threaded a Candidate into the sanitizer.
+//
+// Callers (e.g. routing/executor_chat.go) should pass cand.Protocol so the
+// whitelist matches the upstream wire format — stripping "system" from an
+// Anthropic body would silently break Anthropic, and keeping it on an
+// OpenAI body would let unknown tooling data leak through.
+func AllowListForProtocol(protocol string) map[string]bool {
+	switch protocol {
+	case "anthropic-messages":
+		return alwaysKeepFieldsAnthropic
+	default:
+		return alwaysKeepFieldsOpenAI
+	}
 }
 
 func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string) []byte {
@@ -26,11 +67,11 @@ func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string)
 	}
 
 	if len(passthroughFields) > 0 {
-		allowed := make(map[string]bool, len(passthroughFields)+len(alwaysKeepFields))
+		allowed := make(map[string]bool, len(passthroughFields)+len(alwaysKeepFieldsOpenAI))
 		for _, f := range passthroughFields {
 			allowed[f] = true
 		}
-		for f := range alwaysKeepFields {
+		for f := range alwaysKeepFieldsOpenAI {
 			allowed[f] = true
 		}
 		for k := range obj {
