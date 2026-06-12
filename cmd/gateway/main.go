@@ -219,10 +219,31 @@ func main() {
 	// ── Model Discovery ─────────────────────────────────────────────────
 	bgDataPlaneOnly := strings.EqualFold(cfg.BGMode, "data-plane")
 	var discoverySvc *discovery.Service
+	var fernetKey []byte
+	var keyring *secret.Keyring
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
+
+		// Derive credential decryption keys early so discovery can use them
+		var ferr error
+		fernetKey, ferr = secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
+		if ferr != nil {
+			slog.Warn("fernet key unavailable", "error", ferr)
+			fernetKey = nil
+		}
+		if cfg.CredentialEncryptionKey != "" {
+			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
+				slog.Warn("AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
+			} else {
+				keyring = kr
+				slog.Info("AES-GCM keyring initialized")
+			}
+		}
+
 		if !bgDataPlaneOnly {
 			discoverySvc = discovery.NewService(dbConn.Pool(), 1*time.Hour)
+			discoverySvc.SetKeyring(keyring)
+			discoverySvc.SetFernetKey(fernetKey)
 			discoverySvc.Start(context.Background())
 			slog.Info("model discovery service enabled")
 		} else {
@@ -232,25 +253,10 @@ func main() {
 
 	// ── Admin API ───────────────────────────────────────────────────────
 	var adminHandler *admin.Handler
-	var fernetKey []byte
 	if dbConn != nil && dbConn.Enabled() {
-		var ferr error
-		fernetKey, ferr = secret.FernetKeyFromSecret(cfg.SecretKey, cfg.CredentialEncryptionKey)
-		if ferr != nil {
-			slog.Warn("admin API: fernet key unavailable", "error", ferr)
-			fernetKey = nil
-		}
 		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
-		// Initialize AES-256-GCM keyring so that credential decryption works
-		// for v1-envelope ciphertexts. Without this, decryptCredStr falls
-		// through to the legacy Fernet path and fails on AES-GCM envelopes.
-		if cfg.CredentialEncryptionKey != "" {
-			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
-				slog.Warn("admin API: AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
-			} else {
-				adminHandler.SetKeyring(kr)
-				slog.Info("admin API: AES-GCM keyring initialized")
-			}
+		if keyring != nil {
+			adminHandler.SetKeyring(keyring)
 		}
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
@@ -268,6 +274,9 @@ func main() {
 		credRecovery.Start(context.Background())
 		if !bgDataPlaneOnly && fernetKey != nil {
 			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
+			if keyring != nil {
+				credCycler.SetKeyring(keyring)
+			}
 			credCycler.Start(context.Background())
 			slog.Info("credential cycler started")
 		} else if bgDataPlaneOnly {
