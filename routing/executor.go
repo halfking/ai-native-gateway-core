@@ -194,6 +194,22 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	}
 	if len(candidates) == 0 {
 		trace.FailureReason = "no_candidates_from_router"
+		// Aggregate why every input candidate was filtered out so the next
+		// "every provider failed simultaneously" outage is diagnosable from
+		// this single log line.
+		reasonCounts := make(map[string]int, 8)
+		for _, c := range params.Candidates {
+			reason := c.UnavailableReason()
+			if reason == "" {
+				reason = "unknown"
+			}
+			reasonCounts[reason]++
+		}
+		slog.Warn("executor: no candidates after router",
+			"input_candidates", len(params.Candidates),
+			"client_model", params.ClientModel,
+			"reasons", reasonCounts,
+		)
 		if params.AuditBuilder != nil {
 			params.AuditBuilder.DecisionTrace(trace)
 		}

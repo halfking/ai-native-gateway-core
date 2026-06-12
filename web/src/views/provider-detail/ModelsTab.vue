@@ -210,12 +210,11 @@ load()
             <th>赋值时间</th>
             <th>延迟 P95</th>
             <th>成功率</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="9">加载中…</td></tr>
-          <tr v-else-if="!offers.length"><td colspan="9">暂无模型</td></tr>
+          <tr v-if="loading"><td colspan="8">加载中…</td></tr>
+          <tr v-else-if="!offers.length"><td colspan="8">暂无模型</td></tr>
           <template v-for="o in offers" :key="o.id">
             <tr>
               <td><code>{{ o.raw_model_name }}</code></td>
@@ -263,32 +262,40 @@ load()
                   </div>
                 </template>
                 <template v-else>
-                  <code v-if="o.standardized_name">{{ o.standardized_name }}</code>
-                  <span v-else style="color:var(--muted)">—</span>
+                  <div class="name-cell">
+                    <code v-if="o.standardized_name">{{ o.standardized_name }}</code>
+                    <span v-else class="name-empty">—</span>
+                    <button
+                      type="button"
+                      class="icon-btn"
+                      title="编辑标准化名"
+                      @click="startEdit(o)"
+                    >✎</button>
+                  </div>
                 </template>
+                <div v-if="editingId === o.id" class="edit-actions">
+                  <button class="btn btn-primary btn-sm" :disabled="draft[o.id].saving" @click="saveEdit(o)">
+                    {{ draft[o.id].saving ? '保存中…' : '保存' }}
+                  </button>
+                  <button class="btn btn-ghost btn-sm" :disabled="draft[o.id].saving" @click="cancelEdit(o)">取消</button>
+                </div>
               </td>
               <td>#{{ o.credential_id }} {{ o.credential_label }}</td>
-              <td><span :class="o.available ? 'badge badge-green' : 'badge badge-red'">{{ o.available ? '可用' : '不可用' }}</span></td>
+              <td>
+                <button
+                  type="button"
+                  class="avail-toggle"
+                  :class="o.available ? 'on' : 'off'"
+                  :title="o.available ? '点击禁用' : '点击启用'"
+                  @click="toggle(o)"
+                >
+                  {{ o.available ? '可用' : '不可用' }}
+                </button>
+              </td>
               <td><span class="badge" :class="o.availability_source === 'auto' ? 'badge-amber' : o.availability_source === 'manual' ? 'badge-blue' : ''">{{ sourceLabel(o.availability_source) }}</span></td>
               <td>{{ timeText(o.unavailable_at) }}</td>
               <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
               <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
-              <td>
-                <div style="display:flex;gap:6px;flex-wrap:wrap">
-                  <button
-                    v-if="editingId !== o.id"
-                    class="btn btn-ghost btn-sm"
-                    @click="startEdit(o)"
-                  >编辑标准化名</button>
-                  <template v-else>
-                    <button class="btn btn-primary btn-sm" :disabled="draft[o.id].saving" @click="saveEdit(o)">
-                      {{ draft[o.id].saving ? '保存中…' : '保存' }}
-                    </button>
-                    <button class="btn btn-ghost btn-sm" :disabled="draft[o.id].saving" @click="cancelEdit(o)">取消</button>
-                  </template>
-                  <button class="btn btn-ghost btn-sm" @click="toggle(o)">{{ o.available ? '禁用' : '启用' }}</button>
-                </div>
-              </td>
             </tr>
           </template>
         </tbody>
@@ -349,5 +356,53 @@ load()
 }
 .suggest-err {
   color: var(--danger, #f85149);
+}
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.name-empty {
+  color: var(--muted);
+}
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+.icon-btn:hover {
+  color: var(--accent, #6366f1);
+  background: rgba(99, 102, 241, 0.1);
+}
+.edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.avail-toggle {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.avail-toggle.on {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.avail-toggle.off {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.avail-toggle:hover {
+  filter: brightness(1.1);
 }
 </style>

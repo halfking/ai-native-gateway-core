@@ -987,6 +987,12 @@ export interface RoutingCandidate {
   routable: boolean
   runtime_routable: boolean
   runtime_block_reason: string | null
+  manual_priority?: number
+  active_sessions?: number
+  consecutive_failures?: number
+  composite_score?: number
+  billing_mode?: string
+  billing_round?: number
 }
 
 export interface RoutingOverviewRow {

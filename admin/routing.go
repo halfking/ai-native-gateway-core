@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/routing"
 )
 
 type routingHandler struct {
@@ -100,6 +102,12 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		RuntimeRoutable      bool     `json:"runtime_routable"`
 		Routable             bool     `json:"routable"`
 		BlockReason          string   `json:"block_reason,omitempty"`
+		ManualPriority       int      `json:"manual_priority"`
+		ActiveSessions       int      `json:"active_sessions"`
+		ConsecutiveFailures  int      `json:"consecutive_failures"`
+		CompositeScore       float64  `json:"composite_score"`
+		BillingMode          string   `json:"billing_mode"`
+		BillingRound         int      `json:"billing_round"`
 	}
 
 	rawModels := []string{normalizedModel}
@@ -131,6 +139,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			mo.available,
 			COALESCE(mo.routing_tier, 2) AS tier,
 			COALESCE(mo.weight, 100) AS weight,
+			COALESCE(mo.manual_priority, 99) AS manual_priority,
+			COALESCE(mo.active_sessions, 0) AS active_sessions,
+			COALESCE(mo.consecutive_failures, 0) AS consecutive_failures,
+			COALESCE(mo.billing_mode, 'token') AS billing_mode,
 			mo.unit_price_in_per_1m,
 			mo.unit_price_out_per_1m,
 			COALESCE(mo.currency, 'USD') AS currency,
@@ -148,7 +160,19 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		  AND mo.available IS TRUE
 		  AND c.status IN ('active','cooling','degraded')
 		  AND p.enabled IS TRUE
-		ORDER BY COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
+		ORDER BY
+			CASE COALESCE(mo.billing_mode, 'token')
+				WHEN 'free' THEN 1
+				WHEN 'token_plan' THEN 1
+				WHEN 'code_plan' THEN 1
+				WHEN 'agent_plan' THEN 1
+				WHEN 'monthly' THEN 1
+				ELSE 2
+			END,
+			COALESCE(mo.manual_priority, 99),
+			COALESCE(mo.routing_tier, 2),
+			COALESCE(mo.weight, 100) DESC,
+			COALESCE(mo.success_rate, 0.9) DESC
 	`, rawModels)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -156,6 +180,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	weights := scoringWeightsFromMap(h.getScoringWeights(ctx))
 	candidates := make([]candidate, 0)
 	for rows.Next() {
 		var c candidate
@@ -166,6 +191,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.CircuitState, &c.CoolingUntil, &c.Available, &c.Tier, &c.Weight,
+			&c.ManualPriority, &c.ActiveSessions, &c.ConsecutiveFailures, &c.BillingMode,
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency, &c.SuccessRate,
 			&c.P95LatencyMs, &c.ModelName, &c.StandardizedName,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
@@ -194,26 +220,45 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				c.BlockReason = "unknown"
 			}
 		}
+		c.BillingRound = provider.BillingRound(c.BillingMode)
+		pc := provider.Candidate{
+			ManualPriority:      c.ManualPriority,
+			PriceInPer1M:        c.UnitPriceInPer1M,
+			PriceOutPer1M:       c.UnitPriceOutPer1M,
+			Currency:            c.Currency,
+			ConcurrencyLimit:    c.ConcurrencyLimit,
+			ActiveSessions:      c.ActiveSessions,
+			ConsecutiveFailures: c.ConsecutiveFailures,
+			BillingMode:         c.BillingMode,
+			Tier:                c.Tier,
+			CredentialID:        c.CredentialID,
+		}
+		c.CompositeScore = routing.CalculateCompositeScore(pc, weights)
 		candidates = append(candidates, c)
 	}
 
-	// Add rank
-	for i := range candidates {
-		candidates[i].Rank = i + 1
+	toProviderCandidate := func(c candidate) provider.Candidate {
+		return provider.Candidate{
+			CredentialID:        c.CredentialID,
+			Tier:                c.Tier,
+			ManualPriority:      c.ManualPriority,
+			PriceInPer1M:        c.UnitPriceInPer1M,
+			PriceOutPer1M:       c.UnitPriceOutPer1M,
+			Currency:            c.Currency,
+			ConcurrencyLimit:    c.ConcurrencyLimit,
+			ActiveSessions:      c.ActiveSessions,
+			ConsecutiveFailures: c.ConsecutiveFailures,
+			CompositeScore:      c.CompositeScore,
+			BillingMode:         c.BillingMode,
+		}
 	}
-
-	// Sort by tier, weight, success rate
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Tier != candidates[j].Tier {
-			return candidates[i].Tier < candidates[j].Tier
-		}
-		if candidates[i].Weight != candidates[j].Weight {
-			return candidates[i].Weight > candidates[j].Weight
-		}
-		return candidates[i].SuccessRate > candidates[j].SuccessRate
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return routing.CompareCandidatePriority(
+			toProviderCandidate(candidates[i]),
+			toProviderCandidate(candidates[j]),
+		)
 	})
 
-	// Re-assign ranks after sort
 	for i := range candidates {
 		candidates[i].Rank = i + 1
 	}
@@ -1552,6 +1597,9 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			c.concurrency_limit,
 			COALESCE(mo.currency, 'USD') AS currency,
+			COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			mo.unit_price_in_per_1m,
+			mo.unit_price_out_per_1m,
 			CASE
 				WHEN mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0 THEN 0
 				WHEN mo.unit_price_in_per_1m IS NULL AND mo.unit_price_out_per_1m IS NULL THEN 5.0
@@ -1563,7 +1611,16 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		WHERE p.tenant_id = 'default'
 		  AND (lower(mo.raw_model_name) = lower($1) OR lower(mo.standardized_name) = lower($1))
 		  AND mo.available IS TRUE
-		ORDER BY mo.manual_priority NULLS LAST
+		ORDER BY
+			CASE COALESCE(mo.billing_mode, 'token')
+				WHEN 'free' THEN 1
+				WHEN 'token_plan' THEN 1
+				WHEN 'code_plan' THEN 1
+				WHEN 'agent_plan' THEN 1
+				WHEN 'monthly' THEN 1
+				ELSE 2
+			END,
+			mo.manual_priority NULLS LAST
 	`
 	slog.Info("score-details executing SQL", "sql", sqlQuery, "model", model, "normalizedModel", normalizedModel)
 	rows, err := h.db.Query(ctx, sqlQuery, normalizedModel)
@@ -1590,16 +1647,20 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		NormalizedCost      float64 `json:"normalized_cost"`
 		SessionLoad         float64 `json:"session_load"`
 		CompositeScore      float64 `json:"composite_score"`
+		BillingMode         string  `json:"billing_mode"`
+		BillingRound        int     `json:"billing_round"`
 	}
 
+	scoringWeights := scoringWeightsFromMap(weights)
 	details := make([]scoreDetail, 0)
 	for rows.Next() {
 		var d scoreDetail
+		var priceIn, priceOut *float64
 		if err := rows.Scan(
 			&d.CredentialID, &d.ProviderID, &d.ProviderName, &d.RawModel,
 			&d.ManualPriority, &d.PriceIn, &d.PriceOut,
 			&d.ActiveSessions, &d.ConsecutiveFailures, &d.ConcurrencyLimit,
-			&d.Currency, &d.BlendedCost,
+			&d.Currency, &d.BillingMode, &priceIn, &priceOut, &d.BlendedCost,
 		); err != nil {
 			continue
 		}
@@ -1627,11 +1688,38 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 			}
 		}
 
-		d.CompositeScore = float64(d.ManualPriority) + d.NormalizedCost*weights["price"] +
-			d.SessionLoad*weights["session_load"] + float64(d.ConsecutiveFailures)*weights["failure_penalty"]
+		d.BillingRound = provider.BillingRound(d.BillingMode)
+		d.CompositeScore = routing.CalculateCompositeScore(provider.Candidate{
+			ManualPriority:      d.ManualPriority,
+			PriceInPer1M:        priceIn,
+			PriceOutPer1M:       priceOut,
+			Currency:            d.Currency,
+			ConcurrencyLimit:    d.ConcurrencyLimit,
+			ActiveSessions:      d.ActiveSessions,
+			ConsecutiveFailures: d.ConsecutiveFailures,
+			BillingMode:         d.BillingMode,
+			CredentialID:        d.CredentialID,
+		}, scoringWeights)
 
 		details = append(details, d)
 	}
+
+	sort.SliceStable(details, func(i, j int) bool {
+		return routing.CompareCandidatePriority(
+			provider.Candidate{
+				CredentialID:   details[i].CredentialID,
+				ManualPriority: details[i].ManualPriority,
+				CompositeScore: details[i].CompositeScore,
+				BillingMode:    details[i].BillingMode,
+			},
+			provider.Candidate{
+				CredentialID:   details[j].CredentialID,
+				ManualPriority: details[j].ManualPriority,
+				CompositeScore: details[j].CompositeScore,
+				BillingMode:    details[j].BillingMode,
+			},
+		)
+	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"model":      model,
@@ -1693,6 +1781,26 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 	}
 
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+}
+
+func scoringWeightsFromMap(m map[string]float64) routing.ScoringWeights {
+	w := routing.DefaultScoringWeights()
+	if v, ok := m["price"]; ok {
+		w.Price = v
+	}
+	if v, ok := m["session_load"]; ok {
+		w.SessionLoad = v
+	}
+	if v, ok := m["failure_penalty"]; ok {
+		w.FailurePenalty = v
+	}
+	if v, ok := m["default_price_cny"]; ok {
+		w.DefaultPriceCNY = v
+	}
+	if v, ok := m["default_price_usd"]; ok {
+		w.DefaultPriceUSD = v
+	}
+	return w
 }
 
 func (h *Handler) getScoringWeights(ctx context.Context) map[string]float64 {

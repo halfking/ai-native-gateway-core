@@ -149,8 +149,9 @@ function cancelEdit() {
   editingPriority.value = null
 }
 
-function getScoreFor(credId: number): number | null {
-  return compositeScores.value.get(credId) ?? null
+function getScoreFor(c: RoutingCandidate): number | null {
+  if (c.composite_score != null) return c.composite_score
+  return compositeScores.value.get(c.credential_id) ?? null
 }
 
 function getScoreBreakdown(credId: number): ScoreDetail | null {
@@ -284,6 +285,7 @@ function dateWindow(c: RoutingCandidate): string {
             <th>目录代码</th>
             <th>凭据</th>
             <th>上游 raw</th>
+            <th>计费</th>
             <th>策略</th>
             <th>手工序号</th>
             <th>价格 in/out</th>
@@ -296,10 +298,10 @@ function dateWindow(c: RoutingCandidate): string {
             <td style="text-align:center">
               <span
                 class="score-badge"
-                :class="getScoreFor(c.credential_id) === 0 ? 'score-free' : (getScoreFor(c.credential_id) !== null && getScoreFor(c.credential_id)! < 20 ? 'score-good' : 'score-normal')"
-                :title="getScoreFor(c.credential_id) === 0 ? '免费模型，最优先' : ''"
+                :class="getScoreFor(c) === 0 ? 'score-free' : (getScoreFor(c) !== null && getScoreFor(c)! < 20 ? 'score-good' : 'score-normal')"
+                :title="getScoreFor(c) === 0 ? '免费模型，最优先' : ''"
               >
-                {{ getScoreFor(c.credential_id) !== null ? getScoreFor(c.credential_id)!.toFixed(1) : '—' }}
+                {{ getScoreFor(c) !== null ? getScoreFor(c)!.toFixed(1) : '—' }}
               </span>
               <div v-if="getScoreBreakdown(c.credential_id)" class="cell-muted" style="font-size:10px">
                 <span title="手工序号">P{{ getScoreBreakdown(c.credential_id)!.manual_priority }}</span> ·
@@ -315,6 +317,12 @@ function dateWindow(c: RoutingCandidate): string {
               <div class="cell-muted">#{{ c.credential_id }} · 并发 {{ c.effective_concurrency ?? c.concurrency_limit ?? '—' }}</div>
             </td>
             <td><code style="font-size:11px">{{ c.model_name }}</code></td>
+            <td>
+              <span class="badge" :class="c.billing_round === 1 ? 'badge-green' : ''" style="font-size:11px">
+                {{ c.billing_mode || 'token' }}
+              </span>
+              <div v-if="c.billing_round === 2" class="cell-muted">第2轮 · 并发溢出</div>
+            </td>
             <td>T{{ c.tier }} · w{{ c.weight }}</td>
             <td>
               <div v-if="editingPriority === c.credential_id" style="display:flex;gap:4px;align-items:center">
@@ -330,8 +338,8 @@ function dateWindow(c: RoutingCandidate): string {
                 <button class="btn btn-primary btn-sm" @click="savePriority(c.credential_id, c.model_name)" style="font-size:11px;padding:2px 6px">保存</button>
                 <button class="btn btn-ghost btn-sm" @click="cancelEdit" style="font-size:11px;padding:2px 6px">取消</button>
               </div>
-              <div v-else style="cursor:pointer" @click="startEditPriority(c.credential_id, getScoreBreakdown(c.credential_id)?.manual_priority ?? 99)">
-                <span style="font-weight:600">{{ getScoreBreakdown(c.credential_id)?.manual_priority ?? 99 }}</span>
+              <div v-else style="cursor:pointer" @click="startEditPriority(c.credential_id, getScoreBreakdown(c.credential_id)?.manual_priority ?? c.manual_priority ?? 99)">
+                <span style="font-weight:600">{{ getScoreBreakdown(c.credential_id)?.manual_priority ?? c.manual_priority ?? 99 }}</span>
                 <span class="cell-muted" style="font-size:10px;margin-left:4px">✎</span>
               </div>
             </td>

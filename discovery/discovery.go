@@ -519,6 +519,11 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
 		VALUES ($1, $2, $3, $4, TRUE, NOW())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			canonical_id = EXCLUDED.canonical_id,
+			standardized_name = EXCLUDED.standardized_name,
+			available = TRUE,
+			last_seen_at = NOW()
 	`, cred.ID, canonicalID, rawName, modelname.StandardizeName(rawName))
 	if err != nil {
 		return err

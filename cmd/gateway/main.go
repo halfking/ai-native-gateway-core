@@ -288,7 +288,6 @@ func main() {
 				credCycler.SetKeyring(keyring)
 			}
 			credCycler.Start(context.Background())
-			slog.Info("credential cycler started")
 		} else if bgDataPlaneOnly {
 			slog.Info("credential cycler skipped (bg_mode=data-plane)")
 		}
@@ -300,12 +299,10 @@ func main() {
 				credProbeV2.SetKeyring(keyring)
 			}
 			credProbeV2.Start(context.Background())
-			slog.Info("credential probe v2 started")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
 			defaultProbePicker = bg.NewDefaultProbePicker(dbConn.Pool())
 			defaultProbePicker.Start(context.Background())
-			slog.Info("default probe picker started")
 		}
 
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
@@ -315,7 +312,6 @@ func main() {
 		if !bgDataPlaneOnly {
 			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
 			taxonomySync.Start(context.Background())
-			slog.Info("taxonomy sync started")
 		} else {
 			slog.Info("taxonomy sync skipped (bg_mode=data-plane)")
 		}
