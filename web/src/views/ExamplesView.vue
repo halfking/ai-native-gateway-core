@@ -248,8 +248,8 @@ const exampleTitle: Record<ExampleId, string> = {
         <div style="max-width:360px;flex:1;min-width:240px">
           <ModelPicker
             v-model="selectedModel"
-            :allow-free-text="true"
-            placeholder="选择或输入模型名"
+            placeholder="选择模型…"
+            title="选择示例模型"
           />
         </div>
         <div style="font-size:12px;color:var(--muted)">

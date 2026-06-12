@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
+import ModelPicker from '../../components/ModelPicker.vue'
 
 const props = defineProps<{ providerId: number }>()
 const logs = ref<ProviderLogEntry[]>([])
@@ -9,7 +10,7 @@ const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
 const error = ref('')
-const keyword = ref('')
+const modelFilter = ref('')
 const credentialId = ref<number | ''>('')
 const successFilter = ref<'all' | 'true' | 'false'>('all')
 const errorKindFilter = ref('')
@@ -27,7 +28,7 @@ async function load() {
   try {
     const range = timeRange()
     const resp = await getProviderLogs(props.providerId, {
-      model: keyword.value.trim() || undefined,
+      model: modelFilter.value.trim() || undefined,
       credential_id: credentialId.value === '' ? undefined : Number(credentialId.value),
       success: successFilter.value === 'all' ? undefined : successFilter.value === 'true',
       error_kind: errorKindFilter.value.trim() || undefined,
@@ -54,7 +55,7 @@ async function loadCredentials() {
 }
 
 function resetFilters() {
-  keyword.value = ''
+  modelFilter.value = ''
   credentialId.value = ''
   successFilter.value = 'all'
   errorKindFilter.value = ''
@@ -90,12 +91,14 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
         <option :value="24">24小时</option>
         <option :value="168">7天</option>
       </select>
-      <input
-        v-model="keyword"
-        class="cf-input cf-grow"
-        placeholder="模型名…"
-        @keyup.enter="search"
-      />
+      <div class="cf-grow" style="min-width:200px">
+        <ModelPicker
+          v-model="modelFilter"
+          placeholder="选择模型…"
+          title="筛选供应商日志模型"
+          @update:model-value="search"
+        />
+      </div>
       <select v-model="credentialId" class="cf-select cf-cred" title="凭据" @change="search">
         <option value="">全部凭据</option>
         <option v-for="c in credentials" :key="c.id" :value="c.id">
