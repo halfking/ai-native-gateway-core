@@ -140,8 +140,8 @@ onUnmounted(() => {
           <div class="decisions-model-picker">
             <ModelPicker
               v-model="filterModel"
-              :allow-free-text="true"
-              placeholder="标准模型名…"
+              placeholder="选择模型…"
+              title="筛选路由决策模型"
               @update:model-value="resetAndLoad"
             />
           </div>

@@ -61,7 +61,12 @@
     <!-- Filter Bar -->
     <div class="pm-filters">
       <div class="filter-group">
-        <input v-model="filters.search" placeholder="搜索模型…" class="filter-input" @input="onFilterChange" />
+        <ModelPicker
+          v-model="filters.search"
+          placeholder="选择模型筛选…"
+          title="定价管理 · 模型筛选"
+          @update:model-value="onFilterChange"
+        />
       </div>
       <div class="filter-group">
         <select v-model="filters.provider_id" @change="onFilterChange" class="filter-select">
@@ -368,6 +373,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { store } from '../store'
+import ModelPicker from '../components/ModelPicker.vue'
 
 const API = '/api/pricing'
 

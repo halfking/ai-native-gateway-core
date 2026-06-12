@@ -225,13 +225,13 @@ onMounted(load)
     <div v-if="!loading" class="card">
       <h3 style="margin-top:0">特色模型 (Featured)</h3>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">
-        选择或输入模型 raw_model_name，将在路由总览中以 ★ 标记，并可启用「仅特色」筛选。
+        选择标准模型名称，将在路由总览中以 ★ 标记，并可启用「仅特色」筛选。
       </p>
       <ModelPicker
         v-model="featuredArray"
         mode="multi"
-        :allow-free-text="true"
-        placeholder="选择或输入后回车添加"
+        placeholder="选择特色模型…"
+        title="特色模型（多选）"
       />
       <div style="margin-top:8px">
         <button class="btn btn-primary" @click="saveFeatured" :disabled="saving">
