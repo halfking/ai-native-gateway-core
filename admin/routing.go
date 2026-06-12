@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/routing"
 )
@@ -1481,7 +1482,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		"max_tokens": req.MaxTokens,
 		"stream":     false,
 	})
-	probeURL := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
+	probeURL := upstreamurl.ChatCompletionsURL(baseURL)
 	probeReq, _ := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, strings.NewReader(string(probeBody)))
 	probeReq.Header.Set("Content-Type", "application/json")
 	probeReq.Header.Set("Authorization", "Bearer "+apiKey)

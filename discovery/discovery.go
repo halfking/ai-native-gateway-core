@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -308,7 +308,7 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 			return s.discoverFromManifest(ctx, cred)
 		}
-		modelsURL = urlutil.ModelsURL(cred.BaseURL)
+		modelsURL = upstreamurl.ModelsURL(cred.BaseURL)
 		if modelsURL == "" {
 			return s.discoverFromManifest(ctx, cred)
 		}
@@ -393,7 +393,7 @@ func modelsEndpointURL(baseURL string, template *string) string {
 		base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 		return base + tpl
 	}
-	return urlutil.ModelsURL(baseURL)
+	return upstreamurl.ModelsURL(baseURL)
 }
 
 func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string, error) {

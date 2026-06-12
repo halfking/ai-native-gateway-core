@@ -8,13 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -34,8 +34,7 @@ type ChatExecutor struct {
 }
 
 func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStream bool) (*http.Request, error) {
-	base := strings.TrimRight(cand.BaseURL, "/")
-	upstreamURL := base + "/v1/chat/completions"
+	upstreamURL := upstreamurl.ChatCompletionsURL(cand.BaseURL)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -168,10 +167,11 @@ func (e *Executor) executeOpenAI(
 
 		result, tryErr := func() (*ExecuteResult, error) {
 			var reqPool *pool.Pool
-			base := strings.TrimRight(cand.BaseURL, "/")
-			upstreamURL := base + "/chat/completions"
+			var upstreamURL string
 			if cand.Protocol == "anthropic-messages" {
-				upstreamURL = base + "/messages"
+				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
+			} else {
+				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
 
 			req, err := http.NewRequestWithContext(
