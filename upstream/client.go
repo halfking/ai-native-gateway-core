@@ -14,6 +14,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 const (
@@ -161,8 +162,7 @@ func BuildUpstreamRequest(
 	stream bool,
 	id *identity.ClientIdentity,
 ) (*http.Request, error) {
-	base := strings.TrimRight(baseURL, "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamurl.ChatCompletionsURL(baseURL), body)
 	if err != nil {
 		return nil, err
 	}

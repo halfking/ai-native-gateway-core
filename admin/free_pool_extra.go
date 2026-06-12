@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 // ── Static Catalog (mirrors Python free_pool_signup_hub.py) ────────────────
@@ -711,15 +711,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 		return nil
 	}}
 
-	candidates := []string{
-		normalized + "/models",
-		urlutil.ModelsURL(normalized),
-	}
-	if strings.HasSuffix(normalized, "/v1") {
-		root := strings.TrimRight(normalized, "/v1")
-		root = strings.TrimRight(root, "/")
-		candidates = append([]string{root + "/v1/models"}, candidates...)
-	}
+	candidates := upstreamurl.ModelsURLCandidates(normalized)
 
 	var lastStatus *int
 	var lastError string
@@ -791,10 +783,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 
 	// Fallback: try chat/completions with a 1-token request
 	if strings.TrimSpace(apiKey) != "" {
-		chatURL := normalized + "/v1/chat/completions"
-		if strings.HasSuffix(normalized, "/v1") {
-			chatURL = normalized + "/chat/completions"
-		}
+		chatURL := upstreamurl.ChatCompletionsURL(normalized)
 		body, _ := json.Marshal(map[string]any{
 			"model":      "gpt-4o-mini",
 			"messages":   []map[string]string{{"role": "user", "content": "ping"}},

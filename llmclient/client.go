@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
 type ModelInfo struct {
@@ -74,7 +74,7 @@ func New() *Client {
 func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]string, error) {
 	hasKey := strings.TrimSpace(apiKey) != ""
 	var lastErr error
-	for _, modelsURL := range urlutil.ModelsURLCandidates(baseURL) {
+	for _, modelsURL := range upstreamurl.ModelsURLCandidates(baseURL) {
 		req, err := http.NewRequestWithContext(ctx, "GET", modelsURL, nil)
 		if err != nil {
 			lastErr = err
@@ -123,8 +123,7 @@ func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]stri
 }
 
 func (c *Client) Chat(ctx context.Context, baseURL, apiKey string, req ChatRequest) (*ChatResponse, error) {
-	baseURL = strings.TrimRight(baseURL, "/")
-	chatURL := baseURL + "/v1/chat/completions"
+	chatURL := upstreamurl.ChatCompletionsURL(baseURL)
 
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 256
