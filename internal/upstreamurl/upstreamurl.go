@@ -56,15 +56,19 @@ const (
 var versionTrailing = regexp.MustCompile(`/v[1-9]$`)
 
 // completionSuffixes are stripped when they appear at the tail of a base URL.
+// Order matters: longer /vN/foo must be checked before bare /foo, and
+// /v1/ variants must be checked before other /vN/ variants.
 var completionSuffixes = []string{
 	"/v1/chat/completions",
 	"/v1/completions",
 	"/v1/responses",
 	"/v1/messages",
+	"/v1/models",
 	"/chat/completions",
 	"/completions",
 	"/responses",
 	"/messages",
+	"/models",
 }
 
 // stripTail runs the standard 2-step base-URL cleanup:
