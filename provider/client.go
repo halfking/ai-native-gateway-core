@@ -47,6 +47,7 @@ type Candidate struct {
 	ConsecutiveFailures int      `json:"consecutive_failures"`
 	CompositeScore      float64  `json:"composite_score"`
 	Currency            string   `json:"currency"`
+	BillingMode         string   `json:"billing_mode"`
 	APIKey              string   `json:"-"`
 }
 
@@ -75,28 +76,46 @@ func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens
 }
 
 func (c *Candidate) IsAvailable() bool {
+	return c.UnavailableReason() == ""
+}
+
+// UnavailableReason returns a human-readable reason string when the
+// candidate cannot be used, or "" if it is fully available. Order matches
+// IsAvailable() so the first non-nil branch is the dominant reason.
+func (c *Candidate) UnavailableReason() string {
 	if !c.Routable {
-		return false
+		if c.BlockReason != nil && *c.BlockReason != "" {
+			return "routing_blocked:" + *c.BlockReason
+		}
+		return "routing_blocked"
 	}
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
-		return false
+		return "lifecycle:" + c.LifecycleStatus
 	}
 	switch c.AvailabilityState {
-	case "suspended", "auth_failed":
-		return false
-	case "cooling", "rate_limited", "unreachable":
-		return false
+	case "suspended":
+		return "availability:suspended"
+	case "auth_failed":
+		return "availability:auth_failed"
+	case "cooling":
+		return "availability:cooling"
+	case "rate_limited":
+		return "availability:rate_limited"
+	case "unreachable":
+		return "availability:unreachable"
 	}
 	switch c.QuotaState {
-	case "balance_exhausted", "permanently_exhausted":
-		return false
+	case "balance_exhausted":
+		return "quota:balance_exhausted"
+	case "permanently_exhausted":
+		return "quota:permanently_exhausted"
 	case "periodic_exhausted":
-		return false
+		return "quota:periodic_exhausted"
 	}
 	if c.BalanceUSD != nil && *c.BalanceUSD <= 0 {
-		return false
+		return "balance:zero"
 	}
-	return true
+	return ""
 }
 
 type Policy struct {
@@ -428,6 +447,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
+			COALESCE(mo.billing_mode, 'token') AS billing_mode,
 			mo.raw_model_name
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
@@ -450,7 +470,19 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
-		ORDER BY COALESCE(mo.manual_priority, 99), COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
+		ORDER BY
+			CASE COALESCE(mo.billing_mode, 'token')
+				WHEN 'free' THEN 1
+				WHEN 'token_plan' THEN 1
+				WHEN 'code_plan' THEN 1
+				WHEN 'agent_plan' THEN 1
+				WHEN 'monthly' THEN 1
+				ELSE 2
+			END,
+			COALESCE(mo.manual_priority, 99),
+			COALESCE(mo.routing_tier, 2),
+			COALESCE(mo.weight, 100) DESC,
+			COALESCE(mo.success_rate, 0.9) DESC
 	`)
 	if err != nil {
 		return nil, err
@@ -495,6 +527,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			&cand.ActiveSessions,
 			&cand.ConsecutiveFailures,
 			&cand.Currency,
+			&cand.BillingMode,
 			&offerRawModel,
 		); err != nil {
 			return nil, err

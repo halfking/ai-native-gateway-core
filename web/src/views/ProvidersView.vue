@@ -627,11 +627,17 @@ onUnmounted(() => {
             <th>24h 错误率</th>
             <th>系统健康</th>
             <th>状态</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="p in providers" :key="p.id" @click="router.push('/providers/' + p.id)" style="cursor:pointer">
+          <tr
+            v-for="p in providers"
+            :key="p.id"
+            class="provider-row"
+            tabindex="0"
+            @click="router.push('/providers/' + p.id)"
+            @keydown.enter="router.push('/providers/' + p.id)"
+          >
             <td>
               <div style="font-weight:500">{{ p.display_name }}</div>
               <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>
@@ -677,25 +683,6 @@ onUnmounted(() => {
               <span class="badge" :class="p.enabled ? 'badge-green' : 'badge-gray'">
                 {{ p.enabled ? '已启用' : '已禁用' }}
               </span>
-            </td>
-            <td>
-              <div style="display:flex;gap:6px;flex-wrap:wrap">
-                <button class="btn btn-ghost btn-sm" @click="openEdit(p)">编辑</button>
-                <button class="btn btn-ghost btn-sm" @click="toggle(p)">
-                  {{ p.enabled ? '禁用' : '启用' }}
-                </button>
-                <button class="btn btn-ghost btn-sm" @click="openCred(p)">+ 凭据</button>
-                <button class="btn btn-ghost btn-sm" @click="openManageCred(p)">管理凭据</button>
-                <button
-                  class="btn btn-ghost btn-sm"
-                  @click="checkSingleProvider(p)"
-                  :disabled="checkingProvider[p.id]"
-                  title="对该供应商所有凭据执行一次健康检测"
-                >{{ checkingProvider[p.id] ? '检测中…' : '检测' }}</button>
-              </div>
-              <div v-if="checkResults[p.id]" style="font-size:11px;color:var(--muted);margin-top:4px">
-                {{ checkResults[p.id] }}
-              </div>
             </td>
           </tr>
         </tbody>
@@ -1262,6 +1249,16 @@ onUnmounted(() => {
 .badge-orange {
   background: rgba(210,153,34,.15);
   color: var(--warning);
+}
+.provider-row {
+  cursor: pointer;
+}
+.provider-row:hover td {
+  background: rgba(99, 102, 241, 0.06);
+}
+.provider-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 @media (max-width: 1000px) {
   .credential-table {

@@ -283,6 +283,7 @@ func loadVersionInfo() map[string]any {
 
 func versionFileCandidates() []string {
 	candidates := []string{
+		"/opt/llm-gateway-go/" + llmGatewayVersionFile,
 		llmGatewayVersionFile,
 		"services/llm-gateway-go/" + llmGatewayVersionFile,
 	}
@@ -315,6 +316,7 @@ func loadDeploySeq() int {
 
 func deploySeqFileCandidates() []string {
 	candidates := []string{
+		"/opt/llm-gateway-go/" + llmGatewayDeploySeqFile,
 		llmGatewayDeploySeqFile,
 		"services/llm-gateway-go/" + llmGatewayDeploySeqFile,
 	}
