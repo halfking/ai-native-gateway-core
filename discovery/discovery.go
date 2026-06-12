@@ -298,13 +298,13 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return nil, 0, nil
 	}
 
-	if cred.DiscoveryStrategy == "manifest_only" {
+	if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 		return s.discoverFromManifest(ctx, cred)
 	}
 
 	modelsURL := modelsEndpointURL(cred.BaseURL, cred.ModelsEndpointTemplate)
 	if modelsURL == "" {
-		if cred.DiscoveryStrategy == "manifest_only" {
+		if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 			return s.discoverFromManifest(ctx, cred)
 		}
 		modelsURL = urlutil.ModelsURL(cred.BaseURL)
