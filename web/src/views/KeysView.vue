@@ -8,7 +8,8 @@ import FilterInput from '../components/FilterInput.vue'
 const router = useRouter()
 
 const keys = ref<ApiKey[]>([])
-const profileEdit = ref<{ keyId: number; profile: string; ownerUser: string; keyAlias: string } | null>(null)
+const selectedKey = ref<ApiKey | null>(null)
+const editForm = ref({ profile: '', ownerUser: '', keyAlias: '' })
 const profileSaving = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -211,22 +212,29 @@ const copiedId = ref<string | null>(null)
 const copyNotice = ref('')
 let copyNoticeTimer: number | undefined
 
+function openKeyDrawer(k: ApiKey) {
+  selectedKey.value = k
+  editForm.value = {
+    profile: k.default_client_profile || '',
+    ownerUser: k.owner_user || '',
+    keyAlias: k.key_alias || '',
+  }
+}
+
+function closeKeyDrawer() {
+  selectedKey.value = null
+}
+
 async function saveKeyProfile() {
-  if (!profileEdit.value) return
+  if (!selectedKey.value) return
   profileSaving.value = true
   try {
     const updates: Record<string, string> = {}
-    if (profileEdit.value.profile !== undefined) {
-      updates.default_client_profile = profileEdit.value.profile.trim()
-    }
-    if (profileEdit.value.ownerUser !== undefined) {
-      updates.owner_user = profileEdit.value.ownerUser.trim()
-    }
-    if (profileEdit.value.keyAlias !== undefined) {
-      updates.key_alias = profileEdit.value.keyAlias.trim()
-    }
-    await patchKeyProfile(profileEdit.value.keyId, updates)
-    profileEdit.value = null
+    updates.default_client_profile = editForm.value.profile.trim()
+    updates.owner_user = editForm.value.ownerUser.trim()
+    updates.key_alias = editForm.value.keyAlias.trim()
+    await patchKeyProfile(selectedKey.value.id, updates)
+    closeKeyDrawer()
     await load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '保存失败'
@@ -395,17 +403,21 @@ async function copyCreatedKey(id: string) {
   }, 2500)
 }
 
-async function approve(k: ApiKey) {
+async function approveSelected() {
+  const k = selectedKey.value
+  if (!k) return
   try {
     await approveKey(k.id)
+    closeKeyDrawer()
     await load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '审批失败'
   }
 }
 
-async function disable(k: ApiKey) {
-  // System keys cannot be disabled
+async function disableSelected() {
+  const k = selectedKey.value
+  if (!k) return
   if ((k as any).is_system) {
     error.value = '系统密钥无法禁用'
     return
@@ -413,27 +425,35 @@ async function disable(k: ApiKey) {
   if (!confirm(`确认禁用密钥 ${k.key_prefix}？可通过"启用"恢复。`)) return
   try {
     await disableKey(k.id)
-    // If the disabled key is the current session key, clear session and redirect
-    // because disabled keys can't authenticate anymore
     const currentKeyPrefix = store.apiKey ? store.apiKey.substring(0, 12) : ''
     if (k.key_prefix && currentKeyPrefix.startsWith(k.key_prefix.substring(0, 8))) {
       clearApiKey()
       window.location.href = '/login'
       return
     }
+    closeKeyDrawer()
     await load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '禁用失败'
   }
 }
 
-async function enable(k: ApiKey) {
+async function enableSelected() {
+  const k = selectedKey.value
+  if (!k) return
   try {
     await enableKey(k.id)
+    closeKeyDrawer()
     await load()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '启用失败'
   }
+}
+
+async function copySelectedKey() {
+  const k = selectedKey.value
+  if (!k) return
+  await copyKey(k, `drawer-${k.id}`)
 }
 
 function viewStats(k: ApiKey) {
@@ -575,11 +595,16 @@ onBeforeUnmount(() => {
             <th>到期</th>
             <th>最后使用</th>
             <th>备注</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="k in filteredKeys" :key="k.id">
+          <tr
+            v-for="k in filteredKeys"
+            :key="k.id"
+            class="key-row"
+            :class="{ selected: selectedKey?.id === k.id }"
+            @click="openKeyDrawer(k)"
+          >
             <td style="font-size:11px;color:var(--muted);font-family:monospace">{{ k.id }}</td>
             <td>
               <div class="key-cell">
@@ -599,17 +624,9 @@ onBeforeUnmount(() => {
             <td><code style="font-size:11px">{{ k.key_alias || '—' }}</code></td>
             <td>
               <code style="font-size:11px">{{ k.default_client_profile || '—' }}</code>
-              <button
-                class="btn btn-ghost btn-xs"
-                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '', keyAlias: k.key_alias || '' }"
-              >编辑</button>
             </td>
             <td>
               <span style="font-size:12px">{{ k.owner_user ?? '—' }}</span>
-              <button
-                class="btn btn-ghost btn-xs"
-                @click="profileEdit = { keyId: k.id, profile: k.default_client_profile || '', ownerUser: k.owner_user || '', keyAlias: k.key_alias || '' }"
-              >编辑</button>
             </td>
             <td>
               <span class="badge"
@@ -633,73 +650,107 @@ onBeforeUnmount(() => {
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
               {{ k.remark || '—' }}
             </td>
-            <td>
-              <div class="action-cell">
-                <button
-                  class="btn btn-secondary btn-sm"
-                  @click="viewStats(k)"
-                  title="查看使用统计"
-                >
-                  📊 统计
-                </button>
-                <button
-                  class="btn btn-success btn-sm"
-                  @click="approve(k)"
-                  v-if="k.status === 'pending'"
-                >审批</button>
-                <button
-                  @click="disable(k)"
-                  v-else-if="k.status === 'active'"
-                >禁用</button>
-                <button
-                  class="btn btn-secondary btn-sm"
-                  @click="enable(k)"
-                  v-else-if="k.status === 'disabled'"
-                >启用</button>
-              </div>
-            </td>
           </tr>
         </tbody>
       </table>
       <div v-if="!loading && filteredKeys.length === 0" class="empty">当前状态下没有密钥</div>
     </div>
 
-    <!-- Edit Key Modal -->
-    <div v-if="profileEdit" class="modal-overlay" @click.self="profileEdit = null">
-      <div class="modal card" style="max-width:420px" @click.stop>
-        <h3>编辑 Key #{{ profileEdit.keyId }}</h3>
-        <div class="form-group">
-          <label>Client Profile</label>
-          <input
-            v-model="profileEdit.profile"
-            class="input"
-            placeholder="cursor / roocode / cline"
-          />
-        </div>
-        <div class="form-group">
-          <label>归属用户</label>
-          <input
-            v-model="profileEdit.ownerUser"
-            class="input"
-            placeholder="用户名"
-          />
-        </div>
-        <div class="form-group">
-          <label>密钥别名</label>
-          <input
-            v-model="profileEdit.keyAlias"
-            class="input"
-            placeholder="如: prod, dev, zhangsan-cli"
-          />
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-          <button class="btn btn-ghost" @click="profileEdit = null">取消</button>
-          <button class="btn btn-primary" @click="saveKeyProfile" :disabled="profileSaving">
-            {{ profileSaving ? '保存中…' : '保存' }}
-          </button>
+    <!-- Key edit drawer -->
+    <Teleport to="body">
+      <div v-if="selectedKey" class="drawer-backdrop" @click="closeKeyDrawer">
+        <div class="drawer-panel card" @click.stop>
+          <div class="drawer-header">
+            <div>
+              <div style="font-size:15px;font-weight:600">密钥 #{{ selectedKey.id }}</div>
+              <div class="drawer-sub"><code>{{ selectedKey.key_prefix }}***</code> · {{ selectedKey.application_code }}</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="closeKeyDrawer">✕ 关闭</button>
+          </div>
+
+          <div class="drawer-body">
+            <div class="drawer-section">
+              <div class="drawer-section-title">基本信息</div>
+              <div class="detail-grid">
+                <span class="dk">租户</span><span class="dv mono">{{ selectedKey.tenant_id }}</span>
+                <span class="dk">应用</span><span class="dv">{{ selectedKey.application_code }}</span>
+                <span class="dk">状态</span>
+                <span class="dv">
+                  <span class="badge" :class="keyStateBadgeClass(selectedKey)">{{ keyStateLabel(selectedKey) }}</span>
+                  <span v-if="(selectedKey as any).is_system" class="badge badge-system">系统</span>
+                </span>
+                <span class="dk">预算</span><span class="dv">{{ selectedKey.budget_usd != null ? fmtCost(selectedKey.budget_usd) : '无限制' }}</span>
+                <span class="dk">速率限制</span><span class="dv">{{ rateLimitLabel(selectedKey) }}</span>
+                <span class="dk">到期</span><span class="dv">{{ fmtDate(selectedKey.expires_at) }}</span>
+                <span class="dk">备注</span><span class="dv">{{ selectedKey.remark || '—' }}</span>
+              </div>
+            </div>
+
+            <div class="drawer-section">
+              <div class="drawer-section-title">编辑</div>
+              <div class="form-group">
+                <label>Client Profile</label>
+                <input
+                  v-model="editForm.profile"
+                  class="input"
+                  placeholder="cursor / roocode / cline"
+                />
+              </div>
+              <div class="form-group">
+                <label>归属用户</label>
+                <input
+                  v-model="editForm.ownerUser"
+                  class="input"
+                  placeholder="用户名"
+                />
+              </div>
+              <div class="form-group">
+                <label>密钥别名</label>
+                <input
+                  v-model="editForm.keyAlias"
+                  class="input"
+                  placeholder="如: prod, dev, zhangsan-cli"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="drawer-footer">
+            <div class="drawer-actions">
+              <button
+                class="btn btn-ghost btn-sm"
+                :class="{ 'btn-success': copiedId === `drawer-${selectedKey.id}` }"
+                @click="copySelectedKey"
+              >
+                {{ copiedId === `drawer-${selectedKey.id}` ? '✓ 已复制' : '📋 复制密钥' }}
+              </button>
+              <button class="btn btn-secondary btn-sm" @click="viewStats(selectedKey)">📊 使用统计</button>
+              <button
+                v-if="selectedKey.status === 'pending'"
+                class="btn btn-success btn-sm"
+                @click="approveSelected"
+              >审批</button>
+              <button
+                v-else-if="selectedKey.status === 'active'"
+                class="btn btn-sm"
+                @click="disableSelected"
+              >禁用</button>
+              <button
+                v-else-if="selectedKey.status === 'disabled'"
+                class="btn btn-secondary btn-sm"
+                @click="enableSelected"
+              >启用</button>
+            </div>
+            <div class="drawer-save-row">
+              <button class="btn btn-ghost" @click="closeKeyDrawer">取消</button>
+              <button class="btn btn-primary" @click="saveKeyProfile" :disabled="profileSaving">
+                {{ profileSaving ? '保存中…' : '保存' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
 
     <div class="modal-overlay" v-if="showNew" @click.self="() => { if (!createdKey) showNew = false }">
       <div class="modal" @click.stop>
@@ -887,16 +938,71 @@ onBeforeUnmount(() => {
   line-height: 18px;
 }
 
+.key-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.key-row:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.key-row.selected {
+  background: rgba(99, 102, 241, 0.1);
+}
+
 .key-cell {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.action-cell {
+.drawer-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.drawer-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
   display: flex;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.drawer-save-row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 8px 12px;
+  font-size: 13px;
+}
+
+.detail-grid .dk {
+  color: var(--muted);
+}
+
+.detail-grid .dv.mono {
+  font-family: monospace;
+  font-size: 12px;
 }
 
 .has-cost {
