@@ -81,3 +81,6 @@ logs/
 *.pid
 *.bak
 *.backup
+
+# Vendored kx-design (use services/shared/kx-design instead)
+kx-design/
