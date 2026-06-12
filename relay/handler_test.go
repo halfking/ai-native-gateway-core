@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -157,4 +158,50 @@ func TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream(t *testing.T) 
 		}
 	}
 	_ = upstreamBody
+}
+
+// TestExtractBearerToken_Bearer covers the primary path: Anthropic-style
+// clients sending Authorization: Bearer <key> (or lowercase variant).
+func TestExtractBearerToken_Bearer(t *testing.T) {
+	for _, prefix := range []string{"Bearer ", "bearer "} {
+		req := httptest.NewRequest("POST", "/v1/messages", nil)
+		req.Header.Set("Authorization", prefix+"sk-test-123")
+		if got := extractBearerToken(req); got != "sk-test-123" {
+			t.Errorf("Authorization %q: got %q, want sk-test-123", prefix+"sk-test-123", got)
+		}
+	}
+}
+
+// TestExtractBearerToken_XAPIKey covers the fallback added for clients
+// that follow the Anthropic SDK default of sending x-api-key without an
+// Authorization header (which previously caused 401 at this gateway).
+func TestExtractBearerToken_XAPIKey(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("x-api-key", "sk-xapi-456")
+	if got := extractBearerToken(req); got != "sk-xapi-456" {
+		t.Errorf("x-api-key header: got %q, want sk-xapi-456", got)
+	}
+}
+
+// TestExtractBearerToken_AuthorizationWins ensures that when both headers
+// are present, Authorization: Bearer takes precedence (matches the
+// documented ordering).
+func TestExtractBearerToken_AuthorizationWins(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer sk-bearer-789")
+	req.Header.Set("x-api-key", "sk-xapi-789")
+	if got := extractBearerToken(req); got != "sk-bearer-789" {
+		t.Errorf("Authorization should take precedence over x-api-key; got %q", got)
+	}
+}
+
+// TestExtractBearerToken_Empty ensures an empty x-api-key is ignored so
+// that SDKs which send the header unconditionally with an empty value
+// still fall through to 401 instead of returning a bogus token.
+func TestExtractBearerToken_Empty(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("x-api-key", "")
+	if got := extractBearerToken(req); got != "" {
+		t.Errorf("empty x-api-key should not be accepted; got %q", got)
+	}
 }
