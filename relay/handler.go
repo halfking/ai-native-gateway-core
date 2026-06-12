@@ -499,10 +499,18 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed())
 
+	upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
+	if convErr != nil {
+		*attemptErrCode = "chat_to_anthropic_conversion_error"
+		*attemptErrMsg = convErr.Error()
+		writeErrorJSON(w, http.StatusBadRequest, requestID, convErr.Error(), "invalid_request", "chat_to_anthropic_conversion_error")
+		return
+	}
+
 	result, execErr := h.executor.Execute(&routing.ExecParams{
 		W:             w,
 		R:             r,
-		BodyBytes:     bodyBytes,
+		BodyBytes:     upstreamBody,
 		IsStream:      isStream,
 		ClientModel:   clientModel,
 		OutboundModel: explicitOutbound,
@@ -1042,6 +1050,34 @@ func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
 	buf.WriteString(`"` + clientModel + `"`)
 	buf.Write(suffix)
 	return buf.Bytes()
+}
+
+// selectChatUpstreamBodyBytes is the Q1 vs Q3 dispatch for /v1/chat/completions.
+//
+// Q3 (openai→anthropic, e.g. minimax's /anthropic compatible
+// endpoint, or any future provider whose protocol field is set to
+// "anthropic-messages"): the OpenAI Chat body is converted to the
+// Anthropic Messages shape before being forwarded. The conversion
+// itself lives in ConvertChatRequestToAnthropic (relay/chat_to_anthropic.go)
+// and is responsible for:
+//   - moving role:system to a top-level "system" field
+//   - renaming "stop" → "stop_sequences"
+//   - rewriting function-style tools into Anthropic tool blocks
+//   - collapsing tool_calls/tool role messages into tool_use/tool_result
+//
+// Q1 (openai→openai-completions / openai-responses / unknown
+// protocol): the original body bytes are forwarded unchanged.
+//
+// Behavior matrix:
+//   - candidates[0].Protocol == "anthropic-messages" → converted body
+//   - any other protocol (or empty) → original body
+//   - len(candidates) == 0 → original body (defensive; GetCandidates
+//     already returned 503 in that case)
+func selectChatUpstreamBodyBytes(candidates []provider.Candidate, originalBody []byte) ([]byte, error) {
+	if len(candidates) > 0 && candidates[0].Protocol == "anthropic-messages" {
+		return ConvertChatRequestToAnthropic(originalBody)
+	}
+	return originalBody, nil
 }
 
 func requestHasTools(body []byte) bool {
