@@ -1181,15 +1181,16 @@ func envDuration(key string, def time.Duration) time.Duration {
 }
 
 func extractBearerToken(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return ""
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if strings.HasPrefix(auth, "Bearer ") {
+			return strings.TrimPrefix(auth, "Bearer ")
+		}
+		if strings.HasPrefix(auth, "bearer ") {
+			return strings.TrimPrefix(auth, "bearer ")
+		}
 	}
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	if strings.HasPrefix(auth, "bearer ") {
-		return strings.TrimPrefix(auth, "bearer ")
+	if key := r.Header.Get("x-api-key"); key != "" {
+		return key
 	}
 	return ""
 }
