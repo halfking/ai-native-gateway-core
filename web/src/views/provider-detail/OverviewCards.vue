@@ -53,7 +53,15 @@ function timeText(v?: string | null) {
 </template>
 
 <style scoped>
-.overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 960px) {
+  .overview-grid { grid-template-columns: 1fr; }
+}
 .overview-grid dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 8px 0; }
 .overview-grid dt { color: var(--muted, #94a3b8); white-space: nowrap; }
 .overview-grid dd { margin: 0; }

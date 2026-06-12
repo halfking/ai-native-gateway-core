@@ -98,7 +98,7 @@ async function runHealthCheck() {
 
 <template>
   <div class="settings-tab">
-    <section class="card settings-section">
+    <section class="card settings-section settings-section--edit">
       <h3 class="section-title">编辑提供商</h3>
       <div class="settings-form">
         <div class="form-grid">
@@ -168,7 +168,7 @@ async function runHealthCheck() {
       </div>
     </section>
 
-    <section class="card settings-section">
+    <section class="card settings-section settings-section--batch">
       <h3 class="section-title">批量操作</h3>
       <div class="batch-actions">
         <button class="btn btn-ghost btn-sm" @click="batchRecover" :disabled="batchLoading">
@@ -182,7 +182,7 @@ async function runHealthCheck() {
       </div>
     </section>
 
-    <section class="card settings-section">
+    <section class="card settings-section settings-section--info">
       <h3 class="section-title">提供商信息</h3>
       <div class="info-grid">
         <div class="info-item"><span class="info-label">ID</span><span>{{ provider.id }}</span></div>
@@ -210,14 +210,15 @@ async function runHealthCheck() {
 
 <style scoped>
 .settings-tab {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 280px));
   gap: 16px;
-  max-width: 760px;
+  align-items: start;
 }
 
 .settings-section {
   margin: 0;
+  min-width: 0;
 }
 
 .section-title {
@@ -235,13 +236,13 @@ async function runHealthCheck() {
 
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 16px;
+  grid-template-columns: 1fr;
+  gap: 12px;
 }
 
 .form-row-triple {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
 }
 
@@ -275,8 +276,8 @@ async function runHealthCheck() {
 
 .info-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 20px;
+  grid-template-columns: 1fr;
+  gap: 8px;
   font-size: 13px;
 }
 
@@ -292,7 +293,7 @@ async function runHealthCheck() {
 }
 
 .info-label {
-  flex: 0 0 96px;
+  flex: 0 0 84px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -301,15 +302,8 @@ async function runHealthCheck() {
   word-break: break-all;
 }
 
-@media (max-width: 720px) {
+@media (max-width: 960px) {
   .settings-tab {
-    max-width: none;
-  }
-  .form-grid,
-  .info-grid {
-    grid-template-columns: 1fr;
-  }
-  .form-row-triple {
     grid-template-columns: 1fr;
   }
   .info-item--wide {
