@@ -635,67 +635,76 @@ func (e *Executor) tryCandidate(
 				} else if e.StreamChat != nil {
 					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture, params.ToolsRequested)
 				}
-				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					// Check if stream is resumable (chunk count below threshold)
-					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
+			if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
+				// Check if stream is resumable (chunk count below threshold)
+				isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
-					// Classify the interruption. eof_without_done is the
-					// dominant pattern seen for MiniMax / similar providers
-					// under concurrent overload — they close the SSE
-					// connection instead of returning a 5xx, so we have to
-					// infer the cause from the absence-of-done signal.
-					// Route the failure through KindConcurrent (5-minute
-					// cooling) when the reason matches the overload pattern
-					// so the credential is taken out of rotation long
-					// enough for the upstream to clear.
-					streamKind := errorsx.KindStreamTimeout
-					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
-						streamKind = errorsx.KindConcurrent
+				// Classify the interruption. eof_without_done is the
+				// dominant pattern seen for MiniMax / similar providers —
+				// they close the SSE connection without sending [DONE].
+				// This is NOT necessarily concurrent overload; many providers
+				// simply omit the sentinel on successful streams.
+				// We only escalate to KindConcurrent when the upstream
+				// explicitly returns an overload error body (not just
+				// eof_without_done). For eof_without_done with chunks
+				// already sent, we use KindStreamTimeout with a light
+				// cooling that goes through the normal threshold gate.
+				streamKind := errorsx.KindStreamTimeout
+				if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
+					streamKind = errorsx.KindConcurrent
+				}
+
+				// eof_without_done with chunks already received: the stream
+				// likely completed its work, just without the [DONE] sentinel.
+				// Do NOT trigger aggressive cooling for this case.
+				isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
+
+				slog.Warn("executor: stream interrupted",
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"reason", streamOutcome.Reason,
+					"chunk_count", streamOutcome.ChunkCount,
+					"resumable", isResumable,
+					"classified_as", streamKind,
+					"benign_eof", isBenignEOF,
+				)
+
+				if isBenignEOF {
+					// Stream produced output but ended without [DONE].
+					// This is a benign provider quirk (common for MiniMax).
+					// Don't penalize the credential — record success so the
+					// circuit breaker stays healthy. The bytes have already
+					// been written to the client (relay/stream.go sends the
+					// [DONE] terminator after EOF), so we must NOT return
+					// an error here — the response has already gone out.
+					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+					return &ExecuteResult{
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+					}, nil
+				} else if isResumable {
+					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+					if streamKind == errorsx.KindConcurrent {
+						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+							fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
+					} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 					}
-
-					slog.Warn("executor: stream interrupted",
+				} else if streamKind == errorsx.KindConcurrent {
+					// Non-resumable stream interruption from confirmed overload:
+					// record circuit failure and write credential state immediately.
+					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+						fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
+					slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"reason", streamOutcome.Reason,
 						"chunk_count", streamOutcome.ChunkCount,
-						"resumable", isResumable,
-						"classified_as", streamKind,
 					)
-
-					if isResumable {
-						// Mark credential as cooling for the classified kind.
-						// For KindConcurrent we bypass the
-						// shouldWriteCredentialStateOnConfirmedFailure
-						// threshold — a single eof_without_done under load
-						// is enough to take the credential out of rotation
-						// for 5 minutes.
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						if streamKind == errorsx.KindConcurrent {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
-								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
-						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
-						}
-					} else if streamKind == errorsx.KindConcurrent {
-						// Non-resumable stream interruption: the executor
-						// cannot try the next candidate (the client already
-						// received partial bytes), so we have to surface
-						// the error to the caller. But we still want the
-						// credential out of rotation for 5 minutes, so
-						// record the circuit failure and write the
-						// credential state immediately. This avoids the
-						// pathological "same credential retried forever"
-						// loop that the original code fell into.
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
-							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
-						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
-							"credential_id", cand.CredentialID,
-							"provider_id", cand.ProviderID,
-							"reason", streamOutcome.Reason,
-							"chunk_count", streamOutcome.ChunkCount,
-						)
-					}
+				}
 
 					return &ExecuteResult{
 						Response:    resp,
@@ -845,7 +854,12 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	}
 	if err := e.State.WriteOnError(ctx, credentialID, failure); err != nil {
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
+		return
 	}
+	// Invalidate candidate cache to ensure routing picks up the new credential state
+	// without waiting for the 30-second cache expiry. This is critical for quota exhaustion
+	// scenarios where we need to immediately exclude the exhausted credential.
+	provider.InvalidateAllCandidateCache()
 }
 
 func (e *Executor) stickyCredentialID(stickyKey string) *int {
@@ -930,6 +944,13 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, credentialID int, kind errorsx.ErrorKind) bool {
 	if !shouldWriteCredentialState(kind) {
 		return false
+	}
+	// Quota errors (402 Payment Required) should write state immediately
+	// without waiting for circuit open, since 402 is definitive evidence
+	// that the credential is exhausted
+	if kind == errorsx.KindQuota || kind == errorsx.KindQuotaBalance ||
+		kind == errorsx.KindQuotaPeriodic || kind == errorsx.KindQuotaPermanent {
+		return true
 	}
 	if e.Circuit == nil {
 		return true
