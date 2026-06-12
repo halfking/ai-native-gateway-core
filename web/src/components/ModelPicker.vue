@@ -50,7 +50,6 @@ const unmapped = ref<string[]>([])
 const loading = ref(false)
 const loadErr = ref('')
 const open = ref(false)
-const search = ref('')
 const freeText = ref('')
 const triggerRef = ref<HTMLElement | null>(null)
 const panelStyle = ref<Record<string, string>>({})
@@ -132,13 +131,27 @@ const multiValues = computed<string[]>(() =>
   Array.isArray(props.modelValue) ? props.modelValue : []
 )
 
+const query = computed(() => freeText.value.trim().toLowerCase())
+
 function displayName(v: AvailableVersion | PopularModel): string {
   return ('display_name' in v && v.display_name) ? v.display_name : v.canonical_name
+}
+
+function matchesQuery(name: string, display: string, extras: string[] = []): boolean {
+  const q = query.value
+  if (!q) return true
+  if (name.toLowerCase().includes(q)) return true
+  if (display.toLowerCase().includes(q)) return true
+  return extras.some((x) => x.toLowerCase().includes(q))
 }
 
 function isChosen(name: string): boolean {
   if (props.mode === 'multi') return multiValues.value.includes(name)
   return singleValue.value === name
+}
+
+function emitSingle(value: string) {
+  emit('update:modelValue', value)
 }
 
 function pick(name: string) {
@@ -148,12 +161,10 @@ function pick(name: string) {
     else cur.add(name)
     emit('update:modelValue', Array.from(cur))
     freeText.value = ''
-    search.value = ''
   } else {
-    emit('update:modelValue', name)
+    emitSingle(name)
     freeText.value = name
     closePanel()
-    search.value = ''
   }
 }
 
@@ -164,11 +175,11 @@ function removeChip(raw: string) {
 
 function clear() {
   if (props.mode === 'multi') emit('update:modelValue', [])
-  else emit('update:modelValue', '')
+  else emitSingle('')
   freeText.value = ''
 }
 
-function submitFreeText() {
+function commitFreeText() {
   const v = freeText.value.trim()
   if (!v) return
   if (props.mode === 'multi') {
@@ -177,9 +188,23 @@ function submitFreeText() {
     }
     freeText.value = ''
   } else {
-    emit('update:modelValue', v)
+    emitSingle(v)
     closePanel()
-    freeText.value = ''
+  }
+}
+
+function onInputChange() {
+  if (!open.value) void openPanel()
+}
+
+function onInputKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    closePanel()
+    return
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    commitFreeText()
   }
 }
 
@@ -189,29 +214,30 @@ watch(() => props.modelValue, (v) => {
   }
 }, { immediate: true })
 
-const filteredPopular = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return popular.value
-  return popular.value.filter((m) =>
-    m.canonical_name.toLowerCase().includes(q) ||
-    m.display_name.toLowerCase().includes(q)
+const inputMatchesPopular = computed(() => {
+  const q = query.value
+  if (!q) return true
+  return popular.value.some((m) =>
+    matchesQuery(m.canonical_name, m.display_name)
   )
 })
 
+const displayedPopular = computed(() => {
+  if (!inputMatchesPopular.value) return []
+  return popular.value
+})
+
 const vendorGroups = computed(() => {
-  const q = search.value.trim().toLowerCase()
+  const q = query.value
   const groups = new Map<string, { vendor: string; versions: AvailableVersion[] }>()
   for (const fam of families.value) {
     const vendor = fam.vendor || fam.display_name || '其他'
     const versions = fam.versions.filter((v) => {
       if (!q) return true
-      return (
-        vendor.toLowerCase().includes(q) ||
-        fam.display_name.toLowerCase().includes(q) ||
-        v.canonical_name.toLowerCase().includes(q) ||
-        v.display_name.toLowerCase().includes(q) ||
-        (v.raw_names || []).some((r) => r.toLowerCase().includes(q)) ||
-        (v.aliases || []).some((a) => a.toLowerCase().includes(q))
+      return matchesQuery(
+        v.canonical_name,
+        v.display_name,
+        [vendor, fam.display_name, ...(v.raw_names || []), ...(v.aliases || [])],
       )
     })
     if (!versions.length) continue
@@ -235,6 +261,10 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
     return a.canonical_name.localeCompare(b.canonical_name)
   })
 }
+
+const hasSuggestions = computed(() =>
+  displayedPopular.value.length > 0 || vendorGroups.value.length > 0
+)
 </script>
 
 <template>
@@ -252,16 +282,11 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
             class="mp-chip-input"
             :placeholder="multiValues.length ? '' : placeholder"
             :disabled="disabled"
-            @keyup.enter="submitFreeText"
+            @input="onInputChange"
+            @keydown="onInputKeydown"
             @focus="openPanel"
           />
-          <button
-            v-else
-            type="button"
-            class="mp-open-btn"
-            :disabled="disabled"
-            @click="toggle"
-          >
+          <button v-else type="button" class="mp-open-btn" :disabled="disabled" @click="toggle">
             {{ multiValues.length ? `已选 ${multiValues.length}` : placeholder }}
           </button>
         </div>
@@ -274,16 +299,13 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
           class="mp-single-input"
           :placeholder="placeholder"
           :disabled="disabled"
+          autocomplete="off"
+          spellcheck="false"
+          @input="onInputChange"
+          @keydown="onInputKeydown"
           @focus="openPanel"
-          @keyup.enter="submitFreeText"
         />
-        <button
-          v-else
-          type="button"
-          class="mp-open-btn"
-          :disabled="disabled"
-          @click="toggle"
-        >
+        <button v-else type="button" class="mp-open-btn" :disabled="disabled" @click="toggle">
           {{ singleValue || placeholder }}
         </button>
       </template>
@@ -296,39 +318,25 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
         title="清空"
         @click.stop="clear"
       >×</button>
-      <button
-        type="button"
-        class="mp-caret"
-        :disabled="disabled"
-        @click.stop="toggle"
-        :aria-label="open ? '收起' : '展开'"
-      >▾</button>
+      <button type="button" class="mp-caret" :disabled="disabled" @click.stop="toggle" :aria-label="open ? '收起' : '展开'">▾</button>
     </div>
 
     <Teleport to="body">
       <div v-if="open" class="mp-backdrop" @click="closePanel" />
       <div v-if="open" class="mp-panel" :style="panelStyle" @mousedown.prevent>
-        <div class="mp-search">
-          <input
-            v-model="search"
-            placeholder="搜索厂商 / 标准模型 / 别名…"
-            @keyup.escape="closePanel"
-          />
-          <button type="button" class="mp-refresh" :disabled="loading" title="刷新模型列表" @click="refreshModels(true)">刷新</button>
-        </div>
-
         <div v-if="loading" class="mp-status">加载中…</div>
         <div v-else-if="loadErr" class="mp-status mp-err">{{ loadErr }}</div>
-        <div v-else-if="!filteredPopular.length && !vendorGroups.length" class="mp-status">
-          无匹配模型<span v-if="search"> · 关键词「{{ search }}」</span>
+        <div v-else-if="!hasSuggestions" class="mp-status">
+          无匹配模型<span v-if="query"> · 关键词「{{ freeText.trim() }}」</span>
+          <div v-if="allowFreeText && query" class="mp-hint">按 Enter 使用输入值</div>
         </div>
 
         <div v-else class="mp-scroll">
-          <div v-if="filteredPopular.length" class="mp-section">
+          <div v-if="displayedPopular.length" class="mp-section">
             <div class="mp-section-title">热门模型</div>
             <div class="mp-versions">
               <button
-                v-for="m in filteredPopular"
+                v-for="m in displayedPopular"
                 :key="m.canonical_name"
                 type="button"
                 class="mp-version"
@@ -337,7 +345,8 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
               >
                 <span class="mp-star">★</span>
                 <span class="mp-name">{{ displayName(m) }}</span>
-                <span class="mp-pill">{{ m.source === 'usage' ? '用量' : '策略' }}</span>
+                <span v-if="m.count != null" class="mp-pill">{{ m.count }}</span>
+                <span v-else class="mp-pill">{{ m.source === 'usage' ? '用量' : '策略' }}</span>
               </button>
             </div>
           </div>
@@ -372,7 +381,6 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
 
 <style scoped>
 .model-picker { position: relative; width: 100%; }
-
 .mp-trigger {
   display: flex; align-items: center; gap: 4px;
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -380,88 +388,44 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
 }
 .mp-trigger.open { border-color: var(--accent); }
 .mp-trigger.disabled { opacity: 0.6; cursor: not-allowed; }
-
 .mp-single-input, .mp-chip-input {
-  flex: 1; min-width: 120px;
-  border: 0; outline: none; background: transparent;
+  flex: 1; min-width: 120px; border: 0; outline: none; background: transparent;
   color: var(--text); font: inherit; padding: 4px 6px;
 }
 .mp-open-btn {
   flex: 1; text-align: left; border: 0; background: transparent;
   color: var(--text); cursor: pointer; padding: 4px 6px; font: inherit;
 }
-.mp-open-btn:disabled { cursor: not-allowed; }
-
 .mp-chips { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; align-items: center; }
 .mp-chip {
   display: inline-flex; align-items: center; gap: 4px;
   background: rgba(96, 165, 250, 0.15); color: var(--accent);
-  border: 1px solid var(--border); border-radius: 999px;
-  padding: 2px 8px; font-size: 0.85em;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 0.85em;
 }
-.mp-chip-x {
-  border: 0; background: transparent; color: inherit;
-  cursor: pointer; font-size: 1em; line-height: 1; padding: 0 2px;
-}
-
-.mp-clear, .mp-caret {
-  border: 0; background: transparent; color: var(--muted);
-  cursor: pointer; padding: 4px 6px; font-size: 0.9em;
-}
-.mp-caret { font-size: 0.8em; }
-.mp-clear:hover, .mp-caret:hover { color: var(--text); }
-
-.mp-backdrop {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.35);
-  z-index: 1200;
-}
-
+.mp-chip-x { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.mp-clear, .mp-caret { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 4px 6px; }
+.mp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 1200; }
 .mp-panel {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-  overflow: hidden; display: flex; flex-direction: column;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35); overflow: hidden; display: flex; flex-direction: column;
 }
-.mp-search { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
-.mp-search input {
-  flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg); color: var(--text); padding: 6px 8px; font: inherit;
-}
-.mp-refresh {
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--card); color: var(--text); padding: 6px 10px;
-  cursor: pointer; font: inherit; white-space: nowrap;
-}
-.mp-refresh:disabled { opacity: 0.6; cursor: wait; }
 .mp-status { padding: 16px; color: var(--muted); font-size: 0.9em; text-align: center; }
 .mp-err { color: var(--danger); }
-
+.mp-hint { margin-top: 8px; font-size: 0.85em; }
 .mp-scroll { overflow-y: auto; flex: 1; padding: 4px 0; }
 .mp-section { padding: 6px 8px; }
 .mp-section + .mp-section { border-top: 1px solid var(--border); }
-.mp-section-title {
-  font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--muted); padding: 4px 6px 6px;
-}
-
+.mp-section-title { font-size: 0.78em; color: var(--muted); padding: 4px 6px 6px; }
 .mp-versions { display: flex; flex-direction: column; gap: 2px; }
 .mp-version {
-  display: flex; align-items: center; gap: 8px;
-  background: transparent; border: 0; color: var(--text);
-  padding: 6px 8px; border-radius: var(--radius); cursor: pointer;
-  text-align: left; font: inherit;
+  display: flex; align-items: center; gap: 8px; background: transparent; border: 0;
+  color: var(--text); padding: 6px 8px; border-radius: var(--radius); cursor: pointer; text-align: left; font: inherit;
 }
 .mp-version:hover { background: rgba(96, 165, 250, 0.10); }
 .mp-version.chosen { background: rgba(96, 165, 250, 0.20); color: var(--accent); }
-.mp-star { color: var(--warning); font-size: 0.9em; width: 1em; }
+.mp-star { color: var(--warning); width: 1em; }
 .mp-name { flex: 1; }
 .mp-pcount, .mp-pill { color: var(--muted); font-size: 0.82em; }
-.mp-pill {
-  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
-}
-
-.mp-unmapped {
-  padding: 6px 12px; border-top: 1px solid var(--border);
-  color: var(--warning); font-size: 0.82em; cursor: help;
-}
+.mp-pill { border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; }
+.mp-unmapped { padding: 6px 12px; border-top: 1px solid var(--border); color: var(--warning); font-size: 0.82em; }
 </style>

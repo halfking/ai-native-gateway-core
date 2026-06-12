@@ -285,3 +285,119 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   border-bottom-color: var(--accent);
   font-weight: 600;
 }
+
+/* Horizontal compact filter bar (overrides global input/select width:100%) */
+.compact-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.compact-filter-bar .cf-select,
+.compact-filter-bar .cf-input {
+  width: auto;
+  min-width: 0;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.cf-select.cf-hours { width: 84px; flex-shrink: 0; }
+.cf-select.cf-status { width: 72px; flex-shrink: 0; }
+.cf-select.cf-source { width: 96px; flex-shrink: 0; }
+.cf-select.cf-error { width: 108px; flex-shrink: 0; }
+.cf-select.cf-cred {
+  width: 160px;
+  max-width: 220px;
+  flex-shrink: 0;
+}
+.cf-input.cf-grow {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+.cf-input.cf-medium {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+.cf-meta {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.compact-filter-bar .cf-meta {
+  margin-left: auto;
+}
+
+.cf-hint {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.compact-filter-bar--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.compact-filter-bar .cf-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.compact-filter-bar .cf-row--secondary {
+  padding-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.compact-filter-bar .cf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.compact-filter-bar .cf-field--model {
+  flex: 0 1 280px;
+  min-width: 200px;
+  max-width: 360px;
+}
+
+.compact-filter-bar .cf-field--grow {
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
+.compact-filter-bar .cf-label {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.compact-filter-bar .cf-field .cf-input,
+.compact-filter-bar .cf-field .model-picker {
+  width: 100%;
+}
+
+.compact-filter-bar .cf-row .cf-meta {
+  margin-left: auto;
+}
+
+.compact-filter-bar .decisions-model-picker {
+  flex: 1 1 100%;
+  min-width: 200px;
+  max-width: none;
+}

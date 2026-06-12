@@ -1,17 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getRequestLogs, getRequestLogDetail, getKeys, listModels, type RequestLogRow, type RequestLogDetail, type ApiKey, type ModelListResponse, type RequestLogsResponse } from '../api'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import {
+  getRequestLogs,
+  getRequestLogDetail,
+  getRequestLogTopModels,
+  getKeys,
+  type RequestLogRow,
+  type RequestLogDetail,
+  type ApiKey,
+  type RequestLogsResponse,
+  type TopRequestModel,
+} from '../api'
+import ModelPicker from '../components/ModelPicker.vue'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
-const models = ref<ModelListResponse | null>(null)
+const topModels = ref<TopRequestModel[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
+const modelFilter = ref('')
 const hours = ref(24)
 const successFilter = ref<'' | 'success' | 'failure'>('')
+const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
+const canonicalFilter = ref<number | null>(null)
+const modelNameFilter = ref('')
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -30,36 +46,95 @@ async function loadKeys() {
   }
 }
 
-async function loadModels() {
+function timeRange() {
+  const end = new Date()
+  const start = new Date(end.getTime() - hours.value * 3600 * 1000)
+  return { from: start.toISOString(), to: end.toISOString() }
+}
+
+async function loadTopModels() {
   try {
-    models.value = await listModels({ status: 'active' })
+    const range = timeRange()
+    const resp = await getRequestLogTopModels({ from: range.from, to: range.to, limit: 20 })
+    topModels.value = resp.items
   } catch {
-    models.value = null
+    topModels.value = []
   }
 }
 
-function setCanonicalFilter(canonicalId: number | null) {
-  canonicalFilter.value = canonicalId
+function clearModelFilter() {
+  canonicalFilter.value = null
+  modelNameFilter.value = ''
+  modelFilter.value = ''
   page.value = 1
   load()
 }
 
-const canonicalFilter = ref<number | null>(null)
+function setCanonicalFilter(canonicalId: number | null, canonicalName?: string) {
+  if (canonicalId != null) {
+    canonicalFilter.value = canonicalId
+    modelNameFilter.value = ''
+  } else if (canonicalName) {
+    canonicalFilter.value = null
+    modelNameFilter.value = canonicalName
+  } else {
+    clearModelFilter()
+    return
+  }
+  modelFilter.value = canonicalName || ''
+  page.value = 1
+  load()
+}
+
+function onModelFilterChange(name: string | string[]) {
+  const v = typeof name === 'string' ? name.trim() : ''
+  if (!v) {
+    canonicalFilter.value = null
+    modelNameFilter.value = ''
+    return
+  }
+  const hit = topModels.value.find((m) => m.canonical_name === v)
+  if (hit?.canonical_id != null) {
+    canonicalFilter.value = hit.canonical_id
+    modelNameFilter.value = ''
+  } else {
+    canonicalFilter.value = null
+    modelNameFilter.value = v
+  }
+}
+
+const ERROR_KIND_LABELS: Record<string, string> = {
+  model_not_found: '模型未找到',
+  provider_error: '供应商错误',
+  auth_error: '认证失败',
+  rate_limit: '限流',
+  timeout: '超时',
+  canceled: '已取消',
+  upstream_error: '上游错误',
+}
+
+function statusLabel(row: RequestLogRow): string {
+  if (row.success) return '成功'
+  const kind = row.error_kind || ''
+  if (ERROR_KIND_LABELS[kind]) return ERROR_KIND_LABELS[kind]
+  return kind || '失败'
+}
 
 async function load() {
   loading.value = true
   error.value = null
   try {
-    const end = new Date()
-    const start = new Date(end.getTime() - hours.value * 3600 * 1000)
+    const range = timeRange()
     const successParam = successFilter.value === '' ? undefined : successFilter.value === 'success'
     const resp: RequestLogsResponse = await getRequestLogs({
       api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
-      from: start.toISOString(),
-      to: end.toISOString(),
+      from: range.from,
+      to: range.to,
       q: keyword.value.trim() || undefined,
       success: successParam,
+      error_kind: errorKindFilter.value.trim() || undefined,
       canonical_id: canonicalFilter.value ?? undefined,
+      model: modelNameFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       page: page.value,
       page_size: pageSize.value,
@@ -173,8 +248,22 @@ function roleColor(role: string): string {
   }
 }
 
+const route = useRoute()
+
+watch(hours, () => { void loadTopModels() })
+
 onMounted(async () => {
-  await Promise.all([loadKeys(), loadModels()])
+  const q = route.query
+  if (q.success === 'success' || q.success === 'failure') {
+    successFilter.value = q.success
+  }
+  if (typeof q.error_kind === 'string' && q.error_kind.trim()) {
+    errorKindFilter.value = q.error_kind.trim()
+  }
+  if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
+    hours.value = Number(q.hours)
+  }
+  await Promise.all([loadKeys(), loadTopModels()])
   await load()
 })
 </script>
@@ -186,65 +275,87 @@ onMounted(async () => {
       <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
     </div>
 
-    <div class="compact-filter-bar">
-      <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
-        <option value="">全部 Key</option>
-        <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
-      </select>
-      <select v-model="hours" class="cf-select cf-hours" title="时间范围">
-        <option :value="1">1小时</option>
-        <option :value="6">6小时</option>
-        <option :value="24">24小时</option>
-        <option :value="168">7天</option>
-      </select>
-      <select v-model="successFilter" class="cf-select cf-status" title="结果">
-        <option value="">全部</option>
-        <option value="success">成功</option>
-        <option value="failure">失败</option>
-      </select>
-      <select
-        v-model="usageSourceFilter"
-        class="cf-select"
-        style="width:96px"
-        title="estimated = 本地估算（上游未返回 usage）"
-      >
-        <option value="">Token来源</option>
-        <option value="llm">LLM返回</option>
-        <option value="estimated">本地估算</option>
-      </select>
-      <input
-        v-model="keyword"
-        type="text"
-        class="cf-input cf-grow"
-        placeholder="模型名 / 消息片段…"
-        @keyup.enter="resetPageAndLoad"
-      />
-      <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
-      <span class="cf-meta">共 {{ total }} 条</span>
+    <div class="compact-filter-bar compact-filter-bar--stacked">
+      <div class="cf-row">
+        <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
+          <option value="">全部 Key</option>
+          <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
+        </select>
+        <select v-model="hours" class="cf-select cf-hours" title="时间范围">
+          <option :value="1">1小时</option>
+          <option :value="6">6小时</option>
+          <option :value="24">24小时</option>
+          <option :value="168">7天</option>
+        </select>
+        <select v-model="successFilter" class="cf-select cf-status" title="结果">
+          <option value="">全部</option>
+          <option value="success">成功</option>
+          <option value="failure">失败</option>
+        </select>
+        <select v-model="errorKindFilter" class="cf-select cf-error" title="错误类型">
+          <option value="">全部错误</option>
+          <option value="model_not_found">模型未找到</option>
+          <option value="provider_error">供应商错误</option>
+          <option value="timeout">超时</option>
+          <option value="rate_limit">限流</option>
+        </select>
+        <select
+          v-model="usageSourceFilter"
+          class="cf-select cf-source"
+          title="estimated = 本地估算（上游未返回 usage）"
+        >
+          <option value="">Token来源</option>
+          <option value="llm">LLM返回</option>
+          <option value="estimated">本地估算</option>
+        </select>
+        <span class="cf-meta">共 {{ total }} 条</span>
+      </div>
+      <div class="cf-row cf-row--secondary">
+        <div class="cf-field cf-field--model">
+          <span class="cf-label">模型（可选）</span>
+          <ModelPicker
+            v-model="modelFilter"
+            placeholder="标准模型名…"
+            @update:model-value="onModelFilterChange"
+          />
+        </div>
+        <div class="cf-field cf-field--grow">
+          <span class="cf-label">消息片段</span>
+          <input
+            v-model="keyword"
+            type="text"
+            class="cf-input"
+            placeholder="搜索请求消息内容…"
+            @keyup.enter="resetPageAndLoad"
+          />
+        </div>
+        <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
+      </div>
     </div>
 
-    <div v-if="models && models.items.length" class="card" style="margin-bottom:16px;padding:12px 16px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span style="font-size:13px;color:var(--muted)">按模型过滤</span>
-        <span style="color:var(--muted);font-size:11px">点击切换</span>
+    <div v-if="topModels.length" class="card model-filter-card">
+      <div class="model-filter-header">
+        <span>热门模型</span>
+        <span class="model-filter-hint">按用量排序 · 最多 20 个</span>
       </div>
       <div class="model-chip-row">
         <button
           type="button"
           class="model-chip"
-          :class="{ active: canonicalFilter === null }"
-          @click="setCanonicalFilter(null)"
+          :class="{ active: canonicalFilter === null && !modelNameFilter }"
+          @click="clearModelFilter"
         >全部</button>
         <button
-          v-for="m in models.items"
-          :key="m.id"
+          v-for="m in topModels"
+          :key="`${m.canonical_id ?? 'raw'}-${m.canonical_name}`"
           type="button"
           class="model-chip"
-          :class="{ active: canonicalFilter === m.id }"
-          :title="`${m.canonical_name} · ${m.family || '未分类'}`"
-          @click="setCanonicalFilter(m.id)"
+          :class="{ active: canonicalFilter === m.canonical_id || modelNameFilter === m.canonical_name }"
+          :title="`${m.canonical_name} · ${m.request_count} 次`"
+          @click="setCanonicalFilter(m.canonical_id, m.canonical_name)"
         >
           <span>{{ m.display_name || m.canonical_name }}</span>
+          <span class="model-chip-count">{{ m.request_count }}</span>
         </button>
       </div>
     </div>
@@ -312,7 +423,7 @@ onMounted(async () => {
             <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_write_tokens, r.usage_source) }}</td>
             <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }">{{ r.success ? '成功' : (r.error_kind ?? '失败') }}</td>
+            <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }" :title="r.error_kind || ''">{{ statusLabel(r) }}</td>
             <td><button class="btn btn-sm" @click.stop="showDetail(r.request_id)">查看</button></td>
           </tr>
         </tbody>
@@ -417,12 +528,31 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.model-filter-card {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+}
+.model-filter-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.model-filter-hint {
+  font-size: 11px;
+  opacity: 0.85;
+}
 .model-chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  max-height: 120px;
-  overflow-y: auto;
+}
+.model-chip-count {
+  margin-left: 6px;
+  font-size: 10px;
+  opacity: 0.8;
 }
 .model-chip {
   border: 1px solid var(--border, #30363d);

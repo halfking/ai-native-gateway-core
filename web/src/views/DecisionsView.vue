@@ -111,34 +111,42 @@ onUnmounted(() => {
       </label>
     </div>
 
-    <div class="compact-filter-bar">
-      <div class="decisions-model-picker">
-        <ModelPicker
-          v-model="filterModel"
-          :allow-free-text="true"
-          placeholder="模型筛选…"
-          @update:modelValue="resetAndLoad"
-        />
+    <div class="compact-filter-bar compact-filter-bar--stacked">
+      <div class="cf-row">
+        <select v-model="filterSuccess" class="cf-select cf-status" title="状态" @change="resetAndLoad">
+          <option value="">全部</option>
+          <option value="true">成功</option>
+          <option value="false">失败</option>
+        </select>
+        <select v-model="sinceMinutes" class="cf-select cf-hours" title="时间范围" @change="resetAndLoad">
+          <option :value="10">10分钟</option>
+          <option :value="30">30分钟</option>
+          <option :value="60">1小时</option>
+          <option :value="360">6小时</option>
+          <option :value="1440">24小时</option>
+        </select>
+        <select v-model="limit" class="cf-select" style="width:72px" title="条数" @change="resetAndLoad">
+          <option :value="20">20条</option>
+          <option :value="50">50条</option>
+          <option :value="100">100条</option>
+          <option :value="200">200条</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
+        <span class="cf-meta">共 {{ total }} 条</span>
       </div>
-      <select v-model="filterSuccess" class="cf-select cf-status" title="状态" @change="resetAndLoad">
-        <option value="">全部</option>
-        <option value="true">成功</option>
-        <option value="false">失败</option>
-      </select>
-      <select v-model="sinceMinutes" class="cf-select cf-hours" title="时间范围" @change="resetAndLoad">
-        <option :value="10">10分钟</option>
-        <option :value="30">30分钟</option>
-        <option :value="60">1小时</option>
-        <option :value="360">6小时</option>
-        <option :value="1440">24小时</option>
-      </select>
-      <select v-model="limit" class="cf-select" style="width:72px" title="条数" @change="resetAndLoad">
-        <option :value="20">20条</option>
-        <option :value="50">50条</option>
-        <option :value="100">100条</option>
-        <option :value="200">200条</option>
-      </select>
-      <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
+      <div class="cf-row cf-row--secondary">
+        <div class="cf-field cf-field--grow">
+          <span class="cf-label">模型（可选）</span>
+          <div class="decisions-model-picker">
+            <ModelPicker
+              v-model="filterModel"
+              :allow-free-text="true"
+              placeholder="标准模型名…"
+              @update:model-value="resetAndLoad"
+            />
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
