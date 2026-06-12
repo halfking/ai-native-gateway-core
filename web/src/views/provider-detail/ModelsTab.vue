@@ -16,7 +16,6 @@ const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
 const error = ref('')
 
-// 900-series: routable summary from VIEW
 const routable = ref<{
   total_bindings: number
   routable_bindings: number
@@ -26,18 +25,19 @@ const routable = ref<{
 } | null>(null)
 const routableLoading = ref(false)
 
-// Per-row edit state keyed by offer.id
+const selected = ref<ModelOffer | null>(null)
+
 interface EditDraft {
   standardized_name: string
   canonical_id: number | null
   saving: boolean
+  toggling: boolean
   loadingSuggest: boolean
   suggest: ModelOfferSuggestion | null
   suggestErr: string
   saveErr: string
 }
-const editingId = ref<number | null>(null)
-const draft = reactive<Record<number, EditDraft>>({})
+const draft = reactive<Partial<EditDraft>>({})
 
 async function load() {
   loading.value = true
@@ -59,15 +59,6 @@ async function load() {
   }
 }
 
-async function toggle(offer: ModelOffer) {
-  try {
-    await toggleModelOfferState(props.providerId, offer.id, { available: !offer.available })
-    await load()
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
-  }
-}
-
 function sourceLabel(v?: string | null) {
   if (v === 'auto') return '自动'
   if (v === 'manual') return '手动'
@@ -79,74 +70,61 @@ function timeText(v?: string | null) {
   return new Date(v).toLocaleString('zh-CN', { hour12: false })
 }
 
-function ensureDraft(o: ModelOffer): EditDraft {
-  if (!draft[o.id]) {
-    draft[o.id] = reactive({
-      standardized_name: o.standardized_name ?? '',
-      canonical_id: o.canonical_id ?? null,
-      saving: false,
-      loadingSuggest: false,
-      suggest: null,
-      suggestErr: '',
-      saveErr: '',
-    }) as EditDraft
-  }
-  return draft[o.id]
+function resetDraft(o: ModelOffer) {
+  draft.standardized_name = o.standardized_name ?? ''
+  draft.canonical_id = o.canonical_id ?? null
+  draft.saving = false
+  draft.toggling = false
+  draft.loadingSuggest = false
+  draft.suggest = null
+  draft.suggestErr = ''
+  draft.saveErr = ''
 }
 
-async function startEdit(o: ModelOffer) {
-  editingId.value = o.id
-  const d = ensureDraft(o)
-  d.standardized_name = o.standardized_name ?? ''
-  d.canonical_id = o.canonical_id ?? null
-  d.saveErr = ''
-  d.suggestErr = ''
-  d.suggest = null
-  d.loadingSuggest = true
+async function openDrawer(o: ModelOffer) {
+  selected.value = o
+  resetDraft(o)
+  draft.loadingSuggest = true
   try {
-    d.suggest = await getModelOfferSuggestions(props.providerId, o.id)
+    draft.suggest = await getModelOfferSuggestions(props.providerId, o.id)
   } catch (e: unknown) {
-    d.suggestErr = e instanceof Error ? e.message : '加载推荐失败'
+    draft.suggestErr = e instanceof Error ? e.message : '加载推荐失败'
   } finally {
-    d.loadingSuggest = false
+    draft.loadingSuggest = false
   }
 }
 
-function cancelEdit(o: ModelOffer) {
-  if (editingId.value === o.id) editingId.value = null
-  delete draft[o.id]
+function closeDrawer() {
+  selected.value = null
 }
 
-function applyRuleBased(o: ModelOffer) {
-  const d = ensureDraft(o)
-  if (!d.suggest) return
-  d.standardized_name = d.suggest.rule_based || d.standardized_name
-  // If the rule-based value matches a DB canonical, link it automatically.
-  const match = d.suggest.canonical_options.find(
-    c => (c.canonical_name || '').toLowerCase() === (d.standardized_name || '').toLowerCase()
+function applyRuleBased() {
+  if (!draft.suggest) return
+  draft.standardized_name = draft.suggest.rule_based || draft.standardized_name || ''
+  const match = draft.suggest.canonical_options.find(
+    c => (c.canonical_name || '').toLowerCase() === (draft.standardized_name || '').toLowerCase()
   )
-  d.canonical_id = match ? match.id : null
+  draft.canonical_id = match ? match.id : null
 }
 
-function applyCanonical(o: ModelOffer, canonicalId: number | null) {
-  const d = ensureDraft(o)
-  d.canonical_id = canonicalId
-  if (canonicalId != null && d.suggest) {
-    const match = d.suggest.canonical_options.find(c => c.id === canonicalId)
-    if (match) d.standardized_name = match.canonical_name
+function applyCanonical(canonicalId: number | null) {
+  draft.canonical_id = canonicalId
+  if (canonicalId != null && draft.suggest) {
+    const match = draft.suggest.canonical_options.find(c => c.id === canonicalId)
+    if (match) draft.standardized_name = match.canonical_name
   }
 }
 
-async function saveEdit(o: ModelOffer) {
-  const d = ensureDraft(o)
-  d.saving = true
-  d.saveErr = ''
+async function saveEdit() {
+  const o = selected.value
+  if (!o) return
+  draft.saving = true
+  draft.saveErr = ''
   try {
     const updated = await updateModelOffer(props.providerId, o.id, {
-      standardized_name: d.standardized_name.trim() || null,
-      canonical_id: d.canonical_id,
+      standardized_name: (draft.standardized_name ?? '').trim() || null,
+      canonical_id: draft.canonical_id ?? null,
     })
-    // Reflect saved values into the local list without a full reload
     const idx = offers.value.findIndex(x => x.id === o.id)
     if (idx >= 0) {
       offers.value[idx] = {
@@ -154,13 +132,28 @@ async function saveEdit(o: ModelOffer) {
         standardized_name: updated.standardized_name ?? '',
         canonical_id: updated.canonical_id,
       }
+      selected.value = offers.value[idx]
     }
-    editingId.value = null
-    delete draft[o.id]
   } catch (e: unknown) {
-    d.saveErr = e instanceof Error ? e.message : '保存失败'
+    draft.saveErr = e instanceof Error ? e.message : '保存失败'
   } finally {
-    d.saving = false
+    draft.saving = false
+  }
+}
+
+async function toggleAvailable() {
+  const o = selected.value
+  if (!o) return
+  draft.toggling = true
+  try {
+    await toggleModelOfferState(props.providerId, o.id, { available: !o.available })
+    await load()
+    const refreshed = offers.value.find(x => x.id === o.id)
+    if (refreshed) selected.value = refreshed
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '操作失败'
+  } finally {
+    draft.toggling = false
   }
 }
 
@@ -174,7 +167,6 @@ load()
       <button class="btn btn-sm" @click="load" :disabled="loading">{{ loading ? '加载中…' : '刷新' }}</button>
     </div>
 
-    <!-- 900-series: routable binding summary -->
     <div v-if="routable" class="card" style="margin-bottom:12px;background:rgba(99,102,241,0.04)">
       <h5 style="margin:0 0 8px 0">可路由性摘要 (v_routable_credential_models)</h5>
       <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);gap:8px">
@@ -199,147 +191,245 @@ load()
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
     <div class="card" style="overflow-x:auto">
-      <table class="data-table" style="width:100%;font-size:12px">
+      <table class="data-table model-table">
         <thead>
           <tr>
             <th>原始模型名</th>
-            <th style="min-width:340px">标准化名</th>
+            <th>标准化名</th>
             <th>关联凭据</th>
             <th>可用</th>
             <th>来源</th>
-            <th>赋值时间</th>
             <th>延迟 P95</th>
             <th>成功率</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="8">加载中…</td></tr>
-          <tr v-else-if="!offers.length"><td colspan="8">暂无模型</td></tr>
-          <template v-for="o in offers" :key="o.id">
-            <tr>
-              <td><code>{{ o.raw_model_name }}</code></td>
-              <td>
-                <template v-if="editingId === o.id">
-                  <div style="display:flex;flex-direction:column;gap:6px">
-                    <input
-                      v-model="draft[o.id].standardized_name"
-                      class="form-input"
-                      placeholder="标准化模型名"
-                      style="width:100%"
-                    />
-                    <div v-if="draft[o.id].saveErr" class="alert alert-danger" style="margin:0;padding:4px 8px">{{ draft[o.id].saveErr }}</div>
-                    <div class="suggest-block">
-                      <div class="suggest-row">
-                        <span class="suggest-label">规则推荐</span>
-                        <span v-if="draft[o.id].loadingSuggest" class="suggest-loading">计算中…</span>
-                        <button
-                          v-else-if="draft[o.id].suggest && draft[o.id].suggest?.rule_based"
-                          type="button"
-                          class="suggest-chip"
-                          :title="`基于规则 standardize_name(${o.raw_model_name})`"
-                          @click="applyRuleBased(o)"
-                        >{{ draft[o.id].suggest?.rule_based }}</button>
-                        <span v-else class="suggest-empty">—</span>
-                      </div>
-                      <div class="suggest-row">
-                        <span class="suggest-label">从已认可标准化名中选择</span>
-                        <select
-                          :value="draft[o.id].canonical_id ?? ''"
-                          @change="(ev) => applyCanonical(o, (ev.target as HTMLSelectElement).value === '' ? null : Number((ev.target as HTMLSelectElement).value))"
-                          class="form-input"
-                          style="flex:1;min-width:0"
-                        >
-                          <option value="">— 不关联 canonical —</option>
-                          <option
-                            v-for="c in (draft[o.id].suggest?.canonical_options ?? [])"
-                            :key="c.id"
-                            :value="c.id"
-                          >{{ c.canonical_name }}<span v-if="c.display_name && c.display_name !== c.canonical_name"> · {{ c.display_name }}</span></option>
-                        </select>
-                      </div>
-                      <div v-if="draft[o.id].suggestErr" class="suggest-err">{{ draft[o.id].suggestErr }}</div>
-                    </div>
-                  </div>
-                </template>
-                <template v-else>
-                  <div class="name-cell">
-                    <code v-if="o.standardized_name">{{ o.standardized_name }}</code>
-                    <span v-else class="name-empty">—</span>
-                    <button
-                      type="button"
-                      class="icon-btn"
-                      title="编辑标准化名"
-                      @click="startEdit(o)"
-                    >✎</button>
-                  </div>
-                </template>
-                <div v-if="editingId === o.id" class="edit-actions">
-                  <button class="btn btn-primary btn-sm" :disabled="draft[o.id].saving" @click="saveEdit(o)">
-                    {{ draft[o.id].saving ? '保存中…' : '保存' }}
-                  </button>
-                  <button class="btn btn-ghost btn-sm" :disabled="draft[o.id].saving" @click="cancelEdit(o)">取消</button>
-                </div>
-              </td>
-              <td>#{{ o.credential_id }} {{ o.credential_label }}</td>
-              <td>
-                <button
-                  type="button"
-                  class="avail-toggle"
-                  :class="o.available ? 'on' : 'off'"
-                  :title="o.available ? '点击禁用' : '点击启用'"
-                  @click="toggle(o)"
-                >
-                  {{ o.available ? '可用' : '不可用' }}
-                </button>
-              </td>
-              <td><span class="badge" :class="o.availability_source === 'auto' ? 'badge-amber' : o.availability_source === 'manual' ? 'badge-blue' : ''">{{ sourceLabel(o.availability_source) }}</span></td>
-              <td>{{ timeText(o.unavailable_at) }}</td>
-              <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
-              <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
-            </tr>
-          </template>
+          <tr v-if="loading"><td colspan="7">加载中…</td></tr>
+          <tr v-else-if="!offers.length"><td colspan="7">暂无模型</td></tr>
+          <tr
+            v-for="o in offers"
+            :key="o.id"
+            class="model-row"
+            tabindex="0"
+            @click="openDrawer(o)"
+            @keydown.enter="openDrawer(o)"
+          >
+            <td><code>{{ o.raw_model_name }}</code></td>
+            <td>
+              <code v-if="o.standardized_name">{{ o.standardized_name }}</code>
+              <span v-else class="cell-muted">—</span>
+            </td>
+            <td>#{{ o.credential_id }} {{ o.credential_label }}</td>
+            <td>
+              <span class="avail-badge" :class="o.available ? 'on' : 'off'">
+                {{ o.available ? '可用' : '不可用' }}
+              </span>
+            </td>
+            <td>
+              <span class="badge" :class="o.availability_source === 'auto' ? 'badge-amber' : o.availability_source === 'manual' ? 'badge-blue' : ''">
+                {{ sourceLabel(o.availability_source) }}
+              </span>
+            </td>
+            <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
+            <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
+          </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Model detail drawer -->
+    <div v-if="selected" class="drawer-backdrop" @click="closeDrawer">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
+          <div>
+            <h3 style="margin:0"><code>{{ selected.raw_model_name }}</code></h3>
+            <div class="drawer-sub">offer #{{ selected.id }} · 凭据 #{{ selected.credential_id }} {{ selected.credential_label }}</div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">关闭</button>
+        </div>
+
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <div class="drawer-section-title">可用状态</div>
+            <div class="avail-row">
+              <span class="avail-badge lg" :class="selected.available ? 'on' : 'off'">
+                {{ selected.available ? '可用' : '不可用' }}
+              </span>
+              <span class="cell-muted">{{ sourceLabel(selected.availability_source) }}</span>
+              <span v-if="selected.unavailable_at" class="cell-muted">{{ timeText(selected.unavailable_at) }}</span>
+            </div>
+            <button
+              class="btn btn-sm"
+              :disabled="draft.toggling"
+              style="margin-top:10px"
+              @click="toggleAvailable"
+            >
+              {{ draft.toggling ? '处理中…' : (selected.available ? '禁用此绑定' : '启用此绑定') }}
+            </button>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">标准化名</div>
+            <input
+              v-model="draft.standardized_name"
+              class="field-input"
+              placeholder="标准化模型名"
+            />
+            <div v-if="draft.saveErr" class="alert alert-danger" style="margin:8px 0;padding:6px 10px">{{ draft.saveErr }}</div>
+            <div class="suggest-block">
+              <div class="suggest-row">
+                <span class="suggest-label">规则推荐</span>
+                <span v-if="draft.loadingSuggest" class="suggest-loading">计算中…</span>
+                <button
+                  v-else-if="draft.suggest?.rule_based"
+                  type="button"
+                  class="suggest-chip"
+                  @click="applyRuleBased"
+                >{{ draft.suggest?.rule_based }}</button>
+                <span v-else class="suggest-empty">—</span>
+              </div>
+              <div class="suggest-row">
+                <span class="suggest-label">已认可标准化名</span>
+                <select
+                  :value="draft.canonical_id ?? ''"
+                  class="field-input"
+                  style="margin:0"
+                  @change="(ev) => applyCanonical((ev.target as HTMLSelectElement).value === '' ? null : Number((ev.target as HTMLSelectElement).value))"
+                >
+                  <option value="">— 不关联 canonical —</option>
+                  <option
+                    v-for="c in (draft.suggest?.canonical_options ?? [])"
+                    :key="c.id"
+                    :value="c.id"
+                  >{{ c.canonical_name }}</option>
+                </select>
+              </div>
+              <div v-if="draft.suggestErr" class="suggest-err">{{ draft.suggestErr }}</div>
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">指标</div>
+            <div class="metric-row">
+              <span>P95 延迟</span>
+              <b>{{ selected.p95_latency_ms != null ? selected.p95_latency_ms + 'ms' : '—' }}</b>
+            </div>
+            <div class="metric-row">
+              <span>成功率</span>
+              <b>{{ selected.success_rate != null ? (selected.success_rate * 100).toFixed(1) + '%' : '—' }}</b>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer-footer">
+          <div class="btn-row btn-row--end">
+            <button class="btn btn-ghost" @click="closeDrawer">取消</button>
+            <button class="btn btn-primary" :disabled="draft.saving" @click="saveEdit">
+              {{ draft.saving ? '保存中…' : '保存标准化名' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.form-input {
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
-  border-radius: 4px;
-  padding: 4px 8px;
+.model-table {
+  width: 100%;
   font-size: 12px;
-  font-family: inherit;
+}
+.model-row {
+  cursor: pointer;
+}
+.model-row:hover td {
+  background: rgba(99, 102, 241, 0.06);
+}
+.model-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.cell-muted {
+  color: var(--muted);
+}
+.avail-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.avail-badge.on {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+.avail-badge.off {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+.avail-badge.lg {
+  font-size: 13px;
+  padding: 4px 14px;
+}
+.drawer-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+}
+.drawer-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.avail-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.field-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+}
+.field-input:focus {
+  border-color: var(--accent);
+  outline: none;
 }
 .suggest-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-top: 10px;
   background: var(--bg-subtle, #161b22);
   border: 1px solid var(--border, #30363d);
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .suggest-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
+  gap: 10px;
+  font-size: 12px;
 }
 .suggest-label {
   color: var(--muted);
   white-space: nowrap;
-  min-width: 130px;
+  min-width: 110px;
 }
 .suggest-chip {
   border: 1px solid var(--accent, #6366f1);
   background: rgba(99,102,241,0.12);
   color: var(--text, #e6edf3);
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 4px 12px;
   font-size: 12px;
   font-family: monospace;
   cursor: pointer;
@@ -349,60 +439,26 @@ load()
   color: #fff;
 }
 .suggest-loading,
-.suggest-empty,
-.suggest-err {
+.suggest-empty {
   color: var(--muted);
   font-size: 11px;
 }
 .suggest-err {
   color: var(--danger, #f85149);
-}
-.name-cell {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.name-empty {
-  color: var(--muted);
-}
-.icon-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 13px;
-  line-height: 1;
-}
-.icon-btn:hover {
-  color: var(--accent, #6366f1);
-  background: rgba(99, 102, 241, 0.1);
-}
-.edit-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-.avail-toggle {
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 2px 10px;
   font-size: 11px;
-  cursor: pointer;
-  font-family: inherit;
 }
-.avail-toggle.on {
-  background: rgba(34, 197, 94, 0.15);
-  color: #22c55e;
-  border-color: rgba(34, 197, 94, 0.35);
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
 }
-.avail-toggle.off {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
-  border-color: rgba(239, 68, 68, 0.35);
+.btn-row {
+  display: flex;
+  gap: 8px;
 }
-.avail-toggle:hover {
-  filter: brightness(1.1);
+.btn-row--end {
+  justify-content: flex-end;
 }
 </style>
