@@ -61,6 +61,18 @@ func TestModelsEndpointURL(t *testing.T) {
 			template: ptr("/v1/models"),
 			want:     "https://example.com/v1/models",
 		},
+		{
+			name:     "azure-openai empty template with base URL containing /openai",
+			baseURL:  "https://test.openai.azure.com/openai",
+			template: ptr(""),
+			want:     "",
+		},
+		{
+			name:     "ollama localhost no template",
+			baseURL:  "http://localhost:11434",
+			template: nil,
+			want:     "http://localhost:11434/v1/models",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
