@@ -377,7 +377,7 @@ func (s *Service) discoverFromManifest(ctx context.Context, cred credential) ([]
 // template, mirroring Python discovery_utils._models_endpoint().
 //
 // Contract:
-//   - template is nil  → fall back to legacy urlutil.ModelsURL (strip /vN, append /v1/models)
+//   - template is nil  → fall back to upstreamurl.ModelsURL (strip /vN, append /v1/models)
 //   - template == ""   → return "" (manifest-only supplier, skip API discovery)
 //   - template starts with http(s):// → use as full URL
 //   - template starts with "/" → append to base_url
