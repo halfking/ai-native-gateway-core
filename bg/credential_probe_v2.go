@@ -155,7 +155,10 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		// Decrypt API key (same pattern as credential_cycler.go)
 		apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
 		if decErr != nil {
-			slog.Warn("credential probe v2: decrypt failed", "credential_id", s.ID, "error", decErr)
+			slog.Warn("credential probe v2: decrypt failed (will mark health=error; is_routable may go FALSE)",
+				"credential_id", s.ID,
+				"error", decErr,
+			)
 			c.writeHealth(timeoutCtx, s.ID, probeResult{
 				HealthStatus: "error",
 				HealthError:  "decrypt failed",
@@ -185,6 +188,15 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			failed++
 			if pr.HealthStatus == "warning" {
 				warn++
+			}
+			if failed == 1 || failed%5 == 0 {
+				slog.Warn("credential probe v2: probe failed (will write health/availability state)",
+					"credential_id", s.ID,
+					"health_status", pr.HealthStatus,
+					"availability_state", pr.AvailabilityState,
+					"error", errMsg,
+					"failed_so_far", failed,
+				)
 			}
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel

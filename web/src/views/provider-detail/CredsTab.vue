@@ -338,23 +338,24 @@ async function repickDefault(c: ProviderCredential) {
             <td>
               <input :value="(c.tags ?? []).join(', ')" class="compact-input" placeholder="tag1, tag2" @input="c.tags = ($event.target as HTMLInputElement).value.split(',').map((t:string) => t.trim()).filter(Boolean)" />
             </td>
-            <td>
-              <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <td class="actions-cell">
+              <div class="actions-primary">
                 <button class="btn btn-primary btn-sm" @click="save(c)" :disabled="saving[c.id]">{{ saving[c.id] ? '保存中' : '保存' }}</button>
                 <button class="btn btn-sm" @click="checkCred(c)" :disabled="checking[c.id]">{{ checking[c.id] ? '检测中' : '检测' }}</button>
-                <button class="btn btn-sm" @click="delCred(c)">停用</button>
+                <details class="actions-more">
+                  <summary class="btn btn-ghost btn-sm">更多</summary>
+                  <div class="actions-menu">
+                    <button type="button" class="menu-item" @click="delCred(c)">停用凭据</button>
+                    <button type="button" class="menu-item" @click="resetAvailability(c)">重置可用性</button>
+                    <button type="button" class="menu-item" @click="resetQuota(c)">重置配额</button>
+                    <button type="button" class="menu-item" @click="forceRecover(c)">强制恢复</button>
+                    <button type="button" class="menu-item" @click="setDefaultModel(c)">设置默认探活模型</button>
+                    <button type="button" class="menu-item" @click="repickDefault(c)">立即重选探活模型</button>
+                  </div>
+                </details>
               </div>
-              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
-                <button class="btn btn-sm" @click="resetAvailability(c)" title="重置 availability_state='ready'">重置可用性</button>
-                <button class="btn btn-sm" @click="resetQuota(c)" title="重置 quota_state='ok'">重置配额</button>
-                <button class="btn btn-sm" @click="forceRecover(c)">强制恢复</button>
-              </div>
-              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
-                <button class="btn btn-sm" @click="setDefaultModel(c)">设置默认模型</button>
-                <button class="btn btn-sm" @click="repickDefault(c)">立即重选</button>
-              </div>
-              <div v-if="saveMsgs[c.id]" style="font-size:11px;color:var(--danger);margin-top:4px">{{ saveMsgs[c.id] }}</div>
-              <div v-if="checkMsgs[c.id]" style="font-size:11px;color:var(--muted);margin-top:4px">{{ checkMsgs[c.id] }}</div>
+              <div v-if="saveMsgs[c.id]" class="action-msg action-msg--danger">{{ saveMsgs[c.id] }}</div>
+              <div v-if="checkMsgs[c.id]" class="action-msg">{{ checkMsgs[c.id] }}</div>
             </td>
           </tr>
         </tbody>
@@ -400,6 +401,61 @@ async function repickDefault(c: ProviderCredential) {
 .compact-input:focus {
   border-color: var(--accent);
   outline: none;
+}
+.actions-cell {
+  min-width: 140px;
+  vertical-align: top;
+}
+.actions-primary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.actions-more {
+  position: relative;
+}
+.actions-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.actions-more > summary::-webkit-details-marker {
+  display: none;
+}
+.actions-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+.action-msg {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.action-msg--danger {
+  color: var(--danger);
 }
 .key-fingerprint {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;

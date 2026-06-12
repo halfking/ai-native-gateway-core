@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"sort"
@@ -28,12 +29,67 @@ func (r *Router) PlanCandidates(
 ) []provider.Candidate {
 	available := filterAvailable(candidates)
 	if len(available) == 0 {
-		slog.Warn("router: all candidates unavailable", "total", len(candidates))
+		// Build a per-reason breakdown so the next "all providers failed at
+		// the same time" outage can be root-caused from this log line alone.
+		reasonCounts := make(map[string]int, 8)
+		var sampleReasons []string
+		for _, c := range candidates {
+			reason := c.UnavailableReason()
+			if reason == "" {
+				reason = "unknown"
+			}
+			reasonCounts[reason]++
+			if len(sampleReasons) < 5 {
+				sampleReasons = append(sampleReasons, fmt.Sprintf(
+					"cred=%d prov=%d reason=%s", c.CredentialID, c.ProviderID, reason,
+				))
+			}
+		}
+		slog.Warn("router: all candidates unavailable",
+			"total", len(candidates),
+			"reasons", reasonCounts,
+			"sample", sampleReasons,
+		)
+		return nil
+	}
+
+	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
+	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
+	round1, round2 := splitByBillingRound(available)
+	ordered := r.planByTier(round1, policy)
+	if len(round2) > 0 {
+		ordered = append(ordered, r.planByTier(round2, policy)...)
+	}
+
+	if stickyCredentialID != nil {
+		ordered = prioritizeSticky(ordered, *stickyCredentialID)
+	}
+
+	if len(egressPreference) > 0 {
+		ordered = applyProtocolAffinity(ordered, egressPreference)
+	}
+
+	return ordered
+}
+
+func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.Candidate) {
+	for _, c := range cands {
+		if provider.IsPreferredPlanBilling(c.BillingMode) {
+			round1 = append(round1, c)
+		} else {
+			round2 = append(round2, c)
+		}
+	}
+	return round1, round2
+}
+
+func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Policy) []provider.Candidate {
+	if len(candidates) == 0 {
 		return nil
 	}
 
 	byTier := make(map[int][]provider.Candidate)
-	for _, c := range available {
+	for _, c := range candidates {
 		byTier[c.Tier] = append(byTier[c.Tier], c)
 	}
 
@@ -55,15 +111,6 @@ func (r *Router) PlanCandidates(
 	if len(ordered) > maxTotal {
 		ordered = ordered[:maxTotal]
 	}
-
-	if stickyCredentialID != nil {
-		ordered = prioritizeSticky(ordered, *stickyCredentialID)
-	}
-
-	if len(egressPreference) > 0 {
-		ordered = applyProtocolAffinity(ordered, egressPreference)
-	}
-
 	return ordered
 }
 
@@ -285,16 +332,33 @@ func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float
 	return score
 }
 
-// SortByCompositeScore sorts candidates by composite score (ascending)
+// CompareCandidatePriority returns true when a should sort before b.
+// Billing round (plan/free before PAYG) takes precedence over composite score.
+func CompareCandidatePriority(a, b provider.Candidate) bool {
+	ra, rb := provider.BillingRound(a.BillingMode), provider.BillingRound(b.BillingMode)
+	if ra != rb {
+		return ra < rb
+	}
+	if a.CompositeScore != b.CompositeScore {
+		return a.CompositeScore < b.CompositeScore
+	}
+	if a.ManualPriority != b.ManualPriority {
+		return a.ManualPriority < b.ManualPriority
+	}
+	if a.Tier != b.Tier {
+		return a.Tier < b.Tier
+	}
+	return a.CredentialID < b.CredentialID
+}
+
+// SortByCompositeScore sorts candidates by billing round then composite score (ascending).
 func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeights) []provider.Candidate {
-	// Calculate composite scores
 	for i := range candidates {
 		candidates[i].CompositeScore = CalculateCompositeScore(candidates[i], weights)
 	}
 
-	// Sort by composite score ascending (lower = better)
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].CompositeScore < candidates[j].CompositeScore
+		return CompareCandidatePriority(candidates[i], candidates[j])
 	})
 
 	return candidates
