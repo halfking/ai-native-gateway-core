@@ -103,7 +103,7 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	KindAuth:           {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
 	KindQuota:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
 	KindUpstreamDown:   {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	KindStreamTimeout:  {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindStreamTimeout:  {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	// KindConcurrent: upstream reports "service overloaded / too many
 	// concurrent requests". Apply a fixed 5-minute cooling window so the
 	// credential is taken out of rotation long enough for the upstream's

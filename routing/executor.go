@@ -713,6 +713,23 @@ func (e *Executor) tryCandidate(
 						"reason", streamOutcome.Reason,
 						"chunk_count", streamOutcome.ChunkCount,
 					)
+				} else {
+					// Non-resumable stream interrupted by non-concurrent cause
+					// (e.g. KindStreamTimeout): still record failure so the
+					// circuit counter advances and credential state is written
+					// when the threshold is met.
+					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+					if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
+						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+							fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
+					}
+					slog.Warn("non-resumable stream interrupted",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"reason", streamOutcome.Reason,
+						"kind", streamKind,
+						"chunk_count", streamOutcome.ChunkCount,
+					)
 				}
 
 					return &ExecuteResult{
