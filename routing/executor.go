@@ -460,7 +460,8 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 
 	tag, err := tx.Exec(ctx,
 		`UPDATE model_offers SET available = FALSE, unavailable_reason = $3, unavailable_at = now()
-		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE`,
+		 WHERE credential_id = $1 AND raw_model_name = $2 AND available = TRUE
+		   AND COALESCE(admin_protected, FALSE) = FALSE`,
 		credentialID, rawModel, reason,
 	)
 	if err != nil {
@@ -479,7 +480,12 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 			availability_recover_at = now() + ($2 || ' seconds')::interval,
 			state_reason_code = $3, state_reason_detail = $4, state_updated_at = now()
 		 WHERE id = $1 AND lifecycle_status = 'active'
-		   AND availability_state NOT IN ('suspended', 'auth_failed')`,
+		   AND availability_state NOT IN ('suspended', 'auth_failed')
+		   AND NOT EXISTS (
+		       SELECT 1 FROM credential_model_bindings cmb
+		       WHERE cmb.credential_id = $1
+		         AND cmb.admin_protected = TRUE
+		   )`,
 		credentialID, coolingSeconds, string(kind), detailStr,
 	)
 	if err != nil {
