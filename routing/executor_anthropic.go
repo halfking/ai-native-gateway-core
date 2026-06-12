@@ -4,11 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // AnthropicExecutor is the ProtocolHandler for Anthropic Messages API
@@ -116,4 +123,258 @@ func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) Str
 	}
 	_, _ = io.Copy(w, resp.Body)
 	return StreamOutcome{}
+}
+
+// executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
+// the Executor. It wires the AnthropicExecutor protocol handler into
+// the common pool / circuit / credential-state machinery and drives
+// the per-attempt loop with retry-on-transient semantics.
+//
+// The function is structurally similar to executeOpenAI (in
+// executor_chat.go) but with the OpenAI-specific transforms stripped:
+//   - no stream_options injection
+//   - no tool-history collapse
+//   - no XMLCoerce
+//   - no disguise
+//   - no capability sanitizer
+//
+// The body bytes are forwarded as-is. For Q3 (chat -> anthropic
+// upstream) the relay layer has already converted the body to Anthropic
+// shape by the time this runs; for Q4 (anthropic -> anthropic) the
+// bytes are unchanged from what the client sent.
+func (e *Executor) executeAnthropic(
+	params *ExecParams,
+	cand provider.Candidate,
+	maxRetries int,
+	tTotal time.Time,
+	fpLease *credentialfpslot.Lease,
+) (*ExecuteResult, error) {
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = cand.RawModel
+	}
+
+	bodyBytes := params.BodyBytes
+	if outboundModel != params.ClientModel {
+		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
+	}
+
+	ae := &AnthropicExecutor{
+		Common: &CommonExecutor{
+			Circuit:              e.Circuit,
+			Limiter:              e.Limiter,
+			Pools:                e.Pools,
+			State:                e.State,
+			HeaderProfiles:       e.HeaderProfiles,
+			Upstream:             e.Upstream,
+			FpSlots:              e.FpSlots,
+			UpstreamTimeout:      e.UpstreamTimeout,
+			StreamTimeout:        e.StreamTimeout,
+			StreamRetryThreshold: e.StreamRetryThreshold,
+		},
+	}
+	// PassthroughStream is left nil — the StreamResponse fallback
+	// (defaultAnthropicPassthrough) handles the case where the
+	// caller didn't wire a hook. Production wiring through the
+	// dispatcher can replace this with relay.StreamAnthropicPassthrough
+	// once Phase 3 (messages.go dispatch) lands.
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			select {
+			case <-params.R.Context().Done():
+				return nil, params.R.Context().Err()
+			case <-time.After(delay):
+			}
+		}
+
+		result, tryErr := e.executeAnthropicOnce(params, cand, ae, bodyBytes, outboundModel, tTotal, fpLease)
+		if tryErr == nil {
+			return result, nil
+		}
+		if _, ok := tryErr.(*retryableError); !ok {
+			return nil, tryErr
+		}
+	}
+	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
+}
+
+// executeAnthropicOnce is a single-attempt Anthropic upstream call.
+// Returns either:
+//   - (*ExecuteResult, nil) on 2xx success
+//   - (*ExecuteResult, nil) for benign stream EOF (stream path)
+//   - (*ExecuteResult, &streamInterruptedError{...}) for stream interruption
+//   - (nil, &retryableError{...}) to signal the outer loop to try again
+//   - (nil, &modelNotFoundError{...}) to signal credential failover
+//   - (nil, error) for any other fatal error
+func (e *Executor) executeAnthropicOnce(
+	params *ExecParams,
+	cand provider.Candidate,
+	ae *AnthropicExecutor,
+	bodyBytes []byte,
+	outboundModel string,
+	tTotal time.Time,
+	fpLease *credentialfpslot.Lease,
+) (*ExecuteResult, error) {
+	req, err := ae.BuildRequest(cand, bodyBytes, params.IsStream)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+	if fpLease != nil && fpLease.Egress != nil {
+		credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
+	} else {
+		req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
+		req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
+		req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+	}
+
+	var httpClient *http.Client
+	var reqPool *pool.Pool
+	if e.Pools != nil {
+		poolKey := pool.PoolKey{
+			IdentityHash: params.ClientID.IdentityHash,
+			ProviderID:   cand.ProviderID,
+			CredentialID: cand.CredentialID,
+		}
+		if p := e.Pools.GetOrCreate(poolKey, ""); p != nil && p.State() == pool.PoolActive {
+			reqPool = p
+			httpClient = p.Client()
+		}
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	} else if err := reqPool.Acquire(params.R.Context()); err != nil {
+		return nil, err
+	} else {
+		defer reqPool.Release()
+	}
+
+	timeout := e.UpstreamTimeout
+	if params.IsStream {
+		timeout = e.StreamTimeout
+	}
+	ctx, cancel := context.WithTimeout(params.R.Context(), timeout)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	if e.Upstream != nil {
+		req.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
+	}
+
+	var resp *http.Response
+	var uErr *upstreampkg.Error
+	if e.Upstream != nil {
+		resp, uErr = e.Upstream.Do(req)
+	} else {
+		var doErr error
+		resp, doErr = httpClient.Do(req)
+		if doErr != nil {
+			uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+		}
+	}
+
+	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+		errKind := uErr.Kind
+		if errKind == errorsx.KindRateLimit {
+			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+		}
+		return nil, &retryableError{err: uErr}
+	}
+
+	if resp != nil && resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		body := make([]byte, 4096)
+		n, _ := resp.Body.Read(body)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
+
+		if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
+			slog.Info("model_not_found skip offer",
+				"credential_id", cand.CredentialID,
+				"model", cand.RawModel,
+				"status", resp.StatusCode,
+				"body_preview", string(body[:min(n, 120)]),
+			)
+			return nil, &modelNotFoundError{
+				credentialID: cand.CredentialID,
+				rawModel:     cand.RawModel,
+				body:         string(body[:n]),
+			}
+		}
+
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+			resp.StatusCode != 429 && resp.StatusCode != 401 &&
+			resp.StatusCode != 403 && resp.StatusCode != 402 &&
+			errKind != errorsx.KindConcurrent {
+			if !errorsx.IsClientBug(errKind) {
+				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+			}
+		} else if errKind == errorsx.KindRateLimit {
+			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+		} else if errKind == errorsx.KindConcurrent {
+			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
+			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
+				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+		}
+		if !errorsx.IsRetryable(errKind) {
+			for k, vs := range resp.Header {
+				for _, v := range vs {
+					params.W.Header().Add(k, v)
+				}
+			}
+			params.W.WriteHeader(resp.StatusCode)
+			if n > 0 {
+				params.W.Write(body[:n])
+			}
+			return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+		}
+		return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+	}
+
+	e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+	latencyMs := int(time.Since(tTotal).Milliseconds())
+
+	if params.IsStream {
+		outcome := ae.StreamResponse(params.W, resp)
+		if outcome.Interrupted && outcome.Reason != "client_cancel" {
+			streamKind := errorsx.KindStreamTimeout
+			if errorsx.IsConcurrentOverload(outcome.Reason) {
+				streamKind = errorsx.KindConcurrent
+			}
+			isResumable := outcome.Resumable && outcome.ChunkCount < e.StreamRetryThreshold
+			isBenignEOF := outcome.Reason == "eof_without_done" && outcome.ChunkCount > 0
+
+			if !isBenignEOF && isResumable {
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+			} else if !isBenignEOF {
+				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+			}
+			return &ExecuteResult{
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
+			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
+		}
+		return &ExecuteResult{
+			Response:    resp,
+			Candidate:   cand,
+			LatencyMs:   latencyMs,
+			RequestBody: append([]byte(nil), bodyBytes...),
+		}, nil
+	}
+
+	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel); err != nil {
+		return nil, err
+	}
+	return &ExecuteResult{
+		Response:    resp,
+		Candidate:   cand,
+		LatencyMs:   latencyMs,
+		RequestBody: append([]byte(nil), bodyBytes...),
+	}, nil
 }

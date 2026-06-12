@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -91,5 +92,76 @@ func TestAnthropicExecutor_CheckSoftMismatch(t *testing.T) {
 	mismatched, _ = ae.CheckSoftMismatch("MiniMax-M2.7", "MiniMax-M2.7")
 	if mismatched {
 		t.Error("matching models should not be flagged")
+	}
+}
+
+// TestExecutor_DispatchesAnthropic verifies the Q4 dispatcher in
+// executor.go: when a candidate has protocol=anthropic-messages, the
+// Executor.executeAnthropic() method must actually send the request to
+// the upstream with x-api-key auth (not Bearer) and the /v1/messages
+// path. The upstream stub verifies these invariants.
+//
+// This is the integration test that closes Phase 2: the dispatcher no
+// longer just returns "not yet implemented".
+func TestExecutor_DispatchesAnthropic(t *testing.T) {
+	cm := newCircuitManagerForTest()
+	lim := newLimiterForTest()
+	e := &Executor{
+		Circuit:         cm,
+		Limiter:         lim,
+		UpstreamTimeout: 5 * time.Second,
+		StreamTimeout:   10 * time.Second,
+	}
+
+	// Stub upstream: capture headers + path, return Anthropic-shaped JSON.
+	var seenAPIKey, seenPath, seenAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAPIKey = r.Header.Get("x-api-key")
+		seenAuth = r.Header.Get("Authorization")
+		seenPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"MiniMax-M2.7","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}`))
+	}))
+	defer srv.Close()
+
+	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(""))
+	r.Header.Set("X-Request-Id", "test-req-1")
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W:             rec,
+		R:             r,
+		BodyBytes:     []byte(`{"model":"MiniMax-M2.7","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`),
+		IsStream:      false,
+		ClientModel:   "MiniMax-M2.7",
+		OutboundModel: "MiniMax-M2.7",
+	}
+	cand := provider.Candidate{
+		ProviderID:   14,
+		CredentialID: 6,
+		BaseURL:      srv.URL,
+		Protocol:     "anthropic-messages",
+		APIKey:       "sk-cp-test",
+	}
+
+	_, err := e.executeAnthropic(params, cand, 2, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("executeAnthropic: %v", err)
+	}
+	if seenAPIKey != "sk-cp-test" {
+		t.Errorf("upstream saw x-api-key = %q, want sk-cp-test", seenAPIKey)
+	}
+	if seenAuth != "" {
+		t.Errorf("upstream saw Authorization = %q, want empty (Anthropic uses x-api-key)", seenAuth)
+	}
+	if seenPath != "/v1/messages" {
+		t.Errorf("upstream saw path = %q, want /v1/messages", seenPath)
+	}
+	// Verify the client got a 200 back.
+	if rec.Code != 200 {
+		t.Errorf("client got status %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"msg_1"`) {
+		t.Errorf("client body should contain Anthropic message; got: %s", rec.Body.String())
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -489,16 +488,6 @@ func (e *Executor) executeOpenAI(
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path.
-// Phase 1 only stubs it; the real implementation lands in Phase 2
-// (executor_anthropic.go + relay/anthropic_passthrough_stream.go).
-// Returning a sentinel error here lets the dispatcher surface a
-// 501-like failure to the client until the Phase 2 wiring is in place.
-func (e *Executor) executeAnthropic(
-	params *ExecParams,
-	cand provider.Candidate,
-	maxRetries int,
-	tTotal time.Time,
-	fpLease *credentialfpslot.Lease,
-) (*ExecuteResult, error) {
-	return nil, errors.New("anthropic executor not yet implemented")
-}
+// The real implementation is in executor_anthropic.go; it lives there
+// (not in this file) so that OpenAI-shape assumptions cannot leak into
+// the Anthropic path.
