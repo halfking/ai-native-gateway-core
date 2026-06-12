@@ -47,7 +47,8 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		SELECT DISTINCT
 			mc.canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
-			COALESCE(mc.modality, 'text') AS modality
+			COALESCE(mc.modality, 'text') AS modality,
+			mc.context_window
 		FROM models_canonical mc
 		JOIN model_offers mo ON mo.canonical_id = mc.id
 		JOIN credentials c ON c.id = mo.credential_id
@@ -72,23 +73,26 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type modelEntry struct {
-		ID       string `json:"id"`
-		Object   string `json:"object"`
-		Family   string `json:"family,omitempty"`
-		Modality string `json:"modality,omitempty"`
+		ID            string `json:"id"`
+		Object        string `json:"object"`
+		Family        string `json:"family,omitempty"`
+		Modality      string `json:"modality,omitempty"`
+		ContextWindow *int   `json:"context_window,omitempty"`
 	}
 
 	var models []modelEntry
 	for rows.Next() {
 		var name, family, modality string
-		if err := rows.Scan(&name, &family, &modality); err != nil {
+		var contextWindow *int
+		if err := rows.Scan(&name, &family, &modality, &contextWindow); err != nil {
 			continue
 		}
 		models = append(models, modelEntry{
-			ID:       name,
-			Object:   "model",
-			Family:   family,
-			Modality: modality,
+			ID:            name,
+			Object:        "model",
+			Family:        family,
+			Modality:      modality,
+			ContextWindow: contextWindow,
 		})
 	}
 
