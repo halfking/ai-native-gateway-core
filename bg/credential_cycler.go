@@ -81,6 +81,11 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
 		  AND c.availability_state = 'ready'
 		  AND p.enabled = TRUE
+		  -- v1/v2 coordination (spec §5.5):
+		  -- v1 (this cycler) skips rows that v2 has probed within the last 90 minutes.
+		  -- v2 writes health_latency_ms (v1 does not), so NULL latency == v1's own write.
+		  AND (c.health_latency_ms IS NULL
+		       OR c.health_checked_at < NOW() - INTERVAL '90 minutes')
 		ORDER BY c.id
 	`)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func extractID(path string) (int, bool) {
@@ -250,6 +251,18 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "manual-disabled":
+		if r.Method == http.MethodPatch {
+			h.setProviderManualDisabled(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "routable-summary":
+		if r.Method == http.MethodGet {
+			h.getRoutableSummary(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "credentials":
 		h.handleProviderCredentials(w, r, providerID, "")
 	default:
@@ -297,12 +310,23 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		       COUNT(c.id) FILTER (WHERE c.health_status = 'healthy') AS healthy_credential_count,
 		       COUNT(c.id) FILTER (WHERE c.health_status = 'warning') AS warning_credential_count,
 		       COUNT(c.id) FILTER (WHERE c.health_status = 'unreachable') AS unreachable_credential_count,
-		       MAX(c.health_checked_at) AS health_checked_at
+		       MAX(c.health_checked_at) AS health_checked_at,
+		       -- 900-series: routable count from VIEW (manual > auto priority)
+		       COALESCE(rs.routable_count, 0)::int AS routable_binding_count,
+		       COALESCE(rs.total_count, 0)::int AS total_binding_count
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		LEFT JOIN credentials c ON c.provider_id = p.id
+		LEFT JOIN (
+		    SELECT provider_id,
+		           count(*) FILTER (WHERE is_routable) AS routable_count,
+		           count(*) AS total_count
+		    FROM v_routable_credential_models
+		    WHERE tenant_id = 'default'
+		    GROUP BY provider_id
+		) rs ON rs.provider_id = p.id
 		WHERE %s
-		GROUP BY p.id, pc.code, pc.header_profile_code, pc.vendor_name
+		GROUP BY p.id, pc.code, pc.header_profile_code, pc.vendor_name, rs.routable_count, rs.total_count
 		ORDER BY p.display_name ASC NULLS LAST, p.id ASC
 	`, whereSQL)
 
@@ -342,6 +366,8 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		HealthCheckedAt        *time.Time `json:"health_checked_at"`
 		FreeModelCount         int        `json:"free_model_count"`
 		HealthStatus           string     `json:"health_status"`
+		RoutableBindingCount   int        `json:"routable_binding_count"`
+		TotalBindingCount      int        `json:"total_binding_count"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
@@ -355,6 +381,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			&p.VendorName, &p.HeaderProfileCode,
 			&p.ActiveCredCount, &p.HealthyCredCount, &p.WarningCredCount, &p.UnreachableCredCount,
 			&p.HealthCheckedAt,
+			&p.RoutableBindingCount, &p.TotalBindingCount,
 		); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
@@ -719,6 +746,24 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 	case "lifecycle":
 		if r.Method == http.MethodPatch {
 			h.updateCredentialLifecycle(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "manual-disabled":
+		if r.Method == http.MethodPatch {
+			h.setCredentialManualDisabled(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "default-probe-model":
+		if r.Method == http.MethodPatch {
+			h.setDefaultProbeModel(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "pick-default-probe-model":
+		if r.Method == http.MethodPost {
+			h.pickDefaultProbeModel(w, r, providerID, credID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -2600,4 +2645,309 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 		"triggered":     true,
 		"credential_id": credID,
 	})
+}
+
+// =============================================================================
+// 900-series endpoints: Manual disable + default probe model
+// Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md
+// =============================================================================
+
+// setProviderManualDisabled toggles providers.manual_disabled
+// Audit: writes a synthetic model_offer_events row with raw_model_name=NULL
+// (provider-level disable does not target a specific model)
+func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Request, providerID int) {
+	var req struct {
+		ManualDisabled bool   `json:"manual_disabled"`
+		Reason         string `json:"reason"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = "admin"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE providers
+		SET manual_disabled = $1, updated_at = now()
+		WHERE id = $2 AND tenant_id = 'default'
+	`, req.ManualDisabled, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	action := "disable"
+	if !req.ManualDisabled {
+		action = "enable"
+	}
+	reasonCode := "provider_manual_disabled"
+	if !req.ManualDisabled {
+		reasonCode = "provider_manual_enabled"
+	}
+	actorCopy := actor
+	reqCopy := req
+	h.db.Exec(ctx, `
+		INSERT INTO model_offer_events
+		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
+		VALUES ('admin', $1, 0, $2, '', $3, $4)
+	`, action, providerID, reasonCode, actorCopy+": "+reqCopy.Reason)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":         "updated",
+		"manual_disabled": req.ManualDisabled,
+		"actor":           actor,
+	})
+}
+
+// setCredentialManualDisabled toggles credentials.manual_disabled
+// Audit: writes a model_offer_events row per affected binding (raw_model_name='' is
+// treated as "applies to all models under this credential")
+func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	var req struct {
+		ManualDisabled bool   `json:"manual_disabled"`
+		Reason         string `json:"reason"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = "admin"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET manual_disabled = $1, updated_at = now()
+		WHERE id = $2 AND provider_id = $3
+	`, req.ManualDisabled, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+
+	action := "disable"
+	reasonCode := "credential_manual_disabled"
+	if !req.ManualDisabled {
+		action = "enable"
+		reasonCode = "credential_manual_enabled"
+	}
+	actorCopy := actor
+	reqCopy := req
+	h.db.Exec(ctx, `
+		INSERT INTO model_offer_events
+		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
+		VALUES ('admin', $1, $2, $3, '', $4, $5)
+	`, action, credID, providerID, reasonCode, actorCopy+": "+reqCopy.Reason)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":         "updated",
+		"manual_disabled": req.ManualDisabled,
+		"actor":           actor,
+	})
+}
+
+// setDefaultProbeModel manually pins a credential's probe model
+// Audit: writes both model_offer_events and credential_probe_model_log
+func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	var req struct {
+		Model  *string `json:"model"`
+		Reason string  `json:"reason"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = "admin"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var oldModel string
+	if err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(default_probe_model, '') FROM credentials WHERE id = $1 AND provider_id = $2`,
+		credID, providerID,
+	).Scan(&oldModel); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+
+	var newModel string
+	var source string
+	if req.Model != nil {
+		newModel = *req.Model
+		source = "manual"
+	} else {
+		source = "cleared"
+	}
+
+	if _, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET default_probe_model = $1, default_probe_model_source = $2, default_probe_model_picked_at = now()
+		WHERE id = $3 AND provider_id = $4
+	`, newModel, source, credID, providerID); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+
+	actorCopy := actor
+	reqCopy := req
+	h.db.Exec(ctx, `
+		INSERT INTO credential_probe_model_log
+		    (tenant_id, credential_id, source, old_model, new_model, actor, reason)
+		VALUES ('default', $1, $2, $3, $4, $5, $6)
+	`, credID, source, oldModel, newModel, actorCopy, reqCopy.Reason)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "updated",
+		"old_model": oldModel,
+		"new_model": newModel,
+		"source":    source,
+		"actor":     actor,
+	})
+}
+
+// pickDefaultProbeModel triggers an immediate auto-pick (skips daily cron)
+// Looks up via request_logs (7d most-used client_model) and falls back to
+// domestic provider random pick. Manual source is preserved.
+func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = "admin"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	result, err := bgPickProbeModel(ctx, h.db, credID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "pick failed: "+err.Error())
+		return
+	}
+
+	if result.Model == "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message": "no candidate found",
+			"model":   "",
+			"source":  "",
+		})
+		return
+	}
+
+	var oldModel string
+	if err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(default_probe_model, '') FROM credentials WHERE id = $1`,
+		credID,
+	).Scan(&oldModel); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+
+	if _, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET default_probe_model = $1, default_probe_model_source = $2, default_probe_model_picked_at = now()
+		WHERE id = $3
+	`, result.Model, result.Source, credID); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
+		return
+	}
+
+	actorCopy := actor
+	h.db.Exec(ctx, `
+		INSERT INTO credential_probe_model_log
+		    (tenant_id, credential_id, source, old_model, new_model, actor, reason)
+		VALUES ('default', $1, $2, $3, $4, $5, $6)
+	`, credID, result.Source, oldModel, result.Model, actorCopy, "admin immediate pick")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "picked",
+		"model":     result.Model,
+		"source":    result.Source,
+		"old_model": oldModel,
+	})
+}
+
+// getRoutableSummary returns aggregate counts of routable vs unavailable bindings
+// for a provider, grouped by unavailable_reason. Backed by v_routable_credential_models.
+func (h *Handler) getRoutableSummary(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+		    COALESCE(unavailable_reason, 'routable') AS reason,
+		    count(*) AS cnt
+		FROM v_routable_credential_models
+		WHERE provider_id = $1 AND tenant_id = 'default'
+		GROUP BY unavailable_reason
+		ORDER BY cnt DESC
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	breakdown := make(map[string]int)
+	var total, routable int
+	for rows.Next() {
+		var reason string
+		var cnt int
+		if err := rows.Scan(&reason, &cnt); err != nil {
+			continue
+		}
+		breakdown[reason] = cnt
+		total += cnt
+		if reason == "routable" {
+			routable = cnt
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id":            providerID,
+		"total_bindings":         total,
+		"routable_bindings":      routable,
+		"unavailable_bindings":   total - routable,
+		"unavailable_breakdown":  breakdown,
+		"routable_ratio":         float64(routable) / float64(maxInt(total, 1)),
+	})
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// =============================================================================
+// Probe model picker helpers (shared with bg package)
+// =============================================================================
+
+// pickProbeResult is the shared return type for picker functions.
+type pickProbeResult struct {
+	Model  string
+	Source string
+}
+
+// bgPickProbeModel is a thin adapter to the bg-package picker.
+// Defined here to avoid an import cycle (admin does not import bg).
+func bgPickProbeModel(ctx context.Context, db *pgxpool.Pool, credID int) (pickProbeResult, error) {
+	return pickProbeModelForCredentialAdapter(ctx, db, credID)
 }
