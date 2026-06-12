@@ -2,6 +2,29 @@
 
 > 自动抓取 + 交叉验证 + 双表写入 (`pricing_plans` 源真值 + `model_offers` 快照)
 
+## 国内模型 CNY 计价规则
+
+> **所有国内厂商模型必须使用人民币(CNY)计价**，不可标 USD。
+
+已修正的厂商（60 个 offer，全部 nvidia-build credential_id=8）：
+
+| 厂商 | 模型前缀 | CNY 来源 | Offers |
+|---|---|---|---|
+| 智谱 Zhipu | glm-* | open.bigmodel.cn/pricing | 12 |
+| DeepSeek | deepseek-* | api-docs.deepseek.com/zh-cn | 6 |
+| 通义千问 Qwen | qwen-*, qwq-* | help.aliyun.com/model-pricing | 6 |
+| 豆包 Doubao | doubao-* | volcengine.com/docs/82379/1544106 | 12 |
+| 月之暗面 Moonshot | moonshot-v1-* | platform.moonshot.ai/docs/pricing | 3 |
+| MiniMax | minimax-*, abab-* | platform.minimaxi.com/pricing-paygo | 4 |
+| 百川 Baichuan | baichuan3-*, baichuan4 | platform.baichuan-ai.com | 3 |
+| 零一万物 Yi | yi-* | platform.lingyiwanwu.com | 3 |
+| 阶跃星辰 Step | step-* | platform.stepfun.com/pricing | 3 |
+| 商汤 SenseChat | sensechat-* | platform.sensenova.cn | 3 |
+| BAAI BGE | bge-* | open-source, USD*7.2 估算 | 1 |
+| Xiaomi Mimo | mimo-* | USD*7.2 估算 | 1 |
+
+修正脚本：`2026-06-12-cny-fix.sql`
+
 ## 目录
 
 - [2026-06-12-llm-pricing.md](2026-06-12-llm-pricing.md) — 主文档（人读）
@@ -75,6 +98,7 @@ curl -sk -H "Authorization: Bearer $API_KEY" \
 | 2026-06-12 Phase E | 73 | 32% | 61 | Tier 1 首次批量入库 |
 | 2026-06-12 Phase G | 149 | 96% | 182 | Tier 2 长尾补全 (NVIDIA NIM 119 + xiaomi 5) |
 | 2026-06-12 Audit fix | 149 | 96% | 182 | 修复 billing_mode 不一致 + plan_meta 补全 |
+| 2026-06-12 CNY fix | 272 | 96% | 182 | 60 个国内模型 USD→CNY（10 厂商官方价） |
 
 ## 月度刷新 (2026-06-12 增补)
 
