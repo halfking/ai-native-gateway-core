@@ -142,7 +142,17 @@ export function createProvider(data: { catalog_code: string; display_name?: stri
   return req<{ id: number; message: string }>('POST', '/api/providers', data)
 }
 
-export function updateProvider(id: number, data: { display_name?: string; base_url?: string; protocol?: string; kind?: string; category?: string; discount_rate?: number; notes?: string }) {
+export function updateProvider(id: number, data: {
+  display_name?: string
+  base_url?: string
+  protocol?: string
+  kind?: string
+  category?: string
+  discount_rate?: number
+  egress_profile?: string
+  notes?: string
+  enabled?: boolean
+}) {
   return req<{ message: string }>('PATCH', `/api/providers/${id}`, data)
 }
 
@@ -317,6 +327,8 @@ export interface ProviderDetail {
   domestic: boolean
   discount_rate: number
   enabled: boolean
+  manual_disabled?: boolean
+  header_profile_code?: string | null
   notes: string | null
   vendor_name: string | null
   active_cred_count: number

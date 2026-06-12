@@ -427,6 +427,8 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		Domestic             bool    `json:"domestic"`
 		DiscountRate         float64 `json:"discount_rate"`
 		Enabled              bool    `json:"enabled"`
+		ManualDisabled       bool    `json:"manual_disabled"`
+		HeaderProfileCode    string  `json:"header_profile_code"`
 		Notes                *string `json:"notes"`
 		VendorName           *string `json:"vendor_name"`
 		ActiveCredCount      int     `json:"active_cred_count"`
@@ -444,8 +446,10 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		SELECT p.id, COALESCE(p.code,''), COALESCE(p.display_name,''), p.catalog_code,
 		       COALESCE(p.kind,''), COALESCE(p.category,''), COALESCE(p.protocol,''),
 		       COALESCE(p.base_url,''), p.egress_profile, p.domestic,
-		       COALESCE(p.discount_rate::float8, 0), p.enabled, p.notes,
-		       pc.vendor_name,
+		       COALESCE(p.discount_rate::float8, 0), p.enabled,
+		       COALESCE(p.manual_disabled, false),
+		       COALESCE(pc.header_profile_code, ''),
+		       p.notes, pc.vendor_name,
 		       COALESCE(ac.cnt, 0), COALESCE(hc.cnt, 0), COALESCE(wc.cnt, 0),
 		       COALESCE(cc.cnt, 0), COALESCE(uc.cnt, 0),
 		       COALESCE(am.cnt, 0), COALESCE(um.cnt, 0),
@@ -465,8 +469,9 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 	`, id).Scan(
 		&p.ID, &p.Code, &p.DisplayName, &p.CatalogCode,
 		&p.Kind, &p.Category, &p.Protocol, &p.BaseURL,
-		&p.EgressProfile, &p.Domestic, &p.DiscountRate, &p.Enabled, &p.Notes,
-		&p.VendorName,
+		&p.EgressProfile, &p.Domestic, &p.DiscountRate, &p.Enabled,
+		&p.ManualDisabled, &p.HeaderProfileCode,
+		&p.Notes, &p.VendorName,
 		&p.ActiveCredCount, &p.HealthyCredCount, &p.WarningCredCount,
 		&p.CoolingCredCount, &p.UnreachableCredCount,
 		&p.AvailableModelCount, &p.UnavailableModelCount,
@@ -583,11 +588,15 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName *string `json:"display_name"`
-		BaseURL     *string `json:"base_url"`
-		Protocol    *string `json:"protocol"`
-		Notes       *string `json:"notes"`
-		Enabled     *bool   `json:"enabled"`
+		DisplayName   *string  `json:"display_name"`
+		BaseURL       *string  `json:"base_url"`
+		Protocol      *string  `json:"protocol"`
+		Kind          *string  `json:"kind"`
+		Category      *string  `json:"category"`
+		DiscountRate  *float64 `json:"discount_rate"`
+		EgressProfile *string  `json:"egress_profile"`
+		Notes         *string  `json:"notes"`
+		Enabled       *bool    `json:"enabled"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -597,19 +606,31 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	defer cancel()
 
 	if req.DisplayName != nil {
-		h.db.Exec(ctx, `UPDATE providers SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
+		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.DisplayName, id)
 	}
 	if req.BaseURL != nil {
-		h.db.Exec(ctx, `UPDATE providers SET base_url = $1 WHERE id = $2`, *req.BaseURL, id)
+		h.db.Exec(ctx, `UPDATE providers SET base_url = $1, updated_at = now() WHERE id = $2`, *req.BaseURL, id)
 	}
 	if req.Protocol != nil {
-		h.db.Exec(ctx, `UPDATE providers SET protocol = $1 WHERE id = $2`, *req.Protocol, id)
+		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, *req.Protocol, id)
+	}
+	if req.Kind != nil {
+		h.db.Exec(ctx, `UPDATE providers SET kind = $1, updated_at = now() WHERE id = $2`, *req.Kind, id)
+	}
+	if req.Category != nil {
+		h.db.Exec(ctx, `UPDATE providers SET category = $1, updated_at = now() WHERE id = $2`, *req.Category, id)
+	}
+	if req.DiscountRate != nil {
+		h.db.Exec(ctx, `UPDATE providers SET discount_rate = $1, updated_at = now() WHERE id = $2`, *req.DiscountRate, id)
+	}
+	if req.EgressProfile != nil {
+		h.db.Exec(ctx, `UPDATE providers SET egress_profile = $1, updated_at = now() WHERE id = $2`, *req.EgressProfile, id)
 	}
 	if req.Notes != nil {
-		h.db.Exec(ctx, `UPDATE providers SET notes = $1 WHERE id = $2`, *req.Notes, id)
+		h.db.Exec(ctx, `UPDATE providers SET notes = $1, updated_at = now() WHERE id = $2`, *req.Notes, id)
 	}
 	if req.Enabled != nil {
-		h.db.Exec(ctx, `UPDATE providers SET enabled = $1 WHERE id = $2`, *req.Enabled, id)
+		h.db.Exec(ctx, `UPDATE providers SET enabled = $1, updated_at = now() WHERE id = $2`, *req.Enabled, id)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
