@@ -70,6 +70,12 @@ const credentialStatuses: Array<{ value: CredentialStatus; label: string }> = [
   { value: 'disabled', label: '停用' },
 ]
 
+function providerChannelLabel(category: string | undefined): { label: string; cls: string } {
+  if (category === 'official') return { label: '原厂', cls: 'badge-blue' }
+  if (!category) return { label: '未知', cls: 'badge-gray' }
+  return { label: '中转', cls: 'badge-orange' }
+}
+
 // ── Add provider modal ──────────────────────────────────────────────────────
 const showAdd      = ref(false)
 const isCustom     = ref(false)
@@ -611,6 +617,7 @@ onUnmounted(() => {
         <thead>
           <tr>
             <th>显示名</th>
+            <th>渠道</th>
             <th>目录代码</th>
             <th>Header Profile</th>
             <th>Base URL</th>
@@ -628,6 +635,11 @@ onUnmounted(() => {
             <td>
               <div style="font-weight:500">{{ p.display_name }}</div>
               <div style="font-size:11px;color:var(--muted)" v-if="p.notes">{{ p.notes }}</div>
+            </td>
+            <td>
+              <span class="badge" :class="providerChannelLabel(p.category).cls">
+                {{ providerChannelLabel(p.category).label }}
+              </span>
             </td>
             <td><code style="font-size:12px">{{ p.catalog_code }}</code></td>
             <td><code style="font-size:11px">{{ p.header_profile_code || '—' }}</code></td>
@@ -1246,6 +1258,10 @@ onUnmounted(() => {
 .badge-blue {
   background: rgba(33,150,243,.18);
   color: #42a5f5;
+}
+.badge-orange {
+  background: rgba(210,153,34,.15);
+  color: var(--warning);
 }
 @media (max-width: 1000px) {
   .credential-table {

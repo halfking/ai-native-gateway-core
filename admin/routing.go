@@ -755,33 +755,137 @@ func (h *Handler) handleRoutingFeatured(w http.ResponseWriter, r *http.Request) 
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
+type availableVersionEntry struct {
+	CanonicalName string   `json:"canonical_name"`
+	DisplayName   string   `json:"display_name"`
+	Modality      string   `json:"modality"`
+	ContextWindow *int     `json:"context_window"`
+	ParametersB   *float64 `json:"parameters_b"`
+	Aliases       []string `json:"aliases"`
+	RawNames      []string `json:"raw_names"`
+	ProviderCount int      `json:"provider_count"`
+	Featured      bool     `json:"featured"`
+	Tags          []string `json:"tags"`
+}
+
+type availableFamilyEntry struct {
+	ID          string                  `json:"id"`
+	DisplayName string                  `json:"display_name"`
+	Vendor      string                  `json:"vendor"`
+	Versions    []availableVersionEntry `json:"versions"`
+}
+
+type popularModelEntry struct {
+	CanonicalName string `json:"canonical_name"`
+	DisplayName   string `json:"display_name"`
+	Source        string `json:"source"`
+}
+
+func (h *Handler) queryPopularModels(ctx context.Context, featuredSet map[string]bool, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
+	popular := make([]popularModelEntry, 0, 10)
+	seen := map[string]bool{}
+
+	add := func(canonical, display, source string) {
+		key := strings.ToLower(strings.TrimSpace(canonical))
+		if key == "" || seen[key] {
+			return
+		}
+		if v, ok := byCanonical[key]; ok {
+			canonical = v.CanonicalName
+			if v.DisplayName != "" {
+				display = v.DisplayName
+			}
+		}
+		if display == "" {
+			display = canonical
+		}
+		popular = append(popular, popularModelEntry{
+			CanonicalName: canonical,
+			DisplayName:   display,
+			Source:        source,
+		})
+		seen[key] = true
+	}
+
+	for name := range featuredSet {
+		add(name, name, "policy")
+		if len(popular) >= 10 {
+			return popular
+		}
+	}
+
+	usageRows, err := h.db.Query(ctx, `
+		SELECT COALESCE(rdl.canonical_model, rdl.model) AS model_key, COUNT(*) AS cnt
+		FROM routing_decision_log rdl
+		WHERE rdl.ts > NOW() - INTERVAL '7 days'
+		  AND rdl.success = TRUE
+		  AND rdl.model IS NOT NULL AND rdl.model != ''
+		GROUP BY COALESCE(rdl.canonical_model, rdl.model)
+		ORDER BY cnt DESC
+		LIMIT 20
+	`)
+	if err == nil {
+		defer usageRows.Close()
+		for usageRows.Next() {
+			if len(popular) >= 10 {
+				break
+			}
+			var modelKey string
+			var cnt int
+			if err := usageRows.Scan(&modelKey, &cnt); err != nil {
+				continue
+			}
+			add(modelKey, modelKey, "usage")
+		}
+	}
+	return popular
+}
+
 func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get active offers grouped by canonical
 	rows, err := h.db.Query(ctx, `
-		SELECT mo.raw_model_name, mo.standardized_name,
+		SELECT mo.raw_model_name,
+		       mo.standardized_name,
 		       COUNT(DISTINCT p.id) AS provider_count,
-		       mc.canonical_name, mc.display_name, mc.family, mc.modality,
-		       mc.context_window, mc.parameters_b
+		       mc.canonical_name,
+		       mc.display_name,
+		       mc.family,
+		       mc.modality,
+		       mc.context_window,
+		       mc.parameters_b,
+		       COALESCE(mf.display_name, mc.family, 'Unclassified') AS family_display_name,
+		       mf.vendor AS family_vendor
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		LEFT JOIN LATERAL (
+			SELECT canonical_id
+			FROM model_aliases
+			WHERE lower(raw_name) = lower(mo.raw_model_name)
+			  AND status = 'active'
+			LIMIT 1
+		) ma ON TRUE
+		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN model_families mf ON mf.id = mc.family AND mf.status = 'active'
 		WHERE p.tenant_id = 'default'
 		  AND mo.available = TRUE
 		  AND c.status = 'active'
 		  AND p.enabled = TRUE
 		  AND COALESCE(mc.status, 'active') = 'active'
-		GROUP BY mo.raw_model_name, mo.standardized_name, mc.canonical_name,
-		         mc.display_name, mc.family, mc.modality, mc.context_window,
-		         mc.parameters_b
+		GROUP BY mo.raw_model_name, mo.standardized_name, mc.canonical_name, mc.display_name,
+		         mc.family, mc.modality, mc.context_window, mc.parameters_b,
+		         mf.display_name, mf.vendor
 	`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -789,112 +893,145 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 
-	type versionEntry struct {
-		CanonicalName string         `json:"canonical_name"`
-		DisplayName   string         `json:"display_name"`
-		Modality      string         `json:"modality"`
-		ContextWindow *int           `json:"context_window"`
-		ParametersB   *int           `json:"parameters_b"`
-		RawNames      []string       `json:"raw_names"`
-		ProviderCount int            `json:"provider_count"`
-		Tags          map[string]any `json:"tags"`
+	featuredSet := map[string]bool{}
+	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
+	var featuredModels []string
+	if err := polRow.Scan(&featuredModels); err == nil {
+		for _, f := range featuredModels {
+			featuredSet[strings.ToLower(strings.TrimSpace(f))] = true
+		}
 	}
 
-	type familyEntry struct {
-		ID          string         `json:"id"`
-		DisplayName string         `json:"display_name"`
-		Versions    []versionEntry `json:"versions"`
+	aliasesByCanonical := map[string][]string{}
+	aliasRows, err := h.db.Query(ctx, `
+		SELECT mc.canonical_name, ARRAY_AGG(ma.raw_name ORDER BY ma.raw_name) AS aliases
+		FROM models_canonical mc
+		JOIN model_aliases ma ON ma.canonical_id = mc.id
+		WHERE mc.status = 'active' AND ma.status = 'active'
+		GROUP BY mc.canonical_name
+	`)
+	if err == nil {
+		defer aliasRows.Close()
+		for aliasRows.Next() {
+			var canonical string
+			var aliases []string
+			if err := aliasRows.Scan(&canonical, &aliases); err == nil {
+				aliasesByCanonical[canonical] = aliases
+			}
+		}
 	}
 
-	// Group by canonical_name
-	type canonKey struct {
-		canonName string
-		family    string
-	}
-	canonMap := map[canonKey]*versionEntry{}
-	familySet := map[string]bool{}
-	familyDisplayMap := map[string]string{}
+	byCanonical := map[string]*availableVersionEntry{}
+	canonFamily := map[string]string{}
+	familyMeta := map[string]availableFamilyEntry{}
+	unmapped := make([]string, 0)
+	totalRaw := 0
 
 	for rows.Next() {
+		totalRaw++
 		var rawName string
-		var stdName, canonName, dispName, family, modality *string
-		var ctxWin, paramsB *int
+		var stdName, canonName, dispName, family, modality, familyDisplay, familyVendor *string
+		var ctxWin *int
+		var paramsB *float64
 		var provCount int
-
-		if err := rows.Scan(&rawName, &stdName, &provCount,
-			&canonName, &dispName, &family, &modality,
-			&ctxWin, &paramsB); err != nil {
+		if err := rows.Scan(&rawName, &stdName, &provCount, &canonName, &dispName, &family, &modality,
+			&ctxWin, &paramsB, &familyDisplay, &familyVendor); err != nil {
 			continue
 		}
-
-		cn := ""
-		fm := "Unclassified"
-		if canonName != nil {
-			cn = *canonName
+		if canonName == nil || strings.TrimSpace(*canonName) == "" {
+			unmapped = append(unmapped, rawName)
+			continue
 		}
-		if family != nil && *family != "" {
-			fm = *family
-		}
-
-		if cn == "" {
-			cn = rawName
-		}
-
-		key := canonKey{canonName: cn, family: fm}
-		if ve, ok := canonMap[key]; ok {
-			ve.RawNames = append(ve.RawNames, rawName)
-			if provCount > ve.ProviderCount {
-				ve.ProviderCount = provCount
-			}
-		} else {
-			tags := map[string]any{}
+		cn := strings.TrimSpace(*canonName)
+		canonKey := strings.ToLower(cn)
+		item, ok := byCanonical[canonKey]
+		if !ok {
 			dn := cn
-			if dispName != nil && *dispName != "" {
-				dn = *dispName
+			if dispName != nil && strings.TrimSpace(*dispName) != "" {
+				dn = strings.TrimSpace(*dispName)
 			}
 			md := "text"
-			if modality != nil && *modality != "" {
-				md = *modality
+			if modality != nil && strings.TrimSpace(*modality) != "" {
+				md = strings.TrimSpace(*modality)
 			}
-			canonMap[key] = &versionEntry{
+			item = &availableVersionEntry{
 				CanonicalName: cn,
 				DisplayName:   dn,
 				Modality:      md,
 				ContextWindow: ctxWin,
 				ParametersB:   paramsB,
-				RawNames:      []string{rawName},
-				ProviderCount: provCount,
-				Tags:          tags,
+				Aliases:       aliasesByCanonical[cn],
+				RawNames:      []string{},
+				ProviderCount: 0,
+				Featured:      featuredSet[canonKey] || featuredSet[strings.ToLower(rawName)],
+				Tags:          []string{},
+			}
+			byCanonical[canonKey] = item
+
+			familyID := "unclassified"
+			familyLabel := "未分类"
+			vendor := "其他"
+			if family != nil && strings.TrimSpace(*family) != "" {
+				familyID = strings.TrimSpace(*family)
+			}
+			if familyDisplay != nil && strings.TrimSpace(*familyDisplay) != "" {
+				familyLabel = strings.TrimSpace(*familyDisplay)
+			}
+			if familyVendor != nil && strings.TrimSpace(*familyVendor) != "" {
+				vendor = strings.TrimSpace(*familyVendor)
+			}
+			canonFamily[canonKey] = familyID
+			if _, exists := familyMeta[familyID]; !exists {
+				familyMeta[familyID] = availableFamilyEntry{
+					ID:          familyID,
+					DisplayName: familyLabel,
+					Vendor:      vendor,
+				}
 			}
 		}
-		familySet[fm] = true
-		if _, ok := familyDisplayMap[fm]; !ok {
-			familyDisplayMap[fm] = fm
+		item.RawNames = append(item.RawNames, rawName)
+		item.ProviderCount += provCount
+		if featuredSet[canonKey] || featuredSet[strings.ToLower(rawName)] {
+			item.Featured = true
 		}
 	}
 
-	// Build families list
-	familyVersions := map[string][]versionEntry{}
-	for key, ve := range canonMap {
-		familyVersions[key.family] = append(familyVersions[key.family], *ve)
-	}
-
-	families := make([]familyEntry, 0, len(familySet))
-	for fm := range familySet {
-		versions := familyVersions[fm]
-		if versions == nil {
-			versions = []versionEntry{}
+	familyVersions := map[string][]availableVersionEntry{}
+	for canonKey, item := range byCanonical {
+		familyID := canonFamily[canonKey]
+		if familyID == "" {
+			familyID = "unclassified"
 		}
-		families = append(families, familyEntry{
-			ID:          fm,
-			DisplayName: familyDisplayMap[fm],
+		familyVersions[familyID] = append(familyVersions[familyID], *item)
+	}
+	familiesOut := make([]availableFamilyEntry, 0, len(familyMeta))
+	for familyID, meta := range familyMeta {
+		versions := familyVersions[familyID]
+		sort.Slice(versions, func(i, j int) bool {
+			return versions[i].CanonicalName < versions[j].CanonicalName
+		})
+		familiesOut = append(familiesOut, availableFamilyEntry{
+			ID:          meta.ID,
+			DisplayName: meta.DisplayName,
+			Vendor:      meta.Vendor,
 			Versions:    versions,
 		})
 	}
+	sort.Slice(familiesOut, func(i, j int) bool {
+		if familiesOut[i].Vendor == familiesOut[j].Vendor {
+			return familiesOut[i].DisplayName < familiesOut[j].DisplayName
+		}
+		return familiesOut[i].Vendor < familiesOut[j].Vendor
+	})
+	sort.Strings(unmapped)
+
+	popular := h.queryPopularModels(ctx, featuredSet, byCanonical)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"families":  families,
-		"total_raw": 0,
+		"families":  familiesOut,
+		"popular":   popular,
+		"unmapped":  unmapped,
+		"total_raw": totalRaw,
 	})
 }
 

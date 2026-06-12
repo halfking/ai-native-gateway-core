@@ -127,7 +127,10 @@ func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	select {
 	case c.queue <- entry:
 	default:
-		slog.Warn("telemetry queue full, dropping decision log", "request_id", entry.RequestID)
+		// Decision logs power /routing-decisions — never silently drop on backpressure.
+		if err := c.insertDecisionLog(entry); err != nil {
+			slog.Warn("telemetry decision sync insert failed", "request_id", entry.RequestID, "error", err)
+		}
 	}
 }
 

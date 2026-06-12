@@ -1,6 +1,6 @@
 # Incremental build: only replace binary and web assets
 # Use existing gitsha-9a6debb as base (has all system deps)
-FROM kx-llm-gateway-go:gitsha-9a6debb
+FROM kx-llm-gateway-go:gitsha-8400475b
 
 # Stage new binary and web assets from build context
 COPY llm-gateway-go /tmp/llm-gateway-go-new

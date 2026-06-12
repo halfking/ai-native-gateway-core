@@ -12,7 +12,7 @@ const filterSuccess = ref<'' | 'true' | 'false'>('')
 const limit = ref(50)
 const offset = ref(0)
 const total = ref(0)
-const autoRefresh = ref(false)
+const autoRefresh = ref(true)
 
 // Detail panel
 const selectedRow = ref<RoutingDecision | null>(null)
@@ -105,12 +105,10 @@ onUnmounted(() => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">路由决策日志</h2>
-      <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)">
-        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
-          <input type="checkbox" v-model="autoRefresh" style="cursor:pointer">
-          自动刷新 (5秒)
-        </label>
-      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+        <input type="checkbox" v-model="autoRefresh" style="cursor:pointer;margin:0">
+        <span>每 5 秒自动刷新</span>
+      </label>
     </div>
 
     <!-- Filters -->
