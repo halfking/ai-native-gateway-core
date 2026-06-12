@@ -156,11 +156,28 @@ type Client struct {
 	sf singleflight.Group
 }
 
+var defaultClient *Client
+
 func NewClient() *Client {
-	return &Client{
+	c := &Client{
 		candCache: make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:  make(map[int]cacheEntry[string]),
 	}
+	defaultClient = c
+	return c
+}
+
+// InvalidateAllCandidateCache clears all cached candidates.
+// Call this after credential state changes (quota exhaustion, suspension, etc.)
+// to ensure routing picks up the new state without waiting for cache expiry.
+func InvalidateAllCandidateCache() {
+	if defaultClient == nil {
+		return
+	}
+	defaultClient.mu.Lock()
+	defaultClient.candCache = make(map[string]cacheEntry[*resolveResponse])
+	defaultClient.mu.Unlock()
+	slog.Info("candidate cache invalidated")
 }
 
 func (c *Client) Enabled() bool {
