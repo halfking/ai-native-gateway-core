@@ -70,9 +70,11 @@ curl -sk -H "Authorization: Bearer $API_KEY" \
 
 ## 历史快照
 
-| Date | 模型数 | 覆盖率 | 备注 |
-|---|---|---|---|
-| 2026-06-12 | 73 | 0% → 100% Tier 1+2 | 首次批量入库 |
+| Date | 模型数 | 覆盖率 | priced_in | 备注 |
+|---|---|---|---|---|
+| 2026-06-12 Phase E | 73 | 32% | 61 | Tier 1 首次批量入库 |
+| 2026-06-12 Phase G | 149 | 96% | 182 | Tier 2 长尾补全 (NVIDIA NIM 119 + xiaomi 5) |
+| 2026-06-12 Audit fix | 149 | 96% | 182 | 修复 billing_mode 不一致 + plan_meta 补全 |
 
 ## 月度刷新 (2026-06-12 增补)
 
