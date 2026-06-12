@@ -178,6 +178,7 @@ func main() {
 			auditSink,
 		)
 		exec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
+		exec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
