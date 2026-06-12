@@ -1064,7 +1064,7 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 			COALESCE(c.tags::text,'[]'),
 			c.secret_ciphertext,
 			c.created_at, c.updated_at,
-			p.id, p.catalog_code, p.display_name, p.base_url
+			p.id, COALESCE(p.catalog_code, ''), p.display_name, p.base_url
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.pool_group = 'free'
