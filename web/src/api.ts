@@ -602,6 +602,44 @@ export async function checkCredentialHealth(providerId: number, credId: number) 
   return pollTask(task_id)
 }
 
+// ── 900-series: manual disable + default probe model ──────────────────────
+// Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md
+
+export function setProviderManualDisabled(providerId: number, manual_disabled: boolean, reason = '') {
+  return req<{ message: string; manual_disabled: boolean; actor: string }>(
+    'PATCH', `/api/providers/${providerId}/manual-disabled`, { manual_disabled, reason }
+  )
+}
+
+export function setCredentialManualDisabled(providerId: number, credId: number, manual_disabled: boolean, reason = '') {
+  return req<{ message: string; manual_disabled: boolean; actor: string }>(
+    'PATCH', `/api/providers/${providerId}/credentials/${credId}/manual-disabled`, { manual_disabled, reason }
+  )
+}
+
+export function setDefaultProbeModel(providerId: number, credId: number, model: string | null, reason = '') {
+  return req<{ message: string; old_model: string; new_model: string; source: string; actor: string }>(
+    'PATCH', `/api/providers/${providerId}/credentials/${credId}/default-probe-model`, { model, reason }
+  )
+}
+
+export function pickDefaultProbeModel(providerId: number, credId: number) {
+  return req<{ message: string; model: string; source: string; old_model: string }>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/pick-default-probe-model`
+  )
+}
+
+export function getRoutableSummary(providerId: number) {
+  return req<{
+    provider_id: number
+    total_bindings: number
+    routable_bindings: number
+    unavailable_bindings: number
+    unavailable_breakdown: Record<string, number>
+    routable_ratio: number
+  }>('GET', `/api/providers/${providerId}/routable-summary`)
+}
+
 // ── Keys ─────────────────────────────────────────────────────────────────
 
 export interface ApiKey {

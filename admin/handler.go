@@ -27,6 +27,8 @@ type Handler struct {
 	envCleaner  *bg.EnvelopeCleaner
 	stickyClean *bg.StickyCleaner
 	taxSync     *bg.TaxonomySync
+	probeV2     *bg.CredentialProbeV2    // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker   // 900-series: default probe model (spec §4)
 	fpSlots     *credentialfpslot.Manager
 }
 
@@ -94,6 +96,12 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.envCleaner = envCleaner
 	h.stickyClean = stickyClean
 	h.taxSync = taxSync
+}
+
+// SetProbeServices injects the 900-series background services (spec §4-5).
+func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.DefaultProbePicker) {
+	h.probeV2 = probeV2
+	h.probePicker = picker
 }
 
 func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {

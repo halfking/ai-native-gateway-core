@@ -266,6 +266,8 @@ func main() {
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
 	var credCycler *bg.CredentialCycler
+	var credProbeV2 *bg.CredentialProbeV2
+	var defaultProbePicker *bg.DefaultProbePicker
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var taxonomySync *bg.TaxonomySync
@@ -282,6 +284,22 @@ func main() {
 		} else if bgDataPlaneOnly {
 			slog.Info("credential cycler skipped (bg_mode=data-plane)")
 		}
+
+		// 900-series: v2 mini-chat probe (spec §5) — independent of v1 cycler
+		if !bgDataPlaneOnly {
+			credProbeV2 = bg.NewCredentialProbeV2(dbConn.Pool(), fernetKey)
+			if keyring != nil {
+				credProbeV2.SetKeyring(keyring)
+			}
+			credProbeV2.Start(context.Background())
+			slog.Info("credential probe v2 started")
+
+			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
+			defaultProbePicker = bg.NewDefaultProbePicker(dbConn.Pool())
+			defaultProbePicker.Start(context.Background())
+			slog.Info("default probe picker started")
+		}
+
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
@@ -296,6 +314,7 @@ func main() {
 
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
+			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
 			adminHandler.SetFpSlots(fpSlots)
 		}
 	}
