@@ -1415,7 +1415,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 	for rows.Next() {
 		var l logEntry
 		if err := rows.Scan(
-			&l.Ts, &l.RequestID, &l.CredentialID,
+			&l.Ts, &l.RequestID, &l.CredentialID, &l.CredentialLabel,
 			&l.ClientModel, &l.OutboundModel,
 			&l.Success, &l.ErrorKind,
 			&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
