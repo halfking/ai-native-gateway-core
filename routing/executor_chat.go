@@ -325,6 +325,41 @@ func (e *Executor) executeOpenAI(
 					)
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+					// Context-length retry path: if the upstream rejected
+					// the request because the conversation exceeded the
+					// model's context window, attempt one client-side trim
+					// + retry. The pre-request trim path
+					// (transform.CompressMessagesIfNeeded) catches obvious
+					// overshoots; this catches the case where the heuristic
+					// underestimated (e.g. tool_call payloads are heavier
+					// than raw chars suggest) and the upstream is the
+					// authority on its own context window.
+					//
+					// The retry attempts at most once. If the second
+					// attempt also fails, we bubble the 4xx up unchanged
+					// — at that point the client is sending genuinely
+					// too much history for this model and needs to make
+					// room on its own.
+					//
+					// Q4 (anthropic-messages passthrough) is skipped: the
+					// body bytes are owned by the Q4 streaming writer and
+					// mid-stream rewriting would break the byte contract.
+					if errorsx.IsContextLength(errKind) && attempt == 0 &&
+						cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+						slog.Info("context_length 4xx → client-side trim retry",
+							"credential_id", cand.CredentialID,
+							"model", cand.RawModel,
+							"context_window", *cand.ContextWindow,
+							"status", resp.StatusCode,
+						)
+						trimmed := transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+						if len(trimmed) < len(bodyBytes) {
+							bodyBytes = trimmed
+							return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+						}
+						// Trim made no progress (already minimal) — fall
+						// through to the 4xx bubble-up.
+					}
 					for k, vs := range resp.Header {
 						for _, v := range vs {
 							params.W.Header().Add(k, v)
@@ -512,6 +547,17 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	}
 	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
 	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
+	// Client-side context window enforcement. Q4 (anthropic-messages
+	// passthrough) is intentionally skipped — see transform/ctx_compress.go
+	// for the rationale (byte-level passthrough contract). For Q1/Q2/Q3
+	// (openai protocol) we drop the oldest non-system messages until the
+	// estimated prompt tokens fit under context_window * 0.85. This is the
+	// counterpart to minimax's server-side sliding-window trim: when a
+	// client (Cursor/RooCode/opencode) is on the proxy path, the upstream
+	// no longer trims for us, so we have to do it ourselves.
+	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+		bodyBytes = transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	}
 	return bodyBytes
 }
 

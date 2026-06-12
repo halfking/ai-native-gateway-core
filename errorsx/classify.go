@@ -34,6 +34,49 @@ const (
 	// non-fatal, non-retryable kind so the gateway does not punish
 	// the credential (this is a client bug, not an upstream failure).
 	KindToolCallIdMismatch ErrorKind = "tool_call_id_mismatch"
+	// KindContextLength: upstream rejected the request because the prompt
+	// (or accumulated conversation history) exceeded the model's context
+	// window. Distinct from KindTransient so the executor can:
+	//   1. Surface a structured retry-after-trim path
+	//      (routing/executor_chat.go attempts one trim+retry before bubbling
+	//      the 4xx up to the client).
+	//   2. Avoid the standard retryable-error fast path that would re-send
+	//      the same oversized body to a different credential.
+	// This matches minimax's behaviour: direct calls to api.minimaxi.com
+	// silently slide-window trim a too-long conversation, but the proxy
+	// path was historically returning the raw 400 because no client-side
+	// trim was applied.
+	KindContextLength ErrorKind = "context_length_exceeded"
+)
+
+// contextLengthRe matches upstream error bodies that signal "prompt too
+// long for the model's context window". The patterns are deliberately
+// broad because each provider phrases the same condition differently:
+//
+//   - OpenAI:     "This model's maximum context length is 8192 tokens..."
+//   - Anthropic:  "prompt is too long", "input is too long"
+//   - minimax:    "context_length_exceeded", "max_tokens exceed"
+//   - deepseek:   "context window exceeded"
+//   - zhipu/glm:  "上下文长度超出限制", "tokens too long"
+//
+// We keep the CJK alternative because a few domestic providers localise
+// the error string rather than returning the canonical English form.
+var contextLengthRe = regexp.MustCompile(
+	`(?i)(context[ _-]?length[ _-]?exceeded|`+
+		`maximum context length|`+
+		`context[ _-]?window[ _-]?(exceeded|is)|`+
+		`prompt is too long|`+
+		`input is too long|`+
+		`too many (input )?tokens|`+
+		`tokens? exceed|`+
+		`reduce the length|`+
+		`maximum number of tokens)`,
+)
+var contextLengthCJKRe = regexp.MustCompile(
+	`上下文(长度)?(超出|超过|超限)|`+
+		`tokens? (过多|超限|超过)|`+
+		`输入(过长|太长)|`+
+		`超出(模型)?(最大)?(上下文|长度|限制)`,
 )
 
 var modelNotFoundRe = regexp.MustCompile(
@@ -179,6 +222,17 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
+		// Context-length / too-long detection comes last because its
+		// pattern set is broad and could in theory swallow concurrent
+		// or model-not-found signals on shared substrings ("too many
+		// tokens" in a body that also contains "rate limit"). Placing
+		// it after the more specific regexes ensures those take
+		// precedence; the executor's context-length path also runs
+		// before the generic transient branch.
+		if (status == 400 || status == 413 || status == 422) &&
+			(contextLengthRe.Match(body) || contextLengthCJKRe.Match(body)) {
+			return KindContextLength
+		}
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
 }
@@ -200,6 +254,9 @@ func ClassifyResponseBody(body []byte) ErrorKind {
 		}
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
+		}
+		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
+			return KindContextLength
 		}
 	}
 	return ""
@@ -227,9 +284,22 @@ func IsRetryable(kind ErrorKind) bool {
 	switch kind {
 	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindConcurrent, KindStreamTimeout:
 		return true
+	// KindContextLength is intentionally NOT in this list. The executor
+	// handles context-length 4xx via a dedicated path: it tries one
+	// client-side trim+retry (executor_chat.go around the 4xx handler) and
+	// then surfaces the 4xx to the caller. Adding it here would route it
+	// into the generic retry loop with the same oversized body, which
+	// would just bounce off the same upstream limit.
 	default:
 		return false
 	}
+}
+
+// IsContextLength returns true if the kind is a context-window exceeded
+// signal. Callers use this to decide whether to attempt a one-shot
+// client-side trim before bubbling the 4xx up.
+func IsContextLength(kind ErrorKind) bool {
+	return kind == KindContextLength
 }
 
 func IsCredentialFatal(kind ErrorKind) bool {
