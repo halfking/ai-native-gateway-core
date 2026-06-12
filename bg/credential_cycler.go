@@ -17,6 +17,7 @@ import (
 type CredentialCycler struct {
 	db       *pgxpool.Pool
 	encKey   []byte
+	keyring  *secret.Keyring
 	interval time.Duration
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -29,6 +30,10 @@ func NewCredentialCycler(db *pgxpool.Pool, encKey []byte) *CredentialCycler {
 		interval: 1 * time.Hour,
 		done:     make(chan struct{}),
 	}
+}
+
+func (c *CredentialCycler) SetKeyring(kr *secret.Keyring) {
+	c.keyring = kr
 }
 
 func (c *CredentialCycler) Start(ctx context.Context) {
@@ -98,7 +103,7 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 			continue
 		}
 
-		decrypted, decErr := decryptCred(string(ciphertext), c.encKey)
+		decrypted, decErr := decryptCredWithKeyring(string(ciphertext), c.keyring, c.encKey)
 		if decErr != nil {
 			c.updateHealth(ctx, credID, "error", "decrypt failed")
 			continue
@@ -150,10 +155,27 @@ func (c *CredentialCycler) cleanStickySessions(ctx context.Context) {
 }
 
 func decryptCred(ciphertext string, encKey []byte) (string, error) {
+	return decryptCredWithKeyring(ciphertext, nil, encKey)
+}
+
+func decryptCredWithKeyring(ciphertext string, kr *secret.Keyring, encKey []byte) (string, error) {
 	if len(ciphertext) == 0 {
 		return "", nil
 	}
-	return secret.DecryptFernet([]byte(ciphertext), encKey)
+	if kr != nil {
+		pt, _, err := secret.DecryptAny(ciphertext, kr, encKey)
+		if err == nil {
+			return string(pt), nil
+		}
+		slog.Debug("DecryptAny failed, falling back to Fernet-only", "error", err)
+	}
+	if len(encKey) == 32 {
+		pt, err := secret.DecryptFernet([]byte(ciphertext), encKey)
+		if err == nil {
+			return pt, nil
+		}
+	}
+	return "", fmt.Errorf("no decryption key available")
 }
 
 func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string) {
@@ -243,7 +265,7 @@ func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialP
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "not found"}
 	}
 
-	decrypted, decErr := decryptCred(string(ciphertext), c.encKey)
+	decrypted, decErr := decryptCredWithKeyring(string(ciphertext), c.keyring, c.encKey)
 	if decErr != nil {
 		return credentialProbeResult{CredentialID: credID, Status: "error", Error: "decrypt failed"}
 	}

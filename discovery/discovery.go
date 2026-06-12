@@ -10,12 +10,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
 	"github.com/kaixuan/llm-gateway-go/modelname"
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // Service manages model discovery from providers.
@@ -31,6 +33,8 @@ type Service struct {
 	heartbeatAt time.Time
 	lastRun     time.Time
 	discovered  int
+	keyring     *secret.Keyring
+	fernetKey   []byte
 }
 
 // NewService creates a new discovery service.
@@ -46,6 +50,41 @@ func NewService(db *pgxpool.Pool, interval time.Duration) *Service {
 		interval: interval,
 		stopCh:   make(chan struct{}),
 	}
+}
+
+// SetKeyring sets the AES-GCM keyring for credential decryption.
+func (s *Service) SetKeyring(kr *secret.Keyring) {
+	s.keyring = kr
+}
+
+// SetFernetKey sets the legacy Fernet key for credential decryption.
+func (s *Service) SetFernetKey(key []byte) {
+	s.fernetKey = key
+}
+
+// decryptCredential decrypts the secret_ciphertext using the available
+// keyring (AES-GCM v1) or legacy Fernet key, matching the logic used
+// by the relay (provider/client.go) and admin handler.
+func (s *Service) decryptCredential(ciphertext []byte) (string, error) {
+	if len(ciphertext) == 0 {
+		return "", nil
+	}
+	ct := string(ciphertext)
+	if s.keyring != nil {
+		pt, _, err := secret.DecryptAny(ct, s.keyring, s.fernetKey)
+		if err == nil {
+			return string(pt), nil
+		}
+		slog.Debug("AES-GCM/Fernet decrypt failed, trying Fernet-only fallback", "error", err)
+	}
+	if len(s.fernetKey) == 32 {
+		pt, err := secret.DecryptFernet([]byte(ct), s.fernetKey)
+		if err == nil {
+			return pt, nil
+		}
+		slog.Debug("Fernet decrypt also failed", "error", err)
+	}
+	return "", fmt.Errorf("no decryption key available (keyring=%v, fernet=%d bytes)", s.keyring != nil, len(s.fernetKey))
 }
 
 // Start begins the periodic discovery loop.
@@ -188,13 +227,16 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 
 // credential holds provider credential info for discovery.
 type credential struct {
-	ID           int
-	ProviderID   int
-	ProviderName string
-	BaseURL      string
-	Protocol     string
-	CatalogCode  string
-	SecretCipher []byte // bytea in DB, must be []byte for pgx scan
+	ID                     int
+	ProviderID             int
+	ProviderName           string
+	BaseURL                string
+	Protocol               string
+	CatalogCode            string
+	SecretCipher           []byte  // bytea in DB, must be []byte for pgx scan
+	ModelsEndpointTemplate *string // from provider_catalog, may be NULL
+	DiscoveryStrategy      string  // from provider_catalog
+	ModelsManifestJSON     *string // from provider_catalog, JSON manifest fallback
 }
 
 func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
@@ -202,16 +244,21 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		SELECT
 			c.id,
 			p.id AS provider_id,
-		p.display_name AS provider_name,
-		p.base_url,
-		p.protocol,
-		p.catalog_code,
-		c.secret_ciphertext
-	FROM credentials c
-	JOIN providers p ON p.id = c.provider_id
-	WHERE c.status = 'active'
-	  AND c.trust_level NOT IN ('quarantine')
-	  AND p.enabled = TRUE
+			p.display_name AS provider_name,
+			p.base_url,
+			p.protocol,
+			p.catalog_code,
+			c.secret_ciphertext,
+			pc.models_endpoint_template,
+			COALESCE(pc.discovery_strategy, 'auto'),
+			pc.models_manifest_json
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		WHERE c.status = 'active'
+		  AND c.is_deleted = FALSE
+		  AND c.trust_level NOT IN ('quarantine')
+		  AND p.enabled = TRUE
 	`)
 	if err != nil {
 		return nil, err
@@ -221,7 +268,7 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 	var creds []credential
 	for rows.Next() {
 		var c credential
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON); err != nil {
 			continue
 		}
 		creds = append(creds, c)
@@ -235,16 +282,33 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) (i
 		return 0, nil
 	}
 
-	// Build models endpoint URL.
-	modelsURL := urlutil.ModelsURL(cred.BaseURL)
+	// Respect manifest_only discovery strategy (mirrors Python discovery_utils)
+	if cred.DiscoveryStrategy == "manifest_only" {
+		return s.discoverFromManifest(ctx, cred)
+	}
+
+	// Build models endpoint URL using catalog template if available
+	modelsURL := modelsEndpointURL(cred.BaseURL, cred.ModelsEndpointTemplate)
 	if modelsURL == "" {
-		return 0, fmt.Errorf("cannot build models URL for %s", cred.BaseURL)
+		// Empty template means manifest-only supplier
+		return s.discoverFromManifest(ctx, cred)
+	}
+
+	// Decrypt the credential secret before using it as API key
+	apiKey, decErr := s.decryptCredential(cred.SecretCipher)
+	if decErr != nil {
+		return 0, fmt.Errorf("credential decrypt failed: %w", decErr)
 	}
 
 	// Fetch models from provider
-	models, err := s.fetchModels(ctx, modelsURL, string(cred.SecretCipher))
+	models, err := s.fetchModels(ctx, modelsURL, apiKey)
 	if err != nil {
-		return 0, err
+		// Fallback to manifest if API call fails
+		slog.Debug("models API call failed, falling back to manifest",
+			"provider", cred.ProviderName,
+			"error", err,
+		)
+		return s.discoverFromManifest(ctx, cred)
 	}
 
 	// Update database with discovered models
@@ -261,6 +325,50 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) (i
 	s.updateCredentialHealth(ctx, cred.ID, "healthy", "")
 
 	return count, nil
+}
+
+// discoverFromManifest extracts models from the provider_catalog.models_manifest_json.
+func (s *Service) discoverFromManifest(ctx context.Context, cred credential) (int, error) {
+	if cred.ModelsManifestJSON == nil || *cred.ModelsManifestJSON == "" {
+		return 0, nil
+	}
+	data := []byte(*cred.ModelsManifestJSON)
+	models, err := extractModelIDs(data)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, rawName := range models {
+		if err := s.upsertModel(ctx, cred, rawName); err != nil {
+			slog.Debug("failed to upsert manifest model", "model", rawName, "error", err)
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+// modelsEndpointURL resolves the model-list endpoint URL using the catalog
+// template, mirroring Python discovery_utils._models_endpoint().
+//
+// Contract:
+//   - template is nil  → fall back to legacy urlutil.ModelsURL (strip /vN, append /v1/models)
+//   - template == ""   → return "" (manifest-only supplier, skip API discovery)
+//   - template starts with http(s):// → use as full URL
+//   - template starts with "/" → append to base_url
+func modelsEndpointURL(baseURL string, template *string) string {
+	if template != nil {
+		tpl := strings.TrimSpace(*template)
+		if tpl == "" {
+			return ""
+		}
+		if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
+			return tpl
+		}
+		base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		return base + tpl
+	}
+	return urlutil.ModelsURL(baseURL)
 }
 
 func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string, error) {
