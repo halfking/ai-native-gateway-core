@@ -111,46 +111,33 @@ onUnmounted(() => {
       </label>
     </div>
 
-    <!-- Filters -->
-    <div class="card" style="margin-bottom:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-      <div style="display:flex;align-items:center;gap:8px;min-width:260px">
-        <label style="font-size:13px;white-space:nowrap">模型筛选</label>
-        <div style="width:220px">
-          <ModelPicker
-            v-model="filterModel"
-            :allow-free-text="true"
-            placeholder="选择或输入模型"
-            @update:modelValue="resetAndLoad"
-          />
-        </div>
+    <div class="compact-filter-bar">
+      <div class="decisions-model-picker">
+        <ModelPicker
+          v-model="filterModel"
+          :allow-free-text="true"
+          placeholder="模型筛选…"
+          @update:modelValue="resetAndLoad"
+        />
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">状态</label>
-        <select v-model="filterSuccess" @change="resetAndLoad" style="width:100px">
-          <option value="">全部</option>
-          <option value="true">成功</option>
-          <option value="false">失败</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">最近</label>
-        <select v-model="sinceMinutes" @change="resetAndLoad" style="width:100px">
-          <option :value="10">10 分钟</option>
-          <option :value="30">30 分钟</option>
-          <option :value="60">1 小时</option>
-          <option :value="360">6 小时</option>
-          <option :value="1440">24 小时</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">条数</label>
-        <select v-model="limit" @change="resetAndLoad" style="width:80px">
-          <option :value="20">20</option>
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-        </select>
-      </div>
+      <select v-model="filterSuccess" class="cf-select cf-status" title="状态" @change="resetAndLoad">
+        <option value="">全部</option>
+        <option value="true">成功</option>
+        <option value="false">失败</option>
+      </select>
+      <select v-model="sinceMinutes" class="cf-select cf-hours" title="时间范围" @change="resetAndLoad">
+        <option :value="10">10分钟</option>
+        <option :value="30">30分钟</option>
+        <option :value="60">1小时</option>
+        <option :value="360">6小时</option>
+        <option :value="1440">24小时</option>
+      </select>
+      <select v-model="limit" class="cf-select" style="width:72px" title="条数" @change="resetAndLoad">
+        <option :value="20">20条</option>
+        <option :value="50">50条</option>
+        <option :value="100">100条</option>
+        <option :value="200">200条</option>
+      </select>
       <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
     </div>
 
