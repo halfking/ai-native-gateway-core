@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import {
-  updateCredential, deleteCredential, checkCredential, startCredentialCheck, getTask, addCredential,
+  updateCredential, deleteCredential, checkCredential,
+  addCredential,
   setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
   resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
+  updateCredentialLifecycle,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
 
@@ -12,15 +15,12 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ refresh: [] }>()
 
-const saving = ref<Record<number, boolean>>({})
-const checking = ref<Record<number, boolean>>({})
-const checkMsgs = ref<Record<number, string>>({})
-const saveMsgs = ref<Record<number, string>>({})
-const diagLoading = ref(false)
-const diagResult = ref<{ credential_count: number; results: CredentialCheckResult[] } | null>(null)
-const diagError = ref('')
+const selected = ref<ProviderCredential | null>(null)
+const saving = ref(false)
+const checking = ref(false)
+const saveMsg = ref('')
+const checkMsg = ref('')
 
-// Add credential modal
 const showAddCred = ref(false)
 const addCredKey = ref('')
 const addCredLabel = ref('')
@@ -42,8 +42,6 @@ const lifecycleStatuses = [
   { value: 'suspended', label: 'suspended (挂起)' },
   { value: 'retired', label: 'retired (退役)' },
 ]
-
-import { ref } from 'vue'
 
 function statusBadge(s: string) {
   if (s === 'active') return 'badge-green'
@@ -77,7 +75,7 @@ function money(v: number | string | null | undefined) {
   return Number.isNaN(n) ? '—' : `$${n.toFixed(4)}`
 }
 
-function asDateInput(v: string | null) {
+function asDateInput(v: string | null | undefined) {
   return v ? v.slice(0, 16) : ''
 }
 
@@ -88,6 +86,23 @@ function sourceLabel(s?: string | null) {
   if (s === 'auto:domestic_random') return '🎲 国内随机'
   if (s === 'cleared') return '— 已清'
   return s
+}
+
+function tagsText(c: ProviderCredential) {
+  const t = c.tags ?? []
+  return t.length ? t.join(', ') : '—'
+}
+
+function openDrawer(c: ProviderCredential) {
+  selected.value = JSON.parse(JSON.stringify(c)) as ProviderCredential
+  saveMsg.value = ''
+  checkMsg.value = ''
+}
+
+function closeDrawer() {
+  selected.value = null
+  saveMsg.value = ''
+  checkMsg.value = ''
 }
 
 function openAddCred() {
@@ -115,8 +130,11 @@ async function submitAddCred() {
   }
 }
 
-async function save(c: ProviderCredential) {
-  saving.value = { ...saving.value, [c.id]: true }
+async function saveSelected() {
+  const c = selected.value
+  if (!c) return
+  saving.value = true
+  saveMsg.value = ''
   try {
     await updateCredential(props.provider.id, c.id, {
       label: c.label,
@@ -128,63 +146,72 @@ async function save(c: ProviderCredential) {
       notes: c.notes || '',
     })
     emit('refresh')
+    closeDrawer()
   } catch (e: unknown) {
-    saveMsgs.value = { ...saveMsgs.value, [c.id]: e instanceof Error ? e.message : '保存失败' }
+    saveMsg.value = e instanceof Error ? e.message : '保存失败'
   } finally {
-    saving.value = { ...saving.value, [c.id]: false }
+    saving.value = false
   }
 }
 
-async function checkCred(c: ProviderCredential) {
-  checking.value = { ...checking.value, [c.id]: true }
-  checkMsgs.value = { ...checkMsgs.value, [c.id]: '' }
+async function checkSelected() {
+  const c = selected.value
+  if (!c) return
+  checking.value = true
+  checkMsg.value = ''
   try {
     const r = await checkCredential(props.provider.id, c.id)
-    checkMsgs.value = { ...checkMsgs.value, [c.id]: `${r.health_status} · ${r.probe_ok ? '探活通过' : '不可用'}` }
+    checkMsg.value = `${r.health_status} · ${r.probe_ok ? '探活通过' : '不可用'}`
     setTimeout(() => emit('refresh'), 3000)
   } catch (e: unknown) {
-    checkMsgs.value = { ...checkMsgs.value, [c.id]: e instanceof Error ? e.message : '检测失败' }
+    checkMsg.value = e instanceof Error ? e.message : '检测失败'
   } finally {
-    checking.value = { ...checking.value, [c.id]: false }
+    checking.value = false
   }
 }
 
-async function delCred(c: ProviderCredential) {
-  if (!confirm('确认停用该凭据？')) return
+async function delSelected() {
+  const c = selected.value
+  if (!c || !confirm('确认停用该凭据？')) return
   try {
     await deleteCredential(props.provider.id, c.id)
+    closeDrawer()
     emit('refresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : '停用失败')
   }
 }
 
-// 900-series: manual disable toggle (spec §6.2)
-async function toggleManualDisabled(c: ProviderCredential) {
+async function toggleManualDisabled() {
+  const c = selected.value
+  if (!c) return
   const next = !c.manual_disabled
   const reason = prompt(`手工${next ? '禁用' : '启用'}该凭据的原因：`, '') ?? ''
   if (reason === null) return
   try {
     await setCredentialManualDisabled(props.provider.id, c.id, next, reason)
+    c.manual_disabled = next
     emit('refresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : '设置失败')
   }
 }
 
-async function setLifecycle(c: ProviderCredential, value: string) {
+async function setLifecycle(value: string) {
+  const c = selected.value
+  if (!c) return
   try {
-    // Re-use existing /lifecycle endpoint (UpdateCredentialLifecycle)
-    const { updateCredentialLifecycle } = await import('../../api')
     await updateCredentialLifecycle(props.provider.id, c.id, value)
+    c.lifecycle_status = value
     emit('refresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : '设置失败')
   }
 }
 
-async function resetAvailability(c: ProviderCredential) {
-  if (!confirm(`重置 ${c.label} 的可用性状态？`)) return
+async function resetAvailability() {
+  const c = selected.value
+  if (!c || !confirm(`重置 ${c.label} 的可用性状态？`)) return
   try {
     await resetCredentialAvailability(props.provider.id, c.id)
     emit('refresh')
@@ -193,8 +220,9 @@ async function resetAvailability(c: ProviderCredential) {
   }
 }
 
-async function resetQuota(c: ProviderCredential) {
-  if (!confirm(`重置 ${c.label} 的配额状态？`)) return
+async function resetQuota() {
+  const c = selected.value
+  if (!c || !confirm(`重置 ${c.label} 的配额状态？`)) return
   try {
     await resetCredentialQuota(props.provider.id, c.id)
     emit('refresh')
@@ -203,8 +231,9 @@ async function resetQuota(c: ProviderCredential) {
   }
 }
 
-async function forceRecover(c: ProviderCredential) {
-  if (!confirm(`强制触发 ${c.label} 立即恢复探活？`)) return
+async function forceRecover() {
+  const c = selected.value
+  if (!c || !confirm(`强制触发 ${c.label} 立即恢复探活？`)) return
   try {
     await forceRecoverCredential(c.id)
     emit('refresh')
@@ -213,7 +242,9 @@ async function forceRecover(c: ProviderCredential) {
   }
 }
 
-async function setDefaultModel(c: ProviderCredential) {
+async function setDefaultModel() {
+  const c = selected.value
+  if (!c) return
   const v = prompt('手工设置默认探活模型（留空清空）：', c.default_probe_model ?? '')
   if (v === null) return
   try {
@@ -224,7 +255,9 @@ async function setDefaultModel(c: ProviderCredential) {
   }
 }
 
-async function repickDefault(c: ProviderCredential) {
+async function repickDefault() {
+  const c = selected.value
+  if (!c) return
   try {
     const r = await pickDefaultProbeModel(props.provider.id, c.id)
     if (!r.model) {
@@ -237,6 +270,29 @@ async function repickDefault(c: ProviderCredential) {
     alert(e instanceof Error ? e.message : '重选失败')
   }
 }
+
+function onEffectiveInput(ev: Event) {
+  const c = selected.value
+  if (!c) return
+  const v = (ev.target as HTMLInputElement).value
+  c.effective_at = v ? new Date(v).toISOString() : null
+}
+
+function onExpiresInput(ev: Event) {
+  const c = selected.value
+  if (!c) return
+  const v = (ev.target as HTMLInputElement).value
+  c.expires_at = v ? new Date(v).toISOString() : null
+}
+
+function onTagsInput(ev: Event) {
+  const c = selected.value
+  if (!c) return
+  c.tags = (ev.target as HTMLInputElement).value
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean)
+}
 </script>
 
 <template>
@@ -245,121 +301,217 @@ async function repickDefault(c: ProviderCredential) {
       <h3 style="margin:0">凭据列表</h3>
       <button class="btn btn-primary btn-sm" @click="openAddCred">+ 添加凭据</button>
     </div>
-    <div style="overflow-x:auto">
-      <table class="data-table" style="width:100%;font-size:12px">
+
+    <div class="card" style="overflow-x:auto">
+      <table class="data-table cred-table">
         <thead>
           <tr>
             <th>凭据</th>
-            <th>状态 / 生命周期 / 手工</th>
+            <th>状态</th>
             <th>探活</th>
             <th>默认探活模型</th>
             <th>并发</th>
-            <th>有效期</th>
             <th>用量</th>
-            <th>标签</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!creds.length"><td colspan="9">暂无凭据</td></tr>
-          <tr v-for="c in creds" :key="c.id" :style="c.manual_disabled ? 'background:rgba(220,38,38,0.06)' : ''">
+          <tr v-if="!creds.length"><td colspan="6">暂无凭据</td></tr>
+          <tr
+            v-for="c in creds"
+            :key="c.id"
+            class="cred-row"
+            :class="{ 'cred-row--disabled': c.manual_disabled }"
+            tabindex="0"
+            @click="openDrawer(c)"
+            @keydown.enter="openDrawer(c)"
+          >
             <td>
-              <input v-model="c.label" class="compact-input" />
+              <div class="cred-label">{{ c.label || `凭据 #${c.id}` }}</div>
               <div class="key-fingerprint" :title="'与上游平台核对用，非完整密钥'">
                 {{ c.key_masked ?? (c.key_mask_error ? '无法解析' : '—') }}
               </div>
-              <div style="font-size:11px;color:var(--muted)">#{{ c.id }} · {{ c.trust_level }}</div>
+              <div class="cred-meta">#{{ c.id }} · {{ c.trust_level }}</div>
             </td>
             <td>
-              <select v-model="c.status" class="compact-input">
-                <option v-for="s in statuses" :key="s.value" :value="s.value">{{ s.label }}</option>
-              </select>
               <span class="badge" :class="statusBadge(c.status)">{{ c.status }}</span>
-              <div style="margin-top:6px">
-                <select
-                  :value="c.lifecycle_status"
-                  class="compact-input"
-                  style="font-size:11px;padding:2px 4px"
-                  @change="(e: Event) => setLifecycle(c, (e.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="s in lifecycleStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
-                </select>
-              </div>
-              <div style="margin-top:6px;display:flex;align-items:center;gap:4px">
-                <input
-                  type="checkbox"
-                  :id="`md-${c.id}`"
-                  :checked="!!c.manual_disabled"
-                  @change="toggleManualDisabled(c)"
-                />
-                <label :for="`md-${c.id}`" style="font-size:11px;cursor:pointer">
-                  手工{{ c.manual_disabled ? '已禁用' : '可用' }} 🔒
-                </label>
-              </div>
-              <div v-if="c.state_reason_code" :title="c.state_reason_detail || ''" style="font-size:10px;color:var(--muted);margin-top:2px">
-                {{ c.state_reason_code }}
-              </div>
+              <div class="cell-sub">{{ c.lifecycle_status }}</div>
+              <div v-if="c.manual_disabled" class="cell-sub cell-sub--danger">🔒 手工已禁用</div>
             </td>
             <td>
               <span class="badge" :class="healthBadge(c.health_status)">{{ healthLabel(c.health_status) }}</span>
-              <div style="font-size:11px;color:var(--muted)">{{ timeText(c.health_checked_at) }}</div>
-              <div v-if="c.health_probe_model" style="font-size:10px;color:var(--muted)">
-                probe: {{ c.health_probe_model }}
-              </div>
-              <div v-if="c.health_error" style="font-size:11px;color:var(--danger);max-width:200px;word-break:break-all">{{ c.health_error }}</div>
+              <div class="cell-sub">{{ timeText(c.health_checked_at) }}</div>
             </td>
             <td>
-              <div v-if="c.default_probe_model" style="font-family:ui-monospace,monospace;font-size:11px">
-                {{ c.default_probe_model }}
-              </div>
-              <div v-else style="font-size:11px;color:var(--muted)">未设置</div>
-              <div style="font-size:10px;color:var(--muted)">{{ sourceLabel(c.default_probe_model_source) }}</div>
-              <div v-if="c.default_probe_model_picked_at" style="font-size:10px;color:var(--muted)">
-                {{ timeText(c.default_probe_model_picked_at) }}
-              </div>
+              <code v-if="c.default_probe_model" class="mono-sm">{{ c.default_probe_model }}</code>
+              <span v-else class="cell-muted">未设置</span>
             </td>
             <td>
-              <input v-model.number="c.concurrency_limit" type="number" min="0" class="compact-input" style="max-width:80px" placeholder="默认5" />
-              <div v-if="c.fp_slot_limit != null" style="font-size:11px;color:var(--muted);margin-top:4px">
+              {{ c.concurrency_limit || '不限' }}
+              <div v-if="c.fp_slot_limit != null" class="cell-sub">
                 槽 {{ c.fp_slots_used ?? 0 }}/{{ c.fp_slot_limit }}
-                <span v-if="(c.fp_slots_free ?? 0) === 0" style="color:var(--danger)">已满</span>
-                <span v-else>余 {{ c.fp_slots_free }}</span>
               </div>
-              <div v-else style="font-size:11px;color:var(--muted);margin-top:4px">无限（0=不限）</div>
             </td>
             <td>
-              <input :value="asDateInput(c.effective_at)" type="datetime-local" class="compact-input" @input="c.effective_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />
-              <input :value="asDateInput(c.expires_at)" type="datetime-local" class="compact-input" @input="c.expires_at = ($event.target as HTMLInputElement).value ? new Date(($event.target as HTMLInputElement).value).toISOString() : null" />
-            </td>
-            <td>
-              <div>{{ c.total_requests }} 次 · {{ money(c.total_cost_usd) }}</div>
-              <div style="font-size:11px;color:var(--muted)">余额 {{ money(c.quota_summary?.remaining_usd ?? null) }}</div>
-            </td>
-            <td>
-              <input :value="(c.tags ?? []).join(', ')" class="compact-input" placeholder="tag1, tag2" @input="c.tags = ($event.target as HTMLInputElement).value.split(',').map((t:string) => t.trim()).filter(Boolean)" />
-            </td>
-            <td class="actions-cell">
-              <div class="actions-primary">
-                <button class="btn btn-primary btn-sm" @click="save(c)" :disabled="saving[c.id]">{{ saving[c.id] ? '保存中' : '保存' }}</button>
-                <button class="btn btn-sm" @click="checkCred(c)" :disabled="checking[c.id]">{{ checking[c.id] ? '检测中' : '检测' }}</button>
-                <details class="actions-more">
-                  <summary class="btn btn-ghost btn-sm">更多</summary>
-                  <div class="actions-menu">
-                    <button type="button" class="menu-item" @click="delCred(c)">停用凭据</button>
-                    <button type="button" class="menu-item" @click="resetAvailability(c)">重置可用性</button>
-                    <button type="button" class="menu-item" @click="resetQuota(c)">重置配额</button>
-                    <button type="button" class="menu-item" @click="forceRecover(c)">强制恢复</button>
-                    <button type="button" class="menu-item" @click="setDefaultModel(c)">设置默认探活模型</button>
-                    <button type="button" class="menu-item" @click="repickDefault(c)">立即重选探活模型</button>
-                  </div>
-                </details>
-              </div>
-              <div v-if="saveMsgs[c.id]" class="action-msg action-msg--danger">{{ saveMsgs[c.id] }}</div>
-              <div v-if="checkMsgs[c.id]" class="action-msg">{{ checkMsgs[c.id] }}</div>
+              <div>{{ c.total_requests }} 次</div>
+              <div class="cell-sub">{{ money(c.total_cost_usd) }}</div>
             </td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- Credential detail drawer -->
+    <div v-if="selected" class="drawer-backdrop" @click="closeDrawer">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
+          <div>
+            <h3 style="margin:0">{{ selected.label || `凭据 #${selected.id}` }}</h3>
+            <div class="drawer-sub">#{{ selected.id }} · {{ selected.trust_level }}</div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">关闭</button>
+        </div>
+
+        <div class="drawer-body">
+          <div class="drawer-section">
+            <div class="drawer-section-title">基本信息</div>
+            <label class="field-label">标签</label>
+            <input v-model="selected.label" class="field-input" />
+            <div class="key-fingerprint drawer-key">{{ selected.key_masked ?? '—' }}</div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">状态</div>
+            <div class="field-grid">
+              <div>
+                <label class="field-label">运行状态</label>
+                <select v-model="selected.status" class="field-input">
+                  <option v-for="s in statuses" :key="s.value" :value="s.value">{{ s.label }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="field-label">生命周期</label>
+                <select
+                  :value="selected.lifecycle_status"
+                  class="field-input"
+                  @change="(e: Event) => setLifecycle((e.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="s in lifecycleStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
+                </select>
+              </div>
+            </div>
+            <label class="manual-toggle">
+              <input type="checkbox" :checked="!!selected.manual_disabled" @change="toggleManualDisabled" />
+              <span>手工{{ selected.manual_disabled ? '已禁用' : '可用' }} 🔒</span>
+            </label>
+            <div v-if="selected.state_reason_code" class="cell-sub" :title="selected.state_reason_detail || ''">
+              {{ selected.state_reason_code }}
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">探活</div>
+            <div class="info-row">
+              <span class="badge" :class="healthBadge(selected.health_status)">{{ healthLabel(selected.health_status) }}</span>
+              <span class="cell-muted">{{ timeText(selected.health_checked_at) }}</span>
+            </div>
+            <div v-if="selected.health_probe_model" class="cell-sub">probe: {{ selected.health_probe_model }}</div>
+            <div v-if="selected.health_error" class="cell-sub cell-sub--danger">{{ selected.health_error }}</div>
+            <div class="btn-row">
+              <button class="btn btn-sm" :disabled="checking" @click="checkSelected">
+                {{ checking ? '检测中…' : '立即检测' }}
+              </button>
+            </div>
+            <div v-if="checkMsg" class="cell-sub">{{ checkMsg }}</div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">默认探活模型</div>
+            <code v-if="selected.default_probe_model" class="mono-sm">{{ selected.default_probe_model }}</code>
+            <span v-else class="cell-muted">未设置</span>
+            <div class="cell-sub">{{ sourceLabel(selected.default_probe_model_source) }}</div>
+            <div class="btn-row">
+              <button class="btn btn-sm" @click="setDefaultModel">手工设置</button>
+              <button class="btn btn-sm" @click="repickDefault">立即重选</button>
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">并发与有效期</div>
+            <div class="field-grid">
+              <div>
+                <label class="field-label">并发上限（0=不限）</label>
+                <input v-model.number="selected.concurrency_limit" type="number" min="0" class="field-input" />
+              </div>
+              <div>
+                <label class="field-label">指纹槽</label>
+                <div class="cell-muted">
+                  <template v-if="selected.fp_slot_limit != null">
+                    {{ selected.fp_slots_used ?? 0 }}/{{ selected.fp_slot_limit }}
+                    <span v-if="(selected.fp_slots_free ?? 0) === 0" class="cell-sub--danger">已满</span>
+                  </template>
+                  <template v-else>无限</template>
+                </div>
+              </div>
+            </div>
+            <div class="field-grid" style="margin-top:8px">
+              <div>
+                <label class="field-label">生效时间</label>
+                <input
+                  :value="asDateInput(selected.effective_at)"
+                  type="datetime-local"
+                  class="field-input"
+                  @input="onEffectiveInput"
+                />
+              </div>
+              <div>
+                <label class="field-label">过期时间</label>
+                <input
+                  :value="asDateInput(selected.expires_at)"
+                  type="datetime-local"
+                  class="field-input"
+                  @input="onExpiresInput"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">用量</div>
+            <div>{{ selected.total_requests }} 次 · {{ money(selected.total_cost_usd) }}</div>
+            <div class="cell-sub">余额 {{ money(selected.quota_summary?.remaining_usd ?? null) }}</div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">标签</div>
+            <input
+              :value="(selected.tags ?? []).join(', ')"
+              class="field-input"
+              placeholder="tag1, tag2"
+              @input="onTagsInput"
+            />
+          </div>
+
+          <div class="drawer-section drawer-section--danger">
+            <div class="drawer-section-title">高级操作</div>
+            <div class="btn-row">
+              <button class="btn btn-sm" @click="resetAvailability">重置可用性</button>
+              <button class="btn btn-sm" @click="resetQuota">重置配额</button>
+              <button class="btn btn-sm" @click="forceRecover">强制恢复</button>
+              <button class="btn btn-sm btn-danger-outline" @click="delSelected">停用凭据</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer-footer">
+          <div v-if="saveMsg" class="cell-sub cell-sub--danger">{{ saveMsg }}</div>
+          <div class="btn-row btn-row--end">
+            <button class="btn btn-ghost" @click="closeDrawer">取消</button>
+            <button class="btn btn-primary" :disabled="saving" @click="saveSelected">
+              {{ saving ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Add Credential Modal -->
@@ -387,81 +539,124 @@ async function repickDefault(c: ProviderCredential) {
 </template>
 
 <style scoped>
-.compact-input {
+.cred-table {
   width: 100%;
-  min-width: 0;
-  margin-bottom: 4px;
-  padding: 4px 6px;
   font-size: 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
 }
-.compact-input:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-.actions-cell {
-  min-width: 140px;
-  vertical-align: top;
-}
-.actions-primary {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-.actions-more {
-  position: relative;
-}
-.actions-more > summary {
-  list-style: none;
+.cred-row {
   cursor: pointer;
 }
-.actions-more > summary::-webkit-details-marker {
-  display: none;
+.cred-row:hover td {
+  background: rgba(99, 102, 241, 0.06);
 }
-.actions-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 20;
-  min-width: 160px;
-  padding: 4px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+.cred-row--disabled td {
+  background: rgba(220, 38, 38, 0.06);
 }
-.menu-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  padding: 6px 10px;
-  font-size: 12px;
-  border-radius: 4px;
-  cursor: pointer;
+.cred-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
-.menu-item:hover {
-  background: rgba(99, 102, 241, 0.1);
+.cred-label {
+  font-weight: 500;
 }
-.action-msg {
+.cred-meta,
+.cell-sub {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: 2px;
 }
-.action-msg--danger {
+.cell-sub--danger {
   color: var(--danger);
+}
+.cell-muted {
+  font-size: 11px;
+  color: var(--muted);
+}
+.mono-sm {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
 }
 .key-fingerprint {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 11px;
   color: var(--text);
-  margin-bottom: 4px;
+  margin: 4px 0;
   word-break: break-all;
+}
+.drawer-key {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--bg-subtle, #161b22);
+  border-radius: 4px;
+}
+.drawer-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+}
+.drawer-footer {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.field-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.field-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.manual-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn-row--end {
+  justify-content: flex-end;
+}
+.btn-danger-outline {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.drawer-section--danger {
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
 }
 </style>
