@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
@@ -44,8 +45,7 @@ type AnthropicExecutor struct {
 const anthropicVersion = "2023-06-01"
 
 func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, isStream bool) (*http.Request, error) {
-	base := strings.TrimRight(cand.BaseURL, "/")
-	upstreamURL := base + "/v1/messages"
+	upstreamURL := upstreamurl.MessagesURL(cand.BaseURL)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

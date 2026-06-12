@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -208,7 +208,7 @@ func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string)
 	}
 
 	hasKey := strings.TrimSpace(apiKey) != ""
-	urls := urlutil.ModelsURLCandidates(baseURL)
+	urls := upstreamurl.ModelsURLCandidates(baseURL)
 	if len(urls) == 0 {
 		return true, "manifest-only, skipped probe"
 	}

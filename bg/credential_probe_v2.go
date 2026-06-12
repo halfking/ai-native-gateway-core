@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -230,7 +231,7 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	}
 
 	// Step 1: GET /v1/models
-	modelsURLs := modelsURLCandidates(s.BaseURL)
+	modelsURLs := upstreamurl.ModelsURLCandidates(s.BaseURL)
 	if len(modelsURLs) == 0 {
 		return true, "" // manifest-only, skip
 	}
@@ -263,7 +264,7 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	}
 
 	// Step 2: mini chat completion with "hi"
-	chatURL := strings.TrimRight(s.BaseURL, "/") + "/v1/chat/completions"
+	chatURL := upstreamurl.ChatCompletionsURL(s.BaseURL)
 	ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
 	if !ok && strings.Contains(errMsg, "max_tokens") {
 		// Some legacy gateways reject max_tokens < 2; retry with 2
@@ -388,15 +389,6 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
 		quotaState, stateReason, credID)
-}
-
-// modelsURLCandidates returns candidate /v1/models URLs to try
-func modelsURLCandidates(baseURL string) []string {
-	base := strings.TrimRight(baseURL, "/")
-	return []string{
-		base + "/v1/models",
-		base + "/models",
-	}
 }
 
 // decryptCiphertext attempts to decrypt with keyring first, then fallback to

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/internal/urlutil"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -139,7 +139,7 @@ func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool,
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
 	}
-	result, err := doProbeRequest(ctx, urlutil.ModelsURLCandidates(baseURL), apiKey)
+	result, err := doProbeRequest(ctx, upstreamurl.ModelsURLCandidates(baseURL), apiKey)
 	if err != nil {
 		return false, err
 	}
@@ -1415,7 +1415,7 @@ func (h *Handler) providerLogs(w http.ResponseWriter, r *http.Request, providerI
 	for rows.Next() {
 		var l logEntry
 		if err := rows.Scan(
-			&l.Ts, &l.RequestID, &l.CredentialID, &l.CredentialLabel,
+			&l.Ts, &l.RequestID, &l.CredentialID,
 			&l.ClientModel, &l.OutboundModel,
 			&l.Success, &l.ErrorKind,
 			&l.PromptTokens, &l.CompletionTokens, &l.TotalTokens,
@@ -1525,7 +1525,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
 
 		start := time.Now()
 		modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
@@ -1558,7 +1558,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			testModel = "gpt-4o-mini"
 		}
 
-		chatURL := urlutil.ChatCompletionsURL(baseURL)
+		chatURL := upstreamurl.ChatCompletionsURL(baseURL)
 		start = time.Now()
 		chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
 		chatLatency := int(time.Since(start).Milliseconds())
@@ -1808,7 +1808,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+			modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
 			start := time.Now()
 			modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
 			modelsLatency := int(time.Since(start).Milliseconds())
@@ -1825,7 +1825,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			h.db.QueryRow(ctx, `SELECT mo.raw_model_name FROM model_offers mo JOIN credentials c ON c.id = mo.credential_id WHERE c.provider_id = $1 AND mo.available = TRUE LIMIT 1`, providerID).Scan(&testModel)
 			if testModel == "" { testModel = "gpt-4o-mini" }
 
-			chatURL := urlutil.ChatCompletionsURL(baseURL)
+			chatURL := upstreamurl.ChatCompletionsURL(baseURL)
 			start = time.Now()
 			chatResp, chatErr := doChatProbe(ctx, chatURL, apiKey, testModel)
 			chatLatency := int(time.Since(start).Milliseconds())
@@ -2218,7 +2218,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
 		start := time.Now()
 		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
@@ -2288,7 +2288,7 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		modelsURLs := urlutil.ModelsURLCandidates(baseURL)
+		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
 		start := time.Now()
 		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
