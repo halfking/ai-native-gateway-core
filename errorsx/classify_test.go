@@ -157,12 +157,32 @@ func TestClassifyError_ConcurrentErrMessage(t *testing.T) {
 		"engine busy, please slow down",
 		"并发请求超限",
 		"服务繁忙，请稍后重试",
-		"upstream sent EOF without [DONE] (eof_without_done)",
 	}
 	for _, msg := range tests {
 		kind := ClassifyError(errors.New(msg), nil)
 		if kind != KindConcurrent {
 			t.Errorf("expected KindConcurrent for %q, got %q", msg, kind)
+		}
+	}
+}
+
+func TestClassifyError_EOFWithoutDoneIsStreamTimeout(t *testing.T) {
+	// eof_without_done / eof without / unexpected eof / etc. are
+	// provider quirks (MiniMax omits [DONE] on successful streams)
+	// and must NOT be classified as KindConcurrent (which would
+	// trigger 5-min cooling). They map to KindStreamTimeout instead.
+	tests := []string{
+		"upstream sent EOF without [DONE] (eof_without_done)",
+		"io: unexpected EOF",
+		"stream closed before completion",
+	}
+	for _, msg := range tests {
+		kind := ClassifyError(errors.New(msg), nil)
+		if kind == KindConcurrent {
+			t.Errorf("eof-shaped error %q must NOT be KindConcurrent (would trigger 5-min cooling), got %q", msg, kind)
+		}
+		if kind != KindStreamTimeout {
+			t.Errorf("expected KindStreamTimeout for %q, got %q", msg, kind)
 		}
 	}
 }
@@ -186,14 +206,20 @@ func TestClassifyResponseBody_ConcurrentOverload(t *testing.T) {
 }
 
 func TestIsConcurrentOverload(t *testing.T) {
-	if !IsConcurrentOverload("eof_without_done") {
-		t.Fatal("eof_without_done should be treated as concurrent overload")
+	if IsConcurrentOverload("eof_without_done") {
+		t.Fatal("eof_without_done should NOT be treated as concurrent overload")
 	}
 	if !IsConcurrentOverload("concurrent limit exceeded") {
 		t.Fatal("concurrent limit exceeded should be treated as concurrent overload")
 	}
+	if !IsConcurrentOverload("engine busy, too many requests") {
+		t.Fatal("engine busy should be treated as concurrent overload")
+	}
 	if IsConcurrentOverload("") {
 		t.Fatal("empty reason should not be treated as concurrent overload")
+	}
+	if IsConcurrentOverload("client_cancel") {
+		t.Fatal("client_cancel should not be treated as concurrent overload")
 	}
 }
 

@@ -2068,14 +2068,16 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 
 	// Insert model offers
 	for _, model := range req.Models {
+		var freeCredID int
+		if err := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND pool_group = 'free' LIMIT 1`, providerID).Scan(&freeCredID); err != nil {
+			continue
+		}
 		h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, raw_model_name, available,
 				routing_tier, billing_mode, currency, unit_price_in_per_1m, unit_price_out_per_1m,
 				pricing_source, pricing_updated_at)
-			SELECT c.id, $1, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW()
-			FROM credentials c WHERE c.provider_id = $2 AND c.pool_group = 'free' LIMIT 1
-			ON CONFLICT (credential_id, raw_model_name) DO NOTHING
-		`, model, providerID)
+			VALUES ($1, $2, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW())
+		`, freeCredID, model)
 	}
 
 	h.logAudit(r, "free_pool_register", map[string]any{
@@ -2654,9 +2656,6 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 				available, routing_tier, billing_mode, currency,
 				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at)
 			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW())
-			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
-				billing_mode = 'free', unit_price_in_per_1m = 0, unit_price_out_per_1m = 0,
-				pricing_source = 'pool_manager', pricing_updated_at = NOW(), available = true
 		`, credID, canonID, model)
 	}
 

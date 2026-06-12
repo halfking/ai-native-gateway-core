@@ -1456,9 +1456,6 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 				available, routing_tier, billing_mode, currency,
 				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at)
 			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW())
-			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
-				billing_mode = 'free', unit_price_in_per_1m = 0, unit_price_out_per_1m = 0,
-				pricing_source = 'pool_manager', pricing_updated_at = NOW(), available = true
 		`, credID, canonID, model); ierr == nil {
 			offerCount++
 		}
