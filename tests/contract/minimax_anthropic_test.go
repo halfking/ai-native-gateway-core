@@ -294,3 +294,66 @@ func TestMinimaxAnthropic_ModelsEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// 6. thinking block — minimax mandates that the first content block is
+//    always type=thinking (their hard rule, NOT Anthropic's). Pinning this
+//    so any future gateway change that drops/strips thinking is caught.
+func TestMinimaxAnthropic_ThinkingBlockMandatory(t *testing.T) {
+	key := minimaxAnthropicKey(t)
+	status, body := postJSON(t, minimaxAnthropicBase+"/v1/messages", map[string]string{
+		"x-api-key":         key,
+		"anthropic-version": minimaxAnthropicVer,
+	}, map[string]any{
+		"model":      "MiniMax-M2.7",
+		"max_tokens": 32,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	var resp struct {
+		Content []struct {
+			Type string `json:"type"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("no content blocks in response: %s", body)
+	}
+	if resp.Content[0].Type != "thinking" {
+		t.Errorf("content[0].type = %q, want \"thinking\" (minimax mandate)", resp.Content[0].Type)
+	}
+}
+
+// 7. soft-mismatch — posting an unknown model name still returns 200
+//    with a real model echoed back. This is the silent-fallback behavior
+//    that AnthropicExecutor.CheckSoftMismatch relies on for diagnostics.
+func TestMinimaxAnthropic_SoftMismatch(t *testing.T) {
+	key := minimaxAnthropicKey(t)
+	const bogus = "MiniMax-XYZ-NONEXISTENT"
+	status, body := postJSON(t, minimaxAnthropicBase+"/v1/messages", map[string]string{
+		"x-api-key":         key,
+		"anthropic-version": minimaxAnthropicVer,
+	}, map[string]any{
+		"model":      bogus,
+		"max_tokens": 32,
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+	})
+	if status != 200 {
+		t.Fatalf("expected 200 (silent fallback), got %d body=%s", status, body)
+	}
+	var resp struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, body)
+	}
+	if resp.Model == bogus {
+		t.Errorf("expected silent fallback to a real model, but got the requested name %q back; body=%s", bogus, body)
+	}
+	if resp.Model == "" {
+		t.Errorf("response model should be a real fallback name, got empty; body=%s", body)
+	}
+}

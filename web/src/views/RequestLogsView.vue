@@ -186,44 +186,41 @@ onMounted(async () => {
       <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
     </div>
 
-    <div class="card" style="margin-bottom:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">API Key</label>
-        <select v-model="apiKeyId" style="min-width:180px">
-          <option value="">全部</option>
-          <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">时间段</label>
-        <select v-model="hours">
-          <option :value="1">1 小时</option>
-          <option :value="6">6 小时</option>
-          <option :value="24">24 小时</option>
-          <option :value="168">7 天</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">状态</label>
-        <select v-model="successFilter" style="min-width:110px">
-          <option value="">全部</option>
-          <option value="success">成功</option>
-          <option value="failure">失败</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="font-size:13px;white-space:nowrap">Token 来源</label>
-        <select v-model="usageSourceFilter" style="min-width:130px" title="estimated = 本地按字符/单词启发式估算（上游未返回 usage）">
-          <option value="">全部</option>
-          <option value="llm">LLM 返回</option>
-          <option value="estimated">本地估算</option>
-        </select>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:220px">
-        <label style="font-size:13px;white-space:nowrap">关键词</label>
-        <input v-model="keyword" type="text" placeholder="模型名 / 消息片段" style="flex:1" @keyup.enter="resetPageAndLoad" />
-      </div>
+    <div class="compact-filter-bar">
+      <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
+        <option value="">全部 Key</option>
+        <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
+      </select>
+      <select v-model="hours" class="cf-select cf-hours" title="时间范围">
+        <option :value="1">1小时</option>
+        <option :value="6">6小时</option>
+        <option :value="24">24小时</option>
+        <option :value="168">7天</option>
+      </select>
+      <select v-model="successFilter" class="cf-select cf-status" title="结果">
+        <option value="">全部</option>
+        <option value="success">成功</option>
+        <option value="failure">失败</option>
+      </select>
+      <select
+        v-model="usageSourceFilter"
+        class="cf-select"
+        style="width:96px"
+        title="estimated = 本地估算（上游未返回 usage）"
+      >
+        <option value="">Token来源</option>
+        <option value="llm">LLM返回</option>
+        <option value="estimated">本地估算</option>
+      </select>
+      <input
+        v-model="keyword"
+        type="text"
+        class="cf-input cf-grow"
+        placeholder="模型名 / 消息片段…"
+        @keyup.enter="resetPageAndLoad"
+      />
       <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
+      <span class="cf-meta">共 {{ total }} 条</span>
     </div>
 
     <div v-if="models && models.items.length" class="card" style="margin-bottom:16px;padding:12px 16px">

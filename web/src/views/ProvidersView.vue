@@ -1060,9 +1060,10 @@ onUnmounted(() => {
 .filter-bar {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
 }
 .filter-search {
   position: relative;
@@ -1072,8 +1073,8 @@ onUnmounted(() => {
 }
 .filter-input {
   width: 100%;
-  padding: 8px 12px 8px 32px;
-  font-size: 13px;
+  padding: 6px 10px 6px 30px;
+  font-size: 12px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;

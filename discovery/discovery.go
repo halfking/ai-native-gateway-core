@@ -516,14 +516,17 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		}
 	}
 
+	// NOTE: model_offers is a VIEW backed by provider_models +
+	// credential_model_bindings. INSERT goes through an INSTEAD OF trigger
+	// that internally upserts both tables via their own UNIQUE
+	// (provider_id, raw_model_name) and (credential_id, provider_model_id)
+	// constraints. We must NOT add ON CONFLICT here — there is no UNIQUE
+	// constraint on the view itself, and adding ON CONFLICT yields
+	// "there is no unique or exclusion constraint matching the ON CONFLICT
+	// specification" (SQLSTATE 42P10).
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
 		VALUES ($1, $2, $3, $4, TRUE, NOW())
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
-			canonical_id = EXCLUDED.canonical_id,
-			standardized_name = EXCLUDED.standardized_name,
-			available = TRUE,
-			last_seen_at = NOW()
 	`, cred.ID, canonicalID, rawName, modelname.StandardizeName(rawName))
 	if err != nil {
 		return err
