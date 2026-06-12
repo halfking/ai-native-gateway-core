@@ -418,22 +418,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
 			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
 			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
-			CASE
-				WHEN mo.available IS NOT TRUE THEN FALSE
-				WHEN c.status NOT IN ('active','cooling','degraded') THEN FALSE
-				WHEN p.enabled IS NOT TRUE THEN FALSE
-				WHEN COALESCE(c.lifecycle_status, 'active') <> 'active' THEN FALSE
-				WHEN COALESCE(c.availability_state, 'ready') IN ('suspended', 'auth_failed') THEN FALSE
-				WHEN COALESCE(c.availability_state, 'ready') IN ('cooling', 'rate_limited', 'unreachable')
-				     AND (c.availability_recover_at IS NULL OR c.availability_recover_at > now()) THEN FALSE
-				WHEN COALESCE(c.quota_state, 'ok') IN ('balance_exhausted', 'permanently_exhausted') THEN FALSE
-				WHEN COALESCE(c.quota_state, 'ok') = 'periodic_exhausted'
-				     AND (c.quota_recover_at IS NULL OR c.quota_recover_at > now()) THEN FALSE
-				WHEN COALESCE(c.circuit_state, 'closed') = 'open'
-				     AND (c.cooling_until IS NULL OR c.cooling_until > now()) THEN FALSE
-				WHEN c.balance_usd IS NOT NULL AND c.balance_usd <= 0 THEN FALSE
-				ELSE TRUE
-			END AS runtime_routable,
+			-- is_routable comes from the unified VIEW (manual > auto priority).
+			-- Spec: 2026-06-12-credential-availability-audit-design §3.1
+			COALESCE(v.is_routable, FALSE) AS runtime_routable,
+			v.unavailable_reason,
 			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
 			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
@@ -444,6 +432,9 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN v_routable_credential_models v
+		       ON v.credential_id = mo.credential_id
+		      AND v.provider_model_id = mo.provider_model_id
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
 		LEFT JOIN LATERAL (
 			SELECT canonical_id
@@ -456,6 +447,9 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
+		  -- v.is_routable is FALSE for any model with manual disable at any layer
+		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
+		  AND v.is_routable = TRUE
 		ORDER BY COALESCE(mo.manual_priority, 99), COALESCE(mo.routing_tier, 2), COALESCE(mo.weight, 100) DESC, COALESCE(mo.success_rate, 0.9) DESC
 	`)
 	if err != nil {
