@@ -2639,13 +2639,15 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if req.Available {
-		// Explicit admin re-enable sets reason='manual' so the
-		// trg_cmb_protect_manual_disable trigger will shield this binding
-		// from subsequent auto_* disable paths (eof_without_done, model_not_found,
-		// discovery_expired). Same as Python gateway.
+		// Admin re-enable: clear unavailable_reason (so v_routable views the
+		// binding as routable) and set admin_protected=TRUE so
+		// expireStaleModels skips this binding on subsequent discovery runs.
+		// The admin_protected column (added by 905) is the authoritative
+		// protection flag — unavailable_reason is kept semantically clean.
 		_, err = h.db.Exec(ctx, `
 			UPDATE model_offers SET available = TRUE,
-			unavailable_reason = 'manual', unavailable_at = NULL
+			unavailable_reason = NULL, unavailable_at = NULL,
+			admin_protected = TRUE
 			WHERE id = $1
 		`, offerID)
 		if err != nil {
@@ -2653,9 +2655,11 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 	} else {
+		// Admin disable: set reason='manual' and clear protection.
 		h.db.Exec(ctx, `
 			UPDATE model_offers SET available = FALSE,
-			unavailable_reason = 'manual', unavailable_at = now()
+			unavailable_reason = 'manual', unavailable_at = now(),
+			admin_protected = FALSE
 			WHERE id = $1
 		`, offerID)
 	}

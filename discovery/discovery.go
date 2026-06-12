@@ -583,6 +583,7 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			WHERE credential_id = $1
 			  AND raw_model_name NOT IN (%s)
 			  AND available = TRUE
+			  AND COALESCE(admin_protected, FALSE) = FALSE
 		`, placeholders), args...)
 		if err != nil {
 			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
