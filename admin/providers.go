@@ -2607,17 +2607,22 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 	defer cancel()
 
 	var credID int
+	var curReason *string
 	err := h.db.QueryRow(ctx, `
-		SELECT mo.credential_id FROM model_offers mo
+		SELECT mo.credential_id, mo.unavailable_reason FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		WHERE mo.id = $1 AND c.provider_id = $2
-	`, offerID, providerID).Scan(&credID)
+	`, offerID, providerID).Scan(&credID, &curReason)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "offer not found")
 		return
 	}
 
 	if req.Available {
+		if curReason != nil && *curReason == "manual" {
+			writeError(w, http.StatusConflict, "cannot re-enable manually-disabled offer; use the credential or binding level toggle instead")
+			return
+		}
 		h.db.Exec(ctx, `
 			UPDATE model_offers SET available = TRUE,
 			unavailable_reason = NULL, unavailable_at = NULL
