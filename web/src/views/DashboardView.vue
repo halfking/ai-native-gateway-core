@@ -201,7 +201,14 @@ onUnmounted(() => {
         <div class="value" :style="{ color: (summary.success_rate ?? 1) > 0.95 ? 'var(--success)' : 'var(--warning)' }">
           {{ fmtPct(summary.success_rate) }}
         </div>
-        <div class="sub">平均延迟 {{ fmt(summary.avg_latency_ms) }} ms</div>
+        <div class="sub">
+          平均延迟 {{ fmt(summary.avg_latency_ms) }} ms
+          <RouterLink
+            v-if="(summary.success_rate ?? 1) < 0.95"
+            :to="{ path: '/request-logs', query: { success: 'failure', hours: String(days * 24) } }"
+            class="dashboard-fail-link"
+          >查看失败请求</RouterLink>
+        </div>
       </div>
       <div class="stat-card">
         <div class="label">接入 API Key</div>
@@ -325,5 +332,16 @@ onUnmounted(() => {
   color: var(--muted);
   font-size: 12px;
   font-style: italic;
+}
+
+.dashboard-fail-link {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--warning);
+  text-decoration: underline;
+}
+.dashboard-fail-link:hover {
+  color: var(--accent);
 }
 </style>

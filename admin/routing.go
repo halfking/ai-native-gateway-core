@@ -825,13 +825,14 @@ type popularModelEntry struct {
 	CanonicalName string `json:"canonical_name"`
 	DisplayName   string `json:"display_name"`
 	Source        string `json:"source"`
+	Count         *int   `json:"count,omitempty"`
 }
 
-func (h *Handler) queryPopularModels(ctx context.Context, featuredSet map[string]bool, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
-	popular := make([]popularModelEntry, 0, 10)
+func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
+	popular := make([]popularModelEntry, 0, 20)
 	seen := map[string]bool{}
 
-	add := func(canonical, display, source string) {
+	add := func(canonical, display, source string, count *int) {
 		key := strings.ToLower(strings.TrimSpace(canonical))
 		if key == "" || seen[key] {
 			return
@@ -849,39 +850,52 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredSet map[string
 			CanonicalName: canonical,
 			DisplayName:   display,
 			Source:        source,
+			Count:         count,
 		})
 		seen[key] = true
 	}
 
-	for name := range featuredSet {
-		add(name, name, "policy")
-		if len(popular) >= 10 {
-			return popular
+	for _, name := range featuredModels {
+		n := strings.TrimSpace(name)
+		if n == "" {
+			continue
 		}
+		add(n, n, "policy", nil)
 	}
 
 	usageRows, err := h.db.Query(ctx, `
-		SELECT COALESCE(rdl.canonical_model, rdl.model) AS model_key, COUNT(*) AS cnt
-		FROM routing_decision_log rdl
-		WHERE rdl.ts > NOW() - INTERVAL '7 days'
-		  AND rdl.success = TRUE
-		  AND rdl.model IS NOT NULL AND rdl.model != ''
-		GROUP BY COALESCE(rdl.canonical_model, rdl.model)
+		SELECT model_key, cnt FROM (
+			SELECT
+				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+				COUNT(*) AS cnt
+			FROM request_logs rl
+			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+			LEFT JOIN LATERAL (
+				SELECT canonical_id
+				FROM model_aliases
+				WHERE lower(raw_name) = lower(rl.client_model)
+				  AND status = 'active'
+				LIMIT 1
+			) ma ON TRUE
+			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+			WHERE rl.ts > NOW() - INTERVAL '7 days'
+			  AND rl.success = TRUE
+			  AND rl.client_model IS NOT NULL AND rl.client_model != ''
+			GROUP BY model_key
+		) u
 		ORDER BY cnt DESC
-		LIMIT 20
+		LIMIT 10
 	`)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
-			if len(popular) >= 10 {
-				break
-			}
 			var modelKey string
 			var cnt int
 			if err := usageRows.Scan(&modelKey, &cnt); err != nil {
 				continue
 			}
-			add(modelKey, modelKey, "usage")
+			c := cnt
+			add(modelKey, modelKey, "usage", &c)
 		}
 	}
 	return popular
@@ -1071,7 +1085,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	})
 	sort.Strings(unmapped)
 
-	popular := h.queryPopularModels(ctx, featuredSet, byCanonical)
+	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"families":  familiesOut,
@@ -1843,68 +1857,30 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// First get popular models from routing_decision_log
-	rows, err := h.db.Query(ctx, `
-		SELECT model, COUNT(*) as cnt
-		FROM routing_decision_log
-		WHERE ts > NOW() - INTERVAL '7 days'
-		  AND model IS NOT NULL AND model != ''
-		GROUP BY model
-		ORDER BY cnt DESC
-		LIMIT 30
-	`)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"models": []any{}})
-		return
-	}
-	defer rows.Close()
+	var featuredModels []string
+	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
+	_ = polRow.Scan(&featuredModels)
+
+	popular := h.queryPopularModels(ctx, featuredModels, nil)
 
 	type featuredModel struct {
-		Name              string `json:"name"`
-		StandardizedName  string `json:"standardized_name"`
-		Count             int    `json:"count"`
-		Source            string `json:"source"`
+		Name             string `json:"name"`
+		StandardizedName string `json:"standardized_name"`
+		Count            int    `json:"count"`
+		Source           string `json:"source"`
 	}
-	models := make([]featuredModel, 0)
-	seen := make(map[string]bool)
-	for rows.Next() {
-		var m featuredModel
-		if err := rows.Scan(&m.Name, &m.Count); err != nil {
-			continue
+	models := make([]featuredModel, 0, len(popular))
+	for _, p := range popular {
+		cnt := 0
+		if p.Count != nil {
+			cnt = *p.Count
 		}
-		m.StandardizedName = m.Name
-		m.Source = "routing"
-		if !seen[m.Name] {
-			models = append(models, m)
-			seen[m.Name] = true
-		}
-	}
-
-	// Also get canonical models from models_canonical
-	canonicalRows, err := h.db.Query(ctx, `
-		SELECT canonical_name
-		FROM models_canonical
-		WHERE status = 'active'
-		ORDER BY canonical_name
-		LIMIT 50
-	`)
-	if err == nil {
-		defer canonicalRows.Close()
-		for canonicalRows.Next() {
-			var name string
-			if err := canonicalRows.Scan(&name); err != nil {
-				continue
-			}
-			if !seen[name] {
-				models = append(models, featuredModel{
-					Name:             name,
-					StandardizedName: name,
-					Count:            0,
-					Source:           "canonical",
-				})
-				seen[name] = true
-			}
-		}
+		models = append(models, featuredModel{
+			Name:             p.CanonicalName,
+			StandardizedName: p.CanonicalName,
+			Count:            cnt,
+			Source:           p.Source,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})

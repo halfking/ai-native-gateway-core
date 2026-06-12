@@ -1313,6 +1313,13 @@ export interface RequestLogsResponse {
   count: number
 }
 
+export interface TopRequestModel {
+  canonical_id: number | null
+  canonical_name: string
+  display_name: string
+  request_count: number
+}
+
 export function getRequestLogs(params: {
   api_key_id?: number
   provider_id?: number
@@ -1321,6 +1328,7 @@ export function getRequestLogs(params: {
   from?: string
   to?: string
   q?: string
+  model?: string
   error_kind?: string
   success?: boolean
   canonical_id?: number
@@ -1336,6 +1344,7 @@ export function getRequestLogs(params: {
   if (params.from) qs.set('from', params.from)
   if (params.to) qs.set('to', params.to)
   if (params.q) qs.set('q', params.q)
+  if (params.model) qs.set('model', params.model)
   if (params.error_kind) qs.set('error_kind', params.error_kind)
   if (params.success != null) qs.set('success', String(params.success))
   if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
@@ -1348,6 +1357,15 @@ export function getRequestLogs(params: {
 
 export function getRequestLogDetail(requestId: string) {
   return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
+}
+
+export function getRequestLogTopModels(params: { from?: string; to?: string; limit?: number } = {}) {
+  const qs = new URLSearchParams()
+  if (params.from) qs.set('from', params.from)
+  if (params.to) qs.set('to', params.to)
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  const s = qs.toString()
+  return req<{ items: TopRequestModel[] }>('GET', `/api/logs/top-models${s ? '?' + s : ''}`)
 }
 
 export function probeModel(model: string, messages?: Array<{role: string; content: string}>, maxTokens = 20, clientProfile = 'roocode') {
@@ -1386,6 +1404,7 @@ export interface PopularModel {
   canonical_name: string
   display_name: string
   source: 'policy' | 'usage' | string
+  count?: number | null
 }
 
 export interface AvailableModelsResponse {

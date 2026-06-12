@@ -5,12 +5,18 @@ import { store } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const selectedModel = ref('glm-4-flash')
-const apiKey = computed(() => store.apiKey || '<YOUR_API_KEY>')
+const realApiKey = computed(() => store.apiKey || '')
+const maskedApiKey = computed(() => {
+  const k = realApiKey.value
+  if (!k) return '<YOUR_API_KEY>'
+  if (k.length <= 16) return `${k.slice(0, 4)}****`
+  return `${k.slice(0, 12)}****${k.slice(-4)}`
+})
 const baseUrl = computed(() => window.location.origin + '/v1')
 
 const curlExample = computed(() => `curl ${baseUrl.value}/chat/completions \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${apiKey.value}" \\
+  -H "Authorization: Bearer ${maskedApiKey.value}" \\
   -d '{
     "model": "${selectedModel.value}",
     "messages": [
@@ -23,7 +29,7 @@ const curlExample = computed(() => `curl ${baseUrl.value}/chat/completions \\
 const pythonExample = computed(() => `from openai import OpenAI
 
 client = OpenAI(
-    api_key="${apiKey.value}",
+    api_key="${maskedApiKey.value}",
     base_url="${baseUrl.value}",
 )
 
@@ -41,7 +47,7 @@ print(response.choices[0].message.content)`)
 const streamExample = computed(() => `from openai import OpenAI
 
 client = OpenAI(
-    api_key="${apiKey.value}",
+    api_key="${maskedApiKey.value}",
     base_url="${baseUrl.value}",
 )
 
@@ -57,7 +63,7 @@ with client.chat.completions.stream(
 const jsExample = computed(() => `import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: "${apiKey.value}",
+  apiKey: "${maskedApiKey.value}",
   baseURL: "${baseUrl.value}",
   dangerouslyAllowBrowser: true,
 });
@@ -71,7 +77,7 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0].message.content);`)
 
 const listModelsExample = computed(() => `curl ${baseUrl.value}/models \\
-  -H "Authorization: Bearer ${apiKey.value}"`)
+  -H "Authorization: Bearer ${maskedApiKey.value}"`)
 
 const copied = ref<string | null>(null)
 function copyCode(key: string, text: string) {
@@ -133,13 +139,13 @@ async function runTest(exampleId: ExampleId) {
   let method = 'POST'
   let headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey.value}`,
+    'Authorization': `Bearer ${realApiKey.value}`,
   }
 
   if (d.testKind === 'models') {
     url = `${baseUrl.value}/models`
     method = 'GET'
-    headers = { 'Authorization': `Bearer ${apiKey.value}` }
+    headers = { 'Authorization': `Bearer ${realApiKey.value}` }
     d.requestBody = `GET ${url}`
   } else {
     const isStream = d.testKind === 'stream'
@@ -191,7 +197,7 @@ async function runTest(exampleId: ExampleId) {
       }
     }
 
-    if (store.apiKey && store.apiKey !== '<YOUR_API_KEY>') {
+    if (realApiKey.value) {
       try {
         const route = await resolveRouting(selectedModel.value)
         d.routing = `模型: ${route.client_model}\n标准名: ${route.canonical_name || '未映射'}\n路径: ${route.resolution_path}\n候选数: ${route.candidates?.length || 0}\n原始模型: ${route.raw_models?.join(', ') || '无'}`
@@ -226,8 +232,14 @@ const exampleTitle: Record<ExampleId, string> = {
       <h2>请求示例</h2>
     </div>
 
-    <p style="color:var(--muted);margin-bottom:20px">
+    <p style="color:var(--muted);margin-bottom:12px">
       网关兼容 OpenAI API 协议。将 <code>base_url</code> 指向此网关即可使用任意支持的模型。
+    </p>
+    <p v-if="realApiKey" class="key-hint">
+      示例代码中的 API Key 已脱敏显示；点击「测试」将使用当前登录密钥。复制示例后请自行替换为真实 Key。
+      <button type="button" class="btn btn-ghost btn-sm" @click="copyCode('realkey', realApiKey)">
+        {{ copied === 'realkey' ? '已复制!' : '复制完整 Key' }}
+      </button>
     </p>
 
     <div class="card" style="margin-bottom:20px">
@@ -438,5 +450,15 @@ const exampleTitle: Record<ExampleId, string> = {
 
 .meta-label {
   color: var(--muted);
+}
+
+.key-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 16px;
 }
 </style>

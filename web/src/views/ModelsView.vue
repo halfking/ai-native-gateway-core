@@ -37,6 +37,7 @@ const discovering = ref(false)
 const discoverResult = ref<DiscoverModelsResult | null>(null)
 const discoverRun = ref<ModelDiscoveryRun | null>(null)
 const discoverMessage = ref('')
+const showDiscoveryCard = ref(false)
 const showCreateModal = ref(false)
 const createForm = ref({ canonical_name: '', display_name: '', family: '', modality: 'text', context_window: '', parameters_b: '', aliases: '', notes: '' })
 const showNamespaceFilters = ref(false)
@@ -389,6 +390,7 @@ async function runDiscovery() {
   try {
     const started = await discoverModels({ use_manifest_fallback: true, force: true })
     discoverRun.value = started.run
+    showDiscoveryCard.value = true
     discoverMessage.value = started.reason === 'already_running' ? '已有扫描正在运行，继续等待结果' : '扫描任务已启动'
     await pollDiscovery(started.run.id)
   } catch (e: unknown) {
@@ -411,22 +413,63 @@ async function pollDiscovery(runId?: number) {
         await reloadAll()
         window.dispatchEvent(new CustomEvent('llm-gateway:models-updated'))
       }
+      refreshDiscoveryCardVisibility()
       return
     }
     await new Promise((resolve) => window.setTimeout(resolve, 3000))
   }
 }
 
+function discoveryHasStats(result: DiscoverModelsResult | null | undefined): boolean {
+  if (!result) return false
+  return (
+    (result.credentials_scanned ?? 0) > 0 ||
+    (result.models_seen ?? 0) > 0 ||
+    (result.offers_upserted ?? 0) > 0 ||
+    (result.credentials_failed ?? 0) > 0
+  )
+}
+
+function refreshDiscoveryCardVisibility() {
+  if (discovering.value) {
+    showDiscoveryCard.value = true
+    return
+  }
+  const run = discoverRun.value
+  const result = discoverResult.value
+  if (discoveryHasStats(result)) {
+    showDiscoveryCard.value = true
+    return
+  }
+  if (run && (run.status === 'succeeded' || run.status === 'failed')) {
+    showDiscoveryCard.value = true
+    return
+  }
+  if (run?.status === 'running' && run.trigger === 'manual') {
+    showDiscoveryCard.value = true
+    return
+  }
+  showDiscoveryCard.value = false
+}
+
 async function loadDiscoveryStatus() {
   try {
     const status = await getModelDiscoveryStatus()
-    discoverRun.value = status.running || status.latest
-    if (status.latest?.summary) discoverResult.value = status.latest.summary
-    if (status.running) {
+    if (status.running?.trigger === 'manual') {
+      discoverRun.value = status.running
+      if (status.running.summary) discoverResult.value = status.running.summary
       discovering.value = true
       discoverMessage.value = '扫描正在后台运行'
+      showDiscoveryCard.value = true
       await pollDiscovery(status.running.id)
+      return
     }
+    discoverRun.value = status.latest
+    if (status.latest?.summary) discoverResult.value = status.latest.summary
+    if (status.running?.trigger === 'scheduled') {
+      discoverMessage.value = ''
+    }
+    refreshDiscoveryCardVisibility()
   } catch (e) { /* ignore */ }
 }
 
@@ -484,13 +527,16 @@ onMounted(async () => {
     </div>
 
     <!-- 发现任务状态 -->
-    <div v-if="discoverRun || discoverResult" class="card discovery-card">
+    <div v-if="showDiscoveryCard" class="card discovery-card">
       <div class="card-header"><h3>发现任务</h3></div>
       <div class="card-body">
         <div v-if="discoverRun" class="summary-row">
-          <span class="badge" :class="discoverRun.status === 'succeeded' ? 'badge-green' : discoverRun.status === 'failed' ? 'badge-red' : 'badge-blue'">{{ discoverRun.status }}</span>
+          <span
+            class="badge"
+            :class="discoverRun.status === 'succeeded' ? 'badge-green' : discoverRun.status === 'failed' ? 'badge-red' : (discovering ? 'badge-blue' : 'badge-gray')"
+          >{{ discovering ? discoverRun.status : (discoverRun.status === 'running' ? '空闲' : discoverRun.status) }}</span>
           <span class="badge badge-gray">{{ discoverRun.trigger }}</span>
-          <span class="muted small">#{{ discoverRun.id }} · {{ discoverMessage || '最近一次扫描' }}</span>
+          <span class="muted small">#{{ discoverRun.id }} · {{ discoverMessage || (discovering ? '扫描进行中' : '最近一次扫描') }}</span>
         </div>
         <div class="summary-row">
           <span class="badge badge-blue">凭据 {{ discoverResult?.credentials_succeeded ?? 0 }}/{{ discoverResult?.credentials_scanned ?? 0 }}</span>

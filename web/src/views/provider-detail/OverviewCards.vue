@@ -3,6 +3,12 @@ defineProps<{
   provider: any
 }>()
 
+/** Detail API uses *_cred_count; list API uses *_credential_count — accept both. */
+function credCount(provider: any, detailKey: string, listKey: string): number {
+  const v = provider?.[detailKey] ?? provider?.[listKey]
+  return typeof v === 'number' ? v : 0
+}
+
 function fmt(v: any) { return v ?? '—' }
 function fmtPct(v: any) { return v != null ? Number(v).toFixed(1) + '%' : '—' }
 function timeText(v?: string | null) {
@@ -29,10 +35,10 @@ function timeText(v?: string | null) {
     <div class="card">
       <h4>凭据概览</h4>
       <div class="metric-grid">
-        <div class="metric"><b>{{ provider?.active_credential_count ?? 0 }}</b><span>可用</span></div>
-        <div class="metric"><b>{{ provider?.healthy_count ?? 0 }}</b><span>健康</span></div>
-        <div class="metric"><b>{{ provider?.cooling_count ?? 0 }}</b><span>冷却</span></div>
-        <div class="metric"><b>{{ provider?.unreachable_count ?? 0 }}</b><span>不可达</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'active_cred_count', 'active_credential_count') }}</b><span>可用</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'healthy_cred_count', 'healthy_credential_count') }}</b><span>健康</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'cooling_cred_count', 'cooling_credential_count') }}</b><span>冷却</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'unreachable_cred_count', 'unreachable_credential_count') }}</b><span>不可达</span></div>
       </div>
     </div>
     <div class="card">

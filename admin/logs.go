@@ -93,6 +93,10 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		h.listLogs(w, r)
 		return
 	}
+	if remaining == "top-models" {
+		h.listTopModels(w, r)
+		return
+	}
 	h.getLog(w, r)
 }
 
@@ -184,6 +188,27 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := queryIntPtr(r, "canonical_id"); v != nil {
 		addFilter("rl.canonical_id = $%d", *v)
+	}
+	if v := strings.TrimSpace(queryString(r, "model")); v != "" {
+		pattern := "%" + v + "%"
+		clauses = append(clauses, fmt.Sprintf(`(
+			EXISTS (
+				SELECT 1 FROM models_canonical mc
+				WHERE mc.id = rl.canonical_id
+				  AND mc.canonical_name ILIKE $%d
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM model_aliases ma
+				JOIN models_canonical mc ON mc.id = ma.canonical_id
+				WHERE lower(ma.raw_name) = lower(rl.client_model)
+				  AND ma.status = 'active'
+				  AND mc.canonical_name ILIKE $%d
+			)
+			OR rl.client_model ILIKE $%d
+		)`, argIdx, argIdx+1, argIdx+2))
+		args = append(args, pattern, pattern, pattern)
+		argIdx += 3
 	}
 	if v := strings.TrimSpace(queryString(r, "usage_source")); v != "" {
 		if v != "llm" && v != "estimated" {
@@ -324,6 +349,73 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	detail.RequestBody = decodeJSONText(requestBodyRaw)
 	detail.ResponseBody = decodeJSONText(responseBodyRaw)
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func (h *Handler) listTopModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	now := time.Now().UTC()
+	start := parseQueryTime(r, "from", now.Add(-24*time.Hour))
+	end := parseQueryTime(r, "to", now)
+	limit := queryInt(r, "limit", 20)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			COALESCE(mc.id, mc2.id) AS canonical_id,
+			COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS canonical_name,
+			COALESCE(mc.display_name, mc2.display_name, mc.canonical_name, mc2.canonical_name, rl.client_model) AS display_name,
+			COUNT(*) AS request_count
+		FROM request_logs rl
+		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+		LEFT JOIN LATERAL (
+			SELECT canonical_id
+			FROM model_aliases
+			WHERE lower(raw_name) = lower(rl.client_model)
+			  AND status = 'active'
+			LIMIT 1
+		) ma ON TRUE
+		LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+		WHERE rl.ts >= $1 AND rl.ts <= $2
+		  AND rl.client_model IS NOT NULL AND rl.client_model != ''
+		GROUP BY canonical_id, canonical_name, display_name
+		ORDER BY request_count DESC
+		LIMIT $3
+	`, start, end, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type topModel struct {
+		CanonicalID   *int   `json:"canonical_id"`
+		CanonicalName string `json:"canonical_name"`
+		DisplayName   string `json:"display_name"`
+		RequestCount  int    `json:"request_count"`
+	}
+	items := make([]topModel, 0)
+	for rows.Next() {
+		var item topModel
+		if err := rows.Scan(&item.CanonicalID, &item.CanonicalName, &item.DisplayName, &item.RequestCount); err != nil {
+			continue
+		}
+		items = append(items, item)
+	}
+	if items == nil {
+		items = []topModel{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {

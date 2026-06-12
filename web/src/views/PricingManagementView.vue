@@ -1,29 +1,29 @@
 <template>
   <div class="pricing-management">
     <div class="pm-header">
-      <h2>Pricing Management</h2>
+      <h2>定价管理</h2>
       <div class="pm-actions">
         <button class="btn btn-sm" @click="fetchData" :disabled="loading">
-          {{ loading ? 'Loading...' : 'Refresh' }}
+          {{ loading ? '加载中…' : '刷新' }}
         </button>
-        <button class="btn btn-sm" @click="exportCsv">Export CSV</button>
-        <button class="btn btn-sm btn-primary" @click="showImport = true">Import CSV</button>
-        <button class="btn btn-sm btn-success" @click="autoInherit">Auto Inherit</button>
+        <button class="btn btn-sm" @click="exportCsv">导出 CSV</button>
+        <button class="btn btn-sm btn-primary" @click="showImport = true">导入 CSV</button>
+        <button class="btn btn-sm btn-success" @click="autoInherit">自动继承</button>
       </div>
     </div>
 
     <div class="pm-summary" v-if="summary">
       <div class="stat-card">
         <div class="stat-val">{{ summary.total_offers }}</div>
-        <div class="stat-label">Total Offers</div>
+        <div class="stat-label">总 Offer</div>
       </div>
       <div class="stat-card">
         <div class="stat-val">{{ summary.priced_in }}</div>
-        <div class="stat-label">Priced (Input)</div>
+        <div class="stat-label">已定价（输入）</div>
       </div>
       <div class="stat-card">
         <div class="stat-val">{{ summary.priced_out }}</div>
-        <div class="stat-label">Priced (Output)</div>
+        <div class="stat-label">已定价（输出）</div>
       </div>
       <div class="stat-card">
         <div class="stat-val">{{ summary.cny_offers }}</div>
@@ -35,17 +35,17 @@
       </div>
       <div class="stat-card">
         <div class="stat-val">{{ summary.free_offers }}</div>
-        <div class="stat-label">Free</div>
+        <div class="stat-label">免费</div>
       </div>
       <div class="stat-card" :class="coverageClass">
         <div class="stat-val">{{ coveragePct }}%</div>
-        <div class="stat-label">Coverage ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</div>
+        <div class="stat-label">覆盖率 ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</div>
       </div>
     </div>
 
     <!-- Coverage by credential -->
     <div v-if="coverageByCred.length" class="pm-coverage">
-      <h3>Coverage by credential</h3>
+      <h3>按凭据覆盖率</h3>
       <div class="cov-row" v-for="row in coverageByCred" :key="row.credential_id">
         <div class="cov-name">{{ row.credential_name }}</div>
         <div class="cov-bar">
@@ -61,55 +61,55 @@
     <!-- Filter Bar -->
     <div class="pm-filters">
       <div class="filter-group">
-        <input v-model="filters.search" placeholder="Search models..." class="filter-input" @input="onFilterChange" />
+        <input v-model="filters.search" placeholder="搜索模型…" class="filter-input" @input="onFilterChange" />
       </div>
       <div class="filter-group">
         <select v-model="filters.provider_id" @change="onFilterChange" class="filter-select">
-          <option value="">All Providers</option>
+          <option value="">全部供应商</option>
           <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.display_name }}</option>
         </select>
       </div>
       <div class="filter-group">
         <select v-model="filters.billing_mode" @change="onFilterChange" class="filter-select">
-          <option value="">All Billing</option>
-          <option value="token">Token (per 1M)</option>
-          <option value="token_plan">Token Plan (xiaomi/volcano)</option>
-          <option value="code_plan">Code Plan</option>
-          <option value="per_token">Per Token (legacy)</option>
-          <option value="per_request">Per Request</option>
-          <option value="monthly">Monthly</option>
-          <option value="free">Free</option>
+          <option value="">全部计费</option>
+          <option value="token">Token（每百万）</option>
+          <option value="token_plan">Token 套餐（小米/火山）</option>
+          <option value="code_plan">Code 套餐</option>
+          <option value="per_token">按 Token（旧）</option>
+          <option value="per_request">按次</option>
+          <option value="monthly">包月</option>
+          <option value="free">免费</option>
         </select>
       </div>
       <div class="filter-group">
         <select v-model="filters.currency" @change="onFilterChange" class="filter-select">
-          <option value="">All Currency</option>
+          <option value="">全部币种</option>
           <option value="CNY">CNY</option>
           <option value="USD">USD</option>
         </select>
       </div>
       <div class="filter-group">
         <select v-model="filters.pricing_status" @change="onFilterChange" class="filter-select">
-          <option value="">All Pricing</option>
-          <option value="priced">Priced</option>
-          <option value="unpriced">Unpriced</option>
-          <option value="free">Free</option>
+          <option value="">全部定价</option>
+          <option value="priced">已定价</option>
+          <option value="unpriced">未定价</option>
+          <option value="free">免费</option>
         </select>
       </div>
       <div class="filter-group">
         <select v-model="filters.availability" @change="onFilterChange" class="filter-select">
-          <option value="">All Status</option>
-          <option value="true">Available</option>
-          <option value="false">Unavailable</option>
+          <option value="">全部状态</option>
+          <option value="true">可用</option>
+          <option value="false">不可用</option>
         </select>
       </div>
-      <button class="btn btn-sm" @click="clearFilters">Clear</button>
+      <button class="btn btn-sm" @click="clearFilters">清空</button>
     </div>
 
     <!-- View Tabs -->
     <div class="pm-tabs">
-      <button :class="['tab', { active: viewMode === 'tree' }]" @click="viewMode = 'tree'">Tree View</button>
-      <button :class="['tab', { active: viewMode === 'table' }]" @click="viewMode = 'table'">Table View</button>
+      <button :class="['tab', { active: viewMode === 'tree' }]" @click="viewMode = 'tree'">树形视图</button>
+      <button :class="['tab', { active: viewMode === 'table' }]" @click="viewMode = 'table'">表格视图</button>
     </div>
 
     <!-- Tree View -->
@@ -119,7 +119,7 @@
           <div class="tree-family-header" @click="toggle(fam.canonical_name)">
             <span class="arrow" :class="{ open: expanded[fam.canonical_name] }">&#9654;</span>
             <span class="family-name">{{ fam.canonical_name }}</span>
-            <span class="family-meta">{{ fam.family }} | {{ fam.offers.length }} offers</span>
+            <span class="family-meta">{{ fam.family }} | {{ fam.offers.length }} 个 offer</span>
           </div>
           <div v-if="expanded[fam.canonical_name]" class="tree-offers">
             <div
@@ -136,8 +136,8 @@
               <span class="offer-price" v-if="offer.unit_price_in_per_1m != null">
                 {{ offer.unit_price_in_per_1m }}/{{ offer.unit_price_out_per_1m }} {{ offer.currency }}
               </span>
-              <span class="offer-price free" v-else-if="offer.billing_mode === 'free'">FREE</span>
-              <span class="offer-price pending" v-else>pending</span>
+              <span class="offer-price free" v-else-if="offer.billing_mode === 'free'">免费</span>
+              <span class="offer-price pending" v-else>待定价</span>
               <span class="offer-window" v-if="offer.window_requests">
                 W:{{ offer.window_success_rate ? (offer.window_success_rate * 100).toFixed(0) + '%' : '-' }}
               </span>
@@ -153,20 +153,20 @@
         <thead>
           <tr>
             <th><input type="checkbox" @change="toggleSelectAll" :checked="allSelected" /></th>
-            <th @click="sortTable('canonical_name')" class="sortable">Model {{ sortIcon('canonical_name') }}</th>
-            <th @click="sortTable('provider_name')" class="sortable">Provider {{ sortIcon('provider_name') }}</th>
-            <th>Credential</th>
-            <th @click="sortTable('unit_price_in_per_1m')" class="sortable">In Price {{ sortIcon('unit_price_in_per_1m') }}</th>
-            <th @click="sortTable('unit_price_out_per_1m')" class="sortable">Out Price {{ sortIcon('unit_price_out_per_1m') }}</th>
-            <th @click="sortTable('currency')" class="sortable">Currency {{ sortIcon('currency') }}</th>
-            <th @click="sortTable('billing_mode')" class="sortable">Billing {{ sortIcon('billing_mode') }}</th>
+            <th @click="sortTable('canonical_name')" class="sortable">模型 {{ sortIcon('canonical_name') }}</th>
+            <th @click="sortTable('provider_name')" class="sortable">供应商 {{ sortIcon('provider_name') }}</th>
+            <th>凭据</th>
+            <th @click="sortTable('unit_price_in_per_1m')" class="sortable">输入价 {{ sortIcon('unit_price_in_per_1m') }}</th>
+            <th @click="sortTable('unit_price_out_per_1m')" class="sortable">输出价 {{ sortIcon('unit_price_out_per_1m') }}</th>
+            <th @click="sortTable('currency')" class="sortable">币种 {{ sortIcon('currency') }}</th>
+            <th @click="sortTable('billing_mode')" class="sortable">计费 {{ sortIcon('billing_mode') }}</th>
             <th @click="sortTable('routing_tier')" class="sortable">Tier {{ sortIcon('routing_tier') }}</th>
-            <th @click="sortTable('weight')" class="sortable">Weight {{ sortIcon('weight') }}</th>
-            <th @click="sortTable('available')" class="sortable">Avail {{ sortIcon('available') }}</th>
-            <th @click="sortTable('success_rate')" class="sortable">Rate {{ sortIcon('success_rate') }}</th>
+            <th @click="sortTable('weight')" class="sortable">权重 {{ sortIcon('weight') }}</th>
+            <th @click="sortTable('available')" class="sortable">可用 {{ sortIcon('available') }}</th>
+            <th @click="sortTable('success_rate')" class="sortable">成功率 {{ sortIcon('success_rate') }}</th>
             <th @click="sortTable('p95_latency_ms')" class="sortable">P95 {{ sortIcon('p95_latency_ms') }}</th>
-            <th>Window</th>
-            <th>Actions</th>
+            <th>窗口</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -186,16 +186,16 @@
             <td>{{ item.p95_latency_ms ? item.p95_latency_ms + 'ms' : '-' }}</td>
             <td>{{ item.window_requests ? `W:${item.window_success_rate ? (item.window_success_rate * 100).toFixed(0) + '%' : '-'}` : '-' }}</td>
             <td>
-              <button class="btn btn-xs" @click="editFromTable(item)">Edit</button>
-              <button class="btn btn-xs" @click="copyPriceFromTable(item)">Copy</button>
+              <button class="btn btn-xs" @click="editFromTable(item)">编辑</button>
+              <button class="btn btn-xs" @click="copyPriceFromTable(item)">复制</button>
             </td>
           </tr>
         </tbody>
       </table>
       <div class="pm-pagination">
-        <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">Prev</button>
-        <span>Page {{ tablePage }} of {{ Math.ceil(tableTotal / tablePageSize) }}</span>
-        <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">Next</button>
+        <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
+        <span>第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
+        <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
         <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
           <option :value="25">25</option>
           <option :value="50">50</option>
@@ -204,22 +204,22 @@
         </select>
       </div>
       <div class="pm-bulk-actions" v-if="selectedRows.size > 0">
-        <span>{{ selectedRows.size }} selected</span>
-        <button class="btn btn-sm" @click="pasteToSelected">Paste Price to Selected</button>
+        <span>已选 {{ selectedRows.size }} 项</span>
+        <button class="btn btn-sm" @click="pasteToSelected">粘贴价格到所选</button>
       </div>
     </div>
 
     <!-- Import Modal -->
     <div v-if="showImport" class="modal-overlay" @click.self="showImport = false">
       <div class="modal" @click.stop>
-        <h3>Import Pricing CSV</h3>
-        <p>CSV columns: offer_id, unit_price_in_per_1m, unit_price_out_per_1m, currency, billing_mode</p>
+        <h3>导入定价 CSV</h3>
+        <p>CSV 列：offer_id, unit_price_in_per_1m, unit_price_out_per_1m, currency, billing_mode</p>
         <input type="file" accept=".csv" @change="onFileChange" />
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" @click="importCsv" :disabled="!importFile || importing">
-            {{ importing ? 'Importing...' : 'Import' }}
+            {{ importing ? '导入中…' : '导入' }}
           </button>
-          <button class="btn btn-sm" @click="showImport = false">Cancel</button>
+          <button class="btn btn-sm" @click="showImport = false">取消</button>
           <span v-if="importMsg">{{ importMsg }}</span>
         </div>
       </div>
@@ -240,30 +240,30 @@
           <div class="drawer-body">
             <!-- Routing Params -->
             <div class="detail-section">
-              <h4>Routing Parameters</h4>
+              <h4>路由参数</h4>
               <div class="params-grid">
                 <div class="param">
                   <label>Tier</label>
                   <span class="param-val">{{ selectedOffer.routing_tier }}</span>
                 </div>
                 <div class="param">
-                  <label>Weight</label>
+                  <label>权重</label>
                   <span class="param-val">{{ selectedOffer.weight }}</span>
                 </div>
                 <div class="param">
-                  <label>Available</label>
-                  <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? 'Yes' : 'No' }}</span>
+                  <label>可用</label>
+                  <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? '是' : '否' }}</span>
                 </div>
                 <div class="param">
-                  <label>Success Rate</label>
+                  <label>成功率</label>
                   <span class="param-val">{{ selectedOffer.success_rate != null ? (selectedOffer.success_rate * 100).toFixed(1) + '%' : '-' }}</span>
                 </div>
                 <div class="param">
-                  <label>P95 Latency</label>
+                  <label>P95 延迟</label>
                   <span class="param-val">{{ selectedOffer.p95_latency_ms ? selectedOffer.p95_latency_ms + 'ms' : '-' }}</span>
                 </div>
                 <div class="param">
-                  <label>Last Seen</label>
+                  <label>最近活跃</label>
                   <span class="param-val">{{ selectedOffer.last_seen_at ? new Date(selectedOffer.last_seen_at).toLocaleString() : '-' }}</span>
                 </div>
               </div>
@@ -271,18 +271,18 @@
 
             <!-- Window Stats -->
             <div class="detail-section" v-if="selectedOffer.window_requests">
-              <h4>Window Stats (10min)</h4>
+              <h4>窗口统计（10 分钟）</h4>
               <div class="params-grid">
                 <div class="param">
-                  <label>Requests</label>
+                  <label>请求数</label>
                   <span class="param-val">{{ selectedOffer.window_requests }}</span>
                 </div>
                 <div class="param">
-                  <label>Success Rate</label>
+                  <label>成功率</label>
                   <span class="param-val">{{ selectedOffer.window_success_rate ? (selectedOffer.window_success_rate * 100).toFixed(1) + '%' : '-' }}</span>
                 </div>
                 <div class="param">
-                  <label>P95 Latency</label>
+                  <label>P95 延迟</label>
                   <span class="param-val">{{ selectedOffer.window_latency_p95_ms ? selectedOffer.window_latency_p95_ms.toFixed(0) + 'ms' : '-' }}</span>
                 </div>
               </div>
@@ -290,52 +290,52 @@
 
             <!-- Pricing Form -->
             <div class="detail-section">
-              <h4>Pricing</h4>
+              <h4>定价</h4>
               <div class="form-group">
-                <label>Input Price (per 1M tokens)</label>
+                <label>输入价（每百万 Token）</label>
                 <input v-model.number="editForm.unit_price_in_per_1m" type="number" step="0.001" />
               </div>
               <div class="form-group">
-                <label>Output Price (per 1M tokens)</label>
+                <label>输出价（每百万 Token）</label>
                 <input v-model.number="editForm.unit_price_out_per_1m" type="number" step="0.001" />
               </div>
               <div class="form-group">
-                <label>Cache Read Price (per 1M)</label>
+                <label>缓存读价（每百万）</label>
                 <input v-model.number="editForm.cache_read_price_per_1m" type="number" step="0.001" />
               </div>
               <div class="form-group">
-                <label>Cache Write Price (per 1M)</label>
+                <label>缓存写价（每百万）</label>
                 <input v-model.number="editForm.cache_write_price_per_1m" type="number" step="0.001" />
               </div>
               <div class="form-group">
-                <label>Currency</label>
+                <label>币种</label>
                 <select v-model="editForm.currency">
                   <option value="CNY">CNY</option>
                   <option value="USD">USD</option>
                 </select>
               </div>
               <div class="form-group">
-                <label>Billing Mode</label>
+                <label>计费模式</label>
                 <select v-model="editForm.billing_mode">
-                  <option value="per_token">Per Token</option>
-                  <option value="per_request">Per Request</option>
-                  <option value="monthly">Monthly</option>
-                  <option value="free">Free</option>
+                  <option value="per_token">按 Token</option>
+                  <option value="per_request">按次</option>
+                  <option value="monthly">包月</option>
+                  <option value="free">免费</option>
                 </select>
               </div>
             </div>
 
             <div class="detail-balance" v-if="selectedOffer.balance_usd != null">
-              <strong>Balance:</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || 'USD' }}
-              <span v-if="selectedOffer.pool_group"> | Pool: {{ selectedOffer.pool_group }}</span>
+              <strong>余额：</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || 'USD' }}
+              <span v-if="selectedOffer.pool_group"> | 资源池：{{ selectedOffer.pool_group }}</span>
             </div>
 
             <div class="form-actions">
               <button class="btn btn-primary btn-sm" @click="saveOffer" :disabled="saving">
-                {{ saving ? 'Saving...' : 'Save' }}
+                {{ saving ? '保存中…' : '保存' }}
               </button>
-              <button class="btn btn-sm" @click="copyPrice">Copy Price</button>
-              <button class="btn btn-sm" @click="pastePrice" :disabled="!clipboard">Paste</button>
+              <button class="btn btn-sm" @click="copyPrice">复制价格</button>
+              <button class="btn btn-sm" @click="pastePrice" :disabled="!clipboard">粘贴</button>
               <span v-if="saveMsg" class="save-msg" :class="{ ok: saveOk }">{{ saveMsg }}</span>
             </div>
           </div>
@@ -346,19 +346,19 @@
     <!-- Auto Inherit Modal -->
     <div v-if="showInheritPreview" class="modal-overlay" @click.self="showInheritPreview = false">
       <div class="modal" @click.stop>
-        <h3>Auto Inherit Pricing</h3>
-        <p>{{ inheritPreview.would_inherit }} offers will inherit pricing from same provider+model.</p>
+        <h3>自动继承定价</h3>
+        <p>{{ inheritPreview.would_inherit }} 个 offer 将从同供应商+模型继承定价。</p>
         <div class="inherit-details" v-if="inheritPreview.details">
           <div v-for="d in inheritPreview.details.slice(0, 20)" :key="d.target_offer_id" class="inherit-row">
             Offer #{{ d.target_offer_id }} ← Offer #{{ d.source_offer_id }}
           </div>
-          <p v-if="inheritPreview.details.length > 20">... and {{ inheritPreview.details.length - 20 }} more</p>
+          <p v-if="inheritPreview.details.length > 20">… 另有 {{ inheritPreview.details.length - 20 }} 项</p>
         </div>
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" @click="confirmInherit" :disabled="inheriting">
-            {{ inheriting ? 'Inheriting...' : 'Confirm Inherit' }}
+            {{ inheriting ? '继承中…' : '确认继承' }}
           </button>
-          <button class="btn btn-sm" @click="showInheritPreview = false">Cancel</button>
+          <button class="btn btn-sm" @click="showInheritPreview = false">取消</button>
         </div>
       </div>
     </div>
@@ -672,15 +672,15 @@ async function saveOffer() {
     })
     const data = await res.json()
     if (data.updated > 0) {
-      saveMsg.value = 'Saved!'
+      saveMsg.value = '已保存'
       saveOk.value = true
       await fetchData()
     } else {
-      saveMsg.value = 'No changes'
+      saveMsg.value = '无变更'
       saveOk.value = false
     }
   } catch (e) {
-    saveMsg.value = 'Error'
+    saveMsg.value = '保存失败'
     saveOk.value = false
   } finally {
     saving.value = false
@@ -690,7 +690,7 @@ async function saveOffer() {
 function copyPrice() {
   if (selectedOffer.value) {
     clipboard.value = { ...selectedOffer.value }
-    saveMsg.value = 'Price copied!'
+    saveMsg.value = '价格已复制'
     saveOk.value = true
   }
 }
@@ -705,13 +705,13 @@ function pastePrice() {
     currency: clipboard.value.currency || 'USD',
     billing_mode: clipboard.value.billing_mode || 'per_token',
   }
-  saveMsg.value = 'Price pasted! Click Save to apply.'
+  saveMsg.value = '已粘贴，请点击保存生效'
   saveOk.value = true
 }
 
 function copyPriceFromTable(item: Offer) {
   clipboard.value = { ...item }
-  saveMsg.value = 'Price copied!'
+  saveMsg.value = '价格已复制'
   saveOk.value = true
 }
 
@@ -738,12 +738,12 @@ async function pasteToSelected() {
       body: JSON.stringify({ updates }),
     })
     const data = await res.json()
-    saveMsg.value = `Updated ${data.updated} offers`
+    saveMsg.value = `已更新 ${data.updated} 个 offer`
     saveOk.value = true
     selectedRows.value.clear()
     await fetchTable()
   } catch (e) {
-    saveMsg.value = 'Error'
+    saveMsg.value = '批量更新失败'
     saveOk.value = false
   } finally {
     saving.value = false
@@ -806,11 +806,11 @@ async function confirmInherit() {
     })
     const data = await res.json()
     showInheritPreview.value = false
-    saveMsg.value = `Inherited ${data.inherited} offers`
+    saveMsg.value = `已继承 ${data.inherited} 个 offer`
     saveOk.value = true
     await fetchData()
   } catch (e) {
-    saveMsg.value = 'Error inheriting'
+    saveMsg.value = '自动继承失败'
     saveOk.value = false
   } finally {
     inheriting.value = false
@@ -846,11 +846,11 @@ async function importCsv() {
       body: fd,
     })
     const data = await res.json()
-    importMsg.value = `Updated ${data.updated} offers`
+    importMsg.value = `已更新 ${data.updated} 个 offer`
     showImport.value = false
     await fetchData()
   } catch (e) {
-    importMsg.value = 'Error'
+    importMsg.value = '导入失败'
   } finally {
     importing.value = false
   }
