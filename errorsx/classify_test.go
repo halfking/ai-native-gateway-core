@@ -223,6 +223,61 @@ func TestIsConcurrentOverload(t *testing.T) {
 	}
 }
 
+func TestClassifyErrorWithBody_ToolCallIdMismatch(t *testing.T) {
+	// MiniMax 4xx body that surfaced during a multi-turn tool flow.
+	// The gateway must recognise this as a client-side bug and
+	// return KindToolCallIdMismatch so the credential is NOT cooled
+	// and the audit row carries an explicit "client bug" annotation
+	// for the operator to find.
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			"minimax-2013",
+			`{"error":{"code":2013,"message":"invalid params, tool result's tool id (call_function_poab3apjo8kn_1) not found","type":"invalid_request"}}`,
+		},
+		{
+			"plain-2013",
+			`{"type":"error","error":{"type":"invalid_request_error","message":"2013"}}`,
+		},
+		{
+			"anthropic-style",
+			`{"type":"error","error":{"type":"invalid_request_error","message":"tool_use_id not found"}}`,
+		},
+		{
+			"openai-style",
+			`{"error":{"message":"Invalid tool_call_id: call_xxx","type":"invalid_request_error","param":"messages.2.tool_call_id","code":"invalid_value"}}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := ClassifyErrorWithBody(400, []byte(tc.body))
+			if kind != KindToolCallIdMismatch {
+				t.Errorf("body %q: kind = %q, want %q", tc.body[:min(80, len(tc.body))], kind, KindToolCallIdMismatch)
+			}
+		})
+	}
+}
+
+func TestIsClientBug(t *testing.T) {
+	if !IsClientBug(KindToolCallIdMismatch) {
+		t.Error("KindToolCallIdMismatch must be flagged as a client bug")
+	}
+	if !IsClientBug(KindModelNotFound) {
+		t.Error("KindModelNotFound must be flagged as a client bug")
+	}
+	if !IsClientBug(KindCanceled) {
+		t.Error("KindCanceled must be flagged as a client bug")
+	}
+	if IsClientBug(KindConcurrent) {
+		t.Error("KindConcurrent must NOT be a client bug")
+	}
+	if IsClientBug(KindAuth) {
+		t.Error("KindAuth must NOT be a client bug")
+	}
+}
+
 func TestIsRetryable(t *testing.T) {
 	tests := []struct {
 		kind     ErrorKind

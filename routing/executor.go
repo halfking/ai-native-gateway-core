@@ -597,7 +597,22 @@ func (e *Executor) tryCandidate(
 				resp.StatusCode != 429 && resp.StatusCode != 401 &&
 				resp.StatusCode != 403 && resp.StatusCode != 402 &&
 				errKind != errorsx.KindConcurrent {
-				e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				// Client-bug errors (e.g. KindToolCallIdMismatch) are a
+				// contract issue with the caller, not an upstream health
+				// signal — explicitly do NOT record a circuit success
+				// here, but also do not let it open the breaker; the
+				// call below will log it as a 4xx passthrough.
+				if !errorsx.IsClientBug(errKind) {
+					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+				} else {
+					slog.Info("upstream rejected request as client bug",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"status", resp.StatusCode,
+						"kind", errKind,
+						"body_preview", string(body[:min(n, 200)]),
+					)
+				}
 			} else if errKind == errorsx.KindRateLimit {
 				e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 			} else if errKind == errorsx.KindConcurrent {
