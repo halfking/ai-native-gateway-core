@@ -2639,10 +2639,13 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if req.Available {
-		// Explicit admin re-enable clears manual (or auto) disable — same as Python gateway.
+		// Explicit admin re-enable sets reason='manual' so the
+		// trg_cmb_protect_manual_disable trigger will shield this binding
+		// from subsequent auto_* disable paths (eof_without_done, model_not_found,
+		// discovery_expired). Same as Python gateway.
 		_, err = h.db.Exec(ctx, `
 			UPDATE model_offers SET available = TRUE,
-			unavailable_reason = NULL, unavailable_at = NULL
+			unavailable_reason = 'manual', unavailable_at = NULL
 			WHERE id = $1
 		`, offerID)
 		if err != nil {
