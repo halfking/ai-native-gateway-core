@@ -298,6 +298,13 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return nil, 0, nil
 	}
 
+	slog.Info("discovery: evaluating credential",
+		"credential_id", cred.ID,
+		"provider_name", cred.ProviderName,
+		"base_url", cred.BaseURL,
+		"discovery_strategy", cred.DiscoveryStrategy,
+		"manifest_empty", cred.ModelsManifestJSON == nil || *cred.ModelsManifestJSON == "" || *cred.ModelsManifestJSON == "[]",
+	)
 	if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 		return s.discoverFromManifest(ctx, cred)
 	}
