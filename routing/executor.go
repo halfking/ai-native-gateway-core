@@ -365,7 +365,16 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		lastErr = execErr
-		kind := errorsx.ClassifyError(execErr, nil)
+		// Prefer the typed Kind from *upstreampkg.Error if available, to
+		// avoid re-classifying from the error text (which embeds the
+		// Kind in [brackets] and can trigger false-positive matches on
+		// the concurrentOverload regex).
+		var kind errorsx.ErrorKind
+		if ue, ok := execErr.(*upstreampkg.Error); ok && ue.Kind != "" {
+			kind = ue.Kind
+		} else {
+			kind = errorsx.ClassifyError(execErr, nil)
+		}
 		e.recordStickyFailure(params, cand.CredentialID, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{

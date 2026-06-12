@@ -89,12 +89,13 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 			return KindConcurrent
 		}
 		if eofWithoutDoneRe.MatchString(msg) {
-			// EOF without [DONE] in the error message is the SSE
-			// closure-before-completion signal. Providers like MiniMax
-			// use this instead of 5xx when they're overloaded; treat
-			// it as concurrent overload so the credential gets the
-			// longer 5-minute cooling.
-			return KindConcurrent
+			// EOF without [DONE] is most often a benign provider quirk
+			// (e.g. MiniMax omits the [DONE] sentinel on successful
+			// streams). Treat as KindStreamTimeout, which is retryable
+			// and short-cooling — the executor's chunk-count heuristic
+			// already distinguishes benign eof (with chunks sent) from
+			// a real overload.
+			return KindStreamTimeout
 		}
 		if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
 			return KindTimeout
@@ -179,16 +180,18 @@ func ClassifyResponseBody(body []byte) ErrorKind {
 	return ""
 }
 
-// IsConcurrentOverload returns true when an SSE stream closed prematurely
-// (EOF before [DONE]) under conditions typical of upstream concurrent
-// overload. Used by the executor to escalate eof_without_done errors to
-// KindConcurrent so the credential gets the longer 5-minute cooling.
+// IsConcurrentOverload returns true when the error reason matches known
+// upstream concurrent-overload signals (rate-limit body text, etc.).
+// NOTE: eof_without_done is NOT treated as concurrent overload here —
+// many providers (MiniMax in particular) simply omit the [DONE] sentinel
+// on otherwise successful streams. The executor handles eof_without_done
+// separately, using chunk-count heuristics to distinguish a genuinely
+// truncated stream from a benign missing-sentinel.
 func IsConcurrentOverload(reason string) bool {
 	if reason == "" {
 		return false
 	}
-	return concurrentOverloadRe.MatchString(reason) || concurrentOverloadCJKRe.MatchString(reason) ||
-		eofWithoutDoneRe.MatchString(reason)
+	return concurrentOverloadRe.MatchString(reason) || concurrentOverloadCJKRe.MatchString(reason)
 }
 
 func IsModelNotFound(kind ErrorKind) bool {
