@@ -192,6 +192,7 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 	}
 
 	totalDiscovered := 0
+	var seenOffers []modelOffer
 	for _, cred := range credentials {
 		if ctx.Err() != nil {
 			break
@@ -199,7 +200,7 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 		s.mu.Lock()
 		s.heartbeatAt = time.Now()
 		s.mu.Unlock()
-		count, err := s.discoverForCredential(ctx, cred)
+		models, count, err := s.discoverForCredential(ctx, cred)
 		if err != nil {
 			slog.Warn("discovery failed for credential",
 				"credential_id", cred.ID,
@@ -209,6 +210,13 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 			continue
 		}
 		totalDiscovered += count
+		for _, m := range models {
+			seenOffers = append(seenOffers, modelOffer{CredentialID: cred.ID, RawName: m})
+		}
+	}
+
+	if len(seenOffers) > 0 {
+		s.expireStaleModels(ctx, seenOffers)
 	}
 
 	s.mu.Lock()
@@ -223,6 +231,13 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 		"models", totalDiscovered,
 	)
 	return nil
+}
+
+// modelOffer tracks which models were seen in the current discovery run
+// so we can expire stale ones afterwards.
+type modelOffer struct {
+	CredentialID int
+	RawName      string
 }
 
 // credential holds provider credential info for discovery.
@@ -257,6 +272,9 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.status = 'active'
 		  AND c.trust_level NOT IN ('quarantine')
+		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
+		  AND c.availability_state = 'ready'
+		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
 		  AND p.enabled = TRUE
 	`)
 	if err != nil {
@@ -275,34 +293,33 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 	return creds, nil
 }
 
-func (s *Service) discoverForCredential(ctx context.Context, cred credential) (int, error) {
-	// Skip Anthropic - no /models endpoint
+func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([]string, int, error) {
 	if cred.Protocol == "anthropic-messages" {
-		return 0, nil
+		return nil, 0, nil
 	}
 
-	// Respect manifest_only discovery strategy (mirrors Python discovery_utils)
 	if cred.DiscoveryStrategy == "manifest_only" {
 		return s.discoverFromManifest(ctx, cred)
 	}
 
-	// Build models endpoint URL using catalog template if available
 	modelsURL := modelsEndpointURL(cred.BaseURL, cred.ModelsEndpointTemplate)
 	if modelsURL == "" {
-		// Empty template means manifest-only supplier
-		return s.discoverFromManifest(ctx, cred)
+		if cred.DiscoveryStrategy == "manifest_only" {
+			return s.discoverFromManifest(ctx, cred)
+		}
+		modelsURL = urlutil.ModelsURL(cred.BaseURL)
+		if modelsURL == "" {
+			return s.discoverFromManifest(ctx, cred)
+		}
 	}
 
-	// Decrypt the credential secret before using it as API key
 	apiKey, decErr := s.decryptCredential(cred.SecretCipher)
 	if decErr != nil {
-		return 0, fmt.Errorf("credential decrypt failed: %w", decErr)
+		return nil, 0, fmt.Errorf("credential decrypt failed: %w", decErr)
 	}
 
-	// Fetch models from provider
 	models, err := s.fetchModels(ctx, modelsURL, apiKey)
 	if err != nil {
-		// Fallback to manifest if API call fails
 		slog.Debug("models API call failed, falling back to manifest",
 			"provider", cred.ProviderName,
 			"error", err,
@@ -310,41 +327,49 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) (i
 		return s.discoverFromManifest(ctx, cred)
 	}
 
-	// Update database with discovered models
 	count := 0
+	failed := 0
 	for _, rawName := range models {
 		if err := s.upsertModel(ctx, cred, rawName); err != nil {
-			slog.Debug("failed to upsert model", "model", rawName, "error", err)
+			slog.Warn("failed to upsert model", "model", rawName, "credential_id", cred.ID, "error", err)
+			failed++
 			continue
 		}
 		count++
 	}
 
-	// Update credential health
 	s.updateCredentialHealth(ctx, cred.ID, "healthy", "")
 
-	return count, nil
+	if failed > 0 {
+		slog.Warn("some models failed to upsert",
+			"provider", cred.ProviderName,
+			"credential_id", cred.ID,
+			"succeeded", count,
+			"failed", failed,
+		)
+	}
+
+	return models, count, nil
 }
 
-// discoverFromManifest extracts models from the provider_catalog.models_manifest_json.
-func (s *Service) discoverFromManifest(ctx context.Context, cred credential) (int, error) {
+func (s *Service) discoverFromManifest(ctx context.Context, cred credential) ([]string, int, error) {
 	if cred.ModelsManifestJSON == nil || *cred.ModelsManifestJSON == "" {
-		return 0, nil
+		return nil, 0, nil
 	}
 	data := []byte(*cred.ModelsManifestJSON)
 	models, err := extractModelIDs(data)
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	count := 0
 	for _, rawName := range models {
 		if err := s.upsertModel(ctx, cred, rawName); err != nil {
-			slog.Debug("failed to upsert manifest model", "model", rawName, "error", err)
+			slog.Warn("failed to upsert manifest model", "model", rawName, "credential_id", cred.ID, "error", err)
 			continue
 		}
 		count++
 	}
-	return count, nil
+	return models, count, nil
 }
 
 // modelsEndpointURL resolves the model-list endpoint URL using the catalog
@@ -517,5 +542,57 @@ func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, 
 	`, status, errMsg, credentialID)
 	if err != nil {
 		slog.Debug("failed to update credential health", "error", err)
+	}
+}
+
+func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
+	if len(seen) == 0 {
+		return
+	}
+
+	credModels := make(map[int]map[string]bool)
+	for _, o := range seen {
+		if credModels[o.CredentialID] == nil {
+			credModels[o.CredentialID] = make(map[string]bool)
+		}
+		credModels[o.CredentialID][o.RawName] = true
+	}
+
+	expired := 0
+	for credID, modelSet := range credModels {
+		placeholders := ""
+		args := []any{credID}
+		i := 2
+		for name := range modelSet {
+			if placeholders != "" {
+				placeholders += ","
+			}
+			placeholders += fmt.Sprintf("$%d", i)
+			args = append(args, name)
+			i++
+		}
+
+		tag, err := s.db.Exec(ctx, fmt.Sprintf(`
+			UPDATE model_offers
+			SET available = FALSE
+			WHERE credential_id = $1
+			  AND raw_model_name NOT IN (%s)
+			  AND available = TRUE
+		`, placeholders), args...)
+		if err != nil {
+			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
+			continue
+		}
+		if tag.RowsAffected() > 0 {
+			expired += int(tag.RowsAffected())
+			slog.Info("expired stale models",
+				"credential_id", credID,
+				"count", tag.RowsAffected(),
+			)
+		}
+	}
+
+	if expired > 0 {
+		slog.Info("total stale models expired", "count", expired)
 	}
 }
