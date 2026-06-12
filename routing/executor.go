@@ -39,6 +39,11 @@ type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel,
 
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
+// AnthropicPassthroughFunc is the signature for the Q4 Anthropic SSE
+// passthrough hook (relay/anthropic_passthrough_stream.go). Wired from
+// main.go so the routing package does not import relay.
+type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+
 // XMLCoerceNonStreamFunc transforms a non-streaming chat response body,
 // rewriting any `<tool_call><function=...>` XML embedded in assistant
 // `content` into structured OpenAI `tool_calls` entries.  The second
@@ -59,6 +64,9 @@ type Executor struct {
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
 	// package does not need to import relay.
 	XMLCoerceNonStream XMLCoerceNonStreamFunc
+	// AnthropicPassthroughStream is the Q4 Anthropic SSE forwarder with
+	// side-channel audit capture. Wired from main.go (relay.StreamAnthropicPassthrough).
+	AnthropicPassthroughStream AnthropicPassthroughFunc
 	Auditor       audit.Sink
 	State         *credentialstate.Writer
 	DB            *db.DB

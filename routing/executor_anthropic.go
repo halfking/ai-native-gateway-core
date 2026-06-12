@@ -175,11 +175,16 @@ func (e *Executor) executeAnthropic(
 			StreamRetryThreshold: e.StreamRetryThreshold,
 		},
 	}
-	// PassthroughStream is left nil — the StreamResponse fallback
-	// (defaultAnthropicPassthrough) handles the case where the
-	// caller didn't wire a hook. Production wiring through the
-	// dispatcher can replace this with relay.StreamAnthropicPassthrough
-	// once Phase 3 (messages.go dispatch) lands.
+	if e.AnthropicPassthroughStream != nil {
+		clientModel := params.ClientModel
+		requestID := ""
+		if params.R != nil {
+			requestID = params.R.Header.Get("X-Request-Id")
+		}
+		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+		}
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
