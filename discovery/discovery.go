@@ -577,7 +577,9 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 
 		tag, err := s.db.Exec(ctx, fmt.Sprintf(`
 			UPDATE model_offers
-			SET available = FALSE
+			SET available = FALSE,
+			    unavailable_reason = 'auto_discovery_expired',
+			    unavailable_at = now()
 			WHERE credential_id = $1
 			  AND raw_model_name NOT IN (%s)
 			  AND available = TRUE
