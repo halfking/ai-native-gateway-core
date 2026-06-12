@@ -300,7 +300,7 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 			mo.raw_model_name AS model_name,
 			p.id AS provider_id,
 			p.display_name AS provider_name,
-			p.catalog_code,
+			COALESCE(p.catalog_code, '') AS catalog_code,
 			p.protocol,
 			p.base_url,
 			p.enabled AS provider_enabled,
@@ -1811,7 +1811,7 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
-			p.catalog_code,
+			COALESCE(p.catalog_code, '') AS catalog_code,
 			p.display_name AS provider_name,
 			c.id AS credential_id,
 			c.label AS credential_label,
@@ -1891,7 +1891,7 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mo.unit_price_in_per_1m, 0) AS unit_price_in_per_1m,
 			COALESCE(mo.unit_price_out_per_1m, 0) AS unit_price_out_per_1m,
 			COALESCE(mo.currency, '') AS currency,
-			p.catalog_code,
+			COALESCE(p.catalog_code, '') AS catalog_code,
 			p.display_name AS provider_name,
 			p.protocol,
 			p.base_url,
@@ -2476,7 +2476,7 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 
 	// 4. Get current status
 	statusRows, _ := h.db.Query(ctx, `
-		SELECT p.catalog_code, p.display_name, c.label, c.status,
+		SELECT COALESCE(p.catalog_code, ''), p.display_name, c.label, c.status,
 		       COUNT(mo.id) AS offers
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
