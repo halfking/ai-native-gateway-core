@@ -76,6 +76,27 @@ type StreamCapture struct {
 	completionTokens *int
 	cacheReadTokens  *int
 	cacheWriteTokens *int
+	// HasThinking is set when the stream contained at least one
+	// Anthropic-style thinking content block. Detected in the
+	// side-channel audit of the Q4 passthrough path.
+	HasThinking bool
+	// ThinkingBlocksN counts the number of content_block_start events
+	// with type=thinking. Used for audit (how deeply did the model
+	// reason) and cost estimation.
+	ThinkingBlocksN int
+	// ModelMismatch is set when the upstream response model name
+	// does not match the request model name (case-insensitive).
+	// Detected in the side-channel audit; surfaces in
+	// SummaryAsMap as a soft-mismatch flag for the admin UI.
+	ModelMismatch bool
+	// InputTokens / OutputTokens mirror promptTokens /
+	// completionTokens under Anthropic naming (input_tokens /
+	// output_tokens in the SSE event payloads). The Q4 passthrough
+	// populates these directly from message_start / message_delta
+	// events so the executor can read them without a separate
+	// extraction pass.
+	InputTokens  *int
+	OutputTokens *int
 }
 
 func NewStreamCapture() *StreamCapture {
@@ -128,6 +149,11 @@ func (sc *StreamCapture) Reset() {
 	sc.completionTokens = nil
 	sc.cacheReadTokens = nil
 	sc.cacheWriteTokens = nil
+	sc.HasThinking = false
+	sc.ThinkingBlocksN = 0
+	sc.ModelMismatch = false
+	sc.InputTokens = nil
+	sc.OutputTokens = nil
 }
 
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
