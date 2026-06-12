@@ -27,17 +27,15 @@
 
 ## 目录
 
-- [2026-06-12-llm-pricing.md](2026-06-12-llm-pricing.md) — 主文档（人读）
-- [2026-06-12-llm-pricing.csv](2026-06-12-llm-pricing.csv) — Go `POST /api/pricing/import` 输入
-- [2026-06-12-pricing-plans.sql](2026-06-12-pricing-plans.sql) — `psql` 直连执行（pricing_plans 源真值）
-- [2026-06-12-offers-baseline.csv](2026-06-12-offers-baseline.csv) — 184 DB 旧价快照（pre-import）
-- [2026-06-12-all-paid-offers.csv](2026-06-12-all-paid-offers.csv) — 184 DB 全量付费 offer 列表
-- [2026-06-12-credentials-with-plan-type.csv](2026-06-12-credentials-with-plan-type.csv) — 凭据分类结果（带 plan_type 标记）
-- [2026-06-12-pricing-matrix.csv](2026-06-12-pricing-matrix.csv) — 完整价格矩阵（73 模型）
-- [2026-06-12-diff.md](2026-06-12-diff.md) — 旧价→新价 diff
+- [scripts/vendor-pricing-table.py](scripts/vendor-pricing-table.py) — **定价 SSOT** (single source of truth)
 - [scripts/fetch-pricing.sh](scripts/fetch-pricing.sh) — agent-reach 一键抓取
+- [scripts/diff-pricing.py](scripts/diff-pricing.py) — SSOT vs DB diff + safety SQL
 - [scripts/apply-pricing.sh](scripts/apply-pricing.sh) — 双表写入编排
+- [2026-06-12-cny-fix-all-credentials.sql](2026-06-12-cny-fix-all-credentials.sql) — 全凭据 CNY 修正
+- [2026-06-12-cny-fix.sql](2026-06-12-cny-fix.sql) — nvidia-build 国内模型 CNY 修正
+- [2026-06-12-audit-fixes.sql](2026-06-12-audit-fixes.sql) — 审计修复
 - [raw/](raw/) — 各厂商原始 markdown 抓取存档
+- 其他文档见本目录
 
 ## 数据库结构
 

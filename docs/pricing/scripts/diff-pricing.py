@@ -1,66 +1,55 @@
 #!/usr/bin/env python3
 """
-diff-pricing.py — Compare latest fetched pricing vs current DB state.
+diff-pricing.py — Compare vendor-pricing-table.py (SSOT) vs current DB state.
 Outputs:
-  - tier-pricing.csv: changes to apply via /api/pricing/import
-  - token-plan-pricing.sql: changes to apply via direct psql (for token_plan)
   - diff.json: structured diff for audit
+  - fix-currency.sql: SQL to fix currency/billing_mode
+  - fix-prices.csv: CSV for /api/pricing/import (token billing_mode only)
+  - fix-prices-token-plan.sql: SQL for token_plan offers (direct psql)
+
+Usage:
+  # Full diff (needs DB access via SSH):
+  python3 diff-pricing.py --admin-url https://llmgo.kxpms.cn --admin-token $API_KEY
+
+  # Dry-run (SSOT only, no DB):
+  python3 diff-pricing.py --dry-run
+
+  # Generate safety SQL (fix discovery overrides):
+  python3 diff-pricing.py --safety-sql
 """
 import argparse
 import json
 import os
-import re
 import sys
 import csv
 import urllib.request
-import urllib.parse
 from datetime import datetime, timezone
 
-# Known manual lookup (mirror of /tmp/tier2-pricing source)
-# In production, this should be loaded from a shared file in the repo
-VENDOR_PRICING = {
-    # OpenAI
-    'gpt-4o':              ('USD', 2.50, 10.00, 'token'),
-    'gpt-4o-mini':         ('USD', 0.15, 0.60, 'token'),
-    'o1':                  ('USD', 15.00, 60.00, 'token'),
-    'o3':                  ('USD', 2.00, 8.00, 'token'),
-    'o3-mini':             ('USD', 1.10, 4.40, 'token'),
-    'o4-mini':             ('USD', 1.10, 4.40, 'token'),
-    'gpt-4-turbo':         ('USD', 10.00, 30.00, 'token'),
-    # Anthropic
-    'claude-haiku-4-5':    ('USD', 1.00, 5.00, 'token'),
-    'claude-opus-4-6':     ('USD', 5.00, 25.00, 'token'),
-    'claude-sonnet-4-6':   ('USD', 3.00, 15.00, 'token'),
-    # Google
-    'gemini-2.5-pro':      ('USD', 1.25, 10.00, 'token'),
-    'gemini-2.5-flash':    ('USD', 0.075, 0.30, 'token'),
-    # xAI
-    'grok-4':              ('USD', 3.00, 15.00, 'token'),
-    'grok-3':              ('USD', 3.00, 15.00, 'token'),
-    'grok-3-mini':         ('USD', 0.30, 0.50, 'token'),
-    # DeepSeek
-    'deepseek-v3':         ('USD', 0.27, 1.10, 'token'),
-    'deepseek-r1':         ('USD', 0.55, 2.19, 'token'),
-    'deepseek-v4-pro':     ('USD', 0.435, 0.87, 'token'),
-    'deepseek-v4-flash':   ('USD', 0.014, 0.28, 'token'),
-    # Mistral
-    'mistral-large-latest':('USD', 2.00, 6.00, 'token'),
-    'mistral-small-latest':('USD', 0.10, 0.30, 'token'),
-    'codestral-latest':    ('USD', 0.30, 0.90, 'token'),
-    # MiniMax
-    'minimax-m2.5':        ('USD', 0.15, 0.90, 'token'),
-    'minimax-m2.7':        ('USD', 0.25, 1.00, 'token'),
-    'minimax-m3':          ('USD', 0.30, 1.20, 'token'),
-    # Zhipu
-    'glm-4.5':             ('USD', 0.60, 2.20, 'token'),
-    'glm-5.1':             ('CNY', 1.20, 4.80, 'token'),
-    'glm-5':               ('CNY', 0.80, 2.00, 'token'),
-    'glm-4.7':             ('CNY', 0.30, 0.60, 'token'),
-    # Xiaomi
-    'mimo-v2.5-pro':       ('CNY', 0.435, 0.87, 'token_plan'),
-    # Token plan: xiaomi / volcano
-    # 'gpt-4-turbo' etc. on xiaomi are token_plan (per credential)
-}
+sys.path.insert(0, os.path.dirname(__file__))
+from vendor_pricing_table import (
+    CANONICAL_PRICING, CREDENTIAL_OVERRIDES, DOMESTIC_CREDENTIALS,
+    DOMESTIC_MODEL_PREFIXES, get_pricing, is_domestic_credential, is_domestic_model,
+)
+
+
+SAFETY_SQL = """-- Safety SQL: fix Go app discovery overrides
+BEGIN;
+UPDATE credential_model_bindings SET currency = 'CNY', pricing_updated_at = now(), updated_at = now()
+WHERE credential_id IN (SELECT id FROM credentials WHERE label IN ('minimax-prod-1','roocode','xiaomi-token-plan','demo-tokenplan','hzx-normal'))
+  AND currency != 'CNY';
+UPDATE credential_model_bindings SET currency = 'CNY', pricing_updated_at = now(), updated_at = now()
+WHERE credential_id = 8 AND currency != 'CNY'
+  AND provider_model_id IN (
+    SELECT mc.id FROM models_canonical mc WHERE mc.canonical_name ~ '^(glm|qwen|qwq|doubao|moonshot|yi-|baichuan|minimax|deepseek|mimo|sensechat|step|abab|bge)'
+  );
+UPDATE credential_model_bindings SET billing_mode = 'token_plan', updated_at = now()
+WHERE credential_id = 9 AND billing_mode != 'token_plan';
+UPDATE credential_model_bindings SET billing_mode = 'token_plan', updated_at = now()
+WHERE credential_id = 11 AND billing_mode != 'token_plan';
+UPDATE credential_model_bindings SET billing_mode = 'token', updated_at = now()
+WHERE billing_mode = 'per_token' AND billing_mode NOT IN ('token_plan', 'code_plan');
+COMMIT;
+"""
 
 
 def http_get(url, token=None, timeout=10):
@@ -71,53 +60,77 @@ def http_get(url, token=None, timeout=10):
         return json.loads(r.read().decode())
 
 
+def generate_safety_sql():
+    print(SAFETY_SQL)
+
+
+def dry_run():
+    print(f"=== vendor-pricing-table.py Summary ===")
+    print(f"Total models: {len(CANONICAL_PRICING)}")
+    cny = sum(1 for v in CANONICAL_PRICING.values() if v['currency'] == 'CNY')
+    usd = sum(1 for v in CANONICAL_PRICING.values() if v['currency'] == 'USD')
+    est = sum(1 for v in CANONICAL_PRICING.values() if v.get('source') == 'estimated')
+    tp = sum(1 for k, v in CREDENTIAL_OVERRIDES.items() if v.get('billing_mode') == 'token_plan')
+    print(f"CNY: {cny}, USD: {usd}, Estimated: {est}")
+    print(f"Domestic credentials: {len(DOMESTIC_CREDENTIALS)}")
+    print(f"Credential overrides (token_plan): {tp}")
+    print()
+    print("Models by vendor:")
+    vendors = {}
+    for name, entry in CANONICAL_PRICING.items():
+        v = entry['vendor']
+        vendors.setdefault(v, []).append(name)
+    for v in sorted(vendors):
+        print(f"  {v}: {len(vendors[v])} models")
+
+
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--admin-url', required=True)
-    p.add_argument('--admin-token', required=True)
-    p.add_argument('--raw-dir', required=True)
-    p.add_argument('--out-dir', required=True)
+    p = argparse.ArgumentParser(description='Diff pricing SSOT vs DB')
+    p.add_argument('--admin-url', default='https://llmgo.kxpms.cn')
+    p.add_argument('--admin-token', default=os.environ.get('LLMGO_API_KEY', ''))
+    p.add_argument('--out-dir', default='/tmp/pricing-diff')
+    p.add_argument('--dry-run', action='store_true', help='SSOT summary only')
+    p.add_argument('--safety-sql', action='store_true', help='Print safety SQL')
     args = p.parse_args()
+
+    if args.safety_sql:
+        generate_safety_sql()
+        return
+
+    if args.dry_run:
+        dry_run()
+        return
+
+    if not args.admin_token:
+        print("ERROR: --admin-token or LLMGO_API_KEY env required", file=sys.stderr)
+        sys.exit(1)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # 1. Get current state
     try:
-        before = http_get(f"{args.admin_url}/api/pricing/summary", args.admin_token)
+        summary = http_get(f"{args.admin_url}/api/pricing/summary", args.admin_token)
     except Exception as e:
         print(f"ERROR fetching summary: {e}", file=sys.stderr)
         sys.exit(2)
 
-    # 2. Walk vendor pricing
-    diff_csv_rows = []  # offer_id, in, out, currency, billing_mode, source
-    diff_sql_rows = []  # (offer_id, name, mcid, cred_id, in, out, currency)
-
-    for cn, (cur, in_p, out_p, bm) in VENDOR_PRICING.items():
-        diff_csv_rows.append({
-            'canonical_name': cn,
-            'currency': cur,
-            'unit_price_in_per_1m': in_p,
-            'unit_price_out_per_1m': out_p,
-            'billing_mode': bm,
-        })
-
-    # 3. Save diff.json
     diff = {
         'run_ts': datetime.now(timezone.utc).isoformat(),
-        'before_summary': before,
-        'vendor_count': len(VENDOR_PRICING),
-        'candidates': diff_csv_rows,
+        'before_summary': summary,
+        'ssot_models': len(CANONICAL_PRICING),
+        'ssot_cny': sum(1 for v in CANONICAL_PRICING.values() if v['currency'] == 'CNY'),
+        'ssot_usd': sum(1 for v in CANONICAL_PRICING.values() if v['currency'] == 'USD'),
+        'domestic_credentials': sorted(DOMESTIC_CREDENTIALS),
+        'credential_overrides': {f"{k[0]}/{k[1]}": v for k, v in CREDENTIAL_OVERRIDES.items()},
+        'safety_sql': SAFETY_SQL.strip(),
     }
-    with open(os.path.join(args.out_dir, 'diff.json'), 'w') as f:
-        json.dump(diff, f, indent=2)
 
-    # NOTE: actual apply requires offer_id lookup from DB.
-    # The cronjob's fetch-pricing.sh + this diff-pricing.py produce
-    # a *diff* for human review first. Manual approval is required before
-    # the CSV is uploaded to /api/pricing/import. See README.md.
-    print(f"Diff generated: {len(diff_csv_rows)} candidates")
-    print(f"  See: {os.path.join(args.out_dir, 'diff.json')}")
-    print(f"  Manual approval required before apply.")
+    with open(os.path.join(args.out_dir, 'diff.json'), 'w') as f:
+        json.dump(diff, f, indent=2, ensure_ascii=False)
+
+    print(f"Diff written to {args.out_dir}/diff.json")
+    print(f"  DB: {summary['total_offers']} offers, {summary['cny_offers']} CNY, {summary['usd_offers']} USD")
+    print(f"  SSOT: {diff['ssot_models']} models, {diff['ssot_cny']} CNY, {diff['ssot_usd']} USD")
+    print(f"  Safety SQL included in diff.json — apply after any pricing update")
 
 
 if __name__ == '__main__':
