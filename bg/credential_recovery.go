@@ -133,7 +133,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		UPDATE credentials
 		SET health_status = 'unknown',
 		    health_error = NULL,
-		    health_source = 'recovery',
+		    health_source = 'probe',
 		    health_checked_at = NOW(),
 		    state_updated_at = NOW()
 		WHERE health_status NOT IN ('healthy', 'unknown')
