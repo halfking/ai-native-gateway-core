@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import {
   updateCredential, deleteCredential, checkCredential, startCredentialCheck, getTask, addCredential,
+  setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
+  resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
 
@@ -32,6 +34,13 @@ const statuses: Array<{ value: CredentialStatus; label: string }> = [
   { value: 'quarantine', label: '隔离' },
   { value: 'quota_expired', label: '配额耗尽' },
   { value: 'disabled', label: '停用' },
+]
+
+const lifecycleStatuses = [
+  { value: 'active', label: 'active (正常)' },
+  { value: 'disabled', label: 'disabled (停用)' },
+  { value: 'suspended', label: 'suspended (挂起)' },
+  { value: 'retired', label: 'retired (退役)' },
 ]
 
 import { ref } from 'vue'
@@ -70,6 +79,15 @@ function money(v: number | string | null | undefined) {
 
 function asDateInput(v: string | null) {
   return v ? v.slice(0, 16) : ''
+}
+
+function sourceLabel(s?: string | null) {
+  if (!s) return '—'
+  if (s === 'manual') return '🔒 手工'
+  if (s === 'auto:request_log') return '📊 请求日志'
+  if (s === 'auto:domestic_random') return '🎲 国内随机'
+  if (s === 'cleared') return '— 已清'
+  return s
 }
 
 function openAddCred() {
@@ -140,6 +158,85 @@ async function delCred(c: ProviderCredential) {
     alert(e instanceof Error ? e.message : '停用失败')
   }
 }
+
+// 900-series: manual disable toggle (spec §6.2)
+async function toggleManualDisabled(c: ProviderCredential) {
+  const next = !c.manual_disabled
+  const reason = prompt(`手工${next ? '禁用' : '启用'}该凭据的原因：`, '') ?? ''
+  if (reason === null) return
+  try {
+    await setCredentialManualDisabled(props.provider.id, c.id, next, reason)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '设置失败')
+  }
+}
+
+async function setLifecycle(c: ProviderCredential, value: string) {
+  try {
+    // Re-use existing /lifecycle endpoint (UpdateCredentialLifecycle)
+    const { updateCredentialLifecycle } = await import('../../api')
+    await updateCredentialLifecycle(props.provider.id, c.id, value)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '设置失败')
+  }
+}
+
+async function resetAvailability(c: ProviderCredential) {
+  if (!confirm(`重置 ${c.label} 的可用性状态？`)) return
+  try {
+    await resetCredentialAvailability(props.provider.id, c.id)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '重置失败')
+  }
+}
+
+async function resetQuota(c: ProviderCredential) {
+  if (!confirm(`重置 ${c.label} 的配额状态？`)) return
+  try {
+    await resetCredentialQuota(props.provider.id, c.id)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '重置失败')
+  }
+}
+
+async function forceRecover(c: ProviderCredential) {
+  if (!confirm(`强制触发 ${c.label} 立即恢复探活？`)) return
+  try {
+    await forceRecoverCredential(c.id)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '触发失败')
+  }
+}
+
+async function setDefaultModel(c: ProviderCredential) {
+  const v = prompt('手工设置默认探活模型（留空清空）：', c.default_probe_model ?? '')
+  if (v === null) return
+  try {
+    await setDefaultProbeModel(props.provider.id, c.id, v === '' ? null : v, 'admin UI set')
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '设置失败')
+  }
+}
+
+async function repickDefault(c: ProviderCredential) {
+  try {
+    const r = await pickDefaultProbeModel(props.provider.id, c.id)
+    if (!r.model) {
+      alert('未找到候选模型（可能没有可用绑定）')
+    } else {
+      alert(`已选: ${r.model} (${r.source})`)
+    }
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '重选失败')
+  }
+}
 </script>
 
 <template>
@@ -153,8 +250,9 @@ async function delCred(c: ProviderCredential) {
         <thead>
           <tr>
             <th>凭据</th>
-            <th>状态</th>
+            <th>状态 / 生命周期 / 手工</th>
             <th>探活</th>
+            <th>默认探活模型</th>
             <th>并发</th>
             <th>有效期</th>
             <th>用量</th>
@@ -163,8 +261,8 @@ async function delCred(c: ProviderCredential) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!creds.length"><td colspan="8">暂无凭据</td></tr>
-          <tr v-for="c in creds" :key="c.id">
+          <tr v-if="!creds.length"><td colspan="9">暂无凭据</td></tr>
+          <tr v-for="c in creds" :key="c.id" :style="c.manual_disabled ? 'background:rgba(220,38,38,0.06)' : ''">
             <td>
               <input v-model="c.label" class="compact-input" />
               <div class="key-fingerprint" :title="'与上游平台核对用，非完整密钥'">
@@ -177,11 +275,48 @@ async function delCred(c: ProviderCredential) {
                 <option v-for="s in statuses" :key="s.value" :value="s.value">{{ s.label }}</option>
               </select>
               <span class="badge" :class="statusBadge(c.status)">{{ c.status }}</span>
+              <div style="margin-top:6px">
+                <select
+                  :value="c.lifecycle_status"
+                  class="compact-input"
+                  style="font-size:11px;padding:2px 4px"
+                  @change="(e: Event) => setLifecycle(c, (e.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="s in lifecycleStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
+                </select>
+              </div>
+              <div style="margin-top:6px;display:flex;align-items:center;gap:4px">
+                <input
+                  type="checkbox"
+                  :id="`md-${c.id}`"
+                  :checked="!!c.manual_disabled"
+                  @change="toggleManualDisabled(c)"
+                />
+                <label :for="`md-${c.id}`" style="font-size:11px;cursor:pointer">
+                  手工{{ c.manual_disabled ? '已禁用' : '可用' }} 🔒
+                </label>
+              </div>
+              <div v-if="c.state_reason_code" :title="c.state_reason_detail || ''" style="font-size:10px;color:var(--muted);margin-top:2px">
+                {{ c.state_reason_code }}
+              </div>
             </td>
             <td>
               <span class="badge" :class="healthBadge(c.health_status)">{{ healthLabel(c.health_status) }}</span>
               <div style="font-size:11px;color:var(--muted)">{{ timeText(c.health_checked_at) }}</div>
+              <div v-if="c.health_probe_model" style="font-size:10px;color:var(--muted)">
+                probe: {{ c.health_probe_model }}
+              </div>
               <div v-if="c.health_error" style="font-size:11px;color:var(--danger);max-width:200px;word-break:break-all">{{ c.health_error }}</div>
+            </td>
+            <td>
+              <div v-if="c.default_probe_model" style="font-family:ui-monospace,monospace;font-size:11px">
+                {{ c.default_probe_model }}
+              </div>
+              <div v-else style="font-size:11px;color:var(--muted)">未设置</div>
+              <div style="font-size:10px;color:var(--muted)">{{ sourceLabel(c.default_probe_model_source) }}</div>
+              <div v-if="c.default_probe_model_picked_at" style="font-size:10px;color:var(--muted)">
+                {{ timeText(c.default_probe_model_picked_at) }}
+              </div>
             </td>
             <td>
               <input v-model.number="c.concurrency_limit" type="number" min="0" class="compact-input" style="max-width:80px" placeholder="默认5" />
@@ -208,6 +343,15 @@ async function delCred(c: ProviderCredential) {
                 <button class="btn btn-primary btn-sm" @click="save(c)" :disabled="saving[c.id]">{{ saving[c.id] ? '保存中' : '保存' }}</button>
                 <button class="btn btn-sm" @click="checkCred(c)" :disabled="checking[c.id]">{{ checking[c.id] ? '检测中' : '检测' }}</button>
                 <button class="btn btn-sm" @click="delCred(c)">停用</button>
+              </div>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
+                <button class="btn btn-sm" @click="resetAvailability(c)" title="重置 availability_state='ready'">重置可用性</button>
+                <button class="btn btn-sm" @click="resetQuota(c)" title="重置 quota_state='ok'">重置配额</button>
+                <button class="btn btn-sm" @click="forceRecover(c)">强制恢复</button>
+              </div>
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
+                <button class="btn btn-sm" @click="setDefaultModel(c)">设置默认模型</button>
+                <button class="btn btn-sm" @click="repickDefault(c)">立即重选</button>
               </div>
               <div v-if="saveMsgs[c.id]" style="font-size:11px;color:var(--danger);margin-top:4px">{{ saveMsgs[c.id] }}</div>
               <div v-if="checkMsgs[c.id]" style="font-size:11px;color:var(--muted);margin-top:4px">{{ checkMsgs[c.id] }}</div>

@@ -205,6 +205,17 @@ export interface ProviderCredential {
   key_masked?: string | null
   key_mask_error?: string | null
   status: CredentialStatus
+  // 900-series: 3-layer state machine fields
+  lifecycle_status?: 'active' | 'disabled' | 'suspended' | 'retired' | null
+  availability_state?: 'ready' | 'cooling' | 'rate_limited' | 'auth_failed' | 'unreachable' | 'suspended' | null
+  quota_state?: 'ok' | 'cooling' | 'periodic_exhausted' | 'balance_exhausted' | 'permanently_exhausted' | null
+  manual_disabled?: boolean
+  state_reason_code?: string | null
+  state_reason_detail?: string | null
+  // 900-series: default probe model (spec §4)
+  default_probe_model?: string | null
+  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_random' | 'cleared' | null
+  default_probe_model_picked_at?: string | null
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
   health_source?: 'models' | 'probe' | 'mixed' | 'none' | null
@@ -595,6 +606,18 @@ export function resetCredentialAvailability(providerId: number, credId: number) 
 
 export function resetCredentialQuota(providerId: number, credId: number) {
   return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-quota`)
+}
+
+export function forceRecoverCredential(credId: number) {
+  return req<{ triggered: boolean; credential_id: number }>(
+    'POST', `/api/providers/credentials/${credId}/force-recover`
+  )
+}
+
+export function updateCredentialLifecycle(providerId: number, credId: number, lifecycle_status: string) {
+  return req<{ message: string }>(
+    'PATCH', `/api/providers/${providerId}/credentials/${credId}/lifecycle`, { lifecycle_status }
+  )
 }
 
 export async function checkCredentialHealth(providerId: number, credId: number) {
@@ -1353,8 +1376,15 @@ export interface AvailableFamily {
   versions: AvailableVersion[]
 }
 
+export interface PopularModel {
+  canonical_name: string
+  display_name: string
+  source: 'policy' | 'usage' | string
+}
+
 export interface AvailableModelsResponse {
   families: AvailableFamily[]
+  popular?: PopularModel[]
   unmapped: string[]
   total_raw: number
 }
