@@ -42,6 +42,8 @@ type AnthropicExecutor struct {
 	PassthroughStream func(w http.ResponseWriter, resp *http.Response) StreamOutcome
 }
 
+var _ ProtocolHandler = (*AnthropicExecutor)(nil)
+
 const anthropicVersion = "2023-06-01"
 
 func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, isStream bool) (*http.Request, error) {

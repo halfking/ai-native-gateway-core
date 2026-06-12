@@ -31,8 +31,12 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	out := map[string]any{
-		"model":      src["model"],
-		"max_tokens": src["max_tokens"],
+		"model": src["model"],
+	}
+	if mt, ok := src["max_tokens"]; ok && mt != nil {
+		out["max_tokens"] = mt
+	} else {
+		out["max_tokens"] = 4096
 	}
 	if s, ok := src["stream"]; ok {
 		out["stream"] = s

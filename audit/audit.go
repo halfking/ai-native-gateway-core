@@ -289,6 +289,18 @@ func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	}
 }
 
+func (sc *StreamCapture) MarkDone() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.doneReceived = true
+}
+
+func (sc *StreamCapture) MarkStreamError() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.interrupted = true
+}
+
 // Link layer event types
 const (
 	EventTypeCredentialSwitch = "credential_switch" // Credential switched during stream
@@ -402,6 +414,19 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.cacheWriteTokens != nil {
 		m["cache_write_tokens"] = *sc.cacheWriteTokens
+	}
+	if sc.InputTokens != nil {
+		m["input_tokens"] = *sc.InputTokens
+	}
+	if sc.OutputTokens != nil {
+		m["output_tokens"] = *sc.OutputTokens
+	}
+	if sc.HasThinking {
+		m["has_thinking"] = true
+		m["thinking_blocks_n"] = sc.ThinkingBlocksN
+	}
+	if sc.ModelMismatch {
+		m["model_mismatch"] = true
 	}
 	return m
 }

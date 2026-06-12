@@ -56,7 +56,7 @@ func AllowListForProtocol(protocol string) map[string]bool {
 	}
 }
 
-func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string) []byte {
+func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string, protocol ...string) []byte {
 	if len(passthroughFields) == 0 && len(stripFields) == 0 {
 		return body
 	}
@@ -66,12 +66,18 @@ func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string)
 		return body
 	}
 
+	proto := ""
+	if len(protocol) > 0 {
+		proto = protocol[0]
+	}
+	baseAllowList := AllowListForProtocol(proto)
+
 	if len(passthroughFields) > 0 {
-		allowed := make(map[string]bool, len(passthroughFields)+len(alwaysKeepFieldsOpenAI))
+		allowed := make(map[string]bool, len(passthroughFields)+len(baseAllowList))
 		for _, f := range passthroughFields {
 			allowed[f] = true
 		}
-		for f := range alwaysKeepFieldsOpenAI {
+		for f := range baseAllowList {
 			allowed[f] = true
 		}
 		for k := range obj {
