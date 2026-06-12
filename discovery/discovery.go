@@ -286,9 +286,14 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 	for rows.Next() {
 		var c credential
 		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON); err != nil {
+			slog.Warn("loadCredentials scan failed", "error", err)
 			continue
 		}
+		slog.Info("loadCredentials loaded", "cred_id", c.ID, "provider", c.ProviderName, "strategy", c.DiscoveryStrategy)
 		creds = append(creds, c)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("loadCredentials rows.Err", "error", err)
 	}
 	return creds, nil
 }
