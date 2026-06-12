@@ -73,3 +73,26 @@ curl -sk -H "Authorization: Bearer $API_KEY" \
 | Date | 模型数 | 覆盖率 | 备注 |
 |---|---|---|---|
 | 2026-06-12 | 73 | 0% → 100% Tier 1+2 | 首次批量入库 |
+
+## 月度刷新 (2026-06-12 增补)
+
+**CronJob**: `deploy/k8s/cron/pricing-monthly-refresh.yaml` (1st @ 03:00 UTC)
+
+**Pipeline**:
+1. git clone 拉取源码 → `bash scripts/fetch-pricing.sh`
+2. `python3 scripts/diff-pricing.py` → `diff.json` (人工审批用)
+3. `POST /api/pricing/import` (multipart) + 直 psql 应用 token_plan
+4. `INSERT pricing_refresh_log` 审计
+5. diff_count > 5 → Feishu 通知
+
+**手动触发**:
+```bash
+kubectl -n pms-test create job --from=cronjob/pricing-monthly-refresh manual-$(date +%s)
+kubectl -n pms-test logs -f job/manual-$(date +%s)
+```
+
+**前置资源** (one-time setup):
+- `Secret: llm-gateway-pg-pass` (key: `pg-password`)
+- `Secret: pricing-refresh-secret` (key: `feishu-webhook`, optional)
+- `PVC: pricing-refresh-work` (10Gi)
+- SQL migration `2026_06_12_pricing_refresh_log.sql` ✅ 已应用
