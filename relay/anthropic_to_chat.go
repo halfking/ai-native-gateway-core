@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ConvertAnthropicResponseToChat converts an Anthropic Messages
@@ -67,6 +68,8 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 	msg := map[string]any{"role": "assistant"}
 	if len(textParts) > 0 {
 		msg["content"] = joinTextParts(textParts)
+	} else if len(toolCalls) > 0 {
+		msg["content"] = nil
 	} else {
 		msg["content"] = ""
 	}
@@ -78,7 +81,7 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 	out := map[string]any{
 		"id":      src.ID,
 		"object":  "chat.completion",
-		"created": 0,
+		"created": time.Now().Unix(),
 		"model":   outModel,
 		"choices": []map[string]any{{
 			"index":         0,
@@ -119,6 +122,8 @@ func mapAnthropicFinishReasonToChat(reason string) string {
 		return "length"
 	case "stop_sequence":
 		return "stop"
+	case "refusal":
+		return "content_filter"
 	default:
 		return "stop"
 	}

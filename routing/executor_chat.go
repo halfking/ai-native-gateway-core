@@ -33,6 +33,8 @@ type ChatExecutor struct {
 	StreamChat         func(http.ResponseWriter, *http.Response, string, string, audit.StreamCapture) StreamOutcome
 }
 
+var _ ProtocolHandler = (*ChatExecutor)(nil)
+
 func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStream bool) (*http.Request, error) {
 	upstreamURL := upstreamurl.ChatCompletionsURL(cand.BaseURL)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstreamURL, bytes.NewReader(body))
@@ -502,6 +504,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 			bodyBytes,
 			params.Transform.PassthroughFields,
 			params.Transform.StripRequestFields,
+			cand.Protocol,
 		)
 	}
 	if !transform.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transform.NeedsToolCollapse(bodyBytes) {

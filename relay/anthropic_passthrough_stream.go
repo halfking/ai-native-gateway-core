@@ -64,11 +64,17 @@ func StreamAnthropicPassthrough(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			if capture != nil {
+				capture.MarkInterruptedWithReason("read_error")
+			}
 			return outcome
 		}
 		if _, werr := w.Write([]byte(line)); werr != nil {
 			outcome.Interrupted = true
 			outcome.Reason = "client_disconnected"
+			if capture != nil {
+				capture.MarkInterruptedWithReason("client_disconnected")
+			}
 			return outcome
 		}
 		if capture != nil && strings.HasPrefix(line, "data: ") {
@@ -134,11 +140,15 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 			ot := *v.Usage.OutputTokens
 			c.OutputTokens = &ot
 		}
+	case "message_stop":
+		c.MarkDone()
 	case "content_block_start":
 		if v.ContentBlock != nil && v.ContentBlock.Type == "thinking" {
 			c.HasThinking = true
 			c.ThinkingBlocksN++
 		}
+	case "error":
+		c.MarkStreamError()
 	}
 }
 
