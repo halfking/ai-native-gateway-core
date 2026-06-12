@@ -37,6 +37,25 @@
         <div class="stat-val">{{ summary.free_offers }}</div>
         <div class="stat-label">Free</div>
       </div>
+      <div class="stat-card" :class="coverageClass">
+        <div class="stat-val">{{ coveragePct }}%</div>
+        <div class="stat-label">Coverage ({{ summary.canonical_covered }}/{{ summary.total_canonical }})</div>
+      </div>
+    </div>
+
+    <!-- Coverage by credential -->
+    <div v-if="coverageByCred.length" class="pm-coverage">
+      <h3>Coverage by credential</h3>
+      <div class="cov-row" v-for="row in coverageByCred" :key="row.credential_id">
+        <div class="cov-name">{{ row.credential_name }}</div>
+        <div class="cov-bar">
+          <div class="cov-fill" :style="{ width: row.pct + '%', background: row.color }"></div>
+        </div>
+        <div class="cov-stats">
+          {{ row.priced }}/{{ row.total }} ({{ row.pct }}%)
+          <span v-if="row.token_plan > 0" class="cov-tag cov-tag-tp">+{{ row.token_plan }} token_plan</span>
+        </div>
+      </div>
     </div>
 
     <!-- Filter Bar -->
@@ -53,7 +72,10 @@
       <div class="filter-group">
         <select v-model="filters.billing_mode" @change="onFilterChange" class="filter-select">
           <option value="">All Billing</option>
-          <option value="per_token">Per Token</option>
+          <option value="token">Token (per 1M)</option>
+          <option value="token_plan">Token Plan (xiaomi/volcano)</option>
+          <option value="code_plan">Code Plan</option>
+          <option value="per_token">Per Token (legacy)</option>
           <option value="per_request">Per Request</option>
           <option value="monthly">Monthly</option>
           <option value="free">Free</option>
@@ -122,115 +144,6 @@
             </div>
           </div>
         </div>
-      </div>
-
-      <div class="pm-detail" v-if="selectedOffer">
-        <h3>{{ selectedOffer.raw_model_name }}</h3>
-        <p class="detail-sub">{{ selectedOffer.provider_name }} / {{ selectedOffer.credential_label }}</p>
-
-        <!-- Routing Params -->
-        <div class="detail-section">
-          <h4>Routing Parameters</h4>
-          <div class="params-grid">
-            <div class="param">
-              <label>Tier</label>
-              <span class="param-val">{{ selectedOffer.routing_tier }}</span>
-            </div>
-            <div class="param">
-              <label>Weight</label>
-              <span class="param-val">{{ selectedOffer.weight }}</span>
-            </div>
-            <div class="param">
-              <label>Available</label>
-              <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? 'Yes' : 'No' }}</span>
-            </div>
-            <div class="param">
-              <label>Success Rate</label>
-              <span class="param-val">{{ selectedOffer.success_rate != null ? (selectedOffer.success_rate * 100).toFixed(1) + '%' : '-' }}</span>
-            </div>
-            <div class="param">
-              <label>P95 Latency</label>
-              <span class="param-val">{{ selectedOffer.p95_latency_ms ? selectedOffer.p95_latency_ms + 'ms' : '-' }}</span>
-            </div>
-            <div class="param">
-              <label>Last Seen</label>
-              <span class="param-val">{{ selectedOffer.last_seen_at ? new Date(selectedOffer.last_seen_at).toLocaleString() : '-' }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Window Stats -->
-        <div class="detail-section" v-if="selectedOffer.window_requests">
-          <h4>Window Stats (10min)</h4>
-          <div class="params-grid">
-            <div class="param">
-              <label>Requests</label>
-              <span class="param-val">{{ selectedOffer.window_requests }}</span>
-            </div>
-            <div class="param">
-              <label>Success Rate</label>
-              <span class="param-val">{{ selectedOffer.window_success_rate ? (selectedOffer.window_success_rate * 100).toFixed(1) + '%' : '-' }}</span>
-            </div>
-            <div class="param">
-              <label>P95 Latency</label>
-              <span class="param-val">{{ selectedOffer.window_latency_p95_ms ? selectedOffer.window_latency_p95_ms.toFixed(0) + 'ms' : '-' }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Pricing Form -->
-        <div class="detail-section">
-          <h4>Pricing</h4>
-          <div class="form-group">
-            <label>Input Price (per 1M tokens)</label>
-            <input v-model.number="editForm.unit_price_in_per_1m" type="number" step="0.001" />
-          </div>
-          <div class="form-group">
-            <label>Output Price (per 1M tokens)</label>
-            <input v-model.number="editForm.unit_price_out_per_1m" type="number" step="0.001" />
-          </div>
-          <div class="form-group">
-            <label>Cache Read Price (per 1M)</label>
-            <input v-model.number="editForm.cache_read_price_per_1m" type="number" step="0.001" />
-          </div>
-          <div class="form-group">
-            <label>Cache Write Price (per 1M)</label>
-            <input v-model.number="editForm.cache_write_price_per_1m" type="number" step="0.001" />
-          </div>
-          <div class="form-group">
-            <label>Currency</label>
-            <select v-model="editForm.currency">
-              <option value="CNY">CNY</option>
-              <option value="USD">USD</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Billing Mode</label>
-            <select v-model="editForm.billing_mode">
-              <option value="per_token">Per Token</option>
-              <option value="per_request">Per Request</option>
-              <option value="monthly">Monthly</option>
-              <option value="free">Free</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="detail-balance" v-if="selectedOffer.balance_usd != null">
-          <strong>Balance:</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || 'USD' }}
-          <span v-if="selectedOffer.pool_group"> | Pool: {{ selectedOffer.pool_group }}</span>
-        </div>
-
-        <div class="form-actions">
-          <button class="btn btn-primary btn-sm" @click="saveOffer" :disabled="saving">
-            {{ saving ? 'Saving...' : 'Save' }}
-          </button>
-          <button class="btn btn-sm" @click="copyPrice">Copy Price</button>
-          <button class="btn btn-sm" @click="pastePrice" :disabled="!clipboard || !selectedOffer">Paste</button>
-          <span v-if="saveMsg" class="save-msg" :class="{ ok: saveOk }">{{ saveMsg }}</span>
-        </div>
-      </div>
-      <div class="pm-detail empty" v-else>
-        <p>Select an offer from the tree to edit pricing.</p>
       </div>
     </div>
 
@@ -311,6 +224,124 @@
         </div>
       </div>
     </div>
+
+    <!-- Edit Drawer (tree + table) -->
+    <Teleport to="body">
+      <div v-if="selectedOffer" class="drawer-backdrop" @click="closeDetail">
+        <div class="drawer-panel card drawer-panel-wide" @click.stop>
+          <div class="drawer-header">
+            <div>
+              <h3 class="drawer-title">{{ selectedOffer.raw_model_name }}</h3>
+              <p class="detail-sub">{{ selectedOffer.provider_name }} / {{ selectedOffer.credential_label }}</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="closeDetail">✕ 关闭</button>
+          </div>
+
+          <div class="drawer-body">
+            <!-- Routing Params -->
+            <div class="detail-section">
+              <h4>Routing Parameters</h4>
+              <div class="params-grid">
+                <div class="param">
+                  <label>Tier</label>
+                  <span class="param-val">{{ selectedOffer.routing_tier }}</span>
+                </div>
+                <div class="param">
+                  <label>Weight</label>
+                  <span class="param-val">{{ selectedOffer.weight }}</span>
+                </div>
+                <div class="param">
+                  <label>Available</label>
+                  <span class="param-val" :class="{ ok: selectedOffer.available }">{{ selectedOffer.available ? 'Yes' : 'No' }}</span>
+                </div>
+                <div class="param">
+                  <label>Success Rate</label>
+                  <span class="param-val">{{ selectedOffer.success_rate != null ? (selectedOffer.success_rate * 100).toFixed(1) + '%' : '-' }}</span>
+                </div>
+                <div class="param">
+                  <label>P95 Latency</label>
+                  <span class="param-val">{{ selectedOffer.p95_latency_ms ? selectedOffer.p95_latency_ms + 'ms' : '-' }}</span>
+                </div>
+                <div class="param">
+                  <label>Last Seen</label>
+                  <span class="param-val">{{ selectedOffer.last_seen_at ? new Date(selectedOffer.last_seen_at).toLocaleString() : '-' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Window Stats -->
+            <div class="detail-section" v-if="selectedOffer.window_requests">
+              <h4>Window Stats (10min)</h4>
+              <div class="params-grid">
+                <div class="param">
+                  <label>Requests</label>
+                  <span class="param-val">{{ selectedOffer.window_requests }}</span>
+                </div>
+                <div class="param">
+                  <label>Success Rate</label>
+                  <span class="param-val">{{ selectedOffer.window_success_rate ? (selectedOffer.window_success_rate * 100).toFixed(1) + '%' : '-' }}</span>
+                </div>
+                <div class="param">
+                  <label>P95 Latency</label>
+                  <span class="param-val">{{ selectedOffer.window_latency_p95_ms ? selectedOffer.window_latency_p95_ms.toFixed(0) + 'ms' : '-' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Pricing Form -->
+            <div class="detail-section">
+              <h4>Pricing</h4>
+              <div class="form-group">
+                <label>Input Price (per 1M tokens)</label>
+                <input v-model.number="editForm.unit_price_in_per_1m" type="number" step="0.001" />
+              </div>
+              <div class="form-group">
+                <label>Output Price (per 1M tokens)</label>
+                <input v-model.number="editForm.unit_price_out_per_1m" type="number" step="0.001" />
+              </div>
+              <div class="form-group">
+                <label>Cache Read Price (per 1M)</label>
+                <input v-model.number="editForm.cache_read_price_per_1m" type="number" step="0.001" />
+              </div>
+              <div class="form-group">
+                <label>Cache Write Price (per 1M)</label>
+                <input v-model.number="editForm.cache_write_price_per_1m" type="number" step="0.001" />
+              </div>
+              <div class="form-group">
+                <label>Currency</label>
+                <select v-model="editForm.currency">
+                  <option value="CNY">CNY</option>
+                  <option value="USD">USD</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Billing Mode</label>
+                <select v-model="editForm.billing_mode">
+                  <option value="per_token">Per Token</option>
+                  <option value="per_request">Per Request</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="free">Free</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="detail-balance" v-if="selectedOffer.balance_usd != null">
+              <strong>Balance:</strong> {{ selectedOffer.balance_usd }} {{ selectedOffer.balance_currency || 'USD' }}
+              <span v-if="selectedOffer.pool_group"> | Pool: {{ selectedOffer.pool_group }}</span>
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-primary btn-sm" @click="saveOffer" :disabled="saving">
+                {{ saving ? 'Saving...' : 'Save' }}
+              </button>
+              <button class="btn btn-sm" @click="copyPrice">Copy Price</button>
+              <button class="btn btn-sm" @click="pastePrice" :disabled="!clipboard">Paste</button>
+              <span v-if="saveMsg" class="save-msg" :class="{ ok: saveOk }">{{ saveMsg }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Auto Inherit Modal -->
     <div v-if="showInheritPreview" class="modal-overlay" @click.self="showInheritPreview = false">
@@ -426,6 +457,65 @@ const showInheritPreview = ref(false)
 const inheritPreview = ref<any>({})
 const inheriting = ref(false)
 
+// Coverage state (2026-06-12)
+const coverageByCred = ref<Array<{
+  credential_id: number
+  credential_name: string
+  priced: number
+  total: number
+  pct: number
+  token_plan: number
+  color: string
+}>>([])
+
+const coveragePct = computed(() => {
+  if (!summary.value || !summary.value.total_canonical) return 0
+  return Math.round((summary.value.canonical_covered / summary.value.total_canonical) * 100)
+})
+
+const coverageClass = computed(() => {
+  if (coveragePct.value >= 90) return 'stat-card-good'
+  if (coveragePct.value >= 50) return 'stat-card-warn'
+  return 'stat-card-bad'
+})
+
+// Helper to lookup credential label by id (uses already-fetched providers list)
+function c_label(credId: number): string {
+  const o: any = (tableItems.value as any[]).find((x: any) => x.credential_id === credId)
+  if (o && (o.credential_label || o.credential_name)) return o.credential_label || o.credential_name
+  return `cred-${credId}`
+}
+
+function buildCoverageByCred(offers: Offer[]) {
+  const byCred = new Map<number, { name: string; total: number; priced: number; token_plan: number }>()
+  for (const o of offers) {
+    const credName = (o as any).credential_label || (o as any).credential_name || c_label(o.credential_id)
+    const e = byCred.get(o.credential_id) || { name: credName, total: 0, priced: 0, token_plan: 0 }
+    e.total += 1
+    if (o.unit_price_in_per_1m && Number(o.unit_price_in_per_1m) > 0) e.priced += 1
+    if (o.billing_mode === 'token_plan') e.token_plan += 1
+    byCred.set(o.credential_id, e)
+  }
+  const arr: any[] = []
+  for (const [id, e] of byCred) {
+    const pct = e.total > 0 ? Math.round((e.priced / e.total) * 100) : 0
+    let color = '#ef4444'  // red
+    if (pct >= 90) color = '#10b981'  // green
+    else if (pct >= 50) color = '#f59e0b'  // amber
+    arr.push({
+      credential_id: id,
+      credential_name: e.name,
+      priced: e.priced,
+      total: e.total,
+      pct,
+      token_plan: e.token_plan,
+      color,
+    })
+  }
+  arr.sort((a, b) => b.pct - a.pct)
+  coverageByCred.value = arr
+}
+
 const authHeaders = () => {
   const key = store.apiKey
   return { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }
@@ -476,6 +566,19 @@ async function fetchTree() {
     const treeData = await treeRes.json()
     families.value = treeData.families || []
     summary.value = await sumRes.json()
+    // Flatten tree leaves to compute coverage
+    // Family shape: { canonical_id, canonical_name, family, modality, offers: Offer[] }
+    const flat: any[] = []
+    for (const f of families.value) {
+      for (const o of (f.offers || [])) {
+        flat.push({
+          ...o,
+          credential_id: o.credential_id,
+          credential_label: o.credential_label || c_label(o.credential_id),
+        })
+      }
+    }
+    if (flat.length) buildCoverageByCred(flat as any)
   } catch (e) {
     console.error('Failed to fetch pricing tree', e)
   } finally {
@@ -495,6 +598,7 @@ async function fetchTable() {
     const data = await res.json()
     tableItems.value = data.items || []
     tableTotal.value = data.total || 0
+    buildCoverageByCred(tableItems.value)
   } catch (e) {
     console.error('Failed to fetch table', e)
   } finally {
@@ -546,6 +650,11 @@ function selectOffer(offer: Offer) {
     currency: offer.currency || 'USD',
     billing_mode: offer.billing_mode || 'per_token',
   }
+  saveMsg.value = ''
+}
+
+function closeDetail() {
+  selectedOffer.value = null
   saveMsg.value = ''
 }
 
@@ -608,7 +717,6 @@ function copyPriceFromTable(item: Offer) {
 
 function editFromTable(item: Offer) {
   selectOffer(item)
-  viewMode.value = 'tree'
 }
 
 async function pasteToSelected() {
@@ -764,8 +872,22 @@ onMounted(fetchData)
 .pm-actions { display: flex; gap: 8px; }
 .pm-summary { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .stat-card { background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 12px 20px; min-width: 100px; text-align: center; }
+.stat-card-good { border-color: #10b981; }
+.stat-card-warn { border-color: #f59e0b; }
+.stat-card-bad { border-color: #ef4444; }
 .stat-val { font-size: 24px; font-weight: 700; color: #89b4fa; }
 .stat-label { font-size: 12px; color: #888; margin-top: 4px; }
+
+/* Coverage by credential */
+.pm-coverage { background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.pm-coverage h3 { margin: 0 0 12px 0; font-size: 14px; color: #fff; }
+.cov-row { display: grid; grid-template-columns: 200px 1fr 200px; gap: 12px; align-items: center; margin-bottom: 6px; font-size: 12px; }
+.cov-name { color: #cdd6f4; font-weight: 500; }
+.cov-bar { background: #2a2a3e; height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid #444; }
+.cov-fill { height: 100%; transition: width 0.3s; }
+.cov-stats { color: #888; text-align: right; }
+.cov-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.cov-tag-tp { background: #45475a; color: #f9e2af; }
 
 /* Filters */
 .pm-filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
@@ -780,10 +902,10 @@ onMounted(fetchData)
 .tab:hover { color: #e0e0e0; }
 
 /* Tree View */
-.pm-body { display: flex; gap: 20px; min-height: 60vh; }
-.pm-tree { width: 55%; overflow-y: auto; background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 12px; }
-.pm-detail { width: 45%; background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 20px; overflow-y: auto; }
-.pm-detail.empty { display: flex; align-items: center; justify-content: center; color: #666; }
+.pm-body { min-height: 60vh; }
+.pm-tree { width: 100%; overflow-y: auto; background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 12px; max-height: calc(100vh - 320px); }
+.drawer-title { margin: 0; color: #fff; font-size: 16px; }
+.drawer-body { flex: 1; overflow-y: auto; }
 .tree-family { margin-bottom: 4px; }
 .tree-family-header { cursor: pointer; padding: 6px 8px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
 .tree-family-header:hover { background: #2a2a3e; }
@@ -809,7 +931,7 @@ onMounted(fetchData)
 .offer-window { font-size: 11px; color: #89dceb; }
 
 /* Detail Panel */
-.detail-sub { color: #888; margin-bottom: 16px; }
+.detail-sub { color: #888; margin: 4px 0 0; font-size: 13px; }
 .detail-section { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid #333; }
 .detail-section h4 { margin: 0 0 8px 0; color: #cba6f7; font-size: 14px; }
 .params-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }

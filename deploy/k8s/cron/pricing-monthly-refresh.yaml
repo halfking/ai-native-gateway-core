@@ -1,0 +1,154 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pricing-monthly-refresh
+  namespace: pms-test
+  labels:
+    app: llm-gateway
+    component: pricing-refresh
+    tier: ops
+  annotations:
+    description: |
+      Monthly pricing refresh (1st @ 03:00 UTC).
+      1) git clone llm-gateway-go repo
+      2) bash scripts/fetch-pricing.sh
+      3) python3 scripts/diff-pricing.py
+      4) if diff>0: POST /api/pricing/import + apply SQL via psql
+      5) INSERT pricing_refresh_log + Feishu webhook if diff>5
+spec:
+  schedule: "0 3 1 * *"
+  timeZone: "Etc/UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: pricing-monthly-refresh
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: default
+          containers:
+          - name: refresh
+            image: registry.kxpms.cn/kx-base:go-vue
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -ec
+            - |
+              set -uo pipefail
+              TS=$(date -u +%Y%m%dT%H%M%SZ)
+              WORK=/work/pricing-refresh/${TS}
+              mkdir -p "${WORK}"
+              cd /work
+              echo "[refresh] start ${TS}"
+
+              # Clone source
+              git clone --depth 1 https://github.com/kaixuan-ai/official-deploy.git official-deploy-src \
+                > "${WORK}/clone.log" 2>&1 || \
+                { echo "GIT CLONE FAILED"; cat "${WORK}/clone.log"; exit 2; }
+
+              # Before snapshot
+              curl -sS --max-time 10 -H "Authorization: Bearer ${LLM_ADMIN_API_KEY}" \
+                "${LLM_ADMIN_URL}/api/pricing/summary" > "${WORK}/summary_before.json" || true
+
+              # Fetch latest pricing
+              bash /work/official-deploy-src/services/llm-gateway-go/docs/pricing/scripts/fetch-pricing.sh \
+                > "${WORK}/fetch.log" 2>&1 || \
+                { echo "FETCH WARNING (continuing with stale raw/)"; }
+
+              # Diff vs current DB
+              python3 /work/official-deploy-src/services/llm-gateway-go/docs/pricing/scripts/diff-pricing.py \
+                --admin-url "${LLM_ADMIN_URL}" \
+                --admin-token "${LLM_ADMIN_API_KEY}" \
+                --raw-dir /work/official-deploy-src/services/llm-gateway-go/docs/pricing/raw/ \
+                --out-dir "${WORK}/" \
+                > "${WORK}/diff.log" 2>&1 || \
+                { echo "DIFF FAILED"; cat "${WORK}/diff.log"; exit 3; }
+
+              # Apply changes
+              APPLIED=0
+              if [ -s "${WORK}/tier-pricing.csv" ]; then
+                echo "[refresh] applying tier-pricing.csv..."
+                curl -sS --max-time 60 -X POST \
+                  -H "Authorization: Bearer ${LLM_ADMIN_API_KEY}" \
+                  -F "file=@${WORK}/tier-pricing.csv;type=text/csv" \
+                  "${LLM_ADMIN_URL}/api/pricing/import" > "${WORK}/import_result.json" 2>&1
+                cat "${WORK}/import_result.json"
+                APPLIED=1
+              fi
+              if [ -s "${WORK}/token-plan-pricing.sql" ]; then
+                echo "[refresh] applying token-plan-pricing.sql via in-pod psql..."
+                PGPASSWORD="${PG_PASSWORD}" psql -h llm-gateway-pg \
+                  -U llm_gateway -d llm_gateway -f "${WORK}/token-plan-pricing.sql" \
+                  > "${WORK}/psql.log" 2>&1 || \
+                  { echo "PSQL APPLY FAILED"; cat "${WORK}/psql.log"; }
+                APPLIED=1
+              fi
+
+              # After snapshot
+              curl -sS --max-time 10 -H "Authorization: Bearer ${LLM_ADMIN_API_KEY}" \
+                "${LLM_ADMIN_URL}/api/pricing/summary" > "${WORK}/summary_after.json" || true
+
+              # Audit log
+              DIFF_COUNT=$(wc -l < "${WORK}/tier-pricing.csv" 2>/dev/null || echo 0)
+              DIFF_COUNT=$((DIFF_COUNT - 1))  # subtract header
+
+              PGPASSWORD="${PG_PASSWORD}" psql -h llm-gateway-pg \
+                -U llm_gateway -d llm_gateway -c "
+                  INSERT INTO pricing_refresh_log
+                    (run_id, run_ts, trigger, status, before_summary, after_summary,
+                     diff_count, artifacts_path, feishu_sent, duration_seconds)
+                  VALUES
+                    ('${TS}', now(), 'cron', 'success',
+                     '$(cat ${WORK}/summary_before.json 2>/dev/null)'::jsonb,
+                     '$(cat ${WORK}/summary_after.json 2>/dev/null)'::jsonb,
+                     ${DIFF_COUNT}, '${WORK}', false, 0);
+                " 2>&1 | tail -5
+
+              # Feishu notification
+              if [ -n "${FEISHU_WEBHOOK_URL:-}" ] && [ "${DIFF_COUNT}" -gt 5 ]; then
+                curl -sS --max-time 10 -X POST "${FEISHU_WEBHOOK_URL}" \
+                  -H "Content-Type: application/json" \
+                  -d "{
+                    \"msgtype\": \"text\",
+                    \"text\": {
+                      \"content\": \"[llm-gateway pricing refresh] ${TS}\nDiff: ${DIFF_COUNT} offers changed\nArtifacts: ${WORK}\"
+                    }
+                  }" > "${WORK}/feishu.log" 2>&1 || true
+              fi
+
+              echo "[refresh] done. applied=${APPLIED} diff=${DIFF_COUNT}"
+            env:
+            - name: LLM_ADMIN_URL
+              value: "http://llm-gateway-go-svc:8780"
+            - name: LLM_ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-gateway-secret
+                  key: admin-api-key
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: llm-gateway-pg-pass
+                  key: pg-password
+            - name: FEISHU_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pricing-refresh-secret
+                  key: feishu-webhook
+                  optional: true
+            volumeMounts:
+            - name: pricing-refresh-work
+              mountPath: /work
+          volumes:
+          - name: pricing-refresh-work
+            persistentVolumeClaim:
+              claimName: pricing-refresh-work
+YAMLEOF
+echo "Wrote $(wc -l < /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/deploy/k8s/cron/pricing-monthly-refresh.yaml) lines"
