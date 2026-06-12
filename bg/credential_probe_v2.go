@@ -104,6 +104,7 @@ type v2Snapshot struct {
 	BaseURL                string
 	APIKey                 string
 	DefaultProbeModel      string
+	ProviderProtocol       string
 }
 
 // cycleAll iterates active credentials, sends /v1/models + mini chat "hi",
@@ -118,7 +119,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		       COALESCE(p.enabled, FALSE), COALESCE(p.manual_disabled, FALSE),
 		       COALESCE(p.base_url, ''),
 		       c.secret_ciphertext,
-		       COALESCE(c.default_probe_model, '')
+		       COALESCE(c.default_probe_model, ''),
+		       COALESCE(p.protocol, 'openai-completions')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -149,7 +151,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		var ciphertext []byte
 		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-			&s.BaseURL, &ciphertext, &s.DefaultProbeModel); err != nil {
+			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol); err != nil {
 			continue
 		}
 
@@ -263,7 +265,14 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 		return false, "models endpoint unreachable"
 	}
 
-	// Step 2: mini chat completion with "hi"
+	// Step 2: mini chat completion with "hi" — protocol-aware.
+	// For anthropic-messages providers (e.g. minimax /anthropic) the openai
+	// chat URL 404s, so we hit /v1/messages instead with x-api-key.
+	if s.ProviderProtocol == "anthropic-messages" {
+		msgURL := upstreamurl.MessagesURL(s.BaseURL)
+		ok, errMsg := c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
+		return ok, errMsg
+	}
 	chatURL := upstreamurl.ChatCompletionsURL(s.BaseURL)
 	ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
 	if !ok && strings.Contains(errMsg, "max_tokens") {
@@ -315,6 +324,45 @@ func truncateBody(b []byte) string {
 		return s[:200]
 	}
 	return s
+}
+
+// miniAnthropic sends a single-shot /v1/messages request with x-api-key +
+// anthropic-version headers. Used as the probe step 2 for anthropic-messages
+// providers (e.g. minimax /anthropic) which don't expose /v1/chat/completions.
+//
+// Returns (true, "") on 2xx; otherwise the upstream status + body preview.
+func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.Client, apiKey, model, msgURL string, maxTokens int) (bool, string) {
+	body := map[string]any{
+		"model":      model,
+		"max_tokens": maxTokens,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+	}
+	bodyJSON, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST", msgURL, bytes.NewReader(bodyJSON))
+	if err != nil {
+		return false, "build messages request: " + err.Error()
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, "messages unreachable: " + err.Error()
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, ""
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return false, fmt.Sprintf("401/403: %s", truncateBody(respBody))
+	}
+	if resp.StatusCode == 429 {
+		return false, "429 rate limited"
+	}
+	return false, fmt.Sprintf("messages status %d: %s", resp.StatusCode, truncateBody(respBody))
 }
 
 func classifyProbeFailure(errMsg string) probeResult {
