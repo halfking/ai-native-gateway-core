@@ -4,19 +4,16 @@ import { useRoute } from 'vue-router'
 import {
   getRequestLogs,
   getRequestLogDetail,
-  getRequestLogTopModels,
   getKeys,
   type RequestLogRow,
   type RequestLogDetail,
   type ApiKey,
   type RequestLogsResponse,
-  type TopRequestModel,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
-const topModels = ref<TopRequestModel[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const apiKeyId = ref<number | ''>('')
@@ -26,7 +23,6 @@ const hours = ref(24)
 const successFilter = ref<'' | 'success' | 'failure'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
-const canonicalFilter = ref<number | null>(null)
 const modelNameFilter = ref('')
 
 const page = ref(1)
@@ -52,55 +48,8 @@ function timeRange() {
   return { from: start.toISOString(), to: end.toISOString() }
 }
 
-async function loadTopModels() {
-  try {
-    const range = timeRange()
-    const resp = await getRequestLogTopModels({ from: range.from, to: range.to, limit: 20 })
-    topModels.value = resp.items
-  } catch {
-    topModels.value = []
-  }
-}
-
-function clearModelFilter() {
-  canonicalFilter.value = null
-  modelNameFilter.value = ''
-  modelFilter.value = ''
-  page.value = 1
-  load()
-}
-
-function setCanonicalFilter(canonicalId: number | null, canonicalName?: string) {
-  if (canonicalId != null) {
-    canonicalFilter.value = canonicalId
-    modelNameFilter.value = ''
-  } else if (canonicalName) {
-    canonicalFilter.value = null
-    modelNameFilter.value = canonicalName
-  } else {
-    clearModelFilter()
-    return
-  }
-  modelFilter.value = canonicalName || ''
-  page.value = 1
-  load()
-}
-
 function onModelFilterChange(name: string | string[]) {
-  const v = typeof name === 'string' ? name.trim() : ''
-  if (!v) {
-    canonicalFilter.value = null
-    modelNameFilter.value = ''
-    return
-  }
-  const hit = topModels.value.find((m) => m.canonical_name === v)
-  if (hit?.canonical_id != null) {
-    canonicalFilter.value = hit.canonical_id
-    modelNameFilter.value = ''
-  } else {
-    canonicalFilter.value = null
-    modelNameFilter.value = v
-  }
+  modelNameFilter.value = typeof name === 'string' ? name.trim() : ''
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -133,7 +82,6 @@ async function load() {
       q: keyword.value.trim() || undefined,
       success: successParam,
       error_kind: errorKindFilter.value.trim() || undefined,
-      canonical_id: canonicalFilter.value ?? undefined,
       model: modelNameFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       page: page.value,
@@ -250,8 +198,6 @@ function roleColor(role: string): string {
 
 const route = useRoute()
 
-watch(hours, () => { void loadTopModels() })
-
 onMounted(async () => {
   const q = route.query
   if (q.success === 'success' || q.success === 'failure') {
@@ -263,7 +209,7 @@ onMounted(async () => {
   if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
     hours.value = Number(q.hours)
   }
-  await Promise.all([loadKeys(), loadTopModels()])
+  await loadKeys()
   await load()
 })
 </script>
@@ -315,7 +261,8 @@ onMounted(async () => {
           <span class="cf-label">模型（可选）</span>
           <ModelPicker
             v-model="modelFilter"
-            placeholder="标准模型名…"
+            placeholder="选择模型…"
+            title="筛选请求日志模型"
             @update:model-value="onModelFilterChange"
           />
         </div>
@@ -330,33 +277,6 @@ onMounted(async () => {
           />
         </div>
         <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
-      </div>
-    </div>
-
-    <div v-if="topModels.length" class="card model-filter-card">
-      <div class="model-filter-header">
-        <span>热门模型</span>
-        <span class="model-filter-hint">按用量排序 · 最多 20 个</span>
-      </div>
-      <div class="model-chip-row">
-        <button
-          type="button"
-          class="model-chip"
-          :class="{ active: canonicalFilter === null && !modelNameFilter }"
-          @click="clearModelFilter"
-        >全部</button>
-        <button
-          v-for="m in topModels"
-          :key="`${m.canonical_id ?? 'raw'}-${m.canonical_name}`"
-          type="button"
-          class="model-chip"
-          :class="{ active: canonicalFilter === m.canonical_id || modelNameFilter === m.canonical_name }"
-          :title="`${m.canonical_name} · ${m.request_count} 次`"
-          @click="setCanonicalFilter(m.canonical_id, m.canonical_name)"
-        >
-          <span>{{ m.display_name || m.canonical_name }}</span>
-          <span class="model-chip-count">{{ m.request_count }}</span>
-        </button>
       </div>
     </div>
 
@@ -527,49 +447,3 @@ onMounted(async () => {
   </div>
 </template>
 
-<style scoped>
-.model-filter-card {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-}
-.model-filter-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.model-filter-hint {
-  font-size: 11px;
-  opacity: 0.85;
-}
-.model-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.model-chip-count {
-  margin-left: 6px;
-  font-size: 10px;
-  opacity: 0.8;
-}
-.model-chip {
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.model-chip:hover {
-  border-color: var(--accent, #6366f1);
-}
-.model-chip.active {
-  background: var(--accent, #6366f1);
-  border-color: var(--accent, #6366f1);
-  color: #fff;
-}
-</style>

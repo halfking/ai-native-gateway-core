@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import {
   resolveRouting, probeModel,
   getScoreDetails, updateManualPriority,
-  getFeaturedModelsDynamic,
   type RoutingCandidate, type ProbeResult, type RoutingResolveResponse,
-  type ScoreDetail, type FeaturedModel,
+  type ScoreDetail,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 
@@ -24,7 +23,6 @@ const probeErr    = ref('')
 
 const scoreDetails = ref<ScoreDetail[]>([])
 const loadingScores = ref(false)
-const featuredModels = ref<FeaturedModel[]>([])
 const editingPriority = ref<number | null>(null)
 const editingValue = ref(99)
 
@@ -44,25 +42,10 @@ const compositeScores = computed(() => {
   return map
 })
 
-onMounted(async () => {
-  await loadFeaturedModels()
-})
-
-async function loadFeaturedModels() {
-  try {
-    const res = await getFeaturedModelsDynamic()
-    featuredModels.value = res.models
-  } catch (e) {
-    console.warn('Failed to load featured models:', e)
-  }
-}
-
-function displayName(m: FeaturedModel): string {
-  return m.standardized_name || m.name
-}
-
-function clickModel(m: FeaturedModel) {
-  selectModel(displayName(m))
+async function onModelPicked(value: string | string[]) {
+  const name = typeof value === 'string' ? value.trim() : ''
+  if (!name) return
+  await selectModel(name)
 }
 
 async function selectModel(name: string) {
@@ -206,8 +189,9 @@ function dateWindow(c: RoutingCandidate): string {
         <div style="flex:1;min-width:240px">
           <ModelPicker
             v-model="modelInput"
-            :allow-free-text="true"
-            placeholder="选择或输入模型，例如 gpt-4o-mini"
+            placeholder="选择模型…"
+            title="路由测试模型"
+            @update:model-value="onModelPicked"
           />
         </div>
         <input
@@ -227,20 +211,6 @@ function dateWindow(c: RoutingCandidate): string {
           title="向路由到的供应商发送一个小型测试请求"
         >
           {{ probing ? '测试中…' : '发送测试请求' }}
-        </button>
-      </div>
-      <div v-if="featuredModels.length > 0" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <span style="font-size:12px;color:var(--muted)">常用模型：</span>
-        <button
-          v-for="m in featuredModels"
-          :key="m.name"
-          class="btn btn-ghost btn-sm"
-          :class="{ active: modelInput === displayName(m) }"
-          :title="m.name !== displayName(m) ? `原始: ${m.name}` : undefined"
-          @click="clickModel(m)"
-          style="font-size:12px;padding:4px 10px"
-        >
-          {{ displayName(m) }} <span style="color:var(--muted);font-size:10px">({{ m.count }})</span>
         </button>
       </div>
     </div>
