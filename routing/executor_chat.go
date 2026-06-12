@@ -133,30 +133,11 @@ func (e *Executor) executeOpenAI(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
+	bodyBytes := prepareRequestBody(params, cand)
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
 		outboundModel = cand.RawModel
 	}
-
-	bodyBytes := params.BodyBytes
-	if outboundModel != params.ClientModel {
-		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
-	}
-	if params.IsStream {
-		bodyBytes = injectStreamOptions(bodyBytes)
-	}
-	if params.Transform != nil {
-		bodyBytes = transform.ApplyRequestWhitelist(
-			bodyBytes,
-			params.Transform.PassthroughFields,
-			params.Transform.StripRequestFields,
-		)
-	}
-	if !transform.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transform.NeedsToolCollapse(bodyBytes) {
-		bodyBytes = transform.CollapseToolHistory(bodyBytes)
-	}
-	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
-	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
 
 	if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
 		profileName := ""
@@ -485,6 +466,50 @@ func (e *Executor) executeOpenAI(
 		}
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
+}
+
+// prepareRequestBody builds the upstream request body from params and cand.
+//
+// It performs the protocol-aware transformations that happen BEFORE the
+// request is sent: model-name substitution, OpenAI stream_options injection
+// (skipped for anthropic-messages since Anthropic has no such field),
+// transform whitelist, tool-history collapse, capability sanitizer, message
+// merge.
+//
+// Extracted as a free function so unit tests can verify each protocol
+// branch without spinning up the full HTTP retry loop.
+func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = cand.RawModel
+	}
+
+	bodyBytes := params.BodyBytes
+	if outboundModel != params.ClientModel {
+		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
+	}
+	// injectStreamOptions adds OpenAI-specific `"stream_options":{"include_usage":true}`
+	// to streaming requests so upstream returns a final usage chunk we can
+	// attribute for billing. Anthropic streams usage via message_start +
+	// message_delta events and has no stream_options field; injecting it would
+	// either be silently ignored or, worse, rejected by strict providers.
+	// Guard on protocol.
+	if params.IsStream && cand.Protocol != "anthropic-messages" {
+		bodyBytes = injectStreamOptions(bodyBytes)
+	}
+	if params.Transform != nil {
+		bodyBytes = transform.ApplyRequestWhitelist(
+			bodyBytes,
+			params.Transform.PassthroughFields,
+			params.Transform.StripRequestFields,
+		)
+	}
+	if !transform.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transform.NeedsToolCollapse(bodyBytes) {
+		bodyBytes = transform.CollapseToolHistory(bodyBytes)
+	}
+	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
+	return bodyBytes
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path.
