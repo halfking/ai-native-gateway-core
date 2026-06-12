@@ -1,22 +1,11 @@
 <script setup lang="ts">
-/**
- * ModelPicker — two-level dropdown (family → version) for selecting models.
- *
- * Single mode (default):
- *   <ModelPicker v-model="modelName" :allow-free-text="true" placeholder="..." />
- *
- * Multi mode (used for featured_models, etc.):
- *   <ModelPicker v-model="modelArray" mode="multi" />
- *
- * Data source: /api/routing/available-models (cached after first load).
- * Featured versions are marked with ★ and listed before non-featured.
- */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   getAvailableModels,
   type AvailableFamily,
   type AvailableVersion,
   type AvailableModelsResponse,
+  type PopularModel,
 } from '../api'
 
 type Mode = 'single' | 'multi'
@@ -38,9 +27,9 @@ const emit = defineEmits<{
   'update:modelValue': [value: string | string[]]
 }>()
 
-// ── Shared module-level cache so multiple pickers share one fetch ───────
 let _cache: AvailableModelsResponse | null = null
 let _inflight: Promise<AvailableModelsResponse> | null = null
+
 function clearAvailableModelsCache() {
   _cache = null
   _inflight = null
@@ -56,12 +45,15 @@ async function loadCached(): Promise<AvailableModelsResponse> {
 }
 
 const families = ref<AvailableFamily[]>([])
+const popular = ref<PopularModel[]>([])
 const unmapped = ref<string[]>([])
-const loading  = ref(false)
-const loadErr  = ref('')
-const open     = ref(false)
-const search   = ref('')
+const loading = ref(false)
+const loadErr = ref('')
+const open = ref(false)
+const search = ref('')
 const freeText = ref('')
+const triggerRef = ref<HTMLElement | null>(null)
+const panelStyle = ref<Record<string, string>>({})
 
 async function refreshModels(force = false) {
   if (force) clearAvailableModelsCache()
@@ -70,6 +62,7 @@ async function refreshModels(force = false) {
   try {
     const data = await loadCached()
     families.value = data.families || []
+    popular.value = data.popular || []
     unmapped.value = data.unmapped || []
   } catch (e: unknown) {
     loadErr.value = e instanceof Error ? e.message : '加载模型失败'
@@ -82,27 +75,65 @@ function onModelsUpdated() {
   void refreshModels(true)
 }
 
+function updatePanelPosition() {
+  const el = triggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const width = Math.max(rect.width, 320)
+  const maxHeight = Math.min(440, window.innerHeight - rect.bottom - 16)
+  panelStyle.value = {
+    position: 'fixed',
+    top: `${rect.bottom + 4}px`,
+    left: `${rect.left}px`,
+    width: `${width}px`,
+    maxHeight: `${Math.max(maxHeight, 200)}px`,
+    zIndex: '1201',
+  }
+}
+
+async function openPanel() {
+  if (props.disabled) return
+  open.value = true
+  await nextTick()
+  updatePanelPosition()
+}
+
+function closePanel() {
+  open.value = false
+}
+
+function toggle() {
+  if (open.value) closePanel()
+  else void openPanel()
+}
+
+function onWindowChange() {
+  if (open.value) updatePanelPosition()
+}
+
 onMounted(async () => {
   window.addEventListener('llm-gateway:models-updated', onModelsUpdated)
+  window.addEventListener('resize', onWindowChange)
+  window.addEventListener('scroll', onWindowChange, true)
   await refreshModels()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('llm-gateway:models-updated', onModelsUpdated)
+  window.removeEventListener('resize', onWindowChange)
+  window.removeEventListener('scroll', onWindowChange, true)
 })
 
-// ── Single mode helpers ────────────────────────────────────────────────
 const singleValue = computed(() =>
   typeof props.modelValue === 'string' ? props.modelValue : ''
 )
 
-// ── Multi mode helpers ─────────────────────────────────────────────────
 const multiValues = computed<string[]>(() =>
   Array.isArray(props.modelValue) ? props.modelValue : []
 )
 
-function pickPreferredName(v: AvailableVersion): string {
-  return v.canonical_name
+function displayName(v: AvailableVersion | PopularModel): string {
+  return ('display_name' in v && v.display_name) ? v.display_name : v.canonical_name
 }
 
 function isChosen(name: string): boolean {
@@ -120,7 +151,8 @@ function pick(name: string) {
     search.value = ''
   } else {
     emit('update:modelValue', name)
-    open.value = false
+    freeText.value = name
+    closePanel()
     search.value = ''
   }
 }
@@ -136,15 +168,9 @@ function clear() {
   freeText.value = ''
 }
 
-// ── Free-text submission ───────────────────────────────────────────────
 function submitFreeText() {
   const v = freeText.value.trim()
   if (!v) return
-  const first = filteredFamilies.value.flatMap((f) => sortedVersions(f.versions))[0]
-  if (first) {
-    pick(pickPreferredName(first))
-    return
-  }
   if (props.mode === 'multi') {
     if (!multiValues.value.includes(v)) {
       emit('update:modelValue', [...multiValues.value, v])
@@ -152,42 +178,55 @@ function submitFreeText() {
     freeText.value = ''
   } else {
     emit('update:modelValue', v)
-    open.value = false
+    closePanel()
     freeText.value = ''
   }
 }
 
-// keep freeText in sync with external single value (so user can edit)
 watch(() => props.modelValue, (v) => {
   if (props.mode === 'single' && typeof v === 'string' && v !== freeText.value) {
     freeText.value = v
   }
 }, { immediate: true })
 
-// ── Filtered families based on search ──────────────────────────────────
-const filteredFamilies = computed<AvailableFamily[]>(() => {
-  const q = (props.mode === 'multi' && props.allowFreeText ? freeText.value : search.value).trim().toLowerCase()
-  if (!q) return families.value
-  return families.value
-    .map((f) => {
-      const matchesFamily = (
-        f.id.toLowerCase().includes(q) ||
-        f.display_name.toLowerCase().includes(q) ||
-        (f.vendor || '').toLowerCase().includes(q)
-      )
-      const versions = f.versions.filter((v) =>
-        matchesFamily ||
+const filteredPopular = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return popular.value
+  return popular.value.filter((m) =>
+    m.canonical_name.toLowerCase().includes(q) ||
+    m.display_name.toLowerCase().includes(q)
+  )
+})
+
+const vendorGroups = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  const groups = new Map<string, { vendor: string; versions: AvailableVersion[] }>()
+  for (const fam of families.value) {
+    const vendor = fam.vendor || fam.display_name || '其他'
+    const versions = fam.versions.filter((v) => {
+      if (!q) return true
+      return (
+        vendor.toLowerCase().includes(q) ||
+        fam.display_name.toLowerCase().includes(q) ||
         v.canonical_name.toLowerCase().includes(q) ||
         v.display_name.toLowerCase().includes(q) ||
         (v.raw_names || []).some((r) => r.toLowerCase().includes(q)) ||
         (v.aliases || []).some((a) => a.toLowerCase().includes(q))
       )
-      return { ...f, versions }
     })
-    .filter((f) => f.versions.length > 0)
+    if (!versions.length) continue
+    const cur = groups.get(vendor) || { vendor, versions: [] }
+    cur.versions.push(...versions)
+    groups.set(vendor, cur)
+  }
+  return Array.from(groups.values())
+    .map((g) => {
+      g.versions.sort((a, b) => a.canonical_name.localeCompare(b.canonical_name))
+      return g
+    })
+    .sort((a, b) => a.vendor.localeCompare(b.vendor))
 })
 
-// Sort: featured first within each family
 function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
   return [...vs].sort((a, b) => {
     const af = a.featured || false
@@ -196,29 +235,11 @@ function sortedVersions(vs: AvailableVersion[]): AvailableVersion[] {
     return a.canonical_name.localeCompare(b.canonical_name)
   })
 }
-
-function toggle() {
-  if (props.disabled) return
-  open.value = !open.value
-}
-
-function onInputFocus() {
-  open.value = true
-}
-
-function closeOnBlur(e: FocusEvent) {
-  const next = e.relatedTarget as Node | null
-  const wrapper = (e.currentTarget as HTMLElement)
-  if (next && wrapper.contains(next)) return
-  open.value = false
-}
 </script>
 
 <template>
-  <div class="model-picker" @focusout="closeOnBlur" tabindex="-1">
-    <!-- Trigger -->
+  <div class="model-picker" ref="triggerRef">
     <div class="mp-trigger" :class="{ open, disabled }">
-      <!-- Multi-mode chips -->
       <template v-if="mode === 'multi'">
         <div class="mp-chips">
           <span v-for="v in multiValues" :key="v" class="mp-chip">
@@ -232,7 +253,7 @@ function closeOnBlur(e: FocusEvent) {
             :placeholder="multiValues.length ? '' : placeholder"
             :disabled="disabled"
             @keyup.enter="submitFreeText"
-            @focus="onInputFocus"
+            @focus="openPanel"
           />
           <button
             v-else
@@ -246,7 +267,6 @@ function closeOnBlur(e: FocusEvent) {
         </div>
       </template>
 
-      <!-- Single-mode input/button -->
       <template v-else>
         <input
           v-if="allowFreeText"
@@ -254,7 +274,7 @@ function closeOnBlur(e: FocusEvent) {
           class="mp-single-input"
           :placeholder="placeholder"
           :disabled="disabled"
-          @focus="onInputFocus"
+          @focus="openPanel"
           @keyup.enter="submitFreeText"
         />
         <button
@@ -285,51 +305,68 @@ function closeOnBlur(e: FocusEvent) {
       >▾</button>
     </div>
 
-    <!-- Dropdown panel -->
-    <div v-if="open" class="mp-panel">
-      <div class="mp-search">
-        <input
-          v-model="search"
-          placeholder="搜索厂商 / 模型 / 别名…"
-          @keyup.escape="open = false"
-        />
-        <button type="button" class="mp-refresh" :disabled="loading" title="刷新模型列表" @click="refreshModels(true)">刷新</button>
-      </div>
+    <Teleport to="body">
+      <div v-if="open" class="mp-backdrop" @click="closePanel" />
+      <div v-if="open" class="mp-panel" :style="panelStyle" @mousedown.prevent>
+        <div class="mp-search">
+          <input
+            v-model="search"
+            placeholder="搜索厂商 / 标准模型 / 别名…"
+            @keyup.escape="closePanel"
+          />
+          <button type="button" class="mp-refresh" :disabled="loading" title="刷新模型列表" @click="refreshModels(true)">刷新</button>
+        </div>
 
-      <div v-if="loading" class="mp-status">加载中…</div>
-      <div v-else-if="loadErr" class="mp-status mp-err">{{ loadErr }}</div>
-      <div v-else-if="!filteredFamilies.length" class="mp-status">
-        无匹配模型<span v-if="search"> · 关键词「{{ search }}」</span>
-      </div>
+        <div v-if="loading" class="mp-status">加载中…</div>
+        <div v-else-if="loadErr" class="mp-status mp-err">{{ loadErr }}</div>
+        <div v-else-if="!filteredPopular.length && !vendorGroups.length" class="mp-status">
+          无匹配模型<span v-if="search"> · 关键词「{{ search }}」</span>
+        </div>
 
-      <div v-else class="mp-families">
-        <div v-for="fam in filteredFamilies" :key="fam.id" class="mp-family">
-          <div class="mp-family-title">
-            <span>{{ fam.display_name }}</span>
-            <span class="mp-vendor">{{ fam.vendor }}</span>
+        <div v-else class="mp-scroll">
+          <div v-if="filteredPopular.length" class="mp-section">
+            <div class="mp-section-title">热门模型</div>
+            <div class="mp-versions">
+              <button
+                v-for="m in filteredPopular"
+                :key="m.canonical_name"
+                type="button"
+                class="mp-version"
+                :class="{ chosen: isChosen(m.canonical_name) }"
+                @click="pick(m.canonical_name)"
+              >
+                <span class="mp-star">★</span>
+                <span class="mp-name">{{ displayName(m) }}</span>
+                <span class="mp-pill">{{ m.source === 'usage' ? '用量' : '策略' }}</span>
+              </button>
+            </div>
           </div>
-          <div class="mp-versions">
-            <button
-              v-for="v in sortedVersions(fam.versions)"
-              :key="v.canonical_name"
-              type="button"
-              class="mp-version"
-              :class="{ chosen: isChosen(pickPreferredName(v)) }"
-              :title="`${v.canonical_name} · ${v.provider_count} 个供应商 · ${v.raw_names.join(', ')}`"
-              @click="pick(pickPreferredName(v))"
-            >
-              <span class="mp-star" v-if="v.featured">★</span>
-              <span class="mp-name">{{ v.display_name || v.canonical_name }}</span>
-              <span class="mp-pcount">×{{ v.provider_count }}</span>
-            </button>
+
+          <div v-for="group in vendorGroups" :key="group.vendor" class="mp-section">
+            <div class="mp-section-title">{{ group.vendor }}</div>
+            <div class="mp-versions">
+              <button
+                v-for="v in sortedVersions(group.versions)"
+                :key="v.canonical_name"
+                type="button"
+                class="mp-version"
+                :class="{ chosen: isChosen(v.canonical_name) }"
+                :title="`${v.canonical_name} · ${v.provider_count} 个供应商`"
+                @click="pick(v.canonical_name)"
+              >
+                <span class="mp-star" v-if="v.featured">★</span>
+                <span class="mp-name">{{ displayName(v) }}</span>
+                <span class="mp-pcount">×{{ v.provider_count }}</span>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div v-if="unmapped.length" class="mp-unmapped" :title="unmapped.join('\n')">
-        ⚠ {{ unmapped.length }} 个未归类原始模型
+        <div v-if="unmapped.length" class="mp-unmapped" :title="unmapped.join('\n')">
+          ⚠ {{ unmapped.length }} 个未归类原始模型
+        </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
@@ -374,12 +411,16 @@ function closeOnBlur(e: FocusEvent) {
 .mp-caret { font-size: 0.8em; }
 .mp-clear:hover, .mp-caret:hover { color: var(--text); }
 
+.mp-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1200;
+}
+
 .mp-panel {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-  z-index: 50; max-height: 440px; overflow: hidden;
-  display: flex; flex-direction: column;
+  overflow: hidden; display: flex; flex-direction: column;
 }
 .mp-search { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
 .mp-search input {
@@ -395,15 +436,13 @@ function closeOnBlur(e: FocusEvent) {
 .mp-status { padding: 16px; color: var(--muted); font-size: 0.9em; text-align: center; }
 .mp-err { color: var(--danger); }
 
-.mp-families { overflow-y: auto; flex: 1; padding: 4px 0; }
-.mp-family { padding: 6px 8px; }
-.mp-family + .mp-family { border-top: 1px solid var(--border); }
-.mp-family-title {
-  display: flex; justify-content: space-between; align-items: baseline;
+.mp-scroll { overflow-y: auto; flex: 1; padding: 4px 0; }
+.mp-section { padding: 6px 8px; }
+.mp-section + .mp-section { border-top: 1px solid var(--border); }
+.mp-section-title {
   font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--muted); padding: 4px 6px;
+  color: var(--muted); padding: 4px 6px 6px;
 }
-.mp-vendor { font-size: 0.9em; opacity: 0.7; }
 
 .mp-versions { display: flex; flex-direction: column; gap: 2px; }
 .mp-version {
@@ -416,7 +455,10 @@ function closeOnBlur(e: FocusEvent) {
 .mp-version.chosen { background: rgba(96, 165, 250, 0.20); color: var(--accent); }
 .mp-star { color: var(--warning); font-size: 0.9em; width: 1em; }
 .mp-name { flex: 1; }
-.mp-pcount { color: var(--muted); font-size: 0.82em; }
+.mp-pcount, .mp-pill { color: var(--muted); font-size: 0.82em; }
+.mp-pill {
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 6px;
+}
 
 .mp-unmapped {
   padding: 6px 12px; border-top: 1px solid var(--border);

@@ -261,6 +261,14 @@ func main() {
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
+
+		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool()); err != nil {
+			slog.Warn("provider catalog seed failed", "error", err)
+		} else if created > 0 {
+			slog.Info("seeded providers from catalog", "created", created)
+		}
+		seedCancel()
 	}
 
 	// ── Background Services ─────────────────────────────────────────────

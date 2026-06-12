@@ -615,7 +615,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		dl.ResolvedRawModel = strPtr(result.Candidate.RawModel)
 		dl.ResolutionRawModels = []string{result.Candidate.RawModel}
 	}
-	h.telemetryClient.EmitDecisionLog(dl)
 
 	var requestBodyText *string
 	if len(requestBody) > 0 {
@@ -831,6 +830,22 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			reqLog.CostCurrency = &curr
 		}
 	}
+
+	dl.PromptTokens = reqLog.PromptTokens
+	dl.CompletionTokens = reqLog.CompletionTokens
+	dl.CostUSD = reqLog.CostUSD
+	if len(requestBody) > 0 {
+		rb := len(requestBody)
+		dl.RequestBytes = &rb
+	}
+	if len(responseBody) > 0 {
+		rsb := len(responseBody)
+		dl.ResponseBytes = &rsb
+	}
+	if result.Trace != nil && len(result.Trace.PlannedCandidates) > 0 {
+		dl.CandidatesTried = len(result.Trace.PlannedCandidates)
+	}
+	h.telemetryClient.EmitDecisionLog(dl)
 
 	h.telemetryClient.EmitRequestLog(reqLog)
 	if h.requestLogHook != nil {
