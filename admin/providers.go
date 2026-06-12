@@ -647,7 +647,10 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 	created := make([]createdProvider, 0)
 
 	rows, err := h.db.Query(ctx, `
-		INSERT INTO providers (tenant_id, code, display_name, catalog_code, protocol, base_url, enabled)
+		INSERT INTO providers (
+			tenant_id, code, display_name, catalog_code, protocol, base_url,
+			kind, category, domestic, egress_profile, enabled
+		)
 		SELECT
 			'default',
 			pc.code,
@@ -655,9 +658,14 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 			pc.code,
 			COALESCE(pc.protocol, 'openai-completions'),
 			COALESCE(pc.base_url_template, ''),
+			COALESCE(pc.kind, 'cloud'),
+			COALESCE(pc.category, 'official'),
+			COALESCE(pc.domestic, TRUE),
+			COALESCE(pc.default_egress_profile, 'direct'),
 			TRUE
 		FROM provider_catalog pc
-		WHERE NOT EXISTS (
+		WHERE pc.hidden IS NOT TRUE
+		  AND NOT EXISTS (
 			SELECT 1 FROM providers p
 			WHERE p.tenant_id = 'default' AND p.catalog_code = pc.code
 		)
@@ -687,6 +695,42 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 		"total":    total,
 		"providers": created,
 	})
+}
+
+// SeedProvidersFromCatalog creates provider rows for every catalog entry that
+// does not yet exist. Safe to call on every startup (idempotent).
+func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+	tag, err := db.Exec(ctx, `
+		INSERT INTO providers (
+			tenant_id, code, display_name, catalog_code, protocol, base_url,
+			kind, category, domestic, egress_profile, enabled
+		)
+		SELECT
+			'default',
+			pc.code,
+			pc.display_name,
+			pc.code,
+			COALESCE(pc.protocol, 'openai-completions'),
+			COALESCE(pc.base_url_template, ''),
+			COALESCE(pc.kind, 'cloud'),
+			COALESCE(pc.category, 'official'),
+			COALESCE(pc.domestic, TRUE),
+			COALESCE(pc.default_egress_profile, 'direct'),
+			TRUE
+		FROM provider_catalog pc
+		WHERE pc.hidden IS NOT TRUE
+		  AND NOT EXISTS (
+			SELECT 1 FROM providers p
+			WHERE p.tenant_id = 'default' AND p.catalog_code = pc.code
+		)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Request, providerID int, credPath string) {
