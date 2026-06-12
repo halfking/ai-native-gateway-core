@@ -256,7 +256,6 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.status = 'active'
-		  AND c.is_deleted = FALSE
 		  AND c.trust_level NOT IN ('quarantine')
 		  AND p.enabled = TRUE
 	`)
