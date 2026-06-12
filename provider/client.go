@@ -488,6 +488,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			&cand.CacheReadPricePer1M,
 			&cand.CacheWritePricePer1M,
 			&cand.Routable,
+			&cand.BlockReason,
 			&cand.SupportsPromptCache,
 			&cand.CacheMode,
 			&cand.ManualPriority,
