@@ -81,9 +81,10 @@ var contextLengthCJKRe = regexp.MustCompile(
 )
 
 var modelNotFoundRe = regexp.MustCompile(
-	`(?i)(model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|`+
-		`(no such|unknown) model|`+
-		`endpoint.{0,40}(does not exist|not found)|`+
+	`(?i)(404 page not found|` +
+		`model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|` +
+		`(no such|unknown) model|` +
+		`endpoint.{0,40}(does not exist|not found)|` +
 		`model.{0,40}(deprecated|retired|sunset))`,
 )
 var modelNotFoundCJKRe = regexp.MustCompile(

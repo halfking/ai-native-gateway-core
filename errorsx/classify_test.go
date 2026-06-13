@@ -187,6 +187,12 @@ func TestClassifyError_EOFWithoutDoneIsStreamTimeout(t *testing.T) {
 	}
 }
 
+func TestClassifyResponseBody_ModelNotFoundGo404(t *testing.T) {
+	if got := ClassifyResponseBody([]byte("404 page not found")); got != KindModelNotFound {
+		t.Fatalf("expected KindModelNotFound for Go default 404 body, got %q", got)
+	}
+}
+
 func TestClassifyResponseBody_ConcurrentOverload(t *testing.T) {
 	tests := []struct {
 		body string
