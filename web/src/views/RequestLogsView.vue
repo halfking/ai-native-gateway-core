@@ -23,7 +23,6 @@ const hours = ref(24)
 const successFilter = ref<'' | 'success' | 'failure'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
-const modelNameFilter = ref('')
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -49,7 +48,7 @@ function timeRange() {
 }
 
 function onModelFilterChange(name: string | string[]) {
-  modelNameFilter.value = typeof name === 'string' ? name.trim() : ''
+  modelFilter.value = typeof name === 'string' ? name.trim() : ''
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -82,7 +81,7 @@ async function load() {
       q: keyword.value.trim() || undefined,
       success: successParam,
       error_kind: errorKindFilter.value.trim() || undefined,
-      model: modelNameFilter.value || undefined,
+      model: modelFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       page: page.value,
       page_size: pageSize.value,
