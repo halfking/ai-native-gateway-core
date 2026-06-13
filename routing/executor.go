@@ -30,6 +30,14 @@ const MinimaxM3ContextWindow = 512_000
 
 const maxBodySize = 32 << 20
 
+// providerResolver is the subset of *provider.Client the routing executor
+// depends on. Defined as an interface so compaction tests can swap in a
+// stub without booting the DB pool.
+type providerResolver interface {
+	Enabled() bool
+	GetCandidates(ctx context.Context, model, profile string) ([]provider.Candidate, *provider.Policy, error)
+}
+
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
 
 type StreamOutcome = struct {
@@ -102,7 +110,12 @@ type Executor struct {
 	NormalizeOpenAITools NormalizeOpenAIToolsFunc
 	Auditor       audit.Sink
 	State         *credentialstate.Writer
-	Provider      *provider.Client
+	// Provider is the credential/candidate resolver. Typed as an interface
+	// (defined in routing) so the compaction fallback tests can inject a
+	// stub without standing up a real pgx pool. The concrete
+	// *provider.Client satisfies the interface, so production wiring
+	// is unchanged.
+	Provider      providerResolver
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
 	FpSlots          *credentialfpslot.Manager

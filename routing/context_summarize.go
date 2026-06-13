@@ -59,17 +59,25 @@ func compactionDisabled() bool {
 	return v == "1" || v == "true" || v == "yes"
 }
 
-func (e *Executor) pickCompactionCandidate(ctx context.Context, profile string) (*provider.Candidate, error) {
+// pickCompactionCandidates returns every viable compaction candidate in
+// env-preference order (cost / affinity). Used by tryLLMContextCompaction to
+// build the fallback chain: model1+credA → model1+credB → model2+credA → ...
+//
+// Lower index = preferred. The caller walks the slice in order, calling
+// invokeCompactionSummarize on each, and stops on the first success.
+func (e *Executor) pickCompactionCandidates(ctx context.Context, profile string) []provider.Candidate {
 	if e.Provider == nil || !e.Provider.Enabled() {
-		return nil, fmt.Errorf("provider client unavailable")
+		return nil
 	}
 	minWindow := defaultCompactionMinWindow
+	var out []provider.Candidate
 	for _, model := range compactionModelsFromEnv() {
 		cands, _, err := e.Provider.GetCandidates(ctx, model, profile)
 		if err != nil {
 			slog.Debug("compaction: resolve candidates failed", "model", model, "error", err)
 			continue
 		}
+		added := 0
 		for i := range cands {
 			c := &cands[i]
 			if !c.IsAvailable() {
@@ -78,15 +86,24 @@ func (e *Executor) pickCompactionCandidate(ctx context.Context, profile string) 
 			if c.ContextWindow != nil && *c.ContextWindow < minWindow {
 				continue
 			}
-			return c, nil
+			out = append(out, *c)
+			added++
+		}
+		if added == 0 {
+			slog.Debug("compaction: no available candidates for model", "model", model)
 		}
 	}
-	return nil, fmt.Errorf("no compaction model available")
+	return out
 }
 
 // tryLLMContextCompaction summarizes oversized history using a large-context
 // model, then rebuilds the client wire body with [summary + recent tail].
 // Returns the new source body and true when compaction succeeded.
+//
+// Falls back across the env-configured compaction model list (and across
+// credentials within a model) so a single down/saturated credential does
+// not abort recovery. The caller sees ctxLenGiveUp only when the entire
+// chain has been exhausted.
 func (e *Executor) tryLLMContextCompaction(
 	ctx context.Context,
 	params *ExecParams,
@@ -102,12 +119,6 @@ func (e *Executor) tryLLMContextCompaction(
 
 	profile := params.ClientID.Fingerprint.ClientProfile
 
-	compactCand, err := e.pickCompactionCandidate(ctx, profile)
-	if err != nil {
-		slog.Warn("compaction: no candidate", "target_model", targetCand.RawModel, "error", err)
-		return sourceBody, false
-	}
-
 	conversation, err := extractConversationText(sourceBody, params.ClientProtocol)
 	if err != nil || strings.TrimSpace(conversation) == "" {
 		slog.Warn("compaction: extract conversation failed", "error", err)
@@ -117,17 +128,58 @@ func (e *Executor) tryLLMContextCompaction(
 	// Keep summarize input under ~900k tokens (heuristic) so 1M models fit.
 	conversation = trimTextToTokenBudget(conversation, 900_000)
 
-	summary, err := e.invokeCompactionSummarize(ctx, params, *compactCand, conversation)
-	if err != nil {
-		slog.Warn("compaction: summarize call failed",
-			"compact_model", compactCand.RawModel,
+	candidates := e.pickCompactionCandidates(ctx, profile)
+	if len(candidates) == 0 {
+		slog.Warn("compaction: no candidate",
 			"target_model", targetCand.RawModel,
-			"error", err,
+			"configured_models", compactionModelsFromEnv(),
 		)
 		return sourceBody, false
 	}
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
+
+	// Walk the fallback chain: model1+credA → model1+credB → model2+credA → ...
+	// Stop on the first summarize success. Per-attempt errors are logged at
+	// WARN with attempt index so the operator can see how far the chain got.
+	var (
+		summary    string
+		usedCand   *provider.Candidate
+		triedCount int
+	)
+	for i := range candidates {
+		cand := candidates[i]
+		triedCount++
+		s, sErr := e.invokeCompactionSummarize(ctx, params, cand, conversation)
+		if sErr != nil {
+			slog.Warn("compaction: summarize call failed, trying next",
+				"attempt", triedCount,
+				"of", len(candidates),
+				"compact_model", cand.RawModel,
+				"compact_credential_id", cand.CredentialID,
+				"target_model", targetCand.RawModel,
+				"error", sErr,
+			)
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			slog.Warn("compaction: empty summary returned, trying next",
+				"attempt", triedCount,
+				"of", len(candidates),
+				"compact_model", cand.RawModel,
+				"compact_credential_id", cand.CredentialID,
+			)
+			continue
+		}
+		summary = s
+		usedCand = &candidates[i]
+		break
+	}
+	if usedCand == nil {
+		slog.Warn("compaction: all candidates exhausted",
+			"target_model", targetCand.RawModel,
+			"tried", triedCount,
+			"of", len(candidates),
+		)
 		return sourceBody, false
 	}
 
@@ -144,8 +196,10 @@ func (e *Executor) tryLLMContextCompaction(
 	}
 
 	slog.Info("compaction: llm summary applied",
-		"compact_model", compactCand.RawModel,
-		"compact_credential_id", compactCand.CredentialID,
+		"compact_model", usedCand.RawModel,
+		"compact_credential_id", usedCand.CredentialID,
+		"attempt", triedCount,
+		"of", len(candidates),
 		"target_model", targetCand.RawModel,
 		"target_credential_id", targetCand.CredentialID,
 		"source_bytes_before", len(sourceBody),
