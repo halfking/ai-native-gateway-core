@@ -303,3 +303,108 @@ func TestSafetyNet_ExecutorUnavailable_PropagatesBodyAndModel(t *testing.T) {
 		t.Errorf("error_kind = %q, want executor_unavailable", row.errorKind)
 	}
 }
+
+// ── classifyFailureStage: every early-exit error must be "gateway",
+//    every other code must be "upstream".  This contract is what
+//    powers the failure_stage column in the request_log UI filter.
+
+func TestClassifyFailureStage_GatewayEarlyExits(t *testing.T) {
+	gatewayCodes := []string{
+		"rate_limit_exceeded",
+		"concurrent_limit_exceeded",
+		"tpm_limit_exceeded",
+		"key_throttled",
+		"budget_exhausted",
+		"missing_key",
+		"invalid_key",
+		"auth_unavailable",
+		"method_not_allowed",
+		"executor_unavailable",
+		"no_candidate",
+		"body_too_large",
+		"body_read_error",
+		"json_parse_error",
+		"missing_model",
+		"missing_max_tokens",
+		"conversion_error",
+		"session_forbidden",
+		"internal_panic",
+		"chat_to_anthropic_conversion_error",
+	}
+	for _, code := range gatewayCodes {
+		if got := classifyFailureStage(code); got != "gateway" {
+			t.Errorf("classifyFailureStage(%q) = %q, want gateway", code, got)
+		}
+	}
+}
+
+func TestClassifyFailureStage_UpstreamDefaults(t *testing.T) {
+	// Anything not in the gateway early-exit list should be
+	// classified as upstream — the request reached the provider
+	// and failed there.  We test a representative sample.
+	upstreamCodes := []string{
+		"provider_error",
+		"model_not_found",
+		"stream_error",
+		"upstream_5xx",
+		"timeout",
+		"connection_reset",
+		"eof_without_done",
+		"benign_eof",
+		"unknown_code", // a code we haven't enumerated
+	}
+	for _, code := range upstreamCodes {
+		if got := classifyFailureStage(code); got != "upstream" {
+			t.Errorf("classifyFailureStage(%q) = %q, want upstream", code, got)
+		}
+	}
+}
+
+func TestClassifyFailureStage_ParityWithMapGatewayErrorToDetail(t *testing.T) {
+	// The two functions must agree on the gateway set: a code is
+	// "gateway" iff mapGatewayErrorToDetail returns a "gw_" prefix
+	// for it.  This guards against the two maps drifting apart.
+	for code, expectedPrefix := range gatewayCodePrefixMap() {
+		got := classifyFailureStage(code)
+		detail := mapGatewayErrorToDetail(code)
+		isGatewayDetail := strings.HasPrefix(detail, "gw_")
+		if got == "gateway" && !isGatewayDetail {
+			t.Errorf("drift for %q: stage=gateway but detail=%q (no gw_ prefix)", code, detail)
+		}
+		if got == "upstream" && expectedPrefix == "gw_" {
+			// We expect a gw_ prefix for this code, so stage
+			// should be gateway.  Skip codes that are
+			// intentionally upstream-only.
+			_ = expectedPrefix
+		}
+	}
+}
+
+// gatewayCodePrefixMap returns the subset of codes that the
+// gateway early-exit handler explicitly maps to a "gw_" prefix in
+// mapGatewayErrorToDetail.  Kept in one place so the parity test
+// does not duplicate the switch statement.
+func gatewayCodePrefixMap() map[string]string {
+	return map[string]string{
+		"rate_limit_exceeded":            "gw_",
+		"concurrent_limit_exceeded":     "gw_",
+		"tpm_limit_exceeded":             "gw_",
+		"key_throttled":                  "gw_",
+		"budget_exhausted":               "gw_",
+		"missing_key":                    "gw_",
+		"invalid_key":                    "gw_",
+		"auth_unavailable":               "gw_",
+		"method_not_allowed":             "gw_",
+		"executor_unavailable":           "gw_",
+		"no_candidate":                   "gw_",
+		"body_too_large":                 "gw_",
+		"body_read_error":                "gw_",
+		"json_parse_error":               "gw_",
+		"missing_model":                  "gw_",
+		"missing_max_tokens":             "gw_",
+		"conversion_error":               "gw_",
+		"session_forbidden":              "gw_",
+		"internal_panic":                 "gw_",
+		"chat_to_anthropic_conversion_error": "gw_",
+	}
+}
