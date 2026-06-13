@@ -176,7 +176,9 @@ async function loadDetail() {
     const [usage, models, trend] = await Promise.all([
       getKeyUsage(keyId.value, params),
       getKeyUsageByModel(keyId.value, { ...params, limit: 50 }),
-      getKeyUsageTrend(keyId.value, trendPeriod.value, useCustomRange.value ? 365 : selectedPeriod.value.days),
+      getKeyUsageTrend(keyId.value, trendPeriod.value, useCustomRange.value && customStart.value && customEnd.value
+        ? { start: customStart.value, end: customEnd.value }
+        : { days: selectedPeriod.value.days }),
     ])
 
     keyUsage.value = usage

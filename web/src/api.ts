@@ -1002,8 +1002,16 @@ export function getKeyUsageByModel(keyId: number, params: { days?: number; start
   return req<ModelUsageForKey[]>('GET', `/api/usage/${keyId}/models${s ? '?' + s : ''}`)
 }
 
-export function getKeyUsageTrend(keyId: number, period: 'day' | 'week' | 'month' = 'day', days = 30) {
-  return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?period=${period}&days=${days}`)
+export function getKeyUsageTrend(keyId: number, period: 'day' | 'week' | 'month' = 'day', opts: { days?: number; start?: string; end?: string } = {}) {
+  const qs = new URLSearchParams()
+  qs.set('period', period)
+  if (opts.start && opts.end) {
+    qs.set('start', opts.start)
+    qs.set('end', opts.end)
+  } else {
+    qs.set('days', String(opts.days ?? 30))
+  }
+  return req<TrendEntry[]>('GET', `/api/usage/${keyId}/trend?${qs.toString()}`)
 }
 
 // ── Routing ──────────────────────────────────────────────────────────────
