@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -134,28 +135,17 @@ func (e *Executor) executeOpenAI(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
-	bodyBytes := prepareRequestBody(params, cand)
+	sourceBody := append([]byte(nil), params.BodyBytes...)
+	bodyBytes, err := e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+	if err != nil {
+		return nil, err
+	}
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
-		outboundModel = cand.RawModel
+		outboundModel = modelname.StandardizeName(cand.RawModel)
 	}
 
-	if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
-		profileName := ""
-		if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
-			profileName = params.Transform.DisguiseProfileID
-		} else if params.ClientID.Fingerprint.ClientProfile != "" {
-			profileName = params.ClientID.Fingerprint.ClientProfile
-		}
-		if profileName != "" {
-			bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
-			slog.Debug("disguise layer applied", "profile", profileName)
-		}
-	}
-
-	if params.SessionKey != "" && cand.SupportsPromptCache {
-		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
-	}
+	contextCompactionRetried := false
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -344,21 +334,34 @@ func (e *Executor) executeOpenAI(
 					// Q4 (anthropic-messages passthrough) is skipped: the
 					// body bytes are owned by the Q4 streaming writer and
 					// mid-stream rewriting would break the byte contract.
-					if errorsx.IsContextLength(errKind) && attempt == 0 &&
+					if errorsx.IsContextLength(errKind) && !contextCompactionRetried &&
 						cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-						slog.Info("context_length 4xx → client-side trim retry",
-							"credential_id", cand.CredentialID,
-							"model", cand.RawModel,
-							"context_window", *cand.ContextWindow,
-							"status", resp.StatusCode,
+						contextCompactionRetried = true
+						mechanicalFn := func(b []byte) []byte {
+							if params.ClientProtocol == "anthropic-messages" {
+								return transform.CompressAnthropicMessagesIfNeeded(b, *cand.ContextWindow)
+							}
+							return transform.CompressMessagesIfNeeded(b, *cand.ContextWindow)
+						}
+						newSource, progressed := e.applyMechanicalThenLLMCompaction(
+							params.R.Context(), params, cand, sourceBody, mechanicalFn,
 						)
-						trimmed := transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-						if len(trimmed) < len(bodyBytes) {
-							bodyBytes = trimmed
+						if progressed {
+							sourceBody = newSource
+							slog.Info("context_length 4xx → openai compaction retry",
+								"credential_id", cand.CredentialID,
+								"model", cand.RawModel,
+								"context_window", *cand.ContextWindow,
+								"status", resp.StatusCode,
+								"source_bytes", len(sourceBody),
+							)
+							bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+							if err != nil {
+								return nil, err
+							}
 							return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
 						}
-						// Trim made no progress (already minimal) — fall
-						// through to the 4xx bubble-up.
+						// Mechanical trim + LLM compaction made no progress — fall through to 4xx bubble-up.
 					}
 					for k, vs := range resp.Header {
 						for _, v := range vs {
@@ -505,6 +508,42 @@ func (e *Executor) executeOpenAI(
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
 }
 
+// finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
+// transforms (Q2 anthropic→openai conversion, disguise, prompt-cache injection).
+func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	p := *params
+	p.BodyBytes = sourceBody
+	bodyBytes := prepareRequestBody(&p, cand)
+	if e.NormalizeOpenAITools != nil {
+		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
+	}
+	if params.ClientProtocol == "anthropic-messages" {
+		if e.AnthropicToOpenAI != nil {
+			converted, err := e.AnthropicToOpenAI(bodyBytes)
+			if err != nil {
+				return nil, fmt.Errorf("convert anthropic body to openai: %w", err)
+			}
+			bodyBytes = converted
+		}
+	}
+	if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
+		profileName := ""
+		if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
+			profileName = params.Transform.DisguiseProfileID
+		} else if params.ClientID.Fingerprint.ClientProfile != "" {
+			profileName = params.ClientID.Fingerprint.ClientProfile
+		}
+		if profileName != "" {
+			bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
+			slog.Debug("disguise layer applied", "profile", profileName)
+		}
+	}
+	if params.SessionKey != "" && cand.SupportsPromptCache {
+		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
+	}
+	return bodyBytes, nil
+}
+
 // prepareRequestBody builds the upstream request body from params and cand.
 //
 // It performs the protocol-aware transformations that happen BEFORE the
@@ -518,7 +557,7 @@ func (e *Executor) executeOpenAI(
 func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
-		outboundModel = cand.RawModel
+		outboundModel = modelname.StandardizeName(cand.RawModel)
 	}
 
 	bodyBytes := params.BodyBytes
@@ -547,14 +586,11 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	}
 	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
 	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
-	// Client-side context window enforcement. Q4 (anthropic-messages
-	// passthrough) is intentionally skipped — see transform/ctx_compress.go
-	// for the rationale (byte-level passthrough contract). For Q1/Q2/Q3
-	// (openai protocol) we drop the oldest non-system messages until the
-	// estimated prompt tokens fit under context_window * 0.85. This is the
-	// counterpart to minimax's server-side sliding-window trim: when a
-	// client (Cursor/RooCode/opencode) is on the proxy path, the upstream
-	// no longer trims for us, so we have to do it ourselves.
+	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
+	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
+	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
+	// upstreams like minimax trim server-side on direct calls, but proxy
+	// clients must trim at the gateway.
 	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
 		bodyBytes = transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
 	}

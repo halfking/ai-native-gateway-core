@@ -48,18 +48,12 @@ func TestChatSelectUpstreamBodyBytes_AlwaysPassthrough(t *testing.T) {
 	}
 }
 
-// TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream is the
-// integration-style assertion: a fake upstream records the body it
-// received, and we verify the body was already in Anthropic shape
-// (system at top-level, no chat-style "messages" with role:system).
+// TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream verifies
+// that the per-candidate conversion (via ConvertChatRequestToAnthropic)
+// produces a valid Anthropic-format body when the client sends OpenAI
+// shape. This tests the conversion function directly — the handler now
+// passes raw bytes and the executor calls the callback per-candidate.
 func TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream(t *testing.T) {
-	upstreamBody := []byte(`{
-        "id":"msg_1","type":"message","role":"assistant","model":"MiniMax-M2.7",
-        "content":[{"type":"text","text":"hello"}],
-        "usage":{"input_tokens":2,"output_tokens":1},
-        "stop_reason":"end_turn"
-    }`)
-
 	bodyBytes := []byte(`{
         "model":"MiniMax-M2.7","max_tokens":256,
         "messages":[
@@ -68,10 +62,9 @@ func TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream(t *testing.T) 
         ]
     }`)
 
-	cands := []provider.Candidate{{Protocol: "anthropic-messages"}}
-	converted, err := selectChatUpstreamBodyBytes(cands, bodyBytes)
+	converted, err := ConvertChatRequestToAnthropic(bodyBytes)
 	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
+		t.Fatalf("ConvertChatRequestToAnthropic: %v", err)
 	}
 
 	var got map[string]any
@@ -88,7 +81,6 @@ func TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream(t *testing.T) 
 			t.Errorf("role:system must not appear in Anthropic messages[]; got %v", mm)
 		}
 	}
-	_ = upstreamBody
 }
 
 // TestExtractBearerToken_Bearer covers the primary path: Anthropic-style

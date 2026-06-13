@@ -15,8 +15,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -200,6 +202,51 @@ func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) Str
 	return StreamOutcome{}
 }
 
+// prepareAnthropicRequestBody applies client-side context trimming on the
+// client's native wire format, then optionally converts OpenAI chat bodies
+// to Anthropic Messages (Q3) and substitutes the outbound model name.
+//
+// Minimax and other anthropic-messages upstreams perform server-side sliding-
+// window trim on direct calls; when traffic goes through the gateway we must
+// trim here so proxy clients (OpenCode/Cursor/RooCode) behave like direct API
+// users.
+func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	bodyBytes := append([]byte(nil), sourceBody...)
+
+	if cand.ContextWindow != nil {
+		if params.ClientProtocol == "anthropic-messages" {
+			bodyBytes = transform.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		} else {
+			bodyBytes = transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		}
+	}
+
+	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
+	if params.ClientProtocol != "anthropic-messages" && params.ClientProtocol != "" {
+		if e.ChatToAnthropic != nil {
+			converted, err := e.ChatToAnthropic(bodyBytes)
+			if err != nil {
+				return nil, fmt.Errorf("convert chat body to anthropic: %w", err)
+			}
+			bodyBytes = converted
+		}
+	}
+
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = modelname.StandardizeName(cand.RawModel)
+	}
+	if outboundModel != params.ClientModel {
+		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
+	}
+	// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
+	// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
+	if e.SanitizeAnthropicTools != nil {
+		bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
+	}
+	return bodyBytes, nil
+}
+
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
 // the Executor. It wires the AnthropicExecutor protocol handler into
 // the common pool / circuit / credential-state machinery and drives
@@ -224,14 +271,15 @@ func (e *Executor) executeAnthropic(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = cand.RawModel
+	sourceBody := append([]byte(nil), params.BodyBytes...)
+	bodyBytes, err := e.prepareAnthropicRequestBody(params, cand, sourceBody)
+	if err != nil {
+		return nil, err
 	}
 
-	bodyBytes := params.BodyBytes
-	if outboundModel != params.ClientModel {
-		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = modelname.StandardizeName(cand.RawModel)
 	}
 
 	ae := &AnthropicExecutor{
@@ -259,6 +307,8 @@ func (e *Executor) executeAnthropic(
 		}
 	}
 
+	contextTrimRetried := false
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
@@ -272,6 +322,44 @@ func (e *Executor) executeAnthropic(
 		result, tryErr := e.executeAnthropicOnce(params, cand, ae, bodyBytes, outboundModel, tTotal, fpLease)
 		if tryErr == nil {
 			return result, nil
+		}
+		if cle, ok := tryErr.(*contextLengthHTTPError); ok && !contextTrimRetried && cand.ContextWindow != nil {
+			contextTrimRetried = true
+			mechanicalFn := func(b []byte) []byte {
+				if params.ClientProtocol == "anthropic-messages" {
+					return transform.CompressAnthropicMessagesIfNeeded(b, *cand.ContextWindow)
+				}
+				return transform.CompressMessagesIfNeeded(b, *cand.ContextWindow)
+			}
+			newSource, progressed := e.applyMechanicalThenLLMCompaction(
+				params.R.Context(), params, cand, sourceBody, mechanicalFn,
+			)
+			if progressed {
+				sourceBody = newSource
+				slog.Info("context_length 4xx → anthropic compaction retry",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"context_window", *cand.ContextWindow,
+					"status", cle.status,
+					"source_bytes", len(sourceBody),
+				)
+				bodyBytes, err = e.prepareAnthropicRequestBody(params, cand, sourceBody)
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
+			// Mechanical trim + LLM compaction made no progress — bubble the original 4xx up.
+			for k, vs := range cle.headers {
+				for _, v := range vs {
+					params.W.Header().Add(k, v)
+				}
+			}
+			params.W.WriteHeader(cle.status)
+			if len(cle.body) > 0 {
+				params.W.Write(cle.body)
+			}
+			return nil, fmt.Errorf("upstream %d", cle.status)
 		}
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
@@ -401,6 +489,13 @@ func (e *Executor) executeAnthropicOnce(
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 		}
 		if !errorsx.IsRetryable(errKind) {
+			if errorsx.IsContextLength(errKind) {
+				return nil, &contextLengthHTTPError{
+					status:  resp.StatusCode,
+					body:    append([]byte(nil), body[:n]...),
+					headers: resp.Header.Clone(),
+				}
+			}
 			for k, vs := range resp.Header {
 				for _, v := range vs {
 					params.W.Header().Add(k, v)

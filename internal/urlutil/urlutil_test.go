@@ -14,10 +14,10 @@ func TestModelsURL(t *testing.T) {
 		{"vapeur /v1", "https://api.vapeur.ai/v1", "https://api.vapeur.ai/v1/models"},
 		{"evol /v1 with proxy prefix", "https://mg-new.evolai.cn/openclaw-proxy/v1", "https://mg-new.evolai.cn/openclaw-proxy/v1/models"},
 
-		// Mid-path /v3, /v4 must be preserved, trailing /v3 stripped, then /v1/models appended.
-		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/coding/paas/v1/models"},
-		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v1/models"},
-		{"volcano-coding mid /v3", "https://ark.cn-beijing.volces.com/api/coding/v3", "https://ark.cn-beijing.volces.com/api/coding/v1/models"},
+		// Mid-path /v3, /v4 preserved (provider uses its own version).
+		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/coding/paas/v4/models"},
+		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/models"},
+		{"volcano-coding mid /v3", "https://ark.cn-beijing.volces.com/api/coding/v3", "https://ark.cn-beijing.volces.com/api/coding/v3/models"},
 
 		// /v1beta is NOT a digits-only version → must be preserved as part of the path.
 		{"gemini /v1beta mid", "https://generativelanguage.googleapis.com/v1beta/openai", "https://generativelanguage.googleapis.com/v1beta/openai/v1/models"},
@@ -40,9 +40,9 @@ func TestModelsURL(t *testing.T) {
 		{"local ollama /v1", "http://{host}:{port}/v1", "http://{host}:{port}/v1/models"},
 		{"local ollama no /v1", "http://{host}:{port}", "http://{host}:{port}/v1/models"},
 
-		// v2-v9.
-		{"v2 trailing", "https://api.example.com/v2", "https://api.example.com/v1/models"},
-		{"v9 trailing", "https://api.example.com/v9", "https://api.example.com/v1/models"},
+		// v2-v9 — version preserved.
+		{"v2 trailing", "https://api.example.com/v2", "https://api.example.com/v2/models"},
+		{"v9 trailing", "https://api.example.com/v9", "https://api.example.com/v9/models"},
 
 		// Empty.
 		{"empty", "", ""},
@@ -62,7 +62,7 @@ func TestChatCompletionsURL(t *testing.T) {
 	}{
 		{"xiaomi /v1", "https://token-plan-cn.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"},
 		{"openai no /vN", "https://api.openai.com", "https://api.openai.com/v1/chat/completions"},
-		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v1/chat/completions"},
+		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
 		{"empty", "", ""},
 	}
 	for _, tc := range cases {

@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -163,5 +164,59 @@ func TestExecutor_DispatchesAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"id":"msg_1"`) {
 		t.Errorf("client body should contain Anthropic message; got: %s", rec.Body.String())
+	}
+}
+
+func TestPrepareAnthropicRequestBody_CompressesOpenAIClient(t *testing.T) {
+	ctxWin := 50
+	long := strings.Repeat("a", 200)
+	openaiBody := []byte(`{"model":"minimax-m3","messages":[
+		{"role":"system","content":"sys"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"latest"}
+	]}`)
+
+	e := &Executor{
+		ChatToAnthropic: func(body []byte) ([]byte, error) {
+			var req struct {
+				Model    string            `json:"model"`
+				Messages []json.RawMessage `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				return nil, err
+			}
+			out, err := json.Marshal(map[string]any{
+				"model":      req.Model,
+				"max_tokens": 256,
+				"messages":   req.Messages,
+			})
+			return out, err
+		},
+	}
+
+	var before struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	_ = json.Unmarshal(openaiBody, &before)
+
+	out, err := e.prepareAnthropicRequestBody(&ExecParams{
+		ClientProtocol: "openai-completions",
+		ClientModel:    "minimax-m3",
+	}, provider.Candidate{ContextWindow: &ctxWin}, openaiBody)
+	if err != nil {
+		t.Fatalf("prepareAnthropicRequestBody: %v", err)
+	}
+
+	var anthropic struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &anthropic); err != nil {
+		t.Fatalf("output not JSON: %v", err)
+	}
+	if len(anthropic.Messages) >= len(before.Messages) {
+		t.Fatalf("expected trimmed anthropic messages; before=%d after=%d", len(before.Messages), len(anthropic.Messages))
 	}
 }

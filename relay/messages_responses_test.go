@@ -225,14 +225,13 @@ func TestConvertAnthropicMessage_ToolResult(t *testing.T) {
 }
 
 func TestMessagesToChatBody_System(t *testing.T) {
-	h := &MessagesHandler{}
 	req := &messagesRequestBody{
 		Model:     "claude-3",
 		MaxTokens: 1024,
 		System:    "You are helpful",
 		Messages: json.RawMessage(`[{"role":"user","content":"Hi"}]`),
 	}
-	chatBody := h.convertToChatBody(req)
+	chatBody := convertToChatBody(req)
 	msgs, ok := chatBody["messages"].([]any)
 	if !ok || len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %v", chatBody["messages"])

@@ -559,6 +559,7 @@ func (h *ChatHandler) serveWithExecutor(
 		R:             r,
 		BodyBytes:     upstreamBody,
 		IsStream:      isStream,
+		ClientProtocol: "openai-completions",
 		ClientModel:   clientModel,
 		OutboundModel: explicitOutbound,
 		ClientID:      clientID,
@@ -1246,31 +1247,12 @@ func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
 	return buf.Bytes()
 }
 
-// selectChatUpstreamBodyBytes is the Q1 vs Q3 dispatch for /v1/chat/completions.
-//
-// Q3 (openai→anthropic, e.g. minimax's /anthropic compatible
-// endpoint, or any future provider whose protocol field is set to
-// "anthropic-messages"): the OpenAI Chat body is converted to the
-// Anthropic Messages shape before being forwarded. The conversion
-// itself lives in ConvertChatRequestToAnthropic (relay/chat_to_anthropic.go)
-// and is responsible for:
-//   - moving role:system to a top-level "system" field
-//   - renaming "stop" → "stop_sequences"
-//   - rewriting function-style tools into Anthropic tool blocks
-//   - collapsing tool_calls/tool role messages into tool_use/tool_result
-//
-// Q1 (openai→openai-completions / openai-responses / unknown
-// protocol): the original body bytes are forwarded unchanged.
-//
-// Behavior matrix:
-//   - candidates[0].Protocol == "anthropic-messages" → converted body
-//   - any other protocol (or empty) → original body
-//   - len(candidates) == 0 → original body (defensive; GetCandidates
-//     already returned 503 in that case)
+// selectChatUpstreamBodyBytes is kept for backward compatibility but
+// now always returns originalBody unchanged. The Q1/Q3 dispatch has
+// moved into the executor (per-candidate) to avoid the candidates[0]
+// mismatch bug where the body format didn't match the candidate the
+// executor actually routed to.
 func selectChatUpstreamBodyBytes(candidates []provider.Candidate, originalBody []byte) ([]byte, error) {
-	if len(candidates) > 0 && candidates[0].Protocol == "anthropic-messages" {
-		return ConvertChatRequestToAnthropic(originalBody)
-	}
 	return originalBody, nil
 }
 
