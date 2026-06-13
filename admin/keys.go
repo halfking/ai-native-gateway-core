@@ -79,6 +79,42 @@ func findActiveKeyConflict(ctx context.Context, db keyConflictQuerier, appID int
 	return &c, nil
 }
 
+const defaultApplicationTenant = "default"
+
+// getOrCreateApplication returns the applications.id for (code, default tenant),
+// auto-inserting a row when absent — mirrors Python _get_or_create_app().
+func (h *Handler) getOrCreateApplication(ctx context.Context, code, ownerUser string) (int, error) {
+	if code == "" {
+		code = "default"
+	}
+	if ownerUser == "" {
+		ownerUser = "admin"
+	}
+
+	var appID int
+	err := h.db.QueryRow(ctx,
+		`SELECT id FROM applications WHERE code = $1 AND tenant_id = $2`,
+		code, defaultApplicationTenant,
+	).Scan(&appID)
+	if err == nil {
+		return appID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return 0, err
+	}
+
+	err = h.db.QueryRow(ctx, `
+		INSERT INTO applications (tenant_id, code, display_name, owner_user)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id
+	`, defaultApplicationTenant, code, code, ownerUser).Scan(&appID)
+	if err != nil {
+		return 0, err
+	}
+	slog.Info("auto-created application", "code", code, "id", appID)
+	return appID, nil
+}
+
 func parseKeyActionRoute(remaining string) keyActionRoute {
 	if remaining == "" {
 		return keyActionRoute{kind: "root"}
@@ -291,10 +327,14 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var appID int
-	err := h.db.QueryRow(ctx, `SELECT id FROM applications WHERE code = $1 AND tenant_id = 'default'`, req.ApplicationCode).Scan(&appID)
+	ownerUser := "admin"
+	if req.OwnerUser != nil && *req.OwnerUser != "" {
+		ownerUser = *req.OwnerUser
+	}
+	appID, err := h.getOrCreateApplication(ctx, req.ApplicationCode, ownerUser)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "application not found")
+		slog.Error("createKey: getOrCreateApplication failed", "error", err, "code", req.ApplicationCode)
+		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
 
@@ -362,7 +402,7 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 //   - 200 + {conflict: null} when no row matches the guard
 //   - 200 + {conflict: {id, key_prefix, is_system, ...}} when a row matches
 //   - 400 when alias is empty or application_code is missing
-//   - 404 when application_code is unknown
+//   - 200 + {conflict: null} when application_code is unknown (no app ⇒ no keys)
 func (h *Handler) lookupKeyConflict(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -383,12 +423,17 @@ func (h *Handler) lookupKeyConflict(w http.ResponseWriter, r *http.Request) {
 
 	var appID int
 	err := h.db.QueryRow(ctx,
-		`SELECT id FROM applications WHERE code = $1 AND tenant_id = 'default'`,
-		appCode,
+		`SELECT id FROM applications WHERE code = $1 AND tenant_id = $2`,
+		appCode, defaultApplicationTenant,
 	).Scan(&appID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "application not found")
+			writeJSON(w, http.StatusOK, map[string]any{
+				"conflict":         nil,
+				"application_code": appCode,
+				"tenant_id":        tenantID,
+				"key_alias":        alias,
+			})
 			return
 		}
 		slog.Error("lookupKeyConflict: applications lookup failed", "error", err, "code", appCode)
@@ -1120,16 +1165,15 @@ func (h *Handler) adminApplyForKey(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var appID int
-	err := h.db.QueryRow(ctx, `SELECT id FROM applications WHERE code = $1 AND tenant_id = 'default'`, req.ApplicationCode).Scan(&appID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "application not found")
-		return
-	}
-
 	owner := "applicant"
-	if req.OwnerUser != nil {
+	if req.OwnerUser != nil && *req.OwnerUser != "" {
 		owner = *req.OwnerUser
+	}
+	appID, err := h.getOrCreateApplication(ctx, req.ApplicationCode, owner)
+	if err != nil {
+		slog.Error("adminApplyForKey: getOrCreateApplication failed", "error", err, "code", req.ApplicationCode)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 	_, keyHash, keyPrefix, keyCiphertext := h.generateAdminKey(h.secret)
 	var keyID int
