@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -551,9 +552,15 @@ func (h *ChatHandler) serveWithExecutor(
 				int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
-			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			writeErrorJSONWithDebug(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				"server_error", "model_not_found")
+				"server_error", "model_not_found", map[string]any{
+					"stage":      "execution",
+					"kind":       string(execErrTyped.LastKind),
+					"attempts":   execErrTyped.Attempts,
+					"tried":      execErrTyped.Tried,
+					"retryable":  errorsx.IsRetryable(execErrTyped.LastKind),
+				})
 			return
 		}
 		h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
@@ -561,7 +568,17 @@ func (h *ChatHandler) serveWithExecutor(
 			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
-		writeErrorJSON(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error")
+		debugInfo := map[string]any{
+			"stage":     "execution",
+			"tried":     tried,
+			"retryable": false,
+		}
+		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok {
+			debugInfo["kind"] = string(execErrTyped.LastKind)
+			debugInfo["attempts"] = execErrTyped.Attempts
+			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
+		}
+		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error", debugInfo)
 		return
 	}
 
@@ -1353,17 +1370,25 @@ func generateRequestID() string {
 }
 
 func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
+	writeErrorJSONWithDebug(w, status, requestID, msg, errType, code, nil)
+}
+
+func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, errType, code string, debug map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	if requestID != "" {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(status)
+	errObj := map[string]any{
+		"message":    msg,
+		"type":       errType,
+		"code":       code,
+		"request_id": requestID,
+	}
+	if debug != nil {
+		errObj["gateway_debug"] = debug
+	}
 	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]string{
-			"message":    msg,
-			"type":       errType,
-			"code":       code,
-			"request_id": requestID,
-		},
+		"error": errObj,
 	})
 }
