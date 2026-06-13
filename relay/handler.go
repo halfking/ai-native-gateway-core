@@ -160,6 +160,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg       string
 		attemptProviderID   *int
 		attemptCredentialID *int
+		attemptRequestBody  []byte
 	)
 	attemptLogged := &attemptLoggedFlag
 	requestID := r.Header.Get("X-Request-Id")
@@ -178,13 +179,18 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptErrCode = "internal_panic"
 			attemptErrMsg = "internal server error"
 			if attemptClientModel == "" {
-				attemptClientModel = "<unknown>"
+				if len(attemptRequestBody) > 0 {
+					attemptClientModel = extractModelFromBody(attemptRequestBody)
+				}
+				if attemptClientModel == "" {
+					attemptClientModel = "<unknown>"
+				}
 			}
 			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
 				attemptErrCode, attemptErrMsg,
 				int(time.Since(startTime).Milliseconds()),
-				nil, attemptKeyInfo, r)
+				attemptRequestBody, attemptKeyInfo, r)
 			if !*attemptLogged {
 				writeErrorJSON(w, http.StatusInternalServerError, requestID,
 					"internal server error", "server_error", "internal_panic")
@@ -197,7 +203,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo, r)
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
 		}
 	}()
 
@@ -224,7 +230,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// written and avoid a duplicate emit.
 		h.serveWithExecutor(w, r, attemptLogged, &attemptKeyInfo, &attemptClientModel,
 			&attemptErrCode, &attemptErrMsg, &attemptProviderID, &attemptCredentialID,
-			requestID, startTime)
+			&attemptRequestBody, requestID, startTime)
 		return
 	}
 	// No executor / provider — record a 503 row so the request still
@@ -257,6 +263,7 @@ func (h *ChatHandler) serveWithExecutor(
 	attemptErrMsg *string,
 	attemptProviderID **int,
 	attemptCredentialID **int,
+	attemptRequestBody *[]byte,
 	requestID string,
 	startTime time.Time,
 ) {
@@ -318,6 +325,19 @@ func (h *ChatHandler) serveWithExecutor(
 			w.Header().Set("Retry-After", "60")
 			*attemptErrCode = "rate_limit_exceeded"
 			*attemptErrMsg = "rate limit exceeded"
+			// Peek the body so the safety-net can recover client_model and
+			// request preview from the rejected request. Body is read lazily
+			// so non-rate-limited requests are not penalised.
+			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+			if len(peeked) > maxBodySize {
+				peeked = peeked[:maxBodySize]
+			}
+			if len(peeked) > 0 {
+				*attemptRequestBody = peeked
+				if *attemptClientModel == "" {
+					*attemptClientModel = extractModelFromBody(peeked)
+				}
+			}
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
 		}
@@ -409,6 +429,9 @@ func (h *ChatHandler) serveWithExecutor(
 			"error": map[string]string{"message": "failed to read request body", "type": "invalid_request", "code": "body_read_error"},
 		})
 		return
+	}
+	if attemptRequestBody != nil && len(bodyBytes) > 0 {
+		*attemptRequestBody = bodyBytes
 	}
 	if len(bodyBytes) > maxBodySize {
 		*attemptErrCode = "body_too_large"
