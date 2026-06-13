@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 )
 
@@ -34,14 +35,50 @@ func WithSession(next http.Handler, manager *Manager) http.Handler {
 		}
 
 		session, err := manager.Get(r.Context(), sessionID)
-		if err != nil {
-			writeErrorJSON(w, http.StatusBadRequest, "", "invalid session", "session_error", "SESSION_INVALID")
+		if err == nil {
+			ctx := context.WithValue(r.Context(), sessionContextKey, session)
+			go manager.Touch(context.Background(), sessionID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), sessionContextKey, session)
-		go manager.Touch(context.Background(), sessionID)
+		if err != ErrSessionNotFound {
+			slog.Warn("legacy session lookup failed", "error", err, "session_id", sessionID)
+			next.ServeHTTP(w, r)
+			return
+		}
 
+		apiKeyID := GetAPIKeyIDFromContext(r.Context())
+		tenantID := getTenantIDFromContext(r.Context())
+		if apiKeyID == 0 {
+			slog.Warn("legacy session fallback: no api key in context", "session_id", sessionID)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		deviceSeed := r.Header.Get("X-Device-Seed")
+		if deviceSeed == "" {
+			deviceSeed = r.Header.Get("X-Machine-Id")
+		}
+		if deviceSeed == "" {
+			deviceSeed = "default"
+		}
+
+		newSession, createErr := manager.CreateV2(r.Context(), apiKeyID, tenantID, deviceSeed, "default")
+		if createErr != nil {
+			slog.Error("legacy session fallback create failed", "error", createErr, "session_id", sessionID)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
+			"original_session_id", sessionID,
+			"new_session_id", newSession.SessionID,
+		)
+		w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+		w.Header().Set("Deprecation", "true")
+
+		ctx := context.WithValue(r.Context(), sessionContextKey, newSession)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
