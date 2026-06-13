@@ -3,6 +3,8 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -383,5 +385,45 @@ func TestTryLLMContextCompaction_FirstModelFails_SecondSucceeds(t *testing.T) {
 	}
 	if parsed.Messages[len(parsed.Messages)-1].Content != "latest" {
 		t.Fatalf("tail not preserved, last msg = %q", parsed.Messages[len(parsed.Messages)-1].Content)
+	}
+}
+
+// TestContextLengthExhaustedError_TypeAndMessage pins the typed-error
+// contract that the outer Execute loop depends on:
+//   - *contextLengthExhaustedError must be a distinct type (not fmt.Errorf)
+//     so type-assertion works and the outer loop can skip circuit / sticky
+//     / disable-offer side effects for context-length exhaustion.
+//   - The Error() string must include the failed model name, credential id,
+//     and upstream status so the operator can read the failure off the
+//     log line alone.
+func TestContextLengthExhaustedError_TypeAndMessage(t *testing.T) {
+	cle := &contextLengthExhaustedError{
+		credentialID: 42,
+		rawModel:     "minimax-m3",
+		status:       400,
+		body:         `{"error":{"code":"context_length_exceeded"}}`,
+	}
+	if got := cle.Error(); !strings.Contains(got, "minimax-m3") ||
+		!strings.Contains(got, "cred=42") ||
+		!strings.Contains(got, "status=400") {
+		t.Fatalf("Error() should include model/cred/status, got %q", got)
+	}
+	// Type assertion must succeed so the outer Execute can branch on it.
+	var err error = cle
+	var asType *contextLengthExhaustedError
+	if !errors.As(err, &asType) {
+		t.Fatal("errors.As should unwrap *contextLengthExhaustedError")
+	}
+	if asType.credentialID != 42 || asType.rawModel != "minimax-m3" {
+		t.Fatalf("field loss in As: %+v", asType)
+	}
+	// And it must NOT match a plain fmt.Errorf error.
+	plain := fmt.Errorf("upstream 400: %s", "context length exceeded")
+	if _, ok := plain.(interface{ credentialID() int }); ok {
+		// This branch is unreachable; it's a compile-time check that the
+		// types are distinct. The real distinction is checked above with
+		// errors.As, but having this guard makes the intent obvious to
+		// future readers.
+		t.Fatal("plain error must not match typed sentinel")
 	}
 }

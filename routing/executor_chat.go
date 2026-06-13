@@ -343,7 +343,19 @@ func (e *Executor) executeOpenAI(
 							}
 							return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
 						case ctxLenGiveUp:
-							// fall through
+							// Return a typed error so the outer Execute
+							// loop knows this is a context-length
+							// exhaustion (model-size limit, not a
+							// credential fault) and can route the
+							// failover accordingly without recording a
+							// circuit failure or disabling the model
+							// offer.
+							return nil, &contextLengthExhaustedError{
+								credentialID: cand.CredentialID,
+								rawModel:     cand.RawModel,
+								status:       resp.StatusCode,
+								body:         string(body[:min(n, 200)]),
+							}
 						}
 					}
 					// Do not write 4xx to ResponseWriter here — Execute() may
