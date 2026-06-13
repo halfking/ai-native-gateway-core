@@ -109,3 +109,135 @@ func TestSelectUpstreamBodyBytes_NoCandidatesFallsBackToConvert(t *testing.T) {
 		t.Error("expected non-empty body")
 	}
 }
+
+// TestConvertChatResponseToAnthropic_ReasoningContent verifies that
+// OpenAI-style reasoning_content emitted by thinking upstreams
+// (minimax-M3, DeepSeek-R1, etc.) is surfaced as a standalone Anthropic
+// `thinking` content block before the visible text — so SDK clients
+// render the trace instead of silently truncating it.
+func TestConvertChatResponseToAnthropic_ReasoningContent(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-r1",
+		"object":"chat.completion",
+		"model":"minimax-m3",
+		"choices":[{
+			"index":0,
+			"message":{
+				"role":"assistant",
+				"content":"HELLO",
+				"reasoning_content":"thinking step by step"
+			},
+			"finish_reason":"stop"
+		}],
+		"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}
+	}`)
+	out := convertChatResponseToAnthropic(body, "minimax-m3", "req-test-r1")
+	var got struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("output not valid JSON: %v body=%s", err, out)
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("expected 2 content blocks (thinking + text); got %d: %s", len(got.Content), out)
+	}
+	if got.Content[0].Type != "thinking" {
+		t.Errorf("content[0].type = %q, want \"thinking\" (reasoning must come first)", got.Content[0].Type)
+	}
+	if got.Content[0].Thinking != "thinking step by step" {
+		t.Errorf("content[0].thinking = %q, want \"thinking step by step\"", got.Content[0].Thinking)
+	}
+	if got.Content[1].Type != "text" {
+		t.Errorf("content[1].type = %q, want \"text\"", got.Content[1].Type)
+	}
+	if got.Content[1].Text != "HELLO" {
+		t.Errorf("content[1].text = %q, want \"HELLO\"", got.Content[1].Text)
+	}
+}
+
+// TestConvertChatResponseToAnthropic_ReasoningEmpty covers the case
+// where reasoning_content is present-but-empty: must not emit an empty
+// thinking block (would produce a visible-but-empty block in SDK UIs).
+func TestConvertChatResponseToAnthropic_ReasoningEmpty(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-r2",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"HI","reasoning_content":""},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+	}`)
+	out := convertChatResponseToAnthropic(body, "m", "req-empty")
+	var got struct {
+		Content []map[string]any `json:"content"`
+	}
+	_ = json.Unmarshal(out, &got)
+	for _, b := range got.Content {
+		if b["type"] == "thinking" {
+			t.Errorf("empty reasoning_content must not produce a thinking block; got: %s", out)
+		}
+	}
+	if len(got.Content) != 1 || got.Content[0]["type"] != "text" {
+		t.Errorf("expected exactly one text block; got %s", out)
+	}
+}
+
+// TestConvertChatResponseToAnthropic_ReasoningOnly covers a response
+// where the upstream produced only reasoning and no visible text (e.g.
+// reasoning model that hit max_tokens while still thinking). Without
+// this fix the gateway would emit an empty text block; with the fix it
+// emits just the thinking block.
+func TestConvertChatResponseToAnthropic_ReasoningOnly(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-r3",
+		"choices":[{
+			"index":0,
+			"message":{"role":"assistant","content":"","reasoning_content":"truncated thought"},
+			"finish_reason":"length"
+		}],
+		"usage":{"prompt_tokens":1,"completion_tokens":50,"total_tokens":51}
+	}`)
+	out := convertChatResponseToAnthropic(body, "minimax-m3", "req-ro")
+	var got struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Thinking string `json:"thinking"`
+		} `json:"content"`
+		StopReason string `json:"stop_reason"`
+	}
+	_ = json.Unmarshal(out, &got)
+	if len(got.Content) != 1 || got.Content[0].Type != "thinking" {
+		t.Errorf("expected exactly one thinking block (no empty text); got %s", out)
+	}
+	if got.Content[0].Thinking != "truncated thought" {
+		t.Errorf("thinking content lost: %s", out)
+	}
+	if got.StopReason != "max_tokens" {
+		t.Errorf("stop_reason = %q, want max_tokens (length maps to max_tokens)", got.StopReason)
+	}
+}
+
+// TestConvertChatResponseToAnthropic_NoReasoningRegression covers the
+// pre-Phase-2 baseline: a response without reasoning_content must still
+// produce a single text block (no thinking block, no extra wrapping).
+func TestConvertChatResponseToAnthropic_NoReasoningRegression(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-x",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+	}`)
+	out := convertChatResponseToAnthropic(body, "m", "req-noreg")
+	var got struct {
+		Content []struct {
+			Type string `json:"type"`
+		} `json:"content"`
+	}
+	_ = json.Unmarshal(out, &got)
+	if len(got.Content) != 1 {
+		t.Fatalf("expected 1 content block (no reasoning); got %d: %s", len(got.Content), out)
+	}
+	if got.Content[0].Type != "text" {
+		t.Errorf("content[0].type = %q, want \"text\"", got.Content[0].Type)
+	}
+}
