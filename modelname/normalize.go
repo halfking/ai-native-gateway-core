@@ -176,6 +176,24 @@ func hasOverlap(a, b []string) bool {
 	return false
 }
 
+// StripProviderPrefix removes the provider prefix from a model name
+// while preserving the original casing. For example:
+//
+//	"z-ai/glm-5.1" → "glm-5.1"
+//	"scnet/minimax-m2.5" → "minimax-m2.5"
+//	"MiniMax-M3" → "MiniMax-M3" (no prefix, unchanged)
+func StripProviderPrefix(rawName string) string {
+	model := strings.TrimSpace(rawName)
+	if model == "" {
+		return ""
+	}
+	// Strip provider prefix (e.g., "scnet/minimax-m2.5" → "minimax-m2.5")
+	if idx := strings.LastIndex(model, "/"); idx >= 0 {
+		model = model[idx+1:]
+	}
+	return model
+}
+
 func StandardizeName(rawName string) string {
 	model := strings.TrimSpace(strings.ToLower(rawName))
 	if model == "" {
