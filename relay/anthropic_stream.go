@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
 func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
@@ -335,7 +336,7 @@ func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, fullText str
 		return
 	}
 
-	think, rest, ok := splitLeadingThinkBlock(fullText)
+	think, rest, ok := textsplit.SplitLeadingThink(fullText)
 	if !ok {
 		// No <think> prefix: emit the whole content as a single text_delta
 		// on the pre-declared block, then close it.
