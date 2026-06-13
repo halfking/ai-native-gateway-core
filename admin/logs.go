@@ -56,6 +56,8 @@ type requestLogRow struct {
 	StreamInterrupted  *bool      `json:"stream_interrupted"`
 	StreamDoneSent     *bool      `json:"stream_done_sent"`
 	UsageSource        *string    `json:"usage_source"`
+	GwSessionID        *string    `json:"gw_session_id"`
+	GwTaskID           *string    `json:"gw_task_id"`
 }
 
 type requestLogDetail struct {
@@ -80,7 +82,8 @@ const requestLogsSelectCols = `
 	rl.request_preview, rl.transform_summary, rl.response_preview,
 	rl.stream_first_chunk_ms, rl.stream_chunk_count,
 	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent,
-	rl.usage_source
+	rl.usage_source,
+	rl.gw_session_id, rl.gw_task_id
 `
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +127,7 @@ func scanRequestLogRow(rows interface {
 		&l.StreamFirstChunkMs, &l.StreamChunkCount,
 		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
 		&l.UsageSource,
+		&l.GwSessionID, &l.GwTaskID,
 	)
 	return l, err
 }
@@ -209,6 +213,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		)`, argIdx, argIdx+1, argIdx+2))
 		args = append(args, pattern, pattern, pattern)
 		argIdx += 3
+	}
+	if v := strings.TrimSpace(queryString(r, "gw_session_id")); v != "" {
+		addFilter("rl.gw_session_id = $%d", v)
+	}
+	if v := strings.TrimSpace(queryString(r, "gw_task_id")); v != "" {
+		addFilter("rl.gw_task_id = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "usage_source")); v != "" {
 		if v != "llm" && v != "estimated" {
@@ -334,6 +344,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.StreamInterrupted,
 		&detail.StreamDoneSent,
 		&detail.UsageSource,
+		&detail.GwSessionID,
+		&detail.GwTaskID,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

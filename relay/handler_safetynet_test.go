@@ -137,9 +137,9 @@ func TestRequestLog_DoesNotDuplicateAcrossCallers(t *testing.T) {
 	// path produced two rows for the same request_id.
 	ch, col := newHookedHandler()
 	ch.recordFailedRequestWithKey("req-A", "mimo-v2.5-pro", "",
-		nil, nil, "no_candidate", "no candidates", 100, []byte(`{}`), nil)
+		nil, nil, "no_candidate", "no candidates", 100, []byte(`{}`), nil, nil)
 	ch.recordFailedRequestWithKey("req-B", "minimax-m2.7", "",
-		nil, nil, "rate_limit_exceeded", "too many", 50, []byte(`{}`), nil)
+		nil, nil, "rate_limit_exceeded", "too many", 50, []byte(`{}`), nil, nil)
 	rows := col.Snapshot()
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 distinct rows, got %d: %+v", len(rows), rows)
