@@ -232,37 +232,40 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 		return false, "empty base URL"
 	}
 
-	// Step 1: GET /v1/models
-	modelsURLs := upstreamurl.ModelsURLCandidates(s.BaseURL)
-	if len(modelsURLs) == 0 {
-		return true, "" // manifest-only, skip
-	}
 	httpClient := &http.Client{Timeout: 15 * time.Second}
-	step1OK := false
-	for _, u := range modelsURLs {
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
+
+	// Step 1: GET /v1/models (skip for anthropic-messages — no /models endpoint)
+	if s.ProviderProtocol != "anthropic-messages" {
+		modelsURLs := upstreamurl.ModelsURLCandidates(s.BaseURL)
+		if len(modelsURLs) == 0 {
+			return true, "" // manifest-only, skip
 		}
-		if s.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+s.APIKey)
+		step1OK := false
+		for _, u := range modelsURLs {
+			req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+			if err != nil {
+				continue
+			}
+			if s.APIKey != "" {
+				req.Header.Set("Authorization", "Bearer "+s.APIKey)
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				continue
+			}
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				step1OK = true
+				break
+			}
+			if resp.StatusCode == 401 || resp.StatusCode == 403 {
+				return false, fmt.Sprintf("401/403: %s", truncateBody(body))
+			}
 		}
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			continue
+		if !step1OK {
+			return false, "models endpoint unreachable"
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		resp.Body.Close()
-		if resp.StatusCode == 200 {
-			step1OK = true
-			break
-		}
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			return false, fmt.Sprintf("401/403: %s", truncateBody(body))
-		}
-	}
-	if !step1OK {
-		return false, "models endpoint unreachable"
 	}
 
 	// Step 2: mini chat completion with "hi" — protocol-aware.
