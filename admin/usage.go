@@ -623,12 +623,12 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT TO_CHAR(DATE_TRUNC($1, ts), $4) AS period,
+		SELECT TO_CHAR(DATE_TRUNC($1, ts), $3) AS period,
 		       COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0)::float8
-		FROM usage_ledger WHERE api_key_id = $2 AND ts >= $5 AND ts < $6
+		FROM usage_ledger WHERE api_key_id = $2 AND ts >= $4 AND ts < $5
 		GROUP BY DATE_TRUNC($1, ts) ORDER BY DATE_TRUNC($1, ts)
-	`, period, keyID, 0, dateFormat, startTime, endTime)
+	`, period, keyID, dateFormat, startTime, endTime)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
