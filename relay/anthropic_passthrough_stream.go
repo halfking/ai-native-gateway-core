@@ -165,6 +165,7 @@ func StreamAnthropicPassthrough(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 ) routing.StreamOutcome {
+	slog.Info("PHASE4_DBG: StreamAnthropicPassthrough invoked", "client_model", clientModel, "outbound_model", outboundModel, "request_id", requestID)
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {
