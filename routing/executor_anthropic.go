@@ -325,7 +325,17 @@ func (e *Executor) executeAnthropic(
 				}
 				continue
 			case ctxLenGiveUp:
-				return nil, fmt.Errorf("upstream %d: %s", cle.status, string(cle.body[:min(len(cle.body), 200)]))
+				// Return a typed error so the outer Execute loop knows
+				// this is a context-length exhaustion (model-size
+				// limit, not a credential fault) and can route the
+				// failover accordingly without recording a circuit
+				// failure or disabling the model offer.
+				return nil, &contextLengthExhaustedError{
+					credentialID: cand.CredentialID,
+					rawModel:     cand.RawModel,
+					status:       cle.status,
+					body:         string(cle.body[:min(len(cle.body), 200)]),
+				}
 			}
 		}
 		if _, ok := tryErr.(*retryableError); !ok {

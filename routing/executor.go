@@ -421,6 +421,41 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue
 		}
 
+		// contextLengthExhaustedError: handleContextLengthRecovery
+		// gave up after mechanical trim + the multi-model LLM-summary
+		// chain. This is a property of the model the client asked for
+		// (its context window is too small for the body), not of the
+		// credential serving it. Skip the circuit / sticky / disable-
+		// model-offer side effects so the credential stays routable,
+		// and let the next candidate (different credential for the
+		// same model) have a turn. If all candidates fail with this
+		// same kind, the final 4xx bubbles up to the client with the
+		// last credential's body as the reason.
+		if cle, ok := execErr.(*contextLengthExhaustedError); ok {
+			var ctxWindow int
+			if cand.ContextWindow != nil {
+				ctxWindow = *cand.ContextWindow
+			}
+			slog.Warn("candidate exhausted context window, trying next credential",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"raw_model", cand.RawModel,
+				"context_window", ctxWindow,
+				"status", cle.status,
+				"body_preview", cle.body,
+			)
+			lastErr = execErr
+			lastKind = errorsx.KindContextLength
+			attempts = append(attempts, AttemptRecord{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Kind:         errorsx.KindContextLength,
+				Reason:       cle.body,
+			})
+			continue
+		}
+
 		if sie, ok := execErr.(*streamInterruptedError); ok {
 			kind := sie.kind
 			if kind == "" {
@@ -730,6 +765,25 @@ type contextLengthHTTPError struct {
 
 func (e *contextLengthHTTPError) Error() string {
 	return fmt.Sprintf("upstream %d context_length_exceeded", e.status)
+}
+
+// contextLengthExhaustedError signals that handleContextLengthRecovery
+// gave up after both phases (mechanical trim + LLM summary fallback
+// chain). Carries the credential that was the last to fail so the outer
+// Execute loop can decide which kind of failover to attempt next
+// (e.g. try a different credential, or a bigger-context model), and
+// crucially so the credential is NOT recorded as a circuit failure —
+// hitting a context limit is a property of the model the client asked
+// for, not of the credential serving it.
+type contextLengthExhaustedError struct {
+	credentialID int
+	rawModel     string
+	status       int
+	body         string // first 200 bytes of upstream 4xx body
+}
+
+func (e *contextLengthExhaustedError) Error() string {
+	return fmt.Sprintf("context_length_exhausted: %s (cred=%d, status=%d)", e.rawModel, e.credentialID, e.status)
 }
 
 func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
