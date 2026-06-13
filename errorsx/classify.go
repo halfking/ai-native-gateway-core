@@ -238,6 +238,19 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			return KindContextLength
 		}
 	}
+	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
+	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
+	// retrying the same payload on a different credential would just
+	// bounce off the same upstream rule. Map them to KindUnsupportedFeature
+	// so IsClientBug returns true, the executor skips cross-credential
+	// retry, and the credential is NOT cooled. 408 (Request Timeout) is
+	// mapped to KindTimeout so the network-retry path still fires.
+	switch status {
+	case 408:
+		return KindTimeout
+	case 405, 406, 409, 410, 411, 412, 415, 416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 431:
+		return KindUnsupportedFeature
+	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
 }
 

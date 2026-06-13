@@ -622,10 +622,23 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		e.Router.Sticky.Delete(params.StickyKey)
 		return
 	}
-	if kind == errorsx.KindCanceled {
+	// 2026-06-13: network / upstream-down / client-bug kinds are NOT the
+	// credential's fault. Previously any of these counted toward the
+	// sticky-failure threshold (3), so 3 transient TCP resets in an
+	// hour would silently unbind the sticky session and force a
+	// credential re-pick. Only "real" credential-level failures should
+	// count: rate-limit, concurrent-overload, stream-timeout, quota.
+	// KindContextLength is also included here because the request's
+	// context overflow is the caller's fault, not the credential's.
+	if kind == errorsx.KindCanceled ||
+		kind == errorsx.KindNetwork ||
+		kind == errorsx.KindTimeout ||
+		kind == errorsx.KindUpstreamDown ||
+		kind == errorsx.KindContextLength ||
+		errorsx.IsClientBug(kind) {
 		return
 	}
-	e.Router.Sticky.RecordFailure(params.StickyKey, 3)
+	e.Router.Sticky.RecordFailure(params.StickyKey, 5)
 }
 
 type modelNotFoundError struct {

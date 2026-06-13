@@ -299,3 +299,51 @@ func TestIsRetryable(t *testing.T) {
 		}
 	}
 }
+
+// 2026-06-13: protocol/shape 4xx codes must NOT be classified as
+// KindTransient (which would trigger cross-credential retry and 10-20s
+// stalls when an upstream intermittently returns 405).
+func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   ErrorKind
+	}{
+		{"405_method_not_allowed", 405, `Method Not Allowed`, KindUnsupportedFeature},
+		{"406_not_acceptable", 406, `not acceptable`, KindUnsupportedFeature},
+		{"415_unsupported_media_type", 415, `unsupported media type`, KindUnsupportedFeature},
+		{"409_conflict", 409, `conflict`, KindUnsupportedFeature},
+		{"410_gone", 410, `gone`, KindUnsupportedFeature},
+		{"422_unprocessable", 422, `unprocessable entity`, KindUnsupportedFeature},
+		{"408_request_timeout_still_timeout", 408, `request timeout`, KindTimeout},
+		{"401_unauthorized_still_auth", 401, `unauthorized`, KindAuth},
+		// 429 with overload-shaped body intentionally upgrades to
+		// KindConcurrent per the comment in ClassifyResponseStatus; only
+		// a plain 429 stays as KindRateLimit.
+		{"429_plain_still_rate_limit", 429, `quota exceeded`, KindRateLimit},
+		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
+		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
+		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if got != tc.want {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = %q, want %q",
+					tc.status, tc.body, got, tc.want)
+			}
+			// All these should also NOT be retryable except
+			// 408/500/502/503/429 (which are intentionally retryable).
+			retryable := IsRetryable(got)
+			retryableWant := tc.want == KindTimeout ||
+				tc.want == KindUpstreamDown ||
+				tc.want == KindConcurrent ||
+				tc.want == KindTransient
+			if retryable != retryableWant {
+				t.Errorf("IsRetryable(%q) = %v, want %v",
+					got, retryable, retryableWant)
+			}
+		})
+	}
+}
