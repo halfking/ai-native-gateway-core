@@ -433,6 +433,7 @@ func (e *Executor) executeAnthropicOnce(
 	latencyMs := int(time.Since(tTotal).Milliseconds())
 
 	if params.IsStream {
+		slog.Info("PHASE4_DBG: enter anthropic stream branch", "provider_id", cand.ProviderID, "credential_id", cand.CredentialID, "passthrough_nil", ae.PassthroughStream == nil)
 		outcome := ae.StreamResponse(params.W, resp)
 		if outcome.Interrupted && outcome.Reason != "client_cancel" {
 			streamKind := errorsx.KindStreamTimeout
