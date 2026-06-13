@@ -343,7 +343,9 @@ func main() {
 		sessionHandler := sessions.NewHandler(sessionMgr)
 		mux.Handle("/v1/sessions", sessionHandler)
 		mux.Handle("/v1/sessions/", sessionHandler)
-		slog.Info("session endpoints enabled")
+		mux.Handle("/v1/gw/sessions", sessionHandler)
+		mux.Handle("/v1/gw/sessions/", sessionHandler)
+		slog.Info("session endpoints enabled", "paths", []string{"/v1/sessions", "/v1/gw/sessions"})
 	}
 
 	// ── Config reload endpoint ──────────────────────────────────────────
