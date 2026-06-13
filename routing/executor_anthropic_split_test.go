@@ -3,12 +3,14 @@ package routing
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
 // TestSplitLeadingThinkBlock_Basic covers the simple "extract leading
 // <think>...</think>" case.
 func TestSplitLeadingThinkBlock_Basic(t *testing.T) {
-	think, rest, ok := splitLeadingThinkBlock("<think>plan</think>\n\nHELLO")
+	think, rest, ok := textsplit.SplitLeadingThink("<think>plan</think>\n\nHELLO")
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -24,7 +26,7 @@ func TestSplitLeadingThinkBlock_Basic(t *testing.T) {
 // the prefix is missing (so legitimate XML/HTML content in text blocks
 // is never touched).
 func TestSplitLeadingThinkBlock_NoThinkTag(t *testing.T) {
-	think, rest, ok := splitLeadingThinkBlock("just a normal response")
+	think, rest, ok := textsplit.SplitLeadingThink("just a normal response")
 	if ok {
 		t.Error("expected ok=false when <think> prefix missing")
 	}
@@ -40,7 +42,7 @@ func TestSplitLeadingThinkBlock_NoThinkTag(t *testing.T) {
 // (would mean malformed upstream response). We do not promote — must
 // leave content untouched so the client can render it as-is.
 func TestSplitLeadingThinkBlock_UnclosedThink(t *testing.T) {
-	_, rest, ok := splitLeadingThinkBlock("<think>never closes\ntext continues")
+	_, rest, ok := textsplit.SplitLeadingThink("<think>never closes\ntext continues")
 	if ok {
 		t.Error("expected ok=false for unclosed <think>")
 	}
