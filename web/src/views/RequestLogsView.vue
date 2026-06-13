@@ -50,7 +50,7 @@ function timeRange() {
 }
 
 function onModelFilterChange(name: string | string[]) {
-  modelNameFilter.value = typeof name === 'string' ? name.trim() : ''
+  modelFilter.value = typeof name === 'string' ? name.trim() : ''
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -83,7 +83,7 @@ async function load() {
       q: keyword.value.trim() || undefined,
       success: successParam,
       error_kind: errorKindFilter.value.trim() || undefined,
-      model: modelNameFilter.value || undefined,
+      model: modelFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       gw_session_id: gwSessionFilter.value.trim() || undefined,
       gw_task_id: gwTaskFilter.value.trim() || undefined,
