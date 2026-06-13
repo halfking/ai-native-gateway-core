@@ -494,6 +494,21 @@ func (h *ChatHandler) serveWithExecutor(
 		auditBuilder.TransformRule(txResult.MatchedRule)
 	}
 
+	egressProtocol := ""
+	if len(candidates) > 0 {
+		egressProtocol = candidates[0].Protocol
+	}
+	var canonicalID *int
+	if modelResolution != nil {
+		canonicalID = modelResolution.CanonicalID
+	}
+	h.recordInitialRequestLog(
+		requestID, clientModel, explicitOutbound, endUser, "chat", keyInfo,
+		clientID.Fingerprint.ClientProfile, identityHash,
+		*attemptProviderID, *attemptCredentialID, canonicalID,
+		bodyBytes, txResult, egressProtocol, isStream,
+	)
+
 	var sessionKey string
 	if sessionInfo != nil {
 		sessionKey = sessionInfo.SessionKey
@@ -786,6 +801,10 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 		if v, ok := m["stream_interrupted"].(bool); ok {
 			reqLog.StreamInterrupted = &v
+			if v {
+				reqLog.Success = false
+				reqLog.ErrorKind = strPtr("stream_error")
+			}
 		}
 		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {
 			reqLog.ResponsePreview = strPtr(v)
@@ -872,7 +891,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 	h.telemetryClient.EmitDecisionLog(dl)
 
-	h.telemetryClient.EmitRequestLog(reqLog)
+	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
 	}
@@ -897,7 +916,24 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 // recordFailedRequestWithKey is the full-fat version.  When keyInfo is
 // non-nil we attach api_key_id + tenant_id so the row is queryable
 // from the admin UI in the same way as success rows.
+// It updates the early request_logs row when one exists (see
+// recordInitialRequestLog); otherwise it inserts a complete row.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo) {
+	h.recordFailedRequestDetailed(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, keyInfo, "", "", "")
+}
+
+func (h *ChatHandler) recordFailedRequestDetailed(
+	requestID, clientModel, outboundModel string,
+	providerID, credentialID *int,
+	errCode, errMessage string,
+	latencyMs int,
+	requestBody []byte,
+	keyInfo *auth.KeyInfo,
+	clientProfile, identityHash, requestMode string,
+) {
+	if clientModel == "" && len(requestBody) > 0 {
+		clientModel = extractModelFromBody(requestBody)
+	}
 	var requestBodyText *string
 	if len(requestBody) > 0 {
 		v := string(requestBody)
@@ -911,6 +947,10 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		kid := keyInfo.ID
 		apiKeyID = &kid
 	}
+	var requestPreviewPtr *string
+	if preview := requestPreview(requestBody); preview != "" {
+		requestPreviewPtr = strPtr(preview)
+	}
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:     requestID,
 		TenantID:      tenantID,
@@ -919,10 +959,14 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		OutboundModel: strPtr(outboundModel),
 		ProviderID:    providerID,
 		CredentialID:  credentialID,
+		ClientProfile: strPtr(clientProfile),
+		IdentityHash:  strPtr(identityHash),
+		RequestMode:   strPtr(requestMode),
 		LatencyMs:     &latency,
 		Success:       false,
 		ErrorKind:     strPtr(errCode),
 		RequestBody:   requestBodyText,
+		RequestPreview: requestPreviewPtr,
 	}
 	// Test hook fires regardless of whether the production telemetry
 	// sink is configured, so unit tests can assert the safety net
@@ -933,7 +977,99 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
-	h.telemetryClient.EmitRequestLog(reqLog)
+	h.telemetryClient.EmitRequestLogUpdate(reqLog)
+}
+
+// recordInitialRequestLog writes the base request metadata as soon as routing
+// is resolved and before the upstream call starts.  Streaming requests then
+// appear immediately in /request-logs; completion paths update tokens, bodies,
+// and final success/error state via EmitRequestLogUpdate.
+func (h *ChatHandler) recordInitialRequestLog(
+	requestID, clientModel, outboundModel, endUser, requestMode string,
+	keyInfo *auth.KeyInfo,
+	clientProfile, identityHash string,
+	providerID, credentialID, canonicalID *int,
+	requestBody []byte,
+	txResult *transform.TransformResult,
+	egressProtocol string,
+	isStream bool,
+) {
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	if clientModel == "" && len(requestBody) > 0 {
+		clientModel = extractModelFromBody(requestBody)
+	}
+	if outboundModel == "" && clientModel != "" {
+		outboundModel = clientModel
+	}
+	var requestBodyText *string
+	if len(requestBody) > 0 {
+		v := string(requestBody)
+		requestBodyText = &v
+	}
+	tenantID := "default"
+	var apiKeyID *int
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+		kid := keyInfo.ID
+		apiKeyID = &kid
+	}
+	var requestPreviewPtr *string
+	if preview := requestPreview(requestBody); preview != "" {
+		requestPreviewPtr = strPtr(preview)
+	}
+	var transformSummaryPtr *string
+	if summary := transformSummary(txResult, outboundModel); summary != "" {
+		transformSummaryPtr = strPtr(summary)
+	}
+	var transformRuleID *string
+	if txResult != nil && txResult.MatchedRule != "" {
+		transformRuleID = strPtr(txResult.MatchedRule)
+	}
+	streamInterrupted := false
+	reqLog := &telemetry.RequestLogEntry{
+		RequestID:        requestID,
+		TenantID:           tenantID,
+		APIKeyID:           apiKeyID,
+		EndUserID:          strPtr(endUser),
+		ClientModel:        strPtr(clientModel),
+		OutboundModel:      strPtr(outboundModel),
+		ProviderID:         providerID,
+		CredentialID:       credentialID,
+		CanonicalID:        canonicalID,
+		ClientProfile:      strPtr(clientProfile),
+		IdentityHash:       strPtr(identityHash),
+		RequestMode:        strPtr(requestMode),
+		Success:            false,
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
+	}
+	if isStream {
+		zero := 0
+		reqLog.StreamChunkCount = &zero
+	}
+	if h.requestLogHook != nil {
+		h.requestLogHook(reqLog)
+	}
+	h.telemetryClient.EmitRequestLogInsert(reqLog)
+}
+
+func extractModelFromBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Model)
 }
 
 func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyInfo *auth.KeyInfo, clientID identity.ClientIdentity, candidatesTried int, modelResolution *resolve.Resolution, txResult *transform.TransformResult, errCode string, failTrace *routing.Trace, latencyMs int) {
