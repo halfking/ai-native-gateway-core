@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
@@ -16,7 +15,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
-	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -141,7 +139,10 @@ func (e *Executor) executeOpenAI(
 	if err != nil {
 		return nil, err
 	}
-	outboundModel := resolveOutboundModel(params, cand)
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = cand.RawModel
+	}
 
 	contextCompactionRetried := false
 
@@ -552,26 +553,23 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 //
 // Extracted as a free function so unit tests can verify each protocol
 // branch without spinning up the full HTTP retry loop.
-// resolveOutboundModel picks the model name sent to the upstream provider.
-// Raw offer names may carry vendor prefixes (e.g. nvidia-build "z-ai/glm-5.1")
-// that the upstream does not recognize; prefer the client model in that case.
-// Do not standardize casing — providers like MiniMax require exact raw names.
+
+// resolveOutboundModel picks the upstream model field.
+// Mirrors Python prepare_candidate → render_outbound_model() default path:
+// transform-rendered OutboundModel wins; else cand.RawModel which is
+// COALESCE(outbound_model_name, raw_model_name) from model_offers.
 func resolveOutboundModel(params *ExecParams, cand provider.Candidate) string {
 	if params.OutboundModel != "" {
 		return params.OutboundModel
 	}
-	outbound := cand.RawModel
-	if strings.HasPrefix(outbound, "z-ai/") {
-		if params.ClientModel != "" {
-			return params.ClientModel
-		}
-		return strings.TrimPrefix(outbound, "z-ai/")
-	}
-	return outbound
+	return cand.RawModel
 }
 
 func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
-	outboundModel := resolveOutboundModel(params, cand)
+	outboundModel := params.OutboundModel
+	if outboundModel == "" {
+		outboundModel = cand.RawModel
+	}
 
 	bodyBytes := params.BodyBytes
 	if outboundModel != params.ClientModel {

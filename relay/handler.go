@@ -506,10 +506,8 @@ func (h *ChatHandler) serveWithExecutor(
 		txResult = h.matrix.Resolve(tCtx)
 	}
 	explicitOutbound := ""
-	if txResult != nil && txResult.OutboundModel != "" {
-		explicitOutbound = transform.RenderOutboundModel(
-			txResult.OutboundModel, txResult.OutboundModel, clientModel, tCtx.CanonicalName,
-		)
+	if len(candidates) > 0 {
+		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
 	auditBuilder.OutboundModel(explicitOutbound).Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)

@@ -255,8 +255,8 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		txResult = h.chatHandler.matrix.Resolve(tCtx)
 	}
 	explicitOutbound := ""
-	if txResult != nil && txResult.OutboundModel != "" {
-		explicitOutbound = transform.RenderOutboundModel(txResult.OutboundModel, txResult.OutboundModel, clientModel, tCtx.CanonicalName)
+	if len(candidates) > 0 {
+		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
 	egressProtocol := ""

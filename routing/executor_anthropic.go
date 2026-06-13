@@ -15,7 +15,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
-	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
@@ -232,10 +231,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		}
 	}
 
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = modelname.StandardizeName(cand.RawModel)
-	}
+	outboundModel := resolveOutboundModel(params, cand)
 	if outboundModel != params.ClientModel {
 		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
 	}
@@ -277,10 +273,7 @@ func (e *Executor) executeAnthropic(
 		return nil, err
 	}
 
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = modelname.StandardizeName(cand.RawModel)
-	}
+	outboundModel := resolveOutboundModel(params, cand)
 
 	ae := &AnthropicExecutor{
 		Common: &CommonExecutor{
