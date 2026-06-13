@@ -182,8 +182,128 @@ func ApplyCapabilitySanitizer(body []byte, catalogCode string) []byte {
 		body = stripBooleanParams(body)
 	case "deepseek":
 		body = capMaxTokens(body, 8192)
+	case "minimax":
+		body = SimplifyTools(body)
 	}
 	return body
+}
+
+// SimplifyTools normalises the `tools` array in an OpenAI Chat Completions
+// request body so that every tool entry has the canonical shape:
+//
+//	{"type":"function","function":{"name":"...","description":"...","parameters":{...}}}
+//
+// Some clients (and some SDK versions) omit the outer `type` field, send
+// `function` at the top level without the wrapper, or leave optional fields
+// missing entirely.  Upstream providers that set `simplify_tools: true` in
+// their capabilities manifest (e.g. MiniMax) require this exact shape;
+// without it they reject the request with "invalid tool type (2013)".
+//
+// The logic mirrors the Python gateway's `_simplify_tools` helper in
+// app/core/protocol/sanitizer.go.
+func SimplifyTools(body []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	toolsRaw, ok := obj["tools"]
+	if !ok || len(toolsRaw) == 0 || string(toolsRaw) == "null" {
+		return body
+	}
+
+	var tools []json.RawMessage
+	if err := json.Unmarshal(toolsRaw, &tools); err != nil {
+		return body
+	}
+
+	changed := false
+	simplified := make([]json.RawMessage, 0, len(tools))
+	for _, t := range tools {
+		var tool map[string]any
+		if err := json.Unmarshal(t, &tool); err != nil {
+			simplified = append(simplified, t)
+			continue
+		}
+
+		// Check if already has canonical shape: {"type":"function","function":{...}}
+		if _, hasType := tool["type"]; hasType {
+			fnObj, hasFn := tool["function"].(map[string]any)
+			if hasFn {
+				// Check if function has all required fields
+				_, hasName := fnObj["name"]
+				_, hasDesc := fnObj["description"]
+				_, hasParams := fnObj["parameters"]
+				if hasName && hasDesc && hasParams {
+					simplified = append(simplified, t)
+					continue
+				}
+				// Has function wrapper but missing fields — need to fill defaults
+				changed = true
+				if !hasDesc {
+					fnObj["description"] = ""
+				}
+				if !hasParams {
+					fnObj["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				canonical := map[string]any{
+					"type":     "function",
+					"function": fnObj,
+				}
+				b, _ := json.Marshal(canonical)
+				simplified = append(simplified, b)
+				continue
+			}
+		}
+
+		// Need to rebuild — mark changed.
+		changed = true
+
+		// Extract function block (may be at top level or nested).
+		fn, _ := tool["function"].(map[string]any)
+		if fn == nil {
+			// Function fields are at the top level (no wrapper).
+			fn = make(map[string]any, 3)
+			if name, ok := tool["name"]; ok {
+				fn["name"] = name
+			}
+			if desc, ok := tool["description"]; ok {
+				fn["description"] = desc
+			}
+			if params, ok := tool["parameters"]; ok {
+				fn["parameters"] = params
+			}
+		}
+
+		// Ensure required fields exist with sensible defaults.
+		if _, ok := fn["name"]; !ok {
+			fn["name"] = ""
+		}
+		if _, ok := fn["description"]; !ok {
+			fn["description"] = ""
+		}
+		if fn["parameters"] == nil {
+			fn["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+		}
+
+		canonical := map[string]any{
+			"type":     "function",
+			"function": fn,
+		}
+		b, _ := json.Marshal(canonical)
+		simplified = append(simplified, b)
+	}
+
+	if !changed {
+		return body
+	}
+
+	toolsJSON, _ := json.Marshal(simplified)
+	obj["tools"] = toolsJSON
+	result, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return result
 }
 
 func MergeConsecutiveMessages(body []byte) []byte {
