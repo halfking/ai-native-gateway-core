@@ -294,8 +294,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, msgID, clientModel, finishReason string, outputTokens int) {
 	stopReason := mapAnthropicStopReason(finishReason)
 
-	blockStop := map[string]any{"type": "content_block_stop", "index": 0}
-	writeSSE(w, "content_block_stop", blockStop)
+	// Note: the trailing content_block_stop is intentionally omitted. Phase 4's
+	// flushBufferedText already emits per-block stops for the first text
+	// block (or for thinking + post-think text after a split). Emitting an
+	// extra stop here would produce a duplicate on the un-split path.
 
 	deltaPayload := map[string]any{
 		"type": "message_delta",
