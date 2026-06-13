@@ -48,6 +48,7 @@ func NewMessagesHandler(ch *ChatHandler) *MessagesHandler {
 }
 
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("PHASE4_DBG: MessagesHandler.ServeHTTP entry", "method", r.Method, "path", r.URL.Path, "executor_nil", h.chatHandler.executor == nil)
 	defer r.Body.Close()
 
 	// ── requestAttempt safety-net: every Anthropic /v1/messages
