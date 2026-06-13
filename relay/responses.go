@@ -174,7 +174,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientModel := reqBody.Model
 	isStream := reqBody.Stream
-	sessionID := r.Header.Get("X-Session-Id")
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), "")
 
