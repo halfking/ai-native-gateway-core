@@ -237,11 +237,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// shows up in the admin request-logs UI.
 	attemptErrCode = "executor_unavailable"
 	attemptErrMsg = "routing executor not available; database connection required"
+	captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 	h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 		attemptProviderID, attemptCredentialID,
 		attemptErrCode, attemptErrMsg,
 		int(time.Since(startTime).Milliseconds()),
-		nil, attemptKeyInfo, r)
+		attemptRequestBody, attemptKeyInfo, r)
 	*attemptLogged = true
 	h.serveFallback(w, r)
 }
@@ -280,6 +281,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if rawKey == "" {
 			*attemptErrCode = "missing_key"
 			*attemptErrMsg = "missing api key"
+			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 			writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
@@ -1027,24 +1029,31 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 	if preview := requestPreview(requestBody); preview != "" {
 		requestPreviewPtr = strPtr(preview)
 	}
+	// failure_detail_code: a machine-readable sub-classification of
+	// error_kind.  For gateway-side early-exit errors we prefix with
+	// "gw_" so request_log consumers can immediately tell these apart
+	// from upstream provider errors (which keep their classified kind,
+	// e.g. "rate_limit", "concurrent", "timeout").
+	detailCode := mapGatewayErrorToDetail(errCode)
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:     requestID,
-		TenantID:      tenantID,
-		APIKeyID:      apiKeyID,
-		ClientModel:   strPtr(clientModel),
-		OutboundModel: strPtr(outboundModel),
-		ProviderID:    providerID,
-		CredentialID:  credentialID,
-		ClientProfile: strPtr(clientProfile),
-		IdentityHash:  strPtr(identityHash),
-		RequestMode:   strPtr(requestMode),
-		GwSessionID:   strPtr(gwSessionID),
-		GwTaskID:      strPtr(gwTaskID),
-		LatencyMs:     &latency,
-		Success:       false,
-		RequestStatus: strPtr(telemetry.RequestStatusFailure),
-		ErrorKind:     strPtr(errCode),
-		RequestBody:   requestBodyText,
+		RequestID:      requestID,
+		TenantID:       tenantID,
+		APIKeyID:       apiKeyID,
+		ClientModel:    strPtr(clientModel),
+		OutboundModel:  strPtr(outboundModel),
+		ProviderID:     providerID,
+		CredentialID:   credentialID,
+		ClientProfile:  strPtr(clientProfile),
+		IdentityHash:   strPtr(identityHash),
+		RequestMode:    strPtr(requestMode),
+		GwSessionID:    strPtr(gwSessionID),
+		GwTaskID:       strPtr(gwTaskID),
+		LatencyMs:      &latency,
+		Success:        false,
+		RequestStatus:  strPtr(telemetry.RequestStatusFailure),
+		ErrorKind:      strPtr(errCode),
+		FailureDetailCode: strPtr(detailCode),
+		RequestBody:    requestBodyText,
 		RequestPreview: requestPreviewPtr,
 	}
 	// Test hook fires regardless of whether the production telemetry
@@ -1057,6 +1066,59 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 		return
 	}
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
+}
+
+// mapGatewayErrorToDetail returns a machine-readable sub-classification for
+// the given early-exit error code.  Gateway-side errors are prefixed with
+// "gw_" so that request_log consumers can immediately distinguish these from
+// upstream provider errors (which keep their classified kind, e.g. "rate_limit",
+// "concurrent", "timeout").
+//
+// The mapping:
+//
+//	gateway RPM limit   → "gw_rpm_exceeded"
+//	gateway concurrent  → "gw_concurrent_exceeded"
+//	gateway TPM         → "gw_tpm_exceeded"
+//	key throttled       → "gw_key_throttled"
+//	budget exhausted    → "gw_budget_exhausted"
+//	upstream 429        → "rate_limit"        (unchanged)
+//	upstream 429/503    → "concurrent"        (unchanged)
+//	other early-exits   → errCode passthrough
+func mapGatewayErrorToDetail(errCode string) string {
+	switch errCode {
+	case "rate_limit_exceeded":
+		return "gw_rpm_exceeded"
+	case "concurrent_limit_exceeded":
+		return "gw_concurrent_exceeded"
+	case "tpm_limit_exceeded":
+		return "gw_tpm_exceeded"
+	case "key_throttled":
+		return "gw_key_throttled"
+	case "budget_exhausted":
+		return "gw_budget_exhausted"
+	case "missing_key", "invalid_key":
+		return "gw_" + errCode
+	case "auth_unavailable":
+		return "gw_auth_unavailable"
+	case "method_not_allowed":
+		return "gw_method_not_allowed"
+	case "executor_unavailable":
+		return "gw_executor_unavailable"
+	case "no_candidate":
+		return "gw_no_candidate"
+	case "body_too_large", "body_read_error", "json_parse_error":
+		return "gw_" + errCode
+	case "missing_model", "missing_max_tokens":
+		return "gw_" + errCode
+	case "conversion_error":
+		return "gw_conversion_error"
+	case "session_forbidden":
+		return "gw_session_forbidden"
+	case "internal_panic":
+		return "gw_internal_panic"
+	default:
+		return errCode
+	}
 }
 
 // recordInitialRequestLog writes the base request metadata as soon as routing
@@ -1614,4 +1676,28 @@ func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, 
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
 	})
+}
+
+// captureAttemptBody is a stub added to allow compile of pre-existing code
+// that references an undefined helper. It reads the body into a buffer
+// (capped at 1MB) and records the client_model. Both are then passed to
+// the failed-request recorder via the supplied pointers.
+func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
+	if r.Body == nil {
+		return
+	}
+	defer r.Body.Close()
+	const maxBody = 1 << 20 // 1MB
+	buf, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
+	if err != nil || len(buf) == 0 {
+		return
+	}
+	*bodyOut = buf
+	var probe struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(buf, &probe)
+	if probe.Model != "" {
+		*modelOut = probe.Model
+	}
 }

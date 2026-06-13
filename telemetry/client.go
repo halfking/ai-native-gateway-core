@@ -110,6 +110,7 @@ type RequestLogEntry struct {
 	StreamInterrupted  *bool    `json:"stream_interrupted,omitempty"`
 	ResponseChecksum   *string  `json:"response_checksum,omitempty"`
 	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
+	FailureStage       *string  `json:"failure_stage,omitempty"`
 	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
 	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
 	RequestPreview     *string  `json:"request_preview,omitempty"`
@@ -376,7 +377,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			cost_usd, cost_display, cost_currency,
 			latency_ms, success, request_status, error_kind, search_text,
 			identity_hash, response_checksum,
-			transform_rule_id, egress_protocol, failure_detail_code,
+			transform_rule_id, egress_protocol, failure_stage, failure_detail_code,
 			request_preview, transform_summary, response_preview,
 			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
@@ -393,12 +394,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$18, $19, $20,
 			$21, $22, $23, $24, $25,
 			$26, $27,
-			$28, $29, $30,
-			$31, $32, $33,
-			CAST($34 AS jsonb), CAST($35 AS jsonb),
-			$36, $37, $38,
-			$39,
-			$40, $41, $42
+			$28, $29, $30, $31,
+			$32, $33, $34,
+			CAST($35 AS jsonb), CAST($36 AS jsonb),
+			$37, $38, $39,
+			$40,
+			$41, $42, $43
 		)
 	`,
 		entry.RequestID,
@@ -430,6 +431,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ResponseChecksum,
 		entry.TransformRuleID,
 		entry.EgressProtocol,
+		entry.FailureStage,
 		entry.FailureDetailCode,
 		entry.RequestPreview,
 		entry.TransformSummary,
@@ -571,21 +573,22 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       response_checksum = COALESCE($22, rl.response_checksum),
 		       response_preview = COALESCE($23, rl.response_preview),
 		       response_body = COALESCE(CAST($24 AS jsonb), rl.response_body),
-		       failure_detail_code = COALESCE($25, rl.failure_detail_code),
-		       transform_rule_id = COALESCE($26, rl.transform_rule_id),
-		       egress_protocol = COALESCE($27, rl.egress_protocol),
-		       request_preview = COALESCE($28, rl.request_preview),
-		       transform_summary = COALESCE($29, rl.transform_summary),
-		       request_body = COALESCE(CAST($30 AS jsonb), rl.request_body),
-		       usage_source = COALESCE(NULLIF($31, ''), rl.usage_source),
-		       success = COALESCE($32, rl.success),
-		       request_status = COALESCE($33, rl.request_status),
-		       error_kind = COALESCE($34, rl.error_kind),
-		       latency_ms = COALESCE($35, rl.latency_ms),
-		       identity_hash = COALESCE($36, rl.identity_hash),
-		       search_text = COALESCE($37, rl.search_text),
-		       gw_session_id = COALESCE($38, rl.gw_session_id),
-		       gw_task_id = COALESCE($39, rl.gw_task_id)
+		       failure_stage = COALESCE($25, rl.failure_stage),
+		       failure_detail_code = COALESCE($26, rl.failure_detail_code),
+		       transform_rule_id = COALESCE($27, rl.transform_rule_id),
+		       egress_protocol = COALESCE($28, rl.egress_protocol),
+		       request_preview = COALESCE($29, rl.request_preview),
+		       transform_summary = COALESCE($30, rl.transform_summary),
+		       request_body = COALESCE(CAST($31 AS jsonb), rl.request_body),
+		       usage_source = COALESCE(NULLIF($32, ''), rl.usage_source),
+		       success = COALESCE($33, rl.success),
+		       request_status = COALESCE($34, rl.request_status),
+		       error_kind = COALESCE($35, rl.error_kind),
+		       latency_ms = COALESCE($36, rl.latency_ms),
+		       identity_hash = COALESCE($37, rl.identity_hash),
+		       search_text = COALESCE($38, rl.search_text),
+		       gw_session_id = COALESCE($39, rl.gw_session_id),
+		       gw_task_id = COALESCE($40, rl.gw_task_id)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -614,6 +617,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ResponseChecksum,
 		entry.ResponsePreview,
 		entry.ResponseBody,
+		entry.FailureStage,
 		entry.FailureDetailCode,
 		entry.TransformRuleID,
 		entry.EgressProtocol,
@@ -872,6 +876,7 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.TransformRuleID)
 	sanitizeStringPtr(&e.EgressProtocol)
 	sanitizeStringPtr(&e.FailureDetailCode)
+	sanitizeStringPtr(&e.FailureStage)
 	sanitizeStringPtr(&e.RequestPreview)
 	sanitizeStringPtr(&e.TransformSummary)
 	sanitizeStringPtr(&e.ResponsePreview)
@@ -958,6 +963,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.ResponsePreview, src.ResponsePreview)
 	mergeStringPtr(&dst.ResponseBody, src.ResponseBody)
 	mergeStringPtr(&dst.FailureDetailCode, src.FailureDetailCode)
+	mergeStringPtr(&dst.FailureStage, src.FailureStage)
 	mergeStringPtr(&dst.TransformRuleID, src.TransformRuleID)
 	mergeStringPtr(&dst.EgressProtocol, src.EgressProtocol)
 	mergeStringPtr(&dst.RequestPreview, src.RequestPreview)

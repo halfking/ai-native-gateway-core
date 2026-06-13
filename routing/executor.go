@@ -119,6 +119,18 @@ type Executor struct {
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
 	FpSlots          *credentialfpslot.Manager
+	// PeakCollector records per-credential-model concurrency for the
+	// auto-tune background worker. Nil disables the feature.
+	PeakCollector interface {
+		Acquire(credID int64, model string)
+		Release(credID int64, model string)
+	}
+	// DisguisePool injects rotating User-Agent / Accept-Language headers.
+	// Nil disables the feature.
+	DisguisePool interface {
+		Headers() map[string]string
+		MaybeRotate()
+	}
 
 	StreamTimeout        time.Duration
 	UpstreamTimeout      time.Duration
@@ -371,6 +383,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue
 		}
 
+		// Track live peak concurrency for auto-tune.
+		if e.PeakCollector != nil {
+			e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
+		}
+
 		var execErr error
 		var result *ExecuteResult
 		switch cand.Protocol {
@@ -384,6 +401,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// All existing chat-style traffic goes through this branch;
 			// no behavior change from the pre-split executor.
 			result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
+		}
+		// Release peak tracking before the concurrency limiter so the
+		// next sample run sees the post-release state.
+		if e.PeakCollector != nil {
+			e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
 		}
 		release()
 		if fpLease != nil {

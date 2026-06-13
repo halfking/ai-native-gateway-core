@@ -207,6 +207,15 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 
+			// Apply disguise headers (User-Agent / Accept-Language rotation).
+			// These override any UA already set above.
+			if e.DisguisePool != nil {
+				for k, v := range e.DisguisePool.Headers() {
+					req.Header.Set(k, v)
+				}
+				e.DisguisePool.MaybeRotate()
+			}
+
 			var httpClient *http.Client
 			if e.Pools != nil {
 				poolKey := pool.PoolKey{

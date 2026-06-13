@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,14 @@ type Handler struct {
 	probeV2     *bg.CredentialProbeV2    // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker   // 900-series: default probe model (spec §4)
 	fpSlots     *credentialfpslot.Manager
+	peakCollector interface {
+		Acquire(credID int64, model string)
+		Release(credID int64, model string)
+		Stats() map[string]interface{}
+		GetLiveConcurrent(credID int64, model string) int64
+	}
+	refreshMu   sync.Mutex               // guards lazy init of refreshState
+	refreshState *providerRefreshState   // per-provider "refresh model list" tracking (see providers.go)
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -106,6 +115,18 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 
 func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {
 	h.fpSlots = m
+}
+
+// SetPeakCollector injects the concurrency peak collector so the admin
+// API can report live stats. Accepts a structural interface to avoid
+// an import cycle with the bg package's optional methods.
+func (h *Handler) SetPeakCollector(pc interface {
+	Acquire(credID int64, model string)
+	Release(credID int64, model string)
+	Stats() map[string]interface{}
+	GetLiveConcurrent(credID int64, model string) int64
+}) {
+	h.peakCollector = pc
 }
 
 func (h *Handler) fpSlotsDefaultLimit() int {
@@ -186,6 +207,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys/", admin(h.handleFreePoolKeysSubRouter))
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
 	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
+
+	// Peak concurrency + auto-tune endpoints (Phase 2).
+	if h.db != nil {
+		peakH := NewPeakHandlers(h.db)
+		peakH.RegisterPeakRoutes(mux, admin)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

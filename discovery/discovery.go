@@ -103,8 +103,8 @@ func (s *Service) Start(ctx context.Context) {
 	slog.Info("model discovery service starting", "interval", s.interval)
 
 	go func() {
-		// Run immediately on start
-		s.runDiscovery(ctx)
+		// Run immediately on start (full sweep; providerID=0 means all)
+		_ = s.runDiscovery(ctx, 0)
 
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
@@ -112,7 +112,7 @@ func (s *Service) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				s.runDiscovery(ctx)
+				_ = s.runDiscovery(ctx, 0)
 			case <-s.stopCh:
 				slog.Info("model discovery service stopping")
 				return
@@ -170,22 +170,28 @@ func (s *Service) Status() map[string]any {
 	}
 }
 
-// RunOnce triggers a single discovery run.
-func (s *Service) RunOnce(ctx context.Context) error {
+// RunOnce triggers a single discovery run for every active credential.
+// providerID == 0 means "all providers"; pass a positive ID to scope the
+// run to a single provider.
+func (s *Service) RunOnce(ctx context.Context, providerID int) error {
 	s.mu.Lock()
 	s.trigger = "manual"
 	s.startedAt = time.Now()
 	s.heartbeatAt = time.Now()
 	s.mu.Unlock()
-	return s.runDiscovery(ctx)
+	return s.runDiscovery(ctx, providerID)
 }
 
-func (s *Service) runDiscovery(ctx context.Context) error {
+func (s *Service) runDiscovery(ctx context.Context, providerID int) error {
 	start := time.Now()
-	slog.Info("model discovery started")
+	if providerID > 0 {
+		slog.Info("model discovery started (scoped)", "provider_id", providerID)
+	} else {
+		slog.Info("model discovery started")
+	}
 
 	// Get all active credentials with their providers
-	credentials, err := s.loadCredentials(ctx)
+	credentials, err := s.loadCredentials(ctx, providerID)
 	if err != nil {
 		slog.Error("failed to load credentials", "error", err)
 		return err
@@ -225,11 +231,20 @@ func (s *Service) runDiscovery(ctx context.Context) error {
 	s.heartbeatAt = time.Now()
 	s.mu.Unlock()
 
-	slog.Info("model discovery completed",
-		"duration", time.Since(start).String(),
-		"credentials", len(credentials),
-		"models", totalDiscovered,
-	)
+	if providerID > 0 {
+		slog.Info("model discovery completed (scoped)",
+			"provider_id", providerID,
+			"duration", time.Since(start).String(),
+			"credentials", len(credentials),
+			"models", totalDiscovered,
+		)
+	} else {
+		slog.Info("model discovery completed",
+			"duration", time.Since(start).String(),
+			"credentials", len(credentials),
+			"models", totalDiscovered,
+		)
+	}
 	return nil
 }
 
@@ -254,8 +269,23 @@ type credential struct {
 	ModelsManifestJSON     *string // from provider_catalog, JSON manifest fallback
 }
 
-func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
-	rows, err := s.db.Query(ctx, `
+func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]credential, error) {
+	// Base filter: only active, ready, non-quarantined credentials attached
+	// to an enabled provider.  When providerID > 0 we further restrict the
+	// scan to a single provider, which is what the per-provider refresh
+	// endpoint uses.
+	baseWhere := `
+		c.status = 'active'
+		  AND c.trust_level NOT IN ('quarantine')
+		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
+		  AND c.availability_state = 'ready'
+		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
+		  AND p.enabled = TRUE
+	`
+	var query string
+	var args []any
+	if providerID > 0 {
+		query = `
 		SELECT
 			c.id,
 			p.id AS provider_id,
@@ -270,13 +300,28 @@ func (s *Service) loadCredentials(ctx context.Context) ([]credential, error) {
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.status = 'active'
-		  AND c.trust_level NOT IN ('quarantine')
-		  AND c.lifecycle_status NOT IN ('suspended', 'retired', 'disabled')
-		  AND c.availability_state = 'ready'
-		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
-		  AND p.enabled = TRUE
-	`)
+		WHERE p.id = $1 AND ` + baseWhere
+		args = []any{providerID}
+	} else {
+		query = `
+		SELECT
+			c.id,
+			p.id AS provider_id,
+			p.display_name AS provider_name,
+			p.base_url,
+			p.protocol,
+			COALESCE(p.catalog_code, ''),
+			c.secret_ciphertext,
+			pc.models_endpoint_template,
+			COALESCE(pc.discovery_strategy, 'auto'),
+			pc.models_manifest_json
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		WHERE ` + baseWhere
+	}
+
+	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

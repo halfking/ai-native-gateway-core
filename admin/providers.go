@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -237,6 +238,15 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodGet {
 			h.queryProviderModels(w, r, providerID)
 		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "refresh-models":
+		switch r.Method {
+		case http.MethodPost:
+			h.startRefreshProviderModels(w, r, providerID)
+		case http.MethodGet:
+			h.getRefreshProviderModelsStatus(w, r, providerID)
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "logs":
@@ -3027,4 +3037,517 @@ type pickProbeResult struct {
 // Defined here to avoid an import cycle (admin does not import bg).
 func bgPickProbeModel(ctx context.Context, db *pgxpool.Pool, credID int) (pickProbeResult, error) {
 	return pickProbeModelForCredentialAdapter(ctx, db, credID)
+}
+
+// ── Per-provider model list refresh (force fetch from vendor API) ───────
+//
+// POST /api/providers/{id}/refresh-models
+//   202 Accepted    : { "accepted": true, "reason": "started", "run": {...} }
+//   404             : provider not found
+//   503             : discovery service not available
+//
+// GET /api/providers/{id}/refresh-models
+//   200             : { "running": {...} | null, "latest": {...} | null }
+//
+// The endpoint differs from the global /api/models/discover in two ways:
+//   1. scope is restricted to a single provider (and its credentials)
+//   2. it tracks per-provider status so the UI can show a live progress
+//      message ("正在从供应商读取数据…") and re-fetch offers on success.
+type providerRefreshStatus string
+
+const (
+	providerRefreshIdle    providerRefreshStatus = "idle"
+	providerRefreshRunning providerRefreshStatus = "running"
+	providerRefreshSucceed providerRefreshStatus = "succeeded"
+	providerRefreshFailed  providerRefreshStatus = "failed"
+)
+
+type providerRefreshRun struct {
+	RunID             string                `json:"run_id"`
+	ProviderID        int                   `json:"provider_id"`
+	Status            providerRefreshStatus `json:"status"`
+	StartedAt         time.Time             `json:"started_at"`
+	FinishedAt        *time.Time            `json:"finished_at,omitempty"`
+	HeartbeatAt       *time.Time            `json:"heartbeat_at,omitempty"`
+	CredentialsScanned int                  `json:"credentials_scanned"`
+	ModelsUpserted     int                  `json:"models_upserted"`
+	CredentialsFailed  int                  `json:"credentials_failed"`
+	Errors             []string             `json:"errors,omitempty"`
+	Message            string               `json:"message,omitempty"`
+}
+
+type providerRefreshState struct {
+	mu     sync.Mutex
+	latest map[int]*providerRefreshRun
+}
+
+// getProviderRefreshState lazily initialises the in-memory state tracker
+// the first time a refresh endpoint touches it.
+func (h *Handler) getProviderRefreshState() *providerRefreshState {
+	h.refreshMu.Lock()
+	defer h.refreshMu.Unlock()
+	if h.refreshState == nil {
+		h.refreshState = &providerRefreshState{latest: make(map[int]*providerRefreshRun)}
+	}
+	return h.refreshState
+}
+
+func (h *Handler) recordProviderRefresh(providerID int, run *providerRefreshRun) {
+	st := h.getProviderRefreshState()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.latest[providerID] = run
+}
+
+func (h *Handler) getProviderRefresh(providerID int) *providerRefreshRun {
+	st := h.getProviderRefreshState()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if run, ok := st.latest[providerID]; ok {
+		copy := *run
+		return &copy
+	}
+	return nil
+}
+
+func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	if h.discSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "discovery service not available")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	var (
+		providerCode    string
+		providerName    string
+		providerEnabled bool
+	)
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(code,''), COALESCE(display_name,''), enabled
+		FROM providers WHERE id = $1 AND tenant_id = 'default'
+	`, providerID).Scan(&providerCode, &providerName, &providerEnabled)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	if !providerEnabled {
+		writeError(w, http.StatusConflict, "provider is disabled")
+		return
+	}
+
+	runID := fmt.Sprintf("provider-refresh-%d-%d", providerID, time.Now().UnixNano())
+	now := time.Now()
+	run := &providerRefreshRun{
+		RunID:       runID,
+		ProviderID:  providerID,
+		Status:      providerRefreshRunning,
+		StartedAt:   now,
+		HeartbeatAt: &now,
+		Message:     "从供应商接口读取模型列表",
+	}
+	h.recordProviderRefresh(providerID, run)
+
+	slog.Info("provider refresh started",
+		"run_id", runID,
+		"provider_id", providerID,
+		"provider_code", providerCode,
+		"provider_name", providerName,
+	)
+
+	// Run in background so the POST returns 202 immediately.  We use a
+	// detached context so a client disconnect does not abort the
+	// upstream calls mid-flight.
+	go func() {
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer bgCancel()
+
+		creds, _ := h.fetchActiveCredentialsForProvider(bgCtx, providerID)
+
+		var (
+			totalUpserted int
+			totalFailed   int
+			errs          []string
+		)
+		for _, cred := range creds {
+			heartbeat := time.Now()
+			run.HeartbeatAt = &heartbeat
+			h.recordProviderRefresh(providerID, run)
+
+			upserted, failed, err := h.discoverAndUpsertForCredential(bgCtx, cred)
+			if err != nil {
+				totalFailed++
+				errs = append(errs, fmt.Sprintf("credential #%d %s: %s", cred.id, cred.label, err.Error()))
+				slog.Warn("provider refresh: credential failed",
+					"run_id", runID,
+					"provider_id", providerID,
+					"credential_id", cred.id,
+					"error", err,
+				)
+				continue
+			}
+			totalUpserted += upserted
+			totalFailed += failed
+		}
+
+		finishedAt := time.Now()
+		run.FinishedAt = &finishedAt
+		run.CredentialsScanned = len(creds)
+		run.ModelsUpserted = totalUpserted
+		run.CredentialsFailed = totalFailed
+		run.Errors = errs
+		if totalFailed > 0 && totalUpserted == 0 {
+			run.Status = providerRefreshFailed
+			run.Message = "刷新失败：所有凭据都返回错误"
+		} else {
+			run.Status = providerRefreshSucceed
+			run.Message = fmt.Sprintf("新增/更新 %d 个模型（凭据 %d 个，失败 %d 个）",
+				totalUpserted, len(creds), totalFailed)
+		}
+		h.recordProviderRefresh(providerID, run)
+
+		slog.Info("provider refresh finished",
+			"run_id", runID,
+			"provider_id", providerID,
+			"credentials", len(creds),
+			"upserted", totalUpserted,
+			"failed", totalFailed,
+		)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"reason":   "started",
+		"run":      run,
+	})
+}
+
+func (h *Handler) getRefreshProviderModelsStatus(w http.ResponseWriter, r *http.Request, providerID int) {
+	run := h.getProviderRefresh(providerID)
+	resp := map[string]any{
+		"running": nil,
+		"latest":  nil,
+	}
+	if run != nil {
+		if run.Status == providerRefreshRunning {
+			resp["running"] = run
+		} else {
+			resp["latest"] = run
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// credentialRowLite is a slim credential view used only by the per-provider
+// refresh path; we keep the columns tight so the background goroutine does
+// not pull fields it never reads.
+type credentialRowLite struct {
+	id                 int
+	label              string
+	providerID         int
+	providerName       string
+	baseURL            string
+	protocol           string
+	catalogCode        string
+	secretCipher       []byte
+	modelsEndpointTpl  *string
+	discoveryStrategy  string
+	modelsManifestJSON *string
+}
+
+func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, providerID int) ([]credentialRowLite, error) {
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			c.id, COALESCE(c.label,''), p.id, p.display_name,
+			COALESCE(p.base_url,''), COALESCE(p.protocol,''),
+			COALESCE(p.catalog_code, ''),
+			c.secret_ciphertext,
+			pc.models_endpoint_template,
+			COALESCE(pc.discovery_strategy, 'auto'),
+			pc.models_manifest_json
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		WHERE c.provider_id = $1
+		  AND c.status = 'active'
+		  AND p.enabled = TRUE
+		ORDER BY c.id
+	`, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []credentialRowLite
+	for rows.Next() {
+		var c credentialRowLite
+		if err := rows.Scan(&c.id, &c.label, &c.providerID, &c.providerName,
+			&c.baseURL, &c.protocol, &c.catalogCode,
+			&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON); err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// discoverAndUpsertForCredential replicates the vendor-API fetch +
+// upsert logic from discovery.discoverForCredential but stays in the
+// admin package so it can write to a per-provider status record and
+// remain decoupled from the global discovery Service.  Behavior must
+// match discovery.discoverForCredential: existing rows are kept, new
+// model names are inserted, and the credential health is updated.
+func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred credentialRowLite) (upserted int, failed int, err error) {
+	if cred.protocol == "anthropic-messages" {
+		return 0, 0, fmt.Errorf("anthropic-messages protocol does not expose a /models endpoint")
+	}
+
+	strategy := cred.discoveryStrategy
+	manifestOnly := strategy == "manifest" || strategy == "manifest_only"
+
+	modelsURL := ""
+	if cred.modelsEndpointTpl != nil {
+		tpl := strings.TrimSpace(*cred.modelsEndpointTpl)
+		if tpl != "" {
+			if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
+				modelsURL = tpl
+			} else {
+				base := strings.TrimRight(strings.TrimSpace(cred.baseURL), "/")
+				modelsURL = base + tpl
+			}
+		}
+	}
+	if modelsURL == "" && !manifestOnly {
+		modelsURL = upstreamurl.ModelsURL(cred.baseURL)
+	}
+
+	// Manifest-only or template="" or both: skip API call, use manifest.
+	if manifestOnly || modelsURL == "" {
+		models, mErr := extractManifestModels(cred.modelsManifestJSON)
+		if mErr != nil || len(models) == 0 {
+			return 0, 0, nil
+		}
+		for _, m := range models {
+			if uErr := h.upsertModelForProvider(ctx, cred.id, m); uErr != nil {
+				failed++
+				continue
+			}
+			upserted++
+		}
+		h.updateCredHealth(ctx, cred.id, "healthy", "")
+		return upserted, failed, nil
+	}
+
+	apiKey, decErr := h.decryptCredStr(string(cred.secretCipher))
+	if decErr != nil {
+		return 0, 0, fmt.Errorf("decrypt credential: %w", decErr)
+	}
+
+	models, fErr := fetchVendorModels(ctx, modelsURL, apiKey)
+	if fErr != nil {
+		// Fallback to manifest on API error (same as discovery.discoverForCredential)
+		models, _ = extractManifestModels(cred.modelsManifestJSON)
+		if len(models) == 0 {
+			h.updateCredHealth(ctx, cred.id, "unreachable", fErr.Error())
+			return 0, 0, fErr
+		}
+	}
+	for _, m := range models {
+		if uErr := h.upsertModelForProvider(ctx, cred.id, m); uErr != nil {
+			failed++
+			continue
+		}
+		upserted++
+	}
+	h.updateCredHealth(ctx, cred.id, "healthy", "")
+	return upserted, failed, nil
+}
+
+func fetchVendorModels(ctx context.Context, url, apiKey string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	return parseVendorModelsBody(body)
+}
+
+func parseVendorModelsBody(data []byte) ([]string, error) {
+	// Standard OpenAI format: {"data": [{"id": "..."}]}
+	var openai struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
+		var ids []string
+		for _, m := range openai.Data {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+
+	// Alt format: {"models": [{"id": "..."}]}
+	var alt struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &alt); err == nil && len(alt.Models) > 0 {
+		var ids []string
+		for _, m := range alt.Models {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+
+	// Bare array
+	var bare []string
+	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
+		return bare, nil
+	}
+
+	// Array of objects
+	var objArray []map[string]any
+	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
+		var ids []string
+		for _, m := range objArray {
+			if id, ok := m["id"].(string); ok && id != "" {
+				ids = append(ids, id)
+			} else if name, ok := m["name"].(string); ok && name != "" {
+				ids = append(ids, name)
+			} else if model, ok := m["model"].(string); ok && model != "" {
+				ids = append(ids, model)
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unrecognized models response format")
+}
+
+func extractManifestModels(manifest *string) ([]string, error) {
+	if manifest == nil || *manifest == "" {
+		return nil, nil
+	}
+	data := []byte(*manifest)
+
+	// Try {"models": [{"id": "..."}]}
+	var wrap struct {
+		Models []struct {
+			ID string `json:"id"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(data, &wrap); err == nil && len(wrap.Models) > 0 {
+		var ids []string
+		for _, m := range wrap.Models {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			}
+		}
+		return ids, nil
+	}
+
+	// Try {"data": [{"id": "..."}]}
+	var openai struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
+		var ids []string
+		for _, m := range openai.Data {
+			if m.ID != "" {
+				ids = append(ids, m.ID)
+			}
+		}
+		return ids, nil
+	}
+
+	// Try bare array
+	var bare []string
+	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
+		return bare, nil
+	}
+
+	// Try array of objects
+	var objArray []map[string]any
+	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
+		var ids []string
+		for _, m := range objArray {
+			if id, ok := m["id"].(string); ok && id != "" {
+				ids = append(ids, id)
+			} else if name, ok := m["name"].(string); ok && name != "" {
+				ids = append(ids, name)
+			}
+		}
+		return ids, nil
+	}
+	return nil, nil
+}
+
+// upsertModelForProvider inserts (or no-ops on duplicate) one model_offer
+// row.  Existence is determined by (credential_id, raw_model_name); if a
+// row already exists we touch last_seen_at and clear unavailable_* so a
+// previously-expired binding comes back online.  We do NOT touch the
+// canonical_id, standardized_name, or admin_protected flag here — the
+// only mutator of those is the existing PATCH /api/providers/.../models
+// drawer in ModelsTab.vue.
+func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO model_offers
+			(credential_id, raw_model_name, available, last_seen_at)
+		VALUES ($1, $2, TRUE, NOW())
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET available = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at = NULL,
+		    last_seen_at = NOW()
+	`, credentialID, rawName)
+	return err
+}
+
+func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {
+	_, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET health_status = $1, health_error = $2, health_checked_at = NOW()
+		WHERE id = $3
+	`, status, errMsg, credentialID)
+	if err != nil {
+		slog.Debug("updateCredHealth failed", "credential_id", credentialID, "error", err)
+	}
 }

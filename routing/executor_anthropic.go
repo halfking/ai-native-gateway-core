@@ -375,6 +375,14 @@ func (e *Executor) executeAnthropicOnce(
 		req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
 	}
 
+	// Apply disguise headers (User-Agent / Accept-Language rotation).
+	if e.DisguisePool != nil {
+		for k, v := range e.DisguisePool.Headers() {
+			req.Header.Set(k, v)
+		}
+		e.DisguisePool.MaybeRotate()
+	}
+
 	var httpClient *http.Client
 	var reqPool *pool.Pool
 	if e.Pools != nil {
