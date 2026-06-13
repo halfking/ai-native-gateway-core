@@ -34,6 +34,7 @@ type requestLogRow struct {
 	CostCurrency       *string    `json:"cost_currency"`
 	LatencyMs          *int       `json:"latency_ms"`
 	Success            bool       `json:"success"`
+	RequestStatus      string     `json:"request_status"`
 	ErrorKind          *string    `json:"error_kind"`
 	SearchText         *string    `json:"search_text"`
 	IdentityHash       *string    `json:"identity_hash"`
@@ -66,6 +67,15 @@ type requestLogDetail struct {
 	ResponseBody any `json:"response_body"`
 }
 
+const requestLogStatusExpr = `COALESCE(
+	NULLIF(rl.request_status, ''),
+	CASE
+		WHEN rl.success THEN 'success'
+		WHEN rl.error_kind IS NOT NULL AND rl.error_kind <> '' THEN 'failure'
+		ELSE 'in_progress'
+	END
+)`
+
 const requestLogsSelectCols = `
 	rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
 	rl.client_model, rl.outbound_model,
@@ -75,7 +85,9 @@ const requestLogsSelectCols = `
 	rl.client_profile, rl.request_mode,
 	rl.prompt_tokens, rl.completion_tokens,
 	rl.cache_read_tokens, rl.cache_write_tokens, rl.total_tokens,
-	rl.cost_usd::float8, rl.cost_display::float8, rl.cost_currency, rl.latency_ms, rl.success, rl.error_kind, rl.search_text,
+	rl.cost_usd::float8, rl.cost_display::float8, rl.cost_currency, rl.latency_ms, rl.success,
+	` + requestLogStatusExpr + ` AS request_status,
+	rl.error_kind, rl.search_text,
 	rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
 	rl.affinity_hit, rl.request_checksum, rl.response_checksum,
 	rl.transform_rule_id, rl.egress_protocol, rl.failure_stage, rl.failure_detail_code,
@@ -119,7 +131,7 @@ func scanRequestLogRow(rows interface {
 		&l.ClientProfile, &l.RequestMode,
 		&l.PromptTokens, &l.CompletionTokens,
 		&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
-		&l.CostUSD, &l.CostDisplay, &l.CostCurrency, &l.LatencyMs, &l.Success, &l.ErrorKind, &l.SearchText,
+		&l.CostUSD, &l.CostDisplay, &l.CostCurrency, &l.LatencyMs, &l.Success, &l.RequestStatus, &l.ErrorKind, &l.SearchText,
 		&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
 		&l.AffinityHit, &l.RequestChecksum, &l.ResponseChecksum,
 		&l.TransformRuleID, &l.EgressProtocol, &l.FailureStage, &l.FailureDetailCode,
@@ -187,8 +199,24 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(queryString(r, "error_kind")); v != "" {
 		addFilter("rl.error_kind = $%d", v)
 	}
-	if v := queryOptionalBool(r, "success"); v != nil {
-		addFilter("rl.success = $%d", *v)
+	if v := strings.TrimSpace(queryString(r, "request_status")); v != "" {
+		switch v {
+		case "in_progress", "success", "failure":
+			clauses = append(clauses, fmt.Sprintf("(%s) = $%d", requestLogStatusExpr, argIdx))
+			args = append(args, v)
+			argIdx++
+		default:
+			writeError(w, http.StatusBadRequest, "request_status must be 'in_progress', 'success', or 'failure'")
+			return
+		}
+	} else if v := queryOptionalBool(r, "success"); v != nil {
+		status := "failure"
+		if *v {
+			status = "success"
+		}
+		clauses = append(clauses, fmt.Sprintf("(%s) = $%d", requestLogStatusExpr, argIdx))
+		args = append(args, status)
+		argIdx++
 	}
 	if v := queryIntPtr(r, "canonical_id"); v != nil {
 		addFilter("rl.canonical_id = $%d", *v)

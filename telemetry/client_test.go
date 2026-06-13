@@ -41,3 +41,37 @@ func TestClient_EmitDoesNotBlock(t *testing.T) {
 	}
 	c.Stop()
 }
+
+func TestResolveRequestStatus(t *testing.T) {
+	t.Parallel()
+	errKind := "timeout"
+	cases := []struct {
+		name      string
+		success   bool
+		errorKind *string
+		initial   bool
+		want      string
+	}{
+		{name: "success", success: true, want: RequestStatusSuccess},
+		{name: "failure", success: false, errorKind: &errKind, want: RequestStatusFailure},
+		{name: "initial in progress", success: false, initial: true, want: RequestStatusInProgress},
+		{name: "update without error still in progress", success: false, initial: false, want: RequestStatusInProgress},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ResolveRequestStatus(tc.success, tc.errorKind, tc.initial); got != tc.want {
+				t.Fatalf("ResolveRequestStatus() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeRequestStatus(t *testing.T) {
+	entry := &RequestLogEntry{Op: RequestLogInsert, Success: false}
+	normalizeRequestStatus(entry)
+	if entry.RequestStatus == nil || *entry.RequestStatus != RequestStatusInProgress {
+		t.Fatalf("expected in_progress, got %#v", entry.RequestStatus)
+	}
+}
