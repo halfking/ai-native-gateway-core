@@ -51,18 +51,22 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	_, err := d.pool.Exec(ctx, `
 		ALTER TABLE request_logs
 		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
-		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT;
+		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT,
+		    ADD COLUMN IF NOT EXISTS request_status TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_task_ts
 		    ON request_logs (gw_task_id, ts DESC)
 		    WHERE gw_task_id IS NOT NULL AND gw_task_id <> '';
+		CREATE INDEX IF NOT EXISTS idx_request_logs_status_ts
+		    ON request_logs (request_status, ts DESC)
+		    WHERE request_status IS NOT NULL AND request_status <> '';
 	`)
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status)")
 	return nil
 }
 
