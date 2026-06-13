@@ -20,7 +20,7 @@ const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const modelFilter = ref('')
 const hours = ref(24)
-const successFilter = ref<'' | 'success' | 'failure'>('')
+const successFilter = ref<'' | 'success' | 'failure' | 'in_progress'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
@@ -64,10 +64,17 @@ const ERROR_KIND_LABELS: Record<string, string> = {
 }
 
 function statusLabel(row: RequestLogRow): string {
-  if (row.success) return '成功'
+  if (row.request_status === 'in_progress') return '请求中'
+  if (row.request_status === 'success' || row.success) return '成功'
   const kind = row.error_kind || ''
   if (ERROR_KIND_LABELS[kind]) return ERROR_KIND_LABELS[kind]
   return kind || '失败'
+}
+
+function statusColor(row: RequestLogRow): string {
+  if (row.request_status === 'in_progress') return 'var(--warning, #f59e0b)'
+  if (row.request_status === 'success' || row.success) return 'var(--success)'
+  return 'var(--danger)'
 }
 
 async function load() {
@@ -75,13 +82,12 @@ async function load() {
   error.value = null
   try {
     const range = timeRange()
-    const successParam = successFilter.value === '' ? undefined : successFilter.value === 'success'
     const resp: RequestLogsResponse = await getRequestLogs({
       api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
       from: range.from,
       to: range.to,
       q: keyword.value.trim() || undefined,
-      success: successParam,
+      request_status: successFilter.value === '' ? undefined : successFilter.value,
       error_kind: errorKindFilter.value.trim() || undefined,
       model: modelFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
@@ -203,7 +209,7 @@ const route = useRoute()
 
 onMounted(async () => {
   const q = route.query
-  if (q.success === 'success' || q.success === 'failure') {
+  if (q.success === 'success' || q.success === 'failure' || q.success === 'in_progress') {
     successFilter.value = q.success
   }
   if (typeof q.error_kind === 'string' && q.error_kind.trim()) {
@@ -238,6 +244,7 @@ onMounted(async () => {
         </select>
         <select v-model="successFilter" class="cf-select cf-status" title="结果">
           <option value="">全部</option>
+          <option value="in_progress">请求中</option>
           <option value="success">成功</option>
           <option value="failure">失败</option>
         </select>
@@ -369,7 +376,7 @@ onMounted(async () => {
             <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_write_tokens, r.usage_source) }}</td>
             <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }" :title="r.error_kind || ''">{{ statusLabel(r) }}</td>
+            <td :style="{ color: statusColor(r) }" :title="r.error_kind || ''">{{ statusLabel(r) }}</td>
           </tr>
         </tbody>
       </table>

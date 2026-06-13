@@ -790,6 +790,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		RequestMode:      strPtr(requestMode),
 		LatencyMs:        intPtr(result.LatencyMs),
 		Success:          true,
+		RequestStatus:    strPtr(telemetry.RequestStatusSuccess),
 		IdentityHash:     strPtr(evt.IdentityHash),
 		RequestPreview:   requestPreviewPtr,
 		TransformSummary: transformSummaryPtr,
@@ -835,6 +836,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 				isErr, detailCode := classifyStreamInterruption(m)
 				if isErr {
 					reqLog.Success = false
+					reqLog.RequestStatus = strPtr(telemetry.RequestStatusFailure)
 					reqLog.ErrorKind = strPtr("stream_error")
 				}
 				if detailCode != "" {
@@ -1017,6 +1019,7 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 		GwTaskID:      strPtr(gwTaskID),
 		LatencyMs:     &latency,
 		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusFailure),
 		ErrorKind:     strPtr(errCode),
 		RequestBody:   requestBodyText,
 		RequestPreview: requestPreviewPtr,
@@ -1098,6 +1101,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 		GwSessionID:        strPtr(gwSessionID),
 		GwTaskID:           strPtr(gwTaskID),
 		Success:            false,
+		RequestStatus:      strPtr(telemetry.RequestStatusInProgress),
 		RequestBody:        requestBodyText,
 		RequestPreview:     requestPreviewPtr,
 		TransformSummary:   transformSummaryPtr,

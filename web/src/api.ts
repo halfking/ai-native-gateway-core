@@ -1301,6 +1301,7 @@ export interface RequestLogRow {
   cost_currency: string | null
   latency_ms: number | null
   success: boolean
+  request_status: 'in_progress' | 'success' | 'failure'
   error_kind: string | null
   search_text: string | null
   identity_hash: string | null
@@ -1344,6 +1345,7 @@ export function getRequestLogs(params: {
   q?: string
   model?: string
   error_kind?: string
+  request_status?: 'in_progress' | 'success' | 'failure'
   success?: boolean
   canonical_id?: number
   usage_source?: 'llm' | 'estimated'
@@ -1362,6 +1364,7 @@ export function getRequestLogs(params: {
   if (params.q) qs.set('q', params.q)
   if (params.model) qs.set('model', params.model)
   if (params.error_kind) qs.set('error_kind', params.error_kind)
+  if (params.request_status) qs.set('request_status', params.request_status)
   if (params.success != null) qs.set('success', String(params.success))
   if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
   if (params.usage_source) qs.set('usage_source', params.usage_source)

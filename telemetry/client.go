@@ -66,6 +66,13 @@ const (
 	RequestLogUpdate RequestLogOp = "update"
 )
 
+// Request log lifecycle status stored in request_logs.request_status.
+const (
+	RequestStatusInProgress = "in_progress"
+	RequestStatusSuccess    = "success"
+	RequestStatusFailure    = "failure"
+)
+
 type RequestLogEntry struct {
 	Op RequestLogOp `json:"op,omitempty"`
 	RequestID          string   `json:"request_id"`
@@ -89,6 +96,7 @@ type RequestLogEntry struct {
 	CostCurrency       *string  `json:"cost_currency,omitempty"`
 	LatencyMs          *int     `json:"latency_ms,omitempty"`
 	Success            bool     `json:"success"`
+	RequestStatus      *string  `json:"request_status,omitempty"`
 	ErrorKind          *string  `json:"error_kind,omitempty"`
 	// UsageSource indicates where the token counts came from:
 	//   "llm"       — extracted from upstream response.usage block
@@ -291,6 +299,7 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 }
 
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
+	normalizeRequestStatus(entry)
 	if entry.Op == RequestLogUpdate {
 		return c.updateRequestLog(entry)
 	}
@@ -365,7 +374,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			prompt_tokens, completion_tokens,
 			cache_read_tokens, cache_write_tokens, total_tokens,
 			cost_usd, cost_display, cost_currency,
-			latency_ms, success, error_kind, search_text,
+			latency_ms, success, request_status, error_kind, search_text,
 			identity_hash, response_checksum,
 			transform_rule_id, egress_protocol, failure_detail_code,
 			request_preview, transform_summary, response_preview,
@@ -382,15 +391,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$13, $14,
 			$15, $16, $17,
 			$18, $19, $20,
-			$21, $22, $23, $24,
-			$25, $26,
-			$27, $28, $29,
-			$30, $31, $32,
-			CAST($33 AS jsonb), CAST($34 AS jsonb),
-			$35, $36, $37,
-			$38,
+			$21, $22, $23, $24, $25,
+			$26, $27,
+			$28, $29, $30,
+			$31, $32, $33,
+			CAST($34 AS jsonb), CAST($35 AS jsonb),
+			$36, $37, $38,
 			$39,
-			$40, $41
+			$40, $41, $42
 		)
 	`,
 		entry.RequestID,
@@ -415,6 +423,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.CostCurrency,
 		entry.LatencyMs,
 		entry.Success,
+		entry.RequestStatus,
 		entry.ErrorKind,
 		searchText(entry),
 		entry.IdentityHash,
@@ -570,12 +579,13 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       request_body = COALESCE(CAST($30 AS jsonb), rl.request_body),
 		       usage_source = COALESCE(NULLIF($31, ''), rl.usage_source),
 		       success = COALESCE($32, rl.success),
-		       error_kind = COALESCE($33, rl.error_kind),
-		       latency_ms = COALESCE($34, rl.latency_ms),
-		       identity_hash = COALESCE($35, rl.identity_hash),
-		       search_text = COALESCE($36, rl.search_text),
-		       gw_session_id = COALESCE($37, rl.gw_session_id),
-		       gw_task_id = COALESCE($38, rl.gw_task_id)
+		       request_status = COALESCE($33, rl.request_status),
+		       error_kind = COALESCE($34, rl.error_kind),
+		       latency_ms = COALESCE($35, rl.latency_ms),
+		       identity_hash = COALESCE($36, rl.identity_hash),
+		       search_text = COALESCE($37, rl.search_text),
+		       gw_session_id = COALESCE($38, rl.gw_session_id),
+		       gw_task_id = COALESCE($39, rl.gw_task_id)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -612,6 +622,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.RequestBody,
 		nonEmptyPtr(entry.UsageSource, ""),
 		boolptr(entry.Success),
+		entry.RequestStatus,
 		entry.ErrorKind,
 		entry.LatencyMs,
 		entry.IdentityHash,
@@ -733,6 +744,31 @@ func searchText(entry *RequestLogEntry) *string {
 	}
 	joined := strings.Join(parts, " ")
 	return &joined
+}
+
+func normalizeRequestStatus(entry *RequestLogEntry) {
+	if entry == nil {
+		return
+	}
+	if entry.RequestStatus != nil && *entry.RequestStatus != "" {
+		return
+	}
+	status := ResolveRequestStatus(entry.Success, entry.ErrorKind, entry.Op == RequestLogInsert)
+	entry.RequestStatus = &status
+}
+
+// ResolveRequestStatus derives the three-state lifecycle label used by request_logs.
+func ResolveRequestStatus(success bool, errorKind *string, isInitialInsert bool) string {
+	if success {
+		return RequestStatusSuccess
+	}
+	if errorKind != nil && strings.TrimSpace(*errorKind) != "" {
+		return RequestStatusFailure
+	}
+	if isInitialInsert {
+		return RequestStatusInProgress
+	}
+	return RequestStatusInProgress
 }
 
 // sanitizeUTF8 returns a copy of s with every invalid UTF-8 byte sequence
@@ -929,12 +965,23 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.RequestBody, src.RequestBody)
 	mergeStringPtr(&dst.UsageSource, src.UsageSource)
 	mergeStringPtr(&dst.ErrorKind, src.ErrorKind)
+	mergeStringPtr(&dst.RequestStatus, src.RequestStatus)
 	mergeIntPtr(&dst.LatencyMs, src.LatencyMs)
 	mergeStringPtr(&dst.IdentityHash, src.IdentityHash)
 	mergeStringPtr(&dst.GwSessionID, src.GwSessionID)
 	mergeStringPtr(&dst.GwTaskID, src.GwTaskID)
 	if src.Success {
 		dst.Success = true
+	}
+	if src.RequestStatus != nil && *src.RequestStatus != "" {
+		v := *src.RequestStatus
+		dst.RequestStatus = &v
+	} else if src.Success {
+		v := RequestStatusSuccess
+		dst.RequestStatus = &v
+	} else if src.ErrorKind != nil && *src.ErrorKind != "" {
+		v := RequestStatusFailure
+		dst.RequestStatus = &v
 	}
 }
 
