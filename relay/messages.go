@@ -615,6 +615,7 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 
 	finishReason := "stop"
 	textContent := ""
+	reasoningContent := ""
 	var toolCalls []map[string]any
 
 	if len(choices) > 0 {
@@ -623,6 +624,9 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 			finishReason = mapAnthropicStopReason(fr)
 		}
 		if msg, ok := choice["message"].(map[string]any); ok {
+			if rc, ok := msg["reasoning_content"].(string); ok {
+				reasoningContent = rc
+			}
 			if c, ok := msg["content"].(string); ok {
 				textContent = c
 			}
@@ -648,6 +652,12 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 	}
 
 	contentBlocks := []map[string]any{}
+	if reasoningContent != "" {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":     "thinking",
+			"thinking": reasoningContent,
+		})
+	}
 	if textContent != "" {
 		contentBlocks = append(contentBlocks, map[string]any{
 			"type": "text",
