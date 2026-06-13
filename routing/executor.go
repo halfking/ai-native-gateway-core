@@ -603,7 +603,11 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
 		return
 	}
-	stickyTTL := time.Duration(params.Policy.StickyTTLMilliseconds) * time.Millisecond // M-6: was * time.Second — field is in milliseconds
+	// Policy.StickyTTLSeconds is in seconds (DB column `sticky_ttl_seconds`).
+	// 2026-06-13: the previous code multiplied this value by Millisecond,
+	// which collapsed the intended 1800s TTL to ~1.8s and the
+	// minute-floor in this function masked the bug for years.
+	stickyTTL := time.Duration(params.Policy.StickyTTLSeconds) * time.Second
 	if stickyTTL < time.Minute {
 		stickyTTL = time.Minute
 	}
