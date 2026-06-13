@@ -24,8 +24,8 @@ func TestAuditCriticalEdgeCases(t *testing.T) {
 		{"strip /v1/messages", ModelsURL, "https://api.example.com/v1/messages", "https://api.example.com/v1/models"},
 		{"strip /v1/models", ModelsURL, "https://api.example.com/v1/models", "https://api.example.com/v1/models"},
 
-		// Full endpoint URL as base → strip suffix then strip /vN
-		{"full models endpoint volcengine", ModelsURL, "https://ark.cn-beijing.volces.com/api/v3/models", "https://ark.cn-beijing.volces.com/api/v1/models"},
+		// Full endpoint URL as base → strip suffix, preserve /vN
+		{"full models endpoint volcengine", ModelsURL, "https://ark.cn-beijing.volces.com/api/v3/models", "https://ark.cn-beijing.volces.com/api/v3/models"},
 
 		// /v1beta must NOT be stripped
 		{"preserve /v1beta", ModelsURL, "https://generativelanguage.googleapis.com/v1beta", "https://generativelanguage.googleapis.com/v1beta/v1/models"},
@@ -84,10 +84,10 @@ func TestAuditCompletionSuffixesOrder(t *testing.T) {
 	// Verify that longer suffixes are checked before shorter ones.
 	// If /v1/chat/completions and /chat/completions are both present,
 	// the /v1/ version must be checked first for a URL ending in /v1/chat/completions.
-	got := stripTail("https://api.example.com/v1/chat/completions")
+	got := stripCompletionSuffix("https://api.example.com/v1/chat/completions")
 	want := "https://api.example.com"
 	if got != want {
-		t.Errorf("stripTail(/v1/chat/completions) = %q, want %q", got, want)
+		t.Errorf("stripCompletionSuffix(/v1/chat/completions) = %q, want %q", got, want)
 	}
 }
 
@@ -142,9 +142,9 @@ func TestAuditBuild(t *testing.T) {
 		{"https://api.openai.com", EpMessages, "https://api.openai.com/v1/messages"},
 		{"https://api.openai.com", EpResponses, "https://api.openai.com/v1/responses"},
 
-		// Volcengine
-		{"https://ark.cn-beijing.volces.com/api/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/v1/chat/completions"},
-		{"https://ark.cn-beijing.volces.com/api/v3", EpModels, "https://ark.cn-beijing.volces.com/api/v1/models"},
+		// Volcengine — /v3 preserved (not stripped to /v1)
+		{"https://ark.cn-beijing.volces.com/api/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{"https://ark.cn-beijing.volces.com/api/v3", EpModels, "https://ark.cn-beijing.volces.com/api/v3/models"},
 
 		// Empty
 		{"", EpChatCompletions, ""},

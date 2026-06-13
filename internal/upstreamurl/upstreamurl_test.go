@@ -20,17 +20,17 @@ func TestBuild(t *testing.T) {
 		{"openai chat completions suffix", "https://api.openai.com/v1/chat/completions", EpChatCompletions, "https://api.openai.com/v1/chat/completions"},
 		{"anthropic messages suffix", "https://api.anthropic.com/v1/messages", EpMessages, "https://api.anthropic.com/v1/messages"},
 
-		// Mid-path /v3, /v4 must be preserved, trailing /vN stripped.
-		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", EpChatCompletions, "https://open.bigmodel.cn/api/coding/paas/v1/chat/completions"},
-		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/v1/chat/completions"},
-		{"volcano-coding mid /v3", "https://ark.cn-beijing.volces.com/api/coding/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/coding/v1/chat/completions"},
+		// Mid-path /v3, /v4 must be preserved (not stripped to /v1).
+		{"zhipu mid /v4", "https://open.bigmodel.cn/api/coding/paas/v4", EpChatCompletions, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},
+		{"volcano mid /v3", "https://ark.cn-beijing.volces.com/api/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{"volcano-coding mid /v3", "https://ark.cn-beijing.volces.com/api/coding/v3", EpChatCompletions, "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"},
 
 		// /v1beta is NOT a digits-only version → must be preserved.
 		{"gemini /v1beta mid", "https://generativelanguage.googleapis.com/v1beta/openai", EpChatCompletions, "https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions"},
 
-		// v2-v9 trailing → strip and re-add /v1.
-		{"v2 trailing", "https://api.example.com/v2", EpChatCompletions, "https://api.example.com/v1/chat/completions"},
-		{"v9 trailing", "https://api.example.com/v9", EpChatCompletions, "https://api.example.com/v1/chat/completions"},
+		// v2-v9 trailing → preserved (provider uses its own version).
+		{"v2 trailing", "https://api.example.com/v2", EpChatCompletions, "https://api.example.com/v2/chat/completions"},
+		{"v9 trailing", "https://api.example.com/v9", EpChatCompletions, "https://api.example.com/v9/chat/completions"},
 
 		// Trailing slash.
 		{"trailing slash v1", "https://api.openai.com/v1/", EpChatCompletions, "https://api.openai.com/v1/chat/completions"},
@@ -63,9 +63,9 @@ func TestConvenienceShorthands(t *testing.T) {
 		fn             func(string) string
 	}{
 		{"ModelsURL openai", "https://api.openai.com", "https://api.openai.com/v1/models", ModelsURL},
-		{"ModelsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v1/models", ModelsURL},
+		{"ModelsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/models", ModelsURL},
 		{"ChatCompletionsURL openai", "https://api.openai.com", "https://api.openai.com/v1/chat/completions", ChatCompletionsURL},
-		{"ChatCompletionsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v1/chat/completions", ChatCompletionsURL},
+		{"ChatCompletionsURL volcano v3", "https://ark.cn-beijing.volces.com/api/v3", "https://ark.cn-beijing.volces.com/api/v3/chat/completions", ChatCompletionsURL},
 		{"MessagesURL anthropic", "https://api.anthropic.com", "https://api.anthropic.com/v1/messages", MessagesURL},
 		{"ResponsesURL openai", "https://api.openai.com", "https://api.openai.com/v1/responses", ResponsesURL},
 	}

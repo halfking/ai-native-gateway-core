@@ -24,6 +24,10 @@ import (
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
+// Default minimax-m3 catalog context window (512K). DB models_canonical is SSoT for runtime;
+// keep in sync via deploy/sql/20260613-minimax-m3-context-window-512k.sql.
+const MinimaxM3ContextWindow = 512_000
+
 const maxBodySize = 32 << 20
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
@@ -43,6 +47,24 @@ type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm Nor
 // passthrough hook (relay/anthropic_passthrough_stream.go). Wired from
 // main.go so the routing package does not import relay.
 type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+
+// ChatToAnthropicFunc converts an OpenAI chat completions body to
+// Anthropic Messages format. Wired from main.go so the routing
+// package does not import relay.
+type ChatToAnthropicFunc func(body []byte) ([]byte, error)
+
+// AnthropicToOpenAIFunc converts an Anthropic Messages body to OpenAI
+// chat completions format. Wired from main.go so the routing package
+// does not import relay.
+type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
+
+// SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
+// an Anthropic Messages request body before forwarding to upstream.
+type SanitizeAnthropicToolsFunc func(body []byte) []byte
+
+// NormalizeOpenAIToolsFunc normalizes tools[] in a chat body to nested
+// OpenAI-Chat shape.
+type NormalizeOpenAIToolsFunc func(body []byte) []byte
 
 // XMLCoerceNonStreamFunc transforms a non-streaming chat response body,
 // rewriting any `<tool_call><function=...>` XML embedded in assistant
@@ -67,8 +89,20 @@ type Executor struct {
 	// AnthropicPassthroughStream is the Q4 Anthropic SSE forwarder with
 	// side-channel audit capture. Wired from main.go (relay.StreamAnthropicPassthrough).
 	AnthropicPassthroughStream AnthropicPassthroughFunc
+	// ChatToAnthropic converts OpenAI chat body to Anthropic Messages
+	// format. Used by executeAnthropic when ClientProtocol != "anthropic-messages".
+	ChatToAnthropic ChatToAnthropicFunc
+	// AnthropicToOpenAI converts Anthropic Messages body to OpenAI chat
+	// format. Used by executeOpenAI when ClientProtocol == "anthropic-messages".
+	AnthropicToOpenAI AnthropicToOpenAIFunc
+	// SanitizeAnthropicTools strips invalid tool type fields from Anthropic
+	// Messages bodies (Q3/Q4) before forwarding to minimax/anthropic upstream.
+	SanitizeAnthropicTools SanitizeAnthropicToolsFunc
+	// NormalizeOpenAITools coerces flat/anthropic tool defs to OpenAI-Chat shape.
+	NormalizeOpenAITools NormalizeOpenAIToolsFunc
 	Auditor       audit.Sink
 	State         *credentialstate.Writer
+	Provider      *provider.Client
 	DB            *db.DB
 	HeaderProfiles *HeaderProfileCache
 	FpSlots          *credentialfpslot.Manager
@@ -671,6 +705,19 @@ type retryableError struct {
 }
 
 func (e *retryableError) Error() string { return e.err.Error() }
+
+// contextLengthHTTPError signals the upstream rejected the request because
+// the prompt exceeded the model context window. executeAnthropic uses this
+// to attempt one client-side trim + retry before bubbling the 4xx up.
+type contextLengthHTTPError struct {
+	status  int
+	body    []byte
+	headers http.Header
+}
+
+func (e *contextLengthHTTPError) Error() string {
+	return fmt.Sprintf("upstream %d context_length_exceeded", e.status)
+}
 
 func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	switch kind {

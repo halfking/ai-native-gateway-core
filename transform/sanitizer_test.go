@@ -190,3 +190,169 @@ func TestIsToolUseCapable_ProtocolFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestSimplifyTools_CanonicalShape(t *testing.T) {
+	// Already canonical — should pass through unchanged.
+	in := []byte(`{
+		"model":"minimax-m3",
+		"tools":[{
+			"type":"function",
+			"function":{"name":"get_weather","description":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+		}]
+	}`)
+	out := SimplifyTools(in)
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	tools := v["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "function" {
+		t.Error("type should be function")
+	}
+	fn := tool["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Error("name lost")
+	}
+}
+
+func TestSimplifyTools_MissingType(t *testing.T) {
+	// Missing type field — should add type=function.
+	in := []byte(`{
+		"model":"minimax-m3",
+		"tools":[{
+			"name":"get_weather",
+			"description":"weather",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+		}]
+	}`)
+	out := SimplifyTools(in)
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	tools := v["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "function" {
+		t.Errorf("type should be function, got %v", tool["type"])
+	}
+	fn := tool["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Errorf("name lost, got %v", fn["name"])
+	}
+	if fn["description"] != "weather" {
+		t.Errorf("description lost, got %v", fn["description"])
+	}
+}
+
+func TestSimplifyTools_TopLevelFunctionFields(t *testing.T) {
+	// Function fields at top level (no wrapper) — should wrap them.
+	in := []byte(`{
+		"model":"minimax-m3",
+		"tools":[{
+			"type":"function",
+			"name":"get_weather",
+			"description":"weather",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}}}
+		}]
+	}`)
+	out := SimplifyTools(in)
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	tools := v["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "function" {
+		t.Errorf("type should be function, got %v", tool["type"])
+	}
+	fn, ok := tool["function"].(map[string]any)
+	if !ok {
+		t.Fatal("function should be a map")
+	}
+	if fn["name"] != "get_weather" {
+		t.Errorf("name lost, got %v", fn["name"])
+	}
+}
+
+func TestSimplifyTools_MissingOptionalFields(t *testing.T) {
+	// Missing description and parameters — should add defaults.
+	in := []byte(`{
+		"model":"minimax-m3",
+		"tools":[{
+			"type":"function",
+			"function":{"name":"get_weather"}
+		}]
+	}`)
+	out := SimplifyTools(in)
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	tools := v["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	tool := tools[0].(map[string]any)
+	fn := tool["function"].(map[string]any)
+	if fn["description"] != "" {
+		t.Errorf("description should be empty string, got %v", fn["description"])
+	}
+	if fn["parameters"] == nil {
+		t.Error("parameters should be set to default")
+	}
+}
+
+func TestSimplifyTools_NoToolsField(t *testing.T) {
+	// No tools field — should pass through unchanged.
+	in := []byte(`{"model":"minimax-m3","messages":[{"role":"user","content":"hi"}]}`)
+	out := SimplifyTools(in)
+	if string(out) != string(in) {
+		t.Error("should be no-op when no tools field")
+	}
+}
+
+func TestSimplifyTools_EmptyToolsArray(t *testing.T) {
+	// Empty tools array — should pass through unchanged.
+	in := []byte(`{"model":"minimax-m3","tools":[]}`)
+	out := SimplifyTools(in)
+	if string(out) != string(in) {
+		t.Error("should be no-op when tools is empty")
+	}
+}
+
+func TestSimplifyTools_MixedFormats(t *testing.T) {
+	// Mix of canonical and non-canonical tools.
+	in := []byte(`{
+		"model":"minimax-m3",
+		"tools":[
+			{"type":"function","function":{"name":"tool1","description":"desc1","parameters":{"type":"object","properties":{}}}},
+			{"name":"tool2","description":"desc2","parameters":{"type":"object","properties":{}}}
+		]
+	}`)
+	out := SimplifyTools(in)
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	tools := v["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	// First tool should be unchanged (canonical).
+	t1 := tools[0].(map[string]any)
+	if t1["type"] != "function" {
+		t.Error("tool1 type should be function")
+	}
+	// Second tool should be wrapped.
+	t2 := tools[1].(map[string]any)
+	if t2["type"] != "function" {
+		t.Errorf("tool2 type should be function, got %v", t2["type"])
+	}
+	fn2, ok := t2["function"].(map[string]any)
+	if !ok {
+		t.Fatal("tool2 function should be a map")
+	}
+	if fn2["name"] != "tool2" {
+		t.Errorf("tool2 name lost, got %v", fn2["name"])
+	}
+}

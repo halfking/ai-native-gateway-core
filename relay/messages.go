@@ -168,7 +168,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// format (Q2 path). We precompute the converted body here so
 	// the conversion-error path stays in one place; the Q4 path
 	// discards it later via selectUpstreamBodyBytes.
-	chatBody := h.convertToChatBody(&reqBody)
+	chatBody := convertToChatBody(&reqBody)
 	chatBodyBytes, err := json.Marshal(chatBody)
 	if err != nil {
 		attemptErrCode = "conversion_error"
@@ -282,6 +282,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		BodyBytes:     upstreamBody,
 		IsStream:      isStream,
 		SuppressSuccessWrite: !isStream,
+		ClientProtocol: "anthropic-messages",
 		ClientModel:   clientModel,
 		OutboundModel: explicitOutbound,
 		ClientID:      clientID,
@@ -330,7 +331,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 	*attemptLogged = true
 }
 
-func (h *MessagesHandler) convertToChatBody(req *messagesRequestBody) map[string]any {
+func convertToChatBody(req *messagesRequestBody) map[string]any {
 	chatBody := map[string]any{
 		"model":      req.Model,
 		"max_tokens": req.MaxTokens,
@@ -388,34 +389,24 @@ func (h *MessagesHandler) convertToChatBody(req *messagesRequestBody) map[string
 	return chatBody
 }
 
-// selectUpstreamBodyBytes is the Q2 vs Q4 dispatch for /v1/messages.
-//
-// Q4 (anthropic→anthropic, e.g. minimax's /anthropic compatible
-// endpoint or the anthropic provider): the original Anthropic body
-// is forwarded unchanged. No re-shaping, no tool-collapsing, no
-// stream_options injection — the upstream speaks the same protocol
-// the client used.
-//
-// Q2 (anthropic→openai-completions / openai-responses): the
-// pre-converted OpenAI chat body is forwarded. The conversion
-// itself is done by convertToChatBody in the caller (kept in one
-// place so the conversion-error path is uniform across all
-// candidates); this function only picks which of the two byte
-// slices to return.
-//
-// Behavior matrix:
-//   - candidates[0].Protocol == "anthropic-messages" → originalBody
-//   - candidates[0].Protocol == "openai-completions" /
-//     "openai-responses" / "" (unknown) → convertedBody
-//   - len(candidates) == 0 → convertedBody (defensive; should not
-//     happen in practice because GetCandidates returns 503 when
-//     no candidate exists, but guards against a future caller
-//     forgetting the empty-slice check)
-func selectUpstreamBodyBytes(candidates []provider.Candidate, originalBody, convertedBody []byte) []byte {
-	if len(candidates) > 0 && candidates[0].Protocol == "anthropic-messages" {
-		return originalBody
+// ConvertAnthropicBodyToOpenAI converts an Anthropic Messages-format
+// request body to OpenAI chat completions format. Used as a callback
+// by the executor when a client speaking the Anthropic protocol
+// needs to be routed to an OpenAI-completions upstream candidate.
+func ConvertAnthropicBodyToOpenAI(bodyBytes []byte) ([]byte, error) {
+	var reqBody messagesRequestBody
+	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		return nil, fmt.Errorf("parse anthropic body: %w", err)
 	}
-	return convertedBody
+	chatBody := convertToChatBody(&reqBody)
+	return json.Marshal(chatBody)
+}
+
+// selectUpstreamBodyBytes is kept for backward compatibility but now
+// always returns originalBody. The Q2/Q4 dispatch has moved into the
+// executor (per-candidate) to avoid the candidates[0] mismatch bug.
+func selectUpstreamBodyBytes(candidates []provider.Candidate, originalBody, convertedBody []byte) []byte {
+	return originalBody
 }
 
 func convertAnthropicMessage(msg map[string]any) map[string]any {

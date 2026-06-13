@@ -79,15 +79,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 		anthTools := make([]any, 0, len(tools))
 		for _, t := range tools {
 			tm, _ := t.(map[string]any)
-			if tm["type"] == "function" {
-				fn, _ := tm["function"].(map[string]any)
-				anthTool := map[string]any{"name": fn["name"]}
-				if d, ok := fn["description"].(string); ok && d != "" {
-					anthTool["description"] = d
-				}
-				if p, ok := fn["parameters"]; ok {
-					anthTool["input_schema"] = p
-				}
+			if anthTool, ok := OpenAIToolToAnthropic(tm); ok {
 				anthTools = append(anthTools, anthTool)
 			}
 		}

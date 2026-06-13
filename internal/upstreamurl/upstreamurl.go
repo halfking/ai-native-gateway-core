@@ -71,11 +71,10 @@ var completionSuffixes = []string{
 	"/models",
 }
 
-// stripTail runs the standard 2-step base-URL cleanup:
-//  1. trim trailing /
-//  2. strip one well-known completion suffix if present
-//  3. strip a trailing /vN (e.g. /v1, /v2, /v3, /v4) via regex
-func stripTail(baseURL string) string {
+// stripCompletionSuffix trims trailing "/" and strips one well-known
+// completion suffix if present (e.g. "/v1/chat/completions"). Unlike
+// the old stripTail, it does NOT strip the trailing "/vN" version segment.
+func stripCompletionSuffix(baseURL string) string {
 	baseURL = strings.TrimRight(baseURL, "/")
 	for _, suffix := range completionSuffixes {
 		if strings.HasSuffix(baseURL, suffix) {
@@ -83,8 +82,25 @@ func stripTail(baseURL string) string {
 			break
 		}
 	}
-	baseURL = versionTrailing.ReplaceAllString(baseURL, "")
 	return baseURL
+}
+
+// pathAfterVersion returns the endpoint-specific path WITHOUT a version
+// prefix, suitable for appending to a base URL that already ends with "/vN".
+func pathAfterVersion(ep Endpoint) string {
+	switch ep {
+	case EpModels:
+		return "/models"
+	case EpChatCompletions:
+		return "/chat/completions"
+	case EpCompletions:
+		return "/completions"
+	case EpMessages:
+		return "/messages"
+	case EpResponses:
+		return "/responses"
+	}
+	return ""
 }
 
 // PathFor returns the canonical API path for a given endpoint, e.g.
@@ -105,21 +121,32 @@ func PathFor(ep Endpoint) string {
 	return ""
 }
 
-// Build returns the full URL for a given endpoint and base URL, applying
-// the standard base-URL cleanup. Returns "" if baseURL is empty.
+// Build returns the full URL for a given endpoint and base URL.
+//
+// If the base URL already contains a version segment (e.g. /v1, /v3, /v4),
+// only the endpoint-specific path is appended (preserving the provider's
+// version). Otherwise, /v1 is prepended (matching OpenAI convention).
 //
 //	Build("https://ark.cn-beijing.volces.com/api/v3", EpChatCompletions)
-//	  → "https://ark.cn-beijing.volces.com/api/v1/chat/completions"
+//	  → "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+//	Build("https://open.bigmodel.cn/api/paas/v4", EpChatCompletions)
+//	  → "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 //	Build("https://api.openai.com/v1", EpChatCompletions)
 //	  → "https://api.openai.com/v1/chat/completions"
 //	Build("https://api.openai.com/v1/chat/completions", EpChatCompletions)
 //	  → "https://api.openai.com/v1/chat/completions"
+//	Build("https://api.example.com", EpChatCompletions)
+//	  → "https://api.example.com/v1/chat/completions"
 //	Build("", EpChatCompletions) → ""
 func Build(baseURL string, ep Endpoint) string {
 	if baseURL == "" {
 		return ""
 	}
-	return stripTail(baseURL) + PathFor(ep)
+	cleaned := stripCompletionSuffix(baseURL)
+	if versionTrailing.MatchString(cleaned) {
+		return cleaned + pathAfterVersion(ep)
+	}
+	return cleaned + PathFor(ep)
 }
 
 // ModelsURL is shorthand for Build(baseURL, EpModels). Kept for

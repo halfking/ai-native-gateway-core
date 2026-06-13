@@ -68,6 +68,31 @@ func TestCompressMessagesIfNeeded_NotJSON(t *testing.T) {
 	}
 }
 
+func TestCompressAnthropicMessagesIfNeeded_TrimsWhenOver(t *testing.T) {
+	long := strings.Repeat("b", 200)
+	body := []byte(`{"model":"MiniMax-M3","max_tokens":1024,"system":"You are helpful.","messages":[
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"` + long + `"},
+		{"role":"assistant","content":"` + long + `"},
+		{"role":"user","content":"latest question"}
+	]}`)
+	out := CompressAnthropicMessagesIfNeeded(body, 50)
+
+	var before, after struct {
+		Messages []json.RawMessage `json:"messages"`
+		System   string            `json:"system"`
+	}
+	_ = json.Unmarshal(body, &before)
+	_ = json.Unmarshal(out, &after)
+	if len(after.Messages) >= len(before.Messages) {
+		t.Fatalf("expected anthropic messages to shrink; before=%d after=%d", len(before.Messages), len(after.Messages))
+	}
+	if after.System != before.System {
+		t.Fatalf("system field must be preserved")
+	}
+}
+
 func TestCompressMessagesIfNeeded_PreservesOtherFields(t *testing.T) {
 	long := strings.Repeat("a", 200)
 	body := []byte(`{"model":"m","temperature":0.7,"stream":true,"tools":[{"type":"function","function":{"name":"x"}}],"messages":[

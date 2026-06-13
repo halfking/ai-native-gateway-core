@@ -1,9 +1,9 @@
 // Package transform — ctx_compress.go
 //
-// Client-side context window enforcement for the OpenAI chat (Q1/Q2/Q3) path.
-// Anthropic-Messages passthrough (Q4) is intentionally NOT compressed here:
-// Q4 forwards request body bytes verbatim per the bytes-level passthrough
-// contract documented in relay/messages.go:169.
+// Client-side context window enforcement for OpenAI chat (Q1/Q2/Q3) and
+// Anthropic Messages (Q4) paths. OpenAI chat trimming lives in
+// CompressMessagesIfNeeded; Anthropic passthrough trimming lives in
+// CompressAnthropicMessagesIfNeeded (wired from routing/executor_anthropic.go).
 //
 // Strategy: drop-oldest (truncate). We never rewrite message content; the
 // oldest non-system message is removed in pairs (user/assistant) so the
@@ -40,6 +40,61 @@ const charsPerToken = 3.5
 //
 // Q4 (anthropic-messages) must NEVER call this — pass cand.Protocol == "anthropic-messages"
 // upstream and skip the call.
+// CompressAnthropicMessagesIfNeeded trims Anthropic Messages API bodies
+// (Q4 passthrough) from the oldest user/assistant pairs until the estimated
+// prompt fits under contextWindow * defaultSoftLimitFraction. The system
+// field (string or array) is always preserved.
+func CompressAnthropicMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
+	if contextWindow <= 0 {
+		return bodyBytes
+	}
+
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+		System   json.RawMessage   `json:"system"`
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil || len(req.Messages) == 0 {
+		return bodyBytes
+	}
+
+	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
+	systemTokens := estimateMessageTokens(req.System)
+	estimated := estimatePromptTokens(bodyBytes)
+	if estimated <= softLimit {
+		return bodyBytes
+	}
+
+	trimmed := trimOldestPairs(req.Messages, softLimit-systemTokens)
+	if len(trimmed) == len(req.Messages) {
+		return bodyBytes
+	}
+
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
+		return bodyBytes
+	}
+	rawTrimmed, err := json.Marshal(trimmed)
+	if err != nil {
+		return bodyBytes
+	}
+	generic["messages"] = rawTrimmed
+
+	out, err := json.Marshal(generic)
+	if err != nil {
+		return bodyBytes
+	}
+
+	slog.Info("context_compress: trimmed anthropic messages",
+		"original_count", len(req.Messages),
+		"trimmed_count", len(trimmed),
+		"dropped_count", len(req.Messages)-len(trimmed),
+		"context_window", contextWindow,
+		"soft_limit", softLimit,
+		"estimated_tokens_before", estimated,
+	)
+	return out
+}
+
 func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 	if contextWindow <= 0 {
 		return bodyBytes

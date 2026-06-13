@@ -179,6 +179,10 @@ func main() {
 		)
 		exec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
 		exec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
+		exec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
+		exec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+		exec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
+		exec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
@@ -188,6 +192,7 @@ func main() {
 			exec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
 		exec.FpSlots = fpSlots
+		exec.Provider = providerClient
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled")
 	} else {
