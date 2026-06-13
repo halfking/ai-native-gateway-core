@@ -13,6 +13,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
@@ -673,11 +674,22 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 	}
 
 	contentBlocks := []map[string]any{}
+	// Phase 2: OpenAI `reasoning_content` field → independent thinking block.
+	// Phase 4 (non-stream variant): if the upstream packed reasoning
+	// into the `content` field as `<think>...</think>` (typical of
+	// minimax OpenAI), split it here so SDK clients see the trace
+	// separately from the visible answer.
 	if reasoningContent != "" {
 		contentBlocks = append(contentBlocks, map[string]any{
 			"type":     "thinking",
 			"thinking": reasoningContent,
 		})
+	} else if think, rest, ok := textsplit.SplitLeadingThink(textContent); ok {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":     "thinking",
+			"thinking": think,
+		})
+		textContent = rest
 	}
 	if textContent != "" {
 		contentBlocks = append(contentBlocks, map[string]any{
