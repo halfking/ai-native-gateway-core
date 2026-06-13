@@ -109,6 +109,8 @@ type RequestLogEntry struct {
 	ResponsePreview    *string  `json:"response_preview,omitempty"`
 	RequestBody        *string  `json:"request_body,omitempty"`
 	ResponseBody       *string  `json:"response_body,omitempty"`
+	GwSessionID        *string  `json:"gw_session_id,omitempty"`
+	GwTaskID           *string  `json:"gw_task_id,omitempty"`
 }
 
 func NewClient() *Client {
@@ -206,6 +208,7 @@ func (c *Client) worker() {
 }
 
 func (c *Client) flush(batch []any) {
+	batch = mergeRequestLogBatch(batch)
 	for _, item := range batch {
 		switch v := item.(type) {
 		case *DecisionLogEntry:
@@ -369,7 +372,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted,
-			usage_source
+			usage_source,
+			gw_session_id, gw_task_id
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -385,7 +389,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			CAST($33 AS jsonb), CAST($34 AS jsonb),
 			$35, $36, $37,
 			$38,
-			$39
+			$39,
+			$40, $41
 		)
 	`,
 		entry.RequestID,
@@ -427,6 +432,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.StreamDoneReceived,
 		entry.StreamInterrupted,
 		nonEmptyPtr(entry.UsageSource, "llm"),
+		entry.GwSessionID,
+		entry.GwTaskID,
 	)
 	if err != nil {
 		return err
@@ -566,7 +573,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       error_kind = COALESCE($33, rl.error_kind),
 		       latency_ms = COALESCE($34, rl.latency_ms),
 		       identity_hash = COALESCE($35, rl.identity_hash),
-		       search_text = COALESCE($36, rl.search_text)
+		       search_text = COALESCE($36, rl.search_text),
+		       gw_session_id = COALESCE($37, rl.gw_session_id),
+		       gw_task_id = COALESCE($38, rl.gw_task_id)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -607,6 +616,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.LatencyMs,
 		entry.IdentityHash,
 		searchText(entry),
+		entry.GwSessionID,
+		entry.GwTaskID,
 	)
 	if err != nil {
 		return err
@@ -707,8 +718,11 @@ func firstString(values ...*string) *string {
 }
 
 func searchText(entry *RequestLogEntry) *string {
-	parts := make([]string, 0, 4)
-	for _, value := range []*string{entry.ClientModel, entry.OutboundModel, entry.ClientProfile, entry.RequestMode} {
+	parts := make([]string, 0, 6)
+	for _, value := range []*string{
+		entry.ClientModel, entry.OutboundModel, entry.ClientProfile, entry.RequestMode,
+		entry.GwSessionID, entry.GwTaskID,
+	} {
 		if value != nil && *value != "" {
 			parts = append(parts, *value)
 		}
@@ -793,6 +807,8 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.RequestPreview)
 	sanitizeStringPtr(&e.TransformSummary)
 	sanitizeStringPtr(&e.ResponsePreview)
+	sanitizeStringPtr(&e.GwSessionID)
+	sanitizeStringPtr(&e.GwTaskID)
 	e.RequestID = sanitizeUTF8(e.RequestID)
 	e.TenantID = sanitizeUTF8(e.TenantID)
 	if e.EndUserID != nil {
@@ -810,5 +826,104 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	if e.ResponseBody != nil {
 		v := sanitizeUTF8JSON(*e.ResponseBody)
 		e.ResponseBody = &v
+	}
+}
+
+// mergeRequestLogBatch coalesces multiple updates for the same request_id so a
+// burst of stream telemetry writes one DB round-trip instead of many.
+func mergeRequestLogBatch(batch []any) []any {
+	if len(batch) < 2 {
+		return batch
+	}
+	merged := make([]any, 0, len(batch))
+	pending := make(map[string]*RequestLogEntry)
+	for _, item := range batch {
+		entry, ok := item.(*RequestLogEntry)
+		if !ok || entry.Op != RequestLogUpdate {
+			merged = append(merged, item)
+			continue
+		}
+		if existing, found := pending[entry.RequestID]; found {
+			mergeRequestLogEntry(existing, entry)
+			continue
+		}
+		cp := *entry
+		pending[entry.RequestID] = &cp
+	}
+	for _, entry := range pending {
+		merged = append(merged, entry)
+	}
+	return merged
+}
+
+func mergeRequestLogEntry(dst, src *RequestLogEntry) {
+	if src == nil || dst == nil {
+		return
+	}
+	dst.Op = RequestLogUpdate
+	mergeStringPtr(&dst.ClientModel, src.ClientModel)
+	mergeStringPtr(&dst.OutboundModel, src.OutboundModel)
+	mergeIntPtr(&dst.CredentialID, src.CredentialID)
+	mergeIntPtr(&dst.ProviderID, src.ProviderID)
+	mergeIntPtr(&dst.CanonicalID, src.CanonicalID)
+	mergeStringPtr(&dst.ClientProfile, src.ClientProfile)
+	mergeStringPtr(&dst.RequestMode, src.RequestMode)
+	mergeStringPtr(&dst.EndUserID, src.EndUserID)
+	mergeIntPtr(&dst.PromptTokens, src.PromptTokens)
+	mergeIntPtr(&dst.CompletionTokens, src.CompletionTokens)
+	mergeIntPtr(&dst.CacheReadTokens, src.CacheReadTokens)
+	mergeIntPtr(&dst.CacheWriteTokens, src.CacheWriteTokens)
+	mergeFloatPtr(&dst.CostUSD, src.CostUSD)
+	mergeFloatPtr(&dst.CostDisplay, src.CostDisplay)
+	mergeStringPtr(&dst.CostCurrency, src.CostCurrency)
+	mergeIntPtr(&dst.StreamFirstChunkMs, src.StreamFirstChunkMs)
+	mergeIntPtr(&dst.StreamChunkCount, src.StreamChunkCount)
+	mergeBoolPtr(&dst.StreamDoneReceived, src.StreamDoneReceived)
+	mergeBoolPtr(&dst.StreamInterrupted, src.StreamInterrupted)
+	mergeStringPtr(&dst.ResponseChecksum, src.ResponseChecksum)
+	mergeStringPtr(&dst.ResponsePreview, src.ResponsePreview)
+	mergeStringPtr(&dst.ResponseBody, src.ResponseBody)
+	mergeStringPtr(&dst.FailureDetailCode, src.FailureDetailCode)
+	mergeStringPtr(&dst.TransformRuleID, src.TransformRuleID)
+	mergeStringPtr(&dst.EgressProtocol, src.EgressProtocol)
+	mergeStringPtr(&dst.RequestPreview, src.RequestPreview)
+	mergeStringPtr(&dst.TransformSummary, src.TransformSummary)
+	mergeStringPtr(&dst.RequestBody, src.RequestBody)
+	mergeStringPtr(&dst.UsageSource, src.UsageSource)
+	mergeStringPtr(&dst.ErrorKind, src.ErrorKind)
+	mergeIntPtr(&dst.LatencyMs, src.LatencyMs)
+	mergeStringPtr(&dst.IdentityHash, src.IdentityHash)
+	mergeStringPtr(&dst.GwSessionID, src.GwSessionID)
+	mergeStringPtr(&dst.GwTaskID, src.GwTaskID)
+	if src.Success {
+		dst.Success = true
+	}
+}
+
+func mergeStringPtr(dst **string, src *string) {
+	if src != nil && *src != "" {
+		v := *src
+		*dst = &v
+	}
+}
+
+func mergeIntPtr(dst **int, src *int) {
+	if src != nil {
+		v := *src
+		*dst = &v
+	}
+}
+
+func mergeFloatPtr(dst **float64, src *float64) {
+	if src != nil {
+		v := *src
+		*dst = &v
+	}
+}
+
+func mergeBoolPtr(dst **bool, src *bool) {
+	if src != nil {
+		v := *src
+		*dst = &v
 	}
 }
