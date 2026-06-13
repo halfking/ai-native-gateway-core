@@ -2,7 +2,9 @@ package relay
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,10 +17,144 @@ import (
 
 const anthropicSSEBufSize = 64 * 1024
 
+// textDelta captures a single upstream content_block_delta for a text
+// block, with both the parsed text payload and the raw SSE bytes so we
+// can either forward verbatim or rewrite as a [thinking, text] split
+// when content_block_stop arrives.
+type textDelta struct {
+	text string
+	raw  []byte
+}
+
+// textBlockAccumulator buffers text-delta payloads from a single
+// upstream text content block until content_block_stop, so that the
+// accumulated text can be inspected for an embedded `<think>...</think>`
+// segment and rewritten as [thinking, text] before being flushed to
+// the client. Non-text blocks (tool_use, etc.) flush immediately and
+// never enter the accumulator.
+type textBlockAccumulator struct {
+	index        int
+	started      bool
+	deltas       []textDelta
+	eventPayload []byte // raw SSE event bytes for content_block_start (so we can rewrite the type if split occurs)
+}
+
+// flushBufferedTextBlock emits the buffered text block either as the
+// original (single) text block, or split into [thinking, text] if the
+// accumulated text begins with `<think>...</think>`. It writes the
+// rewritten SSE events to w and returns whether a thinking block was
+// emitted so the caller can update side-channel accounting.
+func (acc *textBlockAccumulator) flushBufferedTextBlock(w http.ResponseWriter, flusher http.Flusher) (hasThinking bool, err error) {
+	if !acc.started {
+		return false, nil
+	}
+	if len(acc.deltas) == 0 {
+		// No content was buffered; emit the original content_block_start
+		// and stop events (rewritten from eventPayload if present) so the
+		// SDK sees a coherent block.
+		if acc.eventPayload != nil {
+			if _, werr := w.Write(acc.eventPayload); werr != nil {
+				return false, werr
+			}
+		}
+		return false, nil
+	}
+
+	var sb strings.Builder
+	for _, d := range acc.deltas {
+		sb.WriteString(d.text)
+	}
+	fullText := sb.String()
+
+	think, rest, ok := splitLeadingThinkBlock(fullText)
+	if !ok {
+		// No <think> prefix: forward each delta verbatim (we never
+		// forwarded them earlier because we were buffering).
+		for _, d := range acc.deltas {
+			if _, werr := w.Write(d.raw); werr != nil {
+				return false, werr
+			}
+		}
+		flusher.Flush()
+		return false, nil
+	}
+
+	// Emit split: thinking block (start + delta + stop), then text block
+	// (start + remaining-delta + stop) with re-numbered indices. We
+	// never forwarded the original content_block_start or any text_delta,
+	// so we don't need to close the original (un-emitted) text block.
+	if err := writeSSEEvent(w, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         acc.index,
+		"content_block": map[string]any{"type": "thinking", "thinking": ""},
+	}); err != nil {
+		return false, err
+	}
+	if err := writeSSEEvent(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": acc.index,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": think},
+	}); err != nil {
+		return false, err
+	}
+	if err := writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": acc.index}); err != nil {
+		return false, err
+	}
+
+	newIndex := acc.index + 1
+	if rest != "" {
+		if err := writeSSEEvent(w, "content_block_start", map[string]any{
+			"type":          "content_block_start",
+			"index":         newIndex,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		}); err != nil {
+			return false, err
+		}
+		if err := writeSSEEvent(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": newIndex,
+			"delta": map[string]any{"type": "text_delta", "text": rest},
+		}); err != nil {
+			return false, err
+		}
+		if err := writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": newIndex}); err != nil {
+			return false, err
+		}
+	}
+	flusher.Flush()
+	return true, nil
+}
+
+// writeSSEEvent writes one SSE event (event: NAME\ndata: ...\n\n) to w.
+func writeSSEEvent(w http.ResponseWriter, eventName string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	buf.WriteString("event: ")
+	buf.WriteString(eventName)
+	buf.WriteByte('\n')
+	buf.WriteString("data: ")
+	buf.Write(body)
+	buf.WriteByte('\n')
+	buf.WriteByte('\n')
+	_, werr := w.Write(buf.Bytes())
+	return werr
+}
+
 // StreamAnthropicPassthrough is the Q4 Anthropic SSE forwarder. It reads
 // Anthropic-format SSE events from upstream and writes them to the
-// client unchanged (byte-for-byte), while scanning for has_thinking /
-// usage accounting in the side-channel audit capture.
+// client mostly unchanged (byte-for-byte), while scanning for
+// has_thinking / usage accounting in the side-channel audit capture.
+//
+// Upstream quirks handled here:
+//   - Some Anthropic-compatible providers (minimax) emit the reasoning
+//     trace inside a single text block as `<think>...</think>` rather
+//     than as an independent thinking block. We buffer the text-block
+//     deltas until content_block_stop, then either forward verbatim
+//     (no think prefix) or rewrite the SSE stream as [thinking, text]
+//     with re-numbered indices so SDKs render the trace separately.
 //
 // This is the "Q4" path: client speaks Anthropic, upstream speaks
 // Anthropic (e.g. anthropic provider, or minimax's /anthropic
@@ -56,6 +192,36 @@ func StreamAnthropicPassthrough(
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
 	outcome := routing.StreamOutcome{}
 
+	var pendingEvent string
+	var pendingPayload string
+	var textAcc *textBlockAccumulator
+
+	flushPending := func() error {
+		if pendingEvent == "" {
+			return nil
+		}
+		var buf bytes.Buffer
+		buf.WriteString("event: ")
+		buf.WriteString(pendingEvent)
+		buf.WriteByte('\n')
+		buf.WriteString("data: ")
+		buf.WriteString(pendingPayload)
+		buf.WriteByte('\n')
+		buf.WriteByte('\n')
+		_, werr := w.Write(buf.Bytes())
+		pendingEvent = ""
+		pendingPayload = ""
+		return werr
+	}
+
+	flushBlank := func() error {
+		if err := flushPending(); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -69,22 +235,108 @@ func StreamAnthropicPassthrough(
 			}
 			return outcome
 		}
-		if _, werr := w.Write([]byte(line)); werr != nil {
-			outcome.Interrupted = true
-			outcome.Reason = "client_disconnected"
+
+		if strings.HasPrefix(line, "event: ") {
+			pendingEvent = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+		} else if strings.HasPrefix(line, "data: ") {
+			payload := strings.TrimRight(strings.TrimPrefix(line, "data: "), "\n")
+			pendingPayload = payload
+
 			if capture != nil {
-				capture.MarkInterruptedWithReason("client_disconnected")
+				observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 			}
-			return outcome
+
+			// While buffering a text block, capture text deltas instead
+			// of forwarding.
+			if textAcc != nil && pendingEvent == "content_block_delta" {
+				var d struct {
+					Delta struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"delta"`
+				}
+				if err := json.Unmarshal([]byte(payload), &d); err == nil && d.Delta.Type == "text_delta" {
+					textAcc.deltas = append(textAcc.deltas, textDelta{
+						text: d.Delta.Text,
+						raw:  []byte(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", payload)),
+					})
+					pendingEvent = ""
+					pendingPayload = ""
+					continue
+				}
+			}
+
+			// Begin buffering on text content_block_start.
+			if pendingEvent == "content_block_start" && textAcc == nil {
+				var s struct {
+					Index        *int `json:"index"`
+					ContentBlock *struct {
+						Type string `json:"type"`
+					} `json:"content_block"`
+				}
+				if err := json.Unmarshal([]byte(payload), &s); err == nil &&
+					s.ContentBlock != nil && s.ContentBlock.Type == "text" {
+					idx := 0
+					if s.Index != nil {
+						idx = *s.Index
+					}
+					textAcc = &textBlockAccumulator{
+						index:        idx,
+						started:      true,
+						eventPayload: []byte(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", payload)),
+					}
+					pendingEvent = ""
+					pendingPayload = ""
+					continue
+				}
+			}
+
+			// content_block_stop for buffered text block → flush.
+			if pendingEvent == "content_block_stop" && textAcc != nil {
+				// Drop the original content_block_stop: flushBufferedTextBlock
+				// will emit either one (no-split) or two (split) stop events
+				// with the right indices.
+				hasThink, err := textAcc.flushBufferedTextBlock(w, flusher)
+				if err != nil {
+					outcome.Interrupted = true
+					outcome.Reason = "client_disconnected"
+					if capture != nil {
+						capture.MarkInterruptedWithReason("client_disconnected")
+					}
+					return outcome
+				}
+				if capture != nil && hasThink {
+					capture.HasThinking = true
+					capture.ThinkingBlocksN++
+				}
+				textAcc = nil
+				pendingEvent = ""
+				pendingPayload = ""
+				continue
+			}
+
+			// Fall through: queue for the blank-line flush below.
+		} else if line == "\n" {
+			if err := flushBlank(); err != nil {
+				outcome.Interrupted = true
+				outcome.Reason = "client_disconnected"
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_disconnected")
+				}
+				return outcome
+			}
+			pendingEvent = ""
+			pendingPayload = ""
 		}
-		if capture != nil && strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
-			payload = strings.TrimSpace(payload)
-			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
-		}
-		if line == "\n" {
-			flusher.Flush()
-		}
+	}
+
+	// Trailing flush.
+	if err := flushPending(); err != nil {
+		outcome.Interrupted = true
+		outcome.Reason = "client_disconnected"
+	}
+	if textAcc != nil {
+		_, _ = textAcc.flushBufferedTextBlock(w, flusher)
 	}
 	flusher.Flush()
 	return outcome
