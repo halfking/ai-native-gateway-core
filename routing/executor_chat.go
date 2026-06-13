@@ -362,16 +362,10 @@ func (e *Executor) executeOpenAI(
 						}
 						// Mechanical trim + LLM compaction made no progress — fall through to 4xx bubble-up.
 					}
-					for k, vs := range resp.Header {
-						for _, v := range vs {
-							params.W.Header().Add(k, v)
-						}
-					}
-					params.W.WriteHeader(resp.StatusCode)
-					if n > 0 {
-						params.W.Write(body[:n])
-					}
-					return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+					// Do not write 4xx to ResponseWriter here — Execute() may
+					// fail over to the next credential. Writing first would
+					// prepend e.g. "404 page not found" before a later 200 body.
+					return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)]))
 				}
 				return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
 			}
