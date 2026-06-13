@@ -14,8 +14,10 @@ RUN apk add --no-cache git ca-certificates nodejs npm
 WORKDIR /src
 COPY go.mod go.sum ./
 ARG GOTOOLCHAIN=auto
-ARG GOPROXY=https://proxy.golang.org,direct
-ARG NPM_REGISTRY=https://registry.npmjs.org/
+# GFW blocks proxy.golang.org (Google IP 142.251.33.209) — use goproxy.cn
+# (Qiniu CDN) as primary. See AGENTS.md 2026-05-12 "key learning".
+ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ARG NPM_REGISTRY=https://registry.npmmirror.com/
 ENV GOPROXY=${GOPROXY}
 RUN GOTOOLCHAIN=auto GOPROXY=${GOPROXY} go mod download
 
