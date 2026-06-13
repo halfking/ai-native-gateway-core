@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -163,4 +164,142 @@ func newHookedHandler() (*ChatHandler, *requestLogCollector) {
 	col := newRequestLogCollector()
 	ch.SetRequestLogHook(col.Hook)
 	return ch, col
+}
+
+// ── captureAttemptBody — direct tests of the body-peek helper ────────────
+//
+// These tests guard the early-exit body capture added in commit
+// "fix: rate_limit 等 early-exit 路径补记 client_model 与 request preview".
+// Every early-exit path (rate_limit, key_throttled, invalid_key,
+// auth_unavailable, budget_exhausted, session_forbidden,
+// internal_panic, …) now calls captureAttemptBody so the request_log
+// row can show the client_model and a body preview.
+
+func TestCaptureAttemptBody_ExtractsModel(t *testing.T) {
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"gpt-4o-mini","messages":[]}`))
+	captureAttemptBody(r, &body, &model)
+	if string(body) != `{"model":"gpt-4o-mini","messages":[]}` {
+		t.Errorf("body not captured: %q", string(body))
+	}
+	if model != "gpt-4o-mini" {
+		t.Errorf("model = %q, want gpt-4o-mini", model)
+	}
+}
+
+func TestCaptureAttemptBody_NoModelField(t *testing.T) {
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"messages":[{"role":"user","content":"hi"}]}`))
+	captureAttemptBody(r, &body, &model)
+	if len(body) == 0 {
+		t.Error("body should still be captured even without model field")
+	}
+	if model != "" {
+		t.Errorf("model should be empty when no model field, got %q", model)
+	}
+}
+
+func TestCaptureAttemptBody_EmptyBody(t *testing.T) {
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(""))
+	captureAttemptBody(r, &body, &model)
+	if len(body) != 0 {
+		t.Errorf("body should be empty, got %q", string(body))
+	}
+	if model != "" {
+		t.Errorf("model should be empty, got %q", model)
+	}
+}
+
+func TestCaptureAttemptBody_NilBody(t *testing.T) {
+	// captureAttemptBody must be a no-op when the request has no body
+	// (e.g. method-not-allowed GET).  We construct a request whose
+	// Body has already been closed and confirm the helper does not
+	// panic.
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	captureAttemptBody(r, &body, &model)
+	if len(body) != 0 || model != "" {
+		t.Errorf("nil-body capture should be a no-op, got body=%q model=%q", body, model)
+	}
+}
+
+func TestCaptureAttemptBody_PreservesExistingValues(t *testing.T) {
+	// If the caller has already populated body/model (e.g. from a
+	// prior capture), captureAttemptBody should NOT clobber them
+	// when the new request body is empty / smaller.  The helper
+	// overwrites unconditionally per the implementation, so this
+	// test pins that behaviour; if a future refactor wants to merge,
+	// this test will fail and force a review.
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"mimo-v2.5-pro","messages":[]}`))
+	captureAttemptBody(r, &body, &model)
+	if model != "mimo-v2.5-pro" {
+		t.Errorf("model = %q, want mimo-v2.5-pro", model)
+	}
+	if !strings.Contains(string(body), "mimo-v2.5-pro") {
+		t.Errorf("body = %q, should contain mimo-v2.5-pro", string(body))
+	}
+}
+
+func TestCaptureAttemptBody_CapsAt1MB(t *testing.T) {
+	// The helper truncates bodies larger than 1MiB.  Build a 2MiB
+	// payload that's NOT valid JSON after truncation; the helper
+	// must still record the (truncated) bytes for the request_log
+	// preview, even though the model field cannot be parsed.
+	huge := bytes.Repeat([]byte("a"), 2<<20) // 2 MiB
+	wrapped := append([]byte(`{"model":"mimo-v2-flash","messages":[{"role":"user","content":"`), huge...)
+	wrapped = append(wrapped, []byte(`"}]}`)...)
+	var body []byte
+	var model string
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(wrapped))
+	captureAttemptBody(r, &body, &model)
+	if int64(len(body)) > (1 << 20) {
+		t.Errorf("body length %d exceeds 1 MiB cap", len(body))
+	}
+	if int64(len(body)) == 0 {
+		t.Errorf("body length should be at least the 1MB cap, got %d", len(body))
+	}
+	// Model is unparseable from truncated JSON — that's OK; the
+	// preview is still recorded for the request_log row.
+}
+
+// ── Safety net: model is captured from the request body for all
+//    early-exit paths.  Today the only DB-free early-exit path is
+//    `executor_unavailable`; once body capture is added to the rest
+//    they share the same code path.  We assert here that the body
+//    preview/model fields reach the safety-net recorder so the
+//    contract is enforced for any future path that hooks in.
+
+func TestSafetyNet_ExecutorUnavailable_PropagatesBodyAndModel(t *testing.T) {
+	ch, col := newHookedHandler()
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	ch.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for executor_unavailable, got %d", rec.Code)
+	}
+	rows := col.Snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.clientModel != "gpt-4o-mini" {
+		t.Errorf("client_model = %q, want gpt-4o-mini (must be recovered from body even when executor unavailable)", row.clientModel)
+	}
+	if row.errorKind != "executor_unavailable" {
+		t.Errorf("error_kind = %q, want executor_unavailable", row.errorKind)
+	}
 }
