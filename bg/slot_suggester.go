@@ -67,16 +67,17 @@ func (s *SlotSuggester) suggest(ctx context.Context) {
 		SELECT
 			wp.credential_id,
 			wp.raw_model,
+			wp.peak_concurrent_5min,
 			wp.peak_concurrent,
 			wp.p95_concurrent,
 			wp.current_limit,
 			wp.week_start
 		FROM credential_model_weekly_peak wp
 		WHERE wp.week_start >= NOW() - INTERVAL '7 days'
-		  AND wp.peak_concurrent > wp.current_limit * 0.8
+		  AND wp.peak_concurrent_5min > wp.current_limit * 0.8
 		  AND wp.current_limit > 0
 		  AND wp.sample_days >= 3
-		ORDER BY wp.peak_concurrent DESC
+		ORDER BY wp.peak_concurrent_5min DESC
 		LIMIT 100
 	`)
 	if err != nil {
@@ -89,15 +90,18 @@ func (s *SlotSuggester) suggest(ctx context.Context) {
 	for rows.Next() {
 		var credID int64
 		var rawModel string
-		var peak, p95, currentLimit int
+		var peak5min, peak int
+		var p95, currentLimit float64 // current_limit is numeric in DB; scan as float to be safe
 		var weekStart time.Time
 
-		if err := rows.Scan(&credID, &rawModel, &peak, &p95, &currentLimit, &weekStart); err != nil {
+		if err := rows.Scan(&credID, &rawModel, &peak5min, &peak, &p95, &currentLimit, &weekStart); err != nil {
 			slog.Error("slot suggester scan failed", "error", err)
 			continue
 		}
-		suggested := s.calculateSuggestedLimit(peak, p95, currentLimit)
-		if suggested <= currentLimit {
+		// current_limit stored as int; truncate float to int
+		current := int(currentLimit)
+		suggested := s.calculateSuggestedLimit(peak5min, int(p95), current)
+		if suggested <= current {
 			continue
 		}
 
@@ -116,8 +120,8 @@ func (s *SlotSuggester) suggest(ctx context.Context) {
 		}
 
 		reason := fmt.Sprintf(
-			"peak=%d, p95=%.0f, current_limit=%d, suggested=%d",
-			peak, float64(p95), currentLimit, suggested,
+			"peak_5min=%d, peak_1m=%d, p95=%.0f, current_limit=%d, suggested=%d",
+			peak5min, peak, p95, current, suggested,
 		)
 		_, err = s.db.Exec(timeoutCtx, `
 			UPDATE credential_model_weekly_peak
@@ -138,13 +142,13 @@ func (s *SlotSuggester) suggest(ctx context.Context) {
 				old_limit, new_limit, reason,
 				peak_concurrent, p95_concurrent, week_start, applied_by
 			) VALUES ($1, $2, 'suggest', $3, $4, $5, $6, $7, $8, 'auto')
-		`, credID, rawModel, currentLimit, suggested, reason, peak, float64(p95), weekStart)
+		`, credID, rawModel, current, suggested, reason, peak5min, p95, weekStart)
 		suggestCount++
 
 		slog.Info("slot suggestion generated",
 			"credential_id", credID, "model", rawModel,
-			"current_limit", currentLimit, "suggested", suggested,
-			"peak", peak, "p95", p95,
+			"current_limit", current, "suggested", suggested,
+			"peak_5min", peak5min, "peak_1m", peak, "p95", p95,
 		)
 	}
 	slog.Info("slot suggester completed", "candidates", suggestCount)
@@ -184,7 +188,7 @@ func (s *SlotSuggester) ApplyDueSuggestions(ctx context.Context) (int, error) {
 		SELECT DISTINCT
 			wp.credential_id, wp.raw_model,
 			wp.suggested_limit, wp.current_limit,
-			wp.peak_concurrent, wp.p95_concurrent, wp.week_start
+			wp.peak_concurrent_5min, wp.p95_concurrent, wp.week_start
 		FROM credential_model_weekly_peak wp
 		WHERE wp.suggested_limit IS NOT NULL
 		  AND wp.suggested_limit > wp.current_limit
@@ -214,12 +218,15 @@ func (s *SlotSuggester) ApplyDueSuggestions(ctx context.Context) (int, error) {
 			slog.Error("apply suggestion scan failed", "error", err)
 			continue
 		}
-		// Only update if current routing_policy limit is still lower than
-		// the suggestion. (Avoid clobbering concurrent manual changes.)
+		// Only update if current credentials.concurrency_limit is still
+		// lower than the suggestion. (Avoid clobbering concurrent manual
+		// changes.)  routing_policy is the global singleton — it has
+		// no credential_id and no concurrency_limit column.  The
+		// per-credential cap lives in credentials.concurrency_limit.
 		tag, err := s.db.Exec(timeoutCtx, `
-			UPDATE routing_policy
+			UPDATE credentials
 			SET concurrency_limit = $1, updated_at = NOW()
-			WHERE credential_id = $2
+			WHERE id = $2
 			  AND (concurrency_limit IS NULL OR concurrency_limit < $1)
 		`, suggested, credID)
 		if err != nil {
@@ -229,7 +236,7 @@ func (s *SlotSuggester) ApplyDueSuggestions(ctx context.Context) (int, error) {
 		if tag.RowsAffected() == 0 {
 			continue
 		}
-		reason := fmt.Sprintf("auto-applied after 24h preview: peak=%d, p95=%.0f, %d -> %d",
+		reason := fmt.Sprintf("auto-applied after 24h preview: peak_5min=%d, p95=%.0f, %d -> %d",
 			peak, p95, current, suggested)
 		_, _ = s.db.Exec(timeoutCtx, `
 			INSERT INTO auto_tune_audit (
