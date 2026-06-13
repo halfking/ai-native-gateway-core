@@ -73,6 +73,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg      string
 		attemptProviderID  *int
 		attemptCredentialID *int
+		attemptRequestBody []byte
 	)
 	attemptLogged := &attemptLoggedFlag
 	requestID := r.Header.Get("X-Request-Id")
@@ -86,7 +87,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo, r)
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
 		}
 	}()
 
@@ -103,6 +104,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if rawKey == "" {
 			attemptErrCode = "missing_key"
 			attemptErrMsg = "missing api key"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
@@ -111,6 +113,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
 				attemptErrMsg = "invalid or expired api key"
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 				writeResponsesError(w, http.StatusUnauthorized, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
 			}
@@ -127,6 +130,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.chatHandler.rateLimiter.CheckRPM(keyInfo.ID, *keyInfo.RateLimitRPM) {
 			attemptErrCode = "rate_limit_exceeded"
 			attemptErrMsg = "rate limit exceeded"
+			// Peek the body so the safety-net can recover client_model
+			// and request preview from the rejected request. Body is
+			// read lazily so non-rate-limited requests are not penalised.
+			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+			if len(peeked) > maxBodySize {
+				peeked = peeked[:maxBodySize]
+			}
+			if len(peeked) > 0 {
+				attemptRequestBody = peeked
+				if attemptClientModel == "" {
+					attemptClientModel = extractModelFromBody(peeked)
+				}
+			}
 			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
 			return
 		}
@@ -138,6 +154,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg = "failed to read request body"
 		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
 		return
+	}
+	if len(bodyBytes) > 0 {
+		attemptRequestBody = bodyBytes
 	}
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"

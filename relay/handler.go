@@ -169,7 +169,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	startTime := time.Now()
-	defer func() {
+		defer func() {
 		slog.Info("safety_net_defer_fired",
 			"request_id", requestID,
 			"attempt_err_code", attemptErrCode,
@@ -178,6 +178,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Error("chat handler panic", "panic", rec, "request_id", requestID)
 			attemptErrCode = "internal_panic"
 			attemptErrMsg = "internal server error"
+			// Make a best-effort body capture so the row can show what
+			// the client was sending when we crashed.  captureAttemptBody
+			// is a no-op when r.Body is already drained or nil.
+			if len(attemptRequestBody) == 0 {
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			}
 			if attemptClientModel == "" {
 				if len(attemptRequestBody) > 0 {
 					attemptClientModel = extractModelFromBody(attemptRequestBody)
@@ -290,6 +296,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
 				*attemptErrCode = "invalid_key"
 				*attemptErrMsg = "invalid or expired api key"
+				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
@@ -299,6 +306,7 @@ func (h *ChatHandler) serveWithExecutor(
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
 			*attemptErrCode = "auth_unavailable"
 			*attemptErrMsg = "authentication service temporarily unavailable"
+			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
@@ -311,6 +319,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && keyInfo.Status == "throttled" {
 		*attemptErrCode = "key_throttled"
 		*attemptErrMsg = "api key throttled due to anomalous usage"
+		captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -351,6 +360,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
 				*attemptErrCode = "budget_exhausted"
 				*attemptErrMsg = "budget exhausted"
+				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
 			}
@@ -411,6 +421,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				*attemptErrCode = "session_forbidden"
 				*attemptErrMsg = "session not owned by this api key"
+				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 				return
 			}
