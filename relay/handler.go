@@ -833,6 +833,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			reqLog.StreamInterrupted = &v
 			if v {
 				isErr, detailCode := classifyStreamInterruption(m)
+				slog.Warn("DEBUG emitTelemetry stream_interrupted branch",
+					"request_id", evt.RequestID,
+					"interrupted", v,
+					"is_err", isErr,
+					"detail_code", detailCode,
+					"chunk_count", m["stream_chunk_count"],
+					"done_received", m["stream_done_received"],
+				)
 				if isErr {
 					reqLog.Success = false
 					reqLog.ErrorKind = strPtr("stream_error")
