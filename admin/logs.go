@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -350,6 +353,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CostCurrency,
 		&detail.LatencyMs,
 		&detail.Success,
+		&detail.RequestStatus,
 		&detail.ErrorKind,
 		&detail.SearchText,
 		&detail.IdentityHash,
@@ -378,11 +382,20 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&responseBodyRaw,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
-		 writeError(w, http.StatusNotFound, "request log not found")
-		 return
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "request log not found")
+			return
 		}
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Warn("admin getLog scan failed", "request_id", requestID, "error", err.Error())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"detail":    "query failed",
+				"db_error":  err.Error(),
+				"request_id": requestID,
+			},
+		})
 		return
 	}
 
