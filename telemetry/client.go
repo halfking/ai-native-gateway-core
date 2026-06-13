@@ -763,10 +763,9 @@ func sanitizeUTF8(s string) string {
 	return strings.ReplaceAll(b.String(), "\\", "\\\\")
 }
 
-// sanitizeUTF8JSON is like sanitizeUTF8 but does NOT escape backslashes.
-// It is only for strings stored in JSONB columns: escaping backslashes
-// would corrupt the JSON content (e.g. \n becoming \\n with different meaning).
-func sanitizeUTF8JSON(s string) string {
+// scrubUTF8ForJSON replaces invalid UTF-8 byte sequences with U+FFFD.
+// Unlike sanitizeUTF8, backslashes are preserved so JSON escape sequences stay intact.
+func scrubUTF8ForJSON(s string) string {
 	if utf8.ValidString(s) {
 		return s
 	}
@@ -782,6 +781,39 @@ func sanitizeUTF8JSON(s string) string {
 		i += size
 	}
 	return b.String()
+}
+
+// truncateToValidJSON walks backward from the end of s, trying each closing
+// brace/bracket as a candidate boundary until json.Valid succeeds.
+func truncateToValidJSON(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	if json.Valid([]byte(s)) {
+		return s, true
+	}
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] != '}' && s[i] != ']' {
+			continue
+		}
+		candidate := strings.TrimSpace(s[:i+1])
+		if candidate != "" && json.Valid([]byte(candidate)) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// sanitizeUTF8JSON scrubs invalid UTF-8 and ensures the result is valid JSON
+// before CAST(... AS jsonb). On unrecoverable corruption it returns "" so callers
+// can store NULL and let UPDATE COALESCE keep the previous body.
+func sanitizeUTF8JSON(s string) string {
+	cleaned := scrubUTF8ForJSON(s)
+	if repaired, ok := truncateToValidJSON(cleaned); ok {
+		return repaired
+	}
+	return ""
 }
 
 func sanitizeStringPtr(p **string) {
@@ -819,14 +851,20 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 		clean := sanitizeUTF8(*e.CostCurrency)
 		e.CostCurrency = &clean
 	}
-	if e.RequestBody != nil {
-		v := sanitizeUTF8JSON(*e.RequestBody)
-		e.RequestBody = &v
+	sanitizeJSONField(&e.RequestBody)
+	sanitizeJSONField(&e.ResponseBody)
+}
+
+func sanitizeJSONField(p **string) {
+	if *p == nil {
+		return
 	}
-	if e.ResponseBody != nil {
-		v := sanitizeUTF8JSON(*e.ResponseBody)
-		e.ResponseBody = &v
+	v := sanitizeUTF8JSON(**p)
+	if v == "" {
+		*p = nil
+		return
 	}
+	*p = &v
 }
 
 // mergeRequestLogBatch coalesces multiple updates for the same request_id so a

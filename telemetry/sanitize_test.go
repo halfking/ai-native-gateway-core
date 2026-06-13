@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -65,6 +66,44 @@ func TestSanitizeUTF8JSON_PreservesBackslashesInJSON(t *testing.T) {
 	}
 	if !utf8.ValidString(out) {
 		t.Errorf("result is invalid UTF-8: %q", out)
+	}
+}
+
+func TestSanitizeUTF8JSON_TruncatesToLastValidBoundary(t *testing.T) {
+	// Simulates stream capture appending garbage after a complete JSON object.
+	truncated := `{"a":1}{"garbage`
+	want := `{"a":1}`
+	out := sanitizeUTF8JSON(truncated)
+	if out != want {
+		t.Fatalf("expected %q, got %q", want, out)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("repaired JSON still invalid: %q", out)
+	}
+}
+
+func TestSanitizeUTF8JSON_InvalidJSONReturnsEmpty(t *testing.T) {
+	out := sanitizeUTF8JSON(`not json at all`)
+	if out != "" {
+		t.Fatalf("expected empty fallback, got %q", out)
+	}
+}
+
+func TestSanitizeJSONField_NilOnUnrecoverableJSON(t *testing.T) {
+	body := `{broken`
+	field := &body
+	sanitizeJSONField(&field)
+	if field != nil {
+		t.Fatalf("expected nil body, got %q", *field)
+	}
+}
+
+func TestSanitizeJSONField_PreservesValidJSON(t *testing.T) {
+	body := `{"ok":true}`
+	field := &body
+	sanitizeJSONField(&field)
+	if field == nil || *field != body {
+		t.Fatalf("expected unchanged JSON, got %v", field)
 	}
 }
 
