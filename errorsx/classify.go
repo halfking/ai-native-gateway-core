@@ -47,6 +47,7 @@ const (
 	// path was historically returning the raw 400 because no client-side
 	// trim was applied.
 	KindContextLength ErrorKind = "context_length_exceeded"
+	KindUnsupportedFeature ErrorKind = "unsupported_feature"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
@@ -83,13 +84,17 @@ var modelNotFoundRe = regexp.MustCompile(
 	`(?i)(model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|`+
 		`(no such|unknown) model|`+
 		`endpoint.{0,40}(does not exist|not found)|`+
-		`(does not|doesn'?t) support (coding plan|tool|function|tools|function call)|`+
-		`(tool|function)[- _]?call(ing|s)? (is )?not supported|`+
-		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|`+
 		`model.{0,40}(deprecated|retired|sunset))`,
 )
 var modelNotFoundCJKRe = regexp.MustCompile(
-	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到|当前模型不支持`,
+	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到`,
+)
+
+var unsupportedFeatureRe = regexp.MustCompile(
+	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|`+
+		`(tool|function)[- _]?call(ing|s)? (is )?not supported|`+
+		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|`+
+		`当前模型不支持)`,
 )
 
 // concurrentOverloadRe matches upstream error bodies that signal
@@ -169,6 +174,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if modelNotFoundRe.MatchString(msg) {
 			return KindModelNotFound
 		}
+		if unsupportedFeatureRe.MatchString(msg) {
+			return KindUnsupportedFeature
+		}
 		return KindTransient
 	}
 	if resp == nil {
@@ -219,16 +227,12 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
 			return KindModelNotFound
 		}
+		if unsupportedFeatureRe.Match(body) {
+			return KindUnsupportedFeature
+		}
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
-		// Context-length / too-long detection comes last because its
-		// pattern set is broad and could in theory swallow concurrent
-		// or model-not-found signals on shared substrings ("too many
-		// tokens" in a body that also contains "rate limit"). Placing
-		// it after the more specific regexes ensures those take
-		// precedence; the executor's context-length path also runs
-		// before the generic transient branch.
 		if (status == 400 || status == 413 || status == 422) &&
 			(contextLengthRe.Match(body) || contextLengthCJKRe.Match(body)) {
 			return KindContextLength
@@ -248,6 +252,9 @@ func ClassifyResponseBody(body []byte) ErrorKind {
 		}
 		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
 			return KindModelNotFound
+		}
+		if unsupportedFeatureRe.Match(body) {
+			return KindUnsupportedFeature
 		}
 		if eofWithoutDoneRe.Match(body) {
 			return KindStreamTimeout
@@ -319,7 +326,7 @@ func IsCredentialFatal(kind ErrorKind) bool {
 // in the credentials table.
 func IsClientBug(kind ErrorKind) bool {
 	switch kind {
-	case KindToolCallIdMismatch, KindModelNotFound, KindCanceled:
+	case KindToolCallIdMismatch, KindModelNotFound, KindUnsupportedFeature, KindCanceled:
 		return true
 	default:
 		return false
