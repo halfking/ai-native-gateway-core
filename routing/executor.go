@@ -134,6 +134,11 @@ type ExecParams struct {
 	// downstream agents (which only inspect the structured field) recognise
 	// the call and dispatch the tool.
 	ToolsRequested bool
+	// ClientProtocol is the wire format the client used: "openai-completions"
+	// for /v1/chat/completions, "anthropic-messages" for /v1/messages.
+	// Empty defaults to "openai-completions". Used by executeAnthropic to
+	// decide whether the body needs Q3 conversion (openai->anthropic).
+	ClientProtocol string
 	SessionKey    string
 	StickyKey     string
 }
@@ -477,6 +482,20 @@ func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int)
 }
 
 func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, detail string) {
+	// 2026-06-13: IsClientBug kinds (model_not_found, tool_call_id_mismatch,
+	// canceled, unsupported_feature) are NOT the credential's fault. Without
+	// this guard, a single upstream 404 (e.g. Zhipu/Aliyun intermittent
+	// 'InvalidEndpointOrModel.NotFound' for glm-5.1) would silently cool the
+	// user's sticky credential for 60s. Skip the DB write entirely; the
+	// credential stays available.
+	if errorsx.IsClientBug(kind) {
+		slog.Warn("disable_model_offer: skipping (client-bug kind, not credential's fault)",
+			"credential_id", credentialID,
+			"model", rawModel,
+			"kind", kind,
+		)
+		return
+	}
 	if e.DB == nil || !e.DB.Enabled() {
 		slog.Warn("disable_model_offer: no db pool available")
 		return
@@ -540,6 +559,11 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 			"model", rawModel,
 			"reason", reason,
 		)
+		// 2026-06-13: Invalidate the in-memory candidate cache so the next
+		// request reflects the new state immediately rather than waiting
+		// for the 30s cache TTL. Without this, the just-cooled credential
+		// can still be picked from the cache.
+		provider.InvalidateAllCandidateCache()
 	}
 }
 
