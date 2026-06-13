@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -458,7 +460,6 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	days := queryInt(r, "days", 7)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -469,19 +470,32 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve time range: explicit start/end takes precedence; otherwise
+	// fall back to ?days=N (default 7). The start/end path is what
+	// /keys/2 sends when the user picks a custom date range; previously
+	// the backend silently ignored them and used the days default,
+	// so custom-range data was always showing the last 7 days.
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 7)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+
 	var totalReqs, promptTok, compTok, totalTok int
 	var cost, avgLatency, successRate float64
 	var uniqueModels int
 	var firstAt, lastAt *time.Time
-	h.db.QueryRow(ctx, `
+	if err := h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0)::float8,
 		       COALESCE(AVG(latency_ms),0)::float8,
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*),0), 1.0),
 		       COUNT(DISTINCT raw_model_name),
 		       MIN(ts), MAX(ts)
-		FROM usage_ledger WHERE api_key_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, keyID, days).Scan(&totalReqs, &promptTok, &compTok, &totalTok, &cost, &avgLatency, &successRate, &uniqueModels, &firstAt, &lastAt)
+		FROM usage_ledger WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+	`, keyID, startTime, endTime).Scan(&totalReqs, &promptTok, &compTok, &totalTok, &cost, &avgLatency, &successRate, &uniqueModels, &firstAt, &lastAt); err != nil {
+		slog.Warn("usageKeyDetail scan failed", "key_id", keyID, "error", err)
+	}
 
 	resp := map[string]any{
 		"key_id":               keyID,
@@ -507,8 +521,13 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID int) {
-	days := queryInt(r, "days", 7)
 	limit := queryInt(r, "limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 500 {
+		limit = 500
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -519,6 +538,12 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		return
 	}
 
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 7)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(raw_model_name,'unknown'), COUNT(*),
 		       COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
@@ -526,9 +551,9 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 		       COALESCE(AVG(latency_ms),0)::float8,
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*),0), 1.0),
 		       MIN(ts), MAX(ts)
-		FROM usage_ledger WHERE api_key_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-		GROUP BY raw_model_name ORDER BY SUM(cost_usd) DESC NULLS LAST LIMIT $3
-	`, keyID, days, limit)
+		FROM usage_ledger WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+		GROUP BY raw_model_name ORDER BY SUM(cost_usd) DESC NULLS LAST LIMIT $4
+	`, keyID, startTime, endTime, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -573,9 +598,22 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	if period == "" {
 		period = "day"
 	}
-	days := queryInt(r, "days", 30)
+	// Validate period to avoid SQL injection via the parameterised
+	// DATE_TRUNC call.
+	switch period {
+	case "day", "week", "month":
+	default:
+		writeError(w, http.StatusBadRequest, "period must be one of: day, week, month")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 30)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
 
 	dateFormat := "YYYY-MM-DD"
 	if period == "week" {
@@ -588,9 +626,9 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		SELECT TO_CHAR(DATE_TRUNC($1, ts), $4) AS period,
 		       COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0)::float8
-		FROM usage_ledger WHERE api_key_id = $2 AND ts >= now() - ($3 * INTERVAL '1 day')
+		FROM usage_ledger WHERE api_key_id = $2 AND ts >= $5 AND ts < $6
 		GROUP BY DATE_TRUNC($1, ts) ORDER BY DATE_TRUNC($1, ts)
-	`, period, keyID, days, dateFormat)
+	`, period, keyID, 0, dateFormat, startTime, endTime)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -807,4 +845,61 @@ func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
 		tenants = append(tenants, t)
 	}
 	writeJSON(w, http.StatusOK, tenants)
+}
+
+// resolveUsageTimeRange parses the start/end and days query parameters
+// for the per-key usage endpoints and returns the (start, end) pair
+// to use in SQL.  Semantics:
+//
+//   - start + end provided  → use them as [start, end).  start is
+//                              inclusive at 00:00:00 UTC; end is
+//                              exclusive at 00:00:00 UTC of the day
+//                              AFTER end (so the end date itself is
+//                              included — matches user expectations
+//                              from a date picker).
+//   - start alone           → invalid; require end too.
+//   - end alone             → invalid; require start too.
+//   - neither               → fall back to [now - defaultDays, now).
+//
+// All times are returned in UTC.  Bounds-check: the range cannot
+// exceed 366 days so a malicious caller cannot force a full-table
+// scan on a multi-year window.
+func resolveUsageTimeRange(r *http.Request, defaultDays int) (start, end time.Time, err error) {
+	now := time.Now().UTC()
+	startStr := queryString(r, "start")
+	endStr := queryString(r, "end")
+
+	if startStr == "" && endStr == "" {
+		days := queryInt(r, "days", defaultDays)
+		if days < 1 {
+			days = 1
+		}
+		if days > 366 {
+			days = 366
+		}
+		return now.Add(-time.Duration(days) * 24 * time.Hour).Truncate(24 * time.Hour), now, nil
+	}
+
+	if startStr == "" || endStr == "" {
+		return time.Time{}, time.Time{}, fmt.Errorf("start and end must both be provided when using a custom range")
+	}
+
+	startDay, err1 := time.Parse("2006-01-02", startStr)
+	if err1 != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid start date: expected YYYY-MM-DD")
+	}
+	endDay, err2 := time.Parse("2006-01-02", endStr)
+	if err2 != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid end date: expected YYYY-MM-DD")
+	}
+	if endDay.Before(startDay) {
+		return time.Time{}, time.Time{}, fmt.Errorf("end must be on or after start")
+	}
+	if endDay.Sub(startDay) > 366*24*time.Hour {
+		return time.Time{}, time.Time{}, fmt.Errorf("date range cannot exceed 366 days")
+	}
+
+	// [start, end) — end is exclusive so the picker-selected end date
+	// is fully included.
+	return startDay.UTC(), endDay.Add(24 * time.Hour).UTC(), nil
 }
