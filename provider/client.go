@@ -24,7 +24,8 @@ type Candidate struct {
 	CatalogCode         string   `json:"catalog_code"`
 	Tier                int      `json:"tier"`
 	Weight              int      `json:"weight"`
-	RawModel            string   `json:"model_name"`
+	RawModel            string   `json:"model_name"` // upstream name: COALESCE(outbound_model_name, raw_model_name)
+	OfferRawModel       string   `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
 	StandardizedName    string   `json:"standardized_name"`
 	SuccessRate         float64  `json:"success_rate"`
 	P95LatencyMs        int      `json:"p95_latency_ms"`
@@ -547,6 +548,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		); err != nil {
 			return nil, err
 		}
+		cand.OfferRawModel = offerRawModel
 		rawOffers = append(rawOffers, struct {
 			Candidate
 			OfferRawModel string
