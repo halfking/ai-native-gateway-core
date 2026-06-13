@@ -38,20 +38,26 @@ COMMENT ON TABLE credential_model_peak_1m IS
 
 -- 2. Weekly peak aggregation
 CREATE TABLE IF NOT EXISTS credential_model_weekly_peak (
-    week_start      TIMESTAMPTZ NOT NULL,                -- Monday 00:00 UTC
-    credential_id   BIGINT      NOT NULL,
-    raw_model       TEXT        NOT NULL DEFAULT '',
-    peak_concurrent INTEGER     NOT NULL DEFAULT 0,
-    p95_concurrent  NUMERIC(8,2) NOT NULL DEFAULT 0,
-    avg_concurrent  NUMERIC(8,2) NOT NULL DEFAULT 0,
-    total_requests  BIGINT      NOT NULL DEFAULT 0,
-    sample_days     INTEGER     NOT NULL DEFAULT 0,
-    current_limit   INTEGER     NOT NULL DEFAULT 0,
-    suggested_limit INTEGER,
-    suggestion_reason TEXT,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    week_start            TIMESTAMPTZ NOT NULL,                -- Monday 00:00 UTC
+    credential_id         BIGINT      NOT NULL,
+    raw_model             TEXT        NOT NULL DEFAULT '',
+    peak_concurrent       INTEGER     NOT NULL DEFAULT 0,      -- max of 1m buckets
+    peak_concurrent_5min  INTEGER     NOT NULL DEFAULT 0,      -- max of 5m rolling window (per spec)
+    p95_concurrent        NUMERIC(8,2) NOT NULL DEFAULT 0,
+    avg_concurrent        NUMERIC(8,2) NOT NULL DEFAULT 0,
+    total_requests        BIGINT      NOT NULL DEFAULT 0,
+    sample_days           INTEGER     NOT NULL DEFAULT 0,
+    current_limit         INTEGER     NOT NULL DEFAULT 0,
+    suggested_limit       INTEGER,
+    suggestion_reason     TEXT,
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (week_start, credential_id, raw_model)
 );
+
+-- Idempotent: add peak_concurrent_5min to a pre-existing table from
+-- the previous DDL run.
+ALTER TABLE credential_model_weekly_peak
+    ADD COLUMN IF NOT EXISTS peak_concurrent_5min INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_weekly_peak_cred
     ON credential_model_weekly_peak (credential_id, week_start DESC);
