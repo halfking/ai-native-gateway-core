@@ -241,3 +241,119 @@ func TestConvertChatResponseToAnthropic_NoReasoningRegression(t *testing.T) {
 		t.Errorf("content[0].type = %q, want \"text\"", got.Content[0].Type)
 	}
 }
+
+// TestConvertChatResponseToAnthropic_SplitsEmbeddedThink covers the
+// Phase 4 non-stream variant: minimax OpenAI packs the reasoning
+// trace into the `content` field as `<think>...</think>` rather than
+// using a separate `reasoning_content` field. The gateway must split
+// this into independent thinking + text blocks.
+func TestConvertChatResponseToAnthropic_SplitsEmbeddedThink(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-mx",
+		"choices":[{
+			"index":0,
+			"message":{
+				"role":"assistant",
+				"content":"<think>step by step</think>\n\n17 * 23 = 391"
+			},
+			"finish_reason":"stop"
+		}],
+		"usage":{"prompt_tokens":1,"completion_tokens":2}
+	}`)
+	out := convertChatResponseToAnthropic(body, "minimax-m3", "req-split")
+	var got struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("expected 2 blocks (thinking + text); got %d: %s body=%s", len(got.Content), got.Content, out)
+	}
+	if got.Content[0].Type != "thinking" {
+		t.Errorf("block[0].type = %q, want thinking", got.Content[0].Type)
+	}
+	if got.Content[0].Thinking != "step by step" {
+		t.Errorf("block[0].thinking = %q, want %q", got.Content[0].Thinking, "step by step")
+	}
+	if got.Content[1].Type != "text" {
+		t.Errorf("block[1].type = %q, want text", got.Content[1].Type)
+	}
+	if got.Content[1].Text != "17 * 23 = 391" {
+		t.Errorf("block[1].text = %q, want %q", got.Content[1].Text, "17 * 23 = 391")
+	}
+}
+
+// TestConvertChatResponseToAnthropic_EmbeddedThinkEmptyAfter covers
+// the case where <think> captures everything (no visible text after).
+// Result should be a thinking block only, no trailing empty text block.
+func TestConvertChatResponseToAnthropic_EmbeddedThinkEmptyAfter(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-empty",
+		"choices":[{
+			"index":0,
+			"message":{
+				"role":"assistant",
+				"content":"<think>only thinking</think>"
+			},
+			"finish_reason":"stop"
+		}],
+		"usage":{"prompt_tokens":1,"completion_tokens":1}
+	}`)
+	out := convertChatResponseToAnthropic(body, "m", "req-empty")
+	var got struct {
+		Content []map[string]any `json:"content"`
+	}
+	_ = json.Unmarshal(out, &got)
+	if len(got.Content) != 1 {
+		t.Fatalf("expected 1 thinking block only; got %d: %s", len(got.Content), out)
+	}
+	if got.Content[0]["type"] != "thinking" {
+		t.Errorf("block[0].type = %v, want thinking", got.Content[0]["type"])
+	}
+	if got.Content[0]["thinking"] != "only thinking" {
+		t.Errorf("block[0].thinking = %v", got.Content[0]["thinking"])
+	}
+}
+
+// TestConvertChatResponseToAnthropic_ReasoningContentWinsOverEmbedded
+// verifies that when an upstream emits BOTH reasoning_content AND
+// content with embedded <think>, the gateway prefers the structured
+// reasoning_content field. This avoids double-counting thinking.
+func TestConvertChatResponseToAnthropic_ReasoningContentWinsOverEmbedded(t *testing.T) {
+	body := []byte(`{
+		"id":"chatcmpl-both",
+		"choices":[{
+			"index":0,
+			"message":{
+				"role":"assistant",
+				"reasoning_content":"structured reasoning",
+				"content":"<think>embedded thinking</think>\n\nvisible"
+			},
+			"finish_reason":"stop"
+		}],
+		"usage":{"prompt_tokens":1,"completion_tokens":2}
+	}`)
+	out := convertChatResponseToAnthropic(body, "m", "req-both")
+	var got struct {
+		Content []struct {
+			Type     string `json:"type"`
+			Thinking string `json:"thinking"`
+			Text     string `json:"text"`
+		} `json:"content"`
+	}
+	_ = json.Unmarshal(out, &got)
+	if len(got.Content) != 2 {
+		t.Fatalf("expected 2 blocks; got %d: %s", len(got.Content), out)
+	}
+	if got.Content[0].Type != "thinking" || got.Content[0].Thinking != "structured reasoning" {
+		t.Errorf("expected first block to use reasoning_content; got %+v", got.Content[0])
+	}
+	if got.Content[1].Type != "text" || got.Content[1].Text != "<think>embedded thinking</think>\n\nvisible" {
+		t.Errorf("expected second block to keep raw content (no split); got %+v", got.Content[1])
+	}
+}
