@@ -36,6 +36,8 @@ type Session struct {
 	SessionKey     string    `json:"session_key"`
 	APIKeyID       int       `json:"api_key_id"`
 	TenantID       string    `json:"tenant_id"`
+	TaskID         string    `json:"task_id"`
+	Namespace      string    `json:"namespace"`
 	Devices        []Device  `json:"devices"`
 	ProviderCache  CacheInfo `json:"provider_cache_info"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -152,6 +154,8 @@ func (sm *Manager) Create(ctx context.Context, apiKeyID int, tenantID string, de
 		"api_key_id":          strconv.Itoa(apiKeyID),
 		"tenant_id":           tenantID,
 		"session_key":         sessionKey,
+		"task_id":             "",
+		"namespace":           "",
 		"created_at":          now.Format(time.RFC3339),
 		"last_active":         now.Format(time.RFC3339),
 		"expires_at":          session.ExpiresAt.Format(time.RFC3339),
@@ -193,11 +197,22 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 		return nil, ErrSessionExpired
 	}
 
+	namespace := data["namespace"]
+	if namespace == "" {
+		namespace = "legacy"
+	}
+	taskID := data["task_id"]
+	if taskID == "" {
+		taskID = "default"
+	}
+
 	return &Session{
 		SessionID:     sessionID,
 		SessionKey:    data["session_key"],
 		APIKeyID:      apiKeyID,
 		TenantID:      data["tenant_id"],
+		TaskID:        taskID,
+		Namespace:     namespace,
 		Devices:       devices,
 		ProviderCache: cacheInfo,
 		CreatedAt:     createdAt,

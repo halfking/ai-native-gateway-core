@@ -93,6 +93,7 @@ type ChatHandler struct {
 	sessionGetter   interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
+		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
 	}
 }
 
@@ -133,9 +134,10 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
-	Get(ctx context.Context, id string) (*sessions.Session, error)
-	Touch(ctx context.Context, id string) error
-}) {
+		Get(ctx context.Context, id string) (*sessions.Session, error)
+		Touch(ctx context.Context, id string) error
+		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
+	}) {
 	h.sessionGetter = sg
 }
 
@@ -340,19 +342,48 @@ func (h *ChatHandler) serveWithExecutor(
 		ctx = sessions.SetTenantID(ctx, keyInfo.TenantID)
 	}
 
-	// ── Session validation (if X-Session-Id provided) ──────────────────
+	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
 	var sessionInfo *sessions.Session
-	sessionID := r.Header.Get("X-Session-Id")
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
-			if err == sessions.ErrSessionNotFound {
-				*attemptErrCode = "session_invalid"
-				*attemptErrMsg = "invalid session id"
-				writeErrorJSON(w, http.StatusBadRequest, requestID, "invalid session", "session_error", "SESSION_INVALID")
-				return
+			if err == sessions.ErrSessionNotFound && keyInfo != nil {
+				deviceSeed := r.Header.Get("X-Device-Seed")
+				if deviceSeed == "" {
+					deviceSeed = r.Header.Get("X-Machine-Id")
+				}
+				if deviceSeed == "" {
+					deviceSeed = "default"
+				}
+				taskID := r.Header.Get("X-Gw-Task-Id")
+				newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
+				if createErr != nil {
+					slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
+				} else {
+					sessionInfo = newSession
+					sessionID = newSession.SessionID
+					ctx = sessions.SessionFromContextWith(ctx, newSession)
+					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+					if r.Header.Get("X-Session-Id") != "" {
+						slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
+							"original_session_id", r.Header.Get("X-Session-Id"),
+							"new_session_id", newSession.SessionID,
+						)
+						w.Header().Set("Deprecation", "true")
+					}
+					slog.Info("session fallback created",
+						"original_session_id", r.Header.Get("X-Gw-Session-Id"),
+						"new_session_id", newSession.SessionID,
+						"task_id", taskID,
+					)
+				}
+			} else if err != sessions.ErrSessionNotFound {
+				slog.Warn("session lookup failed", "error", err)
 			}
-			slog.Warn("session lookup failed", "error", err)
 		} else {
 			sessionInfo = si
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
@@ -362,8 +393,6 @@ func (h *ChatHandler) serveWithExecutor(
 				return
 			}
 			go func() {
-				// Use a bounded context so a slow DB/cache call cannot leak this
-				// goroutine indefinitely.
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer touchCancel()
 				h.sessionGetter.Touch(touchCtx, sessionID)

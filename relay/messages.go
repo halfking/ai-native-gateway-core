@@ -180,7 +180,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientModel := reqBody.Model
 	isStream := reqBody.Stream
-	sessionID := r.Header.Get("X-Session-Id")
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
 	var endUser string
 	if reqBody.Metadata != nil && reqBody.Metadata.UserID != "" {
 		endUser = reqBody.Metadata.UserID
