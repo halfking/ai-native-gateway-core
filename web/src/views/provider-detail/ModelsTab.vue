@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import {
   getProviderModels,
+  refreshProviderModels,
+  getProviderRefreshStatus,
   toggleModelOfferState,
   getModelOfferSuggestions,
   updateModelOffer,
   getRoutableSummary,
   type ModelOffer,
   type ModelOfferSuggestion,
+  type ProviderRefreshRun,
 } from '../../api'
 
 const props = defineProps<{ providerId: number }>()
@@ -15,6 +18,11 @@ const props = defineProps<{ providerId: number }>()
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
 const error = ref('')
+
+const refreshing = ref(false)
+const refreshRun = ref<ProviderRefreshRun | null>(null)
+const refreshError = ref('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const routable = ref<{
   total_bindings: number
@@ -58,6 +66,80 @@ async function load() {
     loading.value = false
   }
 }
+
+function stopPolling() {
+  if (pollTimer != null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollRefreshStatus() {
+  try {
+    const resp = await getProviderRefreshStatus(props.providerId)
+    const run = resp.running ?? resp.latest
+    if (!run) return
+    refreshRun.value = run
+    if (run.status !== 'running') {
+      stopPolling()
+      refreshing.value = false
+      if (run.status === 'succeeded') {
+        await load()
+      } else if (run.status === 'failed') {
+        refreshError.value = run.message || run.errors?.join('; ') || '从供应商读取失败'
+      }
+    }
+  } catch (e: unknown) {
+    stopPolling()
+    refreshing.value = false
+    refreshError.value = e instanceof Error ? e.message : '查询刷新状态失败'
+  }
+}
+
+async function refreshFromProvider() {
+  if (refreshing.value) return
+  refreshing.value = true
+  refreshError.value = ''
+  refreshRun.value = null
+  stopPolling()
+  try {
+    const start = await refreshProviderModels(props.providerId)
+    refreshRun.value = start.run
+    if (start.run.status === 'running') {
+      // Poll every 1.5s while the backend run is in flight; the
+      // "正在从供应商读取数据…" hint is bound to the `refreshing`
+      // ref and will clear once status flips to succeeded/failed.
+      pollTimer = setInterval(pollRefreshStatus, 1500)
+    } else if (start.run.status === 'succeeded') {
+      refreshing.value = false
+      await load()
+    } else if (start.run.status === 'failed') {
+      refreshing.value = false
+      refreshError.value = start.run.message || '从供应商读取失败'
+    }
+  } catch (e: unknown) {
+    refreshing.value = false
+    refreshError.value = e instanceof Error ? e.message : '从供应商读取失败'
+  }
+}
+
+const refreshSummary = computed(() => {
+  const r = refreshRun.value
+  if (!r || r.status === 'running') return ''
+  const parts: string[] = []
+  if (r.models_upserted > 0) {
+    parts.push(`新增/更新 ${r.models_upserted}`)
+  }
+  if (r.credentials_failed > 0) {
+    parts.push(`失败 ${r.credentials_failed}`)
+  }
+  if (parts.length === 0) {
+    return r.message || '无变化'
+  }
+  return parts.join(' · ')
+})
+
+onBeforeUnmount(stopPolling)
 
 function sourceLabel(v?: string | null) {
   if (v === 'auto') return '自动'
@@ -162,9 +244,43 @@ load()
 
 <template>
   <div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h4 style="margin:0">模型清单 ({{ offers.length }})</h4>
-      <button class="btn btn-sm" @click="load" :disabled="loading">{{ loading ? '加载中…' : '刷新' }}</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <h4 style="margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span>模型清单 ({{ offers.length }})</span>
+        <span v-if="refreshing" class="refresh-hint refresh-hint--loading" role="status" aria-live="polite">
+          <span class="refresh-spinner" aria-hidden="true"></span>
+          正在从供应商读取数据…
+        </span>
+        <span
+          v-else-if="refreshError"
+          class="refresh-hint refresh-hint--error"
+          role="status"
+          aria-live="polite"
+        >{{ refreshError }}</span>
+        <span
+          v-else-if="refreshRun && refreshRun.status !== 'running'"
+          class="refresh-hint"
+          :class="refreshRun.status === 'succeeded' ? 'refresh-hint--success' : 'refresh-hint--error'"
+          role="status"
+          aria-live="polite"
+        >{{ refreshSummary }}</span>
+      </h4>
+      <div style="display:flex;gap:6px">
+        <button
+          class="btn btn-sm"
+          :disabled="refreshing"
+          :title="refreshing ? '正在从供应商读取模型列表…' : '调用供应商 /v1/models 接口，新增未入库的模型'"
+          @click="refreshFromProvider"
+        >
+          {{ refreshing ? '读取中…' : '从供应商读取' }}
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="loading || refreshing"
+          title="仅从本地缓存重新加载，不调用供应商接口"
+          @click="load"
+        >{{ loading ? '加载中…' : '刷新' }}</button>
+      </div>
     </div>
 
     <div v-if="routable" class="card" style="margin-bottom:12px;background:rgba(99,102,241,0.04)">
@@ -338,6 +454,51 @@ load()
 .model-table {
   width: 100%;
   font-size: 12px;
+}
+.refresh-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  white-space: nowrap;
+}
+.refresh-hint--loading {
+  color: var(--accent, #6366f1);
+  border-color: rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.12);
+}
+.refresh-hint--success {
+  color: #16a34a;
+  border-color: rgba(34, 197, 94, 0.3);
+  background: rgba(34, 197, 94, 0.1);
+}
+.refresh-hint--error {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+}
+.refresh-hint--idle {
+  color: var(--muted);
+}
+.refresh-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(99, 102, 241, 0.3);
+  border-top-color: var(--accent, #6366f1);
+  border-radius: 50%;
+  animation: refresh-spin 0.8s linear infinite;
+}
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .model-row {
   cursor: pointer;
