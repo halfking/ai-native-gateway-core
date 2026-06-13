@@ -206,7 +206,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.auditor.Emit(r.Context(), auditBuilder.Build())
 	}()
 
-	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if candErr != nil || len(candidates) == 0 {
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
