@@ -212,6 +212,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	slog.Info("PHASE4_DBG: candidates", "count", len(candidates), "client_model", clientModel)
+	for i, c := range candidates {
+		slog.Info("PHASE4_DBG: candidate", "i", i, "provider_id", c.ProviderID, "protocol", c.Protocol, "raw_model", c.RawModel)
+	}
 	if candErr != nil || len(candidates) == 0 {
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
