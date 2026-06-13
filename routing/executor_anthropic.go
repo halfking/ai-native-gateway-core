@@ -311,6 +311,7 @@ func (e *Executor) executeAnthropicOnce(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
+	slog.Info("PHASE4_DBG: executeAnthropicOnce entry", "provider_id", cand.ProviderID, "is_stream", params.IsStream, "passthrough_stream_nil", ae.PassthroughStream == nil, "exec_passthrough_stream_nil", e.AnthropicPassthroughStream == nil)
 	req, err := ae.BuildRequest(cand, bodyBytes, params.IsStream)
 	if err != nil {
 		return nil, err
