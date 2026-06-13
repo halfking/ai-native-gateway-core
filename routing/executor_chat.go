@@ -144,7 +144,7 @@ func (e *Executor) executeOpenAI(
 		outboundModel = cand.RawModel
 	}
 
-	contextCompactionRetried := false
+	contextLenRecovery := contextLengthRecoveryState{}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -333,34 +333,18 @@ func (e *Executor) executeOpenAI(
 					// Q4 (anthropic-messages passthrough) is skipped: the
 					// body bytes are owned by the Q4 streaming writer and
 					// mid-stream rewriting would break the byte contract.
-					if errorsx.IsContextLength(errKind) && !contextCompactionRetried &&
+					if errorsx.IsContextLength(errKind) &&
 						cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-						contextCompactionRetried = true
-						mechanicalFn := func(b []byte) []byte {
-							if params.ClientProtocol == "anthropic-messages" {
-								return transform.CompressAnthropicMessagesIfNeeded(b, *cand.ContextWindow)
-							}
-							return transform.CompressMessagesIfNeeded(b, *cand.ContextWindow)
-						}
-						newSource, progressed := e.applyMechanicalThenLLMCompaction(
-							params.R.Context(), params, cand, sourceBody, mechanicalFn,
-						)
-						if progressed {
-							sourceBody = newSource
-							slog.Info("context_length 4xx → openai compaction retry",
-								"credential_id", cand.CredentialID,
-								"model", cand.RawModel,
-								"context_window", *cand.ContextWindow,
-								"status", resp.StatusCode,
-								"source_bytes", len(sourceBody),
-							)
+						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode) {
+						case ctxLenRetry:
 							bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 							if err != nil {
 								return nil, err
 							}
 							return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+						case ctxLenGiveUp:
+							// fall through
 						}
-						// Mechanical trim + LLM compaction made no progress — fall through to 4xx bubble-up.
 					}
 					// Do not write 4xx to ResponseWriter here — Execute() may
 					// fail over to the next credential. Writing first would

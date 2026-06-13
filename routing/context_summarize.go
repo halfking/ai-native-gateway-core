@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/transform"
 )
 
 const (
@@ -116,7 +117,7 @@ func (e *Executor) tryLLMContextCompaction(
 	// Keep summarize input under ~900k tokens (heuristic) so 1M models fit.
 	conversation = trimTextToTokenBudget(conversation, 900_000)
 
-	summary, err := e.invokeCompactionSummarize(ctx, *compactCand, conversation)
+	summary, err := e.invokeCompactionSummarize(ctx, params, *compactCand, conversation)
 	if err != nil {
 		slog.Warn("compaction: summarize call failed",
 			"compact_model", compactCand.RawModel,
@@ -153,7 +154,7 @@ func (e *Executor) tryLLMContextCompaction(
 	return rebuilt, true
 }
 
-func (e *Executor) invokeCompactionSummarize(ctx context.Context, cand provider.Candidate, conversation string) (string, error) {
+func (e *Executor) invokeCompactionSummarize(ctx context.Context, params *ExecParams, cand provider.Candidate, conversation string) (string, error) {
 	userContent := "Summarize the following conversation history:\n\n" + conversation
 	timeout := 120 * time.Second
 	if e.UpstreamTimeout > 0 {
@@ -163,12 +164,12 @@ func (e *Executor) invokeCompactionSummarize(ctx context.Context, cand provider.
 	defer cancel()
 
 	if cand.Protocol == "anthropic-messages" {
-		return e.invokeAnthropicSummarize(ctx, cand, userContent)
+		return e.invokeAnthropicSummarize(ctx, params, cand, userContent)
 	}
-	return e.invokeOpenAISummarize(ctx, cand, userContent)
+	return e.invokeOpenAISummarize(ctx, params, cand, userContent)
 }
 
-func (e *Executor) invokeOpenAISummarize(ctx context.Context, cand provider.Candidate, userContent string) (string, error) {
+func (e *Executor) invokeOpenAISummarize(ctx context.Context, params *ExecParams, cand provider.Candidate, userContent string) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"model":       cand.RawModel,
 		"max_tokens":  defaultCompactionSummaryMaxTokens,
@@ -183,15 +184,7 @@ func (e *Executor) invokeOpenAISummarize(ctx context.Context, cand provider.Cand
 		return "", err
 	}
 
-	url := upstreamurl.ChatCompletionsURL(cand.BaseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cand.APIKey)
-
-	resp, err := e.doCompactionHTTP(req)
+	resp, err := e.doCompactionUpstream(ctx, params, cand, payload, false)
 	if err != nil {
 		return "", err
 	}
@@ -217,7 +210,7 @@ func (e *Executor) invokeOpenAISummarize(ctx context.Context, cand provider.Cand
 	return parsed.Choices[0].Message.Content, nil
 }
 
-func (e *Executor) invokeAnthropicSummarize(ctx context.Context, cand provider.Candidate, userContent string) (string, error) {
+func (e *Executor) invokeAnthropicSummarize(ctx context.Context, params *ExecParams, cand provider.Candidate, userContent string) (string, error) {
 	payload, err := json.Marshal(map[string]any{
 		"model":      cand.RawModel,
 		"max_tokens": defaultCompactionSummaryMaxTokens,
@@ -230,16 +223,7 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, cand provider.C
 		return "", err
 	}
 
-	url := upstreamurl.MessagesURL(cand.BaseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", cand.APIKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
-
-	resp, err := e.doCompactionHTTP(req)
+	resp, err := e.doCompactionUpstream(ctx, params, cand, payload, true)
 	if err != nil {
 		return "", err
 	}
@@ -268,6 +252,90 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, cand provider.C
 		return "", fmt.Errorf("anthropic summarize: empty content")
 	}
 	return b.String(), nil
+}
+
+func (e *Executor) doCompactionUpstream(
+	ctx context.Context,
+	params *ExecParams,
+	cand provider.Candidate,
+	payload []byte,
+	anthropic bool,
+) (*http.Response, error) {
+	if e.Circuit != nil && !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
+		return nil, fmt.Errorf("compaction: circuit open for credential %d", cand.CredentialID)
+	}
+
+	var releaseLimiter func()
+	if e.Limiter != nil && params != nil {
+		rel, err := e.Limiter.AcquireAll(ctx, cand.ProviderID, cand.CredentialID, params.ClientID.IdentityHash)
+		if err != nil {
+			return nil, fmt.Errorf("compaction: limiter: %w", err)
+		}
+		releaseLimiter = rel
+	}
+	if releaseLimiter != nil {
+		defer releaseLimiter()
+	}
+
+	var url string
+	if anthropic {
+		url = upstreamurl.MessagesURL(cand.BaseURL)
+	} else {
+		url = upstreamurl.ChatCompletionsURL(cand.BaseURL)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	e.applyCompactionRequestHeaders(req, params, cand, anthropic)
+
+	resp, err := e.doCompactionHTTP(req)
+	if err != nil {
+		if e.Circuit != nil {
+			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindNetwork)
+		}
+		return nil, err
+	}
+	if e.Circuit != nil {
+		if resp.StatusCode >= 500 || resp.StatusCode == 429 {
+			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.ClassifyErrorWithBody(resp.StatusCode, nil))
+		} else if resp.StatusCode < 400 {
+			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+		}
+	}
+	return resp, nil
+}
+
+func (e *Executor) applyCompactionRequestHeaders(req *http.Request, params *ExecParams, cand provider.Candidate, anthropic bool) {
+	if anthropic {
+		req.Header.Set("x-api-key", cand.APIKey)
+		req.Header.Set("anthropic-version", anthropicVersion)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+cand.APIKey)
+	}
+	if params == nil || params.R == nil {
+		return
+	}
+	req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+	req.Header.Set("X-Virtual-Client-Id", params.ClientID.VirtualClientID)
+	req.Header.Set("X-Virtual-IP", params.ClientID.VirtualIP)
+	req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
+	if params.Transform != nil {
+		for _, h := range params.Transform.StripHeaders {
+			req.Header.Del(h)
+		}
+		for k, v := range params.Transform.InjectHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+	if e.HeaderProfiles != nil {
+		if prof := e.HeaderProfiles.load(params.R.Context(), cand.CatalogCode, cand.Protocol); prof != nil {
+			for k, v := range prof.Headers {
+				req.Header.Set(k, v)
+			}
+		}
+	}
 }
 
 func (e *Executor) doCompactionHTTP(req *http.Request) (*http.Response, error) {
@@ -300,7 +368,7 @@ func extractOpenAIConversationText(body []byte) (string, error) {
 	}
 	var b strings.Builder
 	for _, raw := range req.Messages {
-		role, text := messageRoleAndText(raw)
+		role, text := messageRoleAndSummary(raw)
 		if text == "" {
 			continue
 		}
@@ -324,7 +392,7 @@ func extractAnthropicConversationText(body []byte) (string, error) {
 		}
 	}
 	for _, raw := range req.Messages {
-		role, text := messageRoleAndText(raw)
+		role, text := messageRoleAndSummary(raw)
 		if text == "" {
 			continue
 		}
@@ -333,15 +401,99 @@ func extractAnthropicConversationText(body []byte) (string, error) {
 	return b.String(), nil
 }
 
-func messageRoleAndText(raw json.RawMessage) (role, text string) {
+func messageRoleAndSummary(raw json.RawMessage) (role, text string) {
 	var probe struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCalls  json.RawMessage `json:"tool_calls"`
+		ToolCallID string          `json:"tool_call_id"`
+		Name       string          `json:"name"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return "", ""
 	}
-	return probe.Role, rawJSONTextContent(probe.Content)
+	var parts []string
+	if t := rawJSONTextContent(probe.Content); t != "" {
+		parts = append(parts, t)
+	}
+	if toolText := formatOpenAIToolCalls(probe.ToolCalls); toolText != "" {
+		parts = append(parts, toolText)
+	}
+	if blockText := formatAnthropicToolBlocks(probe.Content); blockText != "" {
+		parts = append(parts, blockText)
+	}
+	if probe.Role == "tool" {
+		label := probe.Name
+		if label == "" {
+			label = probe.ToolCallID
+		}
+		if label != "" {
+			parts = append([]string{fmt.Sprintf("tool_result(%s)", label)}, parts...)
+		} else {
+			parts = append([]string{"tool_result"}, parts...)
+		}
+	}
+	return probe.Role, strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func formatOpenAIToolCalls(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var calls []struct {
+		ID       string `json:"id"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &calls); err != nil || len(calls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range calls {
+		name := c.Function.Name
+		if name == "" {
+			name = c.ID
+		}
+		fmt.Fprintf(&b, "tool_call(%s): %s\n", name, truncateForLog([]byte(c.Function.Arguments), 512))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatAnthropicToolBlocks(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
+	}
+	var parts []struct {
+		Type      string          `json:"type"`
+		Name      string          `json:"name"`
+		Input     json.RawMessage `json:"input"`
+		ToolUseID string          `json:"tool_use_id"`
+		Text      string          `json:"text"`
+		Content   json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		switch p.Type {
+		case "tool_use":
+			fmt.Fprintf(&b, "tool_use(%s): %s\n", p.Name, truncateForLog(p.Input, 512))
+		case "tool_result":
+			result := p.Text
+			if result == "" {
+				result = rawJSONTextContent(p.Content)
+			}
+			fmt.Fprintf(&b, "tool_result(%s): %s\n", p.ToolUseID, truncateForLog([]byte(result), 512))
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func messageRoleAndText(raw json.RawMessage) (role, text string) {
+	return messageRoleAndSummary(raw)
 }
 
 func rawJSONTextContent(raw json.RawMessage) string {
@@ -386,7 +538,7 @@ func rebuildOpenAIBodyAfterSummary(body []byte, summary string, keepRecentPairs 
 		return nil, err
 	}
 	system, rest := splitSystemMessages(req.Messages)
-	tail := tailMessages(rest, keepRecentPairs)
+	tail := tailMessagesToolAware(rest, keepRecentPairs)
 	summaryMsg, _ := json.Marshal(map[string]string{
 		"role":    "user",
 		"content": compactionSummaryPrefix + summary,
@@ -414,7 +566,7 @@ func rebuildAnthropicBodyAfterSummary(body []byte, summary string, keepRecentPai
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
-	tail := tailMessages(req.Messages, keepRecentPairs)
+	tail := tailMessagesToolAware(req.Messages, keepRecentPairs)
 	summaryMsg, _ := json.Marshal(map[string]string{
 		"role":    "user",
 		"content": compactionSummaryPrefix + summary,
@@ -451,8 +603,8 @@ func isOpenAISystemMessage(raw json.RawMessage) bool {
 	return probe.Role == "system"
 }
 
-// tailMessages keeps the last keepRecentPairs user/assistant pairs (up to 2*keepRecentPairs msgs).
-func tailMessages(messages []json.RawMessage, keepRecentPairs int) []json.RawMessage {
+// tailMessagesToolAware keeps recent tail without splitting tool rounds.
+func tailMessagesToolAware(messages []json.RawMessage, keepRecentPairs int) []json.RawMessage {
 	if keepRecentPairs <= 0 || len(messages) == 0 {
 		return nil
 	}
@@ -460,7 +612,100 @@ func tailMessages(messages []json.RawMessage, keepRecentPairs int) []json.RawMes
 	if len(messages) <= maxKeep {
 		return append([]json.RawMessage(nil), messages...)
 	}
-	return append([]json.RawMessage(nil), messages[len(messages)-maxKeep:]...)
+	start := len(messages) - maxKeep
+	start = extendTailStartForToolIntegrity(messages, start)
+	return append([]json.RawMessage(nil), messages[start:]...)
+}
+
+func extendTailStartForToolIntegrity(messages []json.RawMessage, start int) int {
+	for start > 0 && tailStartNeedsBackwardExtension(messages, start) {
+		start--
+	}
+	return start
+}
+
+func tailStartNeedsBackwardExtension(messages []json.RawMessage, start int) bool {
+	if start <= 0 || start >= len(messages) {
+		return false
+	}
+	role := messageRoleOnly(messages[start])
+	switch role {
+	case "tool":
+		return true
+	case "assistant":
+		if messageHasToolCalls(messages[start]) || messageHasAnthropicToolUse(messages[start]) {
+			return true
+		}
+	case "user":
+		if messageHasAnthropicToolResult(messages[start]) {
+			return true
+		}
+	}
+	return false
+}
+
+func messageHasToolCalls(raw json.RawMessage) bool {
+	var probe struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return len(probe.ToolCalls) > 0 && string(probe.ToolCalls) != "null"
+}
+
+func messageHasAnthropicToolUse(raw json.RawMessage) bool {
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(probe.Content, &parts); err != nil {
+		return false
+	}
+	for _, p := range parts {
+		if p.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
+func messageRoleOnly(raw json.RawMessage) string {
+	var probe struct {
+		Role string `json:"role"`
+	}
+	_ = json.Unmarshal(raw, &probe)
+	return probe.Role
+}
+
+func messageHasAnthropicToolResult(raw json.RawMessage) bool {
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	var parts []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(probe.Content, &parts); err != nil {
+		return false
+	}
+	for _, p := range parts {
+		if p.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+func tailMessages(messages []json.RawMessage, keepRecentPairs int) []json.RawMessage {
+	return tailMessagesToolAware(messages, keepRecentPairs)
 }
 
 func trimTextToTokenBudget(text string, tokenBudget int) string {
@@ -491,23 +736,69 @@ func truncateForLog(b []byte, n int) string {
 	return string(b[:n])
 }
 
-// applyMechanicalThenLLMCompaction runs trim then optional LLM summarize on sourceBody.
-func (e *Executor) applyMechanicalThenLLMCompaction(
+type contextLengthRecoveryState struct {
+	mechanicalAttempted bool
+	llmAttempted        bool
+}
+
+type ctxLenRecoveryAction int
+
+const (
+	ctxLenGiveUp ctxLenRecoveryAction = iota
+	ctxLenRetry
+)
+
+func (e *Executor) handleContextLengthRecovery(
 	ctx context.Context,
 	params *ExecParams,
 	targetCand provider.Candidate,
-	sourceBody []byte,
-	mechanicalTrim func([]byte) []byte,
-) ([]byte, bool) {
-	trimmed := mechanicalTrim(sourceBody)
-	if len(trimmed) < len(sourceBody) {
-		return trimmed, true
+	sourceBody *[]byte,
+	st *contextLengthRecoveryState,
+	status int,
+) ctxLenRecoveryAction {
+	if targetCand.ContextWindow == nil || params == nil || sourceBody == nil || st == nil {
+		return ctxLenGiveUp
 	}
-	newBody, ok := e.tryLLMContextCompaction(ctx, params, targetCand, sourceBody)
-	if ok {
-		return newBody, true
+	mechanicalFn := func(b []byte) []byte {
+		if params.ClientProtocol == "anthropic-messages" {
+			return transform.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
+		}
+		return transform.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
 	}
-	return sourceBody, false
+
+	if !st.mechanicalAttempted {
+		st.mechanicalAttempted = true
+		trimmed := mechanicalFn(*sourceBody)
+		if len(trimmed) < len(*sourceBody) {
+			*sourceBody = trimmed
+			slog.Info("context_length 4xx → mechanical trim retry",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"context_window", *targetCand.ContextWindow,
+				"status", status,
+				"source_bytes", len(*sourceBody),
+			)
+			return ctxLenRetry
+		}
+	}
+
+	if !st.llmAttempted {
+		st.llmAttempted = true
+		newBody, ok := e.tryLLMContextCompaction(ctx, params, targetCand, *sourceBody)
+		if ok {
+			*sourceBody = newBody
+			slog.Info("context_length 4xx → llm summary retry",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"context_window", *targetCand.ContextWindow,
+				"status", status,
+				"source_bytes", len(*sourceBody),
+			)
+			return ctxLenRetry
+		}
+	}
+
+	return ctxLenGiveUp
 }
 
 // classifyContextLengthFromStatus helps tests; re-export pattern from errorsx.

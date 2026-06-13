@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -111,20 +112,78 @@ func TestExtractOpenAIConversationText(t *testing.T) {
 	}
 }
 
-func TestApplyMechanicalThenLLMCompaction_MechanicalOnly(t *testing.T) {
+func TestMessageRoleAndSummary_ToolCalls(t *testing.T) {
+	raw := json.RawMessage(`{
+		"role":"assistant",
+		"content":"checking weather",
+		"tool_calls":[{"id":"tc1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]
+	}`)
+	role, text := messageRoleAndSummary(raw)
+	if role != "assistant" {
+		t.Fatalf("role = %q", role)
+	}
+	if !strings.Contains(text, "checking weather") || !strings.Contains(text, "tool_call(get_weather)") {
+		t.Fatalf("text = %q", text)
+	}
+}
+
+func TestTailMessagesToolAware_PreservesToolRound(t *testing.T) {
+	messages := []json.RawMessage{
+		json.RawMessage(`{"role":"user","content":"old"}`),
+		json.RawMessage(`{"role":"assistant","content":"old reply"}`),
+		json.RawMessage(`{"role":"user","content":"go"}`),
+		json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"read","input":{}}]}`),
+		json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"file contents"}]}`),
+		json.RawMessage(`{"role":"assistant","content":"done"}`),
+	}
+	tail := tailMessagesToolAware(messages, 1)
+	if len(tail) != 4 {
+		t.Fatalf("tail len = %d, want 4 (trigger user + full tool round)", len(tail))
+	}
+	// Must include the user turn that triggered tool_use, then tool_use/tool_result/final reply.
+	if !strings.Contains(string(tail[0]), `"content":"go"`) {
+		t.Fatalf("tail[0] should be triggering user, got %s", tail[0])
+	}
+	if !strings.Contains(string(tail[1]), "tool_use") {
+		t.Fatalf("tail[1] should be tool_use assistant, got %s", tail[1])
+	}
+	if !strings.Contains(string(tail[2]), "tool_result") {
+		t.Fatalf("tail[2] should be tool_result user, got %s", tail[2])
+	}
+}
+
+func TestHandleContextLengthRecovery_TwoPhase(t *testing.T) {
 	e := &Executor{}
-	big := strings.Repeat("x", 500)
-	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + big + `"}]}`)
-	mechanical := func(b []byte) []byte {
-		return []byte(`{"model":"m","messages":[{"role":"user","content":"small"}]}`)
+	params := &ExecParams{R: httptestNewRequest()}
+	window := 50
+	cand := provider.Candidate{ContextWindow: &window}
+	big := strings.Repeat("x", 400)
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + big + `"},{"role":"assistant","content":"` + big + `"},{"role":"user","content":"` + big + `"}]}`)
+
+	st := contextLengthRecoveryState{}
+	source := append([]byte(nil), body...)
+	action := e.handleContextLengthRecovery(context.Background(), params, cand, &source, &st, 400)
+	if action != ctxLenRetry {
+		t.Fatalf("phase1 = %v, want retry", action)
 	}
-	out, ok := e.applyMechanicalThenLLMCompaction(context.Background(), nil, provider.Candidate{}, body, mechanical)
-	if !ok {
-		t.Fatal("expected mechanical compaction")
+	if !st.mechanicalAttempted || st.llmAttempted {
+		t.Fatalf("mechanical=%v llm=%v", st.mechanicalAttempted, st.llmAttempted)
 	}
-	if string(out) != `{"model":"m","messages":[{"role":"user","content":"small"}]}` {
-		t.Fatalf("out = %s", out)
+
+	st2 := contextLengthRecoveryState{mechanicalAttempted: true}
+	source2 := append([]byte(nil), body...)
+	action2 := e.handleContextLengthRecovery(context.Background(), params, cand, &source2, &st2, 400)
+	if action2 != ctxLenGiveUp {
+		t.Fatalf("phase2 = %v, want give up", action2)
 	}
+	if !st2.llmAttempted {
+		t.Fatal("llm should be attempted in phase2")
+	}
+}
+
+func httptestNewRequest() *http.Request {
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+	return req
 }
 
 func TestCompactionModelsFromEnv(t *testing.T) {
