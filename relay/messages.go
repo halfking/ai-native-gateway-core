@@ -254,6 +254,21 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		explicitOutbound = transform.RenderOutboundModel(txResult.OutboundModel, txResult.OutboundModel, clientModel, tCtx.CanonicalName)
 	}
 
+	egressProtocol := ""
+	if len(candidates) > 0 {
+		egressProtocol = candidates[0].Protocol
+	}
+	var canonicalID *int
+	if modelResolution != nil {
+		canonicalID = modelResolution.CanonicalID
+	}
+	h.chatHandler.recordInitialRequestLog(
+		requestID, clientModel, explicitOutbound, endUser, "messages", keyInfo,
+		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
+		attemptProviderID, attemptCredentialID, canonicalID,
+		bodyBytes, txResult, egressProtocol, isStream,
+	)
+
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
 		W:             w,
 		R:             r,
