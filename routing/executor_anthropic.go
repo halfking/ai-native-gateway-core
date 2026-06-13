@@ -342,17 +342,8 @@ func (e *Executor) executeAnthropic(
 				}
 				continue
 			}
-			// Mechanical trim + LLM compaction made no progress — bubble the original 4xx up.
-			for k, vs := range cle.headers {
-				for _, v := range vs {
-					params.W.Header().Add(k, v)
-				}
-			}
-			params.W.WriteHeader(cle.status)
-			if len(cle.body) > 0 {
-				params.W.Write(cle.body)
-			}
-			return nil, fmt.Errorf("upstream %d", cle.status)
+			// Do not write 4xx here; outer Execute() may try the next credential.
+			return nil, fmt.Errorf("upstream %d: %s", cle.status, string(cle.body[:min(len(cle.body), 200)]))
 		}
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
