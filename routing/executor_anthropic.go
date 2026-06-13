@@ -70,6 +70,13 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if clientModel != "" {
 		body = replaceModelInResponseBody(body, clientModel)
 	}
+	// minimax-anthropic upstream packs the reasoning trace inside the
+	// text block as `<think>...</think>` rather than emitting a separate
+	// thinking block. Anthropic's wire protocol expects an independent
+	// `thinking` block; split it so SDK clients render the trace separately
+	// instead of receiving a single text blob the user can't tell apart from
+	// the answer.
+	body = splitEmbeddedThinkTags(body)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -78,6 +85,86 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return err
+}
+
+// splitEmbeddedThinkTags inspects an Anthropic Messages response body and,
+// for each text block whose text contains a leading `<think>...</think>`
+// segment, replaces that block with a [thinking, text] pair. Non-text
+// blocks and text blocks without `<think>` are passed through unchanged.
+//
+// The split is conservative: only the FIRST complete `<think>...</think>`
+// at the start of a text block is promoted to a thinking block. This avoids
+// any false-positive rewrites of legitimate XML/HTML content elsewhere in
+// the response. Bodies that fail to parse as Anthropic Messages JSON are
+// returned unchanged.
+func splitEmbeddedThinkTags(body []byte) []byte {
+	var resp struct {
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	if len(resp.Content) == 0 {
+		return body
+	}
+	changed := false
+	out := make([]json.RawMessage, 0, len(resp.Content))
+	for _, raw := range resp.Content {
+		var b struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil || b.Type != "text" {
+			out = append(out, raw)
+			continue
+		}
+		think, rest, ok := splitLeadingThinkBlock(b.Text)
+		if !ok {
+			out = append(out, raw)
+			continue
+		}
+		changed = true
+		tb, _ := json.Marshal(map[string]string{"type": "thinking", "thinking": think})
+		out = append(out, tb)
+		nb, _ := json.Marshal(map[string]string{"type": "text", "text": rest})
+		out = append(out, nb)
+	}
+	if !changed {
+		return body
+	}
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return body
+	}
+	arr, err := json.Marshal(out)
+	if err != nil {
+		return body
+	}
+	generic["content"] = arr
+	out2, err := json.Marshal(generic)
+	if err != nil {
+		return body
+	}
+	return out2
+}
+
+// splitLeadingThinkBlock extracts a leading `<think>...</think>` segment
+// from s, returning the inner thinking text, the remainder of s with the
+// segment stripped (leading whitespace trimmed), and ok=true if the
+// prefix was found. Otherwise it returns s unchanged and ok=false.
+func splitLeadingThinkBlock(s string) (think, rest string, ok bool) {
+	const openTag = "<think>"
+	const closeTag = "</think>"
+	if !strings.HasPrefix(s, openTag) {
+		return "", s, false
+	}
+	end := strings.Index(s, closeTag)
+	if end < 0 {
+		return "", s, false
+	}
+	think = s[len(openTag):end]
+	rest = strings.TrimLeft(s[end+len(closeTag):], "\n")
+	return think, rest, true
 }
 
 func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
