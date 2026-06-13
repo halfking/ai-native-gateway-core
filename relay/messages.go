@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
 
@@ -77,7 +78,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo, r)
 		}
 	}()
 
@@ -212,7 +213,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo)
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("No available provider for model '%s'", clientModel))
 		return
@@ -262,11 +263,13 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
 	h.chatHandler.recordInitialRequestLog(
 		requestID, clientModel, explicitOutbound, endUser, "messages", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
+		gwSessionID, gwTaskID,
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
@@ -302,7 +305,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		attemptErrMsg = errMsg
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo)
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo, r)
 		*attemptLogged = true
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")

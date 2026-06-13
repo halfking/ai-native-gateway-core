@@ -1313,6 +1313,8 @@ export interface RequestLogRow {
   stream_interrupted: boolean | null
   stream_done_sent: boolean | null
   usage_source: 'llm' | 'estimated' | null
+  gw_session_id: string | null
+  gw_task_id: string | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
@@ -1345,6 +1347,8 @@ export function getRequestLogs(params: {
   success?: boolean
   canonical_id?: number
   usage_source?: 'llm' | 'estimated'
+  gw_session_id?: string
+  gw_task_id?: string
   page?: number
   page_size?: number
 } = {}) {
@@ -1361,6 +1365,8 @@ export function getRequestLogs(params: {
   if (params.success != null) qs.set('success', String(params.success))
   if (params.canonical_id != null) qs.set('canonical_id', String(params.canonical_id))
   if (params.usage_source) qs.set('usage_source', params.usage_source)
+  if (params.gw_session_id) qs.set('gw_session_id', params.gw_session_id)
+  if (params.gw_task_id) qs.set('gw_task_id', params.gw_task_id)
   if (params.page != null) qs.set('page', String(params.page))
   if (params.page_size != null) qs.set('page_size', String(params.page_size))
   const s = qs.toString()

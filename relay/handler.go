@@ -182,7 +182,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attemptProviderID, attemptCredentialID,
 				attemptErrCode, attemptErrMsg,
 				int(time.Since(startTime).Milliseconds()),
-				nil, attemptKeyInfo)
+				nil, attemptKeyInfo, r)
 			if !*attemptLogged {
 				writeErrorJSON(w, http.StatusInternalServerError, requestID,
 					"internal server error", "server_error", "internal_panic")
@@ -195,7 +195,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo, r)
 		}
 	}()
 
@@ -233,7 +233,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID, attemptCredentialID,
 		attemptErrCode, attemptErrMsg,
 		int(time.Since(startTime).Milliseconds()),
-		nil, attemptKeyInfo)
+		nil, attemptKeyInfo, r)
 	*attemptLogged = true
 	h.serveFallback(w, r)
 }
@@ -435,7 +435,7 @@ func (h *ChatHandler) serveWithExecutor(
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
@@ -444,7 +444,7 @@ func (h *ChatHandler) serveWithExecutor(
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
@@ -502,11 +502,13 @@ func (h *ChatHandler) serveWithExecutor(
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
 	h.recordInitialRequestLog(
 		requestID, clientModel, explicitOutbound, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
 		*attemptProviderID, *attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
+		gwSessionID, gwTaskID,
 	)
 
 	var sessionKey string
@@ -564,7 +566,7 @@ func (h *ChatHandler) serveWithExecutor(
 			h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
 				"model_not_found",
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+				int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			writeErrorJSONWithDebug(w, http.StatusServiceUnavailable, requestID,
@@ -580,7 +582,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
 			"provider_error", execErr.Error(),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo)
+			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
 		debugInfo := map[string]any{
@@ -910,7 +912,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 // The caller is expected to call EmitRequestLog exactly once;
 // recordFailedRequest never duplicates the entry.
 func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) {
-	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil)
+	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil, nil)
 }
 
 // recordFailedRequestWithKey is the full-fat version.  When keyInfo is
@@ -918,8 +920,12 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 // from the admin UI in the same way as success rows.
 // It updates the early request_logs row when one exists (see
 // recordInitialRequestLog); otherwise it inserts a complete row.
-func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo) {
-	h.recordFailedRequestDetailed(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, keyInfo, "", "", "")
+func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo, r *http.Request) {
+	gwSessionID, gwTaskID := "", ""
+	if r != nil {
+		gwSessionID, gwTaskID = gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	}
+	h.recordFailedRequestDetailed(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, keyInfo, "", "", "", gwSessionID, gwTaskID)
 }
 
 func (h *ChatHandler) recordFailedRequestDetailed(
@@ -930,6 +936,7 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 	requestBody []byte,
 	keyInfo *auth.KeyInfo,
 	clientProfile, identityHash, requestMode string,
+	gwSessionID, gwTaskID string,
 ) {
 	if clientModel == "" && len(requestBody) > 0 {
 		clientModel = extractModelFromBody(requestBody)
@@ -962,6 +969,8 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 		ClientProfile: strPtr(clientProfile),
 		IdentityHash:  strPtr(identityHash),
 		RequestMode:   strPtr(requestMode),
+		GwSessionID:   strPtr(gwSessionID),
+		GwTaskID:      strPtr(gwTaskID),
 		LatencyMs:     &latency,
 		Success:       false,
 		ErrorKind:     strPtr(errCode),
@@ -993,6 +1002,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	txResult *transform.TransformResult,
 	egressProtocol string,
 	isStream bool,
+	gwSessionID, gwTaskID string,
 ) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -1041,6 +1051,8 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ClientProfile:      strPtr(clientProfile),
 		IdentityHash:       strPtr(identityHash),
 		RequestMode:        strPtr(requestMode),
+		GwSessionID:        strPtr(gwSessionID),
+		GwTaskID:           strPtr(gwTaskID),
 		Success:            false,
 		RequestBody:        requestBodyText,
 		RequestPreview:     requestPreviewPtr,
