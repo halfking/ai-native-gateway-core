@@ -58,7 +58,16 @@ type DecisionLogEntry struct {
 	DecisionTrace       json.RawMessage `json:"decision_trace,omitempty"`
 }
 
+// RequestLogOp distinguishes insert-at-start from update-on-complete.
+type RequestLogOp string
+
+const (
+	RequestLogInsert RequestLogOp = "insert"
+	RequestLogUpdate RequestLogOp = "update"
+)
+
 type RequestLogEntry struct {
+	Op RequestLogOp `json:"op,omitempty"`
 	RequestID          string   `json:"request_id"`
 	TenantID           string   `json:"tenant_id"`
 	ApplicationID      *int     `json:"application_id,omitempty"`
@@ -138,11 +147,27 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 	if !c.Enabled() {
 		return
 	}
+	if entry.Op == "" {
+		entry.Op = RequestLogInsert
+	}
 	select {
 	case c.queue <- entry:
 	default:
-		slog.Warn("telemetry queue full, dropping request log", "request_id", entry.RequestID)
+		// Request logs power /request-logs — never silently drop on backpressure.
+		if err := c.persistRequestLog(entry); err != nil {
+			slog.Warn("telemetry request sync persist failed", "request_id", entry.RequestID, "op", entry.Op, "error", err)
+		}
 	}
+}
+
+func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) {
+	entry.Op = RequestLogInsert
+	c.EmitRequestLog(entry)
+}
+
+func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
+	entry.Op = RequestLogUpdate
+	c.EmitRequestLog(entry)
 }
 
 func (c *Client) Stop() {
@@ -188,8 +213,8 @@ func (c *Client) flush(batch []any) {
 				slog.Warn("telemetry decision db insert failed", "request_id", v.RequestID, "error", err)
 			}
 		case *RequestLogEntry:
-			if err := c.insertRequestLog(v); err != nil {
-				slog.Warn("telemetry request db insert failed", "request_id", v.RequestID, "error", err)
+			if err := c.persistRequestLog(v); err != nil {
+				slog.Warn("telemetry request db persist failed", "request_id", v.RequestID, "op", v.Op, "error", err)
 			}
 		}
 	}
@@ -260,6 +285,13 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 		traceJSON,
 	)
 	return err
+}
+
+func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
+	if entry.Op == RequestLogUpdate {
+		return c.updateRequestLog(entry)
+	}
+	return c.insertRequestLog(entry)
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
@@ -400,7 +432,196 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 
-	if entry.APIKeyID != nil && *entry.APIKeyID > 0 {
+	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
+		var promptAdd, completionAdd int64
+		if entry.PromptTokens != nil {
+			promptAdd = int64(*entry.PromptTokens)
+		}
+		if entry.CompletionTokens != nil {
+			completionAdd = int64(*entry.CompletionTokens)
+		}
+		var costAdd float64
+		if entry.CostUSD != nil {
+			costAdd = *entry.CostUSD
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE api_keys SET
+				total_requests = total_requests + 1,
+				total_prompt_tokens = total_prompt_tokens + $2,
+				total_completion_tokens = total_completion_tokens + $3,
+				total_cost_usd = total_cost_usd + $4,
+				last_request_at = now()
+			WHERE id = $1
+		`, *entry.APIKeyID, promptAdd, completionAdd, costAdd)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
+	if c.dbPool == nil {
+		return errNoTelemetryDB
+	}
+	sanitizeRequestLogEntry(entry)
+	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := c.dbPool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
+		_, err = tx.Exec(ctx, `
+			UPDATE usage_ledger
+			   SET prompt_tokens = COALESCE($2, prompt_tokens),
+			       completion_tokens = COALESCE($3, completion_tokens),
+			       total_tokens = COALESCE($4, total_tokens),
+			       cache_read_tokens = COALESCE($5, cache_read_tokens),
+			       cache_write_tokens = COALESCE($6, cache_write_tokens),
+			       cost_usd = COALESCE($7, cost_usd),
+			       latency_ms = COALESCE($8, latency_ms),
+			       success = COALESCE($9, success),
+			       error_kind = COALESCE($10, error_kind)
+			 WHERE request_id = $1
+		`,
+			entry.RequestID,
+			entry.PromptTokens,
+			entry.CompletionTokens,
+			totalTokens,
+			entry.CacheReadTokens,
+			entry.CacheWriteTokens,
+			entry.CostUSD,
+			entry.LatencyMs,
+			boolptr(entry.Success),
+			entry.ErrorKind,
+		)
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE usage_ledger
+			   SET latency_ms = COALESCE($2, latency_ms),
+			       success = COALESCE($3, success),
+			       error_kind = COALESCE($4, error_kind),
+			       cost_usd = COALESCE($5, cost_usd)
+			 WHERE request_id = $1
+		`,
+			entry.RequestID,
+			entry.LatencyMs,
+			boolptr(entry.Success),
+			entry.ErrorKind,
+			entry.CostUSD,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `
+		WITH latest AS (
+			SELECT id, ts
+			FROM request_logs
+			WHERE request_id = $1
+			ORDER BY ts DESC
+			LIMIT 1
+		)
+		UPDATE request_logs rl
+		   SET client_model = COALESCE($2, rl.client_model),
+		       outbound_model = COALESCE($3, rl.outbound_model),
+		       credential_id = COALESCE($4, rl.credential_id),
+		       provider_id = COALESCE($5, rl.provider_id),
+		       canonical_id = COALESCE($6, rl.canonical_id),
+		       client_profile = COALESCE($7, rl.client_profile),
+		       request_mode = COALESCE($8, rl.request_mode),
+		       end_user_id = COALESCE($9, rl.end_user_id),
+		       prompt_tokens = COALESCE($10, rl.prompt_tokens),
+		       completion_tokens = COALESCE($11, rl.completion_tokens),
+		       total_tokens = COALESCE($12, rl.total_tokens),
+		       cache_read_tokens = COALESCE($13, rl.cache_read_tokens),
+		       cache_write_tokens = COALESCE($14, rl.cache_write_tokens),
+		       cost_usd = COALESCE($15, rl.cost_usd),
+		       cost_display = COALESCE($16, rl.cost_display),
+		       cost_currency = COALESCE($17, rl.cost_currency),
+		       stream_first_chunk_ms = COALESCE($18, rl.stream_first_chunk_ms),
+		       stream_chunk_count = COALESCE($19, rl.stream_chunk_count),
+		       stream_done_received = COALESCE($20, rl.stream_done_received),
+		       stream_interrupted = COALESCE($21, rl.stream_interrupted),
+		       response_checksum = COALESCE($22, rl.response_checksum),
+		       response_preview = COALESCE($23, rl.response_preview),
+		       response_body = COALESCE(CAST($24 AS jsonb), rl.response_body),
+		       failure_detail_code = COALESCE($25, rl.failure_detail_code),
+		       transform_rule_id = COALESCE($26, rl.transform_rule_id),
+		       egress_protocol = COALESCE($27, rl.egress_protocol),
+		       request_preview = COALESCE($28, rl.request_preview),
+		       transform_summary = COALESCE($29, rl.transform_summary),
+		       request_body = COALESCE(CAST($30 AS jsonb), rl.request_body),
+		       usage_source = COALESCE(NULLIF($31, ''), rl.usage_source),
+		       success = COALESCE($32, rl.success),
+		       error_kind = COALESCE($33, rl.error_kind),
+		       latency_ms = COALESCE($34, rl.latency_ms),
+		       identity_hash = COALESCE($35, rl.identity_hash),
+		       search_text = COALESCE($36, rl.search_text)
+		  FROM latest
+		 WHERE rl.id = latest.id
+		   AND rl.ts = latest.ts
+	`,
+		entry.RequestID,
+		entry.ClientModel,
+		entry.OutboundModel,
+		entry.CredentialID,
+		entry.ProviderID,
+		entry.CanonicalID,
+		entry.ClientProfile,
+		entry.RequestMode,
+		entry.EndUserID,
+		entry.PromptTokens,
+		entry.CompletionTokens,
+		totalTokens,
+		entry.CacheReadTokens,
+		entry.CacheWriteTokens,
+		entry.CostUSD,
+		entry.CostDisplay,
+		entry.CostCurrency,
+		entry.StreamFirstChunkMs,
+		entry.StreamChunkCount,
+		entry.StreamDoneReceived,
+		entry.StreamInterrupted,
+		entry.ResponseChecksum,
+		entry.ResponsePreview,
+		entry.ResponseBody,
+		entry.FailureDetailCode,
+		entry.TransformRuleID,
+		entry.EgressProtocol,
+		entry.RequestPreview,
+		entry.TransformSummary,
+		entry.RequestBody,
+		nonEmptyPtr(entry.UsageSource, ""),
+		boolptr(entry.Success),
+		entry.ErrorKind,
+		entry.LatencyMs,
+		entry.IdentityHash,
+		searchText(entry),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// No early row — fall back to insert so the request is not lost.
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
+		}
+		fallback := *entry
+		fallback.Op = RequestLogInsert
+		return c.insertRequestLog(&fallback)
+	}
+
+	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
 		var promptAdd, completionAdd int64
 		if entry.PromptTokens != nil {
 			promptAdd = int64(*entry.PromptTokens)
