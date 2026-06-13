@@ -91,6 +91,11 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	outputTokens := 0
 	inputTokens := 0
 
+	// Buffered first text block (Phase 4): deltas accumulate here so we
+	// can detect an embedded `<think>...</think>` and rewrite the SSE
+	// stream as [thinking, text] at flush time.
+	var bufferedText strings.Builder
+
 	// First-byte timeout
 	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
 	if err != nil {
@@ -162,12 +167,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		textDelta, _ := delta["content"].(string)
 		if textDelta != "" {
-			deltaEvent := map[string]any{
-				"type":  "content_block_delta",
-				"index": 0,
-				"delta": map[string]any{"type": "text_delta", "text": textDelta},
-			}
-			writeSSE(w, "content_block_delta", deltaEvent)
+			// Phase 4 of 4: buffer text deltas so we can split
+			// `<think>...</think>` (minimax upstream) into independent
+			// thinking + text blocks at flush time. See flushBufferedText.
+			bufferedText.WriteString(textDelta)
 			lastSend = time.Now()
 			if capture != nil {
 				capture.ObservePayload(fmt.Sprintf(`{"type":"content_block_delta","text":%q}`, textDelta), "", false)
@@ -270,6 +273,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		processLine(line)
 	}
 
+	// Phase 4 split: flush the buffered text content (split into
+	// thinking + text if the upstream embedded `<think>...</think>`).
+	flushBufferedText(w, flusher, bufferedText.String(), capture)
+
 	writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
 
 	// Only mark the capture as "done" if the stream was NOT interrupted.
@@ -310,4 +317,69 @@ func writeSSE(w http.ResponseWriter, event string, payload any) {
 		return
 	}
 	w.Write([]byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)))
+}
+
+// flushBufferedText emits the accumulated text content of the first text
+// block as either one text block (no `<think>` prefix) or two blocks
+// (thinking + text) when the content begins with `<think>...</think>`.
+// The caller has already emitted the content_block_start (text, index=0);
+// we emit the deltas, the stop, and (on split) a fresh thinking block
+// at index 0 plus an optional text block at index 1.
+func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, fullText string, capture *audit.StreamCapture) {
+	if fullText == "" {
+		// No text emitted. Close the pre-declared empty text block at index 0.
+		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		flusher.Flush()
+		return
+	}
+
+	think, rest, ok := splitLeadingThinkBlock(fullText)
+	if !ok {
+		// No <think> prefix: emit the whole content as a single text_delta
+		// on the pre-declared block, then close it.
+		writeSSE(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{"type": "text_delta", "text": fullText},
+		})
+		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		flusher.Flush()
+		return
+	}
+
+	// Split path:
+	// 1. Close the pre-declared empty text block at index 0.
+	// 2. Open a thinking block at index 0 (reuse the slot).
+	// 3. Emit the thinking delta + stop.
+	// 4. If rest is non-empty, open a NEW text block at index 1 + delta + stop.
+	writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	writeSSE(w, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         0,
+		"content_block": map[string]any{"type": "thinking", "thinking": ""},
+	})
+	writeSSE(w, "content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": think},
+	})
+	writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	if capture != nil {
+		capture.HasThinking = true
+		capture.ThinkingBlocksN++
+	}
+	if rest != "" {
+		writeSSE(w, "content_block_start", map[string]any{
+			"type":          "content_block_start",
+			"index":         1,
+			"content_block": map[string]any{"type": "text", "text": ""},
+		})
+		writeSSE(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": 1,
+			"delta": map[string]any{"type": "text_delta", "text": rest},
+		})
+		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
+	}
+	flusher.Flush()
 }
