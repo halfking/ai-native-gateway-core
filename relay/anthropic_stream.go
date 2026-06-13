@@ -92,10 +92,27 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	outputTokens := 0
 	inputTokens := 0
 
-	// Buffered first text block (Phase 4): deltas accumulate here so we
-	// can detect an embedded `<think>...</think>` and rewrite the SSE
-	// stream as [thinking, text] at flush time.
+	// Phase 4 stream-end split: lazy probing of the running text content
+	// prefix. Most upstreams emit plain text and we want incremental
+	// streaming UX for them. Only minimax-style upstreams that pack a
+	// `<think>...</think>` reasoning trace need full buffering + split
+	// on flush. We detect the latter by probing the prefix as it arrives:
+	//   textAccProbing   — accumulate probeBuf until we have ≥ len("<think>")
+	//                        bytes, then test the prefix
+	//   ├─ prefix IS `<think>`        → textAccBuffering (split on flush)
+	//   └─ prefix is anything else     → flush probe verbatim, then
+	//                                    textAccPassthrough (emit deltas as
+	//                                    they arrive for the rest of the stream)
+	//   textAccPassthrough — emit deltas immediately (default)
+	//   textAccBuffering   — accumulate bufferedText; split on flush
 	var bufferedText strings.Builder
+	var probeBuf strings.Builder
+	const (
+		textAccProbing = iota
+		textAccBuffering
+		textAccPassthrough
+	)
+	textAccMode := textAccProbing
 
 	// First-byte timeout
 	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
@@ -168,10 +185,44 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		textDelta, _ := delta["content"].(string)
 		if textDelta != "" {
-			// Phase 4 of 4: buffer text deltas so we can split
-			// `<think>...</think>` (minimax upstream) into independent
-			// thinking + text blocks at flush time. See flushBufferedText.
-			bufferedText.WriteString(textDelta)
+			// Phase 4 of 4: route the text delta through the accumulator
+			// state machine. See the comment near the variable declarations
+			// above for the semantics of each mode.
+			switch textAccMode {
+			case textAccProbing:
+				probeBuf.WriteString(textDelta)
+				if probeBuf.Len() < len("<think>") {
+					break
+				}
+				probeStr := probeBuf.String()
+				if strings.HasPrefix(probeStr, "<think>") {
+					textAccMode = textAccBuffering
+					bufferedText.WriteString(probeStr)
+				} else {
+					// Probe decided: not a <think> prefix. Flush probe verbatim
+					// then enter passthrough for the rest of the stream.
+					writeSSE(w, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{"type": "text_delta", "text": probeStr},
+					})
+					if flusher != nil {
+						flusher.Flush()
+					}
+					textAccMode = textAccPassthrough
+				}
+			case textAccBuffering:
+				bufferedText.WriteString(textDelta)
+			case textAccPassthrough:
+				writeSSE(w, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]any{"type": "text_delta", "text": textDelta},
+				})
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 			lastSend = time.Now()
 			if capture != nil {
 				capture.ObservePayload(fmt.Sprintf(`{"type":"content_block_delta","text":%q}`, textDelta), "", false)
@@ -274,9 +325,33 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		processLine(line)
 	}
 
-	// Phase 4 split: flush the buffered text content (split into
-	// thinking + text if the upstream embedded `<think>...</think>`).
-	flushBufferedText(w, flusher, bufferedText.String(), capture)
+	// Phase 4: flush whatever mode we ended up in. Probing means the
+	// stream ended before we accumulated enough bytes to decide — flush
+	// whatever we have as a single text_delta so short content isn't
+	// lost. Passthrough means deltas were already emitted in real time,
+	// so just close the pre-declared block. Buffering means a <think>
+	// prefix was confirmed; flush with the split logic.
+	switch textAccMode {
+	case textAccProbing:
+		if probeBuf.Len() > 0 {
+			writeSSE(w, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]any{"type": "text_delta", "text": probeBuf.String()},
+			})
+		}
+		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	case textAccBuffering:
+		flushBufferedText(w, flusher, bufferedText.String(), capture)
+	case textAccPassthrough:
+		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 
 	writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -118,7 +119,7 @@ func splitEmbeddedThinkTags(body []byte) []byte {
 			out = append(out, raw)
 			continue
 		}
-		think, rest, ok := splitLeadingThinkBlock(b.Text)
+		think, rest, ok := textsplit.SplitLeadingThink(b.Text)
 		if !ok {
 			out = append(out, raw)
 			continue
@@ -148,24 +149,9 @@ func splitEmbeddedThinkTags(body []byte) []byte {
 	return out2
 }
 
-// splitLeadingThinkBlock extracts a leading `<think>...</think>` segment
-// from s, returning the inner thinking text, the remainder of s with the
-// segment stripped (leading whitespace trimmed), and ok=true if the
-// prefix was found. Otherwise it returns s unchanged and ok=false.
-func splitLeadingThinkBlock(s string) (think, rest string, ok bool) {
-	const openTag = "<think>"
-	const closeTag = "</think>"
-	if !strings.HasPrefix(s, openTag) {
-		return "", s, false
-	}
-	end := strings.Index(s, closeTag)
-	if end < 0 {
-		return "", s, false
-	}
-	think = s[len(openTag):end]
-	rest = strings.TrimLeft(s[end+len(closeTag):], "\n")
-	return think, rest, true
-}
+// splitLeadingThinkBlock was moved to internal/textsplit/textsplit.go so the
+// relay and routing packages can share one implementation without forming an
+// import cycle (relay already imports routing).
 
 func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
 	if a.PassthroughStream != nil {
