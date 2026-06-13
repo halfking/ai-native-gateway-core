@@ -238,6 +238,7 @@ func (e *Executor) executeAnthropic(
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
 ) (*ExecuteResult, error) {
+	slog.Info("PHASE4_DBG: executeAnthropic entry", "provider_id", cand.ProviderID, "is_stream", params.IsStream, "exec_passthrough_nil", e.AnthropicPassthroughStream == nil)
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
 		outboundModel = cand.RawModel
