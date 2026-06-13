@@ -300,7 +300,7 @@ func (e *Executor) executeAnthropic(
 		}
 	}
 
-	contextTrimRetried := false
+	contextLenRecovery := contextLengthRecoveryState{}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
@@ -316,34 +316,17 @@ func (e *Executor) executeAnthropic(
 		if tryErr == nil {
 			return result, nil
 		}
-		if cle, ok := tryErr.(*contextLengthHTTPError); ok && !contextTrimRetried && cand.ContextWindow != nil {
-			contextTrimRetried = true
-			mechanicalFn := func(b []byte) []byte {
-				if params.ClientProtocol == "anthropic-messages" {
-					return transform.CompressAnthropicMessagesIfNeeded(b, *cand.ContextWindow)
-				}
-				return transform.CompressMessagesIfNeeded(b, *cand.ContextWindow)
-			}
-			newSource, progressed := e.applyMechanicalThenLLMCompaction(
-				params.R.Context(), params, cand, sourceBody, mechanicalFn,
-			)
-			if progressed {
-				sourceBody = newSource
-				slog.Info("context_length 4xx → anthropic compaction retry",
-					"credential_id", cand.CredentialID,
-					"model", cand.RawModel,
-					"context_window", *cand.ContextWindow,
-					"status", cle.status,
-					"source_bytes", len(sourceBody),
-				)
+		if cle, ok := tryErr.(*contextLengthHTTPError); ok && cand.ContextWindow != nil {
+			switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, cle.status) {
+			case ctxLenRetry:
 				bodyBytes, err = e.prepareAnthropicRequestBody(params, cand, sourceBody)
 				if err != nil {
 					return nil, err
 				}
 				continue
+			case ctxLenGiveUp:
+				return nil, fmt.Errorf("upstream %d: %s", cle.status, string(cle.body[:min(len(cle.body), 200)]))
 			}
-			// Do not write 4xx here; outer Execute() may try the next credential.
-			return nil, fmt.Errorf("upstream %d: %s", cle.status, string(cle.body[:min(len(cle.body), 200)]))
 		}
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
