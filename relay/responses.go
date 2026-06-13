@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
 
@@ -85,7 +86,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
 				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo)
+				attemptErrCode, attemptErrMsg, latency, nil, attemptKeyInfo, r)
 		}
 	}()
 
@@ -201,7 +202,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo)
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
 		writeResponsesError(w, http.StatusServiceUnavailable, fmt.Sprintf("No available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
@@ -243,11 +244,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
 	h.chatHandler.recordInitialRequestLog(
 		requestID, clientModel, explicitOutbound, endUser, "responses", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
+		gwSessionID, gwTaskID,
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
@@ -283,7 +286,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptErrMsg = errMsg
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
-			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo)
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo, r)
 		*attemptLogged = true
 		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
 			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")

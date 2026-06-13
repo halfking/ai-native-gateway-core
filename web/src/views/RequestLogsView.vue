@@ -23,6 +23,8 @@ const hours = ref(24)
 const successFilter = ref<'' | 'success' | 'failure'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
+const gwSessionFilter = ref('')
+const gwTaskFilter = ref('')
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -83,6 +85,8 @@ async function load() {
       error_kind: errorKindFilter.value.trim() || undefined,
       model: modelFilter.value || undefined,
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
+      gw_session_id: gwSessionFilter.value.trim() || undefined,
+      gw_task_id: gwTaskFilter.value.trim() || undefined,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -275,6 +279,26 @@ onMounted(async () => {
             @keyup.enter="resetPageAndLoad"
           />
         </div>
+        <div class="cf-field cf-field--grow">
+          <span class="cf-label">会话 ID</span>
+          <input
+            v-model="gwSessionFilter"
+            type="text"
+            class="cf-input"
+            placeholder="X-Gw-Session-Id…"
+            @keyup.enter="resetPageAndLoad"
+          />
+        </div>
+        <div class="cf-field cf-field--grow">
+          <span class="cf-label">任务 ID</span>
+          <input
+            v-model="gwTaskFilter"
+            type="text"
+            class="cf-input"
+            placeholder="X-Gw-Task-Id…"
+            @keyup.enter="resetPageAndLoad"
+          />
+        </div>
         <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
       </div>
     </div>
@@ -285,6 +309,8 @@ onMounted(async () => {
       <table class="data-table" style="width:100%;font-size:12px">
         <thead>
           <tr>
+            <th>会话</th>
+            <th>任务</th>
             <th>时间</th>
             <th>Key</th>
             <th>客户端模型</th>
@@ -301,13 +327,14 @@ onMounted(async () => {
             <th>成本</th>
             <th>延迟</th>
             <th>状态</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="17">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td colspan="17">无记录</td></tr>
-          <tr v-for="r in rows" :key="r.request_id + r.ts" style="cursor:pointer" @click="showDetail(r.request_id)">
+          <tr v-if="loading"><td colspan="18">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td colspan="18">无记录</td></tr>
+          <tr v-for="r in rows" :key="r.request_id + r.ts" class="request-log-row" @click="showDetail(r.request_id)">
+            <td :title="r.gw_session_id || ''">{{ shortHash(r.gw_session_id) }}</td>
+            <td :title="r.gw_task_id || ''">{{ shortHash(r.gw_task_id) }}</td>
             <td>{{ fmtTs(r.ts) }}</td>
             <td>{{ r.api_key_id ?? '—' }}</td>
             <td>{{ r.client_model ?? '—' }}</td>
@@ -343,7 +370,6 @@ onMounted(async () => {
             <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
             <td :style="{ color: r.success ? 'var(--success)' : 'var(--danger)' }" :title="r.error_kind || ''">{{ statusLabel(r) }}</td>
-            <td><button class="btn btn-sm" @click.stop="showDetail(r.request_id)">查看</button></td>
           </tr>
         </tbody>
       </table>
@@ -380,6 +406,8 @@ onMounted(async () => {
           <div class="drawer-section">
             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px">
               <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
+              <span><strong>会话:</strong> {{ detail.gw_session_id ?? '—' }}</span>
+              <span><strong>任务:</strong> {{ detail.gw_task_id ?? '—' }}</span>
               <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
               <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
               <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
@@ -445,4 +473,13 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.request-log-row {
+  cursor: pointer;
+}
+.request-log-row:hover td {
+  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+}
+</style>
 
