@@ -130,8 +130,16 @@ type Policy struct {
 	CircuitOpenSeconds      int `json:"circuit_open_seconds"`
 	CircuitFailureThreshold int `json:"circuit_failure_threshold"`
 	CircuitMaxOpenSeconds   int `json:"circuit_max_open_seconds"`
-	StickyTTLMilliseconds   int `json:"sticky_ttl_seconds"`
-	TransientFailThreshold  int `json:"transient_fail_threshold"`
+	// StickyTTLSeconds is the sticky-session time-to-live in **seconds**.
+	// The DB column is named `sticky_ttl_seconds` and the JSON tag matches
+	// the on-the-wire name; the field name itself was previously
+	// StickyTTLMilliseconds (causing the value to be interpreted as
+	// milliseconds and the effective TTL to collapse to ~60s via the
+	// minute-floor in executor.go).  Fix 2026-06-13: rename the field to
+	// match the unit carried across the wire, then multiply by
+	// time.Second at the use site.
+	StickyTTLSeconds      int `json:"sticky_ttl_seconds"`
+	TransientFailThreshold int `json:"transient_fail_threshold"`
 }
 
 func DefaultPolicy() *Policy {
@@ -142,7 +150,7 @@ func DefaultPolicy() *Policy {
 		CircuitOpenSeconds:      300,
 		CircuitFailureThreshold: 5,
 		CircuitMaxOpenSeconds:   1800,
-		StickyTTLMilliseconds:   1800,
+		StickyTTLSeconds:        1800, // 30 minutes
 		TransientFailThreshold:  2,
 	}
 }
@@ -583,7 +591,7 @@ func (c *Client) fetchPolicyDB(ctx context.Context) (*Policy, error) {
 		&pol.CircuitOpenSeconds,
 		&pol.CircuitFailureThreshold,
 		&pol.CircuitMaxOpenSeconds,
-		&pol.StickyTTLMilliseconds,
+		&pol.StickyTTLSeconds,
 		&pol.TransientFailThreshold,
 	)
 	if err != nil {
@@ -614,8 +622,8 @@ func normalizePolicy(pol *Policy) *Policy {
 	if pol.CircuitMaxOpenSeconds == 0 {
 		pol.CircuitMaxOpenSeconds = 1800
 	}
-	if pol.StickyTTLMilliseconds == 0 {
-		pol.StickyTTLMilliseconds = 1800
+	if pol.StickyTTLSeconds == 0 {
+		pol.StickyTTLSeconds = 1800
 	}
 	if pol.TransientFailThreshold == 0 {
 		pol.TransientFailThreshold = 2
