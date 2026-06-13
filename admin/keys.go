@@ -662,7 +662,10 @@ func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
 func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, enabled bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id)
+	if _, err := h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -675,6 +678,39 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 	if err := readJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+
+	// Bound-check. Without this, a single bad PUT could set
+	// rate_limit_rpm=0 (zero-out throttling) or 999999 (oversubscribe
+	// the upstream) and silently break the key. The bounds are
+	// derived from auth/verifier.go tierDefaults: max=300/50.
+	// We double the production tier (60→10000 RPM, 20→1000
+	// concurrent) and 1B TPM as a hard ceiling.
+	const (
+		maxRPM        = 10000
+		maxConcurrent = 1000
+		maxTPM        = 1_000_000_000
+	)
+	if body.RateLimitRPM != nil {
+		if *body.RateLimitRPM < 1 || *body.RateLimitRPM > maxRPM {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("rate_limit_rpm must be between 1 and %d", maxRPM))
+			return
+		}
+	}
+	if body.RateLimitConcurrent != nil {
+		if *body.RateLimitConcurrent < 1 || *body.RateLimitConcurrent > maxConcurrent {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("rate_limit_concurrent must be between 1 and %d", maxConcurrent))
+			return
+		}
+	}
+	if body.RateLimitTPM != nil {
+		if *body.RateLimitTPM < 1 || *body.RateLimitTPM > maxTPM {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("rate_limit_tpm must be between 1 and %d", maxTPM))
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
