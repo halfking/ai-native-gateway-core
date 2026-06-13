@@ -8,11 +8,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-// TestChatSelectUpstreamBodyBytes_ConvertsWhenAnthropic verifies the
-// Q3 dispatch helper: when the chosen upstream speaks Anthropic, the
-// original OpenAI chat body must be converted to Anthropic Messages
-// format before being forwarded.
-func TestChatSelectUpstreamBodyBytes_ConvertsWhenAnthropic(t *testing.T) {
+// TestChatSelectUpstreamBodyBytes_AlwaysPassthrough verifies the
+// fix: selectChatUpstreamBodyBytes no longer converts to Anthropic
+// based on candidates[0].Protocol. It always returns the original
+// body. Conversion now happens per-candidate inside executeAnthropic
+// via the ChatToAnthropic callback, which avoids the body-format /
+// routed-candidate mismatch bug that caused "invalid tool type" (2013)
+// errors when candidates[0] was anthropic but the executor picked an
+// openai-completions credential.
+func TestChatSelectUpstreamBodyBytes_AlwaysPassthrough(t *testing.T) {
 	originalBody := []byte(`{
         "model":"MiniMax-M2.7","max_tokens":256,
         "messages":[
@@ -20,100 +24,27 @@ func TestChatSelectUpstreamBodyBytes_ConvertsWhenAnthropic(t *testing.T) {
             {"role":"user","content":"hi"}
         ]
     }`)
-	cands := []provider.Candidate{{Protocol: "anthropic-messages"}}
-	out, err := selectChatUpstreamBodyBytes(cands, originalBody)
-	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
-	}
-	var v map[string]any
-	if err := json.Unmarshal(out, &v); err != nil {
-		t.Fatalf("output not valid JSON: %v", err)
-	}
-	if v["system"] != "you are a poet" {
-		t.Errorf("system not extracted to top-level: %v", v)
-	}
-	msgs := v["messages"].([]any)
-	if len(msgs) != 1 {
-		t.Errorf("messages should drop system entry; got %d", len(msgs))
-	}
-	if _, hasStream := v["stream"]; hasStream {
-		t.Errorf("no stream field in original body; output should not have one either")
-	}
-}
 
-// TestChatSelectUpstreamBodyBytes_PassthroughWhenOpenAI verifies the
-// Q1 (openai->openai) fast-path: when the upstream speaks OpenAI, the
-// gateway forwards the body unchanged.
-func TestChatSelectUpstreamBodyBytes_PassthroughWhenOpenAI(t *testing.T) {
-	originalBody := []byte(`{"model":"mimo-v2.5-pro","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	cands := []provider.Candidate{{Protocol: "openai-completions"}}
-	out, err := selectChatUpstreamBodyBytes(cands, originalBody)
+	protocols := []string{"anthropic-messages", "openai-completions", "", "openai-responses"}
+	for _, proto := range protocols {
+		cands := []provider.Candidate{{Protocol: proto}}
+		out, err := selectChatUpstreamBodyBytes(cands, originalBody)
+		if err != nil {
+			t.Errorf("protocol=%q: unexpected error: %v", proto, err)
+			continue
+		}
+		if string(out) != string(originalBody) {
+			t.Errorf("protocol=%q: expected passthrough; got %s", proto, string(out))
+		}
+	}
+
+	// Also with no candidates
+	out, err := selectChatUpstreamBodyBytes(nil, originalBody)
 	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
+		t.Fatalf("nil candidates: unexpected error: %v", err)
 	}
 	if string(out) != string(originalBody) {
-		t.Errorf("expected passthrough for openai upstream; got %s", string(out))
-	}
-}
-
-// TestChatSelectUpstreamBodyBytes_PassthroughWhenProtocolEmpty is the
-// legacy "protocol unknown" fallback: no conversion happens.
-func TestChatSelectUpstreamBodyBytes_PassthroughWhenProtocolEmpty(t *testing.T) {
-	originalBody := []byte(`{"model":"mimo-v2.5-pro","max_tokens":10,"messages":[]}`)
-	cands := []provider.Candidate{{Protocol: ""}}
-	out, err := selectChatUpstreamBodyBytes(cands, originalBody)
-	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
-	}
-	if string(out) != string(originalBody) {
-		t.Errorf("expected passthrough for unknown protocol; got %s", string(out))
-	}
-}
-
-// TestChatSelectUpstreamBodyBytes_ConvertsWhenAnthropicResponses is
-// the Q1' fallback for openai-responses: a candidate with
-// protocol="openai-responses" must NOT trigger Anthropic conversion
-// (which would corrupt the Responses shape).
-func TestChatSelectUpstreamBodyBytes_PasvertsWhenOpenAIResponses(t *testing.T) {
-	originalBody := []byte(`{"model":"mimo-v2.5-pro","max_tokens":10,"messages":[]}`)
-	cands := []provider.Candidate{{Protocol: "openai-responses"}}
-	out, err := selectChatUpstreamBodyBytes(cands, originalBody)
-	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
-	}
-	if string(out) != string(originalBody) {
-		t.Errorf("openai-responses should pass through unchanged; got %s", string(out))
-	}
-}
-
-// TestChatSelectUpstreamBodyBytes_ConvertsToolsAndStop is a broader
-// "end-to-end shape" check on the converted body: when the upstream is
-// anthropic-messages, stop must be renamed to stop_sequences and
-// tools must carry input_schema.
-func TestChatSelectUpstreamBodyBytes_ConvertsToolsAndStop(t *testing.T) {
-	originalBody := []byte(`{
-        "model":"MiniMax-M2.7","max_tokens":10,
-        "stop":["END"],
-        "tools":[{"type":"function","function":{"name":"get_weather","description":"weather","parameters":{"type":"object"}}}],
-        "messages":[{"role":"user","content":"hi"}]
-    }`)
-	cands := []provider.Candidate{{Protocol: "anthropic-messages"}}
-	out, err := selectChatUpstreamBodyBytes(cands, originalBody)
-	if err != nil {
-		t.Fatalf("selectChatUpstreamBodyBytes: %v", err)
-	}
-	var v map[string]any
-	json.Unmarshal(out, &v)
-	if v["stop_sequences"] == nil {
-		t.Error("stop should be renamed to stop_sequences")
-	}
-	tools, ok := v["tools"].([]any)
-	if !ok || len(tools) != 1 {
-		t.Fatalf("tools lost: %v", v["tools"])
-	}
-	tool := tools[0].(map[string]any)
-	if _, ok := tool["input_schema"]; !ok {
-		t.Error("function.parameters should become input_schema")
+		t.Errorf("nil candidates: expected passthrough; got %s", string(out))
 	}
 }
 
