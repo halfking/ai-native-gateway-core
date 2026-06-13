@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
@@ -140,10 +141,7 @@ func (e *Executor) executeOpenAI(
 	if err != nil {
 		return nil, err
 	}
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = modelname.StandardizeName(cand.RawModel)
-	}
+	outboundModel := resolveOutboundModel(params, cand)
 
 	contextCompactionRetried := false
 
@@ -554,11 +552,26 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 //
 // Extracted as a free function so unit tests can verify each protocol
 // branch without spinning up the full HTTP retry loop.
-func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
-	outboundModel := params.OutboundModel
-	if outboundModel == "" {
-		outboundModel = modelname.StandardizeName(cand.RawModel)
+// resolveOutboundModel picks the model name sent to the upstream provider.
+// Raw offer names may carry vendor prefixes (e.g. nvidia-build "z-ai/glm-5.1")
+// that the upstream does not recognize; prefer the client model in that case.
+// Do not standardize casing — providers like MiniMax require exact raw names.
+func resolveOutboundModel(params *ExecParams, cand provider.Candidate) string {
+	if params.OutboundModel != "" {
+		return params.OutboundModel
 	}
+	outbound := cand.RawModel
+	if strings.HasPrefix(outbound, "z-ai/") {
+		if params.ClientModel != "" {
+			return params.ClientModel
+		}
+		return strings.TrimPrefix(outbound, "z-ai/")
+	}
+	return outbound
+}
+
+func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
+	outboundModel := resolveOutboundModel(params, cand)
 
 	bodyBytes := params.BodyBytes
 	if outboundModel != params.ClientModel {
