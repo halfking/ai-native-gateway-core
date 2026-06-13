@@ -1046,6 +1046,10 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 	// from upstream provider errors (which keep their classified kind,
 	// e.g. "rate_limit", "concurrent", "timeout").
 	detailCode := mapGatewayErrorToDetail(errCode)
+	// failure_stage: "gateway" for early-exit errors that never reach an
+	// upstream provider; "upstream" for errors that occurred during or
+	// after the provider call (provider_error, model_not_found, stream_error).
+	failureStage := classifyFailureStage(errCode)
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:      requestID,
 		TenantID:       tenantID,
@@ -1063,6 +1067,7 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 		Success:        false,
 		RequestStatus:  strPtr(telemetry.RequestStatusFailure),
 		ErrorKind:      strPtr(errCode),
+		FailureStage:   strPtr(failureStage),
 		FailureDetailCode: strPtr(detailCode),
 		RequestBody:    requestBodyText,
 		RequestPreview: requestPreviewPtr,
@@ -1127,8 +1132,52 @@ func mapGatewayErrorToDetail(errCode string) string {
 		return "gw_session_forbidden"
 	case "internal_panic":
 		return "gw_internal_panic"
+	case "chat_to_anthropic_conversion_error":
+		return "gw_chat_to_anthropic_conversion_error"
 	default:
 		return errCode
+	}
+}
+
+// classifyFailureStage returns where in the request lifecycle the
+// failure happened so the request_log UI can group and filter.  Two
+// possible values:
+//
+//	"gateway"  — the request never reached an upstream provider
+//	             (auth/rate-limit/budget/validation/panics/...)
+//	"upstream" — the request was dispatched to a provider and failed
+//	             during or after the provider call
+//	             (provider_error, model_not_found, stream_error, ...)
+//
+// Any error code that is NOT in the gateway early-exit list is
+// assumed to be upstream.  This mirrors the rule used in
+// mapGatewayErrorToDetail: the codes that get a "gw_" prefix are
+// gateway; everything else is upstream.
+func classifyFailureStage(errCode string) string {
+	switch errCode {
+	case "rate_limit_exceeded",
+		"concurrent_limit_exceeded",
+		"tpm_limit_exceeded",
+		"key_throttled",
+		"budget_exhausted",
+		"missing_key",
+		"invalid_key",
+		"auth_unavailable",
+		"method_not_allowed",
+		"executor_unavailable",
+		"no_candidate",
+		"body_too_large",
+		"body_read_error",
+		"json_parse_error",
+		"missing_model",
+		"missing_max_tokens",
+		"conversion_error",
+		"session_forbidden",
+		"internal_panic",
+		"chat_to_anthropic_conversion_error":
+		return "gateway"
+	default:
+		return "upstream"
 	}
 }
 
@@ -1689,15 +1738,14 @@ func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, 
 	})
 }
 
-// captureAttemptBody is a stub added to allow compile of pre-existing code
-// that references an undefined helper. It reads the body into a buffer
-// (capped at 1MB) and records the client_model. Both are then passed to
-// the failed-request recorder via the supplied pointers.
+// captureAttemptBody reads the request body (capped at 1MB) into bodyOut
+// and extracts the client_model from the JSON.  It does NOT close the
+// body — the caller (serveWithExecutor) owns that responsibility via
+// its own defer.
 func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	if r.Body == nil {
 		return
 	}
-	defer r.Body.Close()
 	const maxBody = 1 << 20 // 1MB
 	buf, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil || len(buf) == 0 {
