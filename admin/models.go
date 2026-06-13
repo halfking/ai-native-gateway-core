@@ -654,7 +654,7 @@ func (h *Handler) triggerDiscover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "discovery service not available")
 		return
 	}
-	go h.discSvc.RunOnce(r.Context())
+	go func() { _ = h.discSvc.RunOnce(r.Context(), 0) }()
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
 }
 

@@ -354,6 +354,52 @@ export function getProviderModels(providerId: number) {
   )
 }
 
+// ── Per-provider model-list refresh (force fetch from vendor API) ────────
+// POST  /api/providers/{id}/refresh-models → 202 + { run }
+// GET   /api/providers/{id}/refresh-models → { running, latest }
+//
+// Distinct from getProviderModels which only re-reads the database; this
+// actually calls the vendor's /v1/models endpoint and upserts new rows
+// into model_offers.  Already-existing rows are kept untouched (we only
+// touch availability/last_seen_at on conflict), new model names are
+// added.
+export interface ProviderRefreshRun {
+  run_id: string
+  provider_id: number
+  status: 'running' | 'succeeded' | 'failed' | 'idle'
+  started_at: string
+  finished_at: string | null
+  heartbeat_at: string | null
+  credentials_scanned: number
+  models_upserted: number
+  credentials_failed: number
+  errors: string[]
+  message: string
+}
+
+export interface ProviderRefreshStartResponse {
+  accepted: boolean
+  reason: 'started' | 'already_running' | string
+  run: ProviderRefreshRun
+}
+
+export interface ProviderRefreshStatusResponse {
+  running: ProviderRefreshRun | null
+  latest: ProviderRefreshRun | null
+}
+
+export function refreshProviderModels(providerId: number) {
+  return req<ProviderRefreshStartResponse>(
+    'POST', `/api/providers/${providerId}/refresh-models`, {}
+  )
+}
+
+export function getProviderRefreshStatus(providerId: number) {
+  return req<ProviderRefreshStatusResponse>(
+    'GET', `/api/providers/${providerId}/refresh-models`
+  )
+}
+
 export function toggleModelOfferState(providerId: number, offerId: number, body: { available: boolean }) {
   return req<{ message: string; available: boolean }>('PATCH', `/api/providers/${providerId}/models/${offerId}/state`, body)
 }

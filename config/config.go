@@ -63,6 +63,11 @@ type Config struct {
 	DefaultCredentialConcurrency int  `yaml:"default_credential_concurrency" env:"LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY"`
 	EnableCredentialFpSlots      bool `yaml:"enable_credential_fp_slots" env:"LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS"`
 
+	// EnableDisguise rotates User-Agent, Accept-Language, and (optionally)
+	// TLS ClientHello fingerprints. See docs/legal/disguise-compliance.md
+	// for the legal/ToS implications.
+	EnableDisguise bool `yaml:"enable_disguise" env:"LLM_GATEWAY_ENABLE_DISGUISE"`
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
 }
@@ -111,6 +116,7 @@ func Load() *Config {
 		PoolGracePeriod:              180, // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency: 5,
 		EnableCredentialFpSlots:      true,
+		EnableDisguise:               false, // off by default; opt-in
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {
@@ -140,6 +146,19 @@ func Load() *Config {
 		}
 	} else {
 		cfg.DefaultCred = 1
+	}
+
+	// Boolean env-var overrides.
+	if v := os.Getenv("LLM_GATEWAY_ENABLE_DISGUISE"); v != "" {
+		cfg.EnableDisguise = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS"); v != "" {
+		cfg.EnableCredentialFpSlots = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.DefaultCredentialConcurrency = n
+		}
 	}
 
 	return cfg

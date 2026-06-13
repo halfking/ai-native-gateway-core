@@ -33,6 +33,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -50,6 +51,14 @@ import (
 )
 
 func main() {
+	// Package-level singletons declared early so the executor wiring
+	// (lines ~196) and the shutdown sequence (lines ~500) can both
+	// reference them. Actual construction happens in the bg block
+	// after dbConn is initialized.
+	var peakCollector *bg.ConcurrencyPeakCollector
+	var weeklyPeakRollup *bg.WeeklyPeakRollup
+	var slotSuggester *bg.SlotSuggester
+
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
 
@@ -193,6 +202,15 @@ func main() {
 		}
 		exec.FpSlots = fpSlots
 		exec.Provider = providerClient
+		// Inject peak collector (after bg workers have started it).
+		if peakCollector != nil {
+			exec.PeakCollector = peakCollector
+		}
+		// Enable disguise mode if configured.
+		if cfg.EnableDisguise {
+			exec.DisguisePool = disguise.DefaultPool
+			slog.Info("disguise mode enabled")
+		}
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
 		slog.Info("routing executor enabled")
 	} else {
@@ -285,6 +303,8 @@ func main() {
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var taxonomySync *bg.TaxonomySync
+	// peakCollector / weeklyPeakRollup / slotSuggester are declared
+	// at the top of main() so the executor can reference them.
 	if dbConn != nil && dbConn.Enabled() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
@@ -322,10 +342,26 @@ func main() {
 			slog.Info("taxonomy sync skipped (bg_mode=data-plane)")
 		}
 
+		// Peak concurrency tracking — runs in both full and data-plane
+		// modes because it only needs read access to credentials.
+		peakCollector = bg.NewConcurrencyPeakCollector(dbConn.Pool())
+		peakCollector.Start(context.Background())
+
+		// Weekly rollup + auto-tune suggester require writes to
+		// credentials/audit; only run in "full" mode.
+		if !bgDataPlaneOnly {
+			weeklyPeakRollup = bg.NewWeeklyPeakRollup(dbConn.Pool())
+			weeklyPeakRollup.Start(context.Background())
+
+			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
+			slotSuggester.Start(context.Background())
+		}
+
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
 			adminHandler.SetFpSlots(fpSlots)
+			adminHandler.SetPeakCollector(peakCollector)
 		}
 	}
 
@@ -464,6 +500,15 @@ func main() {
 	}
 	if envelopeCleaner != nil {
 		envelopeCleaner.Stop()
+	}
+	if peakCollector != nil {
+		peakCollector.Stop()
+	}
+	if weeklyPeakRollup != nil {
+		weeklyPeakRollup.Stop()
+	}
+	if slotSuggester != nil {
+		slotSuggester.Stop()
 	}
 
 	slog.Info("gateway stopped")
