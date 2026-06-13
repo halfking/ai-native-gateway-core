@@ -29,9 +29,9 @@ func TestGwSessionTaskFromRequest(t *testing.T) {
 
 	t.Run("session object fallback", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-		sess := &sessions.Session{SessionID: "gw_from_redis"}
+		sess := &sessions.Session{SessionID: "gw_from_redis", TaskID: "task_from_redis"}
 		sid, tid := gwSessionTaskFromRequest(req, sess)
-		if sid != "gw_from_redis" || tid != "" {
+		if sid != "gw_from_redis" || tid != "task_from_redis" {
 			t.Fatalf("got sid=%q tid=%q", sid, tid)
 		}
 	})
@@ -40,7 +40,7 @@ func TestGwSessionTaskFromRequest(t *testing.T) {
 		req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		req.Header.Set("X-Gw-Session-Id", "hdr_sess")
 		req.Header.Set("X-Gw-Task-Id", "hdr_task")
-		sess := &sessions.Session{SessionID: "redis_sess"}
+		sess := &sessions.Session{SessionID: "redis_sess", TaskID: "redis_task"}
 		sid, tid := gwSessionTaskFromRequest(req, sess)
 		if sid != "hdr_sess" || tid != "hdr_task" {
 			t.Fatalf("got sid=%q tid=%q", sid, tid)
