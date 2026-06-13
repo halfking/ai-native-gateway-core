@@ -1542,6 +1542,13 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 	isBenignEOF := detailCode == "eof_without_done" && chunkCount > 0
 	isClientCancel := detailCode == "client_cancel" || detailCode == "client_disconnected"
 
+	slog.Warn("DEBUG classifyStreamInterruption",
+		"detail_code", detailCode,
+		"chunk_count", chunkCount,
+		"is_benign_eof", isBenignEOF,
+		"is_client_cancel", isClientCancel,
+	)
+
 	if isBenignEOF || isClientCancel {
 		return false, detailCode
 	}
