@@ -147,11 +147,21 @@ type ExecuteResult struct {
 	Trace     *Trace
 }
 
+type AttemptRecord struct {
+	ProviderID   int              `json:"provider_id"`
+	CredentialID int              `json:"credential_id"`
+	RawModel     string           `json:"raw_model"`
+	Kind         errorsx.ErrorKind `json:"kind"`
+	Reason       string           `json:"reason,omitempty"`
+}
+
 type ExecuteError struct {
 	LastErr   error
 	Tried     int
 	Exhausted bool
 	Trace     *Trace
+	Attempts  []AttemptRecord
+	LastKind  errorsx.ErrorKind
 }
 
 // Trace records the per-candidate decision points during routing/execution.
@@ -249,6 +259,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	tTotal := time.Now()
 	retryPerCred := params.Policy.RetryPerCredential
 	var lastErr error
+	var lastKind errorsx.ErrorKind
+	var attempts []AttemptRecord
 	tried := 0
 
 	for _, cand := range candidates {
@@ -346,6 +358,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
 			e.disableModelOffer(params.R.Context(), mnf.credentialID, mnf.rawModel, errorsx.KindModelNotFound, mnf.body)
 			lastErr = execErr
+			lastKind = errorsx.KindModelNotFound
+			attempts = append(attempts, AttemptRecord{
+				ProviderID:   cand.ProviderID,
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				Kind:         errorsx.KindModelNotFound,
+				Reason:       mnf.body,
+			})
 			continue
 		}
 
@@ -372,6 +392,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
 				}
 				lastErr = execErr
+				lastKind = kind
+				attempts = append(attempts, AttemptRecord{
+					ProviderID:   cand.ProviderID,
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					Kind:         kind,
+					Reason:       sie.reason,
+				})
 				slog.Warn("candidate stream interrupted (resumable), trying next",
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
@@ -409,6 +437,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		} else {
 			kind = errorsx.ClassifyError(execErr, nil)
 		}
+		lastKind = kind
+		attempts = append(attempts, AttemptRecord{
+			ProviderID:   cand.ProviderID,
+			CredentialID: cand.CredentialID,
+			RawModel:     cand.RawModel,
+			Kind:         kind,
+			Reason:       execErr.Error(),
+		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
@@ -427,7 +463,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if params.AuditBuilder != nil {
 		params.AuditBuilder.DecisionTrace(trace)
 	}
-	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace}
+	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace, Attempts: attempts, LastKind: lastKind}
 }
 
 
