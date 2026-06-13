@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -197,5 +201,187 @@ func TestCompactionModelsFromEnv(t *testing.T) {
 func TestClassifyContextLengthFromStatus(t *testing.T) {
 	if !classifyContextLengthFromStatus(400, []byte(`{"error":{"type":"context_length_exceeded"}}`)) {
 		t.Fatal("expected context length")
+	}
+}
+
+// stubProvider implements providerResolver for the compaction fallback tests.
+// perModel drives the candidate list returned for each model name.
+type stubProvider struct {
+	perModel map[string][]provider.Candidate
+}
+
+func (s *stubProvider) Enabled() bool { return true }
+
+func (s *stubProvider) GetCandidates(_ context.Context, model, _ string) ([]provider.Candidate, *provider.Policy, error) {
+	return s.perModel[model], nil, nil
+}
+
+// routableCandidate builds a Candidate that passes IsAvailable() (Routable=true,
+// LifecycleStatus=active) with a fixed context window. Saves boilerplate in
+// the fallback-chain tests below.
+func routableCandidate(providerID, credID int, rawModel, baseURL string, ctxWindow int) provider.Candidate {
+	w := ctxWindow
+	return provider.Candidate{
+		ProviderID:       providerID,
+		CredentialID:     credID,
+		RawModel:         rawModel,
+		BaseURL:          baseURL,
+		APIKey:           "k-cred-" + rawModel,
+		Routable:         true,
+		LifecycleStatus:  "active",
+		CircuitState:     "closed",
+		AvailabilityState: "available",
+		ContextWindow:    &w,
+	}
+}
+
+// newCompactionTestExecutor wires a minimal Executor for the compaction
+// fallback tests: stubbed provider, real circuit/limiter managers, and
+// e.Upstream left nil so the compaction path falls through to http.DefaultClient
+// (which talks to the supplied httptest server). Returns the executor plus a
+// cleanup func to close the test server.
+func newCompactionTestExecutor(t *testing.T, prov providerResolver) (*Executor, func()) {
+	t.Helper()
+	_ = limiter.New() // not strictly needed; doCompactionUpstream nil-checks e.Limiter
+	e := &Executor{
+		Provider:       prov,
+		Circuit:        circuit.NewManager(),
+		Limiter:        limiter.New(),
+		UpstreamTimeout: 5 * time.Second,
+		// Upstream intentionally left nil → doCompactionUpstream uses http.DefaultClient
+	}
+	return e, func() {}
+}
+
+// TestPickCompactionCandidates_ReturnsAllViableInEnvOrder verifies the helper
+// walks the env-configured model list and emits every credential that
+// passes IsAvailable + context-window gate, in env-preference order.
+func TestPickCompactionCandidates_ReturnsAllViableInEnvOrder(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_COMPACTION_MODELS", "minimax-text-01, gemini-2.5-flash")
+	prov := &stubProvider{
+		perModel: map[string][]provider.Candidate{
+			"minimax-text-01": {
+				routableCandidate(1, 10, "minimax-text-01", "http://a", 1_000_000),
+				routableCandidate(1, 11, "minimax-text-01", "http://a", 1_000_000),
+			},
+			"gemini-2.5-flash": {
+				routableCandidate(2, 20, "gemini-2.5-flash", "http://b", 1_000_000),
+				routableCandidate(2, 21, "gemini-2.5-flash", "http://b", 100_000), // filtered: ctx too small
+			},
+			"glm-5.1": { // not in env list, must be ignored
+				routableCandidate(3, 30, "glm-5.1", "http://c", 2_000_000),
+			},
+		},
+	}
+	e := &Executor{Provider: prov}
+	got := e.pickCompactionCandidates(context.Background(), "")
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3 (m-1:cred10, m-1:cred11, gemini:cred20)", len(got))
+	}
+	if got[0].CredentialID != 10 || got[1].CredentialID != 11 || got[2].CredentialID != 20 {
+		t.Fatalf("order = %d/%d/%d, want 10/11/20", got[0].CredentialID, got[1].CredentialID, got[2].CredentialID)
+	}
+}
+
+// TestTryLLMContextCompaction_AllCandidatesFail_PropagatesFalse verifies
+// that when every compaction model/credential returns an error, the
+// function returns the original source body and false (so
+// handleContextLengthRecovery escalates to ctxLenGiveUp).
+func TestTryLLMContextCompaction_AllCandidatesFail_PropagatesFalse(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_COMPACTION_MODELS", "minimax-text-01, gemini-2.5-flash")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+	}))
+	defer srv.Close()
+
+	prov := &stubProvider{
+		perModel: map[string][]provider.Candidate{
+			"minimax-text-01": {routableCandidate(1, 10, "minimax-text-01", srv.URL, 1_000_000)},
+			"gemini-2.5-flash": {routableCandidate(2, 20, "gemini-2.5-flash", srv.URL, 1_000_000)},
+		},
+	}
+	e, done := newCompactionTestExecutor(t, prov)
+	defer done()
+
+	params := &ExecParams{R: httptestNewRequest()}
+	targetCand := provider.Candidate{ProviderID: 99, CredentialID: 99, RawModel: "minimax-m3"}
+	body := []byte(`{"model":"minimax-m3","messages":[{"role":"user","content":"turn1"},{"role":"assistant","content":"reply1"}]}`)
+
+	rebuilt, ok := e.tryLLMContextCompaction(context.Background(), params, targetCand, body)
+	if ok {
+		t.Fatal("ok = true, want false (all candidates should fail)")
+	}
+	if string(rebuilt) != string(body) {
+		t.Fatalf("body changed on full failure; got %q", rebuilt)
+	}
+}
+
+// TestTryLLMContextCompaction_FirstModelFails_SecondSucceeds is the core
+// regression test for the multi-model fallback: model 1's credential returns
+// 500, model 2's credential returns 200 with a valid summary, and the
+// function must end with the rebuilt body from model 2.
+func TestTryLLMContextCompaction_FirstModelFails_SecondSucceeds(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_COMPACTION_MODELS", "minimax-text-01, gemini-2.5-flash")
+	w1M := 1_000_000
+
+	// Two servers: stub-broken always 500, stub-ok returns a clean summary.
+	srvBroken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream down"}}`))
+	}))
+	defer srvBroken.Close()
+	srvOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"prior conversation summary"}}]}`))
+	}))
+	defer srvOK.Close()
+
+	prov := &stubProvider{
+		perModel: map[string][]provider.Candidate{
+			"minimax-text-01": {provider.Candidate{
+				ProviderID: 1, CredentialID: 10, RawModel: "minimax-text-01",
+				BaseURL: srvBroken.URL, APIKey: "k-broken",
+				Routable: true, LifecycleStatus: "active",
+				CircuitState: "closed", AvailabilityState: "available",
+				ContextWindow: &w1M,
+			}},
+			"gemini-2.5-flash": {provider.Candidate{
+				ProviderID: 2, CredentialID: 20, RawModel: "gemini-2.5-flash",
+				BaseURL: srvOK.URL, APIKey: "k-ok",
+				Routable: true, LifecycleStatus: "active",
+				CircuitState: "closed", AvailabilityState: "available",
+				ContextWindow: &w1M,
+			}},
+		},
+	}
+	e, done := newCompactionTestExecutor(t, prov)
+	defer done()
+
+	params := &ExecParams{R: httptestNewRequest()}
+	targetCand := provider.Candidate{ProviderID: 99, CredentialID: 99, RawModel: "minimax-m3"}
+	body := []byte(`{"model":"minimax-m3","messages":[{"role":"user","content":"turn1"},{"role":"assistant","content":"reply1"},{"role":"user","content":"turn2"},{"role":"assistant","content":"reply2"},{"role":"user","content":"latest"}]}`)
+
+	rebuilt, ok := e.tryLLMContextCompaction(context.Background(), params, targetCand, body)
+	if !ok {
+		t.Fatal("ok = false, want true (second model should rescue)")
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(rebuilt, &parsed); err != nil {
+		t.Fatalf("rebuilt not valid JSON: %v\n%s", err, rebuilt)
+	}
+	if len(parsed.Messages) < 2 {
+		t.Fatalf("rebuilt msgs len = %d, want summary + tail", len(parsed.Messages))
+	}
+	if !strings.Contains(parsed.Messages[0].Content, "prior conversation summary") {
+		t.Fatalf("first msg should carry the summary, got %q", parsed.Messages[0].Content)
+	}
+	if parsed.Messages[len(parsed.Messages)-1].Content != "latest" {
+		t.Fatalf("tail not preserved, last msg = %q", parsed.Messages[len(parsed.Messages)-1].Content)
 	}
 }
