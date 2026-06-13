@@ -199,12 +199,16 @@ func (h *PeakHandlers) handleApply(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	var current int
+	// The per-credential concurrency cap lives in credentials.concurrency_limit.
+	// routing_policy is a global singleton row (no credential_id column),
+	// so the previous JOIN against it was returning 0/NotFound and
+	// blocking the manual apply path.
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(concurrency_limit, 0)
-		FROM routing_policy WHERE credential_id = $1
+		FROM credentials WHERE id = $1
 	`, req.CredentialID).Scan(&current)
 	if err != nil {
-		http.Error(w, "credential not found in routing_policy", http.StatusNotFound)
+		http.Error(w, "credential not found", http.StatusNotFound)
 		return
 	}
 	if req.NewLimit <= current {
@@ -212,8 +216,8 @@ func (h *PeakHandlers) handleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.db.Exec(ctx, `
-		UPDATE routing_policy SET concurrency_limit = $1, updated_at = NOW()
-		WHERE credential_id = $2
+		UPDATE credentials SET concurrency_limit = $1, updated_at = NOW()
+		WHERE id = $2
 	`, req.NewLimit, req.CredentialID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
