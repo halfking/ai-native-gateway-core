@@ -832,8 +832,24 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		if v, ok := m["stream_interrupted"].(bool); ok {
 			reqLog.StreamInterrupted = &v
 			if v {
-				reqLog.Success = false
-				reqLog.ErrorKind = strPtr("stream_error")
+				isErr, detailCode := classifyStreamInterruption(m)
+				if isErr {
+					reqLog.Success = false
+					reqLog.ErrorKind = strPtr("stream_error")
+				}
+				if detailCode != "" {
+					reqLog.FailureDetailCode = strPtr(detailCode)
+				}
+			}
+		}
+		// Persist the finish reason for successful streams too. The capture
+		// summary reuses "failure_detail_code" for the upstream finish_reason
+		// regardless of success/failure ("stop", "length", "tool_calls",
+		// "end_turn" for success; "eof_without_done", "stream_timeout" for
+		// interruption). Without this, the column is empty for normal 200s.
+		if reqLog.FailureDetailCode == nil {
+			if dc, ok := m["failure_detail_code"].(string); ok && dc != "" {
+				reqLog.FailureDetailCode = strPtr(dc)
 			}
 		}
 		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {
@@ -1507,6 +1523,29 @@ func strPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+// classifyStreamInterruption determines whether a stream interruption captured
+// in the summary map represents a real gateway error that should mark the
+// request log as failed. It returns (isError, detailCode).
+//
+// Benign cases that do NOT mark the request as failed:
+//   - "eof_without_done" with chunk_count > 0: upstream closed without [DONE]
+//     but content was already delivered (e.g. MiniMax). The gateway synthesises
+//     [DONE] for the client. This mirrors executor_chat.go's isBenignEOF.
+//   - "client_cancel" / "client_disconnected": the client went away; not a
+//     gateway or upstream error.
+func classifyStreamInterruption(m map[string]any) (isError bool, detailCode string) {
+	detailCode, _ = m["failure_detail_code"].(string)
+	chunkCount, _ := m["stream_chunk_count"].(int)
+
+	isBenignEOF := detailCode == "eof_without_done" && chunkCount > 0
+	isClientCancel := detailCode == "client_cancel" || detailCode == "client_disconnected"
+
+	if isBenignEOF || isClientCancel {
+		return false, detailCode
+	}
+	return true, detailCode
 }
 
 // canonicalOrClient prefers the canonical name (standardised model key from the

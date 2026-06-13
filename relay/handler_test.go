@@ -128,3 +128,77 @@ func TestExtractBearerToken_Empty(t *testing.T) {
 		t.Errorf("empty x-api-key should not be accepted; got %q", got)
 	}
 }
+
+func TestClassifyStreamInterruption_BenignEOF(t *testing.T) {
+	m := map[string]any{
+		"stream_interrupted":    true,
+		"failure_detail_code":   "eof_without_done",
+		"stream_chunk_count":    7,
+		"stream_done_received":  false,
+	}
+	isErr, detail := classifyStreamInterruption(m)
+	if isErr {
+		t.Error("benign EOF (eof_without_done + chunks>0) should NOT be classified as error")
+	}
+	if detail != "eof_without_done" {
+		t.Errorf("expected detail 'eof_without_done', got %q", detail)
+	}
+}
+
+func TestClassifyStreamInterruption_BenignEOF_ZeroChunks(t *testing.T) {
+	m := map[string]any{
+		"stream_interrupted":  true,
+		"failure_detail_code": "eof_without_done",
+		"stream_chunk_count":  0,
+	}
+	isErr, _ := classifyStreamInterruption(m)
+	if !isErr {
+		t.Error("eof_without_done with 0 chunks IS a real error (no content delivered)")
+	}
+}
+
+func TestClassifyStreamInterruption_ClientCancel(t *testing.T) {
+	for _, reason := range []string{"client_cancel", "client_disconnected"} {
+		m := map[string]any{
+			"stream_interrupted":  true,
+			"failure_detail_code": reason,
+			"stream_chunk_count":  5,
+		}
+		isErr, detail := classifyStreamInterruption(m)
+		if isErr {
+			t.Errorf("reason=%q should NOT be classified as error", reason)
+		}
+		if detail != reason {
+			t.Errorf("expected detail %q, got %q", reason, detail)
+		}
+	}
+}
+
+func TestClassifyStreamInterruption_RealErrors(t *testing.T) {
+	for _, reason := range []string{"stream_timeout", "stream_error", "read_error"} {
+		m := map[string]any{
+			"stream_interrupted":  true,
+			"failure_detail_code": reason,
+			"stream_chunk_count":  10,
+		}
+		isErr, detail := classifyStreamInterruption(m)
+		if !isErr {
+			t.Errorf("reason=%q with chunks>0 SHOULD be classified as error", reason)
+		}
+		if detail != reason {
+			t.Errorf("expected detail %q, got %q", reason, detail)
+		}
+	}
+}
+
+func TestClassifyStreamInterruption_UnknownReason(t *testing.T) {
+	m := map[string]any{
+		"stream_interrupted":  true,
+		"failure_detail_code": "",
+		"stream_chunk_count":  3,
+	}
+	isErr, _ := classifyStreamInterruption(m)
+	if !isErr {
+		t.Error("unknown/empty reason with chunks>0 should default to error")
+	}
+}
