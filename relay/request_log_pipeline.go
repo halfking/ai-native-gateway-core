@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -9,6 +10,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 )
+
+// jsonMarshal is a local alias used by auto_route.go to avoid pulling
+// encoding/json into the test hot path. (encoding/json is already imported
+// transitively through other helpers.)
+func jsonMarshal(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
 
 // RequestLogContext caches request facts across handler lifecycle stages
 // (auth, body read, routing, upstream, response) so every exit path emits
@@ -28,6 +36,13 @@ type RequestLogContext struct {
 	ProviderID    *int
 	CredentialID  *int
 	ResponseBody  []byte
+
+	// v2.0 auto-route fields (populated when model="auto" was used)
+	IsAutoRequest  bool
+	TaskType       string
+	AutoProfile    string
+	AutoDecision   []byte // serialised autoRouteDecision JSON
+	AutoConfidence float64
 
 	ErrCode string
 	ErrMsg  string
@@ -80,6 +95,27 @@ func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.CredentialID = credentialID
 }
 
+func applyAutoRouteFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil || !c.IsAutoRequest {
+		return
+	}
+	entry.IsAutoRequest = boolPtr(true)
+	if c.TaskType != "" {
+		entry.TaskType = strPtr(c.TaskType)
+	}
+	if c.AutoProfile != "" {
+		entry.AutoProfile = strPtr(c.AutoProfile)
+	}
+	if len(c.AutoDecision) > 0 {
+		v := string(c.AutoDecision)
+		entry.AutoDecision = &v
+	}
+	if c.AutoConfidence > 0 {
+		conf := c.AutoConfidence
+		entry.AutoConfidence = &conf
+	}
+}
+
 func (c *RequestLogContext) SetResponseBody(body []byte) {
 	if len(body) > 0 {
 		c.ResponseBody = body
@@ -130,6 +166,26 @@ func (c *RequestLogContext) RequestMode() string {
 func (c *RequestLogContext) MarkLogged() { c.logged = true }
 func (c *RequestLogContext) IsLogged() bool {
 	return c != nil && c.logged
+}
+
+// SetAutoDecision stores the auto-route decision for persistence in
+// request_logs.auto_decision JSONB. Called from relay/handler.go when
+// model="auto" was resolved.
+func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
+	if c == nil {
+		return
+	}
+	c.IsAutoRequest = true
+	if wire == nil {
+		return
+	}
+	c.TaskType = wire.TaskType
+	c.AutoProfile = wire.Profile
+	c.AutoConfidence = wire.Confidence
+	b, err := jsonMarshal(wire)
+	if err == nil {
+		c.AutoDecision = b
+	}
 }
 
 // BuildFailureEntry assembles a failure row from cached context + exit metadata.
@@ -222,6 +278,7 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		ResponsePreview:   responsePreviewPtr,
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
+	applyAutoRouteFields(reqLog, c)
 	return reqLog
 }
 

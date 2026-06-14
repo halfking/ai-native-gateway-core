@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -59,6 +60,9 @@ type chatRequestBody struct {
 	Stream   bool            `json:"stream"`
 	Messages json.RawMessage `json:"messages,omitempty"`
 	User     string          `json:"user,omitempty"`
+	// Tools is the optional function/tool definitions array.
+	// Used by autoroute (v2.0) to detect multi-tool agent requests.
+	Tools json.RawMessage `json:"tools,omitempty"`
 }
 
 type chatResponseBody struct {
@@ -85,6 +89,10 @@ type ChatHandler struct {
 	keyVerifier     *auth.KeyVerifier
 	rateLimiter     ratelimit.RPMLimiter
 	telemetryClient *telemetry.Client
+	// decider (v2.0) is the optional autoroute.Decider. When non-nil,
+	// requests with model="auto" trigger task classification + 6-dim
+	// scoring. When nil, model="auto" falls back to default chat model.
+	decider *autoroute.Decider
 	// requestLogHook is an optional test sink.  When set, every
 	// request_logs row the gateway emits is also passed to the hook
 	// function so unit tests can assert on the safety-net coverage.
@@ -409,6 +417,29 @@ func (h *ChatHandler) serveWithExecutor(
 
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
+
+	// ── v2.0 auto-route ────────────────────────────────────────────────
+	// If the client requested model="auto", classify the task and pick
+	// the best credential. Rewrites body model + sets X-Gw-Auto-Decision.
+	if clientModel == autoRequestMagic {
+		apiKeyID := 0
+		if keyInfo != nil {
+			apiKeyID = keyInfo.ID
+		}
+		newBody, wire, _ := h.maybeResolveAuto(&reqBody, bodyBytes, r, apiKeyID)
+		if newBody != nil {
+			bodyBytes = newBody
+		}
+		if wire != nil {
+			writeAutoDecisionHeader(w, wire)
+			logCtx.SetAutoDecision(wire)
+		} else {
+			logCtx.IsAutoRequest = true
+		}
+		clientModel = reqBody.Model
+		logCtx.SetClientModel(clientModel)
+	}
+
 	isStream := reqBody.Stream
 	endUser := resolveEndUser(reqBody.User, r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
@@ -515,6 +546,7 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
+		logCtx,
 	)
 
 	var sessionKey string
@@ -1152,6 +1184,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	egressProtocol string,
 	isStream bool,
 	gwSessionID, gwTaskID string,
+	autoCtx *RequestLogContext,
 ) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -1223,6 +1256,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 		zero := 0
 		reqLog.StreamChunkCount = &zero
 	}
+	applyAutoRouteFields(reqLog, autoCtx)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
 	}
@@ -1660,6 +1694,10 @@ func strPtr(v string) *string {
 	if v == "" {
 		return nil
 	}
+	return &v
+}
+
+func boolPtr(v bool) *bool {
 	return &v
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
@@ -58,6 +59,7 @@ func main() {
 	var peakCollector *bg.ConcurrencyPeakCollector
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var slotSuggester *bg.SlotSuggester
+	var autoIndexRefresher *bg.AutoIndexRefresher
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -355,6 +357,24 @@ func main() {
 
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
 			slotSuggester.Start(context.Background())
+
+			autoIdx := autoroute.NewIndex()
+			autoIdx.SetPool(dbConn.Pool())
+			classifier := autoroute.NewHeuristicClassifier(
+				autoroute.DefaultHeuristicThresholds(),
+				autoroute.DefaultKeywords(),
+			)
+			decider := autoroute.NewDecider(
+				classifier,
+				nil,
+				autoIdx,
+				autoroute.NewMemoryProfileStore(),
+			)
+			chatHandler.SetAutoRoute(decider)
+
+			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
+			autoIndexRefresher.Start(context.Background())
+			slog.Info("auto-route decider enabled")
 		}
 
 		if adminHandler != nil {
@@ -514,6 +534,9 @@ func main() {
 	}
 	if slotSuggester != nil {
 		slotSuggester.Stop()
+	}
+	if autoIndexRefresher != nil {
+		autoIndexRefresher.Stop()
 	}
 
 	slog.Info("gateway stopped")

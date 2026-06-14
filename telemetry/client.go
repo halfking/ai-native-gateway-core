@@ -123,6 +123,12 @@ type RequestLogEntry struct {
 	APIKeyPrefix       *string  `json:"api_key_prefix,omitempty"`
 	APIKeyOwnerUser    *string  `json:"api_key_owner_user,omitempty"`
 	ApplicationCode    *string  `json:"application_code,omitempty"`
+	// v2.0 auto-route observability (requires 2026-06-15-auto-route-mode.sql)
+	IsAutoRequest      *bool    `json:"is_auto_request,omitempty"`
+	TaskType           *string  `json:"task_type,omitempty"`
+	AutoProfile        *string  `json:"auto_profile,omitempty"`
+	AutoDecision       *string  `json:"auto_decision,omitempty"`
+	AutoConfidence     *float64 `json:"auto_confidence,omitempty"`
 }
 
 func NewClient() *Client {
@@ -387,7 +393,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			stream_interrupted,
 			usage_source,
 			gw_session_id, gw_task_id,
-			api_key_prefix, api_key_owner_user, application_code
+			api_key_prefix, api_key_owner_user, application_code,
+			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -405,7 +412,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$40,
 			$41,
 			$42, $43,
-			$44, $45, $46
+			$44, $45, $46,
+			$47, $48, $49, CAST($50 AS jsonb), $51
 		)
 	`,
 		entry.RequestID,
@@ -454,6 +462,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.APIKeyPrefix,
 		entry.APIKeyOwnerUser,
 		entry.ApplicationCode,
+		entry.IsAutoRequest,
+		entry.TaskType,
+		entry.AutoProfile,
+		entry.AutoDecision,
+		entry.AutoConfidence,
 	)
 	if err != nil {
 		return err
@@ -600,7 +613,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       gw_task_id = COALESCE($40, rl.gw_task_id),
 		       api_key_prefix = COALESCE($41, rl.api_key_prefix),
 		       api_key_owner_user = COALESCE($42, rl.api_key_owner_user),
-		       application_code = COALESCE($43, rl.application_code)
+		       application_code = COALESCE($43, rl.application_code),
+		       is_auto_request = COALESCE($44, rl.is_auto_request),
+		       task_type = COALESCE($45, rl.task_type),
+		       auto_profile = COALESCE($46, rl.auto_profile),
+		       auto_decision = COALESCE(CAST($47 AS jsonb), rl.auto_decision),
+		       auto_confidence = COALESCE($48, rl.auto_confidence)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -648,6 +666,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.APIKeyPrefix,
 		entry.APIKeyOwnerUser,
 		entry.ApplicationCode,
+		entry.IsAutoRequest,
+		entry.TaskType,
+		entry.AutoProfile,
+		entry.AutoDecision,
+		entry.AutoConfidence,
 	)
 	if err != nil {
 		return err

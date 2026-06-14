@@ -336,6 +336,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
+		nil,
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{

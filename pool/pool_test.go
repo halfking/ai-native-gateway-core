@@ -21,7 +21,7 @@ func TestPoolKeyString(t *testing.T) {
 
 func TestNewPoolDefaultsToActive(t *testing.T) {
 	key := PoolKey{IdentityHash: "a", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 	if p.State() != PoolActive {
 		t.Fatal("new pool should be active")
 	}
@@ -29,7 +29,7 @@ func TestNewPoolDefaultsToActive(t *testing.T) {
 
 func TestPoolFailureDegradation(t *testing.T) {
 	key := PoolKey{IdentityHash: "b", ProviderID: 2, CredentialID: 2}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	for i := 0; i < degradedThreshold; i++ {
 		p.RecordFailure()
@@ -69,7 +69,7 @@ func TestPoolManagerStats(t *testing.T) {
 }
 
 func TestPoolClose(t *testing.T) {
-	p := NewPool(PoolKey{IdentityHash: "d", ProviderID: 4, CredentialID: 4}, "")
+	p := NewPool(PoolKey{IdentityHash: "d", ProviderID: 4, CredentialID: 4}, "", nil)
 	p.Close()
 	// Should not panic on double close
 	p.Close()
@@ -86,7 +86,7 @@ func TestPoolManagerStopPreventsNewPools(t *testing.T) {
 }
 
 func TestPoolAcquireReleaseRespectsCapacity(t *testing.T) {
-	p := NewPool(PoolKey{IdentityHash: "cap", ProviderID: 7, CredentialID: 7}, "")
+	p := NewPool(PoolKey{IdentityHash: "cap", ProviderID: 7, CredentialID: 7}, "", nil)
 	ctx := context.Background()
 	for i := 0; i < poolMaxActiveConns; i++ {
 		if err := p.Acquire(ctx); err != nil {
@@ -105,7 +105,7 @@ func TestPoolAcquireReleaseRespectsCapacity(t *testing.T) {
 }
 
 func TestPoolAcquireFailsAfterClose(t *testing.T) {
-	p := NewPool(PoolKey{IdentityHash: "closed", ProviderID: 8, CredentialID: 8}, "")
+	p := NewPool(PoolKey{IdentityHash: "closed", ProviderID: 8, CredentialID: 8}, "", nil)
 	p.Close()
 	if err := p.Acquire(context.Background()); !errors.Is(err, ErrPoolClosed) {
 		t.Fatalf("expected ErrPoolClosed, got %v", err)
