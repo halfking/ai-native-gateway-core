@@ -307,6 +307,9 @@ func NewHeuristicClassifier(t HeuristicThresholds, k KeywordSet) *HeuristicClass
 //
 //  5. Confidence = top score (capped at 0.95).
 func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSignals) (*Classification, error) {
+	// v2.0.3 audit fix #17: nil-keyword-slice protection. If the
+	// caller passes nil for LastUserPrompt/SystemPrompt we still
+	// produce a valid (chat) classification without panicking.
 	scores := make(map[TaskType]float64, len(AllTaskTypes))
 
 	// Channel 1: hard overrides — confidence 0.95 (very high)
@@ -449,6 +452,9 @@ func normaliseForKeyword(lastUser, system string) string {
 // request pipeline); the double-fold here makes the function safe
 // when called directly in tests or admin tools.
 func countKeywordHits(text string, kws []string) int {
+	if len(kws) == 0 {
+		return 0 // v2.0.3 audit fix #17: no keywords = no hits
+	}
 	count := 0
 	lt := lowerASCII(text)
 	for _, kw := range kws {
