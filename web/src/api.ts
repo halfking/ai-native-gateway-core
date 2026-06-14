@@ -1363,10 +1363,6 @@ export interface RequestLogRow {
   ts: string
   request_id: string
   api_key_id: number | null
-  api_key_prefix: string | null
-  owner_user: string | null
-  application_code: string | null
-  key_alias: string | null
   end_user_id: string | null
   client_model: string | null
   outbound_model: string | null
@@ -1402,6 +1398,9 @@ export interface RequestLogRow {
   usage_source: 'llm' | 'estimated' | null
   gw_session_id: string | null
   gw_task_id: string | null
+  api_key_prefix: string | null
+  api_key_owner_user: string | null
+  application_code: string | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
