@@ -148,3 +148,20 @@ func TestResolveUsageTimeRange_SameDayRange(t *testing.T) {
 		t.Errorf("same-day range span = %v, want 24h", end.Sub(start))
 	}
 }
+
+func TestValidateUsageTrendPeriod(t *testing.T) {
+	got, err := validateUsageTrendPeriod("")
+	if err != nil || got != "day" {
+		t.Fatalf("empty period: got=%q err=%v want day", got, err)
+	}
+	for _, p := range []string{"day", "week", "month"} {
+		got, err = validateUsageTrendPeriod(p)
+		if err != nil || got != p {
+			t.Fatalf("period %q: got=%q err=%v", p, got, err)
+		}
+	}
+	_, err = validateUsageTrendPeriod("year")
+	if err == nil {
+		t.Fatal("expected error for invalid period")
+	}
+}
