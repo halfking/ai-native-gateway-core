@@ -1,96 +1,8 @@
-package db
+-- 002_work_types.sql — Phase 1 work type config (SSOT cache in Gateway PG)
+-- Idempotent: IF NOT EXISTS + ON CONFLICT DO NOTHING seeds.
 
-import (
-	"context"
-	"log/slog"
-	"time"
+BEGIN;
 
-	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-type DB struct {
-	pool *pgxpool.Pool
-}
-
-func Open(ctx context.Context, databaseURL string) (*DB, error) {
-	if databaseURL == "" {
-		return nil, nil
-	}
-	cfg, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		return nil, err
-	}
-	cfg.MaxConns = 16
-	cfg.MinConns = 0
-	cfg.MaxConnLifetime = 30 * time.Minute
-	cfg.MaxConnIdleTime = 5 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	slog.Info("postgres connected")
-	db := &DB{pool: pool}
-	if err := db.ensureRequestLogSchema(pingCtx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	if err := db.ensureWorkTypeSchema(pingCtx); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE request_logs
-		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
-		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT,
-		    ADD COLUMN IF NOT EXISTS request_status TEXT,
-		    ADD COLUMN IF NOT EXISTS api_key_prefix TEXT,
-		    ADD COLUMN IF NOT EXISTS api_key_owner_user TEXT,
-		    ADD COLUMN IF NOT EXISTS application_code TEXT;
-		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
-		    ON request_logs (gw_session_id, ts DESC)
-		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
-		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_task_ts
-		    ON request_logs (gw_task_id, ts DESC)
-		    WHERE gw_task_id IS NOT NULL AND gw_task_id <> '';
-		CREATE INDEX IF NOT EXISTS idx_request_logs_status_ts
-		    ON request_logs (request_status, ts DESC)
-		    WHERE request_status IS NOT NULL AND request_status <> '';
-	`)
-	if err != nil {
-		return err
-	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code)")
-	return nil
-}
-
-func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, workTypeSchemaSQL)
-	if err != nil {
-		return err
-	}
-	slog.Info("work_type_config schema ensured (22 seed rows idempotent)")
-	return nil
-}
-
-// workTypeSchemaSQL mirrors db/migrations/002_work_types.sql for startup apply.
-const workTypeSchemaSQL = `
 CREATE TABLE IF NOT EXISTS work_type_config (
     key                 TEXT PRIMARY KEY,
     label               TEXT NOT NULL,
@@ -108,6 +20,7 @@ CREATE TABLE IF NOT EXISTS work_type_config (
 );
 CREATE INDEX IF NOT EXISTS idx_work_type_config_category ON work_type_config (category, sort_order);
 CREATE INDEX IF NOT EXISTS idx_work_type_config_l1 ON work_type_config (l1_task_type);
+COMMENT ON TABLE work_type_config IS 'Work type definitions (P1 seed; Phase 3 sync from ACC)';
 
 CREATE TABLE IF NOT EXISTS work_type_model_route (
     id              SERIAL PRIMARY KEY,
@@ -119,12 +32,15 @@ CREATE TABLE IF NOT EXISTS work_type_model_route (
     UNIQUE (work_type_key, canonical_name)
 );
 CREATE INDEX IF NOT EXISTS idx_wtmr_work_type ON work_type_model_route (work_type_key);
+COMMENT ON TABLE work_type_model_route IS 'Preferred model routes per work type (L1 selection hints)';
 
+-- Optional future column on request_logs (placeholder for work_type tracking)
 ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
     ON request_logs (work_type, ts DESC)
     WHERE work_type IS NOT NULL AND work_type <> '';
 
+-- 22 seed work types (Phase 1)
 INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
 VALUES
   ('general_chat',        '通用对话',   '通用',   'chat',          'smart',       ARRAY['chat','general'],           ARRAY['对话','聊天','问答'],                    1),
@@ -150,21 +66,5 @@ VALUES
   ('meeting_summary',     '会议纪要',   '企业',   'creative',      'speed_first', ARRAY['meeting','summary'],        ARRAY['会议','纪要','总结','行动项'],           21),
   ('compliance_audit',    '合规审计',   '企业',   'reasoning',     'smart',       ARRAY['compliance','audit'],       ARRAY['合规','审计','风控','政策'],             22)
 ON CONFLICT (key) DO NOTHING;
-`
 
-func (d *DB) Enabled() bool {
-	return d != nil && d.pool != nil
-}
-
-func (d *DB) Pool() *pgxpool.Pool {
-	if d == nil {
-		return nil
-	}
-	return d.pool
-}
-
-func (d *DB) Close() {
-	if d != nil && d.pool != nil {
-		d.pool.Close()
-	}
-}
+COMMIT;

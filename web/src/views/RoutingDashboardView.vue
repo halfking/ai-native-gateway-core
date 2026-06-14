@@ -256,6 +256,7 @@ onUnmounted(() => stopPoll())
           <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
           <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
         </div>
+        <router-link to="/routing-v2/work-types" class="nav-link-wt">工作类型</router-link>
         <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
 
@@ -605,6 +606,16 @@ onUnmounted(() => stopPoll())
 }
 .top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; }
 .refresh-btn { margin-left: auto; }
+.nav-link-wt {
+  font-size: 11px;
+  color: var(--accent-h);
+  text-decoration: none;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.nav-link-wt:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 /* Pipeline */
 .pipeline { margin-bottom: 6px; }
