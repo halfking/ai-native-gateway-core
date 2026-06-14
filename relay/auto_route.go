@@ -51,6 +51,15 @@ const autoTaskHintHeader = "X-Gw-Task-Hint"
 // that's a separate field), so no client will collide by accident.
 const autoRequestMagic = "auto"
 
+// maxWireDecisionBytes caps the JSON-serialised decision we put in
+// both the X-Gw-Auto-Decision response header and request_logs.auto_decision.
+// Without this cap, a cohort with many candidates could trigger a
+// multi-MB decision. 16 KiB is enough for top-3 candidates with full
+// per-dim scores.
+//
+// v2.0.3 audit fix #16.
+const maxWireDecisionBytes = 16 * 1024
+
 // autoRouteDecision is the wire format of X-Gw-Auto-Decision. Stable
 // JSON schema — clients may parse it for observability.
 type autoRouteDecision struct {
@@ -334,12 +343,33 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 	return wire
 }
 
+// capDecisionSize truncates wire.CandidatesTop3 from the tail until
+// serialisation fits in maxWireDecisionBytes. Always keeps the chosen
+// model (top-1) intact. Returns the (possibly truncated) wire.
+func capDecisionSize(wire *autoRouteDecision) *autoRouteDecision {
+	if wire == nil || len(wire.CandidatesTop3) == 0 {
+		return wire
+	}
+	for len(wire.CandidatesTop3) > 0 {
+		b, err := json.Marshal(wire)
+		if err != nil {
+			return wire
+		}
+		if len(b) <= maxWireDecisionBytes {
+			return wire
+		}
+		wire.CandidatesTop3 = wire.CandidatesTop3[:len(wire.CandidatesTop3)-1]
+	}
+	return wire
+}
+
 // writeAutoDecisionHeader serialises the decision as JSON and sets
 // the response header. Errors are swallowed (header is best-effort).
 func writeAutoDecisionHeader(w http.ResponseWriter, wire *autoRouteDecision) {
 	if wire == nil {
 		return
 	}
+	wire = capDecisionSize(wire)
 	b, err := json.Marshal(wire)
 	if err != nil {
 		return

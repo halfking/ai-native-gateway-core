@@ -14,6 +14,7 @@ package admin
 
 import (
 	"context"
+	"log/slog"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -109,7 +110,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -184,7 +185,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	// Get the latest bucket (NULL-safe: returns zero value when empty)
 	var latestBucket sql.NullTime
 	if err := h.db.QueryRow(ctx, `SELECT MAX(bucket) FROM credential_model_index`).Scan(&latestBucket); err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	if !latestBucket.Valid {
@@ -219,7 +220,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -341,7 +342,7 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 		    updated_at = NOW()
 	`, apiKeyID, profile)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "upsert failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{
@@ -381,7 +382,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`).Scan(&total, &successes)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "total query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	out["total_auto_requests"] = total
@@ -483,7 +484,7 @@ func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := h.indexRefresher.RefreshOnce(ctx); err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "refresh failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{
@@ -531,7 +532,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -639,7 +640,7 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeInternalErr(w, err)
 		return
 	}
 	defer rows.Close()
@@ -696,6 +697,11 @@ func writeJSONOk(w http.ResponseWriter, v interface{}) {
 }
 
 // writeJSONErr serialises an error envelope and writes the given status.
+//
+// v2.0.3 audit fix #13: never echo raw err.Error() to the client.
+// pgx error messages can leak schema/table/column names — useful for
+// an attacker doing reconnaissance. The generic message goes to the
+// client; the detailed err is logged server-side via writeInternalErr.
 func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -705,4 +711,12 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 			"type":    "admin_error",
 		},
 	})
+}
+
+// writeInternalErr logs the full error and writes a sanitised message
+// to the client. Use for any 5xx path that would otherwise echo
+// err.Error() directly.
+func writeInternalErr(w http.ResponseWriter, err error) {
+	slog.Error("admin auto-route internal error", "error", err.Error())
+	writeJSONErr(w, http.StatusInternalServerError, "internal error (see server logs)")
 }

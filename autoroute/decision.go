@@ -1,6 +1,7 @@
 package autoroute
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
 	"context"
 	"errors"
 	"fmt"
@@ -182,8 +183,17 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 func (d *Decider) resolveProfile(ctx context.Context, apiKeyID int, header string) Profile {
 	// (1) Header override
 	if h := normaliseProfile(header); h != "" {
+		// v2.0.3 audit fix #18: skip sticky write for api_key_id=0
+		// (unauthenticated requests, e.g. ad-hoc curl). Avoids polluting
+		// the sticky table with junk entries.
 		if apiKeyID > 0 && d.profileStore != nil {
-			_ = d.profileStore.Put(ctx, apiKeyID, h, d.StickyTTL)
+			if err := d.profileStore.Put(ctx, apiKeyID, h, d.StickyTTL); err != nil {
+				slog.Warn("autoroute: sticky profile write failed",
+					"error", err, "api_key_id", apiKeyID, "profile", h)
+			}
+		} else if h != "" && apiKeyID == 0 {
+			slog.Debug("autoroute: header profile set but api_key_id=0, sticky not persisted",
+				"profile", h)
 		}
 		return h
 	}
@@ -286,6 +296,127 @@ type ProfileStore interface {
 	Get(ctx context.Context, apiKeyID int) (Profile, bool)
 	Put(ctx context.Context, apiKeyID int, p Profile, ttl time.Duration) error
 }
+
+
+// DBProfileStore is the production-grade, multi-instance-safe
+// implementation of ProfileStore. Sticky state is persisted to the
+// api_key_auto_profile table (added in v2.0.0 SQL migration).
+//
+// A small in-process cache (1-minute TTL) absorbs the hot path so we
+// do not hammer PG on every request. After 1 min, the cache is
+// considered stale and we re-read from DB.
+//
+// v2.0.3 audit fix #14: replaced MemoryProfileStore (single-process)
+// for multi-instance deployments. MemoryProfileStore is still
+// available for tests.
+type DBProfileStore struct {
+	pool *pgxpool.Pool
+
+	// Cache with 1-minute TTL (so sticky preference survives at most
+	// 1 minute across the cluster). For stronger consistency, set
+	// cacheTTL=0 (always read from DB).
+	cacheTTL time.Duration
+
+	mu   sync.RWMutex
+	rows map[int]cachedProfile
+}
+
+type cachedProfile struct {
+	profile   Profile
+	expiresAt time.Time
+}
+
+// NewDBProfileStore wires the DB-backed store. pool is required.
+// cacheTTL is the local cache window; default 1 minute.
+func NewDBProfileStore(pool *pgxpool.Pool) *DBProfileStore {
+	return &DBProfileStore{
+		pool:     pool,
+		cacheTTL: 1 * time.Minute,
+		rows:     make(map[int]cachedProfile),
+	}
+}
+
+// Get implements ProfileStore.
+//
+// Order of operations:
+//   1. Check in-process cache (RLock). If fresh, return.
+//   2. If miss or stale, query api_key_auto_profile.
+//   3. If found, update cache and return.
+//   4. If not found, return "" + false (caller falls back to default).
+func (s *DBProfileStore) Get(ctx context.Context, apiKeyID int) (Profile, bool) {
+	if apiKeyID <= 0 {
+		return "", false
+	}
+
+	// 1. Cache check
+	s.mu.RLock()
+	e, ok := s.rows[apiKeyID]
+	s.mu.RUnlock()
+	if ok && time.Now().Before(e.expiresAt) {
+		return e.profile, true
+	}
+
+	// 2. DB read
+	var profile string
+	err := s.pool.QueryRow(ctx, `
+		SELECT profile FROM api_key_auto_profile
+		WHERE api_key_id = $1
+	`, apiKeyID).Scan(&profile)
+	if err != nil {
+		// No row or DB error. We log the error but return false so
+		// the caller falls back to default. Caching an empty profile
+		// would mask DB outages.
+		if !errors.Is(err, pgxNoRows()) {
+			slog.Warn("DBProfileStore.Get query failed", "error", err, "api_key_id", apiKeyID)
+		}
+		return "", false
+	}
+
+	p := Profile(profile)
+	s.setCache(apiKeyID, p)
+	return p, true
+}
+
+// Put implements ProfileStore. Upserts the row and updates the local
+// cache so subsequent reads in this process are immediate.
+func (s *DBProfileStore) Put(ctx context.Context, apiKeyID int, p Profile, ttl time.Duration) error {
+	if apiKeyID <= 0 {
+		return fmt.Errorf("api_key_id must be > 0")
+	}
+	if p != ProfileSmart && p != ProfileSpeedFirst && p != ProfileCostFirst {
+		return fmt.Errorf("invalid profile: %q", p)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO api_key_auto_profile (api_key_id, profile, first_chosen_at, last_used_at, updated_at)
+		VALUES ($1, $2, NOW(), NOW(), NOW())
+		ON CONFLICT (api_key_id) DO UPDATE SET
+		    profile = EXCLUDED.profile,
+		    last_used_at = NOW(),
+		    updated_at = NOW()
+	`, apiKeyID, p)
+	if err != nil {
+		return fmt.Errorf("upsert sticky profile: %w", err)
+	}
+	s.setCache(apiKeyID, p)
+	return nil
+}
+
+func (s *DBProfileStore) setCache(apiKeyID int, p Profile) {
+	s.mu.Lock()
+	s.rows[apiKeyID] = cachedProfile{
+		profile:   p,
+		expiresAt: time.Now().Add(s.cacheTTL),
+	}
+	s.mu.Unlock()
+}
+
+// pgxNoRows returns the sentinel error for "no rows" from pgx so we
+// can detect the not-found case without an import cycle.
+func pgxNoRows() error {
+	return errPgxNoRows
+}
+
+var errPgxNoRows = errors.New("no rows in result set")
 
 // MemoryProfileStore is a process-local implementation of ProfileStore.
 // Suitable for single-instance deployments and tests. For multi-instance
