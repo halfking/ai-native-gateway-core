@@ -211,6 +211,33 @@ function taskLabel(key: string): string {
   return TASK_TYPES.find(t => t.key === key)?.label ?? key
 }
 
+const L1_STEPS = ['Prompt', '8类分类', '6维评分', 'Profile', '选模型']
+const L2_STEPS = ['模型解析', 'Tier回退', '计费轮次', 'P2C得分', '执行/熔断']
+
+const heroChips = computed(() => {
+  if (activeTab.value === 'overview') {
+    return [
+      { label: '候选', value: String(indexData.value.length) },
+      { label: '24h', value: String(audit.value.total_auto_requests) },
+      { label: '成功率', value: fmt(audit.value.success_rate * 100, 1) + '%' },
+    ]
+  }
+  if (activeTab.value === 'live') {
+    const topTask = distEntries(audit.value.task_distribution)[0]
+    const topModel = audit.value.top_chosen_models[0]
+    return [
+      { label: 'Auto', value: String(audit.value.total_auto_requests) },
+      { label: 'Top任务', value: topTask?.[0] || '-' },
+      { label: 'Top模型', value: topModel?.model || '-' },
+    ]
+  }
+  return [
+    { label: '算法', value: 'v' + (policy.value?.algorithm_version ?? '-') },
+    { label: 'Tier回退', value: String(policy.value?.tier_fallback_max ?? '-') },
+    { label: '熔断', value: (policy.value?.circuit_failure_threshold ?? '-') + '次' },
+  ]
+})
+
 onMounted(async () => {
   await loadIndex()
   await loadAudit()
@@ -220,48 +247,46 @@ onUnmounted(() => stopPoll())
 
 <template>
   <div class="routing-dashboard">
-    <!-- Header -->
-    <div class="page-header compact">
-      <div>
+    <!-- Unified top: title + tabs + refresh -->
+    <div class="top-bar">
+      <div class="top-bar-head">
         <h2>路由全景</h2>
-        <p class="subtitle">model=auto 两层路由：L1 任务分类选模型 → L2 凭据调度选上游</p>
+        <div class="seg-tabs">
+          <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
+        </div>
+        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
-      <div class="header-actions">
-        <button class="btn btn-sm btn-ghost" @click="loadIndex(); loadAudit()" title="刷新">↻</button>
-      </div>
-    </div>
 
-    <!-- Hero: flow + live stats -->
-    <div class="hero-strip">
-      <div class="flow-track">
-        <div class="flow-node l1">
-          <span class="flow-badge">L1</span>
-          <div class="flow-copy">
-            <strong>选模型</strong>
-            <span>Prompt → 8类分类 → 6维评分</span>
+      <!-- L1 / L2 pipeline -->
+      <div class="pipeline">
+        <div class="pipe-row l1-row">
+          <span class="layer-tag l1">L1</span>
+          <span class="pipe-title">选模型</span>
+          <div class="pipe-steps">
+            <template v-for="(s, i) in L1_STEPS" :key="'l1-' + s">
+              <span class="pipe-step">{{ s }}</span>
+              <span v-if="i < L1_STEPS.length - 1" class="pipe-dot">›</span>
+            </template>
           </div>
         </div>
-        <span class="flow-arrow">→</span>
-        <div class="flow-node l2">
-          <span class="flow-badge">L2</span>
-          <div class="flow-copy">
-            <strong>选凭据</strong>
-            <span>解析 → Tier回退 → P2C执行</span>
+        <div class="pipe-bridge">↓</div>
+        <div class="pipe-row l2-row">
+          <span class="layer-tag l2">L2</span>
+          <span class="pipe-title">选凭据</span>
+          <div class="pipe-steps">
+            <template v-for="(s, i) in L2_STEPS" :key="'l2-' + s">
+              <span class="pipe-step">{{ s }}</span>
+              <span v-if="i < L2_STEPS.length - 1" class="pipe-dot">›</span>
+            </template>
           </div>
         </div>
       </div>
+
       <div class="hero-stats">
-        <span class="chip">候选 <strong>{{ indexData.length }}</strong></span>
-        <span class="chip">24h <strong>{{ audit.total_auto_requests }}</strong></span>
-        <span class="chip">成功率 <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
+        <span v-for="c in heroChips" :key="c.label" class="chip">{{ c.label }} <strong>{{ c.value }}</strong></span>
       </div>
-    </div>
-
-    <!-- Tabs -->
-    <div class="seg-tabs">
-      <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
-      <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
-      <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
     </div>
 
     <!-- ═══ Tab A: Overview ═══ -->
@@ -326,21 +351,21 @@ onUnmounted(() => stopPoll())
                 <tr v-if="expandedModel === m.credential_id + ':' + m.raw_model" class="detail-row">
                   <td colspan="8">
                     <div class="expand-grid">
-                      <div class="layer2-panel">
+                      <div class="layer-panel l2-accent">
                         <div class="section-head sm">
                           <span class="layer-tag l2">L2</span>
                           <span>凭据调度</span>
+                          <span class="section-hint">Tier 1→2→3→9 · plan 优先 PAYG · P2C</span>
                         </div>
                         <div v-if="layer2Loading === (m.canonical_name || m.raw_model)" class="text-muted">加载…</div>
                         <template v-else-if="layer2Cache[m.canonical_name || m.raw_model]">
-                          <div class="l2-meta">
-                            <span>{{ layer2Cache[m.canonical_name || m.raw_model]!.resolution_path }}</span>
-                          </div>
+                          <div class="l2-meta mono">{{ layer2Cache[m.canonical_name || m.raw_model]!.resolution_path }}</div>
                           <div class="l2-creds">
                             <div
                               v-for="(c, ci) in layer2Cache[m.canonical_name || m.raw_model]!.candidates.filter(x => x.routable).slice(0, 4)"
                               :key="c.credential_id"
                               class="l2-cred"
+                              :class="{ top: ci === 0 }"
                             >
                               <span class="l2-rank">#{{ ci + 1 }}</span>
                               <span class="l2-prov">{{ c.provider_name }}</span>
@@ -351,7 +376,7 @@ onUnmounted(() => stopPoll())
                         </template>
                         <div v-else class="text-muted">无凭据</div>
                       </div>
-                      <div class="l1-scores">
+                      <div class="layer-panel l1-accent">
                         <div class="section-head sm"><span class="layer-tag l1">L1</span><span>6维评分</span></div>
                         <SixDimScoreBar compact :scores="{
                           price_score: m.score_smart,
@@ -377,10 +402,10 @@ onUnmounted(() => stopPoll())
 
     <!-- ═══ Tab B: Policy ═══ -->
     <div v-if="activeTab === 'policy'" class="tab-content">
-      <!-- Profile weights -->
-      <div class="card compact-card">
-        <div class="section-head"><span class="layer-tag l1">L1</span><h3>Profile 权重矩阵</h3></div>
-        <div class="profile-grid">
+      <!-- Profile weights — flat 3-col -->
+      <div class="card compact-card flat-card">
+        <div class="section-head tight"><span class="layer-tag l1">L1</span><h3>Profile 权重矩阵</h3></div>
+        <div class="profile-grid flat">
           <div v-for="(w, name) in DEFAULT_PROFILE_WEIGHTS" :key="name" class="profile-col">
             <div class="profile-col-head">{{ name === 'smart' ? '智能' : name === 'speed_first' ? '速度' : '成本' }}</div>
             <SixDimScoreBar compact :scores="{
@@ -395,40 +420,44 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
 
-      <!-- Policy + Weights side by side -->
-      <div class="policy-grid">
-        <div class="card compact-card">
-          <div class="section-head"><h3>L2 路由算法</h3></div>
-          <div class="policy-fields">
-            <div v-for="f in POLICY_FIELDS" :key="f.key" class="form-group">
-              <label>{{ f.label }}</label>
-              <input type="number" :min="f.min" :max="f.max" :step="f.step" v-model.number="policyDraft[f.key]" />
+      <!-- L2 policy + weights — single card, inline -->
+      <div class="card compact-card flat-card">
+        <div class="section-head tight"><span class="layer-tag l2">L2</span><h3>路由算法与得分系数</h3></div>
+        <div class="policy-inline">
+          <div class="policy-block">
+            <div class="block-label">算法参数</div>
+            <div class="inline-fields">
+              <label v-for="f in POLICY_FIELDS" :key="f.key" class="inline-field">
+                <span>{{ f.label }}</span>
+                <input type="number" :min="f.min" :max="f.max" :step="f.step" v-model.number="policyDraft[f.key]" />
+              </label>
             </div>
+            <button class="btn btn-primary btn-sm" :disabled="savingPolicy" @click="savePolicy">保存策略</button>
           </div>
-          <button class="btn btn-primary btn-sm" :disabled="savingPolicy" @click="savePolicy">保存</button>
-        </div>
-        <div class="card compact-card">
-          <div class="section-head"><h3>综合得分系数</h3></div>
-          <div class="policy-fields">
-            <div class="form-group">
-              <label>价格权重</label>
-              <input type="number" min="0" max="100" v-model.number="weightsDraft.price" />
+          <div class="policy-divider" />
+          <div class="policy-block">
+            <div class="block-label">P2C 综合得分</div>
+            <div class="inline-fields">
+              <label class="inline-field">
+                <span>价格权重</span>
+                <input type="number" min="0" max="100" v-model.number="weightsDraft.price" />
+              </label>
+              <label class="inline-field">
+                <span>会话负载</span>
+                <input type="number" min="0" max="100" v-model.number="weightsDraft.session_load" />
+              </label>
+              <label class="inline-field">
+                <span>错误惩罚</span>
+                <input type="number" min="0" max="100" v-model.number="weightsDraft.failure_penalty" />
+              </label>
             </div>
-            <div class="form-group">
-              <label>会话负载</label>
-              <input type="number" min="0" max="100" v-model.number="weightsDraft.session_load" />
-            </div>
-            <div class="form-group">
-              <label>错误惩罚</label>
-              <input type="number" min="0" max="100" v-model.number="weightsDraft.failure_penalty" />
-            </div>
+            <button class="btn btn-primary btn-sm" :disabled="savingPolicy" @click="saveWeights">保存权重</button>
           </div>
-          <button class="btn btn-primary btn-sm" :disabled="savingPolicy" @click="saveWeights">保存权重</button>
         </div>
+        <div v-if="policyMsg" class="policy-msg">{{ policyMsg }}</div>
       </div>
-      <div v-if="policyMsg" class="alert alert-info compact-alert">{{ policyMsg }}</div>
 
-      <!-- Cost tables side by side -->
+      <!-- Cost tables -->
       <div class="cost-grid">
         <div class="card compact-card">
           <div class="section-head"><h3>客户成本</h3></div>
@@ -465,53 +494,50 @@ onUnmounted(() => stopPoll())
 
     <!-- ═══ Tab C: Live ═══ -->
     <div v-if="activeTab === 'live'" class="tab-content">
-      <div class="stat-inline">
-        <span class="chip">Auto <strong>{{ audit.total_auto_requests }}</strong></span>
-        <span class="chip">成功率 <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
-        <span class="chip">Top Task <strong>{{ distEntries(audit.task_distribution)[0]?.[0] || '-' }}</strong></span>
-        <span class="chip">Top Model <strong>{{ audit.top_chosen_models[0]?.model || '-' }}</strong></span>
-      </div>
-
-      <!-- Simulator (top for quick test) -->
-      <div class="card compact-card">
-        <div class="section-head"><h3>路由模拟器</h3></div>
-        <div class="sim-row">
-          <input v-model="simPrompt" placeholder="输入 prompt…" class="sim-input" />
-          <select v-model="simProfile" class="sim-select">
-            <option value="smart">智能</option>
-            <option value="speed_first">速度</option>
-            <option value="cost_first">成本</option>
-          </select>
-          <button class="btn btn-primary btn-sm" :disabled="simLoading" @click="runSim">{{ simLoading ? '…' : '发送' }}</button>
-        </div>
-        <div v-if="simResult" class="sim-out">
-          <div v-if="simResult.error" class="alert alert-danger compact-alert">{{ simResult.error }}</div>
-          <div v-else-if="simResult.decision" class="sim-steps">
-            <span class="sim-chip">L1 {{ (simResult.decision as Record<string, unknown>).task_type }}</span>
-            <span class="sim-chip">{{ fmt(Number((simResult.decision as Record<string, unknown>).confidence) * 100, 0) }}%</span>
-            <span class="sim-chip win">→ {{ (simResult.decision as Record<string, unknown>).chosen_model }}</span>
-            <span class="text-muted">cred #{{ (simResult.decision as Record<string, unknown>).chosen_credential_id }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Distributions -->
-      <div class="card compact-card">
-        <div class="dist-grid compact">
-          <div>
-            <h4>任务分布</h4>
-            <div v-for="[task, count] in distEntries(audit.task_distribution)" :key="task" class="dist-row">
-              <span class="dist-label">{{ task }}</span>
-              <div class="dist-bar-bg"><div class="dist-bar-fill" :style="{ width: (count / distMax(audit.task_distribution) * 100) + '%' }" /></div>
-              <span class="dist-count">{{ count }}</span>
+      <!-- Simulator + distributions merged -->
+      <div class="card compact-card flat-card">
+        <div class="live-grid">
+          <div class="live-sim">
+            <div class="section-head tight"><h3>路由模拟</h3></div>
+            <div class="sim-row">
+              <input v-model="simPrompt" placeholder="输入 prompt 测试 L1→L2…" class="sim-input" />
+              <select v-model="simProfile" class="sim-select">
+                <option value="smart">智能</option>
+                <option value="speed_first">速度</option>
+                <option value="cost_first">成本</option>
+              </select>
+              <button class="btn btn-primary btn-sm" :disabled="simLoading" @click="runSim">{{ simLoading ? '…' : '模拟' }}</button>
+            </div>
+            <div v-if="simResult" class="sim-out">
+              <div v-if="simResult.error" class="alert alert-danger compact-alert">{{ simResult.error }}</div>
+              <div v-else-if="simResult.decision" class="sim-pipeline">
+                <span class="sim-step l1">L1 {{ (simResult.decision as Record<string, unknown>).task_type }}</span>
+                <span class="pipe-dot">→</span>
+                <span class="sim-step">{{ fmt(Number((simResult.decision as Record<string, unknown>).confidence) * 100, 0) }}%</span>
+                <span class="pipe-dot">→</span>
+                <span class="sim-step l2 win">{{ (simResult.decision as Record<string, unknown>).chosen_model }}</span>
+                <span class="text-muted">cred #{{ (simResult.decision as Record<string, unknown>).chosen_credential_id }}</span>
+              </div>
             </div>
           </div>
-          <div>
-            <h4>Profile</h4>
-            <div v-for="[p, count] in distEntries(audit.profile_distribution)" :key="p" class="dist-row">
-              <span class="dist-label">{{ p }}</span>
-              <div class="dist-bar-bg"><div class="dist-bar-fill accent" :style="{ width: (count / distMax(audit.profile_distribution) * 100) + '%' }" /></div>
-              <span class="dist-count">{{ count }}</span>
+          <div class="live-dist">
+            <div class="dist-mini">
+              <div class="dist-col">
+                <h4>任务</h4>
+                <div v-for="[task, count] in distEntries(audit.task_distribution).slice(0, 5)" :key="task" class="dist-row">
+                  <span class="dist-label">{{ task }}</span>
+                  <div class="dist-bar-bg"><div class="dist-bar-fill" :style="{ width: (count / distMax(audit.task_distribution) * 100) + '%' }" /></div>
+                  <span class="dist-count">{{ count }}</span>
+                </div>
+              </div>
+              <div class="dist-col">
+                <h4>Profile</h4>
+                <div v-for="[p, count] in distEntries(audit.profile_distribution).slice(0, 5)" :key="p" class="dist-row">
+                  <span class="dist-label">{{ p }}</span>
+                  <div class="dist-bar-bg"><div class="dist-bar-fill accent" :style="{ width: (count / distMax(audit.profile_distribution) * 100) + '%' }" /></div>
+                  <span class="dist-count">{{ count }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -562,124 +588,137 @@ onUnmounted(() => stopPoll())
 <style scoped>
 .routing-dashboard { max-width: 1200px; }
 
-.page-header.compact { margin-bottom: 8px; }
-.page-header.compact h2 { font-size: 16px; margin: 0; }
-.subtitle { font-size: 11px; color: var(--muted); margin: 2px 0 0; }
-
-/* Hero strip */
-.hero-strip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  margin-bottom: 10px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--card)), var(--card));
+/* Unified top bar */
+.top-bar {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
-.flow-track { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 280px; }
-.flow-node {
-  display: flex; align-items: center; gap: 8px;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
-  border: 1px solid var(--border);
+.top-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
 }
-.flow-copy { display: flex; flex-direction: column; gap: 0; line-height: 1.2; }
-.flow-copy strong { font-size: 11px; font-weight: 600; }
-.flow-copy span { font-size: 10px; color: var(--muted); }
-.flow-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 18px; border-radius: 4px;
-  font-size: 10px; font-weight: 700; flex-shrink: 0;
-}
-.flow-node.l1 .flow-badge { background: rgba(99,102,241,.2); color: var(--accent-h); }
-.flow-node.l2 .flow-badge { background: rgba(63,185,80,.2); color: var(--success); }
-.flow-arrow { color: var(--muted); font-size: 14px; flex-shrink: 0; }
-.hero-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; }
+.refresh-btn { margin-left: auto; }
 
-/* Segmented tabs */
+/* Pipeline */
+.pipeline { margin-bottom: 6px; }
+.pipe-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.pipe-row.l1-row { color: var(--accent-h); }
+.pipe-row.l2-row { color: var(--success); }
+.pipe-title { font-size: 11px; font-weight: 600; min-width: 42px; }
+.pipe-steps { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.pipe-step {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--text);
+}
+.pipe-dot { font-size: 10px; color: var(--muted); padding: 0 1px; }
+.pipe-bridge {
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1;
+  margin: -2px 0;
+  padding-left: 8px;
+}
+
+.hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Segmented tabs (inline in top bar) */
 .seg-tabs {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  margin-bottom: 10px;
+  gap: 1px;
+  padding: 2px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
 }
 .seg-tab {
-  padding: 5px 14px;
+  padding: 3px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
   cursor: pointer;
   transition: all .12s;
+  white-space: nowrap;
 }
 .seg-tab:hover { color: var(--text); }
 .seg-tab.active {
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0,0,0,.15);
+  box-shadow: 0 1px 2px rgba(0,0,0,.12);
 }
 
-.tab-content { display: flex; flex-direction: column; gap: 10px; }
+.tab-content { display: flex; flex-direction: column; gap: 8px; }
 
-/* Inline stats */
-.stat-inline { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 10px;
-  background: var(--card);
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 8px;
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
 }
 .chip strong { color: var(--text); font-weight: 600; }
 
 /* Cards */
-.compact-card { padding: 10px 12px; }
+.compact-card { padding: 8px 10px; }
+.flat-card { box-shadow: none; }
 .card-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
-  padding-bottom: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
-.toolbar-left { display: flex; align-items: center; gap: 8px; }
-.toolbar-title { font-size: 13px; font-weight: 600; }
-.toolbar-filters { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.toolbar-divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
-.loading-hint { padding: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+.toolbar-left { display: flex; align-items: center; gap: 6px; }
+.toolbar-title { font-size: 12px; font-weight: 600; }
+.toolbar-filters { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.toolbar-divider { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
+.loading-hint { padding: 12px; text-align: center; color: var(--muted); font-size: 11px; }
 
 .section-head {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 6px;
 }
-.section-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
-.section-head.sm { margin-bottom: 6px; font-size: 12px; }
+.section-head.tight { margin-bottom: 4px; }
+.section-head h3 { margin: 0; font-size: 12px; font-weight: 600; }
+.section-head.sm { margin-bottom: 4px; font-size: 11px; }
+.section-hint { font-size: 9px; color: var(--muted); font-weight: 400; margin-left: auto; }
 .layer-tag {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 16px;
+  width: 22px; height: 14px;
   border-radius: 3px;
-  font-size: 9px; font-weight: 700;
+  font-size: 8px; font-weight: 700;
+  flex-shrink: 0;
 }
-.layer-tag.l1 { background: rgba(99,102,241,.2); color: var(--accent-h); }
-.layer-tag.l2 { background: rgba(63,185,80,.2); color: var(--success); }
-.task-hint { font-weight: 400; color: var(--muted); font-size: 11px; }
+.layer-tag.l1 { background: rgba(99,102,241,.22); color: var(--accent-h); }
+.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
+.task-hint { font-weight: 400; color: var(--muted); font-size: 10px; }
 
-/* Task pills */
 .task-pill {
-  padding: 4px 10px;
+  padding: 2px 7px;
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 99px;
@@ -688,7 +727,7 @@ onUnmounted(() => stopPoll())
   transition: all .12s;
   color: var(--text);
 }
-.task-pill.sm { padding: 2px 7px; font-size: 12px; }
+.task-pill.sm { padding: 1px 5px; font-size: 11px; }
 .task-pill:hover { border-color: var(--accent); }
 .task-pill.active {
   border-color: var(--accent);
@@ -696,7 +735,7 @@ onUnmounted(() => stopPoll())
 }
 
 .profile-pill {
-  padding: 2px 8px;
+  padding: 1px 7px;
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 99px;
@@ -710,142 +749,189 @@ onUnmounted(() => stopPoll())
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-/* Dense table */
-.table-wrap { overflow-x: auto; }
-.dense-table { font-size: 12px; }
-.dense-table thead th { padding: 4px 8px; font-size: 10px; }
-.dense-table tbody td { padding: 5px 8px; }
-.dense-table .num { color: var(--muted); width: 24px; }
-.model-name { font-weight: 500; font-size: 12px; }
-.model-sub { font-size: 10px; color: var(--muted); }
-.price-cell { font-variant-numeric: tabular-nums; font-size: 11px; }
-.expand-icon { color: var(--muted); width: 20px; text-align: center; font-size: 10px; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.dense-table { font-size: 11px; width: 100%; }
+.dense-table thead th { padding: 3px 6px; font-size: 9px; white-space: nowrap; }
+.dense-table tbody td { padding: 4px 6px; }
+.dense-table .num { color: var(--muted); width: 20px; }
+.model-name { font-weight: 500; font-size: 11px; }
+.model-sub { font-size: 9px; color: var(--muted); }
+.price-cell { font-variant-numeric: tabular-nums; font-size: 10px; }
+.expand-icon { color: var(--muted); width: 16px; text-align: center; font-size: 9px; }
 
 .score-pill {
   display: inline-block;
-  padding: 1px 6px;
+  padding: 0 5px;
   border-radius: 99px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   background: rgba(139,148,158,.15);
   color: var(--muted);
 }
 .score-pill.good { background: rgba(63,185,80,.15); color: var(--success); }
-.score-pill.sm { font-size: 10px; padding: 0 5px; }
+.score-pill.sm { font-size: 9px; padding: 0 4px; }
 
 .model-row { cursor: pointer; }
 .model-row:hover { background: rgba(255,255,255,.03); }
-.model-row.expanded { background: color-mix(in srgb, var(--accent) 6%, transparent); }
-.detail-row td { padding: 8px; background: var(--bg-subtle); border-top: none; }
+.model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.detail-row td { padding: 6px; background: var(--bg-subtle); border-top: none; }
 
-/* Layer 2 panel */
 .expand-grid {
   display: grid;
-  grid-template-columns: 1fr 280px;
-  gap: 12px;
+  grid-template-columns: 1fr minmax(200px, 260px);
+  gap: 8px;
   align-items: start;
 }
-.layer2-panel { display: flex; flex-direction: column; gap: 6px; }
-.l2-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
-.l2-creds { display: flex; flex-wrap: wrap; gap: 6px; }
-.l2-cred {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
+.layer-panel {
+  padding: 6px 8px;
   border-radius: 4px;
+  background: var(--bg);
+}
+.layer-panel.l1-accent { border-left: 3px solid var(--accent); }
+.layer-panel.l2-accent { border-left: 3px solid var(--success); }
+.l2-meta { font-size: 10px; color: var(--muted); margin-bottom: 4px; word-break: break-all; }
+.l2-meta.mono { font-family: ui-monospace, monospace; font-size: 9px; }
+.l2-creds { display: flex; flex-wrap: wrap; gap: 4px; }
+.l2-cred {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 10px;
+}
+.l2-cred.top { border-color: var(--success); background: rgba(63,185,80,.08); }
+.l2-rank { font-weight: 700; color: var(--muted); font-size: 9px; }
+.l2-prov { font-weight: 500; }
+
+/* Policy inline */
+.policy-inline {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.policy-block { flex: 1; min-width: 220px; }
+.policy-divider { width: 1px; background: var(--border); align-self: stretch; min-height: 60px; }
+.block-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: 6px;
+}
+.inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 72px;
+}
+.inline-field span { font-size: 9px; color: var(--muted); }
+.inline-field input {
+  width: 64px;
+  padding: 2px 5px;
   font-size: 11px;
 }
-.l2-rank { font-weight: 700; color: var(--muted); }
-.l2-prov { font-weight: 500; }
-.l1-scores { min-width: 0; }
-
-/* Policy */
-.policy-grid, .cost-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 10px;
-}
-.policy-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.policy-fields .form-group { margin-bottom: 0; }
-.policy-fields label { font-size: 10px; }
-.policy-fields input { padding: 3px 6px; font-size: 12px; }
+.policy-msg { font-size: 11px; color: var(--accent-h); margin-top: 6px; }
 
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
-.profile-col {
-  padding: 8px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.profile-grid.flat .profile-col {
+  padding: 4px 6px;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  border-radius: 0;
 }
+.profile-grid.flat .profile-col:last-child { border-right: none; }
 .profile-col-head {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   text-align: center;
 }
 
-.compact-alert { padding: 6px 10px; margin-bottom: 0; font-size: 12px; }
-.empty-hint { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+.cost-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.compact-alert { padding: 4px 8px; margin-bottom: 0; font-size: 11px; }
+.empty-hint { text-align: center; color: var(--muted); font-size: 11px; padding: 16px; }
 
 /* Live tab */
-.sim-row { display: flex; gap: 6px; }
-.sim-input { flex: 1; font-size: 12px; padding: 4px 8px; }
-.sim-select { width: 80px; font-size: 12px; padding: 4px 6px; }
-.sim-out { margin-top: 8px; }
-.sim-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
-.sim-chip {
-  padding: 2px 8px;
-  background: var(--bg-subtle);
-  border-radius: 99px;
-  font-size: 11px;
+.live-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
 }
-.sim-chip.win { background: rgba(63,185,80,.15); color: var(--success); font-weight: 600; }
+.sim-row { display: flex; gap: 4px; }
+.sim-input { flex: 1; font-size: 11px; padding: 3px 6px; min-width: 0; }
+.sim-select { width: 72px; font-size: 11px; padding: 3px 4px; flex-shrink: 0; }
+.sim-out { margin-top: 6px; }
+.sim-pipeline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; }
+.sim-step {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: var(--bg-subtle);
+}
+.sim-step.l1 { background: rgba(99,102,241,.12); color: var(--accent-h); }
+.sim-step.l2.win { background: rgba(63,185,80,.15); color: var(--success); font-weight: 600; }
 
-.dist-grid.compact { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.dist-grid h4 { font-size: 10px; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.dist-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; letter-spacing: .04em; }
 .dist-row {
   display: grid;
-  grid-template-columns: 72px 1fr 32px;
+  grid-template-columns: 56px 1fr 24px;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 3px;
-  font-size: 11px;
+  gap: 4px;
+  margin-bottom: 2px;
+  font-size: 10px;
 }
 .dist-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dist-bar-bg { height: 10px; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 2px; overflow: hidden; }
+.dist-bar-bg { height: 6px; background: color-mix(in srgb, var(--border) 30%, transparent); border-radius: 2px; overflow: hidden; }
 .dist-bar-fill { height: 100%; background: var(--success); border-radius: 2px; }
 .dist-bar-fill.accent { background: var(--accent); }
-.dist-count { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; }
+.dist-count { text-align: right; font-variant-numeric: tabular-nums; font-size: 9px; }
 
-.auto-toggle { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
-.decision-detail { display: flex; flex-direction: column; gap: 6px; }
-.candidates-compact { display: flex; flex-wrap: wrap; gap: 4px; }
+.auto-toggle { font-size: 10px; color: var(--muted); display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.decision-detail { display: flex; flex-direction: column; gap: 4px; }
+.candidates-compact { display: flex; flex-wrap: wrap; gap: 3px; }
 .cand-chip {
-  padding: 2px 8px;
+  padding: 1px 6px;
   background: var(--bg);
-  border-radius: 4px;
-  font-size: 11px;
+  border-radius: 3px;
+  font-size: 10px;
 }
 
-.text-muted { color: var(--muted); font-size: 11px; }
-.text-danger { color: var(--danger); font-size: 11px; }
+.text-muted { color: var(--muted); font-size: 10px; }
+.text-danger { color: var(--danger); font-size: 10px; }
 
-@media (max-width: 640px) {
-  .hero-strip { flex-direction: column; align-items: stretch; }
-  .flow-track { flex-direction: column; align-items: stretch; }
-  .flow-arrow { display: none; }
+@media (max-width: 768px) {
+  .top-bar-head { gap: 6px; }
+  .seg-tabs { order: 3; width: 100%; justify-content: stretch; }
+  .seg-tab { flex: 1; text-align: center; padding: 4px 6px; }
+  .refresh-btn { order: 2; margin-left: auto; }
+  .pipe-steps { display: none; }
+  .pipe-title::after { content: ' · Prompt→Profile→模型 / 解析→Tier→P2C'; font-weight: 400; color: var(--muted); font-size: 9px; }
   .expand-grid { grid-template-columns: 1fr; }
   .profile-grid { grid-template-columns: 1fr; }
-  .dist-grid.compact { grid-template-columns: 1fr; }
+  .profile-grid.flat .profile-col { border-right: none; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .live-grid { grid-template-columns: 1fr; }
+  .dist-mini { grid-template-columns: 1fr; }
+  .policy-inline { flex-direction: column; }
+  .policy-divider { width: 100%; height: 1px; min-height: 0; }
+  .dense-table thead { display: none; }
+  .dense-table tbody tr.model-row td:nth-child(n+4):not(:last-child) { display: none; }
+}
+
+@media (max-width: 480px) {
+  .toolbar-filters { width: 100%; }
+  .inline-fields { gap: 4px; }
 }
 </style>
