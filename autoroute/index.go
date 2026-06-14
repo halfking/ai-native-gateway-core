@@ -278,17 +278,22 @@ ORDER BY cmi.canonical_id, cmi.score_smart DESC
 `
 
 // scanIndexRow decodes one row from the refresh query into a Candidate.
-// Uses string-typed SQL scanning then parses JSONB tags and computes
+// Uses string-typed SQL scanning then parses tags and computes
 // pressure_ratio from active_sessions / concurrency_limit.
+//
+// Tags handling: models_canonical.tags is a TEXT[] (PostgreSQL array,
+// OID 1009). pgx returns it as []string when the destination is []string
+// (or pgtype array). We use a []string destination and skip the
+// JSONB parser — TEXT[] is not JSONB.
 func scanIndexRow(rows interface {
 	Scan(dest ...any) error
 }) (Candidate, error) {
 	var c Candidate
-	var tagsJSON *string
+	var tags []string
 	var ctxWindow *int
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &c.CanonicalID,
-		&c.CanonicalName, &tagsJSON, &ctxWindow,
+		&c.CanonicalName, &tags, &ctxWindow,
 		&c.BillingMode,
 		&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M,
 		&c.SuccessRate, &c.P95LatencyMs,
@@ -299,9 +304,7 @@ func scanIndexRow(rows interface {
 	if ctxWindow != nil {
 		c.ContextWindow = *ctxWindow
 	}
-	if tagsJSON != nil && *tagsJSON != "" {
-		c.Tags = parseTagsJSONB(*tagsJSON)
-	}
+	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)
 	if c.ConcurrencyLimit > 0 {
 		c.PressureRatio = float64(c.ActiveSessions) / float64(c.ConcurrencyLimit)
