@@ -53,18 +53,19 @@ function val(k: string): number {
   gap: 4px;
 }
 .six-dim.compact {
-  gap: 2px;
+  gap: 1px;
 }
 .dim-row {
   display: grid;
-  grid-template-columns: 56px 1fr 28px;
+  grid-template-columns: 52px 1fr 24px;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-size: 11px;
 }
 .compact .dim-row {
-  font-size: 10px;
-  grid-template-columns: 48px 1fr 22px;
+  font-size: 9px;
+  grid-template-columns: 40px 1fr 20px;
+  gap: 3px;
 }
 .dim-label {
   color: var(--muted);
@@ -78,7 +79,7 @@ function val(k: string): number {
   overflow: hidden;
 }
 .compact .dim-bar-bg {
-  height: 7px;
+  height: 5px;
 }
 .dim-bar-fill {
   height: 100%;
