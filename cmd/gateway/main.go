@@ -368,7 +368,9 @@ func main() {
 				classifier,
 				nil,
 				autoIdx,
-				autoroute.NewMemoryProfileStore(),
+				// v2.0.3 audit fix #14: switch from in-memory
+				// (process-local) sticky to DB-backed (cluster-wide).
+				autoroute.NewDBProfileStore(dbConn.Pool()),
 			)
 			chatHandler.SetAutoRoute(decider)
 
