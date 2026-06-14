@@ -662,12 +662,36 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		dateFormat = "YYYY-MM"
 	}
 
+	// generate_series fills buckets with zero rows so the trend chart
+	// never skips empty days/weeks/months (avoids misleading line segments).
 	rows, err := h.db.Query(ctx, `
-		SELECT TO_CHAR(DATE_TRUNC($1, ts), $3) AS period,
-		       COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
-		       COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0)::float8
-		FROM usage_ledger WHERE api_key_id = $2 AND ts >= $4 AND ts < $5
-		GROUP BY DATE_TRUNC($1, ts) ORDER BY DATE_TRUNC($1, ts)
+		WITH buckets AS (
+			SELECT generate_series(
+				DATE_TRUNC($1, $4::timestamptz),
+				DATE_TRUNC($1, $5::timestamptz - INTERVAL '1 microsecond'),
+				('1 ' || $1)::interval
+			) AS bucket
+		),
+		agg AS (
+			SELECT DATE_TRUNC($1, ts) AS bucket,
+			       COUNT(*)::int AS requests,
+			       COALESCE(SUM(prompt_tokens), 0)::int AS prompt_tokens,
+			       COALESCE(SUM(completion_tokens), 0)::int AS completion_tokens,
+			       COALESCE(SUM(total_tokens), 0)::int AS total_tokens,
+			       COALESCE(SUM(cost_usd), 0)::float8 AS cost_usd
+			FROM usage_ledger
+			WHERE api_key_id = $2 AND ts >= $4 AND ts < $5
+			GROUP BY 1
+		)
+		SELECT TO_CHAR(b.bucket, $3) AS period,
+		       COALESCE(a.requests, 0),
+		       COALESCE(a.prompt_tokens, 0),
+		       COALESCE(a.completion_tokens, 0),
+		       COALESCE(a.total_tokens, 0),
+		       COALESCE(a.cost_usd, 0)::float8
+		FROM buckets b
+		LEFT JOIN agg a ON a.bucket = b.bucket
+		ORDER BY b.bucket
 	`, period, keyID, dateFormat, startTime, endTime)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
