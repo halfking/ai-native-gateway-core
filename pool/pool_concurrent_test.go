@@ -11,7 +11,7 @@ import (
 
 func TestPoolAcquireRelease_Concurrent(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	const goroutines = 50
 	const maxActive = 10
@@ -60,7 +60,7 @@ func TestPoolAcquireRelease_Concurrent(t *testing.T) {
 
 func TestPoolAcquireClosed(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	p.Close()
 
@@ -72,7 +72,7 @@ func TestPoolAcquireClosed(t *testing.T) {
 
 func TestPoolAcquireDeadPool(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	p.state.Store(int32(PoolDead))
 
@@ -84,7 +84,7 @@ func TestPoolAcquireDeadPool(t *testing.T) {
 
 func TestPoolRecordFailureDegradation(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	for i := 0; i < degradedThreshold; i++ {
 		p.RecordFailure()
@@ -97,7 +97,7 @@ func TestPoolRecordFailureDegradation(t *testing.T) {
 
 func TestPoolRecordFailureDraining(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	for i := 0; i < deadThreshold; i++ {
 		p.RecordFailure()
@@ -110,7 +110,7 @@ func TestPoolRecordFailureDraining(t *testing.T) {
 
 func TestPoolRecordSuccessRecovery(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	for i := 0; i < degradedThreshold; i++ {
 		p.RecordFailure()
@@ -127,7 +127,7 @@ func TestPoolRecordSuccessRecovery(t *testing.T) {
 
 func TestPoolDrainingGracePeriod(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 	p.gracePeriod = 100 * time.Millisecond
 
 	for i := 0; i < deadThreshold; i++ {
@@ -274,7 +274,7 @@ func TestPoolCloseAll(t *testing.T) {
 
 func TestPoolLastUsed(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 
 	if !p.LastUsed().IsZero() {
 		t.Error("expected zero last used")
@@ -308,7 +308,7 @@ func TestPoolStateString(t *testing.T) {
 
 func BenchmarkPoolAcquireRelease(b *testing.B) {
 	key := PoolKey{IdentityHash: "bench", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 	p.activeConns = make(chan struct{}, 1000)
 
 	b.ResetTimer()
@@ -343,7 +343,7 @@ func BenchmarkPoolManagerGetOrCreate(b *testing.B) {
 
 func TestPoolAcquireReleaseRespectsCapacity_Concurrent(t *testing.T) {
 	key := PoolKey{IdentityHash: "test", ProviderID: 1, CredentialID: 1}
-	p := NewPool(key, "")
+	p := NewPool(key, "", nil)
 	const maxActive = 5
 	p.activeConns = make(chan struct{}, maxActive)
 
