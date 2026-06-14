@@ -344,14 +344,18 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return nil, 0, nil
 	}
 
-	if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
+	if cred.DiscoveryStrategy == "manifest_only" {
 		return s.discoverFromManifest(ctx, cred)
 	}
 
 	modelsURL := modelsEndpointURL(cred.BaseURL, cred.ModelsEndpointTemplate)
 	explicitTemplate := cred.ModelsEndpointTemplate != nil && strings.TrimSpace(*cred.ModelsEndpointTemplate) != ""
 	if modelsURL == "" {
-		if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
+		if cred.DiscoveryStrategy == "manifest_only" {
+			return s.discoverFromManifest(ctx, cred)
+		}
+		// Empty template: manifest-only supplier (azure-openai, github-copilot).
+		if explicitTemplate {
 			return s.discoverFromManifest(ctx, cred)
 		}
 		// Fall through: try ModelsURLCandidates below.
