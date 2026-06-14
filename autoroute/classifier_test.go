@@ -227,3 +227,32 @@ func TestItoa(t *testing.T) {
 		}
 	}
 }
+func TestNormaliseForKeyword_LargeTruncation(t *testing.T) {
+	// 1 MB system prompt + small last user — should truncate but keep last user
+	largeSystem := strings.Repeat("x", 1024*1024)
+	smallUser := "Write a Python function"
+	got := normaliseForKeyword(smallUser, largeSystem)
+	if len(got) > 64*1024 {
+		t.Fatalf("expected truncation to ≤64KB, got %d bytes", len(got))
+	}
+	if !strings.Contains(got, "write a python function") {
+		t.Fatalf("last user prompt should be preserved after truncation, got: %s", got)
+	}
+}
+
+func TestHeuristicClassifier_CodeFoundInLargePrompt(t *testing.T) {
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	largeSystem := strings.Repeat("this is the system prompt. ", 50_000)
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		SystemPrompt:    largeSystem,
+		LastUserPrompt:  "Write a Python function",
+		EstimatedTokens: 20_000,  // below long_context threshold so code path runs
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	// Should still classify as code because last user has "function"
+	if res.Primary != TaskCode {
+		t.Fatalf("expected TaskCode, got %s", res.Primary)
+	}
+}

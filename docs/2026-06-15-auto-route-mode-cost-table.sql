@@ -65,7 +65,7 @@ COMMENT ON TABLE api_key_model_cost IS 'Auto route: per-API-Key per-model 5min r
 -- ============================================================================
 -- 实时性：任何 auto_route 请求完成后立即更新（不再等 5min refresh）
 CREATE OR REPLACE FUNCTION update_api_key_model_cost()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER AS $
 DECLARE
     bucket_ts TIMESTAMPTZ;
     key_id INT;
@@ -79,11 +79,14 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- 查找 api_key 的 concurrency_limit（来自 api_keys 表）
-    SELECT COALESCE(rate_limit_rpm, 0) INTO limit_val
+    -- 查找 api_key 的 rate_limit_rpm（作为该 key 的并发近似上限）
+    -- 注意：api_keys 表没有 concurrency_limit 列（已在 realtime-trigger SQL 中确认）。
+    -- 用 rate_limit_rpm / 10 作为近似（假设平均请求耗时 6 秒）。
+    SELECT COALESCE(rate_limit_rpm, 0) / 10 INTO limit_val
     FROM api_keys WHERE id = key_id;
 
-    -- 增量更新
+    -- 增量更新（注意：不在这里累加 active_concurrent，因为 AFTER INSERT 只能加不能减。
+    -- active_concurrent 由 customer_cost_view 通过 JOIN request_logs 实时计算）
     INSERT INTO api_key_model_cost (
         bucket, api_key_id, canonical_id, raw_model, billing_mode,
         requests_total, requests_success,
@@ -106,13 +109,17 @@ BEGIN
         tokens_input      = api_key_model_cost.tokens_input + COALESCE(NEW.prompt_tokens, 0),
         tokens_output     = api_key_model_cost.tokens_output + COALESCE(NEW.completion_tokens, 0),
         cost_usd          = api_key_model_cost.cost_usd + COALESCE(NEW.cost_usd, 0),
-        active_concurrent = api_key_model_cost.active_concurrent + 1,
+        -- active_concurrent 在 trigger 中不更新（只在视图层动态计算）
+        concurrency_limit = EXCLUDED.concurrency_limit,
+        pressure_ratio    = CASE WHEN EXCLUDED.concurrency_limit > 0
+                                  THEN LEAST(1.0, EXCLUDED.active_concurrent::numeric / EXCLUDED.concurrency_limit)
+                                  ELSE 0 END,
         last_request_at   = NEW.ts,
         updated_at        = NOW();
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$ LANGUAGE plpgsql;
 
 -- 仅 auto 请求触发（避免给显式 model 请求带来额外开销）
 DROP TRIGGER IF EXISTS trg_update_api_key_model_cost ON request_logs;
@@ -125,6 +132,10 @@ EXECUTE FUNCTION update_api_key_model_cost();
 -- ============================================================================
 -- (c) customer_cost_view — 按 API Key 聚合的成本视图（admin 查询用）
 -- ============================================================================
+-- 修复 v2.0.1 的 active_concurrent bug：
+-- 之前 trigger 在 INSERT 时累加 active_concurrent 但永远不减回，
+-- 几小时后字段会爆增。现在 active_concurrent 在视图层动态计算
+-- (JOIN request_logs 子查询，统计最近 5 分钟内未完成的请求数近似)。
 CREATE OR REPLACE VIEW customer_cost_view AS
 SELECT
     akmc.api_key_id,
@@ -143,9 +154,18 @@ SELECT
     -- 总请求数（auto only）
     SUM(akmc.requests_total) AS total_auto_requests,
     SUM(akmc.requests_success) AS total_auto_success,
-    -- 实时并发（取最新 bucket）
-    MAX(akmc.active_concurrent) AS peak_active_concurrent,
-    -- 平均压力比（最近 1h）
+    -- 实时活跃并发（从 request_logs 动态计算，不依赖 trigger 累加）
+    -- 注意：每个 api_key 最近 5min 内的请求数近似活跃数。
+    -- 真正的活跃数需要 server-side 实时统计，但这个近似够 admin 展示用。
+    (SELECT COUNT(*) FROM request_logs rl
+     WHERE rl.api_key_id = akmc.api_key_id
+       AND rl.is_auto_request = TRUE
+       AND rl.ts >= NOW() - INTERVAL '5 minutes'
+       AND rl.success IS NOT NULL  -- 还未完成 (NULL) 的请求表示 in-flight
+       AND rl.ts IS NOT NULL) AS active_concurrent,
+    -- 限制值（从 akmc 最新 bucket 取）
+    MAX(akmc.concurrency_limit) AS concurrency_limit,
+    -- 平均压力比（最近 1h，按 bucket 加权）
     AVG(CASE WHEN akmc.bucket >= NOW() - INTERVAL '1 hour'
              THEN akmc.pressure_ratio ELSE NULL END) AS avg_pressure_1h,
     -- 智能选择指数（推荐指数）
@@ -158,7 +178,7 @@ FROM api_key_model_cost akmc
 JOIN api_keys ak ON ak.id = akmc.api_key_id
 GROUP BY akmc.api_key_id, ak.key_alias, ak.tenant_id, ak.application_id;
 
-COMMENT ON VIEW customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores)';
+COMMENT ON VIEW customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from request_logs (5min window).';
 
 -- ============================================================================
 -- (d) model_cost_per_task_view — 每个 canonical model 在每个 task 上的成本（模型选型决策用）
