@@ -21,6 +21,11 @@ import FreePoolView           from './views/FreePoolView.vue'
 import TenantsView            from './views/TenantsView.vue'
 import TenantDetailView       from './views/TenantDetailView.vue'
 import RoutingDashboardView   from './views/RoutingDashboardView.vue'
+import WorkTypesView          from './views/WorkTypesView.vue'
+
+function isAuthed(): boolean {
+  return !!(store.jwtToken || store.apiKey)
+}
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -36,6 +41,9 @@ export const router = createRouter({
     { path: '/models',             component: ModelsView },
     { path: '/examples',           component: ExamplesView },
     { path: '/routing-v2',         component: RoutingDashboardView },
+    { path: '/routing-v2/work-types',         component: WorkTypesView },
+    { path: '/routing-v2/work-types/settings', component: WorkTypesView },
+    { path: '/routing-v2/work-types/:key',     component: WorkTypesView },
     { path: '/routing',            component: RoutingTestView },
     { path: '/routing-overview',   component: RoutingOverviewView },
     { path: '/routing-policy',     component: RoutingPolicyView },
@@ -50,10 +58,10 @@ export const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  if (!to.meta.public && !store.apiKey) {
+  if (!to.meta.public && !isAuthed()) {
     return { path: '/login' }
   }
-  if (to.path === '/login' && store.apiKey) {
+  if (to.path === '/login' && isAuthed()) {
     return { path: '/' }
   }
 })

@@ -235,6 +235,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			autoH.SetIndexRefresher(h.autoIndexRefresher)
 		}
 		autoH.RegisterAutoRouteRoutes(mux, admin)
+
+		// Phase 1 work type config CRUD.
+		wtH := NewWorkTypeHandlers(h.db)
+		wtH.RegisterWorkTypeRoutes(mux, admin)
 	}
 }
 
