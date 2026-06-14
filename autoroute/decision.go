@@ -53,6 +53,15 @@ type Decision struct {
 	DecidedAt time.Time
 }
 
+// IndexAccessor is the minimal interface Decider needs from autoroute.Index.
+// Defined as an interface so tests can inject stubs without standing up
+// the full PG pool + 5-min refresh machinery.
+type IndexAccessor interface {
+	Recommend(task TaskType, sigs ClassificationSignals, profile Profile, topN int) []ScoredCandidate
+	Snapshot() []Candidate
+	LastRefresh() time.Time
+}
+
 // Decider orchestrates the auto-route pipeline:
 //
 //   1. Resolve profile (header > sticky > default)
@@ -65,7 +74,7 @@ type Decision struct {
 type Decider struct {
 	classifier Classifier   // heuristic
 	fallback   Classifier   // optional LLM
-	index      *Index       // candidate pool
+	index      IndexAccessor // candidate pool
 	profileStore ProfileStore // per-API-Key sticky profile
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
@@ -93,7 +102,7 @@ type Decider struct {
 //   - LLMConfidenceThreshold    : 0.7
 //   - StickyTTL                 : 30 minutes
 //   - TopN                      : 3
-func NewDecider(classifier Classifier, fallback Classifier, index *Index, profileStore ProfileStore) *Decider {
+func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor, profileStore ProfileStore) *Decider {
 	return &Decider{
 		classifier:             classifier,
 		fallback:               fallback,
