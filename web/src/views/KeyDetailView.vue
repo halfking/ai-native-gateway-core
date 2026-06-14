@@ -102,8 +102,13 @@ const selectedPeriod = ref(periodOptions[0])
 
 // Trend chart controls
 type TrendMetric = 'requests' | 'cost'
-const trendMetric = ref<TrendMetric>('cost')
+const trendMetric = ref<TrendMetric>('requests')
 const trendPeriod = ref<PeriodType>('day')
+const hoveredTrendIndex = ref<number | null>(null)
+
+const CHART_W = 640
+const CHART_H = 132
+const CHART_PAD = { l: 46, r: 10, t: 8, b: 22 }
 const trendPeriodOptions: { label: string; value: PeriodType }[] = [
   { label: '按天', value: 'day' },
   { label: '按周', value: 'week' },
@@ -129,6 +134,102 @@ const totalTrendValue = computed(() => {
   if (keyTrend.value.length === 0) return 0
   return keyTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
 })
+
+function buildYAxis(maxVal: number, divisions = 4): { max: number; ticks: number[] } {
+  if (maxVal <= 0) {
+    return { max: 1, ticks: [0, 0.25, 0.5, 0.75, 1] }
+  }
+  const padded = maxVal * 1.08
+  const rawStep = padded / divisions
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)))
+  const norm = rawStep / mag
+  let niceStep: number
+  if (norm <= 1) niceStep = mag
+  else if (norm <= 2) niceStep = 2 * mag
+  else if (norm <= 5) niceStep = 5 * mag
+  else niceStep = 10 * mag
+  const niceMax = Math.ceil(padded / niceStep) * niceStep
+  const ticks: number[] = []
+  for (let v = 0; v <= niceMax + niceStep * 0.001; v += niceStep) {
+    ticks.push(Number(v.toFixed(10)))
+    if (ticks.length > divisions + 1) break
+  }
+  return { max: niceMax, ticks }
+}
+
+const yAxis = computed(() => buildYAxis(maxTrendValue.value))
+
+const plotSize = computed(() => ({
+  w: CHART_W - CHART_PAD.l - CHART_PAD.r,
+  h: CHART_H - CHART_PAD.t - CHART_PAD.b,
+}))
+
+function formatYTick(v: number): string {
+  if (trendMetric.value === 'cost') {
+    if (v === 0) return '$0'
+    if (v < 0.01) return '$' + v.toFixed(4)
+    if (v < 1) return '$' + v.toFixed(3)
+    return '$' + v.toFixed(2)
+  }
+  if (v >= 10000) return (v / 1000).toFixed(0) + 'k'
+  if (v >= 1000) return (v / 1000).toFixed(1) + 'k'
+  return String(Math.round(v))
+}
+
+const yGridLines = computed(() => {
+  const { max, ticks } = yAxis.value
+  const { h } = plotSize.value
+  return ticks.map(v => ({
+    y: CHART_PAD.t + h - (max > 0 ? (v / max) * h : 0),
+    label: formatYTick(v),
+  }))
+})
+
+const chartPoints = computed(() => {
+  const data = keyTrend.value
+  const { max } = yAxis.value
+  const { w, h } = plotSize.value
+  const n = data.length
+  return data.map((t, i) => {
+    const value = trendValue(t)
+    const x = CHART_PAD.l + (n <= 1 ? w / 2 : (i / (n - 1)) * w)
+    const y = CHART_PAD.t + h - (max > 0 ? (value / max) * h : h)
+    return {
+      x,
+      y,
+      value,
+      entry: t,
+      label: fmtTrendPeriod(t.period, trendPeriod.value),
+    }
+  })
+})
+
+const linePathD = computed(() => {
+  const pts = chartPoints.value
+  if (pts.length === 0) return ''
+  return pts
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`)
+    .join(' ')
+})
+
+const areaPathD = computed(() => {
+  const pts = chartPoints.value
+  if (pts.length === 0) return ''
+  const baseY = CHART_PAD.t + plotSize.value.h
+  const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')
+  const last = pts[pts.length - 1]
+  const first = pts[0]
+  return `${line} L ${last.x.toFixed(1)} ${baseY.toFixed(1)} L ${first.x.toFixed(1)} ${baseY.toFixed(1)} Z`
+})
+
+const hoveredPoint = computed(() => {
+  if (hoveredTrendIndex.value == null) return null
+  return chartPoints.value[hoveredTrendIndex.value] ?? null
+})
+
+const trendLineColor = computed(() =>
+  trendMetric.value === 'cost' ? 'var(--success)' : 'var(--accent)'
+)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function fmtDate(s: string | null | undefined) {
@@ -170,21 +271,18 @@ function fmtCost(n: number | string | null | undefined): string {
   return '$' + Number(n).toFixed(6)
 }
 
-function trendBarWidth(value: number): string {
-  if (maxTrendValue.value === 0) return '0%'
-  return Math.max(2, (value / maxTrendValue.value) * 100).toFixed(1) + '%'
-}
-
 function fmtTrendValue(value: number): string {
   if (trendMetric.value === 'cost') return fmtCost(value)
   return fmtNum(value)
 }
 
-function trendTooltip(t: TrendEntry): string {
-  const metric = trendMetric.value === 'cost'
-    ? fmtCost(t.cost_usd)
-    : `${fmtNum(t.requests)} 次`
-  return `${t.period}: ${metric}`
+function trendTooltipStyle(p: { x: number; y: number }): Record<string, string> {
+  const leftPct = Math.min(92, Math.max(8, (p.x / CHART_W) * 100))
+  const topPct = Math.max(6, (p.y / CHART_H) * 100 - 14)
+  return {
+    left: `${leftPct}%`,
+    top: `${topPct}%`,
+  }
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -424,63 +522,112 @@ watch(keyId, async () => {
           </div>
 
           <!-- Trend chart -->
-          <div class="section">
-            <div class="section-title">费用趋势</div>
-            <div class="trend-toolbar">
-              <div class="trend-tabs" role="tablist" aria-label="趋势指标">
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="trendMetric === 'requests' ? 'btn-primary' : 'btn-ghost'"
-                  role="tab"
-                  :aria-selected="trendMetric === 'requests'"
-                  @click="trendMetric = 'requests'"
-                >次数</button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="trendMetric === 'cost' ? 'btn-primary' : 'btn-ghost'"
-                  role="tab"
-                  :aria-selected="trendMetric === 'cost'"
-                  @click="trendMetric = 'cost'"
-                >费用</button>
-              </div>
-              <div class="trend-periods">
-                <button
-                  v-for="opt in trendPeriodOptions"
-                  :key="opt.value"
-                  type="button"
-                  class="btn btn-sm"
-                  :class="trendPeriod === opt.value && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
-                  @click="useCustomRange = false; trendPeriod = opt.value; changePeriod()"
-                >{{ opt.label }}</button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="useCustomRange ? 'btn-primary' : 'btn-ghost'"
-                  @click="useCustomRange = true; changePeriod()"
-                >自定义</button>
-                <template v-if="useCustomRange">
-                  <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
-                  <span class="range-sep">至</span>
-                  <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
-                </template>
+          <div class="section trend-section">
+            <div class="trend-header">
+              <div class="section-title">使用趋势</div>
+              <div class="trend-controls">
+                <div class="trend-tabs" role="tablist" aria-label="趋势指标">
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :class="trendMetric === 'requests' ? 'btn-primary' : 'btn-ghost'"
+                    role="tab"
+                    :aria-selected="trendMetric === 'requests'"
+                    @click="trendMetric = 'requests'"
+                  >次数</button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :class="trendMetric === 'cost' ? 'btn-primary' : 'btn-ghost'"
+                    role="tab"
+                    :aria-selected="trendMetric === 'cost'"
+                    @click="trendMetric = 'cost'"
+                  >费用</button>
+                </div>
+                <span class="trend-divider" aria-hidden="true"></span>
+                <div class="trend-periods">
+                  <button
+                    v-for="opt in trendPeriodOptions"
+                    :key="opt.value"
+                    type="button"
+                    class="btn btn-sm"
+                    :class="trendPeriod === opt.value && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                    @click="useCustomRange = false; trendPeriod = opt.value; changePeriod()"
+                  >{{ opt.label }}</button>
+                  <button
+                    type="button"
+                    class="btn btn-sm"
+                    :class="useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                    @click="useCustomRange = true; changePeriod()"
+                  >自定义</button>
+                  <template v-if="useCustomRange">
+                    <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
+                    <span class="range-sep">至</span>
+                    <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
+                  </template>
+                </div>
               </div>
             </div>
             <div class="trend-chart" v-if="keyTrend.length > 0">
-              <div class="trend-bars">
-                <div
-                  v-for="t in keyTrend"
-                  :key="t.period"
-                  class="trend-bar-container"
-                  :title="trendTooltip(t)"
+              <div class="trend-chart-wrap">
+                <svg
+                  class="trend-svg"
+                  :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
+                  preserveAspectRatio="xMidYMid meet"
+                  role="img"
+                  :aria-label="trendMetric === 'cost' ? '费用折线图' : '请求次数折线图'"
                 >
-                  <div
-                    class="trend-bar"
-                    :class="trendMetric === 'cost' ? 'trend-bar--cost' : 'trend-bar--requests'"
-                    :style="{ height: trendBarWidth(trendValue(t)) }"
-                  ></div>
-                  <div class="trend-label">{{ fmtTrendPeriod(t.period, trendPeriod) }}</div>
+                  <line
+                    v-for="(grid, gi) in yGridLines"
+                    :key="'grid-' + gi"
+                    :x1="CHART_PAD.l"
+                    :y1="grid.y"
+                    :x2="CHART_W - CHART_PAD.r"
+                    :y2="grid.y"
+                    class="trend-grid-line"
+                  />
+                  <path :d="areaPathD" class="trend-area" :style="{ fill: trendLineColor }" />
+                  <path
+                    :d="linePathD"
+                    class="trend-line"
+                    fill="none"
+                    :stroke="trendLineColor"
+                  />
+                  <circle
+                    v-for="(p, i) in chartPoints"
+                    :key="'pt-' + p.entry.period"
+                    :cx="p.x"
+                    :cy="p.y"
+                    r="3.5"
+                    class="trend-dot"
+                    :class="{ 'trend-dot--active': hoveredTrendIndex === i }"
+                    :fill="trendLineColor"
+                    @mouseenter="hoveredTrendIndex = i"
+                    @mouseleave="hoveredTrendIndex = null"
+                  />
+                  <text
+                    v-for="(grid, gi) in yGridLines"
+                    :key="'ylabel-' + gi"
+                    :x="CHART_PAD.l - 6"
+                    :y="grid.y + 3.5"
+                    class="trend-y-label"
+                    text-anchor="end"
+                  >{{ grid.label }}</text>
+                  <text
+                    v-for="(p, i) in chartPoints"
+                    :key="'xlabel-' + p.entry.period"
+                    :x="p.x"
+                    :y="CHART_H - 4"
+                    class="trend-x-label"
+                    text-anchor="middle"
+                    :opacity="chartPoints.length > 14 && i % Math.ceil(chartPoints.length / 7) !== 0 ? 0 : 1"
+                  >{{ p.label }}</text>
+                </svg>
+                <div v-if="hoveredPoint" class="trend-tooltip" :style="trendTooltipStyle(hoveredPoint)">
+                  <div class="trend-tooltip-period">{{ hoveredPoint.entry.period }}</div>
+                  <div class="trend-tooltip-value">
+                    {{ trendMetric === 'cost' ? fmtCost(hoveredPoint.entry.cost_usd) : fmtNum(hoveredPoint.entry.requests) + ' 次' }}
+                  </div>
                 </div>
               </div>
               <div class="trend-summary">
@@ -658,104 +805,159 @@ watch(keyId, async () => {
 }
 
 .section {
-  margin-top: 24px;
+  margin-top: 20px;
 }
 
 .section-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  margin-bottom: 0;
 }
 
-.trend-toolbar {
+.trend-section {
+  margin-top: 16px;
+}
+
+.trend-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: nowrap;
+}
+
+.trend-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.trend-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 
 .trend-tabs,
 .trend-periods {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  gap: 4px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .range-sep {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
+  flex-shrink: 0;
+}
+
+.date-input {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  width: auto;
+  flex-shrink: 0;
 }
 
 .trend-chart {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px;
+  padding: 10px 12px 8px;
 }
 
-.trend-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 100px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-}
-
-.trend-bar-container {
-  flex: 1;
-  min-width: 24px;
-  max-width: 60px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  height: 100%;
-  justify-content: flex-end;
-}
-
-.trend-bar {
+.trend-chart-wrap {
+  position: relative;
   width: 100%;
-  border-radius: 3px 3px 0 0;
-  min-height: 3px;
-  transition: height 0.3s ease;
+  height: 132px;
 }
 
-.trend-bar--cost {
-  background: var(--success);
+.trend-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-.trend-bar--requests {
-  background: var(--primary);
+.trend-grid-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
 }
 
-.trend-bar-container:hover .trend-bar--cost {
-  filter: brightness(1.08);
+.trend-area {
+  opacity: 0.12;
 }
 
-.trend-bar-container:hover .trend-bar--requests {
-  background: var(--primary-hover);
+.trend-line {
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
-.trend-label {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 6px;
-  text-align: center;
+.trend-dot {
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, r 0.15s;
+}
+
+.trend-chart-wrap:hover .trend-dot,
+.trend-dot--active {
+  opacity: 1;
+}
+
+.trend-dot--active {
+  r: 5;
+}
+
+.trend-y-label {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: inherit;
+}
+
+.trend-x-label {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: inherit;
+}
+
+.trend-tooltip {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.35;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  z-index: 2;
+}
+
+.trend-tooltip-period {
+  color: var(--muted);
+}
+
+.trend-tooltip-value {
+  font-weight: 600;
 }
 
 .trend-summary {
-  margin-top: 12px;
-  font-size: 13px;
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--muted);
   text-align: center;
 }
