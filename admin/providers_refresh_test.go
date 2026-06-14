@@ -252,7 +252,12 @@ func TestStartRefreshProviderModels_NoDiscoveryService(t *testing.T) {
 
 // ── fetchVendorModels — HTTP layer against a stub upstream ────────────────
 
+func testOpenAICred() credentialRowLite {
+	return credentialRowLite{protocol: "openai-completions", catalogCode: "test"}
+}
+
 func TestFetchVendorModels_HappyPath(t *testing.T) {
+	h := &Handler{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Errorf("Authorization header = %q, want Bearer test-key", got)
@@ -262,7 +267,7 @@ func TestFetchVendorModels_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ids, err := fetchVendorModels(context.Background(), srv.URL+"/v1/models", "test-key")
+	ids, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "test-key")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -272,12 +277,13 @@ func TestFetchVendorModels_HappyPath(t *testing.T) {
 }
 
 func TestFetchVendorModels_AuthRejected(t *testing.T) {
+	h := &Handler{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"invalid api key"}}`, http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 
-	_, err := fetchVendorModels(context.Background(), srv.URL+"/v1/models", "bad-key")
+	_, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "bad-key")
 	if err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}
@@ -287,16 +293,46 @@ func TestFetchVendorModels_AuthRejected(t *testing.T) {
 }
 
 func TestFetchVendorModels_5xxBubblesUp(t *testing.T) {
+	h := &Handler{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusBadGateway)
 	}))
 	defer srv.Close()
 
-	_, err := fetchVendorModels(context.Background(), srv.URL+"/v1/models", "k")
+	_, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "k")
 	if err == nil {
 		t.Fatal("expected error on 502, got nil")
 	}
 	if !strings.Contains(err.Error(), "502") {
 		t.Fatalf("err = %v, want it to mention 502", err)
+	}
+}
+
+func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.T) {
+	h := &Handler{}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits == 1 {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"candidate-model"}]}`))
+	}))
+	defer srv.Close()
+
+	ids, err := h.fetchVendorModelsFromURLs(context.Background(), []string{
+		srv.URL + "/bad/models",
+		srv.URL + "/v1/models",
+	}, testOpenAICred(), "test-key")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "candidate-model" {
+		t.Fatalf("ids = %v, want [candidate-model]", ids)
+	}
+	if hits != 2 {
+		t.Fatalf("hits = %d, want 2 candidate attempts", hits)
 	}
 }

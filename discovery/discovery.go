@@ -349,14 +349,12 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 	}
 
 	modelsURL := modelsEndpointURL(cred.BaseURL, cred.ModelsEndpointTemplate)
+	explicitTemplate := cred.ModelsEndpointTemplate != nil && strings.TrimSpace(*cred.ModelsEndpointTemplate) != ""
 	if modelsURL == "" {
 		if cred.DiscoveryStrategy == "manifest" || cred.DiscoveryStrategy == "manifest_only" {
 			return s.discoverFromManifest(ctx, cred)
 		}
-		modelsURL = upstreamurl.ModelsURL(cred.BaseURL)
-		if modelsURL == "" {
-			return s.discoverFromManifest(ctx, cred)
-		}
+		// Fall through: try ModelsURLCandidates below.
 	}
 
 	apiKey, decErr := s.decryptCredential(cred.SecretCipher)
@@ -364,7 +362,15 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return nil, 0, fmt.Errorf("credential decrypt failed: %w", decErr)
 	}
 
-	models, err := s.fetchModels(ctx, modelsURL, apiKey)
+	var (
+		models []string
+		err    error
+	)
+	if explicitTemplate && modelsURL != "" {
+		models, err = s.fetchModels(ctx, modelsURL, apiKey)
+	} else {
+		models, err = s.fetchModelsFromURLs(ctx, upstreamurl.ModelsURLCandidates(cred.BaseURL), apiKey)
+	}
 	if err != nil {
 		slog.Debug("models API call failed, falling back to manifest",
 			"provider", cred.ProviderName,
@@ -466,6 +472,23 @@ func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string
 	}
 
 	return extractModelIDs(body)
+}
+
+func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey string) ([]string, error) {
+	var lastErr error
+	for _, u := range urls {
+		models, err := s.fetchModels(ctx, u, apiKey)
+		if err == nil && len(models) > 0 {
+			return models, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 // extractModelIDs parses various /v1/models response formats.

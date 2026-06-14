@@ -424,6 +424,12 @@ export function getProviderRefreshStatus(providerId: number) {
   )
 }
 
+export function clearProviderModels(providerId: number) {
+  return req<{ message: string; deleted: number }>(
+    'DELETE', `/api/providers/${providerId}/models`
+  )
+}
+
 export function toggleModelOfferState(providerId: number, offerId: number, body: { available: boolean }) {
   return req<{ message: string; available: boolean }>('PATCH', `/api/providers/${providerId}/models/${offerId}/state`, body)
 }
