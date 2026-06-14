@@ -150,7 +150,7 @@ func computeCostContext(cands []Candidate) CostContext {
 		ctx.PriceP75 = percentile(prices, 0.75)
 	}
 	if len(speeds) > 0 {
-		ctx.SpeedP95 = speeds[len(speeds)-1] // max
+		ctx.SpeedP95 = float64(speeds[len(speeds)-1]) // max
 	}
 	return ctx
 }
