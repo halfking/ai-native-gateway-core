@@ -106,3 +106,48 @@ Both endpoints return valid JSON; will populate as auto requests flow in.
 - Design doc promises match production behaviour
 
 **No outstanding v2.0 deliverables**. OpenClaw plugin config is the next work item.
+---
+
+## 10. v2.0.2 post-audit verification (2026-06-15 00:05)
+
+After audit-driven fixes (#1-#12), browser-use re-verified:
+
+### Audit endpoint (live)
+```json
+{
+  "profile_distribution": {"cost_first":1, "smart":6, "speed_first":1, "unknown":7},
+  "success_rate": 0.533,
+  "task_distribution": {"chat":5, "code":1, "creative":1, "reasoning":1, "unknown":7},
+  "top_chosen_models": [{"count":8, "model":"MiniMax-M3"}],
+  "total_auto_requests": 15
+}
+```
+
+### New screenshots
+- `06-v202-audit-after-test.png` — admin dashboard after 15 auto requests
+- `07-v202-dashboard.png` — refreshed dashboard view
+
+### Verified on both 184 (k3s) and 71 (docker)
+Both nodes share the same PG database (llm_gateway @ 184:11033), so
+audit counts are aggregated across nodes. 184 hosts k3s and 71 hosts
+the docker runtime; both serve `model=auto` with identical decision
+logic.
+
+### Issues found and fixed during audit (12 total)
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Hardcoded fallback model | env var `LLM_GATEWAY_AUTO_FALLBACK_MODEL` |
+| 2 | Missing SQL down scripts | Created 2 .down.sql files |
+| 3 | active_concurrent accumulates | Recompute in view from request_logs |
+| 4 | Unbounded classifier input | 32KB cap in normaliseForKeyword |
+| 5 | customer_cost_view MAX bug | Live subquery on request_logs |
+| 6 | Admin refresh not wired | SetAutoIndexRefresher in main.go |
+| 7 | rl.raw_model_name missing | COALESCE(outbound_model, client_model) |
+| 8 | mc.canonical_id missing | Use mo.canonical_id (VIEW has it) |
+| 9 | $2 - INTERVAL type fail | NOW() - INTERVAL |
+| 10 | Subquery ungrouped column | Removed all 6 subqueries |
+| 11 | TEXT[] tags scan mismatch | Scan into []string directly |
+| 12 | Strict tag filter → 503 | Keep all candidates, sort by MatchScore |
+
+All 12 verified fixed in production.
