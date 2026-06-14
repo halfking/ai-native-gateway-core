@@ -57,18 +57,44 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   model_not_found: '模型未找到',
   provider_error: '供应商错误',
   auth_error: '认证失败',
-  rate_limit: '限流',
+  rate_limit: '供应商限流',
+  rate_limit_exceeded: '网关RPM限流',
+  key_throttled: '密钥节流',
+  budget_exhausted: '预算耗尽',
   timeout: '超时',
   canceled: '已取消',
   upstream_error: '上游错误',
+  stream_error: '流中断',
+  no_candidate: '无可用路由',
+}
+
+const FAILURE_DETAIL_LABELS: Record<string, string> = {
+  gw_rpm_exceeded: '网关RPM限流',
+  gw_concurrent_exceeded: '网关并发限流',
+  gw_tpm_exceeded: '网关TPM限流',
+  gw_key_throttled: '密钥节流',
+  gw_budget_exhausted: '预算耗尽',
+  gw_no_candidate: '无可用路由',
+  gw_session_forbidden: '会话无权',
 }
 
 function statusLabel(row: RequestLogRow): string {
   if (row.request_status === 'in_progress') return '请求中'
   if (row.request_status === 'success' || row.success) return '成功'
+  const detail = row.failure_detail_code || ''
+  if (FAILURE_DETAIL_LABELS[detail]) return FAILURE_DETAIL_LABELS[detail]
   const kind = row.error_kind || ''
   if (ERROR_KIND_LABELS[kind]) return ERROR_KIND_LABELS[kind]
-  return kind || '失败'
+  if (detail.startsWith('gw_')) return `网关:${detail.slice(3)}`
+  return kind || detail || '失败'
+}
+
+function statusTitle(row: RequestLogRow): string {
+  const parts: string[] = []
+  if (row.failure_stage) parts.push(`stage=${row.failure_stage}`)
+  if (row.error_kind) parts.push(`error_kind=${row.error_kind}`)
+  if (row.failure_detail_code) parts.push(`detail=${row.failure_detail_code}`)
+  return parts.join(' · ') || ''
 }
 
 function statusColor(row: RequestLogRow): string {
@@ -253,7 +279,9 @@ onMounted(async () => {
           <option value="model_not_found">模型未找到</option>
           <option value="provider_error">供应商错误</option>
           <option value="timeout">超时</option>
-          <option value="rate_limit">限流</option>
+          <option value="rate_limit">供应商限流</option>
+          <option value="rate_limit_exceeded">网关RPM限流</option>
+          <option value="key_throttled">密钥节流</option>
         </select>
         <select
           v-model="usageSourceFilter"
@@ -376,7 +404,7 @@ onMounted(async () => {
             <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_write_tokens, r.usage_source) }}</td>
             <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
             <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td :style="{ color: statusColor(r) }" :title="r.error_kind || ''">{{ statusLabel(r) }}</td>
+            <td :style="{ color: statusColor(r) }" :title="statusTitle(r)">{{ statusLabel(r) }}</td>
           </tr>
         </tbody>
       </table>
@@ -419,7 +447,9 @@ onMounted(async () => {
               <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
               <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
               <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
-              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : (detail.error_kind ?? '失败') }}</span></span>
+              <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : statusLabel(detail) }}</span></span>
+              <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
+              <span v-if="detail.failure_detail_code"><strong>失败详情:</strong> {{ detail.failure_detail_code }}</span>
               <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
               <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
             </div>

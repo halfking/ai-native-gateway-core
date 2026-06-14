@@ -505,6 +505,27 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("usageKeyDetail scan failed", "key_id", keyID, "error", err)
 	}
 
+	var gatewayRejected, upstreamFailed, peakRequests5m int
+	_ = h.db.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'gateway'
+				OR COALESCE(failure_detail_code, '') LIKE 'gw_%'),
+			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream'
+				OR (NOT success AND COALESCE(failure_stage, '') = '' AND provider_id IS NOT NULL)),
+			COALESCE((
+				SELECT MAX(bucket_count) FROM (
+					SELECT COUNT(*) AS bucket_count
+					  FROM request_logs rl2
+					 WHERE rl2.api_key_id = $1
+					   AND rl2.ts >= $2 AND rl2.ts < $3
+					 GROUP BY date_trunc('hour', rl2.ts)
+					        + (FLOOR(EXTRACT(minute FROM rl2.ts) / 5) * INTERVAL '5 minutes')
+				) peaks
+			), 0)
+		FROM request_logs
+		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+	`, keyID, startTime, endTime).Scan(&gatewayRejected, &upstreamFailed, &peakRequests5m)
+
 	resp := map[string]any{
 		"key_id":               keyID,
 		"key_prefix":           keyPrefix,
@@ -516,6 +537,11 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		"avg_latency_ms":       avgLatency,
 		"success_rate":         successRate,
 		"unique_models":        uniqueModels,
+		"gateway_rejected":     gatewayRejected,
+		"upstream_failed":      upstreamFailed,
+		"peak_requests_5m":     peakRequests5m,
+		"window_start":         startTime.Format(time.RFC3339),
+		"window_end":           endTime.Format(time.RFC3339),
 		"first_request_at":     nil,
 		"last_request_at":      nil,
 	}
@@ -617,6 +643,12 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	var keyExists int
+	if err := h.db.QueryRow(ctx, `SELECT 1 FROM api_keys WHERE id = $1`, keyID).Scan(&keyExists); err != nil {
+		writeError(w, http.StatusNotFound, "API key not found")
+		return
+	}
+
 	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 30)
 	if rangeErr != nil {
 		writeError(w, http.StatusBadRequest, rangeErr.Error())
@@ -660,6 +692,73 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		trends = append(trends, t)
 	}
 	writeJSON(w, http.StatusOK, trends)
+}
+
+// usageKeyTraffic returns per-5-minute request counts from request_logs for
+// a single API key.  Used by /keys/:id to show peak traffic and gateway vs
+// upstream failure breakdown within the selected window.
+func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+
+	startTime, endTime, rangeErr := resolveUsageTimeRange(r, 7)
+	if rangeErr != nil {
+		writeError(w, http.StatusBadRequest, rangeErr.Error())
+		return
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT
+			date_trunc('hour', ts)
+				+ (FLOOR(EXTRACT(minute FROM ts) / 5) * INTERVAL '5 minutes') AS bucket,
+			COUNT(*) AS requests,
+			COUNT(*) FILTER (WHERE success) AS success_count,
+			COUNT(*) FILTER (WHERE NOT success) AS failure_count,
+			COUNT(*) FILTER (
+				WHERE COALESCE(failure_stage, '') = 'gateway'
+				   OR COALESCE(failure_detail_code, '') LIKE 'gw_%'
+			) AS gateway_rejected,
+			COUNT(*) FILTER (WHERE COALESCE(failure_stage, '') = 'upstream') AS upstream_failed
+		FROM request_logs
+		WHERE api_key_id = $1 AND ts >= $2 AND ts < $3
+		GROUP BY 1
+		ORDER BY 1
+	`, keyID, startTime, endTime)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "traffic query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type bucket struct {
+		Bucket           time.Time `json:"bucket"`
+		Requests         int       `json:"requests"`
+		SuccessCount     int       `json:"success_count"`
+		FailureCount     int       `json:"failure_count"`
+		GatewayRejected  int       `json:"gateway_rejected"`
+		UpstreamFailed   int       `json:"upstream_failed"`
+	}
+	buckets := make([]bucket, 0)
+	peak := 0
+	for rows.Next() {
+		var b bucket
+		if err := rows.Scan(&b.Bucket, &b.Requests, &b.SuccessCount, &b.FailureCount, &b.GatewayRejected, &b.UpstreamFailed); err != nil {
+			continue
+		}
+		if b.Requests > peak {
+			peak = b.Requests
+		}
+		buckets = append(buckets, b)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key_id":             keyID,
+		"bucket_minutes":     5,
+		"window_start":       startTime.Format(time.RFC3339),
+		"window_end":         endTime.Format(time.RFC3339),
+		"peak_requests_5m":   peak,
+		"buckets":            buckets,
+	})
 }
 
 func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {

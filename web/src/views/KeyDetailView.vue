@@ -91,30 +91,43 @@ async function saveLimits() {
   }
 }
 
-// Time range
+// Time range (summary cards)
 type PeriodType = 'day' | 'week' | 'month'
-const periodOptions: { label: string; value: PeriodType; days: number }[] = [
-  { label: '最近 7 天', value: 'day', days: 7 },
-  { label: '最近 30 天', value: 'day', days: 30 },
-  { label: '最近 90 天', value: 'month', days: 90 },
+const periodOptions: { label: string; days: number }[] = [
+  { label: '最近 7 天', days: 7 },
+  { label: '最近 30 天', days: 30 },
+  { label: '最近 90 天', days: 90 },
 ]
 const selectedPeriod = ref(periodOptions[0])
-const trendPeriod = ref<PeriodType>('day')
 
-// Custom date range
+// Trend chart controls
+type TrendMetric = 'requests' | 'cost'
+const trendMetric = ref<TrendMetric>('cost')
+const trendPeriod = ref<PeriodType>('day')
+const trendPeriodOptions: { label: string; value: PeriodType }[] = [
+  { label: '按天', value: 'day' },
+  { label: '按周', value: 'week' },
+  { label: '按月', value: 'month' },
+]
+
+// Custom date range (shared by summary + trend)
 const useCustomRange = ref(false)
 const customStart = ref('')
 const customEnd = ref('')
 
+function trendValue(t: TrendEntry): number {
+  return trendMetric.value === 'cost' ? t.cost_usd : t.requests
+}
+
 // ── Computed ───────────────────────────────────────────────────────────────
-const maxCost = computed(() => {
+const maxTrendValue = computed(() => {
   if (keyTrend.value.length === 0) return 0
-  return Math.max(...keyTrend.value.map(t => t.cost_usd))
+  return Math.max(...keyTrend.value.map(t => trendValue(t)))
 })
 
-const totalCost = computed(() => {
+const totalTrendValue = computed(() => {
   if (keyTrend.value.length === 0) return 0
-  return keyTrend.value.reduce((sum, t) => sum + t.cost_usd, 0)
+  return keyTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
 })
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -157,9 +170,21 @@ function fmtCost(n: number | string | null | undefined): string {
   return '$' + Number(n).toFixed(6)
 }
 
-function trendBarWidth(cost: number): string {
-  if (maxCost.value === 0) return '0%'
-  return Math.max(2, (cost / maxCost.value) * 100).toFixed(1) + '%'
+function trendBarWidth(value: number): string {
+  if (maxTrendValue.value === 0) return '0%'
+  return Math.max(2, (value / maxTrendValue.value) * 100).toFixed(1) + '%'
+}
+
+function fmtTrendValue(value: number): string {
+  if (trendMetric.value === 'cost') return fmtCost(value)
+  return fmtNum(value)
+}
+
+function trendTooltip(t: TrendEntry): string {
+  const metric = trendMetric.value === 'cost'
+    ? fmtCost(t.cost_usd)
+    : `${fmtNum(t.requests)} 次`
+  return `${t.period}: ${metric}`
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────
@@ -349,15 +374,6 @@ watch(keyId, async () => {
             >
               {{ opt.label }}
             </button>
-            <label class="custom-range-toggle">
-              <input type="checkbox" v-model="useCustomRange" @change="changePeriod">
-              自定义
-            </label>
-            <template v-if="useCustomRange">
-              <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
-              <span>至</span>
-              <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
-            </template>
           </div>
         </div>
 
@@ -409,13 +425,47 @@ watch(keyId, async () => {
 
           <!-- Trend chart -->
           <div class="section">
-            <div class="section-title">
-              费用趋势
-              <select v-model="trendPeriod" @change="changePeriod" class="period-select">
-                <option value="day">按天</option>
-                <option value="week">按周</option>
-                <option value="month">按月</option>
-              </select>
+            <div class="section-title">费用趋势</div>
+            <div class="trend-toolbar">
+              <div class="trend-tabs" role="tablist" aria-label="趋势指标">
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="trendMetric === 'requests' ? 'btn-primary' : 'btn-ghost'"
+                  role="tab"
+                  :aria-selected="trendMetric === 'requests'"
+                  @click="trendMetric = 'requests'"
+                >次数</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="trendMetric === 'cost' ? 'btn-primary' : 'btn-ghost'"
+                  role="tab"
+                  :aria-selected="trendMetric === 'cost'"
+                  @click="trendMetric = 'cost'"
+                >费用</button>
+              </div>
+              <div class="trend-periods">
+                <button
+                  v-for="opt in trendPeriodOptions"
+                  :key="opt.value"
+                  type="button"
+                  class="btn btn-sm"
+                  :class="trendPeriod === opt.value && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                  @click="useCustomRange = false; trendPeriod = opt.value; changePeriod()"
+                >{{ opt.label }}</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                  @click="useCustomRange = true; changePeriod()"
+                >自定义</button>
+                <template v-if="useCustomRange">
+                  <input type="date" v-model="customStart" @change="changePeriod" class="date-input">
+                  <span class="range-sep">至</span>
+                  <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
+                </template>
+              </div>
             </div>
             <div class="trend-chart" v-if="keyTrend.length > 0">
               <div class="trend-bars">
@@ -423,14 +473,18 @@ watch(keyId, async () => {
                   v-for="t in keyTrend"
                   :key="t.period"
                   class="trend-bar-container"
-                  :title="`${t.period}: ${fmtCost(t.cost_usd)} (${fmtNum(t.requests)} 请求)`"
+                  :title="trendTooltip(t)"
                 >
-                  <div class="trend-bar" :style="{ height: trendBarWidth(t.cost_usd) }"></div>
+                  <div
+                    class="trend-bar"
+                    :class="trendMetric === 'cost' ? 'trend-bar--cost' : 'trend-bar--requests'"
+                    :style="{ height: trendBarWidth(trendValue(t)) }"
+                  ></div>
                   <div class="trend-label">{{ fmtTrendPeriod(t.period, trendPeriod) }}</div>
                 </div>
               </div>
               <div class="trend-summary">
-                共 {{ keyTrend.length }} 个周期，合计 {{ fmtCost(totalCost) }}
+                共 {{ keyTrend.length }} 个周期，合计 {{ fmtTrendValue(totalTrendValue) }}
               </div>
             </div>
             <div v-else class="empty small">暂无趋势数据</div>
@@ -616,11 +670,26 @@ watch(keyId, async () => {
   gap: 12px;
 }
 
-.period-select {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+.trend-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.trend-tabs,
+.trend-periods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.range-sep {
   font-size: 12px;
+  color: var(--muted);
 }
 
 .trend-chart {
@@ -652,13 +721,24 @@ watch(keyId, async () => {
 
 .trend-bar {
   width: 100%;
-  background: var(--primary);
   border-radius: 3px 3px 0 0;
   min-height: 3px;
   transition: height 0.3s ease;
 }
 
-.trend-bar-container:hover .trend-bar {
+.trend-bar--cost {
+  background: var(--success);
+}
+
+.trend-bar--requests {
+  background: var(--primary);
+}
+
+.trend-bar-container:hover .trend-bar--cost {
+  filter: brightness(1.08);
+}
+
+.trend-bar-container:hover .trend-bar--requests {
   background: var(--primary-hover);
 }
 

@@ -3,6 +3,7 @@ import { ref, reactive, computed, onBeforeUnmount } from 'vue'
 import {
   getProviderModels,
   refreshProviderModels,
+  clearProviderModels,
   getProviderRefreshStatus,
   toggleModelOfferState,
   getModelOfferSuggestions,
@@ -20,6 +21,7 @@ const loading = ref(false)
 const error = ref('')
 
 const refreshing = ref(false)
+const clearing = ref(false)
 const refreshRun = ref<ProviderRefreshRun | null>(null)
 const refreshError = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -93,6 +95,36 @@ async function pollRefreshStatus() {
     stopPolling()
     refreshing.value = false
     refreshError.value = e instanceof Error ? e.message : '查询刷新状态失败'
+  }
+}
+
+async function clearModels() {
+  if (clearing.value || refreshing.value) return
+  if (!confirm('确定清空当前供应商的全部模型绑定？清空后可重新从供应商读取。')) return
+  clearing.value = true
+  refreshError.value = ''
+  try {
+    const resp = await clearProviderModels(props.providerId)
+    refreshRun.value = null
+    await load()
+    refreshError.value = ''
+    refreshRun.value = {
+      run_id: 'clear',
+      provider_id: props.providerId,
+      status: 'succeeded',
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      heartbeat_at: null,
+      credentials_scanned: 0,
+      models_upserted: 0,
+      credentials_failed: 0,
+      errors: [],
+      message: `已清空 ${resp.deleted} 条模型绑定`,
+    }
+  } catch (e: unknown) {
+    refreshError.value = e instanceof Error ? e.message : '清空失败'
+  } finally {
+    clearing.value = false
   }
 }
 
@@ -268,7 +300,7 @@ load()
       <div style="display:flex;gap:6px">
         <button
           class="btn btn-sm"
-          :disabled="refreshing"
+          :disabled="refreshing || clearing"
           :title="refreshing ? '正在从供应商读取模型列表…' : '调用供应商 /v1/models 接口，新增未入库的模型'"
           @click="refreshFromProvider"
         >
@@ -276,7 +308,13 @@ load()
         </button>
         <button
           class="btn btn-sm btn-ghost"
-          :disabled="loading || refreshing"
+          :disabled="loading || refreshing || clearing || offers.length === 0"
+          title="移除当前供应商的全部模型绑定，便于重新拉取"
+          @click="clearModels"
+        >{{ clearing ? '清空中…' : '清空' }}</button>
+        <button
+          class="btn btn-sm btn-ghost"
+          :disabled="loading || refreshing || clearing"
           title="仅从本地缓存重新加载，不调用供应商接口"
           @click="load"
         >{{ loading ? '加载中…' : '刷新' }}</button>

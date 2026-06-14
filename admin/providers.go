@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -140,7 +141,7 @@ func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool,
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
 	}
-	result, err := doProbeRequest(ctx, upstreamurl.ModelsURLCandidates(baseURL), apiKey)
+	result, err := doProbeRequest(ctx, modelsURLCandidatesForBase(baseURL), apiKey)
 	if err != nil {
 		return false, err
 	}
@@ -227,7 +228,9 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "models":
-		if r.Method == http.MethodGet || r.Method == http.MethodPost {
+		if r.Method == http.MethodDelete {
+			h.clearProviderModels(w, r, providerID)
+		} else if r.Method == http.MethodGet || r.Method == http.MethodPost {
 			h.getProviderModels(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1160,6 +1163,38 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	writeJSON(w, http.StatusOK, offers)
 }
 
+// clearProviderModels removes all model_offers rows for a provider's
+// credentials so the operator can re-fetch a fresh list from the vendor.
+func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	var exists int
+	if err := h.db.QueryRow(ctx, `
+		SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default'
+	`, providerID).Scan(&exists); err != nil {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	tag, err := h.db.Exec(ctx, `
+		DELETE FROM model_offers
+		WHERE credential_id IN (
+			SELECT id FROM credentials WHERE provider_id = $1
+		)
+	`, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+		return
+	}
+
+	deleted := int(tag.RowsAffected())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "ok",
+		"deleted": deleted,
+	})
+}
+
 func classifyAvailability(available bool, reason *string) string {
 	if reason == nil {
 		if available {
@@ -1556,7 +1591,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			continue
 		}
 
-		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
+		modelsURLs := modelsURLCandidatesForBase(baseURL)
 
 		start := time.Now()
 		modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
@@ -1839,7 +1874,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 				continue
 			}
 
-			modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
+			modelsURLs := modelsURLCandidatesForBase(baseURL)
 			start := time.Now()
 			modelsResp, modelsErr := doProbeRequest(ctx, modelsURLs, apiKey)
 			modelsLatency := int(time.Since(start).Milliseconds())
@@ -2249,7 +2284,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
+		modelsURLs := modelsURLCandidatesForBase(baseURL)
 		start := time.Now()
 		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
@@ -2319,7 +2354,7 @@ func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, 
 		healthStatus = "error"
 		healthError = "decrypt failed"
 	} else {
-		modelsURLs := upstreamurl.ModelsURLCandidates(baseURL)
+		modelsURLs := modelsURLCandidatesForBase(baseURL)
 		start := time.Now()
 		result, probeErr := doProbeRequest(ctx, modelsURLs, apiKey)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
@@ -3275,6 +3310,9 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.provider_id = $1
 		  AND c.status = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
+		  AND COALESCE(c.availability_state, 'ready') = 'ready'
+		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
 		  AND p.enabled = TRUE
 		ORDER BY c.id
 	`, providerID)
@@ -3311,9 +3349,11 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	manifestOnly := strategy == "manifest" || strategy == "manifest_only"
 
 	modelsURL := ""
+	explicitTemplate := false
 	if cred.modelsEndpointTpl != nil {
 		tpl := strings.TrimSpace(*cred.modelsEndpointTpl)
 		if tpl != "" {
+			explicitTemplate = true
 			if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
 				modelsURL = tpl
 			} else {
@@ -3322,12 +3362,9 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 			}
 		}
 	}
-	if modelsURL == "" && !manifestOnly {
-		modelsURL = upstreamurl.ModelsURL(cred.baseURL)
-	}
 
 	// Manifest-only or template="" or both: skip API call, use manifest.
-	if manifestOnly || modelsURL == "" {
+	if manifestOnly || (explicitTemplate && modelsURL == "") {
 		models, mErr := extractManifestModels(cred.modelsManifestJSON)
 		if mErr != nil || len(models) == 0 {
 			return 0, 0, nil
@@ -3348,7 +3385,17 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("decrypt credential: %w", decErr)
 	}
 
-	models, fErr := fetchVendorModels(ctx, modelsURL, apiKey)
+	var (
+		models []string
+		fErr   error
+	)
+	if explicitTemplate && modelsURL != "" {
+		models, fErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
+	} else {
+		// Align with credential health check: upstreamurl.ModelsURL first,
+		// then ModelsURLCandidates (deduped).
+		models, fErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl), cred, apiKey)
+	}
 	if fErr != nil {
 		// Fallback to manifest on API error (same as discovery.discoverForCredential)
 		models, _ = extractManifestModels(cred.modelsManifestJSON)
@@ -3368,12 +3415,87 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	return upserted, failed, nil
 }
 
-func fetchVendorModels(ctx context.Context, url, apiKey string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func modelsURLCandidatesForBase(baseURL string) []string {
+	return modelsURLCandidatesForCred(baseURL, nil)
+}
+
+func modelsURLCandidatesForCred(baseURL string, template *string) []string {
+	if template != nil {
+		tpl := strings.TrimSpace(*template)
+		if tpl == "" {
+			return nil
+		}
+		if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
+			return []string{tpl}
+		}
+		base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		return []string{base + tpl}
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 4)
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	add(upstreamurl.ModelsURL(baseURL))
+	for _, u := range upstreamurl.ModelsURLCandidates(baseURL) {
+		add(u)
+	}
+	return out
+}
+
+func setModelsAuthHeaders(req *http.Request, protocol, apiKey string) {
+	key := strings.TrimSpace(apiKey)
+	if key == "" {
+		return
+	}
+	if protocol == "anthropic-messages" {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+}
+
+func (h *Handler) applyCatalogHeaderProfile(ctx context.Context, req *http.Request, catalogCode string) {
+	if h.db == nil || strings.TrimSpace(catalogCode) == "" {
+		return
+	}
+	var headersJSON []byte
+	err := h.db.QueryRow(ctx, `
+		SELECT php.headers_json
+		FROM provider_catalog pc
+		JOIN provider_header_profiles php ON php.profile_code = pc.header_profile_code
+		WHERE pc.code = $1
+	`, catalogCode).Scan(&headersJSON)
+	if err != nil || len(headersJSON) == 0 {
+		return
+	}
+	var headers map[string]string
+	if json.Unmarshal(headersJSON, &headers) != nil {
+		return
+	}
+	for k, v := range headers {
+		if strings.TrimSpace(v) != "" {
+			req.Header.Set(k, v)
+		}
+	}
+}
+
+func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred credentialRowLite, apiKey string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	setModelsAuthHeaders(req, cred.protocol, apiKey)
+	h.applyCatalogHeaderProfile(ctx, req, cred.catalogCode)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -3394,6 +3516,25 @@ func fetchVendorModels(ctx context.Context, url, apiKey string) ([]string, error
 	}
 
 	return parseVendorModelsBody(body)
+}
+
+// fetchVendorModelsFromURLs mirrors checkCredentialHealth's candidate URL
+// walk but requires HTTP 200 with a parseable model list (for refresh).
+func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, error) {
+	var lastErr error
+	for _, u := range urls {
+		models, err := h.fetchVendorModels(ctx, u, cred, apiKey)
+		if err == nil && len(models) > 0 {
+			return models, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 func parseVendorModelsBody(data []byte) ([]string, error) {
@@ -3528,16 +3669,13 @@ func extractManifestModels(manifest *string) ([]string, error) {
 // only mutator of those is the existing PATCH /api/providers/.../models
 // drawer in ModelsTab.vue.
 func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
+	// model_offers is a VIEW; INSERT goes through INSTEAD OF trigger into
+	// provider_models + credential_model_bindings.  Do NOT use ON CONFLICT
+	// on the view (SQLSTATE 42P10).  Match discovery.upsertModel shape.
 	_, err := h.db.Exec(ctx, `
-		INSERT INTO model_offers
-			(credential_id, raw_model_name, available, last_seen_at)
-		VALUES ($1, $2, TRUE, NOW())
-		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
-		SET available = TRUE,
-		    unavailable_reason = NULL,
-		    unavailable_at = NULL,
-		    last_seen_at = NOW()
-	`, credentialID, rawName)
+		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
+		VALUES ($1, NULL, $2, $3, TRUE, NOW())
+	`, credentialID, rawName, modelname.StandardizeName(rawName))
 	return err
 }
 
