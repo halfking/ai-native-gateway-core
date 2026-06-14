@@ -384,6 +384,13 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 	if days > 90 {
 		days = 90
 	}
+	limit := queryInt(r, "limit", 50)
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 500 {
+		limit = 500
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -401,7 +408,8 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY ul.api_key_id, ak.key_prefix
 		ORDER BY cost_usd DESC
-	`, days)
+		LIMIT $2
+	`, days, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
 		return

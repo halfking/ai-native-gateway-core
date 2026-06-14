@@ -112,7 +112,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			attemptErrCode = "auth_unavailable"
 			attemptErrMsg = "authentication service temporarily unavailable"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
 			slog.Warn("messages: key verification RPC failed", "error", verifyErr)
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "Authentication service temporarily unavailable")
+			return
 		} else {
 			keyInfo = ki
 			attemptKeyInfo = ki
