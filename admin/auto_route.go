@@ -14,6 +14,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -177,12 +178,21 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get the latest bucket
-	var latestBucket time.Time
+	// Get the latest bucket (NULL-safe: returns zero value when empty)
+	var latestBucket sql.NullTime
 	if err := h.db.QueryRow(ctx, `SELECT MAX(bucket) FROM credential_model_index`).Scan(&latestBucket); err != nil {
 		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
+	if !latestBucket.Valid {
+		// Empty table — return [] with warning so the admin UI shows
+		// "waiting for first refresh" instead of an error.
+		writeJSONOk(w, []map[string]interface{}{
+			{"warning": "credential_model_index is empty; awaiting first bg worker refresh (within 5 minutes of gateway start)"},
+		})
+		return
+	}
+	bucket := latestBucket.Time
 
 	query := `
 		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
@@ -196,7 +206,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
 		WHERE cmi.bucket = $1
 	`
-	args := []interface{}{latestBucket}
+	args := []interface{}{bucket}
 	if canonicalID != "" {
 		args = append(args, canonicalID)
 		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
@@ -227,7 +237,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 			continue
 		}
 		entry := map[string]interface{}{
-			"bucket":        latestBucket.Format(time.RFC3339),
+			"bucket":        bucket.Format(time.RFC3339),
 			"credential_id": credID,
 			"raw_model":     rawModel,
 		}
