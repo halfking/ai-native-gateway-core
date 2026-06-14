@@ -969,6 +969,8 @@ export interface KeyUsageSummary {
   unique_models: number
   first_request_at: string | null
   last_request_at: string | null
+  window_start?: string
+  window_end?: string
 }
 
 export interface ModelUsageForKey {
@@ -1361,6 +1363,10 @@ export interface RequestLogRow {
   ts: string
   request_id: string
   api_key_id: number | null
+  api_key_prefix: string | null
+  owner_user: string | null
+  application_code: string | null
+  key_alias: string | null
   end_user_id: string | null
   client_model: string | null
   outbound_model: string | null

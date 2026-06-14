@@ -107,8 +107,8 @@ const trendPeriod = ref<PeriodType>('day')
 const hoveredTrendIndex = ref<number | null>(null)
 
 const CHART_W = 640
-const CHART_H = 132
-const CHART_PAD = { l: 46, r: 10, t: 8, b: 22 }
+const CHART_H = 148
+const CHART_PAD = { l: 50, r: 12, t: 10, b: 24 }
 const trendPeriodOptions: { label: string; value: PeriodType }[] = [
   { label: '按天', value: 'day' },
   { label: '按周', value: 'week' },
@@ -124,20 +124,88 @@ function trendValue(t: TrendEntry): number {
   return trendMetric.value === 'cost' ? t.cost_usd : t.requests
 }
 
+function utcDayKey(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+function trendWindowBounds(): { start: Date; end: Date } | null {
+  const usage = keyUsage.value
+  if (usage?.window_start && usage?.window_end) {
+    return { start: new Date(usage.window_start), end: new Date(usage.window_end) }
+  }
+  if (useCustomRange.value && customStart.value && customEnd.value) {
+    const start = new Date(`${customStart.value}T00:00:00.000Z`)
+    const end = new Date(`${customEnd.value}T00:00:00.000Z`)
+    end.setUTCDate(end.getUTCDate() + 1)
+    return { start, end }
+  }
+  const end = new Date()
+  const start = new Date(end)
+  start.setUTCDate(start.getUTCDate() - selectedPeriod.value.days)
+  start.setUTCHours(0, 0, 0, 0)
+  return { start, end }
+}
+
+/** 补齐无数据的空周期，避免折线跨周期直连造成误读 */
+function fillTrendGaps(raw: TrendEntry[], period: PeriodType): TrendEntry[] {
+  if (raw.length === 0 || period !== 'day') return raw
+  const window = trendWindowBounds()
+  if (!window) return raw
+
+  const byPeriod = new Map(raw.map(t => [t.period, t]))
+  const filled: TrendEntry[] = []
+  const cursor = new Date(window.start)
+  cursor.setUTCHours(0, 0, 0, 0)
+  const end = new Date(window.end)
+  end.setUTCHours(0, 0, 0, 0)
+
+  while (cursor < end) {
+    const key = utcDayKey(cursor)
+    filled.push(byPeriod.get(key) ?? {
+      period: key,
+      requests: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      cost_usd: 0,
+    })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return filled.length > 0 ? filled : raw
+}
+
 // ── Computed ───────────────────────────────────────────────────────────────
+const displayTrend = computed(() => fillTrendGaps(keyTrend.value, trendPeriod.value))
+
 const maxTrendValue = computed(() => {
-  if (keyTrend.value.length === 0) return 0
-  return Math.max(...keyTrend.value.map(t => trendValue(t)))
+  if (displayTrend.value.length === 0) return 0
+  return Math.max(...displayTrend.value.map(t => trendValue(t)))
 })
 
 const totalTrendValue = computed(() => {
-  if (keyTrend.value.length === 0) return 0
-  return keyTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
+  if (displayTrend.value.length === 0) return 0
+  return displayTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
+})
+
+const trendSummaryLabel = computed(() => {
+  const periodLabel = trendPeriodOptions.find(o => o.value === trendPeriod.value)?.label ?? '按天'
+  if (useCustomRange.value && customStart.value && customEnd.value) {
+    return `${periodLabel} · ${customStart.value} ~ ${customEnd.value}`
+  }
+  return `${periodLabel} · ${selectedPeriod.value.label}`
+})
+
+const trendTotalMatchesSummary = computed(() => {
+  if (!keyUsage.value || displayTrend.value.length === 0) return true
+  if (trendMetric.value === 'requests') {
+    return totalTrendValue.value === keyUsage.value.total_requests
+  }
+  return Math.abs(totalTrendValue.value - keyUsage.value.total_cost_usd) < 1e-9
 })
 
 function buildYAxis(maxVal: number, divisions = 4): { max: number; ticks: number[] } {
   if (maxVal <= 0) {
-    return { max: 1, ticks: [0, 0.25, 0.5, 0.75, 1] }
+    return { max: 1, ticks: [0] }
   }
   const padded = maxVal * 1.08
   const rawStep = padded / divisions
@@ -185,8 +253,15 @@ const yGridLines = computed(() => {
   }))
 })
 
+function shouldShowXLabel(index: number, total: number): boolean {
+  if (total <= 7) return true
+  if (index === 0 || index === total - 1) return true
+  const step = Math.max(1, Math.ceil(total / 7))
+  return index % step === 0
+}
+
 const chartPoints = computed(() => {
-  const data = keyTrend.value
+  const data = displayTrend.value
   const { max } = yAxis.value
   const { w, h } = plotSize.value
   const n = data.length
@@ -250,7 +325,7 @@ function fmtTrendPeriod(s: string, period: 'day' | 'week' | 'month') {
   if (!s) return '—'
   if (period === 'week') {
     const m = /^(\d{4})-(\d{1,2})$/.exec(s)
-    if (m) return `${m[2]}周`
+    if (m) return `${m[1].slice(2)}-${m[2]}周`
     return s
   }
   if (period === 'month') {
@@ -568,15 +643,22 @@ watch(keyId, async () => {
                 </div>
               </div>
             </div>
-            <div class="trend-chart" v-if="keyTrend.length > 0">
+            <div class="trend-chart" v-if="displayTrend.length > 0">
               <div class="trend-chart-wrap">
                 <svg
                   class="trend-svg"
                   :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
-                  preserveAspectRatio="xMidYMid meet"
+                  preserveAspectRatio="none"
                   role="img"
                   :aria-label="trendMetric === 'cost' ? '费用折线图' : '请求次数折线图'"
                 >
+                  <line
+                    :x1="CHART_PAD.l"
+                    :y1="CHART_PAD.t"
+                    :x2="CHART_PAD.l"
+                    :y2="CHART_PAD.t + plotSize.h"
+                    class="trend-axis-line"
+                  />
                   <line
                     v-for="(grid, gi) in yGridLines"
                     :key="'grid-' + gi"
@@ -593,22 +675,32 @@ watch(keyId, async () => {
                     fill="none"
                     :stroke="trendLineColor"
                   />
-                  <circle
+                  <g
                     v-for="(p, i) in chartPoints"
                     :key="'pt-' + p.entry.period"
-                    :cx="p.x"
-                    :cy="p.y"
-                    r="3.5"
-                    class="trend-dot"
-                    :class="{ 'trend-dot--active': hoveredTrendIndex === i }"
-                    :fill="trendLineColor"
+                    class="trend-dot-group"
                     @mouseenter="hoveredTrendIndex = i"
                     @mouseleave="hoveredTrendIndex = null"
-                  />
+                  >
+                    <circle
+                      :cx="p.x"
+                      :cy="p.y"
+                      r="10"
+                      class="trend-dot-hit"
+                    />
+                    <circle
+                      :cx="p.x"
+                      :cy="p.y"
+                      r="3"
+                      class="trend-dot"
+                      :class="{ 'trend-dot--active': hoveredTrendIndex === i }"
+                      :fill="trendLineColor"
+                    />
+                  </g>
                   <text
                     v-for="(grid, gi) in yGridLines"
                     :key="'ylabel-' + gi"
-                    :x="CHART_PAD.l - 6"
+                    :x="CHART_PAD.l - 8"
                     :y="grid.y + 3.5"
                     class="trend-y-label"
                     text-anchor="end"
@@ -617,21 +709,22 @@ watch(keyId, async () => {
                     v-for="(p, i) in chartPoints"
                     :key="'xlabel-' + p.entry.period"
                     :x="p.x"
-                    :y="CHART_H - 4"
+                    :y="CHART_H - 6"
                     class="trend-x-label"
                     text-anchor="middle"
-                    :opacity="chartPoints.length > 14 && i % Math.ceil(chartPoints.length / 7) !== 0 ? 0 : 1"
+                    :opacity="shouldShowXLabel(i, chartPoints.length) ? 1 : 0"
                   >{{ p.label }}</text>
                 </svg>
                 <div v-if="hoveredPoint" class="trend-tooltip" :style="trendTooltipStyle(hoveredPoint)">
-                  <div class="trend-tooltip-period">{{ hoveredPoint.entry.period }}</div>
+                  <div class="trend-tooltip-period">{{ fmtTrendPeriod(hoveredPoint.entry.period, trendPeriod) }}</div>
                   <div class="trend-tooltip-value">
                     {{ trendMetric === 'cost' ? fmtCost(hoveredPoint.entry.cost_usd) : fmtNum(hoveredPoint.entry.requests) + ' 次' }}
                   </div>
                 </div>
               </div>
               <div class="trend-summary">
-                共 {{ keyTrend.length }} 个周期，合计 {{ fmtTrendValue(totalTrendValue) }}
+                <span>{{ trendSummaryLabel }} · 共 {{ displayTrend.length }} 个周期 · 合计 {{ fmtTrendValue(totalTrendValue) }}</span>
+                <span v-if="!trendTotalMatchesSummary" class="trend-summary-warn" title="趋势合计与上方汇总卡片不一致，可能由时区或聚合粒度导致">⚠ 与汇总不完全一致</span>
               </div>
             </div>
             <div v-else class="empty small">暂无趋势数据</div>
@@ -844,7 +937,31 @@ watch(keyId, async () => {
   flex-shrink: 0;
 }
 
-.trend-tabs,
+.trend-tabs {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  align-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.trend-tabs .btn {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.trend-tabs .btn-ghost {
+  border-right: 1px solid var(--border);
+}
+
+.trend-tabs .btn-ghost:last-child {
+  border-right: none;
+}
+
 .trend-periods {
   display: flex;
   flex-wrap: nowrap;
@@ -878,7 +995,7 @@ watch(keyId, async () => {
 .trend-chart-wrap {
   position: relative;
   width: 100%;
-  height: 132px;
+  height: 148px;
 }
 
 .trend-svg {
@@ -887,48 +1004,56 @@ watch(keyId, async () => {
   height: 100%;
 }
 
+.trend-axis-line {
+  stroke: color-mix(in srgb, var(--muted) 55%, var(--border));
+  stroke-width: 1;
+}
+
 .trend-grid-line {
   stroke: var(--border);
   stroke-width: 1;
-  stroke-dasharray: 3 3;
-  opacity: 0.7;
+  stroke-dasharray: 4 4;
+  opacity: 0.55;
 }
 
 .trend-area {
-  opacity: 0.12;
+  opacity: 0.14;
 }
 
 .trend-line {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
+}
+
+.trend-dot-group {
+  cursor: pointer;
+}
+
+.trend-dot-hit {
+  fill: transparent;
+  pointer-events: all;
 }
 
 .trend-dot {
-  opacity: 0;
-  cursor: pointer;
-  transition: opacity 0.15s, r 0.15s;
+  opacity: 0.55;
+  transition: opacity 0.15s;
 }
 
-.trend-chart-wrap:hover .trend-dot,
-.trend-dot--active {
+.trend-dot--active,
+.trend-dot-group:hover .trend-dot {
   opacity: 1;
-}
-
-.trend-dot--active {
-  r: 5;
 }
 
 .trend-y-label {
   fill: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-family: inherit;
 }
 
 .trend-x-label {
   fill: var(--muted);
-  font-size: 9px;
+  font-size: 10px;
   font-family: inherit;
 }
 
@@ -960,6 +1085,16 @@ watch(keyId, async () => {
   font-size: 12px;
   color: var(--muted);
   text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+}
+
+.trend-summary-warn {
+  color: var(--warning);
+  font-size: 11px;
 }
 
 .detail-table {
