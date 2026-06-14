@@ -390,6 +390,13 @@ func main() {
 			adminHandler.SetFpSlots(fpSlots)
 			adminHandler.SetPeakCollector(peakCollector)
 		}
+
+		// v2.0.2 audit fix #6: admin auto-route refresh endpoint needs
+		// the live AutoIndexRefresher wired in. Without this, /refresh
+		// returns 503 "index refresher not wired".
+		if autoIndexRefresher != nil && adminHandler != nil {
+			adminHandler.SetAutoIndexRefresher(autoIndexRefresher)
+		}
 	}
 
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
