@@ -159,12 +159,15 @@ func (c *CredentialCycler) cycleAll(ctx context.Context) {
 func (c *CredentialCycler) updateHealth(ctx context.Context, credID int, status, errMsg string) {
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	c.db.Exec(execCtx, `
+	if _, err := c.db.Exec(execCtx, `
 		UPDATE credentials
 		SET health_status = $1, health_error = $2, health_checked_at = NOW(), health_source = 'probe'
 		WHERE id = $3
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
-	`, status, errMsg, credID)
+	`, status, errMsg, credID); err != nil {
+		slog.Warn("credential cycler: updateHealth failed",
+			"credential_id", credID, "status", status, "error", err)
+	}
 }
 
 func (c *CredentialCycler) cleanStickySessions(ctx context.Context) {

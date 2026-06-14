@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse } from '../api'
 import OverviewCards from './provider-detail/OverviewCards.vue'
@@ -11,7 +11,11 @@ import SettingsTab from './provider-detail/SettingsTab.vue'
 
 const route = useRoute()
 const router = useRouter()
-const providerId = Number(route.params.id)
+// providerId must be reactive — Vue Router reuses the component when
+// navigating between /providers/1 and /providers/2, so a non-reactive
+// `Number(route.params.id)` would never update.  Use a computed and a
+// watcher to reload on change.
+const providerId = computed(() => Number(route.params.id))
 
 const provider = ref<any>(null)
 const creds = ref<ProviderCredential[]>([])
@@ -27,8 +31,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    provider.value = await getProviderDetail(providerId)
-    creds.value = await getProviderCredentials(providerId)
+    provider.value = await getProviderDetail(providerId.value)
+    creds.value = await getProviderCredentials(providerId.value)
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -50,8 +54,11 @@ async function toggle() {
 async function toggleProviderManual() {
   if (!provider.value) return
   const next = !provider.value.manual_disabled
-  const reason = prompt(`手工${next ? '禁用' : '启用'}提供商 ${provider.value.display_name} 的原因：`, '') ?? ''
-  if (reason === null) return
+  // prompt() returns null on Cancel.  Check it BEFORE coalescing to ''
+  // — using `prompt(...) ?? ''` swallowed the cancel signal.
+  const raw = prompt(`手工${next ? '禁用' : '启用'}提供商 ${provider.value.display_name} 的原因：`, '')
+  if (raw === null) return
+  const reason = raw.trim()
   try {
     await setProviderManualDisabled(provider.value.id, next, reason)
     provider.value.manual_disabled = next
@@ -65,7 +72,7 @@ async function runDiagnose() {
   diagError.value = ''
   diagResult.value = null
   try {
-    diagResult.value = await diagnoseProvider(providerId, { force: true })
+    diagResult.value = await diagnoseProvider(providerId.value, { force: true })
   } catch (e: unknown) {
     diagError.value = e instanceof Error ? e.message : '诊断失败'
   } finally {
@@ -76,6 +83,13 @@ async function runDiagnose() {
 function back() { router.push('/providers') }
 
 onMounted(load)
+// Reload when the route changes (e.g. user clicks a different provider
+// link without remounting the component).
+watch(providerId, () => {
+  if (!Number.isNaN(providerId.value)) {
+    load()
+  }
+})
 </script>
 
 <template>
