@@ -758,7 +758,7 @@ watch(keyId, async () => {
                     <circle
                       :cx="p.x"
                       :cy="p.y"
-                      :r="chartPoints.length > 120 ? 0 : 3"
+                      :r="chartPoints.length > 120 ? 0 : 2"
                       class="trend-dot"
                       :class="{ 'trend-dot--active': hoveredTrendIndex === i }"
                       :fill="trendLineColor"
@@ -1088,23 +1088,23 @@ watch(keyId, async () => {
 }
 
 .trend-axis-line {
-  stroke: color-mix(in srgb, var(--muted) 55%, var(--border));
-  stroke-width: 1;
+  stroke: color-mix(in srgb, var(--muted) 50%, var(--border));
+  stroke-width: 0.75;
 }
 
 .trend-grid-line {
   stroke: var(--border);
-  stroke-width: 1;
-  stroke-dasharray: 4 4;
-  opacity: 0.55;
+  stroke-width: 0.75;
+  stroke-dasharray: 3 3;
+  opacity: 0.45;
 }
 
 .trend-area {
-  opacity: 0.14;
+  opacity: 0.1;
 }
 
 .trend-line {
-  stroke-width: 2;
+  stroke-width: 1.25;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1130,13 +1130,15 @@ watch(keyId, async () => {
 
 .trend-y-label {
   fill: var(--muted);
-  font-size: 8px;
+  font-size: 7px;
+  font-weight: 400;
   font-family: inherit;
 }
 
 .trend-x-label {
   fill: var(--muted);
-  font-size: 8px;
+  font-size: 7px;
+  font-weight: 400;
   font-family: inherit;
 }
 
