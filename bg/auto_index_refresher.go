@@ -309,7 +309,7 @@ WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.credential_id IS NOT NULL
   AND COALESCE(cr.status, 'active') NOT IN ('disabled')
   AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
-GROUP BY cr.id, COALESCE(rl.outbound_model, rl.client_model), mc.canonical_id, mo.billing_mode,
+GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model), mo.canonical_id, mo.billing_mode,
          mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mc.context_window,
          cr.concurrency_limit
 ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
