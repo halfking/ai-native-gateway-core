@@ -110,7 +110,10 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 	}
 
 	if info := kv.getCache(rawKey); info != nil {
-		return info, nil
+		// Stale cache entries from before key_prefix was populated must refresh.
+		if strings.TrimSpace(info.KeyPrefix) != "" {
+			return info, nil
+		}
 	}
 
 	v, err, _ := kv.sfGroup.Do("key:"+rawKey, func() (any, error) {

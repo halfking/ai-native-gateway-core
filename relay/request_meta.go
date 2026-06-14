@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -197,9 +198,39 @@ func keyMetaFromKeyInfo(keyInfo *auth.KeyInfo) (prefix, owner, appCode string) {
 		return "", "", ""
 	}
 	prefix = formatKeyPrefixDisplay(keyInfo.KeyPrefix)
+	if prefix == "" && keyInfo.ID > 0 {
+		prefix = fmt.Sprintf("key#%d", keyInfo.ID)
+	}
 	if keyInfo.OwnerUser != nil {
 		owner = strings.TrimSpace(*keyInfo.OwnerUser)
 	}
-	appCode = keyInfo.ApplicationCode
+	appCode = strings.TrimSpace(keyInfo.ApplicationCode)
 	return prefix, owner, appCode
+}
+
+// applyKeyInfoToRequestLog fills api key display fields on a telemetry row.
+func applyKeyInfoToRequestLog(reqLog *telemetry.RequestLogEntry, keyInfo *auth.KeyInfo) {
+	if reqLog == nil || keyInfo == nil {
+		return
+	}
+	prefix, owner, appCode := keyMetaFromKeyInfo(keyInfo)
+	if prefix != "" {
+		reqLog.APIKeyPrefix = strPtr(prefix)
+	}
+	if owner != "" {
+		reqLog.APIKeyOwnerUser = strPtr(owner)
+	}
+	if appCode != "" {
+		reqLog.ApplicationCode = strPtr(appCode)
+	}
+	if reqLog.APIKeyID == nil {
+		id := keyInfo.ID
+		reqLog.APIKeyID = &id
+	}
+	if reqLog.ApplicationID == nil {
+		reqLog.ApplicationID = appID(keyInfo)
+	}
+	if reqLog.TenantID == "" {
+		reqLog.TenantID = keyInfo.TenantID
+	}
 }

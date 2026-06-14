@@ -1403,6 +1403,7 @@ export interface RequestLogRow {
   api_key_prefix: string | null
   api_key_owner_user: string | null
   application_code: string | null
+  canonical_name: string | null
   trace_seq: number | null
 }
 
