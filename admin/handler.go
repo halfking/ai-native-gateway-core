@@ -212,6 +212,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.db != nil {
 		peakH := NewPeakHandlers(h.db)
 		peakH.RegisterPeakRoutes(mux, admin)
+
+		// v2.0 auto-route admin endpoints (Phase 3).
+		autoH := NewAutoRouteHandlers(h.db)
+		autoH.RegisterAutoRouteRoutes(mux, admin)
 	}
 }
 
