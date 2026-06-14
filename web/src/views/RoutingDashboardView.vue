@@ -231,75 +231,69 @@ onUnmounted(() => stopPoll())
       </div>
     </div>
 
-    <!-- Routing flow -->
-    <div class="flow-bar">
-      <div class="flow-step l1">
-        <span class="flow-badge">L1</span>
-        <span class="flow-text">Prompt → 分类器(8类) → 6维评分 → 选模型</span>
+    <!-- Hero: flow + live stats -->
+    <div class="hero-strip">
+      <div class="flow-track">
+        <div class="flow-node l1">
+          <span class="flow-badge">L1</span>
+          <div class="flow-copy">
+            <strong>选模型</strong>
+            <span>Prompt → 8类分类 → 6维评分</span>
+          </div>
+        </div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-node l2">
+          <span class="flow-badge">L2</span>
+          <div class="flow-copy">
+            <strong>选凭据</strong>
+            <span>解析 → Tier回退 → P2C执行</span>
+          </div>
+        </div>
       </div>
-      <span class="flow-arrow">→</span>
-      <div class="flow-step l2">
-        <span class="flow-badge">L2</span>
-        <span class="flow-text">模型解析 → Tier回退 → P2C → 凭据执行</span>
+      <div class="hero-stats">
+        <span class="chip">候选 <strong>{{ indexData.length }}</strong></span>
+        <span class="chip">24h <strong>{{ audit.total_auto_requests }}</strong></span>
+        <span class="chip">成功率 <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
       </div>
     </div>
 
     <!-- Tabs -->
-    <div class="tabs">
-      <button class="tab-btn" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略与数据</button>
-      <button class="tab-btn" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
+    <div class="seg-tabs">
+      <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
+      <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
+      <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
     </div>
 
     <!-- ═══ Tab A: Overview ═══ -->
     <div v-if="activeTab === 'overview'" class="tab-content">
-      <!-- Inline stats -->
-      <div class="stat-inline">
-        <span class="chip">候选 <strong>{{ indexData.length }}</strong></span>
-        <span class="chip">24h Auto <strong>{{ audit.total_auto_requests }}</strong></span>
-        <span class="chip">成功率 <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
-        <span class="chip">Top <strong>{{ audit.top_chosen_models[0]?.model || '-' }}</strong></span>
-      </div>
-
-      <!-- L1: Task + Profile -->
-      <div class="card compact-card">
-        <div class="section-head">
-          <span class="layer-tag l1">L1</span>
-          <h3>任务分类 → 模型选择</h3>
+      <div v-if="indexData.length > 0 || indexLoading" class="card compact-card">
+        <div class="card-toolbar">
+          <div class="toolbar-left">
+            <span class="layer-tag l1">L1</span>
+            <span class="toolbar-title">模型推荐</span>
+            <span v-if="selectedTask" class="task-hint">{{ taskLabel(selectedTask) }}</span>
+          </div>
+          <div class="toolbar-filters">
+            <button
+              v-for="t in TASK_TYPES"
+              :key="t.key"
+              class="task-pill sm"
+              :class="{ active: selectedTask === t.key }"
+              :title="TASK_TAGS[t.key]?.join(', ') || ''"
+              @click="selectedTask = selectedTask === t.key ? '' : t.key"
+            >{{ t.icon }}</button>
+            <span class="toolbar-divider" />
+            <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">智能</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">速度</button>
+            <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">成本</button>
+          </div>
         </div>
-        <div class="task-pills">
-          <button
-            v-for="t in TASK_TYPES"
-            :key="t.key"
-            class="task-pill"
-            :class="{ active: selectedTask === t.key }"
-            :title="TASK_TAGS[t.key]?.join(', ') || ''"
-            @click="selectedTask = selectedTask === t.key ? '' : t.key"
-          >
-            {{ t.icon }} {{ t.label }}
-          </button>
-        </div>
-        <div class="profile-pills">
-          <span class="pill-label">Profile:</span>
-          <button class="profile-pill" :class="{ active: selectedProfile === 'smart' }" @click="selectedProfile = 'smart'">智能</button>
-          <button class="profile-pill" :class="{ active: selectedProfile === 'speed_first' }" @click="selectedProfile = 'speed_first'">速度</button>
-          <button class="profile-pill" :class="{ active: selectedProfile === 'cost_first' }" @click="selectedProfile = 'cost_first'">成本</button>
-        </div>
-      </div>
-
-      <!-- Model ranking table -->
-      <div v-if="indexData.length > 0" class="card compact-card">
-        <div class="section-head">
-          <span class="layer-tag l1">L1</span>
-          <h3>模型推荐 Top-{{ Math.min(sortedIndex.length, 10) }}
-            <span v-if="selectedTask" class="task-hint">· {{ taskLabel(selectedTask) }}</span>
-          </h3>
-        </div>
-        <div class="table-wrap">
+        <div v-if="indexLoading" class="loading-hint">加载索引…</div>
+        <div v-else class="table-wrap">
           <table class="dense-table">
             <thead>
               <tr>
-                <th>#</th><th>模型</th><th>{{ profileLabel }}</th><th>P95</th><th>成功率</th><th>价格/1M</th><th>压力</th><th></th>
+                <th>#</th><th>模型</th><th>{{ profileLabel }}</th><th>P95</th><th>成功率</th><th>入/出 $/1M</th><th>压力</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -331,38 +325,34 @@ onUnmounted(() => stopPoll())
                 <!-- L2 detail -->
                 <tr v-if="expandedModel === m.credential_id + ':' + m.raw_model" class="detail-row">
                   <td colspan="8">
-                    <div class="layer2-panel">
-                      <div class="section-head sm">
-                        <span class="layer-tag l2">L2</span>
-                        <span>凭据调度 · {{ m.canonical_name || m.raw_model }}</span>
-                      </div>
-                      <div v-if="layer2Loading === (m.canonical_name || m.raw_model)" class="text-muted">加载凭据计划…</div>
-                      <template v-else-if="layer2Cache[m.canonical_name || m.raw_model]">
-                        <div class="l2-meta">
-                          <span>解析: {{ layer2Cache[m.canonical_name || m.raw_model]!.resolution_path }}</span>
-                          <span v-if="layer2Cache[m.canonical_name || m.raw_model]!.plan_order.length">
-                            执行链:
-                            <template v-for="(p, pi) in layer2Cache[m.canonical_name || m.raw_model]!.plan_order.slice(0, 5)" :key="p.credential_id">
-                              {{ pi > 0 ? ' → ' : '' }}#{{ p.credential_id }}(T{{ p.tier }})
-                            </template>
-                          </span>
+                    <div class="expand-grid">
+                      <div class="layer2-panel">
+                        <div class="section-head sm">
+                          <span class="layer-tag l2">L2</span>
+                          <span>凭据调度</span>
                         </div>
-                        <div class="l2-creds">
-                          <div
-                            v-for="(c, ci) in layer2Cache[m.canonical_name || m.raw_model]!.candidates.filter(x => x.routable).slice(0, 4)"
-                            :key="c.credential_id"
-                            class="l2-cred"
-                          >
-                            <span class="l2-rank">#{{ ci + 1 }}</span>
-                            <span class="l2-prov">{{ c.provider_name }}</span>
-                            <span class="badge badge-gray">T{{ c.tier }} w{{ c.weight }}</span>
-                            <span class="text-muted">#{{ c.credential_id }}</span>
-                            <span v-if="c.composite_score != null" class="score-pill sm">{{ c.composite_score.toFixed(1) }}</span>
+                        <div v-if="layer2Loading === (m.canonical_name || m.raw_model)" class="text-muted">加载…</div>
+                        <template v-else-if="layer2Cache[m.canonical_name || m.raw_model]">
+                          <div class="l2-meta">
+                            <span>{{ layer2Cache[m.canonical_name || m.raw_model]!.resolution_path }}</span>
                           </div>
-                        </div>
-                      </template>
-                      <div v-else class="text-muted">无 L2 凭据数据</div>
+                          <div class="l2-creds">
+                            <div
+                              v-for="(c, ci) in layer2Cache[m.canonical_name || m.raw_model]!.candidates.filter(x => x.routable).slice(0, 4)"
+                              :key="c.credential_id"
+                              class="l2-cred"
+                            >
+                              <span class="l2-rank">#{{ ci + 1 }}</span>
+                              <span class="l2-prov">{{ c.provider_name }}</span>
+                              <span class="badge badge-gray">T{{ c.tier }}</span>
+                              <span v-if="c.composite_score != null" class="score-pill sm">{{ c.composite_score.toFixed(1) }}</span>
+                            </div>
+                          </div>
+                        </template>
+                        <div v-else class="text-muted">无凭据</div>
+                      </div>
                       <div class="l1-scores">
+                        <div class="section-head sm"><span class="layer-tag l1">L1</span><span>6维评分</span></div>
                         <SixDimScoreBar compact :scores="{
                           price_score: m.score_smart,
                           speed_score: m.score_speed_first,
@@ -381,7 +371,7 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
       <div v-else-if="!indexLoading" class="card compact-card empty-hint">
-        索引暂无数据 — 等待 5 分钟自动刷新或点击 ↻
+        索引暂无数据 — 点击 ↻ 刷新
       </div>
     </div>
 
@@ -389,10 +379,10 @@ onUnmounted(() => stopPoll())
     <div v-if="activeTab === 'policy'" class="tab-content">
       <!-- Profile weights -->
       <div class="card compact-card">
-        <div class="section-head"><h3>Profile 权重矩阵</h3></div>
-        <div class="profile-matrix compact">
-          <div v-for="(w, name) in DEFAULT_PROFILE_WEIGHTS" :key="name" class="profile-row">
-            <span class="profile-name">{{ name === 'smart' ? '智能' : name === 'speed_first' ? '速度' : '成本' }}</span>
+        <div class="section-head"><span class="layer-tag l1">L1</span><h3>Profile 权重矩阵</h3></div>
+        <div class="profile-grid">
+          <div v-for="(w, name) in DEFAULT_PROFILE_WEIGHTS" :key="name" class="profile-col">
+            <div class="profile-col-head">{{ name === 'smart' ? '智能' : name === 'speed_first' ? '速度' : '成本' }}</div>
             <SixDimScoreBar compact :scores="{
               price_score: (w as ProfileWeights).Price / maxDimValue(w as ProfileWeights) * 100,
               speed_score: (w as ProfileWeights).Speed / maxDimValue(w as ProfileWeights) * 100,
@@ -570,39 +560,73 @@ onUnmounted(() => stopPoll())
 </template>
 
 <style scoped>
-.routing-dashboard { max-width: 1100px; }
+.routing-dashboard { max-width: 1200px; }
 
-.page-header.compact { margin-bottom: 10px; }
+.page-header.compact { margin-bottom: 8px; }
 .page-header.compact h2 { font-size: 16px; margin: 0; }
 .subtitle { font-size: 11px; color: var(--muted); margin: 2px 0 0; }
 
-/* Flow bar */
-.flow-bar {
+/* Hero strip */
+.hero-strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
   padding: 8px 12px;
-  background: var(--card);
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 6%, var(--card)), var(--card));
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 12px;
-  font-size: 11px;
 }
-.flow-step { display: flex; align-items: center; gap: 6px; flex: 1; }
+.flow-track { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 280px; }
+.flow-node {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  border: 1px solid var(--border);
+}
+.flow-copy { display: flex; flex-direction: column; gap: 0; line-height: 1.2; }
+.flow-copy strong { font-size: 11px; font-weight: 600; }
+.flow-copy span { font-size: 10px; color: var(--muted); }
 .flow-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px; height: 18px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
-  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 18px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; flex-shrink: 0;
 }
-.flow-step.l1 .flow-badge { background: rgba(99,102,241,.2); color: var(--accent-h); }
-.flow-step.l2 .flow-badge { background: rgba(63,185,80,.2); color: var(--success); }
-.flow-text { color: var(--muted); }
+.flow-node.l1 .flow-badge { background: rgba(99,102,241,.2); color: var(--accent-h); }
+.flow-node.l2 .flow-badge { background: rgba(63,185,80,.2); color: var(--success); }
 .flow-arrow { color: var(--muted); font-size: 14px; flex-shrink: 0; }
+.hero-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Segmented tabs */
+.seg-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.seg-tab {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all .12s;
+}
+.seg-tab:hover { color: var(--text); }
+.seg-tab.active {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,.15);
+}
 
 .tab-content { display: flex; flex-direction: column; gap: 10px; }
 
@@ -621,6 +645,22 @@ onUnmounted(() => stopPoll())
 
 /* Cards */
 .compact-card { padding: 10px 12px; }
+.card-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.toolbar-left { display: flex; align-items: center; gap: 8px; }
+.toolbar-title { font-size: 13px; font-weight: 600; }
+.toolbar-filters { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.toolbar-divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.loading-hint { padding: 16px; text-align: center; color: var(--muted); font-size: 12px; }
+
 .section-head {
   display: flex; align-items: center; gap: 8px;
   margin-bottom: 8px;
@@ -638,7 +678,6 @@ onUnmounted(() => stopPoll())
 .task-hint { font-weight: 400; color: var(--muted); font-size: 11px; }
 
 /* Task pills */
-.task-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .task-pill {
   padding: 4px 10px;
   background: var(--bg-subtle);
@@ -649,14 +688,13 @@ onUnmounted(() => stopPoll())
   transition: all .12s;
   color: var(--text);
 }
+.task-pill.sm { padding: 2px 7px; font-size: 12px; }
 .task-pill:hover { border-color: var(--accent); }
 .task-pill.active {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--bg-subtle));
 }
 
-.profile-pills { display: flex; align-items: center; gap: 4px; }
-.pill-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
 .profile-pill {
   padding: 2px 8px;
   background: transparent;
@@ -701,7 +739,13 @@ onUnmounted(() => stopPoll())
 .detail-row td { padding: 8px; background: var(--bg-subtle); border-top: none; }
 
 /* Layer 2 panel */
-.layer2-panel { display: flex; flex-direction: column; gap: 8px; }
+.expand-grid {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 12px;
+  align-items: start;
+}
+.layer2-panel { display: flex; flex-direction: column; gap: 6px; }
 .l2-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
 .l2-creds { display: flex; flex-wrap: wrap; gap: 6px; }
 .l2-cred {
@@ -714,7 +758,7 @@ onUnmounted(() => stopPoll())
 }
 .l2-rank { font-weight: 700; color: var(--muted); }
 .l2-prov { font-weight: 500; }
-.l1-scores { max-width: 360px; }
+.l1-scores { min-width: 0; }
 
 /* Policy */
 .policy-grid, .cost-grid {
@@ -732,14 +776,23 @@ onUnmounted(() => stopPoll())
 .policy-fields label { font-size: 10px; }
 .policy-fields input { padding: 3px 6px; font-size: 12px; }
 
-.profile-matrix.compact { gap: 6px; }
-.profile-row {
+.profile-grid {
   display: grid;
-  grid-template-columns: 48px 1fr;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
-.profile-name { font-size: 11px; font-weight: 500; }
+.profile-col {
+  padding: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.profile-col-head {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  text-align: center;
+}
 
 .compact-alert { padding: 6px 10px; margin-bottom: 0; font-size: 12px; }
 .empty-hint { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
@@ -788,8 +841,11 @@ onUnmounted(() => stopPoll())
 .text-danger { color: var(--danger); font-size: 11px; }
 
 @media (max-width: 640px) {
-  .flow-bar { flex-direction: column; align-items: stretch; }
+  .hero-strip { flex-direction: column; align-items: stretch; }
+  .flow-track { flex-direction: column; align-items: stretch; }
   .flow-arrow { display: none; }
+  .expand-grid { grid-template-columns: 1fr; }
+  .profile-grid { grid-template-columns: 1fr; }
   .dist-grid.compact { grid-template-columns: 1fr; }
 }
 </style>
