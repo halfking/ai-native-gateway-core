@@ -66,6 +66,7 @@ type requestLogRow struct {
 	APIKeyOwnerUser    *string    `json:"api_key_owner_user"`
 	ApplicationCode    *string    `json:"application_code"`
 	CanonicalName      *string    `json:"canonical_name"`
+	ProviderModel      *string    `json:"provider_model"`
 	TraceSeq           *int       `json:"trace_seq,omitempty"`
 }
 
@@ -107,7 +108,8 @@ const requestLogsSelectCols = `
 	COALESCE(NULLIF(TRIM(rl.api_key_prefix), ''), NULLIF(TRIM(ak.key_prefix), '')) AS api_key_prefix,
 	COALESCE(NULLIF(TRIM(rl.api_key_owner_user), ''), ak.owner_user) AS api_key_owner_user,
 	COALESCE(NULLIF(TRIM(rl.application_code), ''), app.code) AS application_code,
-	mc.canonical_name
+	mc.canonical_name,
+	mo_pick.provider_model
 `
 
 const requestLogsJoins = `
@@ -116,6 +118,38 @@ const requestLogsJoins = `
 	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	LEFT JOIN applications app ON app.id = ak.application_id
 	LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+	LEFT JOIN LATERAL (
+		SELECT COALESCE(
+			NULLIF(TRIM(mo.outbound_model_name), ''),
+			NULLIF(TRIM(mo.raw_model_name), '')
+		) AS provider_model
+		FROM model_offers mo
+		WHERE mo.credential_id = rl.credential_id
+		  AND (
+			(rl.canonical_id IS NOT NULL AND mo.canonical_id = rl.canonical_id)
+			OR (
+				rl.canonical_id IS NULL AND (
+					lower(mo.standardized_name) = lower(COALESCE(mc.canonical_name, rl.client_model, ''))
+					OR lower(mo.raw_model_name) = lower(COALESCE(rl.outbound_model, rl.client_model, ''))
+				)
+			)
+		  )
+		ORDER BY
+			CASE
+				WHEN rl.outbound_model IS NOT NULL
+				 AND lower(COALESCE(NULLIF(TRIM(mo.outbound_model_name), ''), TRIM(mo.raw_model_name)))
+					= lower(rl.outbound_model)
+				THEN 0 ELSE 1
+			END,
+			CASE WHEN NULLIF(TRIM(mo.outbound_model_name), '') IS NOT NULL THEN 0 ELSE 1 END,
+			CASE
+				WHEN lower(TRIM(mo.raw_model_name)) <> lower(TRIM(COALESCE(mo.standardized_name, mc.canonical_name, rl.client_model, '')))
+				THEN 0 ELSE 1
+			END,
+			mo.available DESC NULLS LAST,
+			mo.id DESC
+		LIMIT 1
+	) mo_pick ON TRUE
 `
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +195,7 @@ func scanRequestLogRow(rows interface {
 		&l.UsageSource,
 		&l.GwSessionID, &l.GwTaskID,
 		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
-		&l.CanonicalName,
+		&l.CanonicalName, &l.ProviderModel,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -413,6 +447,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.APIKeyOwnerUser,
 		&detail.ApplicationCode,
 		&detail.CanonicalName,
+		&detail.ProviderModel,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

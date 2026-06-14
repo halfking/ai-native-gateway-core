@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"strings"
+
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
@@ -26,4 +28,27 @@ func renderOutboundFromTransform(
 		offerRaw,
 		canonicalName,
 	)
+}
+
+// outboundModelForLog picks the supplier-facing model name stored on request_logs.
+// When the transform leaves outbound equal to the client model, prefer the
+// credential offer raw model so /request-logs can show "req → provider".
+func outboundModelForLog(clientModel, explicitOutbound, candidateRaw string) string {
+	clientModel = strings.TrimSpace(clientModel)
+	explicitOutbound = strings.TrimSpace(explicitOutbound)
+	candidateRaw = strings.TrimSpace(candidateRaw)
+
+	if candidateRaw != "" && candidateRaw != clientModel {
+		return candidateRaw
+	}
+	if explicitOutbound != "" && explicitOutbound != clientModel {
+		return explicitOutbound
+	}
+	if explicitOutbound != "" {
+		return explicitOutbound
+	}
+	if candidateRaw != "" {
+		return candidateRaw
+	}
+	return clientModel
 }
