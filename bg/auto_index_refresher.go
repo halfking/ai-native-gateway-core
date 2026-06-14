@@ -327,7 +327,7 @@ SELECT
     END AS avg_cost_per_1k_usd,
     MODE() WITHIN GROUP (ORDER BY rl.credential_id) AS primary_credential_id
 FROM request_logs rl
-WHERE rl.ts >= $1 - INTERVAL '5 minutes'
+WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < $1
   AND rl.is_auto_request = TRUE
   AND rl.canonical_id IS NOT NULL
