@@ -5,6 +5,7 @@ package modelcatalog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,19 +50,22 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
     updated_at = NOW(),
     available = CASE
         WHEN credential_model_bindings.available = FALSE
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%%'
+             -- 'manual%' in PostgreSQL LIKE matches any string starting with 'manual'
+             -- (e.g. 'manual_disabled', 'manual_perf_test'). The double-'%' from
+             -- the earlier Go raw string was a harmless typo but confusing to readers.
+             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
         THEN credential_model_bindings.available
         ELSE TRUE
     END,
     unavailable_reason = CASE
         WHEN credential_model_bindings.available = FALSE
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%%'
+             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
         THEN credential_model_bindings.unavailable_reason
         ELSE NULL
     END,
     unavailable_at = CASE
         WHEN credential_model_bindings.available = FALSE
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%%'
+             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
         THEN credential_model_bindings.unavailable_at
         ELSE NULL
     END
@@ -70,22 +74,39 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
 // ClearProviderBindings hard-deletes all credential_model_bindings for a
 // provider and removes orphan provider_models rows. This bypasses the
 // model_offers view DELETE trigger which only soft-deletes (reason=deleted).
+//
+// All DELETE statements run in a single transaction so a failure on the
+// orphan cleanup rolls back the bindings deletion. Without the transaction,
+// a partial failure would leave the provider with no bindings but its
+// provider_models rows still present, making the next list/fetch see stale
+// model entries.
 func ClearProviderBindings(ctx context.Context, db *pgxpool.Pool, providerID int) (bindingsDeleted int64, err error) {
 	if db == nil {
 		return 0, fmt.Errorf("database not configured")
 	}
-	tag, err := db.Exec(ctx, `
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	// Rollback is a no-op after a successful Commit.
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+			slog.Warn("clear provider bindings rollback failed", "error", rbErr, "provider_id", providerID)
+		}
+	}()
+
+	tag, err := tx.Exec(ctx, `
 		DELETE FROM credential_model_bindings
 		WHERE credential_id IN (
 			SELECT id FROM credentials WHERE provider_id = $1
 		)
 	`, providerID)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete bindings: %w", err)
 	}
 	bindingsDeleted = tag.RowsAffected()
 
-	_, err = db.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		DELETE FROM provider_models pm
 		WHERE pm.provider_id = $1
 		  AND NOT EXISTS (
@@ -94,7 +115,11 @@ func ClearProviderBindings(ctx context.Context, db *pgxpool.Pool, providerID int
 		  )
 	`, providerID)
 	if err != nil {
-		return bindingsDeleted, err
+		return bindingsDeleted, fmt.Errorf("delete orphan provider_models: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return bindingsDeleted, fmt.Errorf("commit: %w", err)
 	}
 	return bindingsDeleted, nil
 }
