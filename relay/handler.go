@@ -336,19 +336,7 @@ func (h *ChatHandler) serveWithExecutor(
 			w.Header().Set("Retry-After", "60")
 			*attemptErrCode = "rate_limit_exceeded"
 			*attemptErrMsg = "rate limit exceeded"
-			// Peek the body so the safety-net can recover client_model and
-			// request preview from the rejected request. Body is read lazily
-			// so non-rate-limited requests are not penalised.
-			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
-			if len(peeked) > maxBodySize {
-				peeked = peeked[:maxBodySize]
-			}
-			if len(peeked) > 0 {
-				*attemptRequestBody = peeked
-				if *attemptClientModel == "" {
-					*attemptClientModel = extractModelFromBody(peeked)
-				}
-			}
+			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
 		}
@@ -437,7 +425,13 @@ func (h *ChatHandler) serveWithExecutor(
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
 		*attemptErrCode = "body_read_error"
-		*attemptErrMsg = "failed to read request body"
+		*attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		slog.Warn("request body read failed",
+			"request_id", requestID,
+			"error", err,
+			"content_length", r.ContentLength,
+			"latency_ms", time.Since(startTime).Milliseconds(),
+		)
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "failed to read request body", "type": "invalid_request", "code": "body_read_error"},
 		})
@@ -449,6 +443,9 @@ func (h *ChatHandler) serveWithExecutor(
 	if len(bodyBytes) > maxBodySize {
 		*attemptErrCode = "body_too_large"
 		*attemptErrMsg = "request body exceeds 32 MiB limit"
+		if *attemptClientModel == "" {
+			*attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
+		}
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
 			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
 		})
@@ -459,6 +456,9 @@ func (h *ChatHandler) serveWithExecutor(
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
 		*attemptErrCode = "json_parse_error"
 		*attemptErrMsg = "invalid JSON in request body"
+		if *attemptClientModel == "" {
+			*attemptClientModel = extractModelFromBody(bodyBytes)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "invalid JSON in request body", "type": "invalid_request", "code": "json_parse_error"},
 		})
@@ -874,6 +874,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 					reqLog.Success = false
 					reqLog.RequestStatus = strPtr(telemetry.RequestStatusFailure)
 					reqLog.ErrorKind = strPtr("stream_error")
+					reqLog.FailureStage = strPtr("upstream")
 				}
 				if detailCode != "" {
 					reqLog.FailureDetailCode = strPtr(detailCode)
@@ -1743,7 +1744,10 @@ func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, 
 // body — the caller (serveWithExecutor) owns that responsibility via
 // its own defer.
 func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
-	if r.Body == nil {
+	if bodyOut == nil || r == nil || r.Body == nil {
+		return
+	}
+	if len(*bodyOut) > 0 {
 		return
 	}
 	const maxBody = 1 << 20 // 1MB
@@ -1752,6 +1756,9 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 		return
 	}
 	*bodyOut = buf
+	if modelOut == nil || *modelOut != "" {
+		return
+	}
 	var probe struct {
 		Model string `json:"model"`
 	}

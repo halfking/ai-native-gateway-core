@@ -175,7 +175,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
 		attemptErrCode = "body_read_error"
-		attemptErrMsg = "failed to read request body"
+		attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		slog.Warn("responses request body read failed",
+			"request_id", requestID,
+			"error", err,
+			"content_length", r.ContentLength,
+		)
 		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
 		return
 	}
