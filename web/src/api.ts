@@ -1030,7 +1030,9 @@ export function getKeyUsageByModel(keyId: number, params: { days?: number; start
   return req<ModelUsageForKey[]>('GET', `/api/usage/${keyId}/models${s ? '?' + s : ''}`)
 }
 
-export function getKeyUsageTrend(keyId: number, period: 'day' | 'week' | 'month' = 'day', opts: { days?: number; start?: string; end?: string } = {}) {
+export type UsageTrendPeriod = 'minute' | 'hour' | 'day' | 'week' | 'month'
+
+export function getKeyUsageTrend(keyId: number, period: UsageTrendPeriod = 'day', opts: { days?: number; start?: string; end?: string } = {}) {
   const qs = new URLSearchParams()
   qs.set('period', period)
   if (opts.start && opts.end) {
