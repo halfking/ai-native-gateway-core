@@ -236,17 +236,17 @@ func TestProviderRefresh_ProvidersAreIsolated(t *testing.T) {
 
 // ── startRefreshProviderModels — error paths that don't touch the DB ──────
 
-func TestStartRefreshProviderModels_NoDiscoveryService(t *testing.T) {
-	h := &Handler{db: nil, discSvc: nil}
+func TestStartRefreshProviderModels_NoDatabase(t *testing.T) {
+	h := &Handler{db: nil}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/providers/1/refresh-models", nil)
 	h.startRefreshProviderModels(rec, req, 1)
 
 	if rec.Code != 503 {
-		t.Fatalf("status = %d, want 503 when discSvc nil", rec.Code)
+		t.Fatalf("status = %d, want 503 when db nil", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "discovery service not available") {
-		t.Fatalf("body = %q, want discovery-unavailable message", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "database not configured") {
+		t.Fatalf("body = %q, want database-unavailable message", rec.Body.String())
 	}
 }
 
@@ -334,5 +334,59 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 	}
 	if hits != 2 {
 		t.Fatalf("hits = %d, want 2 candidate attempts", hits)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// MiniMax catalog uses discovery_strategy=manifest with models_endpoint_template=/models.
+// Manual refresh (forceAPI=true) must call the live API, not the stale manifest seed.
+func TestResolveModelsForCredential_ManifestStrategyForceAPIUsesLiveAPI(t *testing.T) {
+	h := &Handler{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"minimax-m2.7"},{"id":"minimax-m2.5"}]}`))
+	}))
+	defer srv.Close()
+
+	tpl := "/v1/models"
+	manifest := `{"models":[{"id":"MiniMax-Text-01"},{"id":"abab6.5s-chat"}]}`
+	cred := credentialRowLite{
+		baseURL:            srv.URL,
+		protocol:           "openai-completions",
+		discoveryStrategy:  "manifest",
+		modelsEndpointTpl:  &tpl,
+		modelsManifestJSON: &manifest,
+	}
+
+	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if source != "api" {
+		t.Fatalf("source = %q, want api", source)
+	}
+	if len(ids) != 2 || ids[0] != "minimax-m2.7" {
+		t.Fatalf("ids = %v, want live API models", ids)
+	}
+}
+
+func TestResolveModelsForCredential_ManifestStrategyScheduledUsesManifestOnly(t *testing.T) {
+	h := &Handler{}
+	manifest := `{"models":[{"id":"seed-a"},{"id":"seed-b"}]}`
+	cred := credentialRowLite{
+		discoveryStrategy:  "manifest_only",
+		modelsManifestJSON: &manifest,
+	}
+
+	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "", false)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if source != "manifest_only" {
+		t.Fatalf("source = %q, want manifest_only", source)
+	}
+	if len(ids) != 2 || ids[0] != "seed-a" {
+		t.Fatalf("ids = %v", ids)
 	}
 }
