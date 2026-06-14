@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -156,7 +157,8 @@ func computeCostContext(cands []Candidate) CostContext {
 }
 
 // percentile returns the p-th percentile (0-1) of a sorted slice.
-// Uses nearest-rank method (simple, deterministic, no interpolation).
+// Uses nearest-rank method with ceil (rounds up so p=0.5 of 10 items
+// returns the 5th item, which is the standard interpretation).
 // Caller must pre-sort.
 func percentile(sorted []float64, p float64) float64 {
 	if len(sorted) == 0 {
@@ -168,11 +170,16 @@ func percentile(sorted []float64, p float64) float64 {
 	if p >= 1 {
 		return sorted[len(sorted)-1]
 	}
-	rank := int(float64(len(sorted)) * p)
-	if rank >= len(sorted) {
-		rank = len(sorted) - 1
+	// ceil(n * p)
+	n := float64(len(sorted))
+	rank := int(n*p + 0.999999)
+	if rank < 1 {
+		rank = 1
 	}
-	return sorted[rank]
+	if rank > len(sorted) {
+		rank = len(sorted)
+	}
+	return sorted[rank-1]
 }
 
 // Refresh reloads the entire credential_model_index snapshot from the
@@ -308,44 +315,15 @@ func scanIndexRow(rows interface {
 // Example input: `["reasoning","code","agent"]`
 // Example input: `null` → returns nil
 //
-// Hand-rolled to avoid importing encoding/json (microbench: 3x faster
-// in hot paths). For tags, the input is constrained to a flat string
-// array by the YAML taxonomy loader.
+// Uses encoding/json (canonical, robust to escape sequences).
 func parseTagsJSONB(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "null" || s == "[]" {
 		return nil
 	}
-	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		return nil
-	}
-	body := s[1 : len(s)-1]
-	if body == "" {
-		return nil
-	}
-	out := make([]string, 0, 4)
-	depth := 0
-	start := 0
-	inStr := false
-	escaped := false
-	for i := 0; i < len(body); i++ {
-		c := body[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inStr:
-			escaped = true
-		case c == '"':
-			inStr = !inStr
-			if !inStr {
-				out = append(out, body[start+1:i])
-			}
-			start = i + 1
-		case !inStr && c == '[':
-			depth++
-		case !inStr && c == ']':
-			depth--
-		}
 	}
 	return out
 }
