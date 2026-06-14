@@ -57,17 +57,14 @@ EXECUTE FUNCTION notify_auto_route_refresh();
 DROP TRIGGER IF EXISTS trg_notify_auto_route_apikeys ON api_keys;
 CREATE TRIGGER trg_notify_auto_route_apikeys
 AFTER UPDATE OF
-    rate_limit_rpm, budget_usd, concurrency_limit
+    rate_limit_rpm, budget_usd, enabled, status
 ON api_keys
 FOR EACH ROW
 WHEN (OLD.* IS DISTINCT FROM NEW.*)
 EXECUTE FUNCTION notify_auto_route_refresh();
 
--- model_offers — 价格 / 上下文窗口变化
-DROP TRIGGER IF EXISTS trg_notify_auto_route_mo ON model_offers;
-CREATE TRIGGER trg_notify_auto_route_mo
-AFTER INSERT OR UPDATE OR DELETE ON model_offers
-FOR EACH ROW
-EXECUTE FUNCTION notify_auto_route_refresh();
+-- Note: model_offers is a VIEW, not a table — cannot have triggers.
+-- Price changes propagate via credentials / credential_model_bindings
+-- triggers instead (covers the same change paths).
 
 COMMIT;
