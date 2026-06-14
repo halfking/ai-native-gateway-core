@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"testing"
+	"time"
 )
 
 func TestProfileWeights_AllProfilesSum(t *testing.T) {
