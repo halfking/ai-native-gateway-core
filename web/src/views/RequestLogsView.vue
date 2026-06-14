@@ -128,16 +128,38 @@ const taskSummary = computed(() => {
   return { total: rows.value.length, ok, fail, pending }
 })
 
+/** 点击脉络：优先按会话聚合（同一会话含多步请求）；无会话时按任务 ID */
+function filterByTrace(row: RequestLogRow) {
+  if (row.gw_session_id) {
+    gwSessionFilter.value = row.gw_session_id
+    gwTaskFilter.value = ''
+  } else if (row.gw_task_id) {
+    gwTaskFilter.value = row.gw_task_id
+    gwSessionFilter.value = ''
+  } else {
+    return
+  }
+  // 脉络视图拉宽时间窗与页大小，避免同脉络记录落在默认 24h/50 条外
+  if (hours.value < 168) hours.value = 168
+  if (pageSize.value < 200) pageSize.value = 200
+  resetPageAndLoad()
+}
+
 function filterByTask(taskId: string | null | undefined) {
   if (!taskId) return
   gwTaskFilter.value = taskId
   gwSessionFilter.value = ''
+  if (hours.value < 168) hours.value = 168
+  if (pageSize.value < 200) pageSize.value = 200
   resetPageAndLoad()
 }
 
 function filterBySession(sessionId: string | null | undefined) {
   if (!sessionId) return
   gwSessionFilter.value = sessionId
+  gwTaskFilter.value = ''
+  if (hours.value < 168) hours.value = 168
+  if (pageSize.value < 200) pageSize.value = 200
   resetPageAndLoad()
 }
 
@@ -147,25 +169,34 @@ function clearTraceFilter() {
   resetPageAndLoad()
 }
 
-function routeLabel(r: RequestLogRow): string {
-  if (r.provider_name) return r.provider_name
+function routeProviderLine(r: RequestLogRow): string {
+  const parts: string[] = []
+  if (r.provider_name) parts.push(r.provider_name)
+  else if (r.provider_code) parts.push(r.provider_code)
+  if (r.credential_label) parts.push(r.credential_label)
+  if (parts.length) return parts.join(' · ')
   if (r.error_kind === 'missing_key' || r.error_kind === 'invalid_key') return '—'
   return '—'
 }
 
-function modelArrow(r: RequestLogRow): string {
+function routeModelLine(r: RequestLogRow): string {
   const inM = r.client_model ?? '—'
   const outM = r.outbound_model
   if (!outM || outM === inM) return inM
   return `${inM} → ${outM}`
 }
 
-function callerLabel(r: RequestLogRow): string {
-  const parts: string[] = []
-  if (r.api_key_owner_user) parts.push(r.api_key_owner_user)
-  else if (r.api_key_prefix) parts.push(r.api_key_prefix)
-  if (r.application_code) parts.push(r.application_code)
-  return parts.length ? parts.join(' · ') : (r.api_key_prefix ?? '无key')
+function callerUserLine(r: RequestLogRow): string {
+  if (r.api_key_owner_user) return r.api_key_owner_user
+  if (r.end_user_id) return r.end_user_id
+  if (r.application_code) return r.application_code
+  return '—'
+}
+
+function callerKeyLine(r: RequestLogRow): string {
+  const key = r.api_key_prefix ?? '无key'
+  if (r.application_code && r.api_key_owner_user) return `${key} · ${r.application_code}`
+  return key
 }
 
 async function load() {
@@ -212,6 +243,14 @@ function resetPageAndLoad() {
 
 function fmtTs(ts: string) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false })
+}
+
+function fmtDate(ts: string) {
+  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+function fmtTime(ts: string) {
+  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' | null) {
@@ -412,7 +451,7 @@ onMounted(async () => {
       style="margin-bottom:12px;padding:10px 14px;font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"
     >
       <span style="font-weight:600">任务脉络</span>
-      <span>本页 {{ taskSummary.total }} 步</span>
+      <span>共 {{ total }} 步（本页 {{ taskSummary.total }}）</span>
       <span style="color:var(--success)">成功 {{ taskSummary.ok }}</span>
       <span style="color:var(--danger)">失败 {{ taskSummary.fail }}</span>
       <span v-if="taskSummary.pending" style="color:var(--warning, #f59e0b)">进行中 {{ taskSummary.pending }}</span>
@@ -429,7 +468,6 @@ onMounted(async () => {
             <th class="col-time">时间</th>
             <th class="col-trace">脉络</th>
             <th class="col-caller">调用方</th>
-            <th class="col-model">模型</th>
             <th class="col-route">路由</th>
             <th class="col-tokens">Token</th>
             <th class="col-lat">延迟</th>
@@ -437,8 +475,8 @@ onMounted(async () => {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="traceMode ? 9 : 8">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td :colspan="traceMode ? 9 : 8">无记录</td></tr>
+          <tr v-if="loading"><td :colspan="traceMode ? 8 : 7">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td :colspan="traceMode ? 8 : 7">无记录</td></tr>
           <tr
             v-for="r in rows"
             :key="r.request_id + r.ts"
@@ -446,42 +484,51 @@ onMounted(async () => {
             :class="{ 'row-failure': r.request_status === 'failure' || (!r.success && r.request_status !== 'in_progress') }"
             @click="showDetail(r.request_id)"
           >
-            <td v-if="traceMode" class="col-seq" style="color:var(--muted);font-variant-numeric:tabular-nums">
-              {{ r.trace_seq ?? '—' }}
+            <td v-if="traceMode" class="col-seq">
+              <span class="cell-line1">{{ r.trace_seq ?? '—' }}</span>
             </td>
-            <td class="col-time" :title="r.request_id">{{ fmtTs(r.ts) }}</td>
-            <td class="col-trace">
-              <div
-                v-if="r.gw_task_id"
-                class="trace-link"
-                :title="r.gw_task_id"
-                @click.stop="filterByTask(r.gw_task_id)"
-              >{{ shortHash(r.gw_task_id) }}</div>
+            <td class="col-time" :title="`${r.request_id} · ${fmtTs(r.ts)}`">
+              <div class="cell-line1">{{ fmtDate(r.ts) }}</div>
+              <div class="cell-line2">{{ fmtTime(r.ts) }}</div>
+            </td>
+            <td class="col-trace" @click.stop="filterByTrace(r)">
               <div
                 v-if="r.gw_session_id"
-                class="trace-link trace-sub"
-                :title="r.gw_session_id"
-                @click.stop="filterBySession(r.gw_session_id)"
-              >{{ shortHash(r.gw_session_id) }}</div>
-              <span v-if="!r.gw_task_id && !r.gw_session_id" style="color:var(--muted)">—</span>
+                class="trace-link trace-full"
+                :title="`会话 ${r.gw_session_id}`"
+              >会话 {{ r.gw_session_id }}</div>
+              <div
+                v-if="r.gw_task_id"
+                class="trace-sub trace-full"
+                :title="`任务 ${r.gw_task_id}`"
+                @click.stop="filterByTask(r.gw_task_id)"
+              >任务 {{ r.gw_task_id }}</div>
+              <span v-if="!r.gw_task_id && !r.gw_session_id" class="cell-line2" style="color:var(--muted)">—</span>
             </td>
-            <td class="col-caller" :title="callerLabel(r)">
-              <div>{{ callerLabel(r) }}</div>
-              <div v-if="r.identity_hash" class="cell-sub" :title="r.identity_hash">{{ shortHash(r.identity_hash) }}</div>
+            <td class="col-caller" :title="`${callerUserLine(r)} · ${callerKeyLine(r)}`">
+              <div class="cell-line1">{{ callerUserLine(r) }}</div>
+              <div class="cell-line2">{{ callerKeyLine(r) }}</div>
             </td>
-            <td class="col-model" :title="modelArrow(r)">{{ modelArrow(r) }}</td>
-            <td class="col-route" :title="r.credential_label || ''">
-              <div>{{ routeLabel(r) }}</div>
-              <div v-if="r.request_mode" class="cell-sub">{{ r.request_mode }}</div>
+            <td class="col-route" :title="`${routeProviderLine(r)} · ${routeModelLine(r)}`">
+              <div class="cell-line1">{{ routeProviderLine(r) }}</div>
+              <div class="cell-line2">{{ routeModelLine(r) }}</div>
             </td>
             <td class="col-tokens" :title="tokenTitle(r.usage_source)">
-              <span v-if="r.prompt_tokens != null || r.completion_tokens != null">
-                {{ token(r.prompt_tokens, r.usage_source) }}/{{ token(r.completion_tokens, r.usage_source) }}
-              </span>
-              <span v-else>—</span>
+              <div class="cell-line1">
+                读 {{ token(r.prompt_tokens, r.usage_source) }} / 写 {{ token(r.completion_tokens, r.usage_source) }}
+              </div>
+              <div class="cell-line2">
+                缓读 {{ token(r.cache_read_tokens, r.usage_source) }} / 缓写 {{ token(r.cache_write_tokens, r.usage_source) }}
+              </div>
             </td>
-            <td class="col-lat">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td class="col-status" :style="{ color: statusColor(r) }" :title="statusTitle(r)">{{ statusLabel(r) }}</td>
+            <td class="col-lat">
+              <div class="cell-line1">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</div>
+              <div v-if="r.request_mode" class="cell-line2">{{ r.request_mode }}</div>
+            </td>
+            <td class="col-status" :style="{ color: statusColor(r) }" :title="statusTitle(r)">
+              <div class="cell-line1">{{ statusLabel(r) }}</div>
+              <div v-if="r.error_kind && r.request_status === 'failure'" class="cell-line2">{{ r.error_kind }}</div>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -603,24 +650,53 @@ onMounted(async () => {
 }
 .request-log-table th,
 .request-log-table td {
-  padding: 6px 8px;
+  padding: 5px 7px;
   vertical-align: top;
+}
+.col-seq {
+  width: 2.2rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.col-model {
-  white-space: normal;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.col-time {
+  width: 4.8rem;
+  white-space: nowrap;
+}
+.col-trace {
+  min-width: 9rem;
+  max-width: 14rem;
+  cursor: pointer;
 }
 .col-caller {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 7rem;
+  max-width: 11rem;
 }
-.cell-sub {
+.col-route {
+  min-width: 9rem;
+  max-width: 16rem;
+}
+.col-tokens {
+  min-width: 8.5rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.col-lat {
+  width: 4.5rem;
+  white-space: nowrap;
+}
+.col-status {
+  min-width: 4.5rem;
+  max-width: 7rem;
+}
+.cell-line1 {
+  font-size: 12px;
+  line-height: 1.35;
+}
+.cell-line2 {
   color: var(--muted);
   font-size: 10px;
+  line-height: 1.35;
   margin-top: 2px;
 }
 .trace-link {
@@ -634,6 +710,17 @@ onMounted(async () => {
 .trace-sub {
   color: var(--muted);
   margin-top: 2px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.trace-sub:hover {
+  color: var(--accent, #3b82f6);
+  text-decoration: underline;
+}
+.trace-full {
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .trace-summary {
   border-left: 3px solid var(--accent, #3b82f6);
