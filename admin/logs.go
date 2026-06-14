@@ -65,6 +65,7 @@ type requestLogRow struct {
 	APIKeyPrefix       *string    `json:"api_key_prefix"`
 	APIKeyOwnerUser    *string    `json:"api_key_owner_user"`
 	ApplicationCode    *string    `json:"application_code"`
+	CanonicalName      *string    `json:"canonical_name"`
 	TraceSeq           *int       `json:"trace_seq,omitempty"`
 }
 
@@ -103,7 +104,18 @@ const requestLogsSelectCols = `
 	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent,
 	rl.usage_source,
 	rl.gw_session_id, rl.gw_task_id,
-	rl.api_key_prefix, rl.api_key_owner_user, rl.application_code
+	COALESCE(NULLIF(TRIM(rl.api_key_prefix), ''), NULLIF(TRIM(ak.key_prefix), '')) AS api_key_prefix,
+	COALESCE(NULLIF(TRIM(rl.api_key_owner_user), ''), ak.owner_user) AS api_key_owner_user,
+	COALESCE(NULLIF(TRIM(rl.application_code), ''), app.code) AS application_code,
+	mc.canonical_name
+`
+
+const requestLogsJoins = `
+	LEFT JOIN providers p ON p.id = rl.provider_id
+	LEFT JOIN credentials c ON c.id = rl.credential_id
+	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
+	LEFT JOIN applications app ON app.id = ak.application_id
+	LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
 `
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +161,7 @@ func scanRequestLogRow(rows interface {
 		&l.UsageSource,
 		&l.GwSessionID, &l.GwTaskID,
 		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
+		&l.CanonicalName,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -295,12 +308,11 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM request_logs rl
-		LEFT JOIN providers p ON p.id = rl.provider_id
-		LEFT JOIN credentials c ON c.id = rl.credential_id
+		%s
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, requestLogsSelectCols, traceSeqCol, where, orderBy, limitIdx, offsetIdx), listArgs...)
+	`, requestLogsSelectCols, traceSeqCol, requestLogsJoins, where, orderBy, limitIdx, offsetIdx), listArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -344,12 +356,11 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s, rl.request_body::text, rl.response_body::text
 		  FROM request_logs rl
-	 LEFT JOIN providers p ON p.id = rl.provider_id
-	 LEFT JOIN credentials c ON c.id = rl.credential_id
+		%s
 		 WHERE rl.request_id = $1
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
-	`, requestLogsSelectCols), requestID).Scan(
+	`, requestLogsSelectCols, requestLogsJoins), requestID).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
@@ -401,6 +412,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.APIKeyPrefix,
 		&detail.APIKeyOwnerUser,
 		&detail.ApplicationCode,
+		&detail.CanonicalName,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

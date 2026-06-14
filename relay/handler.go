@@ -921,6 +921,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 	h.telemetryClient.EmitDecisionLog(dl)
 
+	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
@@ -1219,6 +1220,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
 	}
+	applyKeyInfoToRequestLog(reqLog, keyInfo)
 	h.telemetryClient.EmitRequestLogInsert(reqLog)
 }
 
