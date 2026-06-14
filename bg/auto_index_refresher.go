@@ -170,7 +170,7 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // Pre-computes the three profile scores (smart, speed_first, cost_first)
 // inline so the hot path (Decider.Decide) doesn't need to recompute.
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
-	tag, err := r.db.Exec(ctx, rollupCredentialModelIndexSQL, bucket, bucket)
+	tag, err := r.db.Exec(ctx, rollupCredentialModelIndexSQL, bucket)
 	if err != nil {
 		return 0, fmt.Errorf("exec: %w", err)
 	}
@@ -304,8 +304,8 @@ LEFT JOIN model_offers mo
  AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model) OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
 LEFT JOIN model_aliases ma ON ma.raw_name = COALESCE(rl.outbound_model, rl.client_model)
 LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
-WHERE rl.ts >= $2 - INTERVAL '5 minutes'
-  AND rl.ts < $2
+WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
+  AND rl.ts < NOW()
   AND rl.credential_id IS NOT NULL
   AND COALESCE(cr.status, 'active') NOT IN ('disabled')
   AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
