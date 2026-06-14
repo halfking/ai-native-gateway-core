@@ -37,6 +37,12 @@ type Handler struct {
 		Stats() map[string]interface{}
 		GetLiveConcurrent(credID int64, model string) int64
 	}
+	// autoIndexRefresher is wired from cmd/gateway/main.go to let the
+	// /api/admin/auto-route/refresh endpoint trigger immediate
+	// credential_model_index refresh. nil in test mode.
+	autoIndexRefresher interface {
+		RefreshOnce(ctx context.Context) error
+	}
 	refreshMu   sync.Mutex               // guards lazy init of refreshState
 	refreshState *providerRefreshState   // per-provider "refresh model list" tracking (see providers.go)
 }
@@ -129,6 +135,16 @@ func (h *Handler) SetPeakCollector(pc interface {
 	h.peakCollector = pc
 }
 
+// SetAutoIndexRefresher injects the bg.AutoIndexRefresher so the
+// /api/admin/auto-route/refresh endpoint can trigger an immediate
+// credential_model_index refresh. Accepts a structural interface to
+// avoid an import cycle with the bg package.
+func (h *Handler) SetAutoIndexRefresher(r interface {
+	RefreshOnce(ctx context.Context) error
+}) {
+	h.autoIndexRefresher = r
+}
+
 func (h *Handler) fpSlotsDefaultLimit() int {
 	if h.fpSlots == nil {
 		return 5
@@ -215,6 +231,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		// v2.0 auto-route admin endpoints (Phase 3).
 		autoH := NewAutoRouteHandlers(h.db)
+		if h.autoIndexRefresher != nil {
+			autoH.SetIndexRefresher(h.autoIndexRefresher)
+		}
 		autoH.RegisterAutoRouteRoutes(mux, admin)
 	}
 }
