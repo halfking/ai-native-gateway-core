@@ -221,8 +221,7 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // spinning up the full autoroute.Score() formula in PL/pgSQL.
 // The Decider still calls autoroute.Score() at request time using fresh
 // signals, so the SQL scores are advisory.
-const rollupCredentialModelIndexSQL = `
-INSERT INTO credential_model_index (
+const rollupCredentialModelIndexSQL = `INSERT INTO credential_model_index (
     bucket, credential_id, raw_model, canonical_id,
     billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
     success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
@@ -230,89 +229,61 @@ INSERT INTO credential_model_index (
 )
 SELECT
     $1 AS bucket,
-    rl.credential_id AS credential_id,
+    rl.credential_id,
     COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
     mo.canonical_id,
     mo.billing_mode,
-    mo.unit_price_in_per_1m,
-    mo.unit_price_out_per_1m,
-    mc.context_window,
+    AVG(mo.unit_price_in_per_1m)  AS unit_price_in_per_1m,
+    AVG(mo.unit_price_out_per_1m) AS unit_price_out_per_1m,
+    MAX(mc.context_window)        AS context_window,
     -- success rate over the bucket window
     COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) AS success_rate,
-    -- p95 latency (approximated via percentile_cont; for >10k rows,
-    -- switch to approx_percentile for speed)
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms)::int, 1000) AS p95_latency_ms,
-    -- live concurrency from peak_1m
-    COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-              WHERE credential_id = rl.credential_id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
-              ORDER BY bucket DESC LIMIT 1), 0) AS active_sessions,
-    cr.concurrency_limit,
-    CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
-         THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                   WHERE credential_id = rl.credential_id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
-                                   ORDER BY bucket DESC LIMIT 1), 0)::numeric
-                         / cr.concurrency_limit)
-         ELSE 0
-    END AS pressure_ratio,
-    -- pre-computed scores (advisory — final score computed at request time)
-    -- smart: balanced
-    100 * (1 - LEAST(1.0,
-        COALESCE(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m, 0) / 20.0)) * 0.25
-      + (100 - LEAST(100, COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms), 1000)::numeric / 30)) * 0.25
-      + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
-      + 50 * 0.25 -- match placeholder
-      + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
-                  THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = rl.credential_id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
-                                            ORDER BY bucket DESC LIMIT 1), 0)::numeric
-                                  / cr.concurrency_limit)
-                  ELSE 0
-             END) * 100 * 0.10
-      + 80 * 0.15 AS score_smart,
-    -- speed_first: weight speed 5x more than cost
-    100 * (1 - LEAST(1.0,
-        COALESCE(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m, 0) / 20.0)) * 0.10
-      + (100 - LEAST(100, COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms), 1000)::numeric / 30)) * 0.50
-      + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
-      + 50 * 0.15
-      + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
-                  THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = rl.credential_id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
-                                            ORDER BY bucket DESC LIMIT 1), 0)::numeric
-                                  / cr.concurrency_limit)
-                  ELSE 0
-             END) * 100 * 0.05
-      + 80 * 0.10 AS score_speed_first,
-    -- cost_first: weight price 5x more than speed
-    100 * (1 - LEAST(1.0,
-        COALESCE(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m, 0) / 20.0)) * 0.50
-      + (100 - LEAST(100, COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms), 1000)::numeric / 30)) * 0.10
-      + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
-      + 50 * 0.20
-      + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
-                  THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = rl.credential_id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
-                                            ORDER BY bucket DESC LIMIT 1), 0)::numeric
-                                  / cr.concurrency_limit)
-                  ELSE 0
-             END) * 100 * 0.05
-      + 80 * 0.10 AS score_cost_first
+    -- active_sessions / concurrency_limit / pressure_ratio:
+    --   advisory fields, set to 0 here (no subquery).
+    --   The customer_cost_view recomputes active_concurrent live from
+    --   request_logs so this static value is informational only.
+    0                          AS active_sessions,
+    MAX(cr.concurrency_limit)  AS concurrency_limit,
+    0::numeric                 AS pressure_ratio,
+    -- Simplified pre-computed scores (no subquery; pressure assumed 0).
+    -- smart weights: price=25 speed=25 stab=20 match=25 pressure=10 ctx=15
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.25
+   + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.25
+   + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
+   + 50 * 0.25
+   + 100 * 0.10
+   + 80 * 0.15)::numeric(8,4) AS score_smart,
+    -- speed_first weights: price=10 speed=50 stab=20 match=15 pressure=5 ctx=10
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.10
+   + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.50
+   + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.20
+   + 50 * 0.15
+   + 100 * 0.05
+   + 80 * 0.10)::numeric(8,4) AS score_speed_first,
+    -- cost_first weights: price=50 speed=10 stab=15 match=20 pressure=5 ctx=10
+    (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.50
+   + COALESCE(100 - LEAST(100, percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms) / 30), 50) * 0.10
+   + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
+   + 50 * 0.20
+   + 100 * 0.05
+   + 80 * 0.10)::numeric(8,4) AS score_cost_first
 FROM request_logs rl
 JOIN credentials cr ON cr.id = rl.credential_id
 LEFT JOIN model_offers mo
   ON mo.credential_id = rl.credential_id
- AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model) OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
-LEFT JOIN model_aliases ma ON ma.raw_name = COALESCE(rl.outbound_model, rl.client_model)
-LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+ AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model)
+   OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
+LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < NOW()
   AND rl.credential_id IS NOT NULL
   AND COALESCE(cr.status, 'active') NOT IN ('disabled')
   AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
-GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model), mo.canonical_id, mo.billing_mode,
-         mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mc.context_window,
-         cr.concurrency_limit
+GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
+         mo.canonical_id, mo.billing_mode
 ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
+    canonical_id         = EXCLUDED.canonical_id,
     billing_mode         = EXCLUDED.billing_mode,
     unit_price_in_per_1m = EXCLUDED.unit_price_in_per_1m,
     unit_price_out_per_1m = EXCLUDED.unit_price_out_per_1m,
