@@ -5,6 +5,10 @@ FROM kx-llm-gateway-go:gitsha-8400475b
 # Stage new binary and web assets from build context
 COPY llm-gateway-go /tmp/llm-gateway-go-new
 COPY web/dist /tmp/web-dist-new/
+# v2.0.4 fix: also stage VERSION + .deploy_seq so admin UI footer
+# ("v<x> · build #N · YYYY-MM-DD") renders correctly. Without these
+# files loadVersionInfo() falls back to version=0.1.0 + build_seq=0.
+COPY VERSION .deploy_seq /tmp/version-files/
 
 # Replace binary (need root for /usr/local/bin/)
 USER root
@@ -14,7 +18,10 @@ RUN cp /tmp/llm-gateway-go-new /usr/local/bin/llm-gateway-go && \
     mkdir -p /opt/llm-gateway-go/web/dist && \
     cp -r /tmp/web-dist-new/* /opt/llm-gateway-go/web/dist/ && \
     chown -R llmgw:llmgw /opt/llm-gateway-go/web/dist && \
-    rm -rf /tmp/llm-gateway-go-new /tmp/web-dist-new
+    cp /tmp/version-files/VERSION /opt/llm-gateway-go/VERSION && \
+    cp /tmp/version-files/.deploy_seq /opt/llm-gateway-go/.deploy_seq && \
+    chown llmgw:llmgw /opt/llm-gateway-go/VERSION /opt/llm-gateway-go/.deploy_seq && \
+    rm -rf /tmp/llm-gateway-go-new /tmp/web-dist-new /tmp/version-files
 
 # Restore non-root user
 USER llmgw
