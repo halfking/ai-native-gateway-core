@@ -100,7 +100,11 @@ const periodOptions: { label: string; days: number }[] = [
   { label: '最近 30 天', days: 30 },
   { label: '最近 90 天', days: 90 },
 ]
-const selectedPeriod = ref(periodOptions[2])
+const selectedPeriodDays = ref(7)
+
+function periodLabelForDays(days: number): string {
+  return periodOptions.find(o => o.days === days)?.label ?? `最近 ${days} 天`
+}
 
 // Trend chart controls
 type TrendMetric = 'requests' | 'cost'
@@ -153,7 +157,7 @@ const trendSummaryLabel = computed(() => {
   if (useCustomRange.value && customStart.value && customEnd.value) {
     return `${periodLabel} · ${customStart.value} ~ ${customEnd.value}`
   }
-  return `${periodLabel} · ${selectedPeriod.value.label}`
+  return `${periodLabel} · ${periodLabelForDays(selectedPeriodDays.value)}`
 })
 
 const trendGranularityHint = computed(() => {
@@ -177,7 +181,7 @@ function customRangeDaySpan(): number | null {
 function effectiveWindowDays(): number {
   const customDays = customRangeDaySpan()
   if (customDays != null) return customDays
-  return selectedPeriod.value.days
+  return selectedPeriodDays.value
 }
 
 function clampWindowForGranularity(period: PeriodType): boolean {
@@ -185,10 +189,11 @@ function clampWindowForGranularity(period: PeriodType): boolean {
   const limit = TREND_WINDOW_LIMITS[period]
   if (effectiveWindowDays() <= limit) return false
   if (useCustomRange.value) return false
-  const match = periodOptions.find(o => o.days === limit)
-    ?? periodOptions.filter(o => o.days <= limit).at(-1)
-  if (match && selectedPeriod.value !== match) {
-    selectedPeriod.value = match
+  const matchDays = period === 'minute'
+    ? Math.min(selectedPeriodDays.value, TREND_WINDOW_LIMITS.minute)
+    : Math.min(selectedPeriodDays.value, TREND_WINDOW_LIMITS.hour)
+  if (matchDays !== selectedPeriodDays.value) {
+    selectedPeriodDays.value = matchDays
     return true
   }
   return false
@@ -226,17 +231,10 @@ function buildYAxis(maxVal: number, divisions = 4): { max: number; ticks: number
 
 const yAxis = computed(() => buildYAxis(maxTrendValue.value))
 
-const chartPixelWidth = computed(() => {
-  const n = keyTrend.value.length
-  if (n <= 48) return CHART_W
-  const pxPerPoint = trendPeriod.value === 'minute' ? 4 : trendPeriod.value === 'hour' ? 5 : 6
-  return Math.max(CHART_W, n * pxPerPoint)
-})
-
-const chartViewBox = computed(() => `0 0 ${chartPixelWidth.value} ${CHART_H}`)
+const chartViewBox = computed(() => `0 0 ${CHART_W} ${CHART_H}`)
 
 const plotSize = computed(() => ({
-  w: chartPixelWidth.value - CHART_PAD.l - CHART_PAD.r,
+  w: CHART_W - CHART_PAD.l - CHART_PAD.r,
   h: CHART_H - CHART_PAD.t - CHART_PAD.b,
 }))
 
@@ -410,12 +408,11 @@ function fmtQueryWindow(): string {
   if (useCustomRange.value && customStart.value && customEnd.value) {
     return `${customStart.value} ~ ${customEnd.value}`
   }
-  return selectedPeriod.value.label
+  return periodLabelForDays(selectedPeriodDays.value)
 }
 
 function trendTooltipStyle(p: { x: number; y: number }): Record<string, string> {
-  const width = chartPixelWidth.value
-  const leftPct = Math.min(92, Math.max(8, (p.x / width) * 100))
+  const leftPct = Math.min(92, Math.max(8, (p.x / CHART_W) * 100))
   const topPct = Math.max(6, (p.y / CHART_H) * 100 - 14)
   return {
     left: `${leftPct}%`,
@@ -457,7 +454,7 @@ async function loadDetail() {
       params.start = customStart.value
       params.end = customEnd.value
     } else {
-      params.days = selectedPeriod.value.days
+      params.days = selectedPeriodDays.value
     }
 
     const [usage, models, trend] = await Promise.all([
@@ -465,7 +462,7 @@ async function loadDetail() {
       getKeyUsageByModel(keyId.value, { ...params, limit: 50 }),
       getKeyUsageTrend(keyId.value, trendPeriod.value, useCustomRange.value && customStart.value && customEnd.value
         ? { start: customStart.value, end: customEnd.value }
-        : { days: selectedPeriod.value.days }),
+        : { days: selectedPeriodDays.value }),
     ])
 
     keyUsage.value = usage
@@ -684,8 +681,8 @@ watch(keyId, async () => {
                     :key="opt.label"
                     type="button"
                     class="btn btn-sm"
-                    :class="selectedPeriod === opt && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
-                    @click="useCustomRange = false; selectedPeriod = opt; clampWindowForGranularity(trendPeriod); changePeriod()"
+                    :class="selectedPeriodDays === opt.days && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                    @click="useCustomRange = false; selectedPeriodDays = opt.days; clampWindowForGranularity(trendPeriod); changePeriod()"
                   >{{ opt.label }}</button>
                   <button
                     type="button"
@@ -714,8 +711,7 @@ watch(keyId, async () => {
             </div>
             <div v-if="trendGranularityHint" class="trend-hint">{{ trendGranularityHint }}</div>
             <div class="trend-chart" v-if="keyTrend.length > 0">
-              <div class="trend-chart-scroll">
-                <div class="trend-chart-wrap" :style="{ width: chartPixelWidth + 'px', minWidth: '100%' }">
+              <div class="trend-chart-wrap">
                 <svg
                   class="trend-svg"
                   :viewBox="chartViewBox"
@@ -735,7 +731,7 @@ watch(keyId, async () => {
                     :key="'grid-' + gi"
                     :x1="CHART_PAD.l"
                     :y1="grid.y"
-                    :x2="chartPixelWidth - CHART_PAD.r"
+                    :x2="CHART_W - CHART_PAD.r"
                     :y2="grid.y"
                     class="trend-grid-line"
                   />
@@ -762,7 +758,7 @@ watch(keyId, async () => {
                     <circle
                       :cx="p.x"
                       :cy="p.y"
-                      r="3"
+                      :r="chartPoints.length > 120 ? 0 : 3"
                       class="trend-dot"
                       :class="{ 'trend-dot--active': hoveredTrendIndex === i }"
                       :fill="trendLineColor"
@@ -791,7 +787,6 @@ watch(keyId, async () => {
                   <div class="trend-tooltip-value">
                     {{ trendMetric === 'cost' ? fmtCost(hoveredPoint.entry.cost_usd) : fmtNum(hoveredPoint.entry.requests) + ' 次' }}
                   </div>
-                </div>
                 </div>
               </div>
               <div class="trend-summary">
@@ -1080,14 +1075,9 @@ watch(keyId, async () => {
   text-align: right;
 }
 
-.trend-chart-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-}
-
 .trend-chart-wrap {
   position: relative;
+  width: 100%;
   height: 160px;
 }
 
