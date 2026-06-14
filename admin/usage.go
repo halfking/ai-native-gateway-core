@@ -632,10 +632,50 @@ func validateUsageTrendPeriod(period string) (string, error) {
 		return "day", nil
 	}
 	switch period {
-	case "day", "week", "month":
+	case "minute", "hour", "day", "week", "month":
 		return period, nil
 	default:
-		return "", fmt.Errorf("period must be one of: day, week, month")
+		return "", fmt.Errorf("period must be one of: minute, hour, day, week, month")
+	}
+}
+
+func maxTrendWindow(period string) time.Duration {
+	switch period {
+	case "minute":
+		return 3 * 24 * time.Hour
+	case "hour":
+		return 31 * 24 * time.Hour
+	default:
+		return 366 * 24 * time.Hour
+	}
+}
+
+func validateTrendGranularityWindow(start, end time.Time, period string) error {
+	span := end.Sub(start)
+	max := maxTrendWindow(period)
+	if span > max {
+		switch period {
+		case "minute":
+			return fmt.Errorf("minute granularity supports at most 3 days (got %.0f hours)", span.Hours())
+		case "hour":
+			return fmt.Errorf("hour granularity supports at most 31 days (got %.0f days)", span.Hours()/24)
+		default:
+			return fmt.Errorf("date range cannot exceed 366 days")
+		}
+	}
+	return nil
+}
+
+func trendPeriodDateFormat(period string) string {
+	switch period {
+	case "minute", "hour":
+		return "YYYY-MM-DD HH24:MI"
+	case "week":
+		return "IYYY-IW"
+	case "month":
+		return "YYYY-MM"
+	default:
+		return "YYYY-MM-DD"
 	}
 }
 
@@ -645,7 +685,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		writeError(w, http.StatusBadRequest, periodErr.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	var keyExists int
@@ -659,13 +699,12 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 		writeError(w, http.StatusBadRequest, rangeErr.Error())
 		return
 	}
-
-	dateFormat := "YYYY-MM-DD"
-	if period == "week" {
-		dateFormat = "IYYY-IW"
-	} else if period == "month" {
-		dateFormat = "YYYY-MM"
+	if windowErr := validateTrendGranularityWindow(startTime, endTime, period); windowErr != nil {
+		writeError(w, http.StatusBadRequest, windowErr.Error())
+		return
 	}
+
+	dateFormat := trendPeriodDateFormat(period)
 
 	// generate_series fills buckets with zero rows so the trend chart
 	// never skips empty days/weeks/months (avoids misleading line segments).
