@@ -515,7 +515,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 		SELECT api_key_id, key_alias, tenant_id, application_id,
 		       cost_usd_1h, cost_usd_24h, cost_usd_7d,
 		       total_auto_requests, total_auto_success,
-		       peak_active_concurrent, avg_pressure_1h,
+		       active_concurrent, avg_pressure_1h,
 		       best_score_smart, best_score_speed_first, best_score_cost_first,
 		       last_request_at
 		FROM customer_cost_view
@@ -542,13 +542,13 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 		var keyAlias, tenantID *string
 		var appID *int
 		var cost1h, cost24h, cost7d, avgPressure *float64
-		var totalReqs, totalSuccess, peakActive *int
+		var totalReqs, totalSuccess, activeConcurrent *int
 		var bestSmart, bestSpeed, bestCost *float64
 		var lastReqAt *time.Time
 		if err := rows.Scan(&keyID, &keyAlias, &tenantID, &appID,
 			&cost1h, &cost24h, &cost7d,
 			&totalReqs, &totalSuccess,
-			&peakActive, &avgPressure,
+			&activeConcurrent, &avgPressure,
 			&bestSmart, &bestSpeed, &bestCost,
 			&lastReqAt); err != nil {
 			continue
@@ -580,8 +580,8 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 		if totalSuccess != nil {
 			entry["total_auto_success"] = *totalSuccess
 		}
-		if peakActive != nil {
-			entry["peak_active_concurrent"] = *peakActive
+		if activeConcurrent != nil {
+			entry["active_concurrent"] = *activeConcurrent
 		}
 		if avgPressure != nil {
 			entry["avg_pressure_1h"] = *avgPressure

@@ -416,14 +416,28 @@ func (c *HeuristicClassifier) Name() string { return "heuristic" }
 // normaliseForKeyword lower-cases and concatenates the two text sources
 // we scan for keywords. Concatenation is fine because keywords are
 // single-token or short multi-word strings — no boundary issues.
+//
+// Performance guard: caps the concatenated length at maxScanTextBytes
+// (default 32 KiB). Keyword scanning is O(text × keywords); a 1 MB
+// system prompt would take ~100 ms. Capping at 32 KiB keeps the scan
+// under 1 ms while still covering the entire user message and the head
+// of the system prompt (where instructions typically live).
+const maxScanTextBytes = 32 * 1024
+
 func normaliseForKeyword(lastUser, system string) string {
 	var b strings.Builder
 	if system != "" {
-		b.WriteString(strings.ToLower(system))
+		if len(system) > maxScanTextBytes/2 {
+			system = system[:maxScanTextBytes/2] // truncate head — system instructions typically lead
+		}
+		b.WriteString(lowerASCII(system))
 		b.WriteByte('\n')
 	}
 	if lastUser != "" {
-		b.WriteString(strings.ToLower(lastUser))
+		if len(lastUser) > maxScanTextBytes {
+			lastUser = lastUser[:maxScanTextBytes]
+		}
+		b.WriteString(lowerASCII(lastUser))
 	}
 	return b.String()
 }

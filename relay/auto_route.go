@@ -19,10 +19,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
+
+// autoFallbackModel returns the model used when decider fails or is
+// unconfigured. Override via LLM_GATEWAY_AUTO_FALLBACK_MODEL env var.
+// Defaults to "claude-sonnet-4.5" (canonical name).
+func autoFallbackModel() string {
+	if m := strings.TrimSpace(os.Getenv("LLM_GATEWAY_AUTO_FALLBACK_MODEL")); m != "" {
+		return m
+	}
+	return "claude-sonnet-4.5"
+}
 
 // autoHeaderName is the response header carrying the decision JSON.
 // Stable name (no x- prefix) so it's easy to grep in proxy logs.
@@ -250,8 +261,8 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	}
 	if h.decider == nil {
 		// No decider wired → fall back to default model
-		reqBody.Model = "claude-sonnet-4.5"
-		return rewriteBodyWithModel(rawBody, "claude-sonnet-4.5"), nil, false
+		reqBody.Model = autoFallbackModel()
+		return rewriteBodyWithModel(rawBody, autoFallbackModel()), nil, false
 	}
 
 	sigs := extractSignalsForAuto(reqBody, rawBody)
@@ -267,8 +278,8 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		)
 		// Fall back to a default chat model rather than 502 — clients
 		// should not be punished for the gateway's transient issues.
-		reqBody.Model = "claude-sonnet-4.5"
-		return rewriteBodyWithModel(rawBody, "claude-sonnet-4.5"), nil, false
+		reqBody.Model = autoFallbackModel()
+		return rewriteBodyWithModel(rawBody, autoFallbackModel()), nil, false
 	}
 
 	reqBody.Model = decision.ChosenModel
