@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type KeyInfo struct {
 	TenantID             string   `json:"tenant_id"`
 	ApplicationID        int      `json:"application_id"`
 	ApplicationCode      string   `json:"application_code"`
+	KeyPrefix            string   `json:"key_prefix"`
 	DefaultClientProfile *string  `json:"default_client_profile"`
 	OwnerUser            *string  `json:"owner_user"`
 	RateLimitRPM         *int     `json:"rate_limit_rpm"`
@@ -125,6 +127,60 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 	return v.(*KeyInfo), nil
 }
 
+type KeyLookupMeta struct {
+	ID                   int
+	KeyPrefix            string
+	OwnerUser            *string
+	Status               string
+	Enabled              bool
+	ApplicationCode      string
+	DefaultClientProfile *string
+	TenantID             string
+	ApplicationID        int
+}
+
+func (kv *KeyVerifier) LookupKeyMeta(ctx context.Context, rawKey string) (*KeyLookupMeta, error) {
+	if !kv.Enabled() || strings.TrimSpace(rawKey) == "" {
+		return nil, nil
+	}
+	keyHash := hashAPIKey(kv.secretKey, rawKey)
+	var appID int64
+	var meta KeyLookupMeta
+	err := kv.dbPool.QueryRow(ctx, `
+		SELECT
+			ak.id,
+			COALESCE(ak.key_prefix, ''),
+			ak.owner_user,
+			COALESCE(ak.status, 'active'),
+			ak.enabled,
+			app.code,
+			app.default_client_profile,
+			ak.tenant_id,
+			ak.application_id
+		FROM api_keys ak
+		JOIN applications app ON app.id = ak.application_id
+		WHERE ak.key_hash = $1
+	`, keyHash).Scan(
+		&meta.ID,
+		&meta.KeyPrefix,
+		&meta.OwnerUser,
+		&meta.Status,
+		&meta.Enabled,
+		&meta.ApplicationCode,
+		&meta.DefaultClientProfile,
+		&meta.TenantID,
+		&appID,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	meta.ApplicationID = int(appID)
+	return &meta, nil
+}
+
 func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInfo, error) {
 	if kv.dbPool == nil || kv.secretKey == "" {
 		return nil, fmt.Errorf("key verify DB not configured")
@@ -139,6 +195,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			ak.tenant_id,
 			ak.application_id,
 			app.code AS application_code,
+			COALESCE(ak.key_prefix, '') AS key_prefix,
 			app.default_client_profile,
 			ak.owner_user,
 			ak.rate_limit_rpm,
@@ -159,6 +216,7 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.TenantID,
 		&appID,
 		&info.ApplicationCode,
+		&info.KeyPrefix,
 		&info.DefaultClientProfile,
 		&info.OwnerUser,
 		&info.RateLimitRPM,

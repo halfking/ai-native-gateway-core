@@ -62,6 +62,10 @@ type requestLogRow struct {
 	UsageSource        *string    `json:"usage_source"`
 	GwSessionID        *string    `json:"gw_session_id"`
 	GwTaskID           *string    `json:"gw_task_id"`
+	APIKeyPrefix       *string    `json:"api_key_prefix"`
+	APIKeyOwnerUser    *string    `json:"api_key_owner_user"`
+	ApplicationCode    *string    `json:"application_code"`
+	TraceSeq           *int       `json:"trace_seq,omitempty"`
 }
 
 type requestLogDetail struct {
@@ -98,7 +102,8 @@ const requestLogsSelectCols = `
 	rl.stream_first_chunk_ms, rl.stream_chunk_count,
 	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent,
 	rl.usage_source,
-	rl.gw_session_id, rl.gw_task_id
+	rl.gw_session_id, rl.gw_task_id,
+	rl.api_key_prefix, rl.api_key_owner_user, rl.application_code
 `
 
 func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -124,9 +129,9 @@ func (h *Handler) handleLogsRoot(w http.ResponseWriter, r *http.Request) {
 
 func scanRequestLogRow(rows interface {
 	Scan(dest ...any) error
-}) (requestLogRow, error) {
+}, withTraceSeq bool) (requestLogRow, error) {
 	var l requestLogRow
-	err := rows.Scan(
+	dest := []any{
 		&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
 		&l.ClientModel, &l.OutboundModel,
 		&l.CredentialID, &l.CredentialLabel,
@@ -143,7 +148,12 @@ func scanRequestLogRow(rows interface {
 		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
 		&l.UsageSource,
 		&l.GwSessionID, &l.GwTaskID,
-	)
+		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
+	}
+	if withTraceSeq {
+		dest = append(dest, &l.TraceSeq)
+	}
+	err := rows.Scan(dest...)
 	return l, err
 }
 
@@ -259,6 +269,16 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.usage_source = $%d", v)
 	}
 
+	hasTaskFilter := strings.TrimSpace(queryString(r, "gw_task_id")) != ""
+	hasSessionFilter := strings.TrimSpace(queryString(r, "gw_session_id")) != ""
+	chrono := queryString(r, "chrono") == "1" || hasTaskFilter || hasSessionFilter
+	orderBy := "rl.ts DESC"
+	traceSeqCol := ""
+	if chrono {
+		orderBy = "rl.ts ASC"
+		traceSeqCol = ", ROW_NUMBER() OVER (ORDER BY rl.ts ASC) AS trace_seq"
+	}
+
 	where := strings.Join(clauses, " AND ")
 
 	var count int
@@ -273,14 +293,14 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	offsetIdx := argIdx + 1
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT %s
+		SELECT %s%s
 		FROM request_logs rl
 		LEFT JOIN providers p ON p.id = rl.provider_id
 		LEFT JOIN credentials c ON c.id = rl.credential_id
 		WHERE %s
-		ORDER BY rl.ts DESC
+		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, requestLogsSelectCols, where, limitIdx, offsetIdx), listArgs...)
+	`, requestLogsSelectCols, traceSeqCol, where, orderBy, limitIdx, offsetIdx), listArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -289,7 +309,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]requestLogRow, 0)
 	for rows.Next() {
-		l, err := scanRequestLogRow(rows)
+		l, err := scanRequestLogRow(rows, chrono)
 		if err != nil {
 			continue
 		}
@@ -378,6 +398,9 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.UsageSource,
 		&detail.GwSessionID,
 		&detail.GwTaskID,
+		&detail.APIKeyPrefix,
+		&detail.APIKeyOwnerUser,
+		&detail.ApplicationCode,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

@@ -152,64 +152,42 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//    *attemptLogged bool is shared with the inner functions via
 	//    pointer so success / explicit-failure paths can mark the
 	//    row as already-written to avoid double-logging.
-	var (
-		attemptLoggedFlag   bool
-		attemptKeyInfo      *auth.KeyInfo
-		attemptClientModel  string
-		attemptErrCode      string
-		attemptErrMsg       string
-		attemptProviderID   *int
-		attemptCredentialID *int
-		attemptRequestBody  []byte
-	)
-	attemptLogged := &attemptLoggedFlag
+	var logCtx *RequestLogContext
 	requestID := r.Header.Get("X-Request-Id")
 	if requestID == "" {
 		requestID = generateRequestID()
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	startTime := time.Now()
-		defer func() {
+	logCtx = h.NewRequestLogContext(r, requestID, startTime)
+	defer func() {
 		slog.Info("safety_net_defer_fired",
 			"request_id", requestID,
-			"attempt_err_code", attemptErrCode,
-			"attempt_logged", *attemptLogged)
+			"attempt_err_code", logCtx.ErrCode,
+			"attempt_logged", logCtx.IsLogged())
 		if rec := recover(); rec != nil {
 			slog.Error("chat handler panic", "panic", rec, "request_id", requestID)
-			attemptErrCode = "internal_panic"
-			attemptErrMsg = "internal server error"
-			// Make a best-effort body capture so the row can show what
-			// the client was sending when we crashed.  captureAttemptBody
-			// is a no-op when r.Body is already drained or nil.
-			if len(attemptRequestBody) == 0 {
-				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			logCtx.SetError("internal_panic", "internal server error")
+			if len(logCtx.Body) == 0 {
+				logCtx.EnsureCaptured()
 			}
-			if attemptClientModel == "" {
-				if len(attemptRequestBody) > 0 {
-					attemptClientModel = extractModelFromBody(attemptRequestBody)
+			if logCtx.ClientModel == "" {
+				if len(logCtx.Body) > 0 {
+					logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 				}
-				if attemptClientModel == "" {
-					attemptClientModel = "<unknown>"
+				if logCtx.ClientModel == "" {
+					logCtx.SetClientModel("<unknown>")
 				}
 			}
-			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
-				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg,
-				int(time.Since(startTime).Milliseconds()),
-				attemptRequestBody, attemptKeyInfo, r)
-			if !*attemptLogged {
-				writeErrorJSON(w, http.StatusInternalServerError, requestID,
-					"internal server error", "server_error", "internal_panic")
-			}
-		} else if attemptErrCode != "" && !*attemptLogged {
+			logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, logCtx.ProviderID, logCtx.CredentialID)
+			writeErrorJSON(w, http.StatusInternalServerError, requestID,
+				"internal server error", "server_error", "internal_panic")
+		} else if logCtx.ErrCode != "" && !logCtx.IsLogged() {
 			slog.Info("safety_net: recording failed request",
 				"request_id", requestID,
-				"error_kind", attemptErrCode,
-				"client_model", attemptClientModel)
-			latency := int(time.Since(startTime).Milliseconds())
-			h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
-				attemptProviderID, attemptCredentialID,
-				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+				"error_kind", logCtx.ErrCode,
+				"client_model", logCtx.ClientModel)
+			logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, logCtx.ProviderID, logCtx.CredentialID)
 		}
 	}()
 
@@ -222,34 +200,19 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		attemptErrCode = "method_not_allowed"
-		attemptErrMsg = "method not allowed"
+		logCtx.SetError("method_not_allowed", "method not allowed")
 		http.Error(w, `{"error":{"message":"Method not allowed","type":"invalid_request","code":"method_not_allowed"}}`, http.StatusMethodNotAllowed)
 		return
 	}
 
 	if h.executor != nil && h.provider != nil && h.provider.Enabled() {
-		// serveWithExecutor shares the outer-scope attempt state via
-		// Go's closure capture: any field it writes is visible to the
-		// deferred safety-net below.  attemptLogged is passed as
-		// *bool so the inner function can mark the row as already
-		// written and avoid a duplicate emit.
-		h.serveWithExecutor(w, r, attemptLogged, &attemptKeyInfo, &attemptClientModel,
-			&attemptErrCode, &attemptErrMsg, &attemptProviderID, &attemptCredentialID,
-			&attemptRequestBody, requestID, startTime)
+		h.serveWithExecutor(w, r, logCtx)
 		return
 	}
-	// No executor / provider — record a 503 row so the request still
-	// shows up in the admin request-logs UI.
-	attemptErrCode = "executor_unavailable"
-	attemptErrMsg = "routing executor not available; database connection required"
-	captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
-	h.recordFailedRequestWithKey(requestID, attemptClientModel, "",
-		attemptProviderID, attemptCredentialID,
-		attemptErrCode, attemptErrMsg,
-		int(time.Since(startTime).Milliseconds()),
-		attemptRequestBody, attemptKeyInfo, r)
-	*attemptLogged = true
+	logCtx.SetError("executor_unavailable", "routing executor not available; database connection required")
+	logCtx.EnsureCaptured()
+	logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
+	logCtx.MarkLogged()
 	h.serveFallback(w, r)
 }
 
@@ -263,63 +226,46 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *ChatHandler) serveWithExecutor(
 	w http.ResponseWriter,
 	r *http.Request,
-	attemptLogged *bool,
-	attemptKeyInfo **auth.KeyInfo,
-	attemptClientModel *string,
-	attemptErrCode *string,
-	attemptErrMsg *string,
-	attemptProviderID **int,
-	attemptCredentialID **int,
-	attemptRequestBody *[]byte,
-	requestID string,
-	startTime time.Time,
+	logCtx *RequestLogContext,
 ) {
 	defer r.Body.Close()
 
-	// Helper to mark this request as already-recorded, so the deferred
-	// safety net in ServeHTTP does not write a duplicate row.
-	markLogged := func() { *attemptLogged = true }
+	requestID := logCtx.RequestID
+	startTime := logCtx.StartTime
+	logCtx.EnsureCaptured()
+
+	markLogged := func() { logCtx.MarkLogged() }
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *auth.KeyInfo
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
-			*attemptErrCode = "missing_key"
-			*attemptErrMsg = "missing api key"
-			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+			logCtx.SetError("missing_key", "missing api key")
 			writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
-				*attemptErrCode = "invalid_key"
-				*attemptErrMsg = "invalid or expired api key"
-				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+				logCtx.SetError("invalid_key", "invalid or expired api key")
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
 			}
-			// Auth RPC failed — fail-closed. Silently downgrading to anonymous would
-			// bypass rate limiting, budget checks, and user isolation.
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
-			*attemptErrCode = "auth_unavailable"
-			*attemptErrMsg = "authentication service temporarily unavailable"
-			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+			logCtx.SetError("auth_unavailable", "authentication service temporarily unavailable")
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
 		}
 		keyInfo = ki
-		*attemptKeyInfo = ki
+		logCtx.SetKey(ki)
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
-		*attemptErrCode = "key_throttled"
-		*attemptErrMsg = "api key throttled due to anomalous usage"
-		captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+		logCtx.SetError("key_throttled", "api key throttled due to anomalous usage")
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -334,9 +280,7 @@ func (h *ChatHandler) serveWithExecutor(
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rpmLimit))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 			w.Header().Set("Retry-After", "60")
-			*attemptErrCode = "rate_limit_exceeded"
-			*attemptErrMsg = "rate limit exceeded"
-			captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+			logCtx.SetError("rate_limit_exceeded", "rate limit exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
 		}
@@ -346,9 +290,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
-				*attemptErrCode = "budget_exhausted"
-				*attemptErrMsg = "budget exhausted"
-				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+				logCtx.SetError("budget_exhausted", "budget exhausted")
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
 			}
@@ -386,6 +328,7 @@ func (h *ChatHandler) serveWithExecutor(
 				} else {
 					sessionInfo = newSession
 					sessionID = newSession.SessionID
+					logCtx.SetSession(newSession)
 					ctx = sessions.SessionFromContextWith(ctx, newSession)
 					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
 					if r.Header.Get("X-Session-Id") != "" {
@@ -406,10 +349,9 @@ func (h *ChatHandler) serveWithExecutor(
 			}
 		} else {
 			sessionInfo = si
+			logCtx.SetSession(si)
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
-				*attemptErrCode = "session_forbidden"
-				*attemptErrMsg = "session not owned by this api key"
-				captureAttemptBody(r, attemptRequestBody, attemptClientModel)
+				logCtx.SetError("session_forbidden", "session not owned by this api key")
 				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 				return
 			}
@@ -424,12 +366,14 @@ func (h *ChatHandler) serveWithExecutor(
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
-		*attemptErrCode = "body_read_error"
-		*attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		logCtx.CapturePartialBody(bodyBytes)
+		logCtx.SetError("body_read_error", fmt.Sprintf("failed to read request body: %v", err))
 		slog.Warn("request body read failed",
 			"request_id", requestID,
 			"error", err,
 			"content_length", r.ContentLength,
+			"partial_bytes", len(bodyBytes),
+			"client_model", logCtx.ClientModel,
 			"latency_ms", time.Since(startTime).Milliseconds(),
 		)
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -437,14 +381,13 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		return
 	}
-	if attemptRequestBody != nil && len(bodyBytes) > 0 {
-		*attemptRequestBody = bodyBytes
+	if len(bodyBytes) > 0 {
+		logCtx.Body = bodyBytes
 	}
 	if len(bodyBytes) > maxBodySize {
-		*attemptErrCode = "body_too_large"
-		*attemptErrMsg = "request body exceeds 32 MiB limit"
-		if *attemptClientModel == "" {
-			*attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
+		logCtx.SetError("body_too_large", "request body exceeds 32 MiB limit")
+		if logCtx.ClientModel == "" {
+			logCtx.SetClientModel(extractModelFromBody(bodyBytes[:maxBodySize]))
 		}
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
 			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
@@ -454,10 +397,9 @@ func (h *ChatHandler) serveWithExecutor(
 
 	var reqBody chatRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
-		*attemptErrCode = "json_parse_error"
-		*attemptErrMsg = "invalid JSON in request body"
-		if *attemptClientModel == "" {
-			*attemptClientModel = extractModelFromBody(bodyBytes)
+		logCtx.SetError("json_parse_error", "invalid JSON in request body")
+		if logCtx.ClientModel == "" {
+			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "invalid JSON in request body", "type": "invalid_request", "code": "json_parse_error"},
@@ -466,10 +408,10 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	clientModel := reqBody.Model
-	*attemptClientModel = clientModel
+	logCtx.SetClientModel(clientModel)
 	isStream := reqBody.Stream
 	endUser := resolveEndUser(reqBody.User, r)
-	clientID := identity.BuildIdentityFromRequest(r, "default", nil, nil, "")
+	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 	identityHash := clientID.ShortID()
 	// startTime is the outer-watcher time; executor tracks per-candidate
 	// latency internally.  We re-use the safety-net's startTime (the
@@ -498,18 +440,16 @@ func (h *ChatHandler) serveWithExecutor(
 	if err != nil {
 		slog.Error("failed to get candidates from provider", "error", err)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
-			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+		logCtx.failAndMark("no_candidate",
+			fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
 		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
 	}
 	if len(candidates) == 0 {
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		h.recordFailedRequestWithKey(requestID, clientModel, "", nil, nil, "no_candidate",
-			fmt.Sprintf("no available provider for model '%s'", clientModel),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+		logCtx.failAndMark("no_candidate",
+			fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
 		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
@@ -520,8 +460,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// executor itself fails.
 		pid := candidates[0].ProviderID
 		cid := candidates[0].CredentialID
-		*attemptProviderID = &pid
-		*attemptCredentialID = &cid
+		logCtx.SetRoute(&pid, &cid)
 	}
 
 	var modelResolution *resolve.Resolution
@@ -569,7 +508,7 @@ func (h *ChatHandler) serveWithExecutor(
 	h.recordInitialRequestLog(
 		requestID, clientModel, explicitOutbound, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
-		*attemptProviderID, *attemptCredentialID, canonicalID,
+		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 	)
@@ -582,8 +521,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
 	if convErr != nil {
-		*attemptErrCode = "chat_to_anthropic_conversion_error"
-		*attemptErrMsg = convErr.Error()
+		logCtx.SetError("chat_to_anthropic_conversion_error", convErr.Error())
 		writeErrorJSON(w, http.StatusBadRequest, requestID, convErr.Error(), "invalid_request", "chat_to_anthropic_conversion_error")
 		return
 	}
@@ -627,10 +565,10 @@ func (h *ChatHandler) serveWithExecutor(
 		errCode := "provider_error"
 		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok && execErrTyped.Exhausted {
 			errCode = "model_not_found"
-			h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
-				"model_not_found",
+			logCtx.SetOutboundModel(explicitOutbound)
+			logCtx.failAndMark("model_not_found",
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+				providerID, credentialID)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
 			writeErrorJSONWithDebug(w, http.StatusServiceUnavailable, requestID,
@@ -644,9 +582,8 @@ func (h *ChatHandler) serveWithExecutor(
 				})
 			return
 		}
-		h.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound, providerID, credentialID,
-			"provider_error", execErr.Error(),
-			int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+		logCtx.SetOutboundModel(explicitOutbound)
+		logCtx.failAndMark("provider_error", execErr.Error(), providerID, credentialID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
 		debugInfo := map[string]any{
@@ -675,9 +612,13 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 
 	var apiKeyID *int
 	var tenantID string = "default"
+	var applicationID *int
+	keyPrefix, keyOwner, appCode := "", "", ""
 	if keyInfo != nil {
 		apiKeyID = &keyInfo.ID
 		tenantID = keyInfo.TenantID
+		applicationID = appID(keyInfo)
+		keyPrefix, keyOwner, appCode = keyMetaFromKeyInfo(keyInfo)
 	}
 
 	dl := &telemetry.DecisionLogEntry{
@@ -816,7 +757,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:        evt.RequestID,
 		TenantID:         tenantID,
+		ApplicationID:    applicationID,
 		APIKeyID:         apiKeyID,
+		APIKeyPrefix:     strPtr(keyPrefix),
+		APIKeyOwnerUser:  strPtr(keyOwner),
+		ApplicationCode:  strPtr(appCode),
 		EndUserID:        strPtr(endUser),
 		ClientModel:      strPtr(evt.ClientModel),
 		OutboundModel:    strPtr(evt.OutboundModel),
@@ -998,17 +943,68 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil, nil)
 }
 
-// recordFailedRequestWithKey is the full-fat version.  When keyInfo is
-// non-nil we attach api_key_id + tenant_id so the row is queryable
-// from the admin UI in the same way as success rows.
-// It updates the early request_logs row when one exists (see
-// recordInitialRequestLog); otherwise it inserts a complete row.
+// recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo, r *http.Request) {
-	gwSessionID, gwTaskID := "", ""
-	if r != nil {
-		gwSessionID, gwTaskID = gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	ctx := &RequestLogContext{
+		handler:       h,
+		RequestID:     requestID,
+		StartTime:     time.Now().Add(-time.Duration(latencyMs) * time.Millisecond),
+		Request:       r,
+		KeyInfo:       keyInfo,
+		Body:          requestBody,
+		ClientModel:   clientModel,
+		OutboundModel: outboundModel,
 	}
-	h.recordFailedRequestDetailed(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, keyInfo, "", "", "", gwSessionID, gwTaskID)
+	if r != nil {
+		if session := sessions.SessionFromContext(r.Context()); session != nil {
+			ctx.Session = session
+		}
+		ctx.refreshMeta()
+	}
+	ctx.EmitFailure(errCode, errMessage, providerID, credentialID)
+}
+
+// clientProfileFromKey returns the API key / application default client profile.
+func clientProfileFromKey(keyInfo *auth.KeyInfo) string {
+	if keyInfo != nil && keyInfo.DefaultClientProfile != nil {
+		return strings.TrimSpace(*keyInfo.DefaultClientProfile)
+	}
+	return ""
+}
+
+// failedRequestIdentity builds client_profile + identity_hash from request
+// headers and key anchors without requiring a parsed request body.
+func failedRequestIdentity(r *http.Request, keyInfo *auth.KeyInfo) (clientProfile, identityHash string) {
+	if r == nil {
+		return "", ""
+	}
+	cp := clientProfileFromKey(keyInfo)
+	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), cp)
+	return clientID.Fingerprint.ClientProfile, clientID.ShortID()
+}
+
+func requestModeFromPath(path string) string {
+	switch {
+	case strings.Contains(path, "/messages"):
+		return "anthropic"
+	case strings.Contains(path, "/responses"):
+		return "responses"
+	default:
+		return "chat"
+	}
+}
+
+// capturePartialBodyOnReadError keeps bytes already received when io.ReadAll
+// fails mid-stream (timeout, client disconnect). model is usually near the
+// start of JSON bodies, so partial data is enough for request_logs preview.
+func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, attemptClientModel *string) {
+	if attemptRequestBody == nil || len(body) == 0 {
+		return
+	}
+	*attemptRequestBody = body
+	if attemptClientModel != nil && *attemptClientModel == "" {
+		*attemptClientModel = extractModelFromBody(body)
+	}
 }
 
 func (h *ChatHandler) recordFailedRequestDetailed(
@@ -1020,69 +1016,22 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 	keyInfo *auth.KeyInfo,
 	clientProfile, identityHash, requestMode string,
 	gwSessionID, gwTaskID string,
+	meta *requestAttemptMeta,
 ) {
-	if clientModel == "" && len(requestBody) > 0 {
-		clientModel = extractModelFromBody(requestBody)
+	// Deprecated: kept for binary compatibility in tests; delegates to pipeline.
+	ctx := &RequestLogContext{
+		handler:       h,
+		RequestID:     requestID,
+		StartTime:     time.Now().Add(-time.Duration(latencyMs) * time.Millisecond),
+		KeyInfo:       keyInfo,
+		Body:          requestBody,
+		ClientModel:   clientModel,
+		OutboundModel: outboundModel,
 	}
-	var requestBodyText *string
-	if len(requestBody) > 0 {
-		v := string(requestBody)
-		requestBodyText = &v
+	if meta != nil {
+		ctx.meta = *meta
 	}
-	latency := latencyMs
-	tenantID := "default"
-	var apiKeyID *int
-	if keyInfo != nil {
-		tenantID = keyInfo.TenantID
-		kid := keyInfo.ID
-		apiKeyID = &kid
-	}
-	var requestPreviewPtr *string
-	if preview := requestPreview(requestBody); preview != "" {
-		requestPreviewPtr = strPtr(preview)
-	}
-	// failure_detail_code: a machine-readable sub-classification of
-	// error_kind.  For gateway-side early-exit errors we prefix with
-	// "gw_" so request_log consumers can immediately tell these apart
-	// from upstream provider errors (which keep their classified kind,
-	// e.g. "rate_limit", "concurrent", "timeout").
-	detailCode := mapGatewayErrorToDetail(errCode)
-	// failure_stage: "gateway" for early-exit errors that never reach an
-	// upstream provider; "upstream" for errors that occurred during or
-	// after the provider call (provider_error, model_not_found, stream_error).
-	failureStage := classifyFailureStage(errCode)
-	reqLog := &telemetry.RequestLogEntry{
-		RequestID:      requestID,
-		TenantID:       tenantID,
-		APIKeyID:       apiKeyID,
-		ClientModel:    strPtr(clientModel),
-		OutboundModel:  strPtr(outboundModel),
-		ProviderID:     providerID,
-		CredentialID:   credentialID,
-		ClientProfile:  strPtr(clientProfile),
-		IdentityHash:   strPtr(identityHash),
-		RequestMode:    strPtr(requestMode),
-		GwSessionID:    strPtr(gwSessionID),
-		GwTaskID:       strPtr(gwTaskID),
-		LatencyMs:      &latency,
-		Success:        false,
-		RequestStatus:  strPtr(telemetry.RequestStatusFailure),
-		ErrorKind:      strPtr(errCode),
-		FailureStage:   strPtr(failureStage),
-		FailureDetailCode: strPtr(detailCode),
-		RequestBody:    requestBodyText,
-		RequestPreview: requestPreviewPtr,
-	}
-	// Test hook fires regardless of whether the production telemetry
-	// sink is configured, so unit tests can assert the safety net
-	// without standing up a database.
-	if h.requestLogHook != nil {
-		h.requestLogHook(reqLog)
-	}
-	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
-		return
-	}
-	h.telemetryClient.EmitRequestLogUpdate(reqLog)
+	ctx.EmitFailure(errCode, errMessage, providerID, credentialID)
 }
 
 // mapGatewayErrorToDetail returns a machine-readable sub-classification for
@@ -1213,10 +1162,14 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	tenantID := "default"
 	var apiKeyID *int
+	var applicationID *int
+	keyPrefix, keyOwner, appCode := "", "", ""
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
 		kid := keyInfo.ID
 		apiKeyID = &kid
+		applicationID = appID(keyInfo)
+		keyPrefix, keyOwner, appCode = keyMetaFromKeyInfo(keyInfo)
 	}
 	var requestPreviewPtr *string
 	if preview := requestPreview(requestBody); preview != "" {
@@ -1234,7 +1187,11 @@ func (h *ChatHandler) recordInitialRequestLog(
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:        requestID,
 		TenantID:           tenantID,
+		ApplicationID:      applicationID,
 		APIKeyID:           apiKeyID,
+		APIKeyPrefix:       strPtr(keyPrefix),
+		APIKeyOwnerUser:    strPtr(keyOwner),
+		ApplicationCode:    strPtr(appCode),
 		EndUserID:          strPtr(endUser),
 		ClientModel:        strPtr(clientModel),
 		OutboundModel:      strPtr(outboundModel),
@@ -1272,10 +1229,33 @@ func extractModelFromBody(body []byte) string {
 	var parsed struct {
 		Model string `json:"model"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		return strings.TrimSpace(parsed.Model)
+	}
+	return extractModelFieldLoose(body)
+}
+
+// extractModelFieldLoose reads "model":"..." from truncated or invalid JSON.
+func extractModelFieldLoose(body []byte) string {
+	pattern := []byte(`"model"`)
+	idx := bytes.Index(body, pattern)
+	if idx < 0 {
 		return ""
 	}
-	return strings.TrimSpace(parsed.Model)
+	after := body[idx+len(pattern):]
+	colonIdx := bytes.IndexByte(after, ':')
+	if colonIdx < 0 {
+		return ""
+	}
+	rest := bytes.TrimLeft(after[colonIdx+1:], " \t\n\r")
+	if len(rest) == 0 || rest[0] != '"' {
+		return ""
+	}
+	endIdx := bytes.IndexByte(rest[1:], '"')
+	if endIdx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(rest[1 : endIdx+1]))
 }
 
 func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyInfo *auth.KeyInfo, clientID identity.ClientIdentity, candidatesTried int, modelResolution *resolve.Resolution, txResult *transform.TransformResult, errCode string, failTrace *routing.Trace, latencyMs int) {

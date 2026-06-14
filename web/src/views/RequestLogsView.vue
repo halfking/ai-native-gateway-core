@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getRequestLogs,
@@ -57,6 +57,12 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   model_not_found: '模型未找到',
   provider_error: '供应商错误',
   auth_error: '认证失败',
+  missing_key: '无Key',
+  invalid_key: 'Key无效',
+  auth_unavailable: '鉴权不可用',
+  body_read_error: 'Body读取失败',
+  body_too_large: 'Body过大',
+  json_parse_error: 'JSON无效',
   rate_limit: '供应商限流',
   rate_limit_exceeded: '网关RPM限流',
   key_throttled: '密钥节流',
@@ -66,6 +72,8 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   upstream_error: '上游错误',
   stream_error: '流中断',
   no_candidate: '无可用路由',
+  session_forbidden: '会话无权',
+  executor_unavailable: '执行器不可用',
 }
 
 const FAILURE_DETAIL_LABELS: Record<string, string> = {
@@ -103,6 +111,63 @@ function statusColor(row: RequestLogRow): string {
   return 'var(--danger)'
 }
 
+const traceMode = computed(() =>
+  Boolean(gwTaskFilter.value.trim() || gwSessionFilter.value.trim()),
+)
+
+const taskSummary = computed(() => {
+  if (!traceMode.value || !rows.value.length) return null
+  let ok = 0
+  let fail = 0
+  let pending = 0
+  for (const r of rows.value) {
+    if (r.request_status === 'in_progress') pending++
+    else if (r.request_status === 'success' || r.success) ok++
+    else fail++
+  }
+  return { total: rows.value.length, ok, fail, pending }
+})
+
+function filterByTask(taskId: string | null | undefined) {
+  if (!taskId) return
+  gwTaskFilter.value = taskId
+  gwSessionFilter.value = ''
+  resetPageAndLoad()
+}
+
+function filterBySession(sessionId: string | null | undefined) {
+  if (!sessionId) return
+  gwSessionFilter.value = sessionId
+  resetPageAndLoad()
+}
+
+function clearTraceFilter() {
+  gwTaskFilter.value = ''
+  gwSessionFilter.value = ''
+  resetPageAndLoad()
+}
+
+function routeLabel(r: RequestLogRow): string {
+  if (r.provider_name) return r.provider_name
+  if (r.error_kind === 'missing_key' || r.error_kind === 'invalid_key') return '—'
+  return '—'
+}
+
+function modelArrow(r: RequestLogRow): string {
+  const inM = r.client_model ?? '—'
+  const outM = r.outbound_model
+  if (!outM || outM === inM) return inM
+  return `${inM} → ${outM}`
+}
+
+function callerLabel(r: RequestLogRow): string {
+  const parts: string[] = []
+  if (r.api_key_owner_user) parts.push(r.api_key_owner_user)
+  else if (r.api_key_prefix) parts.push(r.api_key_prefix)
+  if (r.application_code) parts.push(r.application_code)
+  return parts.length ? parts.join(' · ') : (r.api_key_prefix ?? '无key')
+}
+
 async function load() {
   loading.value = true
   error.value = null
@@ -119,6 +184,7 @@ async function load() {
       usage_source: usageSourceFilter.value === '' ? undefined : usageSourceFilter.value,
       gw_session_id: gwSessionFilter.value.trim() || undefined,
       gw_task_id: gwTaskFilter.value.trim() || undefined,
+      chrono: traceMode.value || undefined,
       page: page.value,
       page_size: pageSize.value,
     })
@@ -340,71 +406,82 @@ onMounted(async () => {
 
     <p v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</p>
 
+    <div
+      v-if="traceMode && taskSummary"
+      class="card trace-summary"
+      style="margin-bottom:12px;padding:10px 14px;font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap"
+    >
+      <span style="font-weight:600">任务脉络</span>
+      <span>本页 {{ taskSummary.total }} 步</span>
+      <span style="color:var(--success)">成功 {{ taskSummary.ok }}</span>
+      <span style="color:var(--danger)">失败 {{ taskSummary.fail }}</span>
+      <span v-if="taskSummary.pending" style="color:var(--warning, #f59e0b)">进行中 {{ taskSummary.pending }}</span>
+      <span v-if="gwTaskFilter" style="color:var(--muted)">任务: {{ gwTaskFilter }}</span>
+      <span v-if="gwSessionFilter" style="color:var(--muted)">会话: {{ shortHash(gwSessionFilter) }}</span>
+      <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="clearTraceFilter">清除脉络筛选</button>
+    </div>
+
     <div class="card" style="overflow-x:auto">
-      <table class="data-table" style="width:100%;font-size:12px">
+      <table class="data-table request-log-table" style="width:100%;font-size:12px">
         <thead>
           <tr>
-            <th>会话</th>
-            <th>任务</th>
-            <th>时间</th>
-            <th>Key</th>
-            <th>客户端模型</th>
-            <th>出站模型</th>
-            <th>出站供应商</th>
-            <th>出站凭据</th>
-            <th>模式</th>
-            <th>身份</th>
-            <th>流式</th>
-            <th>输入</th>
-            <th>输出</th>
-            <th>缓存读</th>
-            <th>缓存写</th>
-            <th>成本</th>
-            <th>延迟</th>
-            <th>状态</th>
+            <th v-if="traceMode" class="col-seq">#</th>
+            <th class="col-time">时间</th>
+            <th class="col-trace">脉络</th>
+            <th class="col-caller">调用方</th>
+            <th class="col-model">模型</th>
+            <th class="col-route">路由</th>
+            <th class="col-tokens">Token</th>
+            <th class="col-lat">延迟</th>
+            <th class="col-status">状态</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="18">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td colspan="18">无记录</td></tr>
-          <tr v-for="r in rows" :key="r.request_id + r.ts" class="request-log-row" @click="showDetail(r.request_id)">
-            <td :title="r.gw_session_id || ''">{{ shortHash(r.gw_session_id) }}</td>
-            <td :title="r.gw_task_id || ''">{{ shortHash(r.gw_task_id) }}</td>
-            <td>{{ fmtTs(r.ts) }}</td>
-            <td>{{ r.api_key_id ?? '—' }}</td>
-            <td>{{ r.client_model ?? '—' }}</td>
-            <td>{{ r.outbound_model ?? '—' }}</td>
-            <td>
-              <div>{{ r.provider_name ?? '—' }}</div>
-              <div v-if="r.provider_id" style="color:var(--muted);font-size:11px">#{{ r.provider_id }} {{ r.provider_code ?? '' }}</div>
+          <tr v-if="loading"><td :colspan="traceMode ? 9 : 8">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td :colspan="traceMode ? 9 : 8">无记录</td></tr>
+          <tr
+            v-for="r in rows"
+            :key="r.request_id + r.ts"
+            class="request-log-row"
+            :class="{ 'row-failure': r.request_status === 'failure' || (!r.success && r.request_status !== 'in_progress') }"
+            @click="showDetail(r.request_id)"
+          >
+            <td v-if="traceMode" class="col-seq" style="color:var(--muted);font-variant-numeric:tabular-nums">
+              {{ r.trace_seq ?? '—' }}
             </td>
-            <td>
-              <div>{{ r.credential_label ?? '—' }}</div>
-              <div v-if="r.credential_id" style="color:var(--muted);font-size:11px">#{{ r.credential_id }}</div>
+            <td class="col-time" :title="r.request_id">{{ fmtTs(r.ts) }}</td>
+            <td class="col-trace">
+              <div
+                v-if="r.gw_task_id"
+                class="trace-link"
+                :title="r.gw_task_id"
+                @click.stop="filterByTask(r.gw_task_id)"
+              >{{ shortHash(r.gw_task_id) }}</div>
+              <div
+                v-if="r.gw_session_id"
+                class="trace-link trace-sub"
+                :title="r.gw_session_id"
+                @click.stop="filterBySession(r.gw_session_id)"
+              >{{ shortHash(r.gw_session_id) }}</div>
+              <span v-if="!r.gw_task_id && !r.gw_session_id" style="color:var(--muted)">—</span>
             </td>
-            <td>{{ r.request_mode ?? r.client_profile ?? '—' }}</td>
-            <td>
-              <div>{{ shortHash(r.identity_hash) }}</div>
-              <div v-if="r.virtual_ip || r.affinity_hit != null" style="color:var(--muted);font-size:11px">
-                {{ r.virtual_ip ?? '—' }} / {{ r.affinity_hit ? 'affinity' : 'no-affinity' }}
-              </div>
+            <td class="col-caller" :title="callerLabel(r)">
+              <div>{{ callerLabel(r) }}</div>
+              <div v-if="r.identity_hash" class="cell-sub" :title="r.identity_hash">{{ shortHash(r.identity_hash) }}</div>
             </td>
-            <td>
-              <div v-if="r.stream_chunk_count != null">
-                {{ r.stream_chunk_count }} chunks
-              </div>
-              <div v-if="r.stream_first_chunk_ms != null" style="color:var(--muted);font-size:11px">
-                first {{ r.stream_first_chunk_ms }}ms / {{ r.stream_done_sent ? 'done' : (r.stream_interrupted ? 'interrupted' : 'pending') }}
-              </div>
-              <span v-if="r.stream_chunk_count == null">—</span>
+            <td class="col-model" :title="modelArrow(r)">{{ modelArrow(r) }}</td>
+            <td class="col-route" :title="r.credential_label || ''">
+              <div>{{ routeLabel(r) }}</div>
+              <div v-if="r.request_mode" class="cell-sub">{{ r.request_mode }}</div>
             </td>
-            <td :title="tokenTitle(r.usage_source)">{{ token(r.prompt_tokens, r.usage_source) }}</td>
-            <td :title="tokenTitle(r.usage_source)">{{ token(r.completion_tokens, r.usage_source) }}</td>
-            <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_read_tokens, r.usage_source) }}</td>
-            <td :title="tokenTitle(r.usage_source)">{{ token(r.cache_write_tokens, r.usage_source) }}</td>
-            <td :title="tokenTitle(r.usage_source)">{{ costDisplay(r.cost_display ?? r.cost_usd, r.cost_currency) }}</td>
-            <td>{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
-            <td :style="{ color: statusColor(r) }" :title="statusTitle(r)">{{ statusLabel(r) }}</td>
+            <td class="col-tokens" :title="tokenTitle(r.usage_source)">
+              <span v-if="r.prompt_tokens != null || r.completion_tokens != null">
+                {{ token(r.prompt_tokens, r.usage_source) }}/{{ token(r.completion_tokens, r.usage_source) }}
+              </span>
+              <span v-else>—</span>
+            </td>
+            <td class="col-lat">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</td>
+            <td class="col-status" :style="{ color: statusColor(r) }" :title="statusTitle(r)">{{ statusLabel(r) }}</td>
           </tr>
         </tbody>
       </table>
@@ -443,6 +520,9 @@ onMounted(async () => {
               <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
               <span><strong>会话:</strong> {{ detail.gw_session_id ?? '—' }}</span>
               <span><strong>任务:</strong> {{ detail.gw_task_id ?? '—' }}</span>
+              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? '#' + detail.api_key_id : '无key') }}</span>
+              <span v-if="detail.api_key_owner_user"><strong>Key用户:</strong> {{ detail.api_key_owner_user }}</span>
+              <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
               <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
               <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
               <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
@@ -517,6 +597,46 @@ onMounted(async () => {
 }
 .request-log-row:hover td {
   background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+}
+.request-log-row.row-failure td {
+  background: color-mix(in srgb, var(--danger, #ef4444) 4%, transparent);
+}
+.request-log-table th,
+.request-log-table td {
+  padding: 6px 8px;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.col-model {
+  white-space: normal;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.col-caller {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cell-sub {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.trace-link {
+  color: var(--accent, #3b82f6);
+  cursor: pointer;
+  font-size: 11px;
+}
+.trace-link:hover {
+  text-decoration: underline;
+}
+.trace-sub {
+  color: var(--muted);
+  margin-top: 2px;
+}
+.trace-summary {
+  border-left: 3px solid var(--accent, #3b82f6);
 }
 </style>
 
