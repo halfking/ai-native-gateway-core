@@ -87,21 +87,32 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 	all := idx.entries
 	idx.mu.RUnlock()
 
-	// Pre-filter: routable + has some tag match
-	filtered := make([]Candidate, 0, len(all))
-	for i := range all {
-		c := all[i]
-		// Compute TaskMatchScore inline so admins can change the
-		// required-tag map without a code redeploy.
-		c.TaskMatchScore = TaskMatchScore(task, c.Tags)
-		if c.TaskMatchScore == 0 {
-			continue
-		}
-		filtered = append(filtered, c)
-	}
-	if len(filtered) == 0 {
-		return nil
-	}
+// Pre-filter: routable + has some tag match.
+// Fallback: if NO candidate has any tag match for this task type,
+// return all candidates (chat-style fallback) rather than 0 candidates.
+// This handles the common case where models_canonical.tags is empty
+// (which is the default for newly-discovered models) — without this
+// fallback, every task_type other than chat would always 503.
+filtered := make([]Candidate, 0, len(all))
+for i := range all {
+	c := all[i]
+	// Compute TaskMatchScore inline so admins can change the
+	// required-tag map without a code redeploy.
+	c.TaskMatchScore = TaskMatchScore(task, c.Tags)
+	filtered = append(filtered, c)
+}
+
+// Sort: candidates with non-zero TaskMatchScore first, then all others.
+// We don't strictly filter (which would 503 every task type when tags
+// are empty); instead we keep all and let the MatchScore (0-100)
+// contribute to the weighted composite.
+sort.SliceStable(filtered, func(i, j int) bool {
+	return filtered[i].TaskMatchScore > filtered[j].TaskMatchScore
+})
+
+if len(filtered) == 0 {
+	return nil
+}
 
 	// Compute cohort baselines
 	costCtx := computeCostContext(filtered)
