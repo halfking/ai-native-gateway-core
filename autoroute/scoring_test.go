@@ -80,7 +80,8 @@ func TestScore_CostFirst_WeightsPrice(t *testing.T) {
 	cheapCost := Score(cheapFast, sigs, ProfileCostFirst, cost)
 	expensCost := Score(expensiveFast, sigs, ProfileCostFirst, cost)
 
-	if cheapCost.Composite >= expensCost.Composite {
+	// cost-first: cheap should win
+	if cheapCost.Composite <= expensCost.Composite {
 		t.Fatalf("cost-first should prefer cheap: cheap=%.2f expensive=%.2f",
 			cheapCost.Composite, expensCost.Composite)
 	}
@@ -88,6 +89,7 @@ func TestScore_CostFirst_WeightsPrice(t *testing.T) {
 	cheapSpeed := Score(cheapFast, sigs, ProfileSpeedFirst, cost)
 	expensSpeed := Score(expensiveFast, sigs, ProfileSpeedFirst, cost)
 
+	// speed-first: expensive-fast (lower latency) should win
 	if expensSpeed.Composite <= cheapSpeed.Composite {
 		t.Fatalf("speed-first should prefer expensive-fast: cheap=%.2f expensive=%.2f",
 			cheapSpeed.Composite, expensSpeed.Composite)
