@@ -60,6 +60,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	mux.HandleFunc("/api/admin/auto-route/profile", adminWrap(h.handleSetProfile))
 	mux.HandleFunc("/api/admin/auto-route/audit", adminWrap(h.handleAudit))
 	mux.HandleFunc("/api/admin/auto-route/refresh", adminWrap(h.handleRefresh))
+	// v2.0.1 — per-API-Key customer cost dashboard
+	mux.HandleFunc("/api/admin/auto-route/cost/customer", adminWrap(h.handleCustomerCost))
+	mux.HandleFunc("/api/admin/auto-route/cost/model", adminWrap(h.handleModelCost))
 }
 
 // handleDecisions returns the most recent N auto-route decisions from
@@ -487,6 +490,203 @@ func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request
 		"refreshed":    true,
 		"refreshed_at": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// handleCustomerCost returns per-API-Key customer cost dashboard.
+// Reads from customer_cost_view (v2.0.1 SQL migration).
+//
+// Query params:
+//   - api_key_id : filter by API key (optional)
+//   - top        : limit rows (default 50)
+func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	apiKeyID := r.URL.Query().Get("api_key_id")
+	top := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v > 0 && v <= 500 {
+		top = v
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT api_key_id, key_alias, tenant_id, application_id,
+		       cost_usd_1h, cost_usd_24h, cost_usd_7d,
+		       total_auto_requests, total_auto_success,
+		       peak_active_concurrent, avg_pressure_1h,
+		       best_score_smart, best_score_speed_first, best_score_cost_first,
+		       last_request_at
+		FROM customer_cost_view
+		WHERE 1=1
+	`
+	args := []interface{}{}
+	if apiKeyID != "" {
+		args = append(args, apiKeyID)
+		query += fmt.Sprintf(" AND api_key_id = $%d", len(args))
+	}
+	args = append(args, top)
+	query += fmt.Sprintf(" ORDER BY cost_usd_24h DESC NULLS LAST LIMIT $%d", len(args))
+
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var keyID int
+		var keyAlias, tenantID *string
+		var appID *int
+		var cost1h, cost24h, cost7d, avgPressure *float64
+		var totalReqs, totalSuccess, peakActive *int
+		var bestSmart, bestSpeed, bestCost *float64
+		var lastReqAt *time.Time
+		if err := rows.Scan(&keyID, &keyAlias, &tenantID, &appID,
+			&cost1h, &cost24h, &cost7d,
+			&totalReqs, &totalSuccess,
+			&peakActive, &avgPressure,
+			&bestSmart, &bestSpeed, &bestCost,
+			&lastReqAt); err != nil {
+			continue
+		}
+		entry := map[string]interface{}{
+			"api_key_id": keyID,
+		}
+		if keyAlias != nil {
+			entry["key_alias"] = *keyAlias
+		}
+		if tenantID != nil {
+			entry["tenant_id"] = *tenantID
+		}
+		if appID != nil {
+			entry["application_id"] = *appID
+		}
+		if cost1h != nil {
+			entry["cost_usd_1h"] = *cost1h
+		}
+		if cost24h != nil {
+			entry["cost_usd_24h"] = *cost24h
+		}
+		if cost7d != nil {
+			entry["cost_usd_7d"] = *cost7d
+		}
+		if totalReqs != nil {
+			entry["total_auto_requests"] = *totalReqs
+		}
+		if totalSuccess != nil {
+			entry["total_auto_success"] = *totalSuccess
+		}
+		if peakActive != nil {
+			entry["peak_active_concurrent"] = *peakActive
+		}
+		if avgPressure != nil {
+			entry["avg_pressure_1h"] = *avgPressure
+		}
+		if bestSmart != nil {
+			entry["best_score_smart"] = *bestSmart
+		}
+		if bestSpeed != nil {
+			entry["best_score_speed_first"] = *bestSpeed
+		}
+		if bestCost != nil {
+			entry["best_score_cost_first"] = *bestCost
+		}
+		if lastReqAt != nil {
+			entry["last_request_at"] = lastReqAt.Format(time.RFC3339)
+		}
+		out = append(out, entry)
+	}
+	writeJSONOk(w, out)
+}
+
+// handleModelCost returns per-model aggregated cost (last 7 days).
+// Reads from model_cost_per_task_view.
+//
+// Query params:
+//   - canonical_id : filter by canonical_id (optional)
+//   - top          : limit rows (default 50)
+func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	canonicalID := r.URL.Query().Get("canonical_id")
+	top := 50
+	if v, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && v > 0 && v <= 500 {
+		top = v
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT canonical_id, raw_model, total_cost_usd, total_tokens,
+		       avg_cost_per_1m_usd, success_rate, avg_latency_ms,
+		       total_requests, unique_api_keys
+		FROM model_cost_per_task_view
+		WHERE 1=1
+	`
+	args := []interface{}{}
+	if canonicalID != "" {
+		args = append(args, canonicalID)
+		query += fmt.Sprintf(" AND canonical_id = $%d", len(args))
+	}
+	args = append(args, top)
+	query += fmt.Sprintf(" ORDER BY total_cost_usd DESC LIMIT $%d", len(args))
+
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		writeJSONErr(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var canonID *int
+		var rawModel string
+		var totalCost, avgCost1M *float64
+		var totalTokens *int64
+		var successRate, avgLatency *float64
+		var totalReqs, uniqueKeys *int
+		if err := rows.Scan(&canonID, &rawModel, &totalCost, &totalTokens,
+			&avgCost1M, &successRate, &avgLatency,
+			&totalReqs, &uniqueKeys); err != nil {
+			continue
+		}
+		entry := map[string]interface{}{
+			"raw_model": rawModel,
+		}
+		if canonID != nil {
+			entry["canonical_id"] = *canonID
+		}
+		if totalCost != nil {
+			entry["total_cost_usd"] = *totalCost
+		}
+		if totalTokens != nil {
+			entry["total_tokens"] = *totalTokens
+		}
+		if avgCost1M != nil {
+			entry["avg_cost_per_1m_usd"] = *avgCost1M
+		}
+		if successRate != nil {
+			entry["success_rate"] = *successRate
+		}
+		if avgLatency != nil {
+			entry["avg_latency_ms"] = *avgLatency
+		}
+		if totalReqs != nil {
+			entry["total_requests"] = *totalReqs
+		}
+		if uniqueKeys != nil {
+			entry["unique_api_keys"] = *uniqueKeys
+		}
+		out = append(out, entry)
+	}
+	writeJSONOk(w, out)
 }
 
 // writeJSONOk serialises v as JSON and writes 200. Errors are swallowed.

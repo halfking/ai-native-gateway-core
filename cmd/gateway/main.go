@@ -374,7 +374,14 @@ func main() {
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
-			slog.Info("auto-route decider enabled")
+
+			// v2.0.1: realtime listener for sub-second index refresh
+			// (PG LISTEN/NOTIFY trigger on credential_model_bindings /
+			// credentials / api_keys / model_offers).
+			autoRouteListener := bg.NewAutoRouteRealtimeListener(dbConn.Pool(), autoIndexRefresher)
+			autoRouteListener.Start(context.Background())
+
+			slog.Info("auto-route decider enabled (with realtime LISTEN/NOTIFY)")
 		}
 
 		if adminHandler != nil {
