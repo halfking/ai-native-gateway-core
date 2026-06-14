@@ -278,7 +278,15 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 
-	decision, err := h.decider.Decide(r.Context(), sigs, apiKeyID, headerProfile, taskHint)
+	// Extract session ID for intent caching.
+	// v2.0.4: if session ID present, Decider reuses the cached intent
+	// (10min TTL) instead of reclassifying on every request.
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
+
+	decision, err := h.decider.Decide(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		slog.Warn("auto-route: decider failed, falling back",
 			"error", err,

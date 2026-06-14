@@ -77,6 +77,7 @@ type Decider struct {
 	fallback   Classifier   // optional LLM
 	index      IndexAccessor // candidate pool
 	profileStore ProfileStore // per-API-Key sticky profile
+	intentCache  *SessionIntentCache // per-session intent cache (v2.0.4)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	// Default: ProfileSmart.
@@ -90,6 +91,10 @@ type Decider struct {
 	// key without a header. Default: 30 minutes.
 	StickyTTL time.Duration
 
+	// IntentCacheTTL controls how long a session intent is cached.
+	// Default: 10 minutes.
+	IntentCacheTTL time.Duration
+
 	// TopN is the size of CandidatesTopN stored in auto_decision.
 	// Default: 3.
 	TopN int
@@ -102,6 +107,7 @@ type Decider struct {
 //   - DefaultProfile            : ProfileSmart
 //   - LLMConfidenceThreshold    : 0.7
 //   - StickyTTL                 : 30 minutes
+//   - IntentCacheTTL            : 10 minutes (auto-creates SessionIntentCache)
 //   - TopN                      : 3
 func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor, profileStore ProfileStore) *Decider {
 	return &Decider{
@@ -109,11 +115,19 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 		fallback:               fallback,
 		index:                  index,
 		profileStore:           profileStore,
+		intentCache:            NewSessionIntentCache(10 * time.Minute),
 		DefaultProfile:         ProfileSmart,
 		LLMConfidenceThreshold: 0.7,
 		StickyTTL:              30 * time.Minute,
+		IntentCacheTTL:         10 * time.Minute,
 		TopN:                   3,
 	}
+}
+
+// SetIntentCache overrides the default session intent cache. Pass nil
+// to disable session-level caching entirely (every request reclassifies).
+func (d *Decider) SetIntentCache(c *SessionIntentCache) {
+	d.intentCache = c
 }
 
 // Decide runs the full pipeline. Returns the Decision (always non-nil on
@@ -127,12 +141,33 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 //   apiKeyID         : the resolved API key ID (0 for unauthenticated)
 //   headerProfile    : X-Gw-Auto-Profile header value (empty = no override)
 //   taskHint         : X-Gw-Task-Hint header value (optional client hint)
+//   sessionID        : X-Gw-Session-Id (empty = no session, always reclassify)
 //
 // Side effects:
 //
 //   - Updates sticky profile for apiKeyID (best-effort)
+//   - Caches intent for sessionID (10min TTL, best-effort)
 //   - Returns Decision including the chosen model + top-N candidates
-func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType) (*Decision, error) {
+func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
+	if sessionID != "" && d.intentCache != nil {
+		if cached, ok := d.intentCache.Get(sessionID); ok {
+			if !shouldReclassify(cached.TaskType, sigs) {
+				return &Decision{
+					ChosenModel:        cached.ChosenModel,
+					ChosenCredentialID: cached.CredentialID,
+					ChosenRawModel:     cached.ChosenModel,
+					TaskType:           cached.TaskType,
+					Confidence:         cached.Confidence,
+					Profile:            cached.Profile,
+					Classifier:         "session_cache",
+					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
+					DecidedAt:          time.Now(),
+				}, nil
+			}
+		}
+	}
+
 	// Step 1: resolve profile (header > sticky > default)
 	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
 
@@ -158,7 +193,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 
 	winner := recommended[0]
 
-	return &Decision{
+	decision := &Decision{
 		ChosenModel:        winner.Candidate.CanonicalName,
 		ChosenCredentialID: winner.Candidate.CredentialID,
 		ChosenRawModel:     winner.Candidate.RawModel,
@@ -168,8 +203,22 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		Classifier:         cls.Classifier,
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
-		DecidedAt:           time.Now(),
-	}, nil
+		DecidedAt:          time.Now(),
+	}
+
+	// Step 4: cache the intent for this session
+	if sessionID != "" && d.intentCache != nil {
+		d.intentCache.Put(sessionID, CachedIntent{
+			TaskType:     decision.TaskType,
+			ChosenModel:  decision.ChosenModel,
+			CredentialID: decision.ChosenCredentialID,
+			Profile:      decision.Profile,
+			Confidence:   decision.Confidence,
+			Classifier:   decision.Classifier,
+		})
+	}
+
+	return decision, nil
 }
 
 // resolveProfile applies the profile precedence:

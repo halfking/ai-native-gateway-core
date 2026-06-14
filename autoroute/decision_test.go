@@ -44,7 +44,7 @@ func TestDecide_HeuristicOnly_NoFallback(t *testing.T) {
 	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
 	d.TopN = 3
 
-	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "", "")
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestDecide_HeaderOverridesSticky(t *testing.T) {
 	_ = store.Put(context.Background(), 42, ProfileCostFirst, 30*time.Minute)
 
 	d := NewDecider(cls, nil, idx, store)
-	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "speed_first", "")
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "speed_first", "", "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestDecide_StickyUsedWhenNoHeader(t *testing.T) {
 	_ = store.Put(context.Background(), 7, ProfileCostFirst, 30*time.Minute)
 
 	d := NewDecider(cls, nil, idx, store)
-	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 7, "", "")
+	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 7, "", "", "")
 	if dec.Profile != ProfileCostFirst {
 		t.Fatalf("sticky should be used: got %s", dec.Profile)
 	}
@@ -103,7 +103,7 @@ func TestDecide_LLMFallback_TriggersOnLowConfidence(t *testing.T) {
 	d := NewDecider(heuristic, llm, idx, nil)
 	d.LLMConfidenceThreshold = 0.7
 
-	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "")
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestDecide_NoCandidates_Error(t *testing.T) {
 	idx := &stubIndex{cands: nil}
 	d := NewDecider(cls, nil, idx, nil)
 
-	_, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "")
+	_, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	if err == nil {
 		t.Fatal("expected error for empty candidate set")
 	}
@@ -131,7 +131,7 @@ func TestDecide_HeuristicError_UsesDefault(t *testing.T) {
 	idx := &stubIndex{cands: []ScoredCandidate{{Candidate: Candidate{CanonicalName: "m"}}}}
 	d := NewDecider(cls, nil, idx, nil)
 
-	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "")
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestDecide_TaskHintOverridesHeuristic(t *testing.T) {
 	idx := &stubIndex{cands: []ScoredCandidate{{Candidate: Candidate{CanonicalName: "m"}}}}
 	d := NewDecider(cls, nil, idx, nil)
 
-	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", TaskReasoning)
+	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", TaskReasoning, "")
 	if dec.TaskType != TaskReasoning {
 		t.Fatalf("task hint should override heuristic, got %s", dec.TaskType)
 	}
@@ -162,7 +162,7 @@ func TestDecide_InvalidTaskHint_Ignored(t *testing.T) {
 	idx := &stubIndex{cands: []ScoredCandidate{{Candidate: Candidate{CanonicalName: "m"}}}}
 	d := NewDecider(cls, nil, idx, nil)
 
-	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", TaskType("bogus"))
+	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", TaskType("bogus"), "")
 	if dec.TaskType != TaskCode {
 		t.Fatalf("invalid hint should fall through to heuristic, got %s", dec.TaskType)
 	}
