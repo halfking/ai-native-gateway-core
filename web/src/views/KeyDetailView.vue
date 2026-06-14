@@ -124,68 +124,20 @@ function trendValue(t: TrendEntry): number {
   return trendMetric.value === 'cost' ? t.cost_usd : t.requests
 }
 
-function utcDayKey(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-function trendWindowBounds(): { start: Date; end: Date } | null {
-  const usage = keyUsage.value
-  if (usage?.window_start && usage?.window_end) {
-    return { start: new Date(usage.window_start), end: new Date(usage.window_end) }
-  }
-  if (useCustomRange.value && customStart.value && customEnd.value) {
-    const start = new Date(`${customStart.value}T00:00:00.000Z`)
-    const end = new Date(`${customEnd.value}T00:00:00.000Z`)
-    end.setUTCDate(end.getUTCDate() + 1)
-    return { start, end }
-  }
-  const end = new Date()
-  const start = new Date(end)
-  start.setUTCDate(start.getUTCDate() - selectedPeriod.value.days)
-  start.setUTCHours(0, 0, 0, 0)
-  return { start, end }
-}
-
-/** 补齐无数据的空周期，避免折线跨周期直连造成误读 */
-function fillTrendGaps(raw: TrendEntry[], period: PeriodType): TrendEntry[] {
-  if (raw.length === 0 || period !== 'day') return raw
-  const window = trendWindowBounds()
-  if (!window) return raw
-
-  const byPeriod = new Map(raw.map(t => [t.period, t]))
-  const filled: TrendEntry[] = []
-  const cursor = new Date(window.start)
-  cursor.setUTCHours(0, 0, 0, 0)
-  const end = new Date(window.end)
-  end.setUTCHours(0, 0, 0, 0)
-
-  while (cursor < end) {
-    const key = utcDayKey(cursor)
-    filled.push(byPeriod.get(key) ?? {
-      period: key,
-      requests: 0,
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      cost_usd: 0,
-    })
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
-  }
-  return filled.length > 0 ? filled : raw
-}
-
 // ── Computed ───────────────────────────────────────────────────────────────
-const displayTrend = computed(() => fillTrendGaps(keyTrend.value, trendPeriod.value))
-
 const maxTrendValue = computed(() => {
-  if (displayTrend.value.length === 0) return 0
-  return Math.max(...displayTrend.value.map(t => trendValue(t)))
+  if (keyTrend.value.length === 0) return 0
+  return Math.max(...keyTrend.value.map(t => trendValue(t)))
 })
 
 const totalTrendValue = computed(() => {
-  if (displayTrend.value.length === 0) return 0
-  return displayTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
+  if (keyTrend.value.length === 0) return 0
+  return keyTrend.value.reduce((sum, t) => sum + trendValue(t), 0)
 })
+
+const trendHasActivity = computed(() =>
+  keyTrend.value.some(t => t.requests > 0 || t.cost_usd > 0)
+)
 
 const trendSummaryLabel = computed(() => {
   const periodLabel = trendPeriodOptions.find(o => o.value === trendPeriod.value)?.label ?? '按天'
@@ -196,7 +148,7 @@ const trendSummaryLabel = computed(() => {
 })
 
 const trendTotalMatchesSummary = computed(() => {
-  if (!keyUsage.value || displayTrend.value.length === 0) return true
+  if (!keyUsage.value || keyTrend.value.length === 0) return true
   if (trendMetric.value === 'requests') {
     return totalTrendValue.value === keyUsage.value.total_requests
   }
@@ -261,7 +213,7 @@ function shouldShowXLabel(index: number, total: number): boolean {
 }
 
 const chartPoints = computed(() => {
-  const data = displayTrend.value
+  const data = keyTrend.value
   const { max } = yAxis.value
   const { w, h } = plotSize.value
   const n = data.length
@@ -534,22 +486,8 @@ watch(keyId, async () => {
         </div>
       </div>
 
-      <!-- Time range selector -->
+      <!-- Usage stats + trend -->
       <div class="card">
-        <div class="detail-toolbar">
-          <div class="period-selector">
-            <button
-              v-for="opt in periodOptions"
-              :key="opt.label"
-              class="btn btn-sm"
-              :class="selectedPeriod === opt && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
-              @click="useCustomRange = false; selectedPeriod = opt; changePeriod()"
-            >
-              {{ opt.label }}
-            </button>
-          </div>
-        </div>
-
         <!-- Loading state -->
         <div v-if="detailLoading" class="empty">加载中…</div>
         <div v-else-if="detailError" class="alert alert-danger">{{ detailError }}</div>
@@ -620,14 +558,14 @@ watch(keyId, async () => {
                   >费用</button>
                 </div>
                 <span class="trend-divider" aria-hidden="true"></span>
-                <div class="trend-periods">
+                <div class="trend-window">
                   <button
-                    v-for="opt in trendPeriodOptions"
-                    :key="opt.value"
+                    v-for="opt in periodOptions"
+                    :key="opt.label"
                     type="button"
                     class="btn btn-sm"
-                    :class="trendPeriod === opt.value && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
-                    @click="useCustomRange = false; trendPeriod = opt.value; changePeriod()"
+                    :class="selectedPeriod === opt && !useCustomRange ? 'btn-primary' : 'btn-ghost'"
+                    @click="useCustomRange = false; selectedPeriod = opt; changePeriod()"
                   >{{ opt.label }}</button>
                   <button
                     type="button"
@@ -641,9 +579,20 @@ watch(keyId, async () => {
                     <input type="date" v-model="customEnd" @change="changePeriod" class="date-input">
                   </template>
                 </div>
+                <span class="trend-divider" aria-hidden="true"></span>
+                <div class="trend-granularity">
+                  <button
+                    v-for="opt in trendPeriodOptions"
+                    :key="opt.value"
+                    type="button"
+                    class="btn btn-sm"
+                    :class="trendPeriod === opt.value ? 'btn-primary' : 'btn-ghost'"
+                    @click="trendPeriod = opt.value; changePeriod()"
+                  >{{ opt.label }}</button>
+                </div>
               </div>
             </div>
-            <div class="trend-chart" v-if="displayTrend.length > 0">
+            <div class="trend-chart" v-if="keyTrend.length > 0">
               <div class="trend-chart-wrap">
                 <svg
                   class="trend-svg"
@@ -723,11 +672,15 @@ watch(keyId, async () => {
                 </div>
               </div>
               <div class="trend-summary">
-                <span>{{ trendSummaryLabel }} · 共 {{ displayTrend.length }} 个周期 · 合计 {{ fmtTrendValue(totalTrendValue) }}</span>
+                <span>{{ trendSummaryLabel }} · 共 {{ keyTrend.length }} 个周期 · 合计 {{ fmtTrendValue(totalTrendValue) }}</span>
+                <span v-if="!trendHasActivity" class="trend-summary-muted">（该窗口内无使用记录）</span>
                 <span v-if="!trendTotalMatchesSummary" class="trend-summary-warn" title="趋势合计与上方汇总卡片不一致，可能由时区或聚合粒度导致">⚠ 与汇总不完全一致</span>
               </div>
             </div>
-            <div v-else class="empty small">暂无趋势数据</div>
+            <div v-else-if="keyUsage.total_requests > 0" class="empty small">
+              汇总有数据但趋势序列为空，请刷新页面；若仍异常请联系管理员
+            </div>
+            <div v-else class="empty small">{{ trendSummaryLabel }}内暂无使用记录</div>
           </div>
 
           <!-- Model breakdown -->
@@ -962,7 +915,8 @@ watch(keyId, async () => {
   border-right: none;
 }
 
-.trend-periods {
+.trend-window,
+.trend-granularity {
   display: flex;
   flex-wrap: nowrap;
   gap: 4px;
@@ -1094,6 +1048,11 @@ watch(keyId, async () => {
 
 .trend-summary-warn {
   color: var(--warning);
+  font-size: 11px;
+}
+
+.trend-summary-muted {
+  color: var(--muted);
   font-size: 11px;
 }
 
