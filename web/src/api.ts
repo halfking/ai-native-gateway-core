@@ -1,9 +1,14 @@
-import { store } from './store'
+import { store, clearApiKey } from './store'
 
 const BASE = ''  // same origin in prod; proxied in dev
 
-function headers(): Record<string, string> {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' }
+function headers(method: string): Record<string, string> {
+  const h: Record<string, string> = {}
+  // Only send Content-Type when we actually have a body — some
+  // middleware/WAFs reject GETs with application/json content-type.
+  if (method !== 'GET') {
+    h['Content-Type'] = 'application/json'
+  }
   if (store.apiKey) h['Authorization'] = `Bearer ${store.apiKey}`
   return h
 }
@@ -11,17 +16,36 @@ function headers(): Record<string, string> {
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(BASE + path, {
     method,
-    headers: headers(),
+    headers: headers(method),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (r.status === 401) {
-    // Clear invalid/stale session (but don't force redirect - let user re-login manually)
-    import('./store').then(({ clearApiKey }) => clearApiKey())
+    // Clear invalid/stale session synchronously so the next request in
+    // the same tick does not carry the stale Bearer token.  (Don't force
+    // a redirect — let the user re-login manually.)
+    clearApiKey()
     throw new Error('Unauthorized')
   }
   if (!r.ok) {
-    const msg = await r.text().catch(() => r.statusText)
-    throw new Error(msg || r.statusText)
+    // Try to parse JSON error first (backend uses {"error": "..."}),
+    // fall back to plain text.
+    let msg = r.statusText
+    try {
+      const text = await r.text()
+      if (text) {
+        try {
+          const j = JSON.parse(text)
+          msg = (j && typeof j.error === 'string') ? j.error :
+                (j && j.error && typeof j.error.detail === 'string') ? j.error.detail :
+                text
+        } catch {
+          msg = text
+        }
+      }
+    } catch {
+      // network/abort error reading body; keep statusText
+    }
+    throw new Error(msg)
   }
   if (r.status === 204) return undefined as T
   return r.json()
@@ -168,8 +192,8 @@ export function checkCredential(providerId: number, credId: number) {
   return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
 }
 
-export async function diagnoseProvider(providerId: number) {
-  const { task_id } = await startDiagnose(providerId)
+export async function diagnoseProvider(providerId: number, opts: { force?: boolean } = {}) {
+  const { task_id } = await startDiagnose(providerId, opts)
   return pollTask(task_id)
 }
 
@@ -642,8 +666,8 @@ export function getProviderLogs(providerId: number, body: {
   return getOrPost<ProviderLogsResponse>(`/api/providers/${providerId}/logs`, getParams, body)
 }
 
-export function startDiagnose(providerId: number) {
-  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/diagnose`)
+export function startDiagnose(providerId: number, opts: { force?: boolean } = {}) {
+  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/diagnose`, opts)
 }
 
 export function getDiagnoseResult(providerId: number) {
@@ -759,10 +783,6 @@ export interface KeyCreatedResponse {
 
 export function getKeys() {
   return req<ApiKey[]>('GET', '/api/keys')
-}
-
-export function getKey(id: number) {
-  return req<ApiKey[]>('GET', `/api/keys?id=${id}`)
 }
 
 export function getKeyDetail(id: number) {

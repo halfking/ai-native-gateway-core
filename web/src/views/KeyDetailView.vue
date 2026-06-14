@@ -38,7 +38,7 @@ const limitsSaving = ref(false)
 const limitsErr = ref('')
 const limitsSuccess = ref('')
 
-type LimitMode = 'default' | 'unlimited' | 'custom'
+type LimitMode = 'default' | 'custom'
 const rpmMode = ref<LimitMode>('default')
 const concurrentMode = ref<LimitMode>('default')
 const tpmMode = ref<LimitMode>('default')
@@ -51,9 +51,11 @@ function initLimitsForm() {
     rate_limit_concurrent: k.rate_limit_concurrent ?? null,
     rate_limit_tpm: k.rate_limit_tpm ?? null,
   }
-  rpmMode.value = k.rate_limit_rpm == null ? 'default' : k.rate_limit_rpm === 0 ? 'unlimited' : 'custom'
-  concurrentMode.value = k.rate_limit_concurrent == null ? 'default' : k.rate_limit_concurrent === 0 ? 'unlimited' : 'custom'
-  tpmMode.value = k.rate_limit_tpm == null ? 'default' : k.rate_limit_tpm === 0 ? 'unlimited' : 'custom'
+  // 'unlimited' was removed: backend rejects 0; "default" (= null) is
+  // the only way to opt out of a per-key limit.
+  rpmMode.value = k.rate_limit_rpm == null ? 'default' : 'custom'
+  concurrentMode.value = k.rate_limit_concurrent == null ? 'default' : 'custom'
+  tpmMode.value = k.rate_limit_tpm == null ? 'default' : 'custom'
   limitsErr.value = ''
   limitsSuccess.value = ''
 }
@@ -65,7 +67,6 @@ function openLimitsEditor() {
 
 function modeToValue(mode: LimitMode, current: number | null | undefined): number | null {
   if (mode === 'default') return null
-  if (mode === 'unlimited') return 0
   return current ?? 0
 }
 
@@ -124,6 +125,25 @@ function fmtDate(s: string | null | undefined) {
 
 function fmtDateShort(s: string | null | undefined) {
   if (!s) return '—'
+  return new Date(s).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
+// Format a trend period label based on the selected trend period.
+// The backend emits "YYYY-MM-DD" for day, "IYYY-IW" for week, "YYYY-MM"
+// for month.  new Date() does not parse "2026-25" (returns Invalid Date),
+// so we need period-aware formatting.
+function fmtTrendPeriod(s: string, period: 'day' | 'week' | 'month') {
+  if (!s) return '—'
+  if (period === 'week') {
+    const m = /^(\d{4})-(\d{1,2})$/.exec(s)
+    if (m) return `${m[2]}周`
+    return s
+  }
+  if (period === 'month') {
+    const m = /^(\d{4})-(\d{1,2})$/.exec(s)
+    if (m) return `${m[1].slice(2)}年${parseInt(m[2], 10)}月`
+    return s
+  }
   return new Date(s).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
@@ -192,6 +212,13 @@ async function loadDetail() {
 }
 
 async function changePeriod() {
+  // When custom-range mode is enabled, only reload after both dates are
+  // filled.  Otherwise the @change handler fires twice (once when each
+  // date input becomes non-empty) and the first call falls back to the
+  // default `days` range, causing a visible flicker.
+  if (useCustomRange.value) {
+    if (!customStart.value || !customEnd.value) return
+  }
   await loadDetail()
 }
 
@@ -275,7 +302,6 @@ watch(keyId, async () => {
               <label>RPM（每分钟请求数）</label>
 <div class="limit-options">
                 <label><input type="radio" v-model="rpmMode" value="default"> 默认</label>
-                <label><input type="radio" v-model="rpmMode" value="unlimited"> 无限制</label>
                 <label><input type="radio" v-model="rpmMode" value="custom"> 自定义</label>
               </div>
               <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" placeholder="输入 RPM">
@@ -285,7 +311,6 @@ watch(keyId, async () => {
               <label>并发（同时请求数）</label>
               <div class="limit-options">
                 <label><input type="radio" v-model="concurrentMode" value="default"> 默认</label>
-                <label><input type="radio" v-model="concurrentMode" value="unlimited"> 无限制</label>
                 <label><input type="radio" v-model="concurrentMode" value="custom"> 自定义</label>
               </div>
               <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" placeholder="输入并发数">
@@ -365,7 +390,7 @@ watch(keyId, async () => {
             </div>
             <div class="stat-card">
               <div class="stat-label">成功率</div>
-              <div class="stat-value">{{ (keyUsage.success_rate * 100).toFixed(1) }}%</div>
+              <div class="stat-value">{{ keyUsage.total_requests > 0 ? (keyUsage.success_rate * 100).toFixed(1) + '%' : '—' }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">平均延迟</div>
@@ -401,7 +426,7 @@ watch(keyId, async () => {
                   :title="`${t.period}: ${fmtCost(t.cost_usd)} (${fmtNum(t.requests)} 请求)`"
                 >
                   <div class="trend-bar" :style="{ height: trendBarWidth(t.cost_usd) }"></div>
-                  <div class="trend-label">{{ fmtDateShort(t.period) }}</div>
+                  <div class="trend-label">{{ fmtTrendPeriod(t.period, trendPeriod) }}</div>
                 </div>
               </div>
               <div class="trend-summary">
