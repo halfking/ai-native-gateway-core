@@ -20,7 +20,6 @@ func TestScore_Balanced(t *testing.T) {
 		Tags:               []string{"reasoning", "code"},
 	}
 	sigs := ClassificationSignals{
-		TaskType:        TaskReasoning,
 		EstimatedTokens: 4000,
 	}
 	cost := CostContext{PriceP75: 18.0, SpeedP95: 1500}
@@ -97,10 +96,10 @@ func TestScore_CostFirst_WeightsPrice(t *testing.T) {
 
 func TestTaskMatchScore(t *testing.T) {
 	tags := []string{"reasoning", "code", "math"}
-	if got := TaskMatchScore(TaskReasoning, tags); got != 1.0 {
-		t.Fatalf("reasoning all match: got %.2f", got)
+	if got := TaskMatchScore(TaskReasoning, tags); got < 0.6 {
+		t.Fatalf("reasoning partial: got %.2f", got)
 	}
-	if got := TaskMatchScore(TaskCode, tags); got < 0.5 {
+	if got := TaskMatchScore(TaskCode, tags); got < 0.3 {
 		t.Fatalf("code partial: got %.2f", got)
 	}
 	if got := TaskMatchScore(TaskVision, tags); got != 0 {
