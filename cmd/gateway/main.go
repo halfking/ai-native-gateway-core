@@ -192,6 +192,20 @@ func main() {
 		exec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
 		exec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
 		exec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+		// Q3 streaming: openai client -> anthropic upstream. Translates
+		// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
+		// doesn't choke on event: ... lines. Fixes the "供应商错误"
+		// symptom on minimax-M2.7 / minimax-M3 etc. (Q3 model routes).
+		exec.AnthropicToOpenAIStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, cap *audit.StreamCapture) routing.StreamOutcome {
+			// relay.StreamOutcome and routing.StreamOutcome are
+			// structurally identical; explicit conversion to bridge the
+			// import boundary (routing can't import relay).
+			return routing.StreamOutcome(relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap))
+		}
+		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
+		// chat.completion JSON. Fixes the missing `content` field on
+		// minimax-M2.7 non-stream responses.
+		exec.AnthropicToChatResponse = relay.ConvertAnthropicResponseToChat
 		exec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
 		exec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second

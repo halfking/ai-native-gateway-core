@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
@@ -42,6 +43,21 @@ type AnthropicExecutor struct {
 	// routing package cannot import relay (relay imports routing),
 	// so the function is injected as a hook.
 	PassthroughStream func(w http.ResponseWriter, resp *http.Response) StreamOutcome
+	// OpenAITranslator converts Anthropic SSE upstream into OpenAI SSE
+	// chunks for the Q3 path (openai client -> anthropic upstream).
+	// When nil, the Q3 stream path falls back to PassthroughStream
+	// (preserving the pre-fix behavior; the OpenAI client will fail to
+	// parse the result, but a misconfig won't take the service down).
+	OpenAITranslator func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+	// ChatResponseConverter converts an Anthropic Messages JSON body
+	// into an OpenAI chat.completion JSON body for the Q3 non-stream
+	// path. When nil, the Q3 non-stream path falls back to passthrough
+	// (Anthropic JSON body) which most OpenAI clients will reject.
+	ChatResponseConverter func(body []byte, clientModel string) ([]byte, error)
+	// ClientProtocol is the wire format the client used to send the
+	// request. Empty defaults to "anthropic-messages" (Q4 passthrough).
+	// "openai-completions" selects the Q3 conversion paths above.
+	ClientProtocol string
 }
 
 var _ ProtocolHandler = (*AnthropicExecutor)(nil)
@@ -69,9 +85,41 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if err != nil {
 		return err
 	}
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+
+	// Q3 mode (openai client -> anthropic upstream): translate the
+	// Anthropic Messages response body into an OpenAI chat.completion
+	// body so the OpenAI parser doesn't choke on the shape mismatch.
+	// Without this branch the OpenAI client receives a Messages-format
+	// JSON body (with `content[].text` and `stop_reason`) and reports
+	// "供应商错误" to the end-user.
+	if a.ClientProtocol != "anthropic-messages" {
+		if a.ChatResponseConverter != nil {
+			converted, convErr := a.ChatResponseConverter(body, clientModel)
+			if convErr == nil {
+				body = converted
+			} else {
+				slog.Warn("anthropic_to_chat convert failed; forwarding raw body",
+					"error", convErr, "request_id", clientModel)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		_, err = w.Write(body)
+		return err
+	}
+
+	// Q4 mode (anthropic client -> anthropic upstream): passthrough
+	// with the existing think-tag split so SDK clients receive a
+	// well-formed Anthropic Messages response.
 	if clientModel != "" {
 		body = replaceModelInResponseBody(body, clientModel)
 	}
+
 	// minimax-anthropic upstream packs the reasoning trace inside the
 	// text block as `<think>...</think>` rather than emitting a separate
 	// thinking block. Anthropic's wire protocol expects an independent
@@ -155,6 +203,17 @@ func splitEmbeddedThinkTags(body []byte) []byte {
 // import cycle (relay already imports routing).
 
 func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	// Q3 mode (openai client -> anthropic upstream): translate the
+	// upstream Anthropic SSE stream into OpenAI SSE chunks so the
+	// OpenAI parser receives data: {...} chunks instead of the raw
+	// event: ... lines. Falls back to PassthroughStream if the
+	// translator hook isn't wired (defensive: a misconfig shouldn't
+	// take the service down).
+	if a.ClientProtocol != "anthropic-messages" {
+		if a.OpenAITranslator != nil {
+			return a.OpenAITranslator(w, resp, "", "", "", nil)
+		}
+	}
 	if a.PassthroughStream != nil {
 		return a.PassthroughStream(w, resp)
 	}
@@ -288,6 +347,30 @@ func (e *Executor) executeAnthropic(
 			StreamTimeout:        e.StreamTimeout,
 			StreamRetryThreshold: e.StreamRetryThreshold,
 		},
+		ClientProtocol: params.ClientProtocol,
+	}
+	if e.AnthropicPassthroughStream != nil {
+		clientModel := params.ClientModel
+		requestID := ""
+		if params.R != nil {
+			requestID = params.R.Header.Get("X-Request-Id")
+		}
+		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+		}
+	}
+	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
+		clientModel := params.ClientModel
+		requestID := ""
+		if params.R != nil {
+			requestID = params.R.Header.Get("X-Request-Id")
+		}
+		ae.OpenAITranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+		}
+	}
+	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {
+		ae.ChatResponseConverter = e.AnthropicToChatResponse
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel

@@ -66,6 +66,16 @@ type ChatToAnthropicFunc func(body []byte) ([]byte, error)
 // does not import relay.
 type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 
+// AnthropicToOpenAISSEFunc is the streaming counterpart of
+// AnthropicToOpenAIFunc: reads Anthropic-format SSE upstream and
+// writes OpenAI-format SSE chunks to w. Wired from main.go.
+type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+
+// AnthropicToChatResponseFunc is the non-stream counterpart that
+// converts an Anthropic Messages JSON body into an OpenAI
+// chat.completion JSON body. Wired from main.go.
+type AnthropicToChatResponseFunc func(body []byte, clientModel string) ([]byte, error)
+
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
 type SanitizeAnthropicToolsFunc func(body []byte) []byte
@@ -103,6 +113,19 @@ type Executor struct {
 	// AnthropicToOpenAI converts Anthropic Messages body to OpenAI chat
 	// format. Used by executeOpenAI when ClientProtocol == "anthropic-messages".
 	AnthropicToOpenAI AnthropicToOpenAIFunc
+	// AnthropicToOpenAIStream is the Q3 streaming counterpart of
+	// AnthropicToOpenAI: reads Anthropic-format SSE upstream and writes
+	// OpenAI-format SSE chunks to the client. Used by executeAnthropic
+	// when ClientProtocol != "anthropic-messages" (openai client ->
+	// anthropic upstream). Defaults to nil; when nil the Q3 stream
+	// path falls back to PassthroughStream which the OpenAI client
+	// can't parse.
+	AnthropicToOpenAIStream AnthropicToOpenAISSEFunc
+	// AnthropicToChatResponse is the Q3 non-stream counterpart:
+	// converts an Anthropic Messages JSON body into an OpenAI
+	// chat.completion JSON body. Used by executeAnthropic when
+	// ClientProtocol != "anthropic-messages".
+	AnthropicToChatResponse AnthropicToChatResponseFunc
 	// SanitizeAnthropicTools strips invalid tool type fields from Anthropic
 	// Messages bodies (Q3/Q4) before forwarding to minimax/anthropic upstream.
 	SanitizeAnthropicTools SanitizeAnthropicToolsFunc
