@@ -505,8 +505,12 @@ func (h *ChatHandler) serveWithExecutor(
 		canonicalID = modelResolution.CanonicalID
 	}
 	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
 	h.recordInitialRequestLog(
-		requestID, clientModel, explicitOutbound, endUser, "chat", keyInfo,
+		requestID, clientModel, outboundForLog, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
@@ -533,7 +537,7 @@ func (h *ChatHandler) serveWithExecutor(
 		IsStream:      isStream,
 		ClientProtocol: "openai-completions",
 		ClientModel:   clientModel,
-		OutboundModel: explicitOutbound,
+		OutboundModel: outboundForLog,
 		ClientID:      clientID,
 		Transform:     txResult,
 		Resolution:    modelResolution,
@@ -754,6 +758,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		responsePreviewPtr = strPtr(responsePreviewText)
 	}
 
+	loggedOutbound := outboundModelForLog(evt.ClientModel, evt.OutboundModel, result.Candidate.RawModel)
+
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:        evt.RequestID,
 		TenantID:         tenantID,
@@ -764,7 +770,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		ApplicationCode:  strPtr(appCode),
 		EndUserID:        strPtr(endUser),
 		ClientModel:      strPtr(evt.ClientModel),
-		OutboundModel:    strPtr(evt.OutboundModel),
+		OutboundModel:    strPtr(loggedOutbound),
 		CredentialID:     intPtr(result.Candidate.CredentialID),
 		ProviderID:       intPtr(result.Candidate.ProviderID),
 		ClientProfile:    strPtr(evt.ClientProfile),

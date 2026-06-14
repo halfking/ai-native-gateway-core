@@ -1,35 +1,59 @@
 package relay
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/transform"
-)
+func TestOutboundModelForLog(t *testing.T) {
+	tests := []struct {
+		name      string
+		client    string
+		explicit  string
+		candidate string
+		want      string
+	}{
+		{
+			name:      "transform differs from client",
+			client:    "minimax-m3",
+			explicit:  "MiniMax-M3",
+			candidate: "MiniMax-M3",
+			want:      "MiniMax-M3",
+		},
+		{
+			name:      "same explicit uses candidate raw",
+			client:    "minimax-m3",
+			explicit:  "minimax-m3",
+			candidate: "MiniMax-M3",
+			want:      "MiniMax-M3",
+		},
+		{
+			name:      "empty explicit uses candidate raw",
+			client:    "glm-5.1",
+			explicit:  "",
+			candidate: "z-ai/glm-5.1",
+			want:      "z-ai/glm-5.1",
+		},
+		{
+			name:      "all same falls back to client",
+			client:    "mimo-v2.5-pro",
+			explicit:  "mimo-v2.5-pro",
+			candidate: "mimo-v2.5-pro",
+			want:      "mimo-v2.5-pro",
+		},
+		{
+			name:      "explicit differs by case only",
+			client:    "MiniMax-M3",
+			explicit:  "minimax-m3",
+			candidate: "MiniMax-M3",
+			want:      "minimax-m3",
+		},
+	}
 
-func TestRenderOutboundFromTransform_MatchesPythonDefault(t *testing.T) {
-	cand := provider.Candidate{
-		RawModel:      "z-ai/glm-5.1",
-		OfferRawModel: "z-ai/glm-5.1",
-	}
-	got := renderOutboundFromTransform(nil, cand, "glm-5.1")
-	if got != "" {
-		t.Fatalf("no transform → empty explicit outbound, got %q", got)
-	}
-
-	candZhipu := provider.Candidate{
-		RawModel:      "glm-5.1",
-		OfferRawModel: "glm-5.1",
-	}
-	tx := &transform.TransformResult{OutboundModel: "{offer.raw_model_name}"}
-	got = renderOutboundFromTransform(tx, candZhipu, "glm-5.1")
-	if got != "glm-5.1" {
-		t.Fatalf("template raw_model_name → %q, want glm-5.1", got)
-	}
-
-	txNvidia := &transform.TransformResult{OutboundModel: "{offer.outbound_model_name}"}
-	got = renderOutboundFromTransform(txNvidia, cand, "glm-5.1")
-	if got != "z-ai/glm-5.1" {
-		t.Fatalf("template outbound_model_name → %q, want z-ai/glm-5.1", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := outboundModelForLog(tt.client, tt.explicit, tt.candidate)
+			if got != tt.want {
+				t.Fatalf("outboundModelForLog(%q, %q, %q) = %q, want %q",
+					tt.client, tt.explicit, tt.candidate, got, tt.want)
+			}
+		})
 	}
 }
