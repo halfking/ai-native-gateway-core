@@ -302,18 +302,43 @@ func scanIndexRow(rows interface {
 	var c Candidate
 	var tags []string
 	var ctxWindow *int
+	// v2.0.4 fix: unit_price / success_rate / canonical_id / canonical_name /
+	// billing_mode can be NULL in credential_model_index when the source
+	// rows have no matching model_offers entry. Use pointers to allow NULL.
+	var canonicalID *int
+	var canonicalName *string
+	var billingMode *string
+	var priceIn, priceOut, successRate *float64
 	if err := rows.Scan(
-		&c.CredentialID, &c.RawModel, &c.CanonicalID,
-		&c.CanonicalName, &tags, &ctxWindow,
-		&c.BillingMode,
-		&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M,
-		&c.SuccessRate, &c.P95LatencyMs,
+		&c.CredentialID, &c.RawModel, &canonicalID,
+		&canonicalName, &tags, &ctxWindow,
+		&billingMode,
+		&priceIn, &priceOut,
+		&successRate, &c.P95LatencyMs,
 		&c.ActiveSessions, &c.ConcurrencyLimit,
 	); err != nil {
 		return c, err
 	}
 	if ctxWindow != nil {
 		c.ContextWindow = *ctxWindow
+	}
+	if canonicalID != nil {
+		c.CanonicalID = *canonicalID
+	}
+	if canonicalName != nil {
+		c.CanonicalName = *canonicalName
+	}
+	if billingMode != nil {
+		c.BillingMode = *billingMode
+	}
+	if priceIn != nil {
+		c.UnitPriceInPer1M = *priceIn
+	}
+	if priceOut != nil {
+		c.UnitPriceOutPer1M = *priceOut
+	}
+	if successRate != nil {
+		c.SuccessRate = *successRate
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)
