@@ -303,6 +303,19 @@ function fmtTrendValue(value: number): string {
   return fmtNum(value)
 }
 
+function fmtQueryWindow(): string {
+  const u = keyUsage.value
+  if (u?.window_start && u?.window_end) {
+    const end = new Date(u.window_end)
+    end.setUTCDate(end.getUTCDate() - 1)
+    return `${fmtDateShort(u.window_start)} ~ ${fmtDateShort(end.toISOString())}`
+  }
+  if (useCustomRange.value && customStart.value && customEnd.value) {
+    return `${customStart.value} ~ ${customEnd.value}`
+  }
+  return selectedPeriod.value.label
+}
+
 function trendTooltipStyle(p: { x: number; y: number }): Record<string, string> {
   const leftPct = Math.min(92, Math.max(8, (p.x / CHART_W) * 100))
   const topPct = Math.max(6, (p.y / CHART_H) * 100 - 14)
@@ -530,8 +543,11 @@ watch(keyId, async () => {
           </div>
 
           <!-- Time range info -->
-          <div class="time-range-info" v-if="keyUsage.first_request_at || keyUsage.last_request_at">
-            数据范围：{{ fmtDate(keyUsage.first_request_at) }} ~ {{ fmtDate(keyUsage.last_request_at) }}
+          <div class="time-range-info">
+            <span>查询窗口：{{ fmtQueryWindow() }}</span>
+            <span v-if="keyUsage.first_request_at || keyUsage.last_request_at" class="time-range-actual">
+              · 实际使用 {{ fmtDate(keyUsage.first_request_at) }} ~ {{ fmtDate(keyUsage.last_request_at) }}
+            </span>
           </div>
 
           <!-- Trend chart -->
@@ -848,6 +864,10 @@ watch(keyId, async () => {
   color: var(--muted);
   text-align: center;
   margin-bottom: 16px;
+}
+
+.time-range-actual {
+  color: color-mix(in srgb, var(--muted) 80%, var(--text));
 }
 
 .section {
