@@ -627,17 +627,22 @@ func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID i
 	writeJSON(w, http.StatusOK, usage)
 }
 
-func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID int) {
-	period := queryString(r, "period")
+func validateUsageTrendPeriod(period string) (string, error) {
 	if period == "" {
-		period = "day"
+		return "day", nil
 	}
-	// Validate period to avoid SQL injection via the parameterised
-	// DATE_TRUNC call.
 	switch period {
 	case "day", "week", "month":
+		return period, nil
 	default:
-		writeError(w, http.StatusBadRequest, "period must be one of: day, week, month")
+		return "", fmt.Errorf("period must be one of: day, week, month")
+	}
+}
+
+func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID int) {
+	period, periodErr := validateUsageTrendPeriod(queryString(r, "period"))
+	if periodErr != nil {
+		writeError(w, http.StatusBadRequest, periodErr.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
