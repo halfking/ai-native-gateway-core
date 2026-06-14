@@ -168,7 +168,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
 		attemptErrCode = "body_read_error"
-		attemptErrMsg = "failed to read request body"
+		attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		slog.Warn("anthropic request body read failed",
+			"request_id", requestID,
+			"error", err,
+			"content_length", r.ContentLength,
+		)
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Failed to read request body")
 		return
 	}

@@ -447,10 +447,15 @@ func main() {
 	srv := &http.Server{
 		Addr:           cfg.Listen,
 		Handler:        handler,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   0,
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 1 << 20,
+		// ReadHeaderTimeout: headers only. ReadTimeout covers the full request
+		// body window from connection accept (see net/http readRequest). The
+		// previous 10s total caused body_read_error when clients uploaded
+		// large chat payloads slowly — production logs showed latency_ms ≈ 10001.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────
