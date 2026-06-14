@@ -110,7 +110,7 @@ const hoveredTrendIndex = ref<number | null>(null)
 
 const CHART_W = 640
 const CHART_H = 160
-const CHART_PAD = { l: 50, r: 12, t: 10, b: 26 }
+const CHART_PAD = { l: 44, r: 10, t: 8, b: 22 }
 const trendPeriodOptions: { label: string; value: PeriodType }[] = [
   { label: '按分钟', value: 'minute' },
   { label: '按小时', value: 'hour' },
@@ -261,12 +261,44 @@ const yGridLines = computed(() => {
   }))
 })
 
+function maxXLabelsForPeriod(total: number): number {
+  if (trendPeriod.value === 'minute') {
+    if (total > 500) return 5
+    if (total > 200) return 6
+    return 8
+  }
+  if (trendPeriod.value === 'hour') {
+    if (total > 120) return 8
+    return 10
+  }
+  if (total > 60) return 6
+  return 8
+}
+
 function shouldShowXLabel(index: number, total: number): boolean {
-  if (total <= 12) return true
+  if (total <= 8) return true
   if (index === 0 || index === total - 1) return true
-  const maxLabels = trendPeriod.value === 'minute' ? 10 : trendPeriod.value === 'hour' ? 12 : 8
+  const maxLabels = maxXLabelsForPeriod(total)
   const step = Math.max(1, Math.ceil(total / maxLabels))
   return index % step === 0
+}
+
+function compactTrendLabel(s: string, period: PeriodType, total: number): string {
+  if (!s) return '—'
+  if (period === 'minute' || period === 'hour') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(s)
+    if (m) {
+      if (period === 'minute') {
+        if (total > 200) return `${m[4]}:${m[5]}`
+        if (total > 48) return `${parseInt(m[3], 10)}日${m[4]}:${m[5]}`
+        return `${m[2]}/${m[3]} ${m[4]}:${m[5]}`
+      }
+      if (total > 72) return `${parseInt(m[3], 10)}日${m[4]}时`
+      return `${m[2]}/${m[3]} ${m[4]}:00`
+    }
+    return s
+  }
+  return fmtTrendPeriod(s, period)
 }
 
 const chartPoints = computed(() => {
@@ -283,7 +315,7 @@ const chartPoints = computed(() => {
       y,
       value,
       entry: t,
-      label: fmtTrendPeriod(t.period, trendPeriod.value),
+      label: compactTrendLabel(t.period, trendPeriod.value, n),
     }
   })
 })
@@ -1108,13 +1140,13 @@ watch(keyId, async () => {
 
 .trend-y-label {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: 8px;
   font-family: inherit;
 }
 
 .trend-x-label {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: 8px;
   font-family: inherit;
 }
 

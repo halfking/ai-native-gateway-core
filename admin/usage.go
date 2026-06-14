@@ -639,10 +639,15 @@ func validateUsageTrendPeriod(period string) (string, error) {
 	}
 }
 
+// minuteTrendMaxWindow allows calendar-aligned "最近 N 天" queries from
+// resolveUsageTimeRange: start is truncated to UTC midnight, so a 3-day
+// window can span up to 96h−1s (not a flat 72h).
+const minuteTrendMaxWindow = 4*24*time.Hour - time.Second
+
 func maxTrendWindow(period string) time.Duration {
 	switch period {
 	case "minute":
-		return 3 * 24 * time.Hour
+		return minuteTrendMaxWindow
 	case "hour":
 		return 31 * 24 * time.Hour
 	default:
