@@ -21,7 +21,6 @@
 --   按 api_key_id 聚合的 1h / 24h / 7d 成本视图
 --   用于 cost-first profile 的智能路由决策
 
-BEGIN;
 
 -- ============================================================================
 -- (a) api_key_model_cost — API Key × Model × 5min 滚动成本
@@ -65,7 +64,7 @@ COMMENT ON TABLE api_key_model_cost IS 'Auto route: per-API-Key per-model 5min r
 -- ============================================================================
 -- 实时性：任何 auto_route 请求完成后立即更新（不再等 5min refresh）
 CREATE OR REPLACE FUNCTION update_api_key_model_cost()
-RETURNS TRIGGER AS $
+RETURNS TRIGGER AS $$
 DECLARE
     bucket_ts TIMESTAMPTZ;
     key_id INT;
@@ -119,7 +118,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- 仅 auto 请求触发（避免给显式 model 请求带来额外开销）
 DROP TRIGGER IF EXISTS trg_update_api_key_model_cost ON request_logs;
@@ -136,7 +135,8 @@ EXECUTE FUNCTION update_api_key_model_cost();
 -- 之前 trigger 在 INSERT 时累加 active_concurrent 但永远不减回，
 -- 几小时后字段会爆增。现在 active_concurrent 在视图层动态计算
 -- (JOIN request_logs 子查询，统计最近 5 分钟内未完成的请求数近似)。
-CREATE OR REPLACE VIEW customer_cost_view AS
+DROP VIEW IF EXISTS customer_cost_view;
+CREATE VIEW customer_cost_view AS
 SELECT
     akmc.api_key_id,
     ak.key_alias,
@@ -183,7 +183,8 @@ COMMENT ON VIEW customer_cost_view IS 'Auto route: per-API-Key customer cost das
 -- ============================================================================
 -- (d) model_cost_per_task_view — 每个 canonical model 在每个 task 上的成本（模型选型决策用）
 -- ============================================================================
-CREATE OR REPLACE VIEW model_cost_per_task_view AS
+DROP VIEW IF EXISTS model_cost_per_task_view;
+CREATE VIEW model_cost_per_task_view AS
 SELECT
     canonical_id,
     raw_model,
@@ -214,5 +215,3 @@ WHERE bucket >= NOW() - INTERVAL '7 days'
 GROUP BY canonical_id, raw_model;
 
 COMMENT ON VIEW model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days';
-
-COMMIT;
