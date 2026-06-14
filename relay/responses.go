@@ -119,6 +119,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel)
+
 	var keyInfo *auth.KeyInfo
 	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
@@ -174,12 +176,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
 	if err != nil {
+		if len(bodyBytes) > 0 {
+			attemptRequestBody = bodyBytes
+			if attemptClientModel == "" {
+				attemptClientModel = extractModelFromBody(bodyBytes)
+			}
+		}
 		attemptErrCode = "body_read_error"
 		attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
 		slog.Warn("responses request body read failed",
 			"request_id", requestID,
 			"error", err,
 			"content_length", r.ContentLength,
+			"partial_bytes", len(bodyBytes),
+			"client_model", attemptClientModel,
 		)
 		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
 		return
@@ -227,7 +237,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
 	endUser := extractEndUser(r)
-	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), "")
+	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 
 	auditBuilder := newAuditEvent(requestID).
 		ClientModel(clientModel).

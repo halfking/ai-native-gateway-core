@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 )
 
@@ -406,5 +409,127 @@ func gatewayCodePrefixMap() map[string]string {
 		"session_forbidden":              "gw_",
 		"internal_panic":                 "gw_",
 		"chat_to_anthropic_conversion_error": "gw_",
+	}
+}
+
+func TestCapturePartialBodyOnReadError_ExtractsModel(t *testing.T) {
+	var body []byte
+	model := ""
+	partial := []byte(`{"model":"glm-4-flash","messages":[{"role":"user","content":"hi`)
+	capturePartialBodyOnReadError(partial, &body, &model)
+	if model != "glm-4-flash" {
+		t.Fatalf("model = %q, want glm-4-flash", model)
+	}
+	if len(body) != len(partial) {
+		t.Fatalf("body len = %d, want %d", len(body), len(partial))
+	}
+}
+
+func TestFailedRequestIdentity_FromHeadersAndKeyProfile(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Device-Seed", "device-abc")
+	r.Header.Set("User-Agent", "openclaw/1.0")
+	profile := "cursor"
+	keyInfo := &auth.KeyInfo{
+		ID:                   2,
+		TenantID:             "default",
+		DefaultClientProfile: &profile,
+	}
+	gotProfile, gotHash := failedRequestIdentity(r, keyInfo)
+	if gotProfile != "cursor" {
+		t.Fatalf("client_profile = %q, want cursor", gotProfile)
+	}
+	if gotHash == "" {
+		t.Fatal("identity_hash should be populated from headers")
+	}
+}
+
+func TestRecordFailedRequestWithKey_IncludesIdentityAndPartialBody(t *testing.T) {
+	var captured *telemetry.RequestLogEntry
+	ch := NewChatHandler(circuit.NewManager(), limiter.New(), nil, nil, nil, nil)
+	ch.SetRequestLogHook(func(entry *telemetry.RequestLogEntry) {
+		if entry != nil {
+			captured = entry
+		}
+	})
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Device-Seed", "seed-xyz")
+	profile := "roocode"
+	keyInfo := &auth.KeyInfo{
+		ID:                   7,
+		TenantID:             "default",
+		KeyPrefix:            "sk-testkey12",
+		ApplicationCode:      "cursor",
+		DefaultClientProfile: &profile,
+	}
+	owner := "alice"
+	keyInfo.OwnerUser = &owner
+	partialBody := []byte(`{"model":"minimax-m3","stream":true`)
+
+	ch.recordFailedRequestWithKey(
+		"req-body-read-fail", "minimax-m3", "",
+		nil, nil, "body_read_error", "timeout", 10001,
+		partialBody, keyInfo, r,
+	)
+
+	if captured == nil {
+		t.Fatal("expected request log hook to fire")
+	}
+	if captured.ClientModel == nil || *captured.ClientModel != "minimax-m3" {
+		t.Fatalf("client_model = %v, want minimax-m3", captured.ClientModel)
+	}
+	if captured.ClientProfile == nil || *captured.ClientProfile != "roocode" {
+		t.Fatalf("client_profile = %v, want roocode", captured.ClientProfile)
+	}
+	if captured.IdentityHash == nil || *captured.IdentityHash == "" {
+		t.Fatalf("identity_hash should be set, got %v", captured.IdentityHash)
+	}
+	if captured.RequestMode == nil || *captured.RequestMode != "chat" {
+		t.Fatalf("request_mode = %v, want chat", captured.RequestMode)
+	}
+	if captured.RequestPreview == nil || *captured.RequestPreview == "" {
+		t.Fatal("request_preview should be populated from partial body")
+	}
+	if captured.APIKeyPrefix == nil || *captured.APIKeyPrefix != "sk-testkey12***" {
+		t.Fatalf("api_key_prefix = %v, want sk-testkey12***", captured.APIKeyPrefix)
+	}
+	if captured.APIKeyOwnerUser == nil || *captured.APIKeyOwnerUser != "alice" {
+		t.Fatalf("api_key_owner_user = %v, want alice", captured.APIKeyOwnerUser)
+	}
+	if captured.ApplicationCode == nil || *captured.ApplicationCode != "cursor" {
+		t.Fatalf("application_code = %v, want cursor", captured.ApplicationCode)
+	}
+}
+
+func TestMaskAPIKeyPrefix(t *testing.T) {
+	if got := maskAPIKeyPrefix(""); got != "无key" {
+		t.Fatalf("empty key = %q, want 无key", got)
+	}
+	if got := maskAPIKeyPrefix("sk-short"); got != "sk-short***" {
+		t.Fatalf("short key = %q", got)
+	}
+	if got := maskAPIKeyPrefix("sk-abcdefghijklmn"); got != "sk-abcdefghi***" {
+		t.Fatalf("long key = %q", got)
+	}
+}
+
+func TestRecordFailedRequestWithKey_MissingKeyShowsWuKey(t *testing.T) {
+	var captured *telemetry.RequestLogEntry
+	ch := NewChatHandler(circuit.NewManager(), limiter.New(), nil, nil, nil, nil)
+	ch.SetRequestLogHook(func(entry *telemetry.RequestLogEntry) {
+		captured = entry
+	})
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"glm-4"}`))
+	ch.recordFailedRequestWithKey(
+		"req-missing-key", "glm-4", "",
+		nil, nil, "missing_key", "missing api key", 5,
+		[]byte(`{"model":"glm-4"}`), nil, r,
+	)
+	if captured == nil {
+		t.Fatal("expected hook")
+	}
+	if captured.APIKeyPrefix == nil || *captured.APIKeyPrefix != "无key" {
+		t.Fatalf("api_key_prefix = %v, want 无key", captured.APIKeyPrefix)
 	}
 }

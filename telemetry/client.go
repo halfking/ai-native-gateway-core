@@ -120,6 +120,9 @@ type RequestLogEntry struct {
 	ResponseBody       *string  `json:"response_body,omitempty"`
 	GwSessionID        *string  `json:"gw_session_id,omitempty"`
 	GwTaskID           *string  `json:"gw_task_id,omitempty"`
+	APIKeyPrefix       *string  `json:"api_key_prefix,omitempty"`
+	APIKeyOwnerUser    *string  `json:"api_key_owner_user,omitempty"`
+	ApplicationCode    *string  `json:"application_code,omitempty"`
 }
 
 func NewClient() *Client {
@@ -383,7 +386,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
 			stream_interrupted,
 			usage_source,
-			gw_session_id, gw_task_id
+			gw_session_id, gw_task_id,
+			api_key_prefix, api_key_owner_user, application_code
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -399,7 +403,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			CAST($35 AS jsonb), CAST($36 AS jsonb),
 			$37, $38, $39,
 			$40,
-			$41, $42, $43
+			$41,
+			$42, $43,
+			$44, $45, $46
 		)
 	`,
 		entry.RequestID,
@@ -445,6 +451,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		nonEmptyPtr(entry.UsageSource, "llm"),
 		entry.GwSessionID,
 		entry.GwTaskID,
+		entry.APIKeyPrefix,
+		entry.APIKeyOwnerUser,
+		entry.ApplicationCode,
 	)
 	if err != nil {
 		return err
@@ -588,7 +597,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       identity_hash = COALESCE($37, rl.identity_hash),
 		       search_text = COALESCE($38, rl.search_text),
 		       gw_session_id = COALESCE($39, rl.gw_session_id),
-		       gw_task_id = COALESCE($40, rl.gw_task_id)
+		       gw_task_id = COALESCE($40, rl.gw_task_id),
+		       api_key_prefix = COALESCE($41, rl.api_key_prefix),
+		       api_key_owner_user = COALESCE($42, rl.api_key_owner_user),
+		       application_code = COALESCE($43, rl.application_code)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -633,6 +645,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		searchText(entry),
 		entry.GwSessionID,
 		entry.GwTaskID,
+		entry.APIKeyPrefix,
+		entry.APIKeyOwnerUser,
+		entry.ApplicationCode,
 	)
 	if err != nil {
 		return err
@@ -736,7 +751,7 @@ func searchText(entry *RequestLogEntry) *string {
 	parts := make([]string, 0, 6)
 	for _, value := range []*string{
 		entry.ClientModel, entry.OutboundModel, entry.ClientProfile, entry.RequestMode,
-		entry.GwSessionID, entry.GwTaskID,
+		entry.GwSessionID, entry.GwTaskID, entry.APIKeyPrefix, entry.APIKeyOwnerUser, entry.ApplicationCode,
 	} {
 		if value != nil && *value != "" {
 			parts = append(parts, *value)
@@ -882,6 +897,9 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ResponsePreview)
 	sanitizeStringPtr(&e.GwSessionID)
 	sanitizeStringPtr(&e.GwTaskID)
+	sanitizeStringPtr(&e.APIKeyPrefix)
+	sanitizeStringPtr(&e.APIKeyOwnerUser)
+	sanitizeStringPtr(&e.ApplicationCode)
 	e.RequestID = sanitizeUTF8(e.RequestID)
 	e.TenantID = sanitizeUTF8(e.TenantID)
 	if e.EndUserID != nil {
@@ -976,6 +994,9 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.IdentityHash, src.IdentityHash)
 	mergeStringPtr(&dst.GwSessionID, src.GwSessionID)
 	mergeStringPtr(&dst.GwTaskID, src.GwTaskID)
+	mergeStringPtr(&dst.APIKeyPrefix, src.APIKeyPrefix)
+	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
+	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)
 	if src.Success {
 		dst.Success = true
 	}
