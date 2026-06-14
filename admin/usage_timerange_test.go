@@ -154,7 +154,7 @@ func TestValidateUsageTrendPeriod(t *testing.T) {
 	if err != nil || got != "day" {
 		t.Fatalf("empty period: got=%q err=%v want day", got, err)
 	}
-	for _, p := range []string{"day", "week", "month"} {
+	for _, p := range []string{"minute", "hour", "day", "week", "month"} {
 		got, err = validateUsageTrendPeriod(p)
 		if err != nil || got != p {
 			t.Fatalf("period %q: got=%q err=%v", p, got, err)
@@ -163,5 +163,29 @@ func TestValidateUsageTrendPeriod(t *testing.T) {
 	_, err = validateUsageTrendPeriod("year")
 	if err == nil {
 		t.Fatal("expected error for invalid period")
+	}
+}
+
+func TestValidateTrendGranularityWindow(t *testing.T) {
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	end3d := start.Add(3 * 24 * time.Hour)
+	end4d := start.Add(4 * 24 * time.Hour)
+	end31d := start.Add(31 * 24 * time.Hour)
+	end32d := start.Add(32 * 24 * time.Hour)
+
+	if err := validateTrendGranularityWindow(start, end3d, "minute"); err != nil {
+		t.Fatalf("3d minute window: %v", err)
+	}
+	if err := validateTrendGranularityWindow(start, end4d, "minute"); err == nil {
+		t.Fatal("expected error for 4d minute window")
+	}
+	if err := validateTrendGranularityWindow(start, end31d, "hour"); err != nil {
+		t.Fatalf("31d hour window: %v", err)
+	}
+	if err := validateTrendGranularityWindow(start, end32d, "hour"); err == nil {
+		t.Fatal("expected error for 32d hour window")
+	}
+	if err := validateTrendGranularityWindow(start, end32d, "day"); err != nil {
+		t.Fatalf("32d day window should be allowed: %v", err)
 	}
 }
