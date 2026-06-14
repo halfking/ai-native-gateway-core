@@ -420,7 +420,7 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		stateReason = &pr.StateReasonCode
 	}
 
-	c.db.Exec(execCtx, `
+	if _, err := c.db.Exec(execCtx, `
 		UPDATE credentials
 		SET health_status = $1,
 		    health_error = $2,
@@ -439,7 +439,10 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		  AND quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
 	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
-		quotaState, stateReason, credID)
+		quotaState, stateReason, credID); err != nil {
+		slog.Warn("credential probe v2: writeHealth failed",
+			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+	}
 }
 
 // decryptCiphertext attempts to decrypt with keyring first, then fallback to

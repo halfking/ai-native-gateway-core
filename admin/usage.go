@@ -737,13 +737,15 @@ func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyI
 	}
 
 	var spentUSD float64
-	h.db.QueryRow(ctx, `
+	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(cost_usd), 0.0)
 		FROM usage_ledger
 		WHERE tenant_id = 'default'
 		  AND api_key_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, keyID, days).Scan(&spentUSD)
+	`, keyID, days).Scan(&spentUSD); err != nil {
+		slog.Warn("usageKeyRemaining: spend query failed", "key_id", keyID, "error", err)
+	}
 
 	var remainingUSD *float64
 	quotaOK := true

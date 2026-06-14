@@ -83,6 +83,27 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	startTime := time.Now()
 	defer func() {
+		// Panic recovery: catch any panic from the inner pipeline and
+		// emit a safety-net request_logs row before bubbling up.
+		if rec := recover(); rec != nil {
+			slog.Error("responses handler panic", "panic", rec, "request_id", requestID)
+			attemptErrCode = "internal_panic"
+			attemptErrMsg = "internal server error"
+			if len(attemptRequestBody) == 0 {
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			}
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+			if !*attemptLogged {
+				writeResponsesError(w, http.StatusInternalServerError, "internal server error", "api_error", "internal_panic")
+			}
+			return
+		}
 		if attemptErrCode != "" && !*attemptLogged {
 			latency := int(time.Since(startTime).Milliseconds())
 			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
