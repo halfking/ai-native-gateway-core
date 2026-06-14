@@ -20,6 +20,7 @@ import PricingManagementView  from './views/PricingManagementView.vue'
 import FreePoolView           from './views/FreePoolView.vue'
 import TenantsView            from './views/TenantsView.vue'
 import TenantDetailView       from './views/TenantDetailView.vue'
+import RoutingDashboardView   from './views/RoutingDashboardView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -34,6 +35,7 @@ export const router = createRouter({
     { path: '/catalog',            component: CatalogView },
     { path: '/models',             component: ModelsView },
     { path: '/examples',           component: ExamplesView },
+    { path: '/routing-v2',         component: RoutingDashboardView },
     { path: '/routing',            component: RoutingTestView },
     { path: '/routing-overview',   component: RoutingOverviewView },
     { path: '/routing-policy',     component: RoutingPolicyView },
