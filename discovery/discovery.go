@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -588,23 +589,7 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		}
 	}
 
-	// NOTE: model_offers is a VIEW backed by provider_models +
-	// credential_model_bindings. INSERT goes through an INSTEAD OF trigger
-	// that internally upserts both tables via their own UNIQUE
-	// (provider_id, raw_model_name) and (credential_id, provider_model_id)
-	// constraints. We must NOT add ON CONFLICT here — there is no UNIQUE
-	// constraint on the view itself, and adding ON CONFLICT yields
-	// "there is no unique or exclusion constraint matching the ON CONFLICT
-	// specification" (SQLSTATE 42P10).
-	_, err = s.db.Exec(ctx, `
-		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
-		VALUES ($1, $2, $3, $4, TRUE, NOW())
-	`, cred.ID, canonicalID, rawName, modelname.StandardizeName(rawName))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return modelcatalog.UpsertCredentialModel(ctx, s.db, cred.ID, rawName, modelname.StandardizeName(rawName), &canonicalID)
 }
 
 func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, status, errMsg string) {

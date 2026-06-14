@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -1163,8 +1164,10 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	writeJSON(w, http.StatusOK, offers)
 }
 
-// clearProviderModels removes all model_offers rows for a provider's
-// credentials so the operator can re-fetch a fresh list from the vendor.
+// clearProviderModels hard-deletes all credential_model_bindings for a
+// provider so the list is empty and the operator can re-fetch from the vendor.
+// We bypass DELETE on model_offers — that view's trigger only soft-deletes
+// (available=false, reason=deleted), which leaves a full disabled list.
 func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -1177,21 +1180,15 @@ func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 
-	tag, err := h.db.Exec(ctx, `
-		DELETE FROM model_offers
-		WHERE credential_id IN (
-			SELECT id FROM credentials WHERE provider_id = $1
-		)
-	`, providerID)
+	deleted, err := modelcatalog.ClearProviderBindings(ctx, h.db, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
 		return
 	}
 
-	deleted := int(tag.RowsAffected())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "ok",
-		"deleted": deleted,
+		"deleted": int(deleted),
 	})
 }
 
@@ -3539,8 +3536,8 @@ func (h *Handler) VerifyAllCredentialModelUpserts(ctx context.Context, providerI
 // match discovery.discoverForCredential: existing rows are kept, new
 // model names are inserted, and the credential health is updated.
 // Manual refresh always forceAPI so catalog "manifest" strategy still
-// hits the live /models endpoint; duplicate INSERTs preserve manual
-// disable state via model_offers_insert_trigger (906).
+// hits the live /models endpoint. Duplicate upserts preserve manual
+// disable state via modelcatalog.UpsertCredentialModel.
 func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred credentialRowLite) (upserted int, failed int, err error) {
 	apiKey, decErr := h.decryptCredStr(string(cred.secretCipher))
 	if decErr != nil {
@@ -3824,22 +3821,11 @@ func extractManifestModels(manifest *string) ([]string, error) {
 	return nil, nil
 }
 
-// upsertModelForProvider inserts (or no-ops on duplicate) one model_offer
-// row.  Existence is determined by (credential_id, raw_model_name); if a
-// row already exists we touch last_seen_at and clear unavailable_* so a
-// previously-expired binding comes back online.  We do NOT touch the
-// canonical_id, standardized_name, or admin_protected flag here — the
-// only mutator of those is the existing PATCH /api/providers/.../models
-// drawer in ModelsTab.vue.
+// upsertModelForProvider upserts one binding directly on base tables.
+// Manual disables (reason LIKE 'manual%') are preserved; legacy soft-deletes
+// and auto disables are re-enabled when the vendor still lists the model.
 func (h *Handler) upsertModelForProvider(ctx context.Context, credentialID int, rawName string) error {
-	// model_offers is a VIEW; INSERT goes through INSTEAD OF trigger into
-	// provider_models + credential_model_bindings.  Do NOT use ON CONFLICT
-	// on the view (SQLSTATE 42P10).  Match discovery.upsertModel shape.
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO model_offers (credential_id, canonical_id, raw_model_name, standardized_name, available, last_seen_at)
-		VALUES ($1, NULL, $2, $3, TRUE, NOW())
-	`, credentialID, rawName, modelname.StandardizeName(rawName))
-	return err
+	return modelcatalog.UpsertCredentialModel(ctx, h.db, credentialID, rawName, modelname.StandardizeName(rawName), nil)
 }
 
 func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status, errMsg string) {
