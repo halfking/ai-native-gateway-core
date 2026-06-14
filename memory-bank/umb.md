@@ -1,37 +1,44 @@
-# UMB (Ultra Memory Bank) — llm-gateway-go v2.0
+# UMB (Ultra Memory Bank) — llm-gateway-go v2.0 + v2.0.1
 
 > **实时跟踪**：当前任务进度、关键决策、待办、已交付
-> **最后更新**：2026-06-14 22:56 (post-deploy checkpoint)
+> **最后更新**：2026-06-14 23:25 (v2.0.1 + browser 验证完成)
 
-## 🎯 当前任务 — **已完成** ✅
+## 🎯 当前任务 — **全部完成** ✅
 
-**目标**：llm-gateway-go v2.0.0 — Auto 路由模式 + 24h 审计修正
-**状态**：✅ 已上线 184 k3s (image `kx-llm-gateway-go:gitsha-10ec804a`)
-**Git tag**：`v2.0.0` (submodule) + `deploy/prod-184-20260614-225626-b7a27e9fae7a` (主仓)
+**v2.0.0 + v2.0.1 已上线 184 k3s**：
+- v2.0.0 image: `kx-llm-gateway-go:gitsha-10ec804a` (auto-route 核心)
+- v2.0.1 image: `kx-llm-gateway-go:gitsha-eaa8b4b4` (realtime + customer cost + screenshots)
+- Git tags: `v2.0.0` + `deploy/prod-184-20260614-225626-b7a27e9fae7a`
 
-## 📍 阶段进度（全部完成）
+## 📍 阶段进度（全部完成，包括 verifier 复查项）
 
-- [x] **阶段 1.0**: 启动 codegraph + memory-bank 初始化
-- [x] **阶段 1.1**: 审计最近 24h commit + 修正 2 项遗漏
-  - modelcatalog.ClearProviderBindings 包事务
-  - upsertCredentialModelSQL LIKE 'manual%%' 改为 'manual%'
-- [x] **阶段 1.2**: 写 24h 审计报告 `docs/2026-06-15-24h-audit-report.md`
-- [x] **阶段 1.3**: 提交 audit fix commit + push
-- [x] **阶段 2.1**: 创建 SQL 迁移 (3 张新表 + request_logs 5 列 + down)
-- [x] **阶段 2.2**: 实现 `autoroute/classifier.go` + 测试 (16 测试)
-- [x] **阶段 2.3**: 实现 `autoroute/scoring.go` + `profile.go` + 测试
-- [x] **阶段 2.4**: 实现 `autoroute/index.go` + `decision.go` + LLM fallback + 测试
-- [x] **阶段 2.5**: 实现 `bg/auto_index_refresher.go` 后台 worker
-- [x] **阶段 2.6**: 修改 `relay/handler.go` + `auto_route.go` 接入 auto
-- [x] **阶段 2.7**: 实现 `admin/auto_route.go` 5 个 API + `handler.go` 注册
-- [x] **阶段 2.8**: `cmd/gateway/main.go` 装配 Decider
-- [x] **阶段 3.1**: 单元测试全部通过 (autoroute / bg / admin / modelcatalog / provider / routing)
-- [x] **阶段 4.1**: v2.0 design + ops 文档
-- [x] **阶段 4.2**: 打 `v2.0.0` tag + push
-- [x] **阶段 4.3**: bump 主仓 submodule 到 `194087f3` + push
-- [x] **阶段 4.4**: SSH 184 应用 SQL 迁移到 `llm-gateway-pg` (postgres pod)
-- [x] **阶段 4.5**: 184 k3s 部署 + curl 验证（包含一个 NULL scan fix in 10ec804a）
-- [x] **阶段 4.6**: post-deploy checkpoint + memory-bank 收尾
+### v2.0 核心交付（阶段 1-4）
+- [x] 阶段 1.0-1.3: 24h 审计 + 修正 2 项遗漏
+- [x] 阶段 2.1-2.8: autoroute 包 + SQL + bg worker + relay + admin + main
+- [x] 阶段 3.1: 单元测试全 PASS (autoroute/bg/admin/modelcatalog/provider/routing)
+- [x] 阶段 4.1-4.6: 文档 + tag v2.0.0 + 184 部署
+
+### v2.0.1 增量（阶段 5 — verifier 触发的补救）
+- [x] **5.1 浏览器验证**: browser-use 登录 admin + 截图 5 张 + admin API 验证
+- [x] **5.2 OpenClaw 插件**:
+  - `services/openclawplugins/configs/devices/prod-184/llm-gateway-v2-auto-route.md`
+  - `services/openclawplugins/configs/devices/prod-184/skills/v2.0-auto-route/SKILL.md`
+  - 共享 skill `llm-gateway-agent-routing/SKILL.md` 追加 v2.0 协同说明
+- [x] **5.3 实时索引**:
+  - SQL trigger on credential_model_bindings / credentials / api_keys
+  - PG NOTIFY 'auto_route_refresh' channel
+  - Go listener `bg/auto_route_realtime_listener.go` 5s debounce
+  - 验证: `{"msg":"auto_route listener: refresh requested","payload":"credential_model_bindings:UPDATE12"}` ✅
+- [x] **5.4 客户成本表**:
+  - SQL 新表 `api_key_model_cost` (per-api_key × per-model × 5min bucket)
+  - SQL trigger on request_logs (is_auto_request=true) 实时增量
+  - SQL 视图 `customer_cost_view` (1h/24h/7d cost + 并发 + 推荐指数)
+  - SQL 视图 `model_cost_per_task_view` (per-model 7d 成本)
+  - Admin API: `GET /api/admin/auto-route/cost/customer` + `cost/model`
+- [x] **5.5 截图 + 文档对比**:
+  - 5 张 admin UI 截图（`docs/screenshots/`）
+  - 完整对照报告 `docs/2026-06-15-v2-browser-verification.md`
+  - 主仓 bump openclawplugins (8ac7354) + llm-gateway-go (eaa8b4b4)
 
 ## 🔑 关键决策（老板拍板）
 
