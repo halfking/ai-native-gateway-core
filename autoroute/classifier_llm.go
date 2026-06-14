@@ -27,7 +27,6 @@ type LLMFallbackClassifier struct {
 	Caller func(ctx context.Context, prompt string) (string, error)
 
 	// Timeout caps the LLM call. Default: 3s.
-	Timeout context.Context // unused — caller is responsible
 	timeout time.Duration
 }
 
