@@ -231,7 +231,7 @@ INSERT INTO credential_model_index (
 SELECT
     $1 AS bucket,
     cr.id AS credential_id,
-    rl.raw_model_name AS raw_model,
+    COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
     mc.canonical_id,
     mo.billing_mode,
     mo.unit_price_in_per_1m,
@@ -244,12 +244,12 @@ SELECT
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms)::int, 1000) AS p95_latency_ms,
     -- live concurrency from peak_1m
     COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-              WHERE credential_id = cr.id AND raw_model = rl.raw_model_name
+              WHERE credential_id = cr.id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
               ORDER BY bucket DESC LIMIT 1), 0) AS active_sessions,
     cr.concurrency_limit,
     CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
          THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                   WHERE credential_id = cr.id AND raw_model = rl.raw_model_name
+                                   WHERE credential_id = cr.id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
                                    ORDER BY bucket DESC LIMIT 1), 0)::numeric
                          / cr.concurrency_limit)
          ELSE 0
@@ -263,7 +263,7 @@ SELECT
       + 50 * 0.25 -- match placeholder
       + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
                   THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = cr.id AND raw_model = rl.raw_model_name
+                                            WHERE credential_id = cr.id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
                                             ORDER BY bucket DESC LIMIT 1), 0)::numeric
                                   / cr.concurrency_limit)
                   ELSE 0
@@ -277,7 +277,7 @@ SELECT
       + 50 * 0.15
       + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
                   THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = cr.id AND raw_model = rl.raw_model_name
+                                            WHERE credential_id = cr.id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
                                             ORDER BY bucket DESC LIMIT 1), 0)::numeric
                                   / cr.concurrency_limit)
                   ELSE 0
@@ -291,7 +291,7 @@ SELECT
       + 50 * 0.20
       + (1 - CASE WHEN COALESCE(cr.concurrency_limit, 0) > 0
                   THEN LEAST(1.0, COALESCE((SELECT peak_concurrent FROM credential_model_peak_1m
-                                            WHERE credential_id = cr.id AND raw_model = rl.raw_model_name
+                                            WHERE credential_id = cr.id AND raw_model = COALESCE(rl.outbound_model, rl.client_model)
                                             ORDER BY bucket DESC LIMIT 1), 0)::numeric
                                   / cr.concurrency_limit)
                   ELSE 0
@@ -301,15 +301,15 @@ FROM request_logs rl
 JOIN credentials cr ON cr.id = rl.credential_id
 LEFT JOIN model_offers mo
   ON mo.credential_id = rl.credential_id
- AND (mo.outbound_model_name = rl.raw_model_name OR mo.raw_model_name = rl.raw_model_name)
-LEFT JOIN model_aliases ma ON ma.raw_name = rl.raw_model_name
+ AND (mo.outbound_model_name = COALESCE(rl.outbound_model, rl.client_model) OR mo.raw_model_name = COALESCE(rl.outbound_model, rl.client_model))
+LEFT JOIN model_aliases ma ON ma.raw_name = COALESCE(rl.outbound_model, rl.client_model)
 LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 WHERE rl.ts >= $2 - INTERVAL '5 minutes'
   AND rl.ts < $2
   AND rl.credential_id IS NOT NULL
   AND COALESCE(cr.status, 'active') NOT IN ('disabled')
   AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
-GROUP BY cr.id, rl.raw_model_name, mc.canonical_id, mo.billing_mode,
+GROUP BY cr.id, COALESCE(rl.outbound_model, rl.client_model), mc.canonical_id, mo.billing_mode,
          mo.unit_price_in_per_1m, mo.unit_price_out_per_1m, mc.context_window,
          cr.concurrency_limit
 ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
