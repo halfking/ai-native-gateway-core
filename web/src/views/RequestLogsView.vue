@@ -180,10 +180,26 @@ function routeProviderLine(r: RequestLogRow): string {
 }
 
 function routeModelLine(r: RequestLogRow): string {
-  const inM = r.client_model ?? '—'
-  const outM = r.outbound_model
-  if (!outM || outM === inM) return inM
-  return `${inM} → ${outM}`
+  const requestModel = r.canonical_name || r.client_model || '—'
+  const targetModel = r.outbound_model || requestModel
+  if (!targetModel || targetModel === requestModel) return requestModel
+  return `${requestModel} → ${targetModel}`
+}
+
+function routeModelTitle(r: RequestLogRow): string {
+  const requestModel = r.canonical_name || r.client_model || '—'
+  const targetModel = r.outbound_model
+  if (!targetModel || targetModel === requestModel) {
+    return `请求模型: ${requestModel}`
+  }
+  return `请求模型: ${requestModel} → 目标模型: ${targetModel}`
+}
+
+function ellipsize(value: string | null | undefined, max = 28): string {
+  const s = (value ?? '').trim()
+  if (!s) return '—'
+  if (s.length <= max) return s
+  return s.slice(0, Math.max(1, max - 1)) + '…'
 }
 
 function callerUserLine(r: RequestLogRow): string {
@@ -193,10 +209,36 @@ function callerUserLine(r: RequestLogRow): string {
   return '—'
 }
 
+function callerUserTitle(r: RequestLogRow): string {
+  const parts: string[] = []
+  if (r.api_key_owner_user) parts.push(`用户: ${r.api_key_owner_user}`)
+  if (r.end_user_id) parts.push(`终端用户: ${r.end_user_id}`)
+  if (r.application_code) parts.push(`应用: ${r.application_code}`)
+  return parts.join(' · ') || '—'
+}
+
 function callerKeyLine(r: RequestLogRow): string {
-  const key = r.api_key_prefix ?? '无key'
+  const key = r.api_key_prefix ?? (r.api_key_id != null ? `key#${r.api_key_id}` : '无key')
   if (r.application_code && r.api_key_owner_user) return `${key} · ${r.application_code}`
+  if (r.application_code) return `${key} · ${r.application_code}`
   return key
+}
+
+function callerKeyTitle(r: RequestLogRow): string {
+  const parts: string[] = []
+  if (r.api_key_prefix) parts.push(`Key: ${r.api_key_prefix}`)
+  else if (r.api_key_id != null) parts.push(`Key ID: ${r.api_key_id}`)
+  else parts.push('Key: 无')
+  if (r.application_code) parts.push(`应用: ${r.application_code}`)
+  return parts.join(' · ')
+}
+
+function traceSessionTitle(id: string) {
+  return `会话 ID（点击筛选同脉络）\n${id}`
+}
+
+function traceTaskTitle(id: string) {
+  return `任务 ID（点击仅筛此任务）\n${id}`
 }
 
 async function load() {
@@ -495,23 +537,23 @@ onMounted(async () => {
               <div
                 v-if="r.gw_session_id"
                 class="trace-link trace-full"
-                :title="`会话 ${r.gw_session_id}`"
-              >会话 {{ r.gw_session_id }}</div>
+                :title="traceSessionTitle(r.gw_session_id)"
+              >会话 {{ ellipsize(r.gw_session_id, 36) }}</div>
               <div
                 v-if="r.gw_task_id"
                 class="trace-sub trace-full"
-                :title="`任务 ${r.gw_task_id}`"
+                :title="traceTaskTitle(r.gw_task_id)"
                 @click.stop="filterByTask(r.gw_task_id)"
-              >任务 {{ r.gw_task_id }}</div>
+              >任务 {{ ellipsize(r.gw_task_id, 36) }}</div>
               <span v-if="!r.gw_task_id && !r.gw_session_id" class="cell-line2" style="color:var(--muted)">—</span>
             </td>
-            <td class="col-caller" :title="`${callerUserLine(r)} · ${callerKeyLine(r)}`">
-              <div class="cell-line1">{{ callerUserLine(r) }}</div>
-              <div class="cell-line2">{{ callerKeyLine(r) }}</div>
+            <td class="col-caller">
+              <div class="cell-line1 cell-clip" :title="callerUserTitle(r)">{{ ellipsize(callerUserLine(r), 18) }}</div>
+              <div class="cell-line2 cell-clip" :title="callerKeyTitle(r)">{{ ellipsize(callerKeyLine(r), 22) }}</div>
             </td>
-            <td class="col-route" :title="`${routeProviderLine(r)} · ${routeModelLine(r)}`">
-              <div class="cell-line1">{{ routeProviderLine(r) }}</div>
-              <div class="cell-line2">{{ routeModelLine(r) }}</div>
+            <td class="col-route">
+              <div class="cell-line1 cell-clip" :title="routeProviderLine(r)">{{ ellipsize(routeProviderLine(r), 24) }}</div>
+              <div class="cell-line2 cell-clip" :title="routeModelTitle(r)">{{ ellipsize(routeModelLine(r), 32) }}</div>
             </td>
             <td class="col-tokens" :title="tokenTitle(r.usage_source)">
               <div class="cell-line1">
@@ -698,6 +740,12 @@ onMounted(async () => {
   font-size: 10px;
   line-height: 1.35;
   margin-top: 2px;
+}
+.cell-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .trace-link {
   color: var(--accent, #3b82f6);
