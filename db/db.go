@@ -52,7 +52,10 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		ALTER TABLE request_logs
 		    ADD COLUMN IF NOT EXISTS gw_session_id TEXT,
 		    ADD COLUMN IF NOT EXISTS gw_task_id TEXT,
-		    ADD COLUMN IF NOT EXISTS request_status TEXT;
+		    ADD COLUMN IF NOT EXISTS request_status TEXT,
+		    ADD COLUMN IF NOT EXISTS api_key_prefix TEXT,
+		    ADD COLUMN IF NOT EXISTS api_key_owner_user TEXT,
+		    ADD COLUMN IF NOT EXISTS application_code TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -66,7 +69,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code)")
 	return nil
 }
 
