@@ -326,8 +326,12 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		canonicalID = modelResolution.CanonicalID
 	}
 	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
 	h.chatHandler.recordInitialRequestLog(
-		requestID, clientModel, explicitOutbound, endUser, "messages", keyInfo,
+		requestID, clientModel, outboundForLog, endUser, "messages", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
@@ -342,7 +346,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		SuppressSuccessWrite: !isStream,
 		ClientProtocol: "anthropic-messages",
 		ClientModel:   clientModel,
-		OutboundModel: explicitOutbound,
+		OutboundModel: outboundForLog,
 		ClientID:      clientID,
 		Transform:     txResult,
 		Resolution:    modelResolution,

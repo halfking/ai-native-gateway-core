@@ -181,18 +181,20 @@ function routeProviderLine(r: RequestLogRow): string {
 
 function routeModelLine(r: RequestLogRow): string {
   const requestModel = r.canonical_name || r.client_model || '—'
-  const targetModel = r.outbound_model || requestModel
-  if (!targetModel || targetModel === requestModel) return requestModel
-  return `${requestModel} → ${targetModel}`
+  const providerModel = (r.provider_model || r.outbound_model || '').trim()
+  if (!providerModel || providerModel.toLowerCase() === requestModel.toLowerCase()) {
+    return requestModel
+  }
+  return `${requestModel} → ${providerModel}`
 }
 
 function routeModelTitle(r: RequestLogRow): string {
   const requestModel = r.canonical_name || r.client_model || '—'
-  const targetModel = r.outbound_model
-  if (!targetModel || targetModel === requestModel) {
+  const providerModel = (r.provider_model || r.outbound_model || '').trim()
+  if (!providerModel || providerModel.toLowerCase() === requestModel.toLowerCase()) {
     return `请求模型: ${requestModel}`
   }
-  return `请求模型: ${requestModel} → 目标模型: ${targetModel}`
+  return `请求模型: ${requestModel} → 供应商模型: ${providerModel}`
 }
 
 function ellipsize(value: string | null | undefined, max = 28): string {

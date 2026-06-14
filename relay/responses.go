@@ -306,8 +306,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		canonicalID = modelResolution.CanonicalID
 	}
 	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
 	h.chatHandler.recordInitialRequestLog(
-		requestID, clientModel, explicitOutbound, endUser, "responses", keyInfo,
+		requestID, clientModel, outboundForLog, endUser, "responses", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
@@ -321,7 +325,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		IsStream:      isStream,
 		SuppressSuccessWrite: !isStream,
 		ClientModel:   clientModel,
-		OutboundModel: explicitOutbound,
+		OutboundModel: outboundForLog,
 		ClientID:      clientID,
 		Transform:     txResult,
 		Resolution:    modelResolution,
