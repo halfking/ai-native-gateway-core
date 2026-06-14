@@ -232,7 +232,7 @@ SELECT
     $1 AS bucket,
     cr.id AS credential_id,
     COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
-    mc.canonical_id,
+    mo.canonical_id,
     mo.billing_mode,
     mo.unit_price_in_per_1m,
     mo.unit_price_out_per_1m,
