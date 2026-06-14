@@ -176,6 +176,11 @@ func TestValidateTrendGranularityWindow(t *testing.T) {
 	if err := validateTrendGranularityWindow(start, end3d, "minute"); err != nil {
 		t.Fatalf("3d minute window: %v", err)
 	}
+	// Day-truncated "最近 3 天" can span up to ~96h (e.g. 84h).
+	end84h := start.Add(84 * time.Hour)
+	if err := validateTrendGranularityWindow(start, end84h, "minute"); err != nil {
+		t.Fatalf("84h minute window (calendar 3d): %v", err)
+	}
 	if err := validateTrendGranularityWindow(start, end4d, "minute"); err == nil {
 		t.Fatal("expected error for 4d minute window")
 	}
