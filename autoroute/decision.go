@@ -1,0 +1,334 @@
+package autoroute
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Decision is the top-level output of Decider.Decide. Consumed by
+// relay/handler.go to:
+//   1. Substitute the model field with ChosenModel
+//   2. Add X-Gw-Auto-Decision header
+//   3. Persist auto_decision JSONB to request_logs
+type Decision struct {
+	// ChosenModel is the canonical_name of the winning credential's model.
+	// The relay substitutes this into the request body's "model" field
+	// before forwarding upstream.
+	ChosenModel string
+
+	// ChosenCredentialID identifies the credential that will be used.
+	ChosenCredentialID int64
+
+	// ChosenRawModel is the upstream-visible name (may differ from
+	// ChosenModel when canonical maps to multiple raw_model variants).
+	ChosenRawModel string
+
+	// TaskType is the classified task type (primary).
+	TaskType TaskType
+
+	// Confidence is the classification confidence (0-1).
+	Confidence float64
+
+	// Profile is the profile actually used (header → sticky → default).
+	Profile Profile
+
+	// Classifier records which path produced the classification
+	// ("heuristic", "llm", "default").
+	Classifier string
+
+	// Reason is the human-readable explanation (shown in admin UI).
+	Reason string
+
+	// CandidatesTopN is the top-N candidates sorted by descending score.
+	// The first element is the winner. Used for audit and admin UI.
+	CandidatesTopN []ScoredCandidate
+
+	// DecidedAt is the wall-clock time when the decision was made.
+	// Used for observability latency tracking.
+	DecidedAt time.Time
+}
+
+// Decider orchestrates the auto-route pipeline:
+//
+//   1. Resolve profile (header > sticky > default)
+//   2. Classify (heuristic, with LLM fallback if confidence < threshold)
+//   3. Score candidates (via index)
+//   4. Return Decision
+//
+// All inputs are read-only after construction (except the index, which
+// is refreshed by bg/auto_index_refresher.go).
+type Decider struct {
+	classifier Classifier   // heuristic
+	fallback   Classifier   // optional LLM
+	index      *Index       // candidate pool
+	profileStore ProfileStore // per-API-Key sticky profile
+
+	// DefaultProfile is used when no header AND no sticky entry exists.
+	// Default: ProfileSmart.
+	DefaultProfile Profile
+
+	// LLMConfidenceThreshold: heuristic results below this trigger LLM
+	// fallback. Default: 0.7.
+	LLMConfidenceThreshold float64
+
+	// StickyTTL controls how long a sticky profile persists for an API
+	// key without a header. Default: 30 minutes.
+	StickyTTL time.Duration
+
+	// TopN is the size of CandidatesTopN stored in auto_decision.
+	// Default: 3.
+	TopN int
+}
+
+// NewDecider wires the pieces. classifier is required; fallback and
+// profileStore are optional (pass nil to disable).
+//
+// Defaults applied:
+//   - DefaultProfile            : ProfileSmart
+//   - LLMConfidenceThreshold    : 0.7
+//   - StickyTTL                 : 30 minutes
+//   - TopN                      : 3
+func NewDecider(classifier Classifier, fallback Classifier, index *Index, profileStore ProfileStore) *Decider {
+	return &Decider{
+		classifier:             classifier,
+		fallback:               fallback,
+		index:                  index,
+		profileStore:           profileStore,
+		DefaultProfile:         ProfileSmart,
+		LLMConfidenceThreshold: 0.7,
+		StickyTTL:              30 * time.Minute,
+		TopN:                   3,
+	}
+}
+
+// Decide runs the full pipeline. Returns the Decision (always non-nil on
+// success). Errors only when ALL paths fail — in that case the caller
+// (relay handler) should fall back to the gateway default model.
+//
+// Parameters:
+//
+//   ctx              : request context (used for timeout propagation)
+//   sigs             : request fingerprint
+//   apiKeyID         : the resolved API key ID (0 for unauthenticated)
+//   headerProfile    : X-Gw-Auto-Profile header value (empty = no override)
+//   taskHint         : X-Gw-Task-Hint header value (optional client hint)
+//
+// Side effects:
+//
+//   - Updates sticky profile for apiKeyID (best-effort)
+//   - Returns Decision including the chosen model + top-N candidates
+func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType) (*Decision, error) {
+	// Step 1: resolve profile (header > sticky > default)
+	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
+
+	// Step 2: classify
+	cls, err := d.classify(ctx, sigs, taskHint)
+	if err != nil {
+		// Both heuristic AND LLM fallback failed — use default chat
+		cls = &Classification{
+			Primary:    TaskChat,
+			Confidence: 0.3,
+			Classifier: "default",
+			Reason:     "classification failed: " + err.Error(),
+		}
+	}
+
+	// Step 3: score candidates
+	recommended := d.index.Recommend(cls.Primary, sigs, profile, d.TopN)
+
+	// If no candidates matched, return a "no decision" sentinel.
+	if len(recommended) == 0 {
+		return nil, errors.New("autoroute: no candidates match task type " + string(cls.Primary))
+	}
+
+	winner := recommended[0]
+
+	return &Decision{
+		ChosenModel:        winner.Candidate.CanonicalName,
+		ChosenCredentialID: winner.Candidate.CredentialID,
+		ChosenRawModel:     winner.Candidate.RawModel,
+		TaskType:           cls.Primary,
+		Confidence:         cls.Confidence,
+		Profile:            profile,
+		Classifier:         cls.Classifier,
+		Reason:             cls.Reason,
+		CandidatesTopN:     recommended,
+		DecidedAt:           time.Now(),
+	}, nil
+}
+
+// resolveProfile applies the profile precedence:
+//
+//   1. X-Gw-Auto-Profile header (if valid)
+//   2. Sticky entry for apiKeyID (if not expired)
+//   3. DefaultProfile (ProfileSmart by default)
+//
+// Side effect: if the header overrides a stale sticky entry, persist the
+// new value via ProfileStore.Put (best-effort, error swallowed).
+func (d *Decider) resolveProfile(ctx context.Context, apiKeyID int, header string) Profile {
+	// (1) Header override
+	if h := normaliseProfile(header); h != "" {
+		if apiKeyID > 0 && d.profileStore != nil {
+			_ = d.profileStore.Put(ctx, apiKeyID, h, d.StickyTTL)
+		}
+		return h
+	}
+	// (2) Sticky entry
+	if apiKeyID > 0 && d.profileStore != nil {
+		if p, ok := d.profileStore.Get(ctx, apiKeyID); ok {
+			return p
+		}
+	}
+	// (3) Default
+	return d.DefaultProfile
+}
+
+// normaliseProfile trims and lowercases the header value, validating
+// it against AllProfiles. Returns "" if invalid.
+func normaliseProfile(raw string) Profile {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	if s == "" {
+		return ""
+	}
+	for _, p := range AllProfiles {
+		if string(p) == s {
+			return p
+		}
+	}
+	return ""
+}
+
+// classify runs the heuristic, then escalates to LLM fallback if needed.
+//
+// Task hint precedence:
+//
+//   - If taskHint is provided (X-Gw-Task-Hint header) and is a valid
+//     TaskType, skip heuristic entirely (high trust in client hint).
+//   - Otherwise run heuristic; if confidence < threshold and LLM
+//     fallback is configured, escalate.
+//
+// Errors:
+//   - Task hint invalid → ignored, falls through to heuristic
+//   - Heuristic error → escalate to LLM
+//   - LLM error      → return error (caller falls back to chat default)
+func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint TaskType) (*Classification, error) {
+	if isValidTaskType(hint) {
+		return &Classification{
+			Primary:    hint,
+			Confidence: 0.9, // trusted client hint
+			Classifier: "heuristic",
+			Reason:     "client-provided task hint",
+		}, nil
+	}
+	if d.classifier == nil {
+		return nil, fmt.Errorf("no classifier configured")
+	}
+	cls, err := d.classifier.Classify(ctx, sigs)
+	if err != nil {
+		return nil, fmt.Errorf("heuristic: %w", err)
+	}
+	if cls.Confidence >= d.LLMConfidenceThreshold {
+		return cls, nil
+	}
+	if d.fallback == nil {
+		slog.Debug("autoroute: low confidence, no LLM fallback",
+			"confidence", cls.Confidence,
+			"task", cls.Primary,
+		)
+		return cls, nil
+	}
+	slog.Info("autoroute: escalating to LLM fallback",
+		"heuristic_confidence", cls.Confidence,
+		"heuristic_task", cls.Primary,
+	)
+	llmCls, llmErr := d.fallback.Classify(ctx, sigs)
+	if llmErr != nil {
+		// LLM fallback failed → return heuristic result at low confidence
+		slog.Warn("autoroute: LLM fallback failed", "error", llmErr)
+		return cls, nil
+	}
+	return llmCls, nil
+}
+
+func isValidTaskType(t TaskType) bool {
+	for _, v := range AllTaskTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
+
+// ProfileStore is the persistence interface used by Decider for sticky
+// profile memory. Implemented by a DB-backed store (PostgreSQL +
+// in-memory cache) wired in cmd/gateway/main.go.
+//
+// Get returns (profile, true) when a non-expired entry exists for the
+// api key. (profile, false) means no sticky state — caller should fall
+// back to DefaultProfile.
+//
+// Put is best-effort — errors are logged but do not block the request.
+type ProfileStore interface {
+	Get(ctx context.Context, apiKeyID int) (Profile, bool)
+	Put(ctx context.Context, apiKeyID int, p Profile, ttl time.Duration) error
+}
+
+// MemoryProfileStore is a process-local implementation of ProfileStore.
+// Suitable for single-instance deployments and tests. For multi-instance
+// deployments, swap in a DB-backed implementation that reads from
+// api_key_auto_profile (see docs/2026-06-15-auto-route-mode.sql).
+//
+// Concurrency: protected by sync.RWMutex. Entries are removed lazily on
+// read (no background cleanup goroutine — saves 1 goroutine per process).
+type MemoryProfileStore struct {
+	entries map[int]memoryProfileEntry
+	mu      sync.RWMutex
+	now     func() time.Time // injectable for tests
+}
+
+type memoryProfileEntry struct {
+	profile   Profile
+	expiresAt time.Time
+}
+
+// NewMemoryProfileStore constructs an empty in-memory store.
+func NewMemoryProfileStore() *MemoryProfileStore {
+	return &MemoryProfileStore{
+		entries: make(map[int]memoryProfileEntry),
+		now:     time.Now,
+	}
+}
+
+// Get implements ProfileStore.
+func (s *MemoryProfileStore) Get(_ context.Context, apiKeyID int) (Profile, bool) {
+	s.mu.RLock()
+	e, ok := s.entries[apiKeyID]
+	s.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	if s.now().After(e.expiresAt) {
+		// Expired — lazy delete
+		s.mu.Lock()
+		delete(s.entries, apiKeyID)
+		s.mu.Unlock()
+		return "", false
+	}
+	return e.profile, true
+}
+
+// Put implements ProfileStore.
+func (s *MemoryProfileStore) Put(_ context.Context, apiKeyID int, p Profile, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[apiKeyID] = memoryProfileEntry{
+		profile:   p,
+		expiresAt: s.now().Add(ttl),
+	}
+	return nil
+}
