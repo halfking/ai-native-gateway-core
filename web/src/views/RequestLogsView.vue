@@ -197,6 +197,22 @@ function routeModelTitle(r: RequestLogRow): string {
   return `请求模型: ${requestModel} → 供应商模型: ${providerModel}`
 }
 
+function outboundModelDisplay(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
+  if (!r) return '—'
+  const v = (r.provider_model || r.outbound_model || '').trim()
+  return v || '—'
+}
+
+function outboundModelTitle(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
+  if (!r) return ''
+  const shown = outboundModelDisplay(r)
+  const recorded = (r.outbound_model || '').trim()
+  if (r.provider_model && recorded && r.provider_model !== recorded) {
+    return `出站模型: ${shown}（记录值: ${recorded}）`
+  }
+  return `出站模型: ${shown}`
+}
+
 function ellipsize(value: string | null | undefined, max = 28): string {
   const s = (value ?? '').trim()
   if (!s) return '—'
@@ -616,7 +632,7 @@ onMounted(async () => {
               <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
               <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
               <span><strong>客户端模型:</strong> {{ detail.client_model ?? '—' }}</span>
-              <span><strong>出站模型:</strong> {{ detail.outbound_model ?? '—' }}</span>
+              <span :title="outboundModelTitle(detail)"><strong>出站模型:</strong> {{ outboundModelDisplay(detail) }}</span>
               <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
               <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : statusLabel(detail) }}</span></span>
               <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
