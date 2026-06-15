@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,13 +32,21 @@ func parseSessionScope(r *http.Request) sessionScope {
 
 // sessionLogsWhere builds WHERE clause + args for request_logs scoped like
 // memora-sessions topic_sessions (task_id + optional session_id + hours).
+// tenant_admin callers get an additional tenant_id filter.
 // Returns clause starting with "WHERE" and args beginning with taskID.
-func sessionLogsWhere(taskID string, sc sessionScope) (clause string, args []any) {
+func sessionLogsWhere(taskID string, sc sessionScope, r *http.Request) (clause string, args []any) {
 	args = []any{taskID, sc.Hours}
 	clause = `WHERE gw_task_id = $1 AND ts > NOW() - INTERVAL '1 hour' * $2`
+	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, 3)
+	if tenantFrag != "" {
+		clause += tenantFrag
+		args = append(args, tenantArgs...)
+	} else {
+		nextArg = 3
+	}
 	if sc.SessionID != "" {
 		args = append(args, sc.SessionID)
-		clause += ` AND COALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) IS NOT DISTINCT FROM $3`
+		clause += fmt.Sprintf(` AND COALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) IS NOT DISTINCT FROM $%d`, nextArg)
 	}
 	return clause, args
 }

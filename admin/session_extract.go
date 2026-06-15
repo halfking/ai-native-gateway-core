@@ -58,6 +58,10 @@ type extractToMemoraRequest struct {
 }
 
 func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Request, taskID string) {
+	if !IsSuperAdminOrLegacy(r) {
+		writeError(w, http.StatusForbidden, "super_admin role required for extract-to-memora")
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
@@ -79,7 +83,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 
 	sc := parseSessionScope(r)
 
-	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc)
+	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc, r)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
@@ -90,7 +94,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	turns, err := h.loadSessionPreviewTurns(ctx, taskID, sc, 500)
+	turns, err := h.loadSessionPreviewTurns(ctx, taskID, sc, r, 500)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -189,6 +193,14 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"task_id":   taskID,
+			"extracted": false,
+		})
+		return
+	}
+
 	var extractedAt time.Time
 	var written, skippedNoise, skippedDuplicate int
 	var status string
@@ -219,8 +231,8 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 	})
 }
 
-func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc sessionScope) (int, error) {
-	where, args := sessionLogsWhere(taskID, sc)
+func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) (int, error) {
+	where, args := sessionLogsWhere(taskID, sc, r)
 	var apiKeyID *int64
 	err := h.db.QueryRow(ctx, `
 		SELECT api_key_id FROM request_logs
@@ -233,8 +245,8 @@ func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc session
 	return int(*apiKeyID), nil
 }
 
-func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, limit int) ([]memora.PreviewTurn, error) {
-	where, args := sessionLogsWhere(taskID, sc)
+func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, r *http.Request, limit int) ([]memora.PreviewTurn, error) {
+	where, args := sessionLogsWhere(taskID, sc, r)
 	args = append(args, limit)
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
