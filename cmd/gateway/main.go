@@ -384,9 +384,23 @@ func main() {
 
 			autoIdx := autoroute.NewIndex()
 			autoIdx.SetPool(dbConn.Pool())
-			classifier := autoroute.NewHeuristicClassifier(
+
+			// v2.1: TuningStore provides dynamic keyword/threshold/weight
+			// overrides from the tuning_params table. Reloaded on a 5-min
+			// ticker aligned with auto_index_refresher. Falls back to
+			// compiled defaults when the DB is empty (already seeded in
+			// db.ensureTuningParamsSchema).
+			tuningStore := autoroute.NewTuningStore(dbConn.Pool())
+			if err := tuningStore.Reload(context.Background()); err != nil {
+				slog.Warn("tuning_store initial reload failed, using defaults", "error", err)
+			}
+			tuningRefresher := bg.NewTuningStoreRefresher(tuningStore, dbConn.Pool())
+			tuningRefresher.Start(context.Background())
+
+			classifier := autoroute.NewHeuristicClassifierWithTuning(
 				autoroute.DefaultHeuristicThresholds(),
 				autoroute.DefaultKeywords(),
+				tuningStore,
 			)
 			decider := autoroute.NewDecider(
 				classifier,
@@ -396,6 +410,11 @@ func main() {
 				// (process-local) sticky to DB-backed (cluster-wide).
 				autoroute.NewDBProfileStore(dbConn.Pool()),
 			)
+			// v2.1: Decider reads the LLM-fallback threshold from
+			// tuningStore dynamically (atomic.Pointer load, no lock).
+			decider.SetTuningStore(tuningStore)
+			// v2.1: Score() also reads profile weights from tuningStore.
+			autoroute.SetTuningStore(tuningStore)
 			chatHandler.SetAutoRoute(decider)
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
@@ -407,7 +426,16 @@ func main() {
 			autoRouteListener := bg.NewAutoRouteRealtimeListener(dbConn.Pool(), autoIndexRefresher)
 			autoRouteListener.Start(context.Background())
 
-			slog.Info("auto-route decider enabled (with realtime LISTEN/NOTIFY)")
+			// v2.1: FeedbackAnalyzer — daily worker that generates
+			// tuning_proposals from tuning_signals. Skipped in data-plane
+			// mode to avoid write load on the secondary instance.
+			feedbackAnalyzer := bg.NewFeedbackAnalyzer(dbConn.Pool())
+			feedbackAnalyzer.Start(context.Background())
+			if adminHandler != nil {
+				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
+			}
+
+			slog.Info("auto-route decider enabled (with realtime LISTEN/NOTIFY + tuning feedback loop)")
 		}
 
 		if adminHandler != nil {
