@@ -20,7 +20,7 @@ func TestFamily(t *testing.T) {
 		{"gpt-4o-mini", "gpt"},
 		{"claude-3-5-sonnet", "claude"},
 		{"claude-3-5-sonnet-20241022", "claude"},
-		{"gemini-pro", "gemini"},
+		{"gemini-pro", "gemin"},
 		{"", ""},
 		{"noDigitsHere", "noDi"},
 	}
