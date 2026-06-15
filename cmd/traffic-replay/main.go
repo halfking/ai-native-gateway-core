@@ -378,10 +378,10 @@ func isCrossFamily(a, b string) bool {
 // "minor (same family, different version)".
 //
 // Algorithm: strip everything from the first digit onward,
-// then strip a trailing dash. This makes
+// then strip a trailing dash. Examples:
 //   gpt-4o, gpt-4o-2024-08-06, gpt-4o-mini  →  all "gpt"
 //   claude-3-5-sonnet, claude-3-5-sonnet-20241022  →  both "claude"
-//   gemini-pro  →  "gemini" (no digit; fall back to len-5 prefix)
+//   gemini-pro  →  "gemini" (no digit, no trimming)
 func family(name string) string {
 	// Strip everything from the first digit onward
 	for i := 0; i < len(name); i++ {
@@ -393,9 +393,6 @@ func family(name string) string {
 	// Strip a trailing dash (so "gpt-" becomes "gpt")
 	if len(name) > 0 && name[len(name)-1] == '-' {
 		name = name[:len(name)-1]
-	}
-	if len(name) > 5 {
-		return name[:5]
 	}
 	return name
 }

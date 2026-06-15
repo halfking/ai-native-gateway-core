@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalyticsFlow } from '../../api-autoroute'
+import {
+  SANKEY_GAP,
+  SANKEY_NODE_H,
+  buildSankeyLayers,
+  computeSankeyHeight,
+} from './sankeyLayout'
 
 const props = defineProps<{
   data: AnalyticsFlow | null
@@ -10,9 +16,8 @@ const props = defineProps<{
 
 const W = 720
 const colX = [80, 360, 640]
-const nodeH = 32
-const gap = 8
-const MIN_H = 400
+const nodeH = SANKEY_NODE_H
+const gap = SANKEY_GAP
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
@@ -35,29 +40,11 @@ function linkColor(taskType?: string): string {
   return taskType ? colorForTask(taskType) : FALLBACK_COLOR
 }
 
-const layers = computed(() => {
-  if (!props.data) return [[], [], []]
-  const out: Array<Array<{ id: string; label: string; layer: number; total: number }>> = [[], [], []]
-  const totals: Record<string, number> = {}
-  for (const l of props.data.links) {
-    totals[l.source] = (totals[l.source] || 0) + l.value
-    totals[l.target] = (totals[l.target] || 0) + l.value
-  }
-  for (const n of props.data.nodes) {
-    const layer = Math.min(Math.max(n.layer, 0), 2)
-    out[layer].push({ ...n, total: totals[n.id] || 0 })
-  }
-  for (const layer of out) {
-    layer.sort((a, b) => b.total - a.total)
-  }
-  return out
-})
+const layers = computed(() => buildSankeyLayers(props.data))
 
-const H = computed(() => {
-  const maxNodes = Math.max(...layers.value.map(l => l.length), 1)
-  const h = 30 + maxNodes * (nodeH + gap) + 30
-  return Math.max(h, props.minHeight || 0, MIN_H)
-})
+const H = computed(() =>
+  computeSankeyHeight(props.data, props.minHeight || 0),
+)
 
 interface LayoutNode {
   id: string
@@ -158,7 +145,12 @@ const TASK_LABELS: Record<string, string> = {
           {{ TASK_LABELS[tk] || tk }}
         </span>
       </div>
-      <svg :viewBox="`0 0 ${W} ${H}`" class="sankey-svg" preserveAspectRatio="xMidYMid meet">
+      <svg
+        :viewBox="`0 0 ${W} ${H}`"
+        class="sankey-svg"
+        :style="{ height: `${H}px` }"
+        preserveAspectRatio="xMidYMin meet"
+      >
         <text :x="colX[0]" y="18" class="layer-title">任务类型</text>
         <text :x="colX[1]" y="18" class="layer-title">出站模型</text>
         <text :x="colX[2]" y="18" class="layer-title">供应商</text>
@@ -205,7 +197,13 @@ const TASK_LABELS: Record<string, string> = {
   color: var(--muted);
   font-size: 11px;
 }
-.sankey-svg-wrap { overflow-x: auto; display: flex; flex-direction: column; flex: 1; }
+.sankey-svg-wrap {
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .sankey-legend {
   display: flex;
   gap: 12px;
@@ -235,7 +233,7 @@ const TASK_LABELS: Record<string, string> = {
 .sankey-svg {
   width: 100%;
   min-width: 480px;
-  height: auto;
+  flex-shrink: 0;
   display: block;
 }
 .layer-title {
