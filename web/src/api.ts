@@ -2298,3 +2298,118 @@ export function getAuditLogs(params: {
     'GET', '/api/admin/audit-logs' + (qs ? '?' + qs : '')
   )
 }
+
+// ── Tenant Management (super_admin only) ─────────────────────────────────
+
+export interface Tenant {
+  code: string
+  name: string
+  status: string  // active | trial | suspended | expired | disabled
+  description: string
+  contact_email: string
+  created_at: string
+  updated_at: string
+  user_count?: number
+  api_key_count?: number
+  requests_7d?: number
+  tokens_7d?: number
+  cost_7d_usd?: number
+  total_requests?: number
+}
+
+export function getTenantsAdmin(status?: string) {
+  const qs = status ? '?status=' + status : ''
+  return req<Tenant[]>('GET', '/api/admin/tenants' + qs)
+}
+
+export function getTenant(code: string) {
+  return req<Tenant>('GET', `/api/admin/tenants/${code}`)
+}
+
+export function createTenant(data: {
+  code: string
+  name: string
+  status?: string
+  description?: string
+  contact_email?: string
+}) {
+  return req<Tenant>('POST', '/api/admin/tenants', data)
+}
+
+export function updateTenant(code: string, data: {
+  name?: string
+  status?: string
+  description?: string
+  contact_email?: string
+}) {
+  return req<Tenant>('PATCH', `/api/admin/tenants/${code}`, data)
+}
+
+export interface TenantUser {
+  id: number
+  tenant_id: string
+  username: string
+  display_name: string
+  email: string
+  role: string
+  enabled: boolean
+  last_login_at: string | null
+  created_at: string
+}
+
+export function getTenantUsers(code: string) {
+  return req<TenantUser[]>('GET', `/api/admin/tenants/${code}/users`)
+}
+
+export interface TenantKey {
+  id: number
+  tenant_id: string
+  key_prefix: string
+  key_alias: string
+  owner_user: string
+  enabled: boolean
+  status: string
+  application_id: number
+  application_code: string
+  total_requests: number
+  total_cost_usd: number
+  expires_at: string | null
+  created_at: string
+}
+
+export function getTenantKeys(code: string) {
+  return req<TenantKey[]>('GET', `/api/admin/tenants/${code}/keys`)
+}
+
+export interface TenantStats {
+  days: number
+  total_requests: number
+  total_tokens: number
+  total_cost_usd: number
+  unique_keys: number
+  unique_models: number
+  unique_apps: number
+  by_model: Array<{ model: string; requests: number; tokens: number; cost_usd: number }>
+  by_application: Array<{ application_code: string; requests: number; tokens: number; cost_usd: number }>
+}
+
+export function getTenantStats(code: string, days?: number) {
+  const qs = days ? '?days=' + days : ''
+  return req<TenantStats>('GET', `/api/admin/tenants/${code}/stats` + qs)
+}
+
+export const TENANT_STATUSES = ['active', 'trial', 'suspended', 'expired', 'disabled'] as const
+export const TENANT_STATUS_LABELS: Record<string, string> = {
+  active: '正常',
+  trial: '试用',
+  suspended: '暂停',
+  expired: '过期',
+  disabled: '已禁用',
+}
+export const TENANT_STATUS_COLORS: Record<string, string> = {
+  active: 'badge-green',
+  trial: 'badge-blue',
+  suspended: 'badge-yellow',
+  expired: 'badge-gray',
+  disabled: 'badge-red',
+}
