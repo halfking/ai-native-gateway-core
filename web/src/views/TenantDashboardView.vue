@@ -25,6 +25,17 @@ const detailTitle = ref('')
 
 const tenantLabel = computed(() => `租户: ${getCurrentTenantId()}`)
 
+const activeSubscription = computed(() => wallet.value?.subscription ?? null)
+
+function fmtDate(s: string | undefined) {
+  if (!s) return '—'
+  return new Date(s).toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' })
+}
+
+function subscriptionPeriod(sub: NonNullable<MaasWallet['subscription']>) {
+  return `${fmtDate(sub.period_start)} — ${fmtDate(sub.period_end)}`
+}
+
 const maxModelRequests = computed(() => {
   const rows = summary.value?.by_model ?? []
   return Math.max(1, ...rows.map((r) => r.requests))
@@ -140,7 +151,6 @@ onMounted(load)
     <div class="page-header">
       <div class="page-header-title">
         <h2>仪表盘</h2>
-        <span class="maas-pill">MaaS 积分</span>
       </div>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
@@ -154,6 +164,36 @@ onMounted(load)
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <div v-if="wallet" class="subscription-card card">
+      <div class="subscription-head">
+        <div class="subscription-title">当前订阅</div>
+        <RouterLink to="/maas/pricing" class="link-sm">套餐与充值 →</RouterLink>
+      </div>
+      <div v-if="activeSubscription" class="subscription-grid">
+        <div class="sub-item">
+          <span class="sub-label">套餐</span>
+          <span class="sub-value">{{ activeSubscription.plan_name }}</span>
+        </div>
+        <div class="sub-item">
+          <span class="sub-label">周期</span>
+          <span class="sub-value">{{ subscriptionPeriod(activeSubscription) }}</span>
+        </div>
+        <div class="sub-item">
+          <span class="sub-label">剩余订阅额度</span>
+          <span class="sub-value highlight">{{ fmtNum(wallet.quota_remaining) }} 积分</span>
+        </div>
+        <div class="sub-item">
+          <span class="sub-label">到期时间</span>
+          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
+        </div>
+      </div>
+      <div v-else class="subscription-empty">
+        暂无有效订阅。
+        <RouterLink to="/maas/pricing">前往套餐与充值</RouterLink>
+        开通月包后可优先消耗订阅额度。
+      </div>
+    </div>
 
     <div class="stat-grid" v-if="summary && wallet">
       <div class="stat-card highlight">
@@ -171,7 +211,7 @@ onMounted(load)
         <div class="value">{{ fmtNum(wallet.total_available) }}</div>
         <div class="sub">
           订阅 {{ fmtNum(wallet.quota_remaining) }} · 信用 {{ fmtNum(wallet.granted_balance) }} · 充值 {{ fmtNum(wallet.purchased_balance) }}
-          <RouterLink to="/maas/account" class="link-sm">账户</RouterLink>
+          <RouterLink to="/maas/account" class="link-sm">我的账户</RouterLink>
         </div>
       </div>
     </div>
@@ -311,7 +351,7 @@ onMounted(load)
       <div v-else class="empty">该筛选条件下暂无请求记录</div>
       <div class="detail-footer">
         <RouterLink :to="'/request-logs'" class="link-sm">查看全部请求日志 →</RouterLink>
-        <RouterLink :to="'/maas/usage'" class="link-sm">MaaS 消耗流水 →</RouterLink>
+        <RouterLink :to="'/maas/usage'" class="link-sm">我的消耗 →</RouterLink>
       </div>
     </div>
 
@@ -319,7 +359,7 @@ onMounted(load)
       v-if="!loading && summary && summary.total_requests === 0"
       class="empty onboarding"
     >
-      暂无 MaaS 请求数据。前往
+      暂无调用数据。前往
       <RouterLink to="/maas/models">模型清单</RouterLink>
       查看可用模型，或到
       <RouterLink to="/keys">API 密钥</RouterLink>
@@ -339,12 +379,45 @@ onMounted(load)
   gap: 8px;
   align-items: center;
 }
-.maas-pill {
+.subscription-card {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+}
+.subscription-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.subscription-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.subscription-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px 20px;
+}
+.sub-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sub-label {
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(99, 102, 241, 0.15);
-  color: var(--accent-h);
+  color: var(--muted);
+}
+.sub-value {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sub-value.highlight {
+  color: #f59e0b;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.subscription-empty {
+  font-size: 13px;
+  color: var(--muted);
 }
 .days-select {
   width: 100px;
