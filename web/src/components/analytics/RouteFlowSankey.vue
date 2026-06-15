@@ -8,10 +8,11 @@ const props = defineProps<{
 }>()
 
 const W = 720
-const H = 280
 const colX = [80, 360, 640]
 const nodeH = 18
 const gap = 4
+const MIN_H = 200
+const MAX_H = 600
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
@@ -52,6 +53,12 @@ const layers = computed(() => {
   return out
 })
 
+const H = computed(() => {
+  const maxNodes = Math.max(...layers.value.map(l => l.length), 1)
+  const h = 24 + maxNodes * (nodeH + gap) + 24
+  return Math.min(Math.max(h, MIN_H), MAX_H)
+})
+
 interface LayoutNode {
   id: string
   label: string
@@ -71,7 +78,7 @@ const layout = computed(() => {
 
   layers.value.forEach((layerNodes, li) => {
     let y = 24
-    const colHeight = H - 48
+    const colHeight = H.value - 48
     const totalLayer = layerNodes.reduce((s, n) => s + n.total, 0) || 1
     for (const n of layerNodes) {
       const h = Math.max(nodeH, (n.total / totalLayer) * colHeight * 0.85)
