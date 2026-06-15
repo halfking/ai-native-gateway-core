@@ -606,10 +606,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
+	cacheKey := funnelCacheKey(model, windowLabel)
+	if cached, ok := globalFunnelCache.get(cacheKey); ok {
+		writeJSONOk(w, cached)
+		return
+	}
+
 	modelNames, _ := expandModelFilter(ctx, h.db, model)
 
 	type funnelRow struct {
 		requests     int
+		traceRows    int
 		totalPlanned int
 		totalBlocked int
 		routable     int
@@ -623,12 +630,18 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	rdlQuery := `
 		SELECT
 			COUNT(*)::int,
+			COUNT(*) FILTER (
+				WHERE decision_trace IS NOT NULL
+				  AND decision_trace <> '{}'::jsonb
+				  AND jsonb_array_length(COALESCE(decision_trace->'planned_candidates', '[]'::jsonb)) > 0
+			)::int,
 			COALESCE(SUM(jsonb_array_length(COALESCE(decision_trace->'planned_candidates', '[]'::jsonb))), 0)::int,
 			COALESCE(SUM(jsonb_array_length(COALESCE(decision_trace->'blocked_candidates', '[]'::jsonb))), 0)::int,
-			COALESCE(SUM(
+			COALESCE(SUM(GREATEST(
 				jsonb_array_length(COALESCE(decision_trace->'planned_candidates', '[]'::jsonb))
-				- jsonb_array_length(COALESCE(decision_trace->'blocked_candidates', '[]'::jsonb))
-			), 0)::int,
+				- jsonb_array_length(COALESCE(decision_trace->'blocked_candidates', '[]'::jsonb)),
+				0
+			)), 0)::int,
 			COUNT(*) FILTER (WHERE chosen_credential_id IS NOT NULL)::int,
 			COUNT(*) FILTER (WHERE success IS TRUE)::int
 		FROM routing_decision_log
@@ -639,7 +652,7 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  )
 	`
 	_ = h.db.QueryRow(ctx, rdlQuery, intervalStr, modelNames).Scan(
-		&fr.requests, &fr.totalPlanned, &fr.totalBlocked,
+		&fr.requests, &fr.traceRows, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
 	)
 
@@ -711,16 +724,46 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		stages[0]["hint"] = "无 trace 时以请求数为基准"
 	}
 
-	writeJSONOk(w, map[string]interface{}{
+	confidence := "low"
+	confidenceHint := "样本不足或仅有 request_logs 近似估算"
+	sampleN := fr.requests
+	traceRatio := 0.0
+	if fr.requests > 0 {
+		traceRatio = float64(fr.traceRows) / float64(fr.requests)
+	}
+	switch {
+	case dataSource == "exact" && fr.requests >= 30 && traceRatio >= 0.8:
+		confidence = "high"
+		confidenceHint = fmt.Sprintf("n=%d，%.0f%% 含完整 decision_trace", fr.requests, traceRatio*100)
+	case dataSource == "exact" && fr.requests >= 10:
+		confidence = "medium"
+		confidenceHint = fmt.Sprintf("n=%d，trace 覆盖率 %.0f%%", fr.requests, traceRatio*100)
+	case dataSource == "mixed":
+		confidence = "medium"
+		confidenceHint = fmt.Sprintf("n=%d，RDL 与 request_logs 混合估算", fr.requests)
+	default:
+		if fr.requests > 0 {
+			confidenceHint = fmt.Sprintf("n=%d，数据为近似估算", fr.requests)
+		}
+	}
+
+	out := map[string]interface{}{
 		"model":    model,
 		"window":   windowLabel,
 		"requests": fr.requests,
 		"stages":   stages,
 		"meta": map[string]interface{}{
-			"approximate": dataSource != "exact",
-			"data_source": dataSource,
-			"blocked":     fr.totalBlocked,
-			"chosen":      fr.chosen,
+			"approximate":     dataSource != "exact",
+			"data_source":     dataSource,
+			"blocked":         fr.totalBlocked,
+			"chosen":          fr.chosen,
+			"sample_n":        sampleN,
+			"trace_rows":      fr.traceRows,
+			"trace_ratio":     traceRatio,
+			"confidence":      confidence,
+			"confidence_hint": confidenceHint,
 		},
-	})
+	}
+	globalFunnelCache.set(cacheKey, out)
+	writeJSONOk(w, out)
 }

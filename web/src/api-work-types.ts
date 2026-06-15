@@ -59,6 +59,27 @@ export interface WorkTypeStats {
   by_work_type: Record<string, WorkTypeStatEntry>
   by_l1_task: Record<string, number>
   top_models: Array<{ model: string; count: number }>
+  sync_meta?: WorkTypeSyncMeta
+}
+
+export interface WorkTypeSyncMeta {
+  source: string
+  last_synced_at?: string | null
+  enabled_count: number
+  route_count: number
+  acc_configured: boolean
+}
+
+export interface WorkTypeSyncResponse {
+  synced: boolean
+  message: string
+  source?: string
+  synced_at?: string
+  upserted?: number
+  routes?: number
+  disabled?: number
+  acc_count?: number
+  sync_meta?: WorkTypeSyncMeta
 }
 
 export const L1_TASK_TYPES = [
@@ -109,6 +130,6 @@ export function getWorkTypeStats(): Promise<WorkTypeStats> {
   return req<WorkTypeStats>('GET', '/api/admin/work-types/stats')
 }
 
-export function syncWorkTypesFromACC(): Promise<{ synced: boolean; message: string }> {
+export function syncWorkTypesFromACC(): Promise<WorkTypeSyncResponse> {
   return req('POST', '/api/admin/work-types/sync-from-acc')
 }

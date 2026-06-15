@@ -264,6 +264,21 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		candidates[i].Rank = i + 1
 	}
 
+	if r.URL.Query().Get("persist_probe") == "1" {
+		probes := make([]resolveProbeCandidate, 0, len(candidates))
+		for _, c := range candidates {
+			probes = append(probes, resolveProbeCandidate{
+				ProviderID:   c.ProviderID,
+				CredentialID: c.CredentialID,
+				ModelName:    c.ModelName,
+				Tier:         c.Tier,
+				Routable:     c.Routable,
+				BlockReason:  c.BlockReason,
+			})
+		}
+		h.persistResolveProbe(ctx, normalizedModel, probes)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_model":    model,
 		"canonical_name":  model,

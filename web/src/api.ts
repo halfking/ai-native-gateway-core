@@ -1157,9 +1157,10 @@ export interface RoutingResolveResponse {
   candidates: RoutingCandidate[]
 }
 
-export function resolveRouting(model: string, clientProfile?: string) {
+export function resolveRouting(model: string, clientProfile?: string, persistProbe = false) {
   const qs = new URLSearchParams({ model })
   if (clientProfile) qs.set('client_profile', clientProfile)
+  if (persistProbe) qs.set('persist_probe', '1')
   return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`)
 }
 

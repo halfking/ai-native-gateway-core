@@ -228,6 +228,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 	}
 	out["top_models"] = topModels
+	out["sync_meta"] = queryWorkTypeSyncMeta(ctx, h.db)
 
 	writeJSONOk(w, out)
 }
@@ -237,9 +238,29 @@ func (h *WorkTypeHandlers) handleSyncFromACC(w http.ResponseWriter, r *http.Requ
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := syncWorkTypesFromACC(ctx, h.db)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{
+			"synced":    false,
+			"message":   result.Message,
+			"source":    "acc",
+			"sync_meta": queryWorkTypeSyncMeta(ctx, h.db),
+		})
+		return
+	}
 	writeJSONOk(w, map[string]interface{}{
-		"synced":  false,
-		"message": "Phase 3",
+		"synced":    result.Synced,
+		"message":   result.Message,
+		"source":    result.Source,
+		"synced_at": result.SyncedAt.Format(time.RFC3339),
+		"upserted":  result.Upserted,
+		"routes":    result.Routes,
+		"disabled":  result.Disabled,
+		"acc_count": result.ACCCount,
+		"sync_meta": queryWorkTypeSyncMeta(ctx, h.db),
 	})
 }
 

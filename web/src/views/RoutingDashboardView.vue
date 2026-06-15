@@ -11,6 +11,7 @@ import {
   type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
   type AnalyticsRowDim, type AnalyticsFunnelStage, type DecisionReplayResponse,
 } from '../api-autoroute'
+import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
   resolveRouting,
@@ -79,6 +80,10 @@ const funnelStages = ref<AnalyticsFunnelStage[]>([])
 const funnelLoading = ref(false)
 const funnelApproximate = ref(false)
 const funnelDataSource = ref<'exact' | 'approximate' | 'mixed' | undefined>()
+const funnelSampleN = ref(0)
+const funnelConfidence = ref<'high' | 'medium' | 'low' | undefined>()
+const funnelConfidenceHint = ref('')
+const wtSyncMeta = ref<WorkTypeSyncMeta | null>(null)
 const decisionReplayCache = ref<Record<string, DecisionReplayResponse | null>>({})
 const decisionReplayLoading = ref('')
 const modalDecisionId = ref('')
@@ -144,6 +149,9 @@ async function loadFunnel(model: string) {
     funnelStages.value = res.stages
     funnelApproximate.value = res.meta?.approximate ?? false
     funnelDataSource.value = res.meta?.data_source
+    funnelSampleN.value = res.meta?.sample_n ?? res.requests ?? 0
+    funnelConfidence.value = res.meta?.confidence
+    funnelConfidenceHint.value = res.meta?.confidence_hint ?? ''
   } catch (e) {
     console.error('loadFunnel', e)
     funnelStages.value = []
@@ -412,7 +420,7 @@ async function doResolve() {
   resolveErr.value = ''
   try {
     const profile = clientProfile.value.trim()
-    const res = await resolveRouting(modelInput.value.trim(), profile || undefined)
+    const res = await resolveRouting(modelInput.value.trim(), profile || undefined, true)
     resolution.value = res
     resolveCandidates.value = res.candidates
     resolved.value = true
@@ -476,12 +484,21 @@ const heroChips = computed(() => {
   if (activeTab.value === 'analytics') {
     const topTask = distEntries(audit.value.task_distribution)[0]
     const topModel = audit.value.top_chosen_models[0]
-    return [
+    const chips = [
       { label: 'Auto', value: String(audit.value.total_auto_requests) },
       { label: '成功率', value: fmt(audit.value.success_rate * 100, 1) + '%' },
       { label: 'Top任务', value: topTask?.[0] || '-' },
       { label: 'Top模型', value: topModel?.model || '-' },
     ]
+    if (wtSyncMeta.value) {
+      chips.push({ label: '工作类型', value: String(wtSyncMeta.value.enabled_count) })
+      chips.push({ label: '映射', value: String(wtSyncMeta.value.route_count) })
+      if (wtSyncMeta.value.last_synced_at) {
+        const d = new Date(wtSyncMeta.value.last_synced_at)
+        chips.push({ label: 'ACC同步', value: d.toLocaleString() })
+      }
+    }
+    return chips
   }
   if (activeTab.value === 'overview') {
     return [
@@ -524,6 +541,10 @@ onMounted(async () => {
   }
   await loadIndex()
   await loadAudit()
+  try {
+    const wt = await getWorkTypeStats()
+    wtSyncMeta.value = wt.sync_meta ?? null
+  } catch { /* non-blocking */ }
   if (activeTab.value === 'analytics') await loadAnalytics()
   if (activeTab.value === 'resolve') loadResolveLog()
 })
@@ -543,7 +564,13 @@ onUnmounted(() => stopPoll())
           <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
           <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
         </div>
-        <router-link to="/routing-v2/work-types" class="nav-link-wt">工作类型</router-link>
+        <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">
+          工作类型
+          <template v-if="wtSyncMeta">
+            <span class="chip-inline">{{ wtSyncMeta.enabled_count }} 启用</span>
+            <span class="chip-inline">{{ wtSyncMeta.route_count }} 映射</span>
+          </template>
+        </router-link>
         <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
 
@@ -654,6 +681,9 @@ onUnmounted(() => stopPoll())
             :model="selectedHeatmapModel"
             :approximate="funnelApproximate"
             :data-source="funnelDataSource"
+            :sample-n="funnelSampleN"
+            :confidence="funnelConfidence"
+            :confidence-hint="funnelConfidenceHint"
             :loading="funnelLoading"
           />
         </div>
@@ -1148,6 +1178,15 @@ onUnmounted(() => stopPoll())
   white-space: nowrap;
 }
 .nav-link-wt:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.chip-link { display: inline-flex; align-items: center; gap: 4px; }
+.chip-inline {
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  color: var(--muted);
+  font-weight: 500;
+}
 
 /* Pipeline */
 .pipeline { margin-bottom: 6px; }

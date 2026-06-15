@@ -5,7 +5,7 @@ import {
   listWorkTypes, getWorkType, createWorkType, updateWorkType, deleteWorkType,
   putWorkTypeRoutes, getWorkTypeStats, syncWorkTypesFromACC,
   L1_TASK_TYPES, PROFILES, CATEGORIES,
-  type WorkTypeConfig, type WorkTypeStats, type ModelRoute,
+  type WorkTypeConfig, type WorkTypeStats, type ModelRoute, type WorkTypeSyncMeta,
 } from '../api-work-types'
 import {
   getAutoRouteAudit, getAutoRouteDecisions,
@@ -45,6 +45,7 @@ async function loadOverview() {
     ])
     audit.value = a
     stats.value = s
+    syncMeta.value = s.sync_meta ?? null
     decisions.value = d
   } catch (e) {
     console.error('loadOverview', e)
@@ -83,6 +84,8 @@ function profileLabel(key: string): string {
 const workTypes = ref<WorkTypeConfig[]>([])
 const settingsLoading = ref(false)
 const syncMsg = ref('')
+const syncOk = ref<boolean | null>(null)
+const syncMeta = ref<WorkTypeSyncMeta | null>(null)
 
 const showModal = ref(false)
 const editing = ref<WorkTypeConfig | null>(null)
@@ -203,10 +206,16 @@ function addRouteRow() {
 
 async function doSyncACC() {
   syncMsg.value = ''
+  syncOk.value = null
   try {
     const r = await syncWorkTypesFromACC()
+    syncOk.value = r.synced
     syncMsg.value = r.message
+    syncMeta.value = r.sync_meta ?? syncMeta.value
+    await loadSettings()
+    await loadOverview()
   } catch (e) {
+    syncOk.value = false
     syncMsg.value = String(e)
   }
 }
@@ -248,6 +257,7 @@ watch(activeTab, (tab) => {
         <span class="chip">Auto 24h <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
         <span class="chip">类型 <strong>{{ workTypes.length || wtStatsEntries.length }}</strong></span>
         <span class="chip">成功率 <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
+        <span v-if="syncMeta?.last_synced_at" class="chip">上次同步 <strong>{{ new Date(syncMeta.last_synced_at).toLocaleString() }}</strong></span>
       </div>
     </div>
 
@@ -402,11 +412,11 @@ watch(activeTab, (tab) => {
             <span class="text-muted">({{ workTypes.length }})</span>
           </div>
           <div class="toolbar-filters">
-            <button class="btn btn-sm btn-ghost" @click="doSyncACC">ACC 同步</button>
+            <button class="btn btn-sm btn-ghost" @click="doSyncACC" title="从 ACC 拉取工作类型配置">从 ACC 同步</button>
             <button class="btn btn-primary btn-sm" @click="openCreate">+ 新建</button>
           </div>
         </div>
-        <div v-if="syncMsg" class="policy-msg">{{ syncMsg }}</div>
+        <div v-if="syncMsg" class="policy-msg" :class="{ 'sync-ok': syncOk, 'sync-err': syncOk === false }">{{ syncMsg }}</div>
         <div v-if="settingsLoading" class="loading-hint">加载…</div>
         <div v-else class="table-wrap">
           <table class="dense-table">
@@ -627,6 +637,8 @@ watch(activeTab, (tab) => {
 
 .loading-hint { padding: 12px; text-align: center; color: var(--muted); font-size: 11px; }
 .policy-msg { font-size: 11px; color: var(--accent-h); margin-bottom: 4px; }
+.policy-msg.sync-ok { color: var(--success); }
+.policy-msg.sync-err { color: var(--danger, #f85149); }
 
 .modal-overlay {
   position: fixed; inset: 0;
