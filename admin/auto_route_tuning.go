@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
 
 // validStatuses and validCategories are allowlists for the proposals
@@ -495,5 +496,161 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 		"window_days":  days,
 		"breakdown":    results,
 		"generated_at": time.Now().UTC(),
+	})
+}
+
+
+// handleStrategies: GET /tuning/strategies?days=7
+//
+// Returns a per-strategy A/B comparison breakdown:
+//   - Total signal count per strategy
+//   - Avg quality, success, latency, cost, drift rate per strategy
+//   - Per-(strategy, task_type) breakdown
+//
+// Strategy values come from the Strategy field on each
+// tuning_signals row (set by emitTuningSignal via
+// autoroute.AssignStrategy). When A/B is disabled, the
+// AssignStrategy helper always returns pattern_layered, so all
+// rows have the same strategy label.
+func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	days := 7
+	if d := r.URL.Query().Get("days"); d != "" {
+		v, err := strconv.Atoi(d)
+		if err != nil || v <= 0 || v > 90 {
+			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
+			return
+		}
+		days = v
+	}
+
+	// Summary: one row per strategy
+	summaryQuery := `
+		SELECT
+		    COALESCE(NULLIF(signal_payload->>'strategy', ''), 'pattern_layered') AS strategy,
+		    COUNT(*) AS total,
+		    AVG(quality_score) AS avg_quality,
+		    AVG(success_score) AS avg_success,
+		    AVG(latency_score) AS avg_latency,
+		    AVG(cost_score) AS avg_cost,
+		    SUM(CASE WHEN drift_flag THEN 1 ELSE 0 END)::float / COUNT(*) AS drift_rate
+		FROM tuning_signals
+		WHERE ts >= NOW() - INTERVAL '1 day' * $1
+		GROUP BY strategy
+		ORDER BY strategy
+	`
+	rows, err := h.parent.db.Query(r.Context(), summaryQuery, days)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	type strategyRow struct {
+		Strategy   string  `json:"strategy"`
+		Total      int     `json:"total"`
+		AvgQuality float64 `json:"avg_quality"`
+		AvgSuccess float64 `json:"avg_success"`
+		AvgLatency float64 `json:"avg_latency"`
+		AvgCost    float64 `json:"avg_cost"`
+		DriftRate  float64 `json:"drift_rate"`
+	}
+
+	var summary []strategyRow
+	for rows.Next() {
+		var row strategyRow
+		if err := rows.Scan(&row.Strategy, &row.Total, &row.AvgQuality,
+			&row.AvgSuccess, &row.AvgLatency, &row.AvgCost, &row.DriftRate); err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		summary = append(summary, row)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	// Per-task-type breakdown per strategy
+	breakdownQuery := `
+		SELECT
+		    COALESCE(NULLIF(signal_payload->>'strategy', ''), 'pattern_layered') AS strategy,
+		    task_type,
+		    COUNT(*) AS total,
+		    AVG(quality_score) AS avg_quality,
+		    AVG(success_score) AS avg_success
+		FROM tuning_signals
+		WHERE ts >= NOW() - INTERVAL '1 day' * $1
+		GROUP BY strategy, task_type
+		ORDER BY strategy, task_type
+	`
+	rows2, err := h.parent.db.Query(r.Context(), breakdownQuery, days)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer rows2.Close()
+
+	type breakdownRow struct {
+		Strategy   string  `json:"strategy"`
+		TaskType   string  `json:"task_type"`
+		Total      int     `json:"total"`
+		AvgQuality float64 `json:"avg_quality"`
+		AvgSuccess float64 `json:"avg_success"`
+	}
+	var breakdown []breakdownRow
+	for rows2.Next() {
+		var row breakdownRow
+		if err := rows2.Scan(&row.Strategy, &row.TaskType, &row.Total,
+			&row.AvgQuality, &row.AvgSuccess); err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		breakdown = append(breakdown, row)
+	}
+	if err := rows2.Err(); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	// A/B verdict: which strategy wins on avg quality (if both present)
+	var verdict string
+	if len(summary) >= 2 {
+		var baselineQ, patternQ float64
+		var baselineN, patternN int
+		for _, s := range summary {
+			if s.Strategy == "baseline_heuristic" {
+				baselineQ, baselineN = s.AvgQuality, s.Total
+			}
+			if s.Strategy == "pattern_layered" {
+				patternQ, patternN = s.AvgQuality, s.Total
+			}
+		}
+		switch {
+		case baselineN < 30 || patternN < 30:
+			verdict = "insufficient_samples"
+		case patternQ > baselineQ+0.02:
+			verdict = "pattern_layered_wins"
+		case baselineQ > patternQ+0.02:
+			verdict = "baseline_heuristic_wins"
+		default:
+			verdict = "no_significant_difference"
+		}
+	} else {
+		verdict = "ab_test_disabled"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window_days":   days,
+		"summary":       summary,
+		"breakdown":     breakdown,
+		"ab_verdict":    verdict,
+		"ab_enabled":    autoroute.IsABTestEnabled(),
+		"ab_baseline_pct": autoroute.BaselinePctPublic(),
+		"generated_at":  time.Now().UTC(),
 	})
 }

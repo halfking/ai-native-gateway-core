@@ -17,8 +17,12 @@ import {
   rejectTuningProposal,
   getTuningAccuracy,
   triggerTuningAnalyze,
+  getTuningStrategies,
   type TuningProposal,
   type AccuracyBreakdownRow,
+  type StrategySummaryRow,
+  type StrategyBreakdownRow,
+  type StrategyResponse,
 } from '../api'
 
 // ── Proposals section ────────────────────────────────────────────
@@ -158,9 +162,51 @@ function qualityColor(q: number): string {
   return '#ef4444'
 }
 
+// ── Strategy (A/B) section ─────────────────────────────────────
+const strategyResp = ref<StrategyResponse | null>(null)
+const strategyLoading = ref(false)
+const strategyError = ref<string | null>(null)
+const strategyDays = ref(7)
+
+async function loadStrategies() {
+  strategyLoading.value = true
+  strategyError.value = null
+  try {
+    strategyResp.value = await getTuningStrategies(strategyDays.value)
+  } catch (e: any) {
+    strategyError.value = e?.message ?? String(e)
+  } finally {
+    strategyLoading.value = false
+  }
+}
+
+const abVerdictLabel = computed(() => {
+  if (!strategyResp.value) return ''
+  switch (strategyResp.value.ab_verdict) {
+    case 'pattern_layered_wins': return 'Pattern layered wins (>2% quality lift)'
+    case 'baseline_heuristic_wins': return 'Baseline wins (rollback considered)'
+    case 'no_significant_difference': return 'No significant difference'
+    case 'insufficient_samples': return 'Insufficient samples (<30 per strategy)'
+    case 'ab_test_disabled': return 'A/B test currently disabled'
+    default: return strategyResp.value.ab_verdict
+  }
+})
+
+const abVerdictColor = computed(() => {
+  if (!strategyResp.value) return '#888'
+  switch (strategyResp.value.ab_verdict) {
+    case 'pattern_layered_wins': return '#22c55e'
+    case 'baseline_heuristic_wins': return '#f97316'
+    case 'no_significant_difference': return '#eab308'
+    case 'insufficient_samples': return '#888'
+    case 'ab_test_disabled': return '#888'
+    default: return '#888'
+  }
+})
+
 // ── Init ────────────────────────────────────────────────────────
 onMounted(async () => {
-  await Promise.all([loadProposals(), loadAccuracy()])
+  await Promise.all([loadProposals(), loadAccuracy(), loadStrategies()])
 })
 </script>
 
@@ -320,7 +366,99 @@ onMounted(async () => {
       <p v-else class="empty">No data yet. Run the gateway for a while and refresh.</p>
     </section>
 
-    <!-- ── 3. Manual trigger ──────────────────────────────────── -->
+    <!-- ── 3. A/B Strategy breakdown ──────────────────────────── -->
+    <section class="card">
+      <h2>A/B 分类策略对比 (Strategy Breakdown)</h2>
+      <p class="hint">
+        Compares the pattern-layered classifier (default) against the
+        baseline keyword-only heuristic. When A/B is enabled, traffic
+        is split deterministically by request_id. The verdict
+        below summarises which strategy produces higher quality.
+      </p>
+      <div class="filter-bar">
+        <label>Window:
+          <select v-model.number="strategyDays" @change="loadStrategies">
+            <option :value="1">1 day</option>
+            <option :value="7">7 days</option>
+            <option :value="30">30 days</option>
+            <option :value="90">90 days</option>
+          </select>
+        </label>
+        <button @click="loadStrategies" :disabled="strategyLoading">
+          {{ strategyLoading ? 'Loading…' : 'Refresh' }}
+        </button>
+      </div>
+
+      <p v-if="strategyError" class="error">⚠️ {{ strategyError }}</p>
+
+      <div v-if="strategyResp" class="strategy-meta">
+        <span class="badge" :style="{ background: abVerdictColor }">
+          {{ abVerdictLabel }}
+        </span>
+        <span class="meta-item">
+          A/B: <strong>{{ strategyResp.ab_enabled ? 'enabled' : 'disabled' }}</strong>
+          <template v-if="strategyResp.ab_enabled">
+            (baseline {{ strategyResp.ab_baseline_pct }}% / pattern {{ 100 - strategyResp.ab_baseline_pct }}%)
+          </template>
+        </span>
+      </div>
+
+      <table v-if="strategyResp && strategyResp.summary.length > 0" class="strategy-table">
+        <thead>
+          <tr>
+            <th>Strategy</th>
+            <th>Total</th>
+            <th>Avg quality</th>
+            <th>Success</th>
+            <th>Latency</th>
+            <th>Cost</th>
+            <th>Drift</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in strategyResp.summary" :key="r.strategy">
+            <td><span class="strategy-tag">{{ r.strategy }}</span></td>
+            <td>{{ r.total.toLocaleString() }}</td>
+            <td :style="{ color: qualityColor(r.avg_quality), fontWeight: 600 }">
+              {{ (r.avg_quality * 100).toFixed(1) }}%
+            </td>
+            <td>{{ (r.avg_success * 100).toFixed(1) }}%</td>
+            <td>{{ (r.avg_latency * 100).toFixed(1) }}%</td>
+            <td>{{ (r.avg_cost * 100).toFixed(1) }}%</td>
+            <td :class="{ drift: r.drift_rate > 0.05 }">
+              {{ (r.drift_rate * 100).toFixed(1) }}%
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="empty">No data yet. A/B test needs traffic to produce signals.</p>
+
+      <details v-if="strategyResp && strategyResp.breakdown.length > 0" class="breakdown-details">
+        <summary>Per-(strategy, task_type) breakdown ({{ strategyResp.breakdown.length }} rows)</summary>
+        <table class="breakdown-table">
+          <thead>
+            <tr>
+              <th>Strategy</th>
+              <th>Task type</th>
+              <th>Total</th>
+              <th>Avg quality</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in strategyResp.breakdown" :key="`${r.strategy}-${r.task_type}`">
+              <td><span class="strategy-tag">{{ r.strategy }}</span></td>
+              <td><span class="task-type">{{ r.task_type }}</span></td>
+              <td>{{ r.total.toLocaleString() }}</td>
+              <td :style="{ color: qualityColor(r.avg_quality) }">
+                {{ (r.avg_quality * 100).toFixed(1) }}%
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </details>
+    </section>
+
+    <!-- ── 4. Manual trigger ──────────────────────────────────── -->
     <section class="card">
       <h2>手动触发分析 (Manual Analyze)</h2>
       <p class="hint">
@@ -524,5 +662,60 @@ h1 {
   border-radius: 4px;
   font-size: 13px;
   color: #aaa;
+}
+.strategy-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+.meta-item {
+  font-size: 13px;
+  color: #aaa;
+}
+.meta-item strong {
+  color: #e6e6e6;
+}
+.strategy-table,
+.breakdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 12px;
+}
+.strategy-table th,
+.breakdown-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: #0e0e0e;
+  border-bottom: 1px solid #2a2a2a;
+  color: #aaa;
+  font-weight: 500;
+}
+.strategy-table td,
+.breakdown-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #1f1f1f;
+}
+.strategy-tag {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #1e293b;
+  color: #93c5fd;
+  border-radius: 3px;
+}
+.breakdown-details {
+  margin-top: 16px;
+  font-size: 13px;
+}
+.breakdown-details summary {
+  cursor: pointer;
+  padding: 6px 0;
+  color: #93c5fd;
+}
+.breakdown-details summary:hover {
+  color: #bfdbfe;
 }
 </style>

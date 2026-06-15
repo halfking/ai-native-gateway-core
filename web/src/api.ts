@@ -2414,3 +2414,40 @@ export const TENANT_STATUS_COLORS: Record<string, string> = {
   expired: 'badge-gray',
   disabled: 'badge-red',
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Auto-route A/B strategy API (Phase 5 strategy breakdown)
+// ─────────────────────────────────────────────────────────────────
+
+export interface StrategySummaryRow {
+  strategy: string
+  total: number
+  avg_quality: number
+  avg_success: number
+  avg_latency: number
+  avg_cost: number
+  drift_rate: number
+}
+
+export interface StrategyBreakdownRow {
+  strategy: string
+  task_type: string
+  total: number
+  avg_quality: number
+  avg_success: number
+}
+
+export interface StrategyResponse {
+  window_days: number
+  summary: StrategySummaryRow[]
+  breakdown: StrategyBreakdownRow[]
+  ab_verdict: 'pattern_layered_wins' | 'baseline_heuristic_wins' | 'no_significant_difference' | 'insufficient_samples' | 'ab_test_disabled'
+  ab_enabled: boolean
+  ab_baseline_pct: number
+  generated_at: string
+}
+
+export function getTuningStrategies(days = 7) {
+  return req<StrategyResponse>('GET',
+    `/api/admin/auto-route/tuning/strategies?days=${days}`)
+}
