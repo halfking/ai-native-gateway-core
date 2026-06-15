@@ -176,6 +176,11 @@ type Executor struct {
 	// queries Memora for L1 session facts and rebuilds the body before
 	// retrying. Nil means the entire Memora path is a no-op.
 	Memora *memora.Client
+	// MemoraSink is the async write buffer for Memora persistence.
+	// When nil (or when Memora is disabled), enqueue calls are no-ops.
+	// Wired from main.go alongside Memora; the sink owns its own worker
+	// goroutines and graceful-shutdown lifecycle.
+	MemoraSink *memora.Sink
 }
 
 func NewExecutor(
