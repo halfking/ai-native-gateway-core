@@ -22,10 +22,14 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (r.status === 401) {
-    // Clear invalid/stale session synchronously so the next request in
-    // the same tick does not carry the stale Bearer token.  (Don't force
-    // a redirect — let the user re-login manually.)
+    // Token expired or invalid. Clear credentials and redirect to /login
+    // so the user can re-authenticate instead of seeing a cascade of 401s.
+    // Using window.location to force a full page reset (clears all
+    // in-flight requests that would also 401 with the now-empty store).
     clearAll()
+    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login'
+    }
     throw new Error('Unauthorized')
   }
   if (!r.ok) {
