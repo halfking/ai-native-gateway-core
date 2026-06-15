@@ -3036,3 +3036,44 @@ export function extendRoutingOverride(id: number, expires_at: string | null) {
   return req<{ id: number; status: string }>('PATCH',
     `/api/admin/routing/overrides/${id}/extend`, { expires_at })
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Quality correlations API (Phase 8.2 endpoint)
+// ─────────────────────────────────────────────────────────────────
+
+export interface QualityCorrelationRow {
+  bucket: string
+  samples: number
+  success_rate: number
+  avg_latency_ms: number
+  avg_quality: number
+  avg_cost_usd: number
+}
+
+export interface QualityCorrelationInsight {
+  predictor: 'prompt_length' | 'tools' | 'images' | 'code_block'
+  buckets: number
+  samples: number
+  correlation: number
+  abs_r: number
+  interpretation: string
+}
+
+export interface QualityCorrelationResponse {
+  window_days: number
+  by: string
+  breakdown: QualityCorrelationRow[]
+  insights: QualityCorrelationInsight[]
+  generated_at: string
+}
+
+export function getQualityCorrelations(params: {
+  days?: number
+  by?: 'prompt_length' | 'tools' | 'images' | 'code_block'
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.days) q.set('days', String(params.days))
+  if (params.by) q.set('by', params.by)
+  const path = '/api/admin/auto-route/quality-correlations' + (q.toString() ? '?' + q : '')
+  return req<QualityCorrelationResponse>('GET', path)
+}
