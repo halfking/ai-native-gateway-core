@@ -170,6 +170,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		h.auditLog(req.Username, "auth.login_failed", "user", 0, fmt.Sprintf("method=jwt ip=%s", r.RemoteAddr))
 	}
 
 	// ── Fall back to legacy admin key auth ────────────────────────────
