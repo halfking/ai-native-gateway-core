@@ -92,4 +92,4 @@ kx-design/
 version.json
 web/public/version.json
 web-vue/tsconfig.tsbuildinfo
-traffic-replay
+traffic-replay-bin
