@@ -94,6 +94,7 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   rate_limit_exceeded: '网关RPM限流',
   key_throttled: '密钥节流',
   budget_exhausted: '预算耗尽',
+  insufficient_credits: '积分不足',
   timeout: '超时',
   canceled: '已取消',
   upstream_error: '上游错误',
@@ -364,6 +365,11 @@ function costDisplay(v: number | string | null | undefined, currency: string | n
   return currency ? `${amount} ${currency}` : amount
 }
 
+function creditsDisplay(v: number | null | undefined): string {
+  if (v == null || v <= 0) return '—'
+  return v.toLocaleString()
+}
+
 function shortHash(v: string | null | undefined) {
   return v ? `${v.slice(0, 12)}…` : '—'
 }
@@ -567,13 +573,14 @@ onMounted(async () => {
             <th class="col-caller">调用方</th>
             <th class="col-route">路由</th>
             <th class="col-tokens">Token</th>
+            <th v-if="!isDefaultTenant()" class="col-credits">积分</th>
             <th class="col-lat">延迟</th>
             <th class="col-status">状态</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="traceMode ? 8 : 7">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td :colspan="traceMode ? 8 : 7">无记录</td></tr>
+          <tr v-if="loading"><td :colspan="traceMode ? (isDefaultTenant() ? 8 : 9) : (isDefaultTenant() ? 7 : 8)">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td :colspan="traceMode ? (isDefaultTenant() ? 8 : 9) : (isDefaultTenant() ? 7 : 8)">无记录</td></tr>
           <tr
             v-for="r in rows"
             :key="r.request_id + r.ts"
@@ -617,6 +624,9 @@ onMounted(async () => {
               <div class="cell-line2">
                 缓读 {{ token(r.cache_read_tokens, r.usage_source) }} / 缓写 {{ token(r.cache_write_tokens, r.usage_source) }}
               </div>
+            </td>
+            <td v-if="!isDefaultTenant()" class="col-credits" title="本次请求扣除的积分">
+              <div class="cell-line1">{{ creditsDisplay(r.credits_charged) }}</div>
             </td>
             <td class="col-lat">
               <div class="cell-line1">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</div>
@@ -676,6 +686,7 @@ onMounted(async () => {
               <span v-if="detail.failure_detail_code"><strong>失败详情:</strong> {{ detail.failure_detail_code }}</span>
               <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
               <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
+              <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ creditsDisplay(detail.credits_charged) }}</span>
             </div>
           </div>
 
@@ -775,6 +786,11 @@ onMounted(async () => {
 }
 .col-tokens {
   min-width: 8.5rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.col-credits {
+  min-width: 4.5rem;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
