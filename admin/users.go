@@ -62,7 +62,7 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, details)
+	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::jsonb)`, actor, action, targetType, targetID, details)
 	if err != nil {
 		slog.Warn("audit_log insert failed", "action", action, "actor", actor, "error", err)
 	}
