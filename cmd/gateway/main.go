@@ -707,7 +707,7 @@ func buildAutoLLMCaller() autoroute.LLMCaller {
 	// Wrap the real caller in: circuit breaker → instrumented metrics.
 	// Order matters: instrumented wraps circuit breaker so metrics
 	// see the outcome AFTER the breaker decides to short-circuit.
-	return autoroute.InstrumentedCaller{
+	return &autoroute.InstrumentedCaller{
 		Inner:   autoroute.NewCircuitBreakerCaller(caller),
 		Metrics: &autoroute.CallerMetrics{},
 	}
