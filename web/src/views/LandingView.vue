@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router';
 import ServiceLandingPage from '../components/ServiceLandingPage.vue';
+import { useLoginModal } from '../composables/useLoginModal';
 
-const router = useRouter();
+const { openLogin } = useLoginModal();
 
 const features = [
   { title: '多租户路由', description: '按租户、模型与凭证智能选路，支持 override 与免费资源池。' },
@@ -21,7 +21,7 @@ const advantages = [
 ];
 
 function goLogin() {
-  router.push('/login');
+  openLogin();
 }
 </script>
 
