@@ -2,23 +2,15 @@
 import { ref, computed, onMounted } from 'vue'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
-import { isSuperAdmin, isDefaultTenant, isPlatformOpsView, getCurrentTenantId } from '../../store'
+import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 
-const pageTitle = computed(() =>
-  isPlatformOpsView() ? 'MaaS 模型清单' : '模型清单',
-)
+const { tenantLabel, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const pageTitle = computed(() => ctxPageTitle('模型清单'))
 
 const models = ref<MaasModel[]>([])
 const loading = ref(false)
 const error = ref('')
 const search = ref('')
-
-const tenantLabel = computed(() => {
-  const tenantId = getCurrentTenantId()
-  if (isSuperAdmin() && isDefaultTenant()) return '整站数据'
-  if (isDefaultTenant()) return '默认租户'
-  return `租户: ${tenantId}`
-})
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -55,10 +47,7 @@ onMounted(load)
     <div class="page-header">
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
-        <span
-          class="tenant-badge"
-          :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }"
-        >
+        <span class="tenant-badge tenant-badge--admin">
           {{ tenantLabel }}
         </span>
         <input
