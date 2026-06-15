@@ -11,13 +11,13 @@ import {
   type SessionExtractionStatusResponse,
 } from '../../api'
 import {
-  displayKey,
-  displayTitle,
-  displayUser,
+  buildSessionQueryParams,
   fmtCost,
-  fmtDateFull,
   fmtScore,
   fmtTime,
+  listBackQueryFromRoute,
+  parseSessionScopeFromRoute,
+  sessionScopeToParams,
   tagClass,
   type useSessionFilters,
 } from '../../composables/useSessionContext'
@@ -28,6 +28,12 @@ const filters = inject<ReturnType<typeof useSessionFilters>>('sessionContextFilt
 
 const taskId = computed(() => decodeURIComponent(String(route.params.taskId || '')))
 const isNoTopic = computed(() => taskId.value === '_no-topic')
+
+const sessionScope = computed(() =>
+  parseSessionScopeFromRoute(route, filters.hours.value),
+)
+const listExpectedCount = computed(() => sessionScope.value.rc)
+const backListQuery = computed(() => listBackQueryFromRoute(route))
 
 const activeTab = ref<'facts' | 'timeline'>(
   route.query.tab === 'timeline' ? 'timeline' : 'facts',
@@ -55,7 +61,7 @@ async function loadContext() {
   contextLoading.value = true
   contextError.value = ''
   try {
-    contextData.value = await getMemoraContext(taskId.value)
+    contextData.value = await getMemoraContext(taskId.value, sessionScopeToParams(sessionScope.value))
   } catch (e: unknown) {
     contextData.value = null
     contextError.value = e instanceof Error ? e.message : '加载 Memora 事实失败'
@@ -69,7 +75,7 @@ async function loadTimeline() {
   messagesLoading.value = true
   messagesError.value = ''
   try {
-    messagesData.value = await getSessionMessages(taskId.value)
+    messagesData.value = await getSessionMessages(taskId.value, sessionScopeToParams(sessionScope.value))
   } catch (e: unknown) {
     messagesData.value = null
     messagesError.value = e instanceof Error ? e.message : '加载对话线索失败'
@@ -93,7 +99,7 @@ async function doExtractToMemora() {
   extractResult.value = ''
   extractError.value = ''
   try {
-    const resp = await extractSessionToMemora(taskId.value)
+    const resp = await extractSessionToMemora(taskId.value, sessionScopeToParams(sessionScope.value))
     extractResult.value = `已写入 ${resp.written} 条，跳过噪音 ${resp.skipped_noise}、重复 ${resp.skipped_duplicate}`
     await loadExtractionStatus()
     await loadContext()
@@ -118,18 +124,21 @@ onMounted(() => {
   }
 })
 
-watch(taskId, () => {
-  contextData.value = null
-  messagesData.value = null
-  extractionStatus.value = null
-  extractResult.value = ''
-  extractError.value = ''
-  activeTab.value = 'facts'
-  if (!isNoTopic.value) {
-    loadContext()
-    loadExtractionStatus()
-  }
-})
+watch(
+  () => [taskId.value, route.query.hours, route.query.session_id, route.query.rc] as const,
+  () => {
+    contextData.value = null
+    messagesData.value = null
+    extractionStatus.value = null
+    extractResult.value = ''
+    extractError.value = ''
+    if (!isNoTopic.value) {
+      loadContext()
+      loadExtractionStatus()
+      if (activeTab.value === 'timeline') loadTimeline()
+    }
+  },
+)
 </script>
 
 <template>
@@ -145,7 +154,13 @@ watch(taskId, () => {
           <div><span class="meta-lbl">Task</span><code>{{ taskId }}</code></div>
           <div v-if="contextData"><span class="meta-lbl">用户</span>{{ contextData.user_id || '—' }}</div>
           <div v-if="contextData"><span class="meta-lbl">请求数</span>{{ contextData.request_count }}</div>
+          <div v-if="contextData"><span class="meta-lbl">时间窗</span>{{ contextData.hours ?? sessionScope.hours }}h</div>
           <div v-if="contextData?.latest_model"><span class="meta-lbl">模型</span>{{ contextData.latest_model }}</div>
+        </div>
+        <div v-if="contextData" class="stats-line text-muted">
+          Memora：可见 {{ contextData.facts_visible ?? contextData.facts.length }} 条
+          · 已写入 {{ contextData.facts_written ?? extractionStatus?.written ?? 0 }} 条
+          · 线索 {{ contextData.request_count }} 条（{{ sessionScope.hours }}h 窗）
         </div>
         <div class="detail-actions">
           <button
@@ -157,7 +172,7 @@ watch(taskId, () => {
             v-if="extractionStatus?.extracted"
             class="badge badge-green"
             :title="extractionStatus.extracted_at"
-          >已提炼 {{ extractionStatus.written ?? 0 }} 条</span>
+          >已写入 {{ extractionStatus.written ?? 0 }} 条</span>
           <a
             :href="`/request-logs?gw_task=${encodeURIComponent(taskId)}`"
             target="_blank"
@@ -184,11 +199,16 @@ watch(taskId, () => {
       <div class="seg-tabs detail-tabs">
         <button class="seg-tab" :class="{ active: activeTab === 'facts' }" @click="switchTab('facts')">
           Memora 事实
-          <span v-if="contextData" class="badge badge-gray">{{ contextData.facts.length }}</span>
+          <span v-if="contextData" class="badge badge-gray">{{ contextData.facts_visible ?? contextData.facts.length }}</span>
         </button>
         <button class="seg-tab" :class="{ active: activeTab === 'timeline' }" @click="switchTab('timeline')">
           对话线索
           <span v-if="messagesData" class="badge badge-gray">{{ messagesData.messages.length }}</span>
+          <span
+            v-if="listExpectedCount != null && messagesData"
+            class="badge"
+            :class="messagesData.messages.length === listExpectedCount ? 'badge-green' : 'badge-yellow'"
+          >与列表一致 {{ listExpectedCount }} 条</span>
         </button>
       </div>
 
@@ -199,7 +219,11 @@ watch(taskId, () => {
           <button class="btn btn-ghost btn-sm" @click="loadContext">重试</button>
         </div>
         <div v-else-if="!contextData || contextData.facts.length === 0" class="state-box">
-          该会话暂无 Memora 记忆事实
+          <p>该会话暂无可见 Memora 事实</p>
+          <p v-if="(contextData?.facts_written ?? 0) > 0" class="text-muted">
+            已写入 {{ contextData?.facts_written }} 条（检索可能仍在索引，或超过可见上限 100 条）
+          </p>
+          <p v-if="contextData?.facts_search_error" class="extract-err">{{ contextData.facts_search_error }}</p>
         </div>
         <div v-else class="facts-list">
           <div v-for="(f, i) in contextData.facts" :key="f.id" class="fact-item">
@@ -224,7 +248,12 @@ watch(taskId, () => {
         </div>
         <div v-else>
           <div class="timeline-summary text-muted">
-            共 {{ messagesData.messages.length }} 条请求，
+            <template v-if="listExpectedCount != null">
+              与列表一致 {{ messagesData.messages.length }}/{{ listExpectedCount }} 条（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
+            </template>
+            <template v-else>
+              共 {{ messagesData.messages.length }} 条请求（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
+            </template>
             {{ messagesData.total_prompt_tokens }} prompt tokens，
             {{ messagesData.total_completion_tokens }} completion tokens，
             {{ fmtCost(messagesData.total_cost_usd) }}
@@ -271,7 +300,9 @@ watch(taskId, () => {
   margin-bottom: 8px;
 }
 .meta-lbl { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; }
-.detail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stats-line { margin-bottom: 8px; font-size: 11px; }
+.detail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.badge-yellow { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
 .extract-ok { margin: 6px 0 0; font-size: 11px; color: var(--success); }
 .extract-err { margin: 6px 0 0; font-size: 11px; color: var(--danger); }
 .detail-tabs { align-self: flex-start; }

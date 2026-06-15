@@ -8,6 +8,7 @@ import {
   displayUser,
   fmtDate,
   sessionRowKey,
+  buildSessionQueryParams,
   type useSessionFilters,
   type useSessionList,
 } from '../../composables/useSessionContext'
@@ -50,7 +51,16 @@ function openSession(s: MemoraSession) {
     })
     return
   }
-  router.push({ path: `/session-context/${encodeURIComponent(s.task_id)}` })
+  router.push({
+    path: `/session-context/${encodeURIComponent(s.task_id)}`,
+    query: buildSessionQueryParams({
+      hours: filters.hours.value,
+      no_topic_window: filters.noTopicWindow.value,
+      section: noTopicOnly.value ? 'no-topic' : 'topic',
+      session_id: s.session_id && s.session_id !== '[空]' ? s.session_id : undefined,
+      rc: s.request_count,
+    }),
+  })
 }
 
 onMounted(() => {

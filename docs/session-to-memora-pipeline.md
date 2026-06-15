@@ -108,3 +108,14 @@ Memora 异步索引 → L1 会话事实 → (可选) distill_knowledge 沉淀 jo
 - `POST .../sediment` 调用 Memora `distill_knowledge` MCP
 - 列表页批量提炼
 - 自动 idle worker
+
+## SSOT 迁移（Phase 4）
+
+Gateway 当前在进程内调用 `memora.ExtractFromPreviews` + `Client.AddMessage`（直连 MemOS `/product/add`）。
+
+**目标**：写入统一走 Memora Dashboard `POST /api/sessions/ingest`（见 `services/kxmemory/docs/session-ingest-from-agents.md`），gateway 仅负责：
+1. 从 `request_logs` 组装 `preview_turns`
+2. 可选本地 `dry_run` 对比
+3. 调用 ingest API，`source=gateway`
+
+Memora 侧过滤规则已与 `memora/extract.go` 对齐（`session_ingest.py`）。

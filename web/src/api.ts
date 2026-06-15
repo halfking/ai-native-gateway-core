@@ -2546,11 +2546,34 @@ export interface MemoraContextResponse {
   request_count: number
   latest_model?: string
   facts: MemoraFact[]
+  facts_visible?: number
+  facts_written?: number
+  hours?: number
+  scoped_session_id?: string | null
+  extracted_at?: string
+  facts_search_error?: string
   title: string
 }
 
-export function getMemoraContext(taskId: string): Promise<MemoraContextResponse> {
-  return req<MemoraContextResponse>('GET', `/api/system/memora-context/${encodeURIComponent(taskId)}`)
+export interface SessionScopeParams {
+  hours?: number
+  session_id?: string
+}
+
+function appendSessionScopeQS(qs: URLSearchParams, scope?: SessionScopeParams) {
+  if (!scope) return
+  if (scope.hours != null) qs.set('hours', String(scope.hours))
+  if (scope.session_id) qs.set('session_id', scope.session_id)
+}
+
+export function getMemoraContext(taskId: string, scope?: SessionScopeParams): Promise<MemoraContextResponse> {
+  const qs = new URLSearchParams()
+  appendSessionScopeQS(qs, scope)
+  const s = qs.toString()
+  return req<MemoraContextResponse>(
+    'GET',
+    `/api/system/memora-context/${encodeURIComponent(taskId)}${s ? '?' + s : ''}`,
+  )
 }
 
 export interface RequestMessage {
@@ -2574,14 +2597,28 @@ export interface SessionMessagesResponse {
   task_id: string
   session_id: string | null
   messages: RequestMessage[]
+  message_count?: number
+  request_count?: number
+  hours?: number
+  scoped_session_id?: string | null
   total_prompt_tokens: number
   total_completion_tokens: number
   total_cost_usd: number
 }
 
-export function getSessionMessages(taskId: string, limit?: number): Promise<SessionMessagesResponse> {
-  const qs = limit != null ? `?limit=${limit}` : ''
-  return req<SessionMessagesResponse>('GET', `/api/system/session-messages/${encodeURIComponent(taskId)}${qs}`)
+export function getSessionMessages(
+  taskId: string,
+  scope?: SessionScopeParams,
+  limit?: number,
+): Promise<SessionMessagesResponse> {
+  const qs = new URLSearchParams()
+  appendSessionScopeQS(qs, scope)
+  if (limit != null) qs.set('limit', String(limit))
+  const s = qs.toString()
+  return req<SessionMessagesResponse>(
+    'GET',
+    `/api/system/session-messages/${encodeURIComponent(taskId)}${s ? '?' + s : ''}`,
+  )
 }
 
 export interface SessionExtractToMemoraResponse {
@@ -2607,10 +2644,17 @@ export interface SessionExtractionStatusResponse {
   status?: string
 }
 
-export function extractSessionToMemora(taskId: string, dryRun = false): Promise<SessionExtractToMemoraResponse> {
+export function extractSessionToMemora(
+  taskId: string,
+  scope?: SessionScopeParams,
+  dryRun = false,
+): Promise<SessionExtractToMemoraResponse> {
+  const qs = new URLSearchParams()
+  appendSessionScopeQS(qs, scope)
+  const s = qs.toString()
   return req<SessionExtractToMemoraResponse>(
     'POST',
-    `/api/system/session-context/${encodeURIComponent(taskId)}/extract-to-memora`,
+    `/api/system/session-context/${encodeURIComponent(taskId)}/extract-to-memora${s ? '?' + s : ''}`,
     { dry_run: dryRun },
   )
 }

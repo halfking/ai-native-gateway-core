@@ -1,9 +1,68 @@
 import { ref, computed } from 'vue'
+import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import {
   getMemoraSessions,
   type MemoraSession,
   type MemoraSessionsResponse,
+  type SessionScopeParams,
 } from '../api'
+
+export type SessionScope = SessionScopeParams & {
+  no_topic_window?: number
+  /** 列表行 request_count，用于详情页核对 */
+  rc?: number
+  section?: 'topic' | 'no-topic'
+}
+
+export function buildSessionQueryParams(
+  scope: SessionScope,
+  extra?: Record<string, string | undefined>,
+): Record<string, string> {
+  const q: Record<string, string> = {}
+  if (scope.hours != null) q.hours = String(scope.hours)
+  if (scope.no_topic_window != null) q.no_topic_window = String(scope.no_topic_window)
+  if (scope.session_id) q.session_id = scope.session_id
+  if (scope.rc != null) q.rc = String(scope.rc)
+  if (scope.section) q.section = scope.section
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v != null && v !== '') q[k] = v
+    }
+  }
+  return q
+}
+
+export function parseSessionScopeFromRoute(
+  route: RouteLocationNormalizedLoaded,
+  fallbackHours = 24,
+): SessionScope {
+  const hours = parseInt(String(route.query.hours ?? ''), 10)
+  const noTopicWindow = parseInt(String(route.query.no_topic_window ?? ''), 10)
+  const rc = parseInt(String(route.query.rc ?? ''), 10)
+  const sessionId = String(route.query.session_id ?? '').trim()
+  return {
+    hours: Number.isFinite(hours) && hours > 0 ? hours : fallbackHours,
+    no_topic_window: Number.isFinite(noTopicWindow) && noTopicWindow > 0 ? noTopicWindow : undefined,
+    session_id: sessionId && sessionId !== '[空]' ? sessionId : undefined,
+    rc: Number.isFinite(rc) && rc >= 0 ? rc : undefined,
+    section: route.query.section === 'no-topic' ? 'no-topic' : 'topic',
+  }
+}
+
+export function sessionScopeToParams(scope: SessionScope): SessionScopeParams {
+  return {
+    hours: scope.hours,
+    session_id: scope.session_id,
+  }
+}
+
+export function listBackQueryFromRoute(route: RouteLocationNormalizedLoaded): Record<string, string> {
+  const q: Record<string, string> = {}
+  if (route.query.hours) q.hours = String(route.query.hours)
+  if (route.query.no_topic_window) q.no_topic_window = String(route.query.no_topic_window)
+  if (route.query.section) q.section = String(route.query.section)
+  return q
+}
 
 export function useSessionFilters() {
   const searchQ = ref('')
