@@ -102,7 +102,7 @@ type CostContext struct {
 //
 // Returns the ScoringBreakdown (all 0-100 fields plus Composite).
 func Score(c Candidate, sigs ClassificationSignals, profile Profile, costCtx CostContext) ScoringBreakdown {
-	w := WeightsFor(profile)
+	w := WeightsForDynamic(profile)
 	wsum := w.Sum()
 	if wsum <= 0 {
 		wsum = 100
