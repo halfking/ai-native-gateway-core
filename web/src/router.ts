@@ -31,7 +31,9 @@ function isAuthed(): boolean {
 }
 
 function isSuperAdmin(): boolean {
-  return store.userInfo?.role === 'super_admin' || !store.jwtToken
+  // Legacy API key auth: no JWT but has apiKey → super_admin
+  if (!store.jwtToken && store.apiKey) return true
+  return store.userInfo?.role === 'super_admin'
 }
 
 export const router = createRouter({
@@ -41,24 +43,26 @@ export const router = createRouter({
     { path: '/forbidden',          component: ForbiddenView, meta: { public: true } },
     { path: '/',                   component: DashboardView },
 
-    // super_admin only — providers, catalog, models, free pool, pricing
+    // super_admin only — providers, catalog, free pool, tenants, audit logs
     { path: '/providers',          component: ProvidersView,       meta: { requiresSuper: true } },
     { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresSuper: true } },
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
     { path: '/catalog',            component: CatalogView,         meta: { requiresSuper: true } },
-    { path: '/models',             component: ModelsView,          meta: { requiresSuper: true } },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
-    { path: '/pricing',            component: PricingManagementView, meta: { requiresSuper: true } },
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
-    { path: '/users',              component: UsersView,           meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
     { path: '/session-context',   component: SessionContextView,    meta: { requiresSuper: true } },
+
+    // Both super_admin and tenant_admin (read-only for tenant_admin)
+    { path: '/users',              component: UsersView },
+    { path: '/models',             component: ModelsView },
+    { path: '/pricing',            component: PricingManagementView },
 
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },

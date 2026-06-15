@@ -7,9 +7,13 @@
           {{ loading ? '加载中…' : '刷新' }}
         </button>
         <button class="btn btn-sm" @click="exportCsv">导出 CSV</button>
-        <button class="btn btn-sm btn-primary" @click="showImport = true">导入 CSV</button>
-        <button class="btn btn-sm btn-success" @click="autoInherit">自动继承</button>
+        <button v-if="!readOnly" class="btn btn-sm btn-primary" @click="showImport = true">导入 CSV</button>
+        <button v-if="!readOnly" class="btn btn-sm btn-success" @click="autoInherit">自动继承</button>
       </div>
+    </div>
+
+    <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
+      📖 您是租户管理员，当前为只读模式。定价仅供查看，不能修改或导入。
     </div>
 
     <div class="pm-summary" v-if="summary">
@@ -372,8 +376,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { store } from '../store'
+import { store, isReadOnlyMode } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
+
+const readOnly = computed(() => isReadOnlyMode())
 
 const API = '/api/pricing'
 

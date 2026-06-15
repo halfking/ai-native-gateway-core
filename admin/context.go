@@ -68,3 +68,17 @@ func EffectiveTenantIDAll(r *http.Request) string {
 	}
 	return "" // empty string means query all tenants
 }
+
+// RequireSuperAdminForWrite returns true and writes a 403 response if the
+// request is from a tenant_admin trying to perform a write operation.
+// super_admin and legacy admin_key can always write.
+func RequireSuperAdminForWrite(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return false // read methods are always allowed
+	}
+	if IsTenantAdmin(r) {
+		writeError(w, http.StatusForbidden, "tenant_admin has read-only access; write operations require super_admin")
+		return true
+	}
+	return false
+}
