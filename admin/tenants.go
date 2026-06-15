@@ -67,6 +67,41 @@ func isValidTenantStatus(s string) bool {
 	return false
 }
 
+// isValidTenantCode validates tenant code format: 2-64 chars, lowercase ASCII
+// letters/digits, hyphens, underscores. Must start with a letter or digit.
+// No spaces, no Unicode, no uppercase - prevents injection and path traversal.
+var tenantCodeBuf [256]bool
+
+func init() {
+	for c := 'a'; c <= 'z'; c++ {
+		tenantCodeBuf[c] = true
+	}
+	for c := '0'; c <= '9'; c++ {
+		tenantCodeBuf[c] = true
+	}
+	tenantCodeBuf['-'] = true
+	tenantCodeBuf['_'] = true
+}
+
+// isValidTenantCode returns true if code is a valid tenant identifier:
+// 2-64 chars, starts with [a-z0-9], only [a-z0-9_-] after.
+func isValidTenantCode(code string) bool {
+	if len(code) < 2 || len(code) > 64 {
+		return false
+	}
+	// First char must be alphanumeric (not - or _)
+	first := code[0]
+	if !((first >= 'a' && first <= 'z') || (first >= '0' && first <= '9')) {
+		return false
+	}
+	for i := 0; i < len(code); i++ {
+		if !tenantCodeBuf[code[i]] {
+			return false
+		}
+	}
+	return true
+}
+
 // handleTenants dispatches /api/admin/tenants and /api/admin/tenants/{code}/*
 // All routes are super_admin only (enforced via h.superAdmin() wrapper).
 func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
@@ -193,11 +228,17 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Code == "" || req.Name == "" {
+	if strings.TrimSpace(req.Code) == "" || strings.TrimSpace(req.Name) == "" {
 		writeError(w, http.StatusBadRequest, "code and name are required")
 		return
 	}
-	if !isValidTenantStatus(req.Status) {
+	req.Code = strings.TrimSpace(req.Code)
+	req.Name = strings.TrimSpace(req.Name)
+	if !isValidTenantCode(req.Code) {
+		writeError(w, http.StatusBadRequest, "code must be 2-64 chars, lowercase alphanumeric, hyphens or underscores only")
+		return
+	}
+	if req.Status != "" && !isValidTenantStatus(req.Status) {
 		writeError(w, http.StatusBadRequest, "status must be one of: "+tenantValidStatuses)
 		return
 	}
@@ -281,6 +322,11 @@ func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request, code stri
 	}
 	if req.Status != nil && !isValidTenantStatus(*req.Status) {
 		writeError(w, http.StatusBadRequest, "status must be one of: "+tenantValidStatuses)
+		return
+	}
+	// The 'default' tenant is the system fallback and must never be disabled.
+	if code == "default" && req.Status != nil && (*req.Status == "disabled" || *req.Status == "suspended") {
+		writeError(w, http.StatusBadRequest, "the default tenant cannot be disabled or suspended")
 		return
 	}
 
