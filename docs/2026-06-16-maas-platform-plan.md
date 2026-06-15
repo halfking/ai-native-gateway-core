@@ -119,9 +119,9 @@ credits = ceil(
 | 区块 | 数据来源 | 交互 |
 |------|----------|------|
 | 总积分消耗 / 请求次数 / 可用余额 | `GET /api/maas/usage/summary` + `/api/maas/wallet` | 时间窗 1/7/30 天 |
-| 模型请求排行 | `by_model[].requests` | 点击柱子 → 请求明细表 |
-| 各模型用量 | `by_model[]` requests + credits | 点击行 → 明细表 |
-| 使用趋势 | `trend[]` 双图（积分 + 次数） | 点击日期 → 当日明细 |
+| 模型请求排行 | `by_model[].requests` | 柱状图；点击 → 请求明细表 |
+| 使用趋势 | `trend[]` 双图（积分 + 次数） | 先图；点击日期 → 当日明细 |
+| 各模型用量 | `by_model[]` requests + credits | 后表；点击行 → 明细表 |
 
 **权限裁剪**（`isPlatformOpsView` = super_admin ∧ default 租户）：
 

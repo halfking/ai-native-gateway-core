@@ -204,33 +204,6 @@ onMounted(load)
     </div>
 
     <div class="card chart-card" v-if="summary">
-      <div class="card-title">各模型用量 <span class="hint">请求次数 + 积分消耗</span></div>
-      <table v-if="summary.by_model.length" class="model-table">
-        <thead>
-          <tr>
-            <th>模型</th>
-            <th style="text-align:right">请求次数</th>
-            <th style="text-align:right">消耗积分</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="row in summary.by_model"
-            :key="'tbl-' + row.model"
-            class="clickable"
-            :class="{ active: selectedModel === row.model }"
-            @click="showModelDetail(row.model)"
-          >
-            <td><code>{{ row.model }}</code></td>
-            <td class="num">{{ fmtNum(row.requests) }}</td>
-            <td class="num credits">{{ fmtNum(row.credits) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="empty">暂无数据</div>
-    </div>
-
-    <div class="card chart-card" v-if="summary">
       <div class="card-title">使用趋势 <span class="hint">点击数据点查看当日明细</span></div>
       <div v-if="!summary.trend.length" class="empty">暂无趋势数据</div>
       <div v-else class="trend-grid">
@@ -275,6 +248,33 @@ onMounted(load)
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="card chart-card" v-if="summary">
+      <div class="card-title">各模型用量 <span class="hint">请求次数 + 积分消耗</span></div>
+      <table v-if="summary.by_model.length" class="model-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th style="text-align:right">请求次数</th>
+            <th style="text-align:right">消耗积分</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="row in summary.by_model"
+            :key="'tbl-' + row.model"
+            class="clickable"
+            :class="{ active: selectedModel === row.model }"
+            @click="showModelDetail(row.model)"
+          >
+            <td><code>{{ row.model }}</code></td>
+            <td class="num">{{ fmtNum(row.requests) }}</td>
+            <td class="num credits">{{ fmtNum(row.credits) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">暂无数据</div>
     </div>
 
     <div v-if="detailTitle" class="card detail-card">
