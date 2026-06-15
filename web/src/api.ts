@@ -2468,6 +2468,7 @@ export interface MemoraSinkStats {
   consecutive_errors: number
   last_error: string | null
   last_error_at: string | null
+  paused?: boolean
 }
 
 export interface MemoraStatus {
@@ -2477,6 +2478,7 @@ export interface MemoraStatus {
   last_error: string | null
   last_error_at: string | null
   ping_latency_ms: number | null
+  sink_paused?: boolean
   sink: MemoraSinkStats | null
 }
 
@@ -2486,6 +2488,10 @@ export function getMemoraStatus(): Promise<MemoraStatus> {
 
 export function pingMemora(): Promise<{ connected: boolean; latency_ms: number; error: string | null }> {
   return req('POST', '/api/system/memora-ping')
+}
+
+export function controlMemoraSink(action: 'pause' | 'resume'): Promise<{ paused: boolean; sink: MemoraSinkStats }> {
+  return req('POST', '/api/system/memora-sink', { action })
 }
 
 export interface MemoraSession {

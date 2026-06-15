@@ -36,6 +36,7 @@ type Sink struct {
 	consecutiveErrors atomic.Int64
 	lastError         atomic.Value // string
 	lastErrorAt       atomic.Value // time.Time
+	paused            atomic.Bool
 }
 
 // WriteOp is one item of work in the sink.
@@ -95,10 +96,36 @@ func (s *Sink) Stop(ctx context.Context) {
 	}
 }
 
+// Paused reports whether the sink is paused (admin disconnect).
+func (s *Sink) Paused() bool {
+	if s == nil {
+		return false
+	}
+	return s.paused.Load()
+}
+
+// Pause stops accepting new writes until Resume is called.
+func (s *Sink) Pause() {
+	if s == nil {
+		return
+	}
+	s.paused.Store(true)
+	slog.Info("memora.sink paused by admin")
+}
+
+// Resume re-enables writes after Pause.
+func (s *Sink) Resume() {
+	if s == nil {
+		return
+	}
+	s.paused.Store(false)
+	slog.Info("memora.sink resumed by admin")
+}
+
 // Enqueue is the ONLY way callers feed the sink. It is O(1) and never
 // blocks: a full queue causes the op to be dropped and counted.
 func (s *Sink) Enqueue(op WriteOp) {
-	if s == nil || s.client == nil || s.client.Disabled() || op.UserID == "" {
+	if s == nil || s.client == nil || s.client.Disabled() || op.UserID == "" || s.paused.Load() {
 		return
 	}
 	select {
@@ -121,6 +148,7 @@ type Stats struct {
 	ConsecutiveErrors int64 `json:"consecutive_errors"`
 	LastError        string `json:"last_error"`
 	LastErrorAt      string `json:"last_error_at"`
+	Paused           bool   `json:"paused"`
 }
 
 func (s *Sink) Stats() Stats {
@@ -135,6 +163,7 @@ func (s *Sink) Stats() Stats {
 		QueueLen:          len(s.queue),
 		QueueCap:          cap(s.queue),
 		ConsecutiveErrors: s.consecutiveErrors.Load(),
+		Paused:            s.paused.Load(),
 	}
 	if v, ok := s.lastError.Load().(string); ok {
 		st.LastError = v
