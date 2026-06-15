@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   useSessionFilters,
   useSessionList,
+  listBackQueryFromRoute,
 } from '../composables/useSessionContext'
 
 const route = useRoute()
@@ -15,6 +16,7 @@ const { meta, loading } = list
 
 const isDetail = computed(() => !!route.params.taskId)
 const activeListTab = computed(() => (route.query.section === 'no-topic' ? 'no-topic' : 'topic'))
+const backListQuery = computed(() => listBackQueryFromRoute(route))
 
 provide('sessionContextFilters', filters)
 provide('sessionContextList', list)
@@ -54,7 +56,11 @@ defineExpose({ refreshList })
   <div class="sc-layout">
     <div class="top-bar">
       <div class="top-bar-head">
-        <router-link v-if="isDetail" to="/session-context" class="back-link">← 会话列表</router-link>
+        <router-link
+          v-if="isDetail"
+          :to="{ path: '/session-context', query: backListQuery }"
+          class="back-link"
+        >← 会话列表</router-link>
         <h2>会话上下文</h2>
         <div v-if="!isDetail" class="seg-tabs">
           <button

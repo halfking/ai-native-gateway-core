@@ -195,6 +195,19 @@ func isRetryable(err error) bool {
 // Search queries Memora for the top-K facts most relevant to query.
 // Returns an empty slice (not an error) on 0 results or non-2xx.
 func (c *Client) Search(ctx context.Context, userID, query string, topK int) ([]Memory, error) {
+	return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+}
+
+// SearchAdmin is like Search but uses a longer timeout for admin UI reads.
+func (c *Client) SearchAdmin(ctx context.Context, userID, query string, topK int) ([]Memory, error) {
+	timeout := 8 * time.Second
+	if c != nil && c.searchTimeout > timeout {
+		timeout = c.searchTimeout
+	}
+	return c.searchWithTimeout(ctx, userID, query, topK, timeout)
+}
+
+func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, topK int, timeout time.Duration) ([]Memory, error) {
 	if c.Disabled() || userID == "" {
 		return nil, nil
 	}
@@ -211,7 +224,7 @@ func (c *Client) Search(ctx context.Context, userID, query string, topK int) ([]
 	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
 		return nil, err
 	}
-	cctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
 		c.baseURL+"/product/search", &buf)
