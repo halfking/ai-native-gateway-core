@@ -59,3 +59,12 @@ func EffectiveTenantID(r *http.Request) string {
 	}
 	return "default"
 }
+
+// EffectiveTenantIDAll returns empty string for super_admin (meaning query all tenants),
+// or the tenant's own ID for tenant_admin. Used for dashboard/summary queries.
+func EffectiveTenantIDAll(r *http.Request) string {
+	if IsTenantAdmin(r) {
+		return GetTenantID(r)
+	}
+	return "" // empty string means query all tenants
+}
