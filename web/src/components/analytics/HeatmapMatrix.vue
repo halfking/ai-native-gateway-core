@@ -7,6 +7,7 @@ const props = defineProps<{
   metric: AnalyticsMetric
   colAliases?: Record<string, string[]>
   loading?: boolean
+  minHeight?: number
 }>()
 
 const emit = defineEmits<{
@@ -71,7 +72,7 @@ const isEmpty = computed(() =>
 </script>
 
 <template>
-  <div class="heatmap-wrap">
+  <div class="heatmap-wrap" :style="minHeight ? { minHeight: minHeight + 'px' } : undefined">
     <div v-if="loading" class="heatmap-hint">加载热力图…</div>
     <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据 — 等待 Auto 路由流量写入 request_logs</div>
     <div v-else class="table-wrap">
