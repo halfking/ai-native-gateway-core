@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
@@ -158,6 +159,13 @@ type Executor struct {
 	StreamTimeout        time.Duration
 	UpstreamTimeout      time.Duration
 	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
+
+	// Memora is the optional context-compression oracle. When non-nil
+	// and enabled, the executor (a) enqueues per-request writes to
+	// Memora for later retrieval, and (b) on context-length overflow,
+	// queries Memora for L1 session facts and rebuilds the body before
+	// retrying. Nil means the entire Memora path is a no-op.
+	Memora *memora.Client
 }
 
 func NewExecutor(
