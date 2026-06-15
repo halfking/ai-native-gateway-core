@@ -22,11 +22,19 @@ BEGIN;
 -- ============================================================================
 CREATE OR REPLACE FUNCTION notify_auto_route_refresh()
 RETURNS TRIGGER AS $$
+DECLARE
+    entity_id text := '';
 BEGIN
     -- 通知 gateway 立即刷新 index（5s debounce 由 Go 端控制）
+    -- credential_model_bindings 用 credential_id；credentials / api_keys 用 id
+    IF TG_TABLE_NAME = 'credential_model_bindings' THEN
+        entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text;
+    ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys') THEN
+        entity_id := COALESCE(NEW.id, OLD.id)::text;
+    END IF;
+
     PERFORM pg_notify('auto_route_refresh',
-        TG_TABLE_NAME || ':' || TG_OP ||
-        COALESCE(NEW.credential_id::text, OLD.credential_id::text, ''));
+        TG_TABLE_NAME || ':' || TG_OP || entity_id);
     RETURN COALESCE(NEW, OLD);
 END;
 $$ LANGUAGE plpgsql;

@@ -754,7 +754,7 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		fmt.Sprintf("UPDATE api_keys SET %s WHERE id = $%d", strings.Join(sets, ", "), argIdx),
 		args...,
 	); err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed")
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
 
