@@ -13,6 +13,62 @@ const colX = [80, 360, 640]
 const nodeH = 18
 const gap = 4
 
+// ── Task-type color palette ──────────────────────────
+const TASK_COLORS: Record<string, string> = {
+  chat:          '#6366f1', // indigo
+  reasoning:     '#a855f7', // purple
+  code:          '#22c55e', // green
+  agent:         '#f97316', // orange
+  creative:      '#ec4899', // pink
+  long_context:  '#a16207', // amber-brown
+  vision:        '#06b6d4', // cyan
+  function_call: '#eab308', // yellow
+}
+const FALLBACK_COLOR = '#94a3b8' // slate-400
+
+function taskKeyFromSource(sourceId: string): string {
+  // sourceId format: "task:<task_type>"
+  if (sourceId.startsWith('task:')) return sourceId.slice(5)
+  return ''
+}
+
+function colorForTask(taskKey: string): string {
+  return TASK_COLORS[taskKey] || FALLBACK_COLOR
+}
+
+// Precompute: for each model node, which task sends the most traffic to it.
+const modelTopTask = computed(() => {
+  const map: Record<string, string> = {}
+  if (!props.data) return map
+  const taskFlow: Record<string, Record<string, number>> = {} // model → task → count
+  for (const l of props.data.links) {
+    const taskKey = taskKeyFromSource(l.source)
+    if (!taskKey) continue // this is a model→provider link, skip
+    const modelId = l.target
+    if (!taskFlow[modelId]) taskFlow[modelId] = {}
+    taskFlow[modelId][taskKey] = (taskFlow[modelId][taskKey] || 0) + l.value
+  }
+  for (const [modelId, tasks] of Object.entries(taskFlow)) {
+    let topTask = ''
+    let topVal = 0
+    for (const [tk, v] of Object.entries(tasks)) {
+      if (v > topVal) { topVal = v; topTask = tk }
+    }
+    map[modelId] = topTask
+  }
+  return map
+})
+
+function linkColor(sourceId: string): string {
+  // Layer 0→1: source is "task:xxx"
+  const taskKey = taskKeyFromSource(sourceId)
+  if (taskKey) return colorForTask(taskKey)
+  // Layer 1→2: source is "model:xxx", look up dominant task
+  const topTask = modelTopTask.value[sourceId]
+  if (topTask) return colorForTask(topTask)
+  return FALLBACK_COLOR
+}
+
 const layers = computed(() => {
   if (!props.data) return [[], [], []]
   const out: Array<Array<{ id: string; label: string; layer: number; total: number }>> = [[], [], []]
@@ -95,6 +151,22 @@ const layerColors = [
   'color-mix(in srgb, var(--success) 20%, var(--bg-subtle))',
   'color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle))',
 ]
+
+// Collect which task types actually appear in the data (for legend)
+const activeTaskTypes = computed(() => {
+  const keys = new Set<string>()
+  if (!props.data) return []
+  for (const l of props.data.links) {
+    const k = taskKeyFromSource(l.source)
+    if (k) keys.add(k)
+  }
+  return [...keys]
+})
+
+const TASK_LABELS: Record<string, string> = {
+  chat: '通用对话', reasoning: '逻辑推理', code: '代码生成', agent: 'Agent',
+  creative: '创意写作', long_context: '长文档', vision: '图像理解', function_call: '函数调用',
+}
 </script>
 
 <template>
@@ -106,6 +178,11 @@ const layerColors = [
         <span v-for="(lbl, i) in layerLabels" :key="lbl" class="legend-chip">
           <span class="legend-swatch" :style="{ background: layerColors[i] }" />
           {{ lbl }}
+        </span>
+        <span class="legend-divider" />
+        <span v-for="tk in activeTaskTypes" :key="tk" class="legend-chip">
+          <span class="legend-swatch" :style="{ background: colorForTask(tk) }" />
+          {{ TASK_LABELS[tk] || tk }}
         </span>
       </div>
       <svg :viewBox="`0 0 ${W} ${H}`" class="sankey-svg" preserveAspectRatio="xMidYMid meet">
@@ -119,6 +196,7 @@ const layerColors = [
             :key="'l-' + i"
             :d="linkPath(l.source, l.target)"
             class="flow-link"
+            :stroke="linkColor(l.source)"
             :stroke-width="linkWidth(l.value)"
             :opacity="0.35 + (l.value / Math.max(...data!.links.map(x => x.value), 1)) * 0.45"
           />
@@ -175,6 +253,12 @@ const layerColors = [
   border-radius: 2px;
   border: 1px solid var(--border);
 }
+.legend-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  margin: 0 2px;
+}
 .sankey-svg {
   width: 100%;
   min-width: 480px;
@@ -189,7 +273,6 @@ const layerColors = [
 }
 .flow-link {
   fill: none;
-  stroke: var(--accent);
   stroke-linecap: round;
 }
 .flow-node {
