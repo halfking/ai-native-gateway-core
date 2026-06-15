@@ -614,6 +614,10 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid key id")
 		return
 	}
+	// tenant_admin can only view usage for their own tenant's keys (Fix 8)
+	if !h.assertKeyTenantScope(w, r, keyID) {
+		return
+	}
 
 	if len(parts) > 1 {
 		switch parts[1] {
@@ -716,6 +720,10 @@ func (h *Handler) usageKeyDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) usageKeyModels(w http.ResponseWriter, r *http.Request, keyID int) {
+	// tenant_admin can only view usage for their own tenant's keys (Fix 8)
+	if !h.assertKeyTenantScope(w, r, keyID) {
+		return
+	}
 	limit := queryInt(r, "limit", 50)
 	if limit < 1 {
 		limit = 1
@@ -846,6 +854,10 @@ func trendPeriodDateFormat(period string) string {
 }
 
 func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID int) {
+	// tenant_admin can only view usage for their own tenant's keys (Fix 8)
+	if !h.assertKeyTenantScope(w, r, keyID) {
+		return
+	}
 	period, periodErr := validateUsageTrendPeriod(queryString(r, "period"))
 	if periodErr != nil {
 		writeError(w, http.StatusBadRequest, periodErr.Error())
@@ -932,6 +944,10 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 // a single API key.  Used by /keys/:id to show peak traffic and gateway vs
 // upstream failure breakdown within the selected window.
 func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID int) {
+	// tenant_admin can only view usage for their own tenant's keys (Fix 8)
+	if !h.assertKeyTenantScope(w, r, keyID) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 

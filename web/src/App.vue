@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { store, clearAll } from './store'
+import { store, clearAll, isSuperAdmin as checkSuperAdmin } from './store'
 
 const route  = useRoute()
 const router = useRouter()
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
-const isSuperAdmin = computed(() => store.userInfo?.role === 'super_admin' || !store.jwtToken)
+const isSuperAdmin = computed(() => checkSuperAdmin())
 
 const versionInfo = ref<{
   version?: string
@@ -40,16 +40,17 @@ const nav = [
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
   { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
   { path: '/tenants',           label: '租户管理', icon: '👥',    super: true },
-  { path: '/users',             label: '用户管理', icon: '👤',    super: true },
+  { path: '/users',             label: '用户管理', icon: '👤' },
   { path: '/audit-logs',       label: '审计日志', icon: '📋',    super: true },
   { path: '/session-context',  label: '会话上下文', icon: '🧠',  super: true },
   { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
-  { path: '/models',            label: '模型与标签', icon: '🏷️', super: true },
+  { path: '/models',            label: '模型与标签', icon: '🏷️' },
   { path: '/examples',          label: '请求示例',  icon: '📝' },
   { path: '/routing-v2',        label: '路由全景',  icon: '🗺️', super: true },
+  { path: '/routing-overview',  label: '路由总览',  icon: '🗺️' },
   { path: '/free-pool',         label: '免费资源',  icon: '🎁',    super: true },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
-  { path: '/pricing',           label: '定价管理',  icon: '💰',    super: true },
+  { path: '/pricing',           label: '定价管理',  icon: '💰' },
 ]
 
 function logout() {
