@@ -3077,3 +3077,45 @@ export function getQualityCorrelations(params: {
   const path = '/api/admin/auto-route/quality-correlations' + (q.toString() ? '?' + q : '')
   return req<QualityCorrelationResponse>('GET', path)
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Routing overrides audit API (Phase 7.9 endpoint)
+// ─────────────────────────────────────────────────────────────────
+
+export interface RoutingAuditEntry {
+  id: number
+  ts: string
+  action: 'insert' | 'update' | 'delete'
+  override_id?: number
+  task_type?: string
+  profile?: string
+  mode?: string
+  model_chosen?: string
+  reason?: string
+  expires_at?: string
+  old_expires_at?: string
+  actor?: string
+}
+
+export interface RoutingAuditResponse {
+  entries: RoutingAuditEntry[]
+  count: number
+  filter: { action: string; actor: string; override_id: string; days: string }
+}
+
+export function getRoutingAudit(params: {
+  action?: 'insert' | 'update' | 'delete' | ''
+  actor?: string
+  override_id?: number
+  days?: number
+  limit?: number
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.action) q.set('action', params.action)
+  if (params.actor) q.set('actor', params.actor)
+  if (params.override_id) q.set('override_id', String(params.override_id))
+  if (params.days) q.set('days', String(params.days))
+  if (params.limit) q.set('limit', String(params.limit))
+  const path = '/api/admin/routing/overrides/audit' + (q.toString() ? '?' + q : '')
+  return req<RoutingAuditResponse>('GET', path)
+}
