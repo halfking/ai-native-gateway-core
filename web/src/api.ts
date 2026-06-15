@@ -2665,3 +2665,54 @@ export function getSessionExtractionStatus(taskId: string): Promise<SessionExtra
     `/api/system/session-context/${encodeURIComponent(taskId)}/extraction-status`,
   )
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Auto-route correlations API (Phase 7.2.3 endpoint)
+// ─────────────────────────────────────────────────────────────────
+
+export interface CorrelationRow {
+  label: string
+  samples: number
+  success_rate: number
+  avg_latency_ms: number
+  avg_cost_usd: number
+  avg_quality?: number
+}
+
+export interface CorrelationRowMT {
+  model: string
+  task_type: string
+  samples: number
+  success_rate: number
+  avg_latency_ms: number
+  avg_cost_usd: number
+}
+
+export interface CorrelationVerdict {
+  task_type: string
+  model: string
+  success_rate: number
+  avg_latency_ms: number
+  rank: number
+}
+
+export interface AutoRouteCorrelationsResponse {
+  window_days: number
+  by_model: CorrelationRow[]
+  by_strategy: CorrelationRow[]
+  by_task_type: CorrelationRow[]
+  by_model_task: CorrelationRowMT[]
+  verdict: CorrelationVerdict[]
+  generated_at: string
+}
+
+export function getAutoRouteCorrelations(params: {
+  days?: number
+  min_samples?: number
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.days) q.set('days', String(params.days))
+  if (params.min_samples) q.set('min_samples', String(params.min_samples))
+  const path = '/api/admin/auto-route/correlations' + (q.toString() ? '?' + q : '')
+  return req<AutoRouteCorrelationsResponse>('GET', path)
+}

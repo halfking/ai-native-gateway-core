@@ -12,6 +12,7 @@ import ExamplesView           from './views/ExamplesView.vue'
 import RoutingOverviewView    from './views/RoutingOverviewView.vue'
 import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
+import CorrelationsView       from './views/CorrelationsView.vue'
 import RequestLogsView        from './views/RequestLogsView.vue'
 import ModelsView             from './views/ModelsView.vue'
 import ProviderDetailView     from './views/ProviderDetailView.vue'
@@ -80,6 +81,7 @@ export const router = createRouter({
     { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
     { path: '/routing-overview',   component: RoutingOverviewView },
     { path: '/routing-decisions',  component: DecisionsView },
+    { path: '/correlations',       component: CorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/examples',           component: ExamplesView },
 
