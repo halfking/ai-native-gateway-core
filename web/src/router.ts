@@ -28,6 +28,9 @@ import SessionContextLayout      from './layouts/SessionContextLayout.vue'
 import SessionContextListView    from './views/session-context/SessionContextListView.vue'
 import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
 import ForbiddenView          from './views/ForbiddenView.vue'
+import MaaSModelsView         from './views/maas/MaaSModelsView.vue'
+import MaaSPricingView        from './views/maas/MaaSPricingView.vue'
+import MaaSUsageView          from './views/maas/MaaSUsageView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -74,6 +77,11 @@ export const router = createRouter({
     { path: '/users',              component: UsersView },
     { path: '/models',             component: ModelsView },
     { path: '/pricing',            component: PricingManagementView },
+
+    // MaaS customer-facing (any authenticated user)
+    { path: '/maas/models',        component: MaaSModelsView },
+    { path: '/maas/pricing',       component: MaaSPricingView },
+    { path: '/maas/usage',         component: MaaSUsageView },
 
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },
