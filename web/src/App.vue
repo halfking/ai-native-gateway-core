@@ -48,7 +48,7 @@ const nav = [
   { path: '/tenants',           label: '租户管理', icon: '👥',    super: true },
   { path: '/users',             label: '用户管理', icon: '👤' },
   { path: '/audit-logs',       label: '审计日志', icon: '📋',    super: true },
-  { path: '/session-context',  label: '会话上下文', icon: '🧠',  super: true },
+  { path: '/session-context',  label: '会话上下文', icon: '💬',  super: true },
   { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
   { path: '/models',            label: '模型与标签', icon: '🏷️' },
   { path: '/examples',          label: '请求示例',  icon: '📝' },
