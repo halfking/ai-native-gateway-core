@@ -23,7 +23,7 @@ import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
-import { computeSankeyCardHeight } from '../components/analytics/sankeyLayout'
+import { computeSankeyCardHeight, SANKEY_DOM_LEGEND_H, SANKEY_SECTION_HEAD_H } from '../components/analytics/sankeyLayout'
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
@@ -71,13 +71,31 @@ const matrixData = ref<AnalyticsMatrix | null>(null)
 const flowData = ref<AnalyticsFlow | null>(null)
 const analyticsLoading = ref(false)
 
-const heatmapChartHeight = computed(() => {
+/** card-toolbar chrome (padding + border) above heatmap body. */
+const HEATMAP_CARD_CHROME = 42
+
+const heatmapContentHeight = computed(() => {
   const rows = matrixData.value?.rows?.length || 0
   return Math.max(rows ? (rows + 1) * 22 + 40 : 200, 400)
 })
 
-const sankeyChartHeight = computed(() =>
+const sankeyCardHeight = computed(() =>
   Math.max(computeSankeyCardHeight(flowData.value), 400),
+)
+
+const heatmapCardHeight = computed(() => heatmapContentHeight.value + HEATMAP_CARD_CHROME)
+
+/** Shared card height: taller of heatmap vs Sankey cards. */
+const chartHeight = computed(() =>
+  Math.max(heatmapCardHeight.value, sankeyCardHeight.value),
+)
+
+const heatmapBodyMinHeight = computed(() =>
+  Math.max(0, chartHeight.value - HEATMAP_CARD_CHROME),
+)
+
+const sankeySvgMinHeight = computed(() =>
+  Math.max(0, chartHeight.value - SANKEY_SECTION_HEAD_H - SANKEY_DOM_LEGEND_H),
 )
 
 const cellDecisions = ref<AutoRouteDecision[]>([])
@@ -626,7 +644,7 @@ onUnmounted(() => stopPoll())
           <AnalyticsKpiBar :audit="audit" />
         </div>
         <div class="analytics-charts">
-          <div class="card compact-card chart-card" :style="{ minHeight: heatmapChartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
             <div class="card-toolbar">
               <div class="toolbar-left">
                 <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
@@ -662,13 +680,13 @@ onUnmounted(() => stopPoll())
               :metric="analyticsMetric"
               :col-aliases="matrixData?.meta?.col_aliases"
               :loading="analyticsLoading"
-              :min-height="heatmapChartHeight"
+              :min-height="heatmapBodyMinHeight"
               @cell-click="onMatrixCellClick"
             />
           </div>
-          <div class="card compact-card chart-card" :style="{ minHeight: sankeyChartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
             <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
+            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgMinHeight" />
           </div>
         </div>
 
@@ -1266,11 +1284,12 @@ onUnmounted(() => stopPoll())
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  align-items: start;
+  align-items: stretch;
 }
 .chart-card {
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 @media (max-width: 900px) {
   .analytics-charts { grid-template-columns: 1fr; }
