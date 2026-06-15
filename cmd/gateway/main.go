@@ -485,6 +485,11 @@ func main() {
 			telemetry.StartTuningWriter()
 			defer telemetry.StopTuningWriter()
 
+			// Wire LLM HTTP status counter indirection so the
+			// HTTPLlmCaller (in autoroute) can emit status codes
+			// without importing the telemetry package.
+			autoroute.RecordLLMHTTPStatus = telemetry.RecordLLMHTTPStatus
+
 			slog.Info("auto-route decider enabled (with realtime LISTEN/NOTIFY + tuning feedback loop)")
 		}
 
@@ -674,9 +679,32 @@ func main() {
 
 
 // buildAutoLLMCaller returns the LLMCaller to use for the auto-route
-// fallback classifier. Currently returns DisabledCaller (no LLM call).
-// Future: read LLMGatewayAutoLLMEndpoint and return an HTTP-based
-// caller when the env var is set.
+// fallback classifier.
+//
+// Selection logic:
+//   1. If LLMGatewayAutoLLMEndpoint env var is set:
+//        HTTPLlmCaller (OpenAI-compatible POST /chat/completions)
+//        wrapped in CircuitBreakerCaller (5-failure / 30s cooldown)
+//        wrapped in InstrumentedCaller (per-call metrics)
+//   2. Otherwise:
+//        DisabledCaller (no LLM call; decider falls back to the
+//        heuristic result at low confidence)
+//
+// Environment variables consumed (all optional except Endpoint):
+//   LLMGatewayAutoLLMEndpoint  base URL (e.g. "https://llm.kxpms.cn/v1")
+//   LLMGatewayAutoLLMApiKey   bearer token
+//   LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
+//   LLMGatewayAutoLLMTimeout  seconds (default 3)
 func buildAutoLLMCaller() autoroute.LLMCaller {
-	return autoroute.DisabledCaller{}
+	caller, enabled := autoroute.BuildHTTPLlmCallerFromEnv(os.Getenv)
+	if !enabled {
+		return autoroute.DisabledCaller{}
+	}
+	// Wrap the real caller in: circuit breaker → instrumented metrics.
+	// Order matters: instrumented wraps circuit breaker so metrics
+	// see the outcome AFTER the breaker decides to short-circuit.
+	return autoroute.InstrumentedCaller{
+		Inner:   autoroute.NewCircuitBreakerCaller(caller),
+		Metrics: &autoroute.CallerMetrics{},
+	}
 }
