@@ -41,6 +41,20 @@ type updateTenantRequest struct {
 	ContactEmail *string `json:"contact_email"`
 }
 
+type tenantModelBreakdown struct {
+	Model    string  `json:"model"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Cost     float64 `json:"cost_usd"`
+}
+
+type tenantAppBreakdown struct {
+	AppCode  string  `json:"application_code"`
+	Requests int64   `json:"requests"`
+	Tokens   int64   `json:"tokens"`
+	Cost     float64 `json:"cost_usd"`
+}
+
 const tenantValidStatuses = "active|trial|suspended|expired|disabled"
 
 // isValidTenantStatus checks if status is one of 5 allowed values.
@@ -118,7 +132,7 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 
 // ── listTenants: GET /api/admin/tenants ──────────────────────────
 
-func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -475,22 +489,10 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		UniqueKeys      int                `json:"unique_keys"`
 		UniqueModels    int                `json:"unique_models"`
 		UniqueApps      int                `json:"unique_apps"`
-		ByModel         []modelBreakdown  `json:"by_model"`
-		ByApplication   []appBreakdown    `json:"by_application"`
+		ByModel         []tenantModelBreakdown  `json:"by_model"`
+		ByApplication   []tenantAppBreakdown    `json:"by_application"`
 	}
 
-	type modelBreakdown struct {
-		Model     string  `json:"model"`
-		Requests  int64   `json:"requests"`
-		Tokens    int64   `json:"tokens"`
-		Cost      float64 `json:"cost_usd"`
-	}
-	type appBreakdown struct {
-		AppCode   string  `json:"application_code"`
-		Requests  int64   `json:"requests"`
-		Tokens    int64   `json:"tokens"`
-		Cost      float64 `json:"cost_usd"`
-	}
 
 	var s tenantStats
 	s.Days = days
@@ -518,13 +520,13 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	if err == nil {
 		defer modelRows.Close()
 		for modelRows.Next() {
-			var m modelBreakdown
+			var m tenantModelBreakdown
 			_ = modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Cost)
 			s.ByModel = append(s.ByModel, m)
 		}
 	}
 	if s.ByModel == nil {
-		s.ByModel = []modelBreakdown{}
+		s.ByModel = []tenantModelBreakdown{}
 	}
 
 	// By application
@@ -541,13 +543,13 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	if err == nil {
 		defer appRows.Close()
 		for appRows.Next() {
-			var a appBreakdown
+			var a tenantAppBreakdown
 			_ = appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Cost)
 			s.ByApplication = append(s.ByApplication, a)
 		}
 	}
 	if s.ByApplication == nil {
-		s.ByApplication = []appBreakdown{}
+		s.ByApplication = []tenantAppBreakdown{}
 	}
 
 	writeJSON(w, http.StatusOK, s)
