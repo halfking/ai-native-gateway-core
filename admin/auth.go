@@ -149,6 +149,16 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		if err == nil && u.Enabled {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) == nil {
+				// Check tenant is not disabled (bypass for 'default' super_admin)
+				if u.TenantID != "default" {
+					var tenantStatus string
+					err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
+					if err != nil || tenantStatus == "disabled" {
+						h.auditLog(req.Username, "auth.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+						writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
+						return
+					}
+				}
 				// Update last_login_at
 				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
