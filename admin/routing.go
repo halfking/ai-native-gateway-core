@@ -519,6 +519,10 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 
 	featuredOnly := queryBool(r, "featured_only")
 
+	// For tenant_admin, hide credential routing details (which credentials route to which model).
+	// They see model names and availability, but NOT credential labels, provider IDs, pricing, etc.
+	hideCredentialDetails := IsTenantAdmin(r)
+
 	var featuredModels []string
 	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, '[]'::jsonb) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
 
@@ -700,6 +704,65 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	}
 	if unmapped == nil {
 		unmapped = []map[string]any{}
+	}
+
+	// For tenant_admin, strip credential routing details to prevent data leakage.
+	// They see which models are available, but not which credentials route to them.
+	if hideCredentialDetails {
+		type simpleVariant struct {
+			Variant       string   `json:"variant"`
+			CanonicalName string   `json:"canonical_name"`
+			Tags          []string `json:"tags"`
+			Available     bool     `json:"available"`
+			CreditCount   int      `json:"credential_count"`
+		}
+		type simpleGeneration struct {
+			Generation string          `json:"generation"`
+			Variants   []simpleVariant `json:"variants"`
+		}
+		type simpleSeries struct {
+			Series      string           `json:"series"`
+			Generations []simpleGeneration `json:"generations"`
+		}
+		simpleList := make([]simpleSeries, 0, len(seriesList))
+		for _, se := range seriesList {
+			ss := simpleSeries{Series: se.Series, Generations: []simpleGeneration{}}
+			for _, ge := range se.Generations {
+				sg := simpleGeneration{Generation: ge.Generation, Variants: []simpleVariant{}}
+				for _, ve := range ge.Variants {
+					if len(ve.Credentials) == 0 {
+						continue
+					}
+					allAvailable := true
+					for _, c := range ve.Credentials {
+						if !c.Available {
+							allAvailable = false
+							break
+						}
+					}
+					sg.Variants = append(sg.Variants, simpleVariant{
+						Variant:       ve.Variant,
+						CanonicalName: ve.CanonicalName,
+						Tags:          ve.Tags,
+						Available:     allAvailable,
+						CreditCount:   len(ve.Credentials),
+					})
+				}
+				if len(sg.Variants) > 0 {
+					ss.Generations = append(ss.Generations, sg)
+				}
+			}
+			if len(ss.Generations) > 0 {
+				simpleList = append(simpleList, ss)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"featured": featuredModels,
+			"series":   simpleList,
+			"unmapped": unmapped,
+			"readonly": true, // hint to frontend that credential details are hidden
+		})
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

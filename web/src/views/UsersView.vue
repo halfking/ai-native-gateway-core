@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
-import { store } from '../store'
+import { store, isReadOnlyMode } from '../store'
+
+const readOnly = computed(() => isReadOnlyMode())
 
 interface User {
   id: number
@@ -121,7 +123,11 @@ onMounted(() => { load(); loadTenants() })
   <div class="users-page">
     <div class="page-header">
       <h1>👤 用户管理</h1>
-      <button class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
+      <button v-if="!readOnly" class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
+    </div>
+
+    <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
+      📖 您是租户管理员，当前为只读模式。用户管理仅限查看，不能创建、编辑或删除用户。
     </div>
 
     <div class="filters">
@@ -161,14 +167,18 @@ onMounted(() => { load(); loadTenants() })
           <td><code>{{ u.tenant_id }}</code></td>
           <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ roleLabel(u.role) }}</span></td>
           <td>
-            <span class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'" style="cursor:pointer" @click="handleToggle(u)">
+            <span v-if="!readOnly" class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'" style="cursor:pointer" @click="handleToggle(u)">
+              {{ u.enabled ? '启用' : '禁用' }}
+            </span>
+            <span v-else class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'">
               {{ u.enabled ? '启用' : '禁用' }}
             </span>
           </td>
           <td>{{ fmtDate(u.last_login_at) }}</td>
           <td>
-            <button class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''">重置密码</button>
-            <button v-if="u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">删除</button>
+            <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''">重置密码</button>
+            <button v-if="!readOnly && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">删除</button>
+            <span v-else-if="readOnly" class="text-muted" style="font-size:12px;color:var(--muted)">—</span>
           </td>
         </tr>
       </tbody>
