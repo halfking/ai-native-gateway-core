@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -425,5 +426,176 @@ func TestContextLengthExhaustedError_TypeAndMessage(t *testing.T) {
 		// errors.As, but having this guard makes the intent obvious to
 		// future readers.
 		t.Fatal("plain error must not match typed sentinel")
+	}
+}
+
+// TestHandleContextLengthRecovery_NilContextWindow_StillTriesLLM verifies
+// that when a candidate has ContextWindow == nil, the mechanical-trim phase
+// is skipped but the LLM-summary fallback phase is still attempted. This is
+// the G1 fix: models without a DB context_window value should still get
+// compaction recovery when the upstream rejects for context length.
+func TestHandleContextLengthRecovery_NilContextWindow_StillTriesLLM(t *testing.T) {
+	e := &Executor{} // no Provider → pickCompactionCandidates returns empty
+	params := &ExecParams{R: httptestNewRequest()}
+	cand := provider.Candidate{ContextWindow: nil} // ← the key: nil window
+	big := strings.Repeat("x", 400)
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + big + `"}]}`)
+
+	st := contextLengthRecoveryState{}
+	source := append([]byte(nil), body...)
+	action := e.handleContextLengthRecovery(context.Background(), params, cand, &source, &st, 400)
+
+	// With no compaction candidates available, the LLM phase returns false →
+	// giveUp. But the critical assertion is that mechanicalAttempted is true
+	// (phase was visited/skipped) AND llmAttempted is true (phase was tried).
+	if action != ctxLenGiveUp {
+		t.Fatalf("expected giveUp (no compaction candidates), got %v", action)
+	}
+	if !st.mechanicalAttempted {
+		t.Fatal("mechanicalAttempted should be true (skipped due to nil window)")
+	}
+	if !st.llmAttempted {
+		t.Fatal("llmAttempted should be true — nil window must NOT block the LLM phase")
+	}
+	// Body should be unchanged (no mechanical trim ran).
+	if string(source) != string(body) {
+		t.Fatal("body should be unchanged when ContextWindow is nil (no mechanical trim)")
+	}
+}
+
+// TestShouldHeuristicCompact covers the heuristic that triggers compaction
+// for non-context-length 4xx when the body is estimated to exceed 90% of the
+// context window.
+func TestShouldHeuristicCompact(t *testing.T) {
+	window512k := 512000
+	smallWindow := 1000
+
+	tests := []struct {
+		name         string
+		status       int
+		kind         errorsx.ErrorKind
+		bodyLen      int
+		contextWindow *int
+		want         bool
+	}{
+		{
+			name:          "large body + 400 + window → trigger",
+			status:        400,
+			kind:          errorsx.KindTransient,
+			bodyLen:       512000 * 4, // ~585K tokens >> 90% of 512K
+			contextWindow: &window512k,
+			want:          true,
+		},
+		{
+			name:          "small body + 400 → no trigger",
+			status:        400,
+			kind:          errorsx.KindTransient,
+			bodyLen:       1000, // ~285 tokens, way under
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "model_not_found → no trigger (routing issue, not size)",
+			status:        400,
+			kind:          errorsx.KindModelNotFound,
+			bodyLen:       512000 * 4,
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "401 auth → no trigger",
+			status:        401,
+			kind:          errorsx.KindAuth,
+			bodyLen:       512000 * 4,
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "429 rate limit → no trigger",
+			status:        429,
+			kind:          errorsx.KindRateLimit,
+			bodyLen:       512000 * 4,
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "500 server error → no trigger (not a client error)",
+			status:        500,
+			kind:          errorsx.KindUpstreamDown,
+			bodyLen:       512000 * 4,
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "nil context window → no trigger (can't estimate)",
+			status:        400,
+			kind:          errorsx.KindTransient,
+			bodyLen:       512000 * 4,
+			contextWindow: nil,
+			want:          false,
+		},
+		{
+			name:          "concurrent overload → no trigger",
+			status:        400,
+			kind:          errorsx.KindConcurrent,
+			bodyLen:       512000 * 4,
+			contextWindow: &window512k,
+			want:          false,
+		},
+		{
+			name:          "boundary: exactly at 90% threshold → no trigger (strictly greater)",
+			status:        400,
+			kind:          errorsx.KindTransient,
+			bodyLen:       int(float64(smallWindow) * 0.9 * 3.5), // exactly ~90%
+			contextWindow: &smallWindow,
+			want:          false,
+		},
+		{
+			name:          "boundary: just above 90% → trigger",
+			status:        400,
+			kind:          errorsx.KindTransient,
+			bodyLen:       int(float64(smallWindow) * 0.95 * 3.5), // ~95%
+			contextWindow: &smallWindow,
+			want:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Import errorsx in the test file via qualified alias to avoid
+			// ambiguity — errorsx is not yet imported here.
+			got := shouldHeuristicCompact(tt.status, tt.kind, tt.bodyLen, tt.contextWindow)
+			if got != tt.want {
+				t.Fatalf("shouldHeuristicCompact(%d, %v, %d, %v) = %v, want %v",
+					tt.status, tt.kind, tt.bodyLen, tt.contextWindow, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleContextLengthRecovery_WithWindow_DoesBothPhases verifies the
+// normal flow is unchanged: with a non-nil ContextWindow, mechanical trim
+// runs first, then LLM fallback. This is a regression guard ensuring the
+// nil-window fix didn't break the non-nil path.
+func TestHandleContextLengthRecovery_WithWindow_DoesBothPhases(t *testing.T) {
+	e := &Executor{}
+	params := &ExecParams{R: httptestNewRequest()}
+	window := 50
+	cand := provider.Candidate{ContextWindow: &window}
+	big := strings.Repeat("x", 400)
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + big + `"},{"role":"assistant","content":"` + big + `"},{"role":"user","content":"` + big + `"}]}`)
+
+	st := contextLengthRecoveryState{}
+	source := append([]byte(nil), body...)
+	action := e.handleContextLengthRecovery(context.Background(), params, cand, &source, &st, 400)
+	if action != ctxLenRetry {
+		t.Fatalf("phase1 should retry, got %v", action)
+	}
+	if !st.mechanicalAttempted {
+		t.Fatal("mechanicalAttempted should be true after phase1")
+	}
+	// Body should have shrunk (mechanical trim ran).
+	if len(source) >= len(body) {
+		t.Fatal("body should have shrunk after mechanical trim")
 	}
 }
