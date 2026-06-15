@@ -1,17 +1,15 @@
 package admin
 
-// routing_overrides.go — P7.6: admin endpoints for routing overrides.
+// routing_overrides.go — P7.6 (CRUD) + P7.9 (audit integration).
 //
-// Endpoints:
+// All three mutation endpoints (create / soft-delete / extend) run
+// inside a transaction that sets `app.current_admin` to the request
+// admin's username. The trigger on routing_overrides reads this
+// GUC to record the actor in routing_overrides_audit.
 //
-//	GET    /api/admin/routing/overrides?active=true
-//	POST   /api/admin/routing/overrides              — create
-//	DELETE /api/admin/routing/overrides/:id         — delete (soft: set expires_at)
-//	PATCH  /api/admin/routing/overrides/:id/extend  — extend/reduce expires_at
-//
-// All routes use the standard adminWrap middleware (bearer token).
-// Validation is strict: missing fields → 400, invalid mode → 400,
-// missing model_chosen for ban → 400.
+// Why: a single transaction guarantees the audit row is written
+// atomically with the DML. Application-level logging could miss
+// writes if the app crashes between DML and log write.
 
 import (
 	"encoding/json"
@@ -21,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -48,8 +47,6 @@ type OverrideCreateReq struct {
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
-// jsonDecode is a thin wrapper around json.NewDecoder for clarity
-// in handlers.
 func jsonDecode(r *http.Request, dst any) error {
 	return json.NewDecoder(r.Body).Decode(dst)
 }
@@ -68,12 +65,17 @@ func (h *AutoRouteHandlers) handleRoutingOverridesCollection(w http.ResponseWrit
 	}
 }
 
-// handleRoutingOverrideItem: DELETE and PATCH /:id/extend.
+// handleRoutingOverrideItem: DELETE and PATCH /:id/extend
+// and the audit endpoint GET /audit (sub-path).
 func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/routing/overrides/")
 	parts := strings.Split(path, "/")
 	if len(parts) < 1 || parts[0] == "" {
-		writeJSONErr(w, http.StatusBadRequest, "expected /:id or /:id/extend")
+		writeJSONErr(w, http.StatusBadRequest, "expected /:id, /:id/extend, or /audit")
+		return
+	}
+	if parts[0] == "audit" {
+		h.handleRoutingOverridesAudit(w, r)
 		return
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
@@ -81,7 +83,6 @@ func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *
 		writeJSONErr(w, http.StatusBadRequest, "invalid override id")
 		return
 	}
-
 	if len(parts) == 2 && parts[1] == "extend" {
 		if r.Method != http.MethodPatch {
 			writeJSONErr(w, http.StatusMethodNotAllowed, "extend requires PATCH")
@@ -94,7 +95,6 @@ func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *
 		writeJSONErr(w, http.StatusBadRequest, "unknown sub-path")
 		return
 	}
-
 	switch r.Method {
 	case http.MethodDelete:
 		h.deleteRoutingOverride(w, r, id)
@@ -103,7 +103,7 @@ func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *
 	}
 }
 
-// ── GET ─────────────────────────────────────────────────────────
+// ── GET (list) ──────────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) listRoutingOverrides(w http.ResponseWriter, r *http.Request) {
 	activeOnly := r.URL.Query().Get("active") == "true"
@@ -158,7 +158,7 @@ func (h *AutoRouteHandlers) listRoutingOverrides(w http.ResponseWriter, r *http.
 	})
 }
 
-// ── POST ────────────────────────────────────────────────────────
+// ── POST (create) ───────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http.Request) {
 	var req OverrideCreateReq
@@ -166,7 +166,6 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-
 	if strings.TrimSpace(req.TaskType) == "" {
 		writeJSONErr(w, http.StatusBadRequest, "task_type is required")
 		return
@@ -196,8 +195,22 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 		createdBy = "admin"
 	}
 
+	// P7.9: wrap in a transaction that sets the actor GUC so the
+	// audit trigger records the right admin user.
+	ctx := r.Context()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
 	var newID int64
-	err := h.db.QueryRow(r.Context(), `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO routing_overrides
 		    (task_type, profile, mode, model_chosen, reason, created_by, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -208,6 +221,10 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 			writeJSONErr(w, http.StatusConflict, "an override with the same (task_type, profile, model_chosen, mode) already exists")
 			return
 		}
+		writeInternalErr(w, err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -222,8 +239,24 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 // ── DELETE (soft) ──────────────────────────────────────────────
 
 func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http.Request, id int64) {
-	// Soft delete: set expires_at to 1s in the past.
-	res, err := h.db.Exec(r.Context(), `
+	ctx := r.Context()
+	createdBy := requestUser(r)
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	res, err := tx.Exec(ctx, `
 		UPDATE routing_overrides
 		SET expires_at = NOW() - INTERVAL '1 second',
 		    updated_at = NOW()
@@ -236,6 +269,10 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 	}
 	if res.RowsAffected() == 0 {
 		writeJSONErr(w, http.StatusNotFound, "override not found or already expired")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeInternalErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -260,7 +297,24 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 
-	res, err := h.db.Exec(r.Context(), `
+	ctx := r.Context()
+	createdBy := requestUser(r)
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	res, err := tx.Exec(ctx, `
 		UPDATE routing_overrides
 		SET expires_at = $2, updated_at = NOW()
 		WHERE id = $1
@@ -273,9 +327,122 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		writeJSONErr(w, http.StatusNotFound, "override not found")
 		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"status": "updated",
+	})
+}
+
+// ── GET (audit log) ─────────────────────────────────────────────
+
+// AuditEntry is the JSON wire format for a routing_overrides_audit row.
+type AuditEntry struct {
+	ID           int64      `json:"id"`
+	TS           time.Time  `json:"ts"`
+	Action       string     `json:"action"`
+	OverrideID   *int64     `json:"override_id,omitempty"`
+	TaskType     *string    `json:"task_type,omitempty"`
+	Profile      *string    `json:"profile,omitempty"`
+	Mode         *string    `json:"mode,omitempty"`
+	ModelChosen  *string    `json:"model_chosen,omitempty"`
+	Reason       *string    `json:"reason,omitempty"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	OldExpiresAt *time.Time `json:"old_expires_at,omitempty"`
+	Actor        *string    `json:"actor,omitempty"`
+}
+
+// handleRoutingOverridesAudit: GET /routing/overrides/audit
+func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	action := r.URL.Query().Get("action")
+	if action != "" && action != "insert" && action != "update" && action != "delete" {
+		writeJSONErr(w, http.StatusBadRequest, "action must be insert|update|delete")
+		return
+	}
+	actor := r.URL.Query().Get("actor")
+	overrideIDStr := r.URL.Query().Get("override_id")
+
+	days := 7
+	if d := r.URL.Query().Get("days"); d != "" {
+		v, err := strconv.Atoi(d)
+		if err != nil || v <= 0 || v > 90 {
+			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
+			return
+		}
+		days = v
+	}
+
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		v, err := strconv.Atoi(l)
+		if err != nil || v <= 0 || v > 1000 {
+			writeJSONErr(w, http.StatusBadRequest, "limit must be 1-1000")
+			return
+		}
+		limit = v
+	}
+
+	q := `SELECT id, ts, action, override_id, task_type, profile, mode,
+	             model_chosen, reason, expires_at, old_expires_at, actor
+	      FROM routing_overrides_audit
+	      WHERE ts >= NOW() - INTERVAL '1 day' * $1`
+	args := []any{days}
+	if action != "" {
+		args = append(args, action)
+		q += fmt.Sprintf(" AND action = $%d", len(args))
+	}
+	if actor != "" {
+		args = append(args, actor)
+		q += fmt.Sprintf(" AND actor = $%d", len(args))
+	}
+	if overrideIDStr != "" {
+		if v, err := strconv.ParseInt(overrideIDStr, 10, 64); err == nil {
+			args = append(args, v)
+			q += fmt.Sprintf(" AND override_id = $%d", len(args))
+		}
+	}
+	q += " ORDER BY ts DESC LIMIT " + strconv.Itoa(limit)
+
+	rows, err := h.db.Query(r.Context(), q, args...)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	var entries []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		if err := rows.Scan(&e.ID, &e.TS, &e.Action, &e.OverrideID,
+			&e.TaskType, &e.Profile, &e.Mode, &e.ModelChosen,
+			&e.Reason, &e.ExpiresAt, &e.OldExpiresAt, &e.Actor); err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entries,
+		"count":   len(entries),
+		"filter": map[string]string{
+			"action":      action,
+			"actor":       actor,
+			"override_id": overrideIDStr,
+			"days":        strconv.Itoa(days),
+		},
 	})
 }
 
@@ -301,14 +468,12 @@ func isUniqueViolation(err error) bool {
 	if errorsAsPgError(err, &pgErr) {
 		return pgErr.Code == "23505"
 	}
-	// Substring fallback (works for wrapped errors)
 	return strings.Contains(err.Error(), "duplicate key") ||
 		strings.Contains(err.Error(), "unique constraint") ||
 		strings.Contains(err.Error(), "23505")
 }
 
-// errorsAsPgError is a tiny shim to avoid the pgx errors.As import
-// in this file. Returns true if err is a pgconn.PgError.
+// errorsAsPgError is a tiny shim to avoid the pgx errors.As import.
 func errorsAsPgError(err error, target **pgconn.PgError) bool {
 	if pgErr, ok := err.(*pgconn.PgError); ok {
 		*target = pgErr
@@ -316,3 +481,7 @@ func errorsAsPgError(err error, target **pgconn.PgError) bool {
 	}
 	return false
 }
+
+// Avoid unused import warnings for pgx (used by *pgxpool types
+// referenced indirectly via h.db).
+var _ = pgx.ErrNoRows
