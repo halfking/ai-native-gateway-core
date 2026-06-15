@@ -334,10 +334,22 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	where := strings.Join(clauses, " AND ")
 
+	// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
 	var count int
-	if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs rl WHERE "+where, args...).Scan(&count); err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
-		return
+	if IsTenantAdmin(r) {
+		// COUNT with api_keys join so ak.tenant_id filter works
+		if err := h.db.QueryRow(ctx, `
+			SELECT COUNT(*) FROM request_logs rl
+			LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
+			WHERE `+where, args...).Scan(&count); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
+	} else {
+		if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs rl WHERE "+where, args...).Scan(&count); err != nil {
+			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			return
+		}
 	}
 
 	offset := (page - 1) * pageSize
