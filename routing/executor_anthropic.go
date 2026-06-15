@@ -85,7 +85,19 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if err != nil {
 		return err
 	}
+	// Copy upstream response headers, but drop hop-by-hop / length headers
+	// (Content-Length will be re-derived from the body bytes written, and
+	// Content-Type/Connection/etc are set explicitly below). Copying
+	// Content-Length verbatim produced a duplicate Content-Length line —
+	// nginx rejects it as 'upstream sent duplicate header line' and the
+	// client sees a 502 even though the gateway returned 200 internally.
 	for k, vs := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") ||
+			strings.EqualFold(k, "Content-Encoding") ||
+			strings.EqualFold(k, "Connection") ||
+			strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
