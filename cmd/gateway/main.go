@@ -275,7 +275,7 @@ func main() {
 		keyVerifier.SetDB(dbConn.Pool(), cfg.SecretKey)
 	}
 	if keyVerifier.Enabled() {
-		slidingRL := ratelimit.NewSlidingWindowLimiter()
+		slidingRL := ratelimit.NewRedisLimiterFromEnv()
 		chatHandler.SetAuth(keyVerifier, slidingRL)
 		slog.Info("API key authentication + RPM rate limiting enabled")
 	} else {
