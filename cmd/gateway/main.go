@@ -61,6 +61,10 @@ func main() {
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
+	// memoraSink is the async write buffer for Memora persistence.
+	// Declared at the top so both the executor wiring and the
+	// graceful-shutdown sequence can reference it.
+	var memoraSink *memora.Sink
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -232,6 +236,12 @@ func main() {
 				APIKey:  os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 			})
 			exec.Memora = memoraClient
+			// Async sink: fire-and-forget write buffer for L1 session
+			// memory persistence. 2 workers / 2048-deep queue is enough
+			// for the write volume (one enqueue per successful request).
+			memoraSink = memora.NewSink(memoraClient, 2, 2048)
+			memoraSink.Start()
+			exec.MemoraSink = memoraSink
 			slog.Info("memora context-compression oracle enabled", "base_url", memoraBase)
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
@@ -649,6 +659,14 @@ func main() {
 	}
 	if autoIndexRefresher != nil {
 		autoIndexRefresher.Stop()
+	}
+	// Drain the Memora sink queue on shutdown so in-flight writes
+	// are not lost. Bounded to 5s so shutdown is not held hostage
+	// to a slow Memora.
+	if memoraSink != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		memoraSink.Stop(stopCtx)
+		stopCancel()
 	}
 
 	slog.Info("gateway stopped")

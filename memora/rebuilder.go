@@ -234,10 +234,14 @@ found:
 func indexOfKey(body, key []byte) int {
 	for i := 0; i+len(key) <= len(body); {
 		if body[i] == '"' && i+len(key) < len(body) && string(body[i:i+len(key)]) == string(key) {
-			// Check that this is preceded by a top-level separator.
+			// Check that this is a top-level key: preceded by '{' or ','
+			// (optionally with whitespace between — handles pretty-printed JSON).
 			if i > 0 {
-				prev := body[i-1]
-				if prev != '{' && prev != ',' {
+				k := i - 1
+				for k > 0 && (body[k] == ' ' || body[k] == '\t' || body[k] == '\n' || body[k] == '\r') {
+					k--
+				}
+				if body[k] != '{' && body[k] != ',' {
 					i++
 					continue
 				}

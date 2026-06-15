@@ -1027,3 +1027,152 @@ func extractAPIKeyID(r *http.Request, ci identity.ClientIdentity) int {
 	}
 	return 0
 }
+
+// enqueueMemoraWrite persists the request conversation (and, when
+// available, the non-stream assistant response) to Memora via the
+// async sink. Best-effort fire-and-forget: if the sink is nil, the
+// queue is full, or Memora is disabled, the call is a silent no-op.
+//
+// This is the write side of the Memora oracle: each successful
+// request accumulates facts in L1 session memory so that a later
+// context-overflow on the SAME (api_key_id, task_id) can retrieve
+// them via tryMemoraCompression and rebuild a smaller body.
+//
+// We persist the request body's conversation turns (which contain
+// the full history visible to the model) rather than individual
+// messages, because Memora's /product/add re-derives facts from
+// the conversation context. The optional respBody (non-stream only)
+// is appended as the assistant turn so Memora sees the model's
+// latest output too.
+func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody []byte) {
+	if e == nil || e.MemoraSink == nil || params == nil || len(sourceBody) == 0 {
+		return
+	}
+	apiKeyID := extractAPIKeyID(params.R, params.ClientID)
+	taskID := memora.TaskID(params.R, sourceBody, apiKeyID)
+	if taskID == "" {
+		return
+	}
+	userID := memora.UserID(apiKeyID, taskID)
+	if userID == "" {
+		return
+	}
+	msgs := extractMemoraMessages(sourceBody, params.ClientProtocol, respBody)
+	if len(msgs) == 0 {
+		return
+	}
+	e.MemoraSink.Enqueue(memora.WriteOp{
+		UserID:   userID,
+		Messages: msgs,
+		Info: map[string]any{
+			"task_id":      taskID,
+			"api_key_id":   apiKeyID,
+			"client_model": params.ClientModel,
+		},
+	})
+}
+
+// extractMemoraMessages turns a wire body (+ optional response body)
+// into memora.Message pairs for /product/add. We keep the extraction
+// minimal: only role + plain-text content, no tool_call args — Memora
+// cares about the semantic conversation, not the tool plumbing.
+func extractMemoraMessages(body []byte, protocol string, respBody []byte) []memora.Message {
+	text, err := extractConversationText(body, protocol)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	// Split the extracted "[role]\n...\n\n" blocks back into messages.
+	var out []memora.Message
+	for _, block := range splitConversationBlocks(text) {
+		if block.role == "" || block.text == "" {
+			continue
+		}
+		out = append(out, memora.Message{Role: block.role, Content: block.text})
+	}
+	// Append the assistant response when we have it (non-stream path).
+	if len(respBody) > 0 {
+		if respText := extractAssistantReplyText(respBody, protocol); respText != "" {
+			out = append(out, memora.Message{Role: "assistant", Content: respText})
+		}
+	}
+	return out
+}
+
+type convBlock struct {
+	role string
+	text string
+}
+
+// splitConversationBlocks reverses the "[role]\ntext\n\n" format
+// produced by extractOpenAIConversationText /
+// extractAnthropicConversationText.
+func splitConversationBlocks(text string) []convBlock {
+	var out []convBlock
+	lines := strings.Split(text, "\n")
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		// A header line looks like "[role]".
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			role := line[1 : len(line)-1]
+			i++
+			var textLines []string
+			for i < len(lines) {
+				if strings.HasPrefix(lines[i], "[") && strings.HasSuffix(lines[i], "]") {
+					break
+				}
+				textLines = append(textLines, lines[i])
+				i++
+			}
+			text := strings.TrimSpace(strings.Join(textLines, "\n"))
+			if role != "" && text != "" {
+				out = append(out, convBlock{role: role, text: text})
+			}
+		} else {
+			i++
+		}
+	}
+	return out
+}
+
+// extractAssistantReplyText pulls the assistant's text from a
+// non-stream response body. Supports both OpenAI chat.completion
+// and Anthropic Messages shapes.
+func extractAssistantReplyText(body []byte, protocol string) string {
+	if protocol == "anthropic-messages" {
+		var resp struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return ""
+		}
+		var b strings.Builder
+		for _, block := range resp.Content {
+			if block.Type == "text" && block.Text != "" {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString(block.Text)
+			}
+		}
+		return strings.TrimSpace(b.String())
+	}
+	// OpenAI chat.completion
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return ""
+	}
+	if len(resp.Choices) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content)
+}
