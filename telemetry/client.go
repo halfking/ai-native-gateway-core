@@ -137,6 +137,7 @@ type RequestLogEntry struct {
 	ConfidenceNum  *float64 `json:"confidence_num,omitempty"`
 	ModelChosen    *string  `json:"model_chosen,omitempty"`
 	StrategyUsed   *string  `json:"strategy_used,omitempty"`
+	CreditsCharged *int64   `json:"credits_charged,omitempty"`
 }
 
 func NewClient() *Client {
@@ -403,7 +404,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			gw_session_id, gw_task_id,
 			api_key_prefix, api_key_owner_user, application_code,
 			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
-			work_type
+			work_type, credits_charged
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -423,7 +424,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$42, $43,
 			$44, $45, $46,
 			$47, $48, $49, CAST($50 AS jsonb), $51,
-			$52
+			$52, $53
 		)
 	`,
 		entry.RequestID,
@@ -478,6 +479,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.AutoDecision,
 		entry.AutoConfidence,
 		entry.WorkType,
+		entry.CreditsCharged,
 	)
 	if err != nil {
 		return err
@@ -630,7 +632,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       auto_profile = COALESCE($46, rl.auto_profile),
 		       auto_decision = COALESCE(CAST($47 AS jsonb), rl.auto_decision),
 		       auto_confidence = COALESCE($48, rl.auto_confidence),
-		       work_type = COALESCE($49, rl.work_type)
+		       work_type = COALESCE($49, rl.work_type),
+		       credits_charged = COALESCE($50, rl.credits_charged)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -684,6 +687,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AutoDecision,
 		entry.AutoConfidence,
 		entry.WorkType,
+		entry.CreditsCharged,
 	)
 	if err != nil {
 		return err
@@ -1033,6 +1037,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.APIKeyPrefix, src.APIKeyPrefix)
 	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
 	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)
+	mergeInt64Ptr(&dst.CreditsCharged, src.CreditsCharged)
 	if src.Success {
 		dst.Success = true
 	}
@@ -1056,6 +1061,13 @@ func mergeStringPtr(dst **string, src *string) {
 }
 
 func mergeIntPtr(dst **int, src *int) {
+	if src != nil {
+		v := *src
+		*dst = &v
+	}
+}
+
+func mergeInt64Ptr(dst **int64, src *int64) {
 	if src != nil {
 		v := *src
 		*dst = &v

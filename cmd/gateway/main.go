@@ -37,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -290,6 +291,12 @@ func main() {
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
 		slog.Info("telemetry emission enabled")
+	}
+
+	if dbConn != nil && dbConn.Enabled() {
+		maasSvc := maas.NewService(dbConn.Pool())
+		chatHandler.SetMaas(maasSvc)
+		slog.Info("maas credits billing enabled")
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────

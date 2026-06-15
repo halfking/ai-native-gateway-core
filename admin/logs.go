@@ -68,6 +68,7 @@ type requestLogRow struct {
 	CanonicalName      *string    `json:"canonical_name"`
 	ProviderModel      *string    `json:"provider_model"`
 	TraceSeq           *int       `json:"trace_seq,omitempty"`
+	CreditsCharged     *int64     `json:"credits_charged"`
 }
 
 type requestLogDetail struct {
@@ -109,7 +110,8 @@ const requestLogsSelectCols = `
 	COALESCE(NULLIF(TRIM(rl.api_key_owner_user), ''), ak.owner_user) AS api_key_owner_user,
 	COALESCE(NULLIF(TRIM(rl.application_code), ''), app.code) AS application_code,
 	mc.canonical_name,
-	mo_pick.provider_model
+	mo_pick.provider_model,
+	rl.credits_charged
 `
 
 const requestLogsJoins = `
@@ -195,7 +197,7 @@ func scanRequestLogRow(rows interface {
 		&l.UsageSource,
 		&l.GwSessionID, &l.GwTaskID,
 		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
-		&l.CanonicalName, &l.ProviderModel,
+		&l.CanonicalName, &l.ProviderModel, &l.CreditsCharged,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -467,6 +469,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.ApplicationCode,
 		&detail.CanonicalName,
 		&detail.ProviderModel,
+		&detail.CreditsCharged,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)
