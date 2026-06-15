@@ -2264,3 +2264,37 @@ export function getAuthMe() {
 export function changeMyPassword(old_password: string, new_password: string) {
   return req<{ status: string }>('PUT', '/api/auth/change-password', { old_password, new_password })
 }
+
+// ── Audit Logs (super_admin only) ──────────────────────────────────────────
+
+export interface AuditLogEntry {
+  id: number
+  ts: string
+  actor: string
+  action: string
+  target_type?: string
+  target_id?: number
+  before_json?: any
+  after_json?: any
+}
+
+export function getAuditLogs(params: {
+  page?: number
+  size?: number
+  actor?: string
+  action?: string
+  from?: string  // RFC3339
+  to?: string
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.page) q.set('page', String(params.page))
+  if (params.size) q.set('size', String(params.size))
+  if (params.actor) q.set('actor', params.actor)
+  if (params.action) q.set('action', params.action)
+  if (params.from) q.set('from', params.from)
+  if (params.to) q.set('to', params.to)
+  const qs = q.toString()
+  return req<{ total: number; page: number; size: number; entries: AuditLogEntry[] }>(
+    'GET', '/api/admin/audit-logs' + (qs ? '?' + qs : '')
+  )
+}
