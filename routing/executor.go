@@ -85,6 +85,11 @@ type SanitizeAnthropicToolsFunc func(body []byte) []byte
 // OpenAI-Chat shape.
 type NormalizeOpenAIToolsFunc func(body []byte) []byte
 
+// StripMinimaxFieldsFunc strips minimax-private top-level fields from
+// a chat response body before it is returned to the client.
+// Wired from main.go (relay.StripMinimaxFieldsBody).
+type StripMinimaxFieldsFunc func(body []byte) []byte
+
 // XMLCoerceNonStreamFunc transforms a non-streaming chat response body,
 // rewriting any `<tool_call><function=...>` XML embedded in assistant
 // `content` into structured OpenAI `tool_calls` entries.  The second
@@ -132,6 +137,11 @@ type Executor struct {
 	SanitizeAnthropicTools SanitizeAnthropicToolsFunc
 	// NormalizeOpenAITools coerces flat/anthropic tool defs to OpenAI-Chat shape.
 	NormalizeOpenAITools NormalizeOpenAIToolsFunc
+	// StripMinimaxFields strips minimax-private top-level fields
+	// (nvext, base_resp, input_sensitive*, output_sensitive*) from
+	// the chat response body before it is returned to the client.
+	// Wired from main.go (relay.StripMinimaxFieldsBody).
+	StripMinimaxFields StripMinimaxFieldsFunc
 	Auditor       audit.Sink
 	State         *credentialstate.Writer
 	// Provider is the credential/candidate resolver. Typed as an interface
