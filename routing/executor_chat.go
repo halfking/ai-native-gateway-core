@@ -486,6 +486,9 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
+			if e.StripMinimaxFields != nil {
+				respBody = e.StripMinimaxFields(respBody)
+			}
 			if !params.SuppressSuccessWrite {
 				for k, vs := range resp.Header {
 					for _, v := range vs {
