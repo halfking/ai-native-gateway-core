@@ -53,7 +53,7 @@ func (h *AutoRouteHandlers) SetIndexRefresher(r interface {
 	h.indexRefresher = r
 }
 
-// RegisterAutoRouteRoutes mounts the 5 endpoints onto the admin mux.
+// RegisterAutoRouteRoutes mounts the endpoints onto the admin mux.
 // adminWrap is the bearer-token middleware (shared with peak handlers).
 func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/admin/auto-route/decisions", adminWrap(h.handleDecisions))
@@ -64,6 +64,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	// v2.0.1 — per-API-Key customer cost dashboard
 	mux.HandleFunc("/api/admin/auto-route/cost/customer", adminWrap(h.handleCustomerCost))
 	mux.HandleFunc("/api/admin/auto-route/cost/model", adminWrap(h.handleModelCost))
+	// v2.1 — Phase 5 tuning feedback endpoints
+	tuning := NewTuningHandlers(h)
+	tuning.RegisterTuningRoutes(mux, adminWrap)
 }
 
 // handleDecisions returns the most recent N auto-route decisions from
