@@ -50,6 +50,11 @@ type TuningSignal struct {
 	PromptTokens     int
 	CompletionTokens int
 	SignalPayload    []byte // JSONB
+
+	// Strategy identifies which classifier strategy produced the task
+	// type for A/B comparison. Optional: empty string means "unknown
+	// or A/B not enabled" (treated as pattern_layered by the admin UI).
+	Strategy string
 }
 
 // tuningWriter manages the batching worker for tuning_signals.
@@ -202,7 +207,16 @@ func (w *tuningWriter) flush(batch []TuningSignal) {
 			"count", len(batch), "error", err)
 		return
 	}
-	// RecordSuccessfulBatch(batch) // auto-agent dangling ref
+	RecordSuccessfulBatch(batch)
+}
+
+// RecordSuccessfulBatch emits per-signal metrics after a successful
+// flush, including the per-strategy A/B gauge.
+func RecordSuccessfulBatch(signals []TuningSignal) {
+	for _, s := range signals {
+		RecordTuningSignalWritten(s.TaskType, s.Classifier, s.QualityScore)
+		RecordStrategySignal(s.Strategy, s.TaskType, s.QualityScore, s.SuccessScore >= 1.0)
+	}
 }
 
 // insertBatch writes a batch of signals in a single multi-row INSERT.
