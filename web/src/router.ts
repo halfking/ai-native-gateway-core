@@ -22,6 +22,7 @@ import TenantsView            from './views/TenantsView.vue'
 import TenantDetailView       from './views/TenantDetailView.vue'
 import RoutingDashboardView   from './views/RoutingDashboardView.vue'
 import WorkTypesView          from './views/WorkTypesView.vue'
+import UsersView              from './views/UsersView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -53,6 +54,7 @@ export const router = createRouter({
     { path: '/pricing',            component: PricingManagementView },
     { path: '/tenants',            component: TenantsView },
     { path: '/tenants/:tenantId',  component: TenantDetailView },
+    { path: '/users',              component: UsersView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
