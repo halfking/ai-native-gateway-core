@@ -31,6 +31,10 @@ type ChatExecutor struct {
 	Normalize          func([]byte, bool) []byte
 	XMLCoerceNonStream func([]byte, bool) []byte
 	StreamChat         func(http.ResponseWriter, *http.Response, string, string, audit.StreamCapture) StreamOutcome
+	// StripMinimaxFields strips minimax-private top-level fields
+	// (nvext, audio_content, name, etc.) from the chat response body
+	// before it is returned to the client. Wired from main.go.
+	StripMinimaxFields func([]byte) []byte
 }
 
 var _ ProtocolHandler = (*ChatExecutor)(nil)
@@ -63,6 +67,9 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	}
 	if clientModel != "" {
 		body = replaceModelInResponseBody(body, clientModel)
+	}
+	if c.StripMinimaxFields != nil {
+		body = c.StripMinimaxFields(body)
 	}
 	for k, vs := range resp.Header {
 		for _, v := range vs {
