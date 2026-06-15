@@ -62,13 +62,14 @@ interface LayoutNode {
 const layout = computed(() => {
   const nodes: LayoutNode[] = []
   const pos: Record<string, { x: number; y: number; h: number }> = {}
-  const contentH = Math.max(...layers.value.map((ln, i) => requiredColHeight(ln, i)), 1)
+  const unifiedColHeight = Math.max(...layers.value.map((ln, i) => requiredColHeight(ln, i)), 1)
+  const contentH = unifiedColHeight
   const innerAvail = H.value - SANKEY_V_PAD
   const yStart = SANKEY_V_PAD / 2 + Math.max(0, (innerAvail - contentH) / 2)
 
   layers.value.forEach((layerNodes, li) => {
     let y = yStart
-    const colHeight = requiredColHeight(layerNodes, li)
+    const colHeight = unifiedColHeight
     const totalGap = Math.max(0, layerNodes.length - 1) * gap
     const available = Math.max(0, colHeight - totalGap)
     const heights = nodeHeightsForColumn(layerNodes, li, available)
@@ -191,7 +192,7 @@ const TASK_LABELS: Record<string, string> = {
 </template>
 
 <style scoped>
-.sankey-wrap { width: 100%; display: flex; flex-direction: column; }
+.sankey-wrap { width: 100%; display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .sankey-hint {
   padding: 16px;
   text-align: center;
@@ -203,6 +204,7 @@ const TASK_LABELS: Record<string, string> = {
   overflow-y: visible;
   display: flex;
   flex-direction: column;
+  flex: 1;
 }
 .sankey-legend {
   display: flex;

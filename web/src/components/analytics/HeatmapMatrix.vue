@@ -105,7 +105,12 @@ const isEmpty = computed(() =>
 </template>
 
 <style scoped>
-.heatmap-wrap { width: 100%; }
+.heatmap-wrap {
+  width: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
 .heatmap-hint {
   padding: 16px;
   text-align: center;
