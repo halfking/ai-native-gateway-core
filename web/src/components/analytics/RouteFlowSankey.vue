@@ -9,6 +9,7 @@ import {
   buildSankeyLayers,
   computeSankeyHeight,
   requiredColHeight,
+  scaleNodeTotal,
 } from './sankeyLayout'
 
 const props = defineProps<{
@@ -68,11 +69,11 @@ const layout = computed(() => {
   layers.value.forEach((layerNodes, li) => {
     let y = yStart
     const colHeight = requiredColHeight(layerNodes)
-    const totalLayer = layerNodes.reduce((s, n) => s + n.total, 0) || 1
+    const totalLayer = layerNodes.reduce((s, n) => s + scaleNodeTotal(n.total), 0) || 1
     const totalGap = Math.max(0, layerNodes.length - 1) * gap
     const available = Math.max(0, colHeight - totalGap)
     for (const n of layerNodes) {
-      const h = Math.max(nodeH, (n.total / totalLayer) * available)
+      const h = Math.max(nodeH, (scaleNodeTotal(n.total) / totalLayer) * available)
       const x = colX[li] - 60
       pos[n.id] = { x, y, h }
       nodes.push({ id: n.id, label: n.label, layer: n.layer, x, y, h })
@@ -107,7 +108,7 @@ function truncLabel(s: string, max = 18): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s
 }
 
-const layerLabels = ['任务类型', '出站模型', '供应商']
+const layerLabels = ['任务类型', '标准模型', '供应商']
 const layerColors = [
   'color-mix(in srgb, var(--accent) 25%, var(--bg-subtle))',
   'color-mix(in srgb, var(--success) 20%, var(--bg-subtle))',
@@ -152,7 +153,7 @@ const TASK_LABELS: Record<string, string> = {
         preserveAspectRatio="xMidYMin meet"
       >
         <text :x="colX[0]" y="18" class="layer-title">任务类型</text>
-        <text :x="colX[1]" y="18" class="layer-title">出站模型</text>
+        <text :x="colX[1]" y="18" class="layer-title">标准模型</text>
         <text :x="colX[2]" y="18" class="layer-title">供应商</text>
 
         <g class="links">
