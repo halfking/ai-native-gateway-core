@@ -68,23 +68,13 @@ const metricLabel = computed(() => {
 const isEmpty = computed(() =>
   !props.loading && (!props.data || !props.data.rows.length || !props.data.cols.length)
 )
-
-const ROW_H = 22 // approximate row height (font + padding + border)
-const MAX_TABLE_H = 600
-
-const tableMaxHeight = computed(() => {
-  if (!props.data?.rows?.length) return MAX_TABLE_H
-  const rows = props.data.rows.length
-  const h = (rows + 1) * ROW_H // +1 for header
-  return Math.min(Math.max(h, 120), MAX_TABLE_H)
-})
 </script>
 
 <template>
   <div class="heatmap-wrap">
     <div v-if="loading" class="heatmap-hint">加载热力图…</div>
     <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据 — 等待 Auto 路由流量写入 request_logs</div>
-    <div v-else class="table-scroll" :style="{ maxHeight: tableMaxHeight + 'px' }">
+    <div v-else class="table-wrap">
       <table class="heatmap-table">
         <thead>
           <tr>
@@ -121,31 +111,11 @@ const tableMaxHeight = computed(() => {
   color: var(--muted);
   font-size: 11px;
 }
-.table-scroll {
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-}
 .heatmap-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 10px;
-}
-.heatmap-table thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-}
-.heatmap-table tbody th.row-head {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-}
-.heatmap-table thead th.corner {
-  position: sticky;
-  left: 0;
-  top: 0;
-  z-index: 3;
 }
 .heatmap-table th,
 .heatmap-table td {
