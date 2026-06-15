@@ -15,11 +15,14 @@ type NavItem = {
   icon: string
   super?: boolean
   platformOps?: boolean
+  /** Tenant consumer menus — hidden for default/platform ops sidebar */
+  tenantOnly?: boolean
 }
 
 function canShowNavItem(item: NavItem): boolean {
   if (item.super && !isSuperAdmin.value) return false
   if (item.platformOps && !isPlatformOps.value) return false
+  if (item.tenantOnly && isPlatformOps.value) return false
   return true
 }
 
@@ -55,14 +58,12 @@ watch(isLoggedIn, (loggedIn) => {
   if (loggedIn) loadVersion()
 }, { immediate: true })
 
-const nav = computed((): NavItem[] => {
-  const ops = isPlatformOps.value
-  return [
+const nav = computed((): NavItem[] => [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
-  { path: '/maas/models',       label: ops ? 'MaaS 模型' : '模型清单', icon: '🤖' },
-  { path: '/maas/account',     label: ops ? 'MaaS 账户' : '我的账户', icon: '💰' },
-  { path: '/maas/pricing',      label: ops ? 'MaaS 套餐' : '套餐与充值', icon: '💳' },
-  { path: '/maas/usage',        label: ops ? 'MaaS 消耗' : '我的消耗', icon: '📉' },
+  { path: '/maas/models',       label: '模型清单', icon: '🤖', tenantOnly: true },
+  { path: '/maas/account',     label: '我的账户', icon: '💰', tenantOnly: true },
+  { path: '/maas/pricing',      label: '套餐与充值', icon: '💳', tenantOnly: true },
+  { path: '/maas/usage',        label: '我的消耗', icon: '📉', tenantOnly: true },
   { path: '/providers',         label: '提供商',   icon: '🔌',    super: true },
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
   { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
@@ -78,8 +79,7 @@ const nav = computed((): NavItem[] => {
   { path: '/free-pool',         label: '免费资源',  icon: '🎁',    super: true },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
   { path: '/pricing',           label: '定价管理',  icon: '💰', platformOps: true },
-]
-})
+])
 
 function logout() {
   clearAll()
