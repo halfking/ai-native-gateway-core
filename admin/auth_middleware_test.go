@@ -18,8 +18,8 @@ func TestAdminMiddlewareRejectsMissingBearer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler(rec, req)
 
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when db nil, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for no auth header, got %d", rec.Code)
 	}
 	if called {
 		t.Fatal("handler should not run without auth/db")
