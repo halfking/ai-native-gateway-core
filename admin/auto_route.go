@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -75,6 +76,7 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 // Query params:
 //   - limit : max rows (default 50, max 500)
 //   - task  : filter by task_type (optional)
+//   - model : filter by outbound_model (optional)
 //   - profile : filter by auto_profile (optional)
 func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -86,6 +88,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		limit = v
 	}
 	task := r.URL.Query().Get("task")
+	model := strings.TrimSpace(r.URL.Query().Get("model"))
 	profile := r.URL.Query().Get("profile")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -103,6 +106,10 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	if task != "" {
 		args = append(args, task)
 		query += fmt.Sprintf(" AND task_type = $%d", len(args))
+	}
+	if model != "" {
+		args = append(args, model)
+		query += fmt.Sprintf(" AND outbound_model = $%d", len(args))
 	}
 	if profile != "" {
 		args = append(args, profile)

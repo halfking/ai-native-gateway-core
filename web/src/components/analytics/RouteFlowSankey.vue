@@ -85,16 +85,29 @@ const isEmpty = computed(() =>
   !props.loading && (!props.data || !props.data.links.length)
 )
 
-function truncLabel(s: string, max = 14): string {
+function truncLabel(s: string, max = 18): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s
 }
+
+const layerLabels = ['任务类型', '出站模型', '供应商']
+const layerColors = [
+  'color-mix(in srgb, var(--accent) 25%, var(--bg-subtle))',
+  'color-mix(in srgb, var(--success) 20%, var(--bg-subtle))',
+  'color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle))',
+]
 </script>
 
 <template>
   <div class="sankey-wrap">
     <div v-if="loading" class="sankey-hint">加载流向图…</div>
-    <div v-else-if="isEmpty" class="sankey-hint">暂无流向数据</div>
+    <div v-else-if="isEmpty" class="sankey-hint">暂无流向数据 — 任务→模型→供应商链路需 Auto 请求样本</div>
     <div v-else class="sankey-svg-wrap">
+      <div class="sankey-legend">
+        <span v-for="(lbl, i) in layerLabels" :key="lbl" class="legend-chip">
+          <span class="legend-swatch" :style="{ background: layerColors[i] }" />
+          {{ lbl }}
+        </span>
+      </div>
       <svg :viewBox="`0 0 ${W} ${H}`" class="sankey-svg" preserveAspectRatio="xMidYMid meet">
         <text :x="colX[0]" y="14" class="layer-title">任务类型</text>
         <text :x="colX[1]" y="14" class="layer-title">出站模型</text>
@@ -122,6 +135,7 @@ function truncLabel(s: string, max = 14): string {
               class="flow-node"
               :class="'layer-' + n.layer"
             />
+            <title>{{ n.label }}</title>
             <text :x="n.x + 4" :y="n.y + n.h / 2 + 3" class="node-label">
               {{ truncLabel(n.label) }}
             </text>
@@ -141,6 +155,26 @@ function truncLabel(s: string, max = 14): string {
   font-size: 11px;
 }
 .sankey-svg-wrap { overflow-x: auto; }
+.sankey-legend {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.legend-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--muted);
+}
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
 .sankey-svg {
   width: 100%;
   min-width: 480px;
