@@ -1,14 +1,44 @@
 import type { AnalyticsFlow } from '../../api-autoroute'
 
-/** Minimum node height (label readability); keep proportional sizing dominant. */
+/** Minimum node height (label readability). */
 export const SANKEY_NODE_H = 18
-/** Sublinear exponent for node height — dampens high-traffic nodes (pow(x, 0.6)). */
-export const SANKEY_HEIGHT_EXPONENT = 0.6
+/** Max height ratio within a column (hot node vs smallest allocated). */
+export const SANKEY_MAX_HEIGHT_RATIO = 3.5
+/** Per-layer pow exponents (layer 0 uses log1p instead). */
+export const SANKEY_LAYER_EXPONENTS = [0.32, 0.42, 0.5] as const
 
-/** Map raw flow total to layout weight (sublinear so large nodes don't dominate). */
-export function scaleNodeTotal(total: number): number {
+/**
+ * Map raw flow total to layout weight.
+ * Layer 0 (task types): log1p — strongest dampening, traffic↑ coefficient↓.
+ * Other layers: pow(total, k) with moderate k.
+ */
+export function scaleNodeTotal(total: number, layer = 0): number {
   if (total <= 0) return 0
-  return Math.pow(total, SANKEY_HEIGHT_EXPONENT)
+  const li = Math.min(Math.max(layer, 0), 2)
+  if (li === 0) return Math.log1p(total)
+  return Math.pow(total, SANKEY_LAYER_EXPONENTS[li])
+}
+
+/** Allocate node heights for one column with sublinear weights + max/min cap. */
+export function nodeHeightsForColumn(
+  layerNodes: Array<{ total: number }>,
+  layerIndex: number,
+  available: number,
+): number[] {
+  const n = layerNodes.length
+  if (!n) return []
+  if (available <= 0) return layerNodes.map(() => SANKEY_NODE_H)
+
+  const weights = layerNodes.map(nd => scaleNodeTotal(nd.total, layerIndex))
+  const sum = weights.reduce((a, b) => a + b, 0) || 1
+  let heights = weights.map(w => Math.max(SANKEY_NODE_H, (w / sum) * available))
+
+  const minH = Math.min(...heights)
+  const cap = minH * SANKEY_MAX_HEIGHT_RATIO
+  if (Math.max(...heights) > cap) {
+    heights = heights.map(h => Math.min(h, cap))
+  }
+  return heights
 }
 export const SANKEY_GAP = 8
 export const SANKEY_V_PAD = 60 // 30 top + 30 bottom inside viewBox
@@ -25,22 +55,19 @@ export interface SankeyLayerNode {
   total: number
 }
 
-/** Minimum inner column height so every node keeps min height under proportional layout. */
-export function requiredColHeight(layerNodes: Array<{ total: number }>): number {
+/** Minimum inner column height so every node keeps min height under sublinear layout. */
+export function requiredColHeight(
+  layerNodes: Array<{ total: number }>,
+  layerIndex = 0,
+): number {
   const n = layerNodes.length
   if (!n) return 0
 
   const totalGap = (n - 1) * SANKEY_GAP
-  const totalLayer = layerNodes.reduce((s, nd) => s + scaleNodeTotal(nd.total), 0) || 1
 
-  const sumAt = (available: number) => {
-    let sum = 0
-    for (const nd of layerNodes) {
-      const w = scaleNodeTotal(nd.total)
-      sum += Math.max(SANKEY_NODE_H, (w / totalLayer) * available)
-    }
-    return sum
-  }
+  const sumAt = (available: number) =>
+    nodeHeightsForColumn(layerNodes, layerIndex, available)
+      .reduce((s, h) => s + h, 0)
 
   let lo = n * SANKEY_NODE_H
   let hi = lo
@@ -87,7 +114,7 @@ export function computeSankeyHeight(
   }
 
   const layers = buildSankeyLayers(data)
-  const maxCol = Math.max(...layers.map(requiredColHeight), 1)
+  const maxCol = Math.max(...layers.map((ln, i) => requiredColHeight(ln, i)), 1)
   const base = SANKEY_V_PAD + maxCol
   // SANKEY_MIN_H applies to empty state only; do not inflate viewBox and stretch nodes.
   return Math.max(base, minHeight)
