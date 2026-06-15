@@ -508,6 +508,11 @@ func (e *Executor) executeOpenAI(
 		}()
 
 		if tryErr == nil {
+			// Memora persistence (fire-and-forget). We enqueue the
+			// request conversation + non-stream response body so L1
+			// session memory accumulates facts for later retrieval on
+			// context-overflow. The sink is nil-checked inside the helper.
+			e.enqueueMemoraWrite(params, sourceBody, result.ResponseBody)
 			return result, nil
 		}
 		if _, ok := tryErr.(*retryableError); !ok {

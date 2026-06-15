@@ -409,6 +409,10 @@ func (e *Executor) executeAnthropic(
 
 		result, tryErr := e.executeAnthropicOnce(params, cand, ae, bodyBytes, outboundModel, tTotal, fpLease)
 		if tryErr == nil {
+			// Memora persistence (fire-and-forget). Enqueue the request
+			// conversation so L1 session memory accumulates facts for
+			// later retrieval on context-overflow.
+			e.enqueueMemoraWrite(params, sourceBody, result.ResponseBody)
 			return result, nil
 		}
 		if cle, ok := tryErr.(*contextLengthHTTPError); ok {

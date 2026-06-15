@@ -64,6 +64,7 @@ func (s *Sink) Start() {
 }
 
 // Stop waits for queued items to drain. Pass a context to bound the wait.
+// A nil context blocks until all queued items are processed.
 func (s *Sink) Stop(ctx context.Context) {
 	if s == nil || s.client == nil || s.client.Disabled() {
 		return
@@ -71,6 +72,11 @@ func (s *Sink) Stop(ctx context.Context) {
 	close(s.queue)
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()
+	if ctx == nil {
+		<-done
+		slog.Info("memora.sink stopped cleanly")
+		return
+	}
 	select {
 	case <-done:
 		slog.Info("memora.sink stopped cleanly")
