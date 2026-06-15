@@ -528,10 +528,12 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		days = v
 	}
 
-	// Summary: one row per strategy
+	// Summary: one row per strategy.
+	// Reads the dedicated `strategy` column (P7.1) for index-friendly
+	// queries. The COALESCE fallback handles a 0-row window gracefully.
 	summaryQuery := `
 		SELECT
-		    COALESCE(NULLIF(signal_payload->>'strategy', ''), 'pattern_layered') AS strategy,
+		    strategy,
 		    COUNT(*) AS total,
 		    AVG(quality_score) AS avg_quality,
 		    AVG(success_score) AS avg_success,
@@ -575,10 +577,12 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Per-task-type breakdown per strategy
+	// Per-task-type breakdown per strategy. Uses the strategy
+	// column directly (with COALESCE for rows that pre-date P7.1
+	// and might still be null — those default to pattern_layered).
 	breakdownQuery := `
 		SELECT
-		    COALESCE(NULLIF(signal_payload->>'strategy', ''), 'pattern_layered') AS strategy,
+		    COALESCE(strategy, 'pattern_layered') AS strategy,
 		    task_type,
 		    COUNT(*) AS total,
 		    AVG(quality_score) AS avg_quality,
