@@ -1,12 +1,12 @@
 // api-autoroute.ts — v2.0 auto-route admin API bindings.
 // Backend endpoints: admin/auto_route.go RegisterAutoRouteRoutes
 
-import { store } from './store'
+import { store, authBearer } from './store'
 
 const BASE = ''
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { 'Authorization': `Bearer ${store.apiKey}` }
+  const headers: Record<string, string> = { 'Authorization': `Bearer ${authBearer()}` }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const resp = await fetch(BASE + path, {
     method,
@@ -349,6 +349,10 @@ export async function simulateAutoRoute(prompt: string, profile: string, hint?: 
   error?: string
 }> {
   try {
+    // This hits the relay endpoint /v1/chat/completions, NOT an admin API.
+    // Relay auth consumes a real sk-... API key (KeyVerifier DB lookup), not
+    // the admin JWT, so store.apiKey is intentional here even when logged in
+    // via JWT. Do not switch this to authBearer().
     const headers: Record<string, string> = {
       'Authorization': `Bearer ${store.apiKey}`,
       'Content-Type': 'application/json',
