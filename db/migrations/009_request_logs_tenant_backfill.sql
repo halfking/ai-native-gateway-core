@@ -1,15 +1,7 @@
--- Migration 009: backfill request_logs.tenant_id + tenant/task index
+-- Migration 009: tenant/task index for session list queries
 -- Idempotent: safe to run multiple times.
-
--- Backfill tenant_id from api_keys where row still has default/empty tenant.
-UPDATE request_logs rl
-SET tenant_id = ak.tenant_id
-FROM api_keys ak
-WHERE rl.api_key_id = ak.id
-  AND ak.tenant_id IS NOT NULL
-  AND ak.tenant_id <> ''
-  AND (rl.tenant_id IS NULL OR rl.tenant_id = '' OR rl.tenant_id = 'default')
-  AND ak.tenant_id <> 'default';
+-- Note: tenant_id backfill (from api_keys) is optional and may be run offline
+-- on large tables; new rows already write tenant_id at insert time.
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_tenant_task_ts
     ON request_logs (tenant_id, gw_task_id, ts DESC)
