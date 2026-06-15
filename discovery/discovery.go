@@ -384,6 +384,13 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		return s.discoverFromManifest(ctx, cred)
 	}
 
+	// Merge catalog-manifest models the live /models list omits. Vendors
+	// sometimes ship a model (e.g. zhipu glm-5.2) before their /models
+	// endpoint lists it; the model is callable but invisible to discovery.
+	// Catalogs register these "known but unlisted" models so auto-discovery
+	// still upserts them alongside the live list.
+	models = mergeManifestModels(models, cred.ModelsManifestJSON)
+
 	count := 0
 	failed := 0
 	for _, rawName := range models {
@@ -497,6 +504,32 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 }
 
 // extractModelIDs parses various /v1/models response formats.
+// mergeManifestModels appends manifest-registered model ids that the live
+// /models list omitted, de-duplicating case-insensitively. Returns live
+// unchanged when manifestJSON is nil/empty or fails to parse.
+func mergeManifestModels(live []string, manifestJSON *string) []string {
+	if manifestJSON == nil || strings.TrimSpace(*manifestJSON) == "" {
+		return live
+	}
+	manifest, err := extractModelIDs([]byte(*manifestJSON))
+	if err != nil || len(manifest) == 0 {
+		return live
+	}
+	seen := make(map[string]bool, len(live))
+	for _, m := range live {
+		seen[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	for _, m := range manifest {
+		key := strings.ToLower(strings.TrimSpace(m))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		live = append(live, m)
+	}
+	return live
+}
+
 func extractModelIDs(data []byte) ([]string, error) {
 	// Try standard OpenAI format: {"data": [{"id": "..."}]}
 	var openai struct {

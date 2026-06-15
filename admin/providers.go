@@ -2294,14 +2294,14 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 			apiModelsErr = &msg
 		} else {
 			healthStatus = "healthy"
-			probeOk = source == "api"
+			probeOk = source == "api" || source == "api+manifest"
 			modelsCount = len(models)
 			limit := 3
 			if len(models) < limit {
 				limit = len(models)
 			}
 			sampleModels = models[:limit]
-			if source != "api" {
+			if source != "api" && source != "api+manifest" {
 				healthError = fmt.Sprintf("used %s fallback (%d models)", source, len(models))
 			}
 		}
@@ -3356,6 +3356,16 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl), cred, apiKey)
 	}
 	if fetchErr == nil && len(models) > 0 {
+		// Merge in catalog-manifest models that the live /models list omits.
+		// Some vendors publish a model (e.g. zhipu glm-5.2) before their
+		// /models endpoint lists it; the model is callable but invisible to
+		// discovery. Catalogs register these "known but unlisted" models so a
+		// refresh still surfaces them without dropping the live list.
+		manifestModels, _ := extractManifestModels(cred.modelsManifestJSON)
+		if len(manifestModels) > 0 {
+			models = mergeModelIDs(models, manifestModels)
+			return models, "api+manifest", nil
+		}
 		return models, "api", nil
 	}
 
@@ -3368,6 +3378,28 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 		return nil, "api", fetchErr
 	}
 	return nil, "api", fmt.Errorf("no models found from vendor API or manifest")
+}
+
+// mergeModelIDs appends manifest entries that are not already present in the
+// live list, preserving order and de-duplicating case-insensitively on the
+// normalized model id. Returns the live list unchanged when manifest is empty.
+func mergeModelIDs(live, manifest []string) []string {
+	if len(manifest) == 0 {
+		return live
+	}
+	seen := make(map[string]bool, len(live))
+	for _, m := range live {
+		seen[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	for _, m := range manifest {
+		key := strings.ToLower(strings.TrimSpace(m))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		live = append(live, m)
+	}
+	return live
 }
 
 // CredentialModelFetchResult is one row from VerifyAllCredentialModelFetches.
@@ -3485,7 +3517,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 		} else if len(models) == 0 {
 			res.Error = "no models returned"
 		} else {
-			res.OK = source == "api" || source == "manifest_only"
+			res.OK = source == "api" || source == "api+manifest" || source == "manifest_only"
 			limit := 3
 			if len(models) < limit {
 				limit = len(models)
@@ -3582,7 +3614,9 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	// is useful for health diagnostics but must not masquerade as a refresh.
 	// Exception: anthropic-messages suppliers never expose /models — manifest
 	// is the authoritative source for those bindings.
-	if source != "api" && source != "manifest_only" {
+	// "api+manifest" is a successful live fetch with extra known-but-unlisted
+	// models merged in, so it counts as a real refresh.
+	if source != "api" && source != "api+manifest" && source != "manifest_only" {
 		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API failed; manifest fallback only")
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
