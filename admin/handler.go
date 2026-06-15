@@ -159,10 +159,15 @@ func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
-	mux.HandleFunc("/v1/keys/apply/", h.handleV1KeysApplyStatus)
+	// JWT-authenticated routes (JWT or admin key)
 	mux.HandleFunc("/v1/keys/apply", h.handleV1KeysApply)
 
 	admin := h.admin
+	// JWT-authenticated routes (JWT or admin key)
+	mux.HandleFunc("/api/auth/me", admin(h.handleAuthMe))
+	mux.HandleFunc("/api/auth/change-password", admin(h.handleChangePassword))
+	mux.HandleFunc("/api/users", admin(h.handleUsers))
+	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))

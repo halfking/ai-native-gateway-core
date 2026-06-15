@@ -3,10 +3,12 @@ module github.com/kaixuan/llm-gateway-go
 go 1.25.0
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.20.0
+	golang.org/x/crypto v0.32.0
 	golang.org/x/sync v0.20.0
 	gopkg.in/yaml.v3 v3.0.1
 )

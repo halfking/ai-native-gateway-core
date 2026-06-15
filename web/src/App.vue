@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { store, clearApiKey } from './store'
+import { store, clearAll } from './store'
 
 const route  = useRoute()
 const router = useRouter()
-const isLoggedIn = computed(() => !!store.apiKey)
+const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
+const isSuperAdmin = computed(() => store.userInfo?.role === 'super_admin' || !store.jwtToken)
 
 const versionInfo = ref<{
   version?: string
@@ -15,10 +16,11 @@ const versionInfo = ref<{
 }>({})
 
 async function loadVersion() {
-  if (!store.apiKey) return
+  if (!isLoggedIn.value) return
+  const token = store.jwtToken || store.apiKey
   try {
     const resp = await fetch('/api/system/version', {
-      headers: { 'Authorization': `Bearer ${store.apiKey}` },
+      headers: { 'Authorization': `Bearer ${token}` },
     })
     if (resp.ok) {
       versionInfo.value = await resp.json()
@@ -34,21 +36,22 @@ watch(isLoggedIn, (loggedIn) => {
 
 const nav = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
-  { path: '/providers',         label: '提供商',   icon: '🔌' },
+  { path: '/providers',         label: '提供商',   icon: '🔌',    super: true },
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
-  { path: '/key-applications',  label: '密钥申请', icon: '📬' },
-  { path: '/tenants',           label: '租户管理', icon: '👥' },
-  { path: '/catalog',           label: '模型目录',  icon: '📋' },
-  { path: '/models',            label: '模型与标签', icon: '🏷️' },
+  { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
+  { path: '/tenants',           label: '租户管理', icon: '👥',    super: true },
+  { path: '/users',             label: '用户管理', icon: '👤' },
+  { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
+  { path: '/models',            label: '模型与标签', icon: '🏷️', super: true },
   { path: '/examples',          label: '请求示例',  icon: '📝' },
-  { path: '/routing-v2',        label: '路由全景',  icon: '🗺️' },
-  { path: '/free-pool',         label: '免费资源',  icon: '🎁' },
+  { path: '/routing-v2',        label: '路由全景',  icon: '🗺️', super: true },
+  { path: '/free-pool',         label: '免费资源',  icon: '🎁',    super: true },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
-  { path: '/pricing',           label: '定价管理',  icon: '💰' },
+  { path: '/pricing',           label: '定价管理',  icon: '💰',    super: true },
 ]
 
 function logout() {
-  clearApiKey()
+  clearAll()
   router.push('/login')
 }
 </script>
@@ -65,18 +68,23 @@ function logout() {
         <span>LLM Gateway</span>
       </div>
       <nav class="sidebar-nav">
-        <RouterLink
-          v-for="item in nav"
-          :key="item.path"
-          :to="item.path"
-          class="nav-item"
-          :class="{ active: route.path === item.path }"
-        >
-          <span class="nav-icon">{{ item.icon }}</span>
-          <span>{{ item.label }}</span>
-        </RouterLink>
+        <template v-for="item in nav" :key="item.path">
+          <RouterLink
+            v-if="!item.super || isSuperAdmin"
+            :to="item.path"
+            class="nav-item"
+            :class="{ active: route.path === item.path }"
+          >
+            <span class="nav-icon">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </template>
       </nav>
       <div class="sidebar-footer">
+        <div class="user-badge" v-if="store.userInfo">
+          <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+          <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
+        </div>
         <div class="version-info" v-if="versionInfo.version">
           <span class="version-tag">v{{ versionInfo.version }}</span>
           <span class="version-build" v-if="versionInfo.build_seq != null">build #{{ versionInfo.build_seq }}</span>
@@ -145,6 +153,27 @@ function logout() {
 .sidebar-footer {
   padding: 12px;
   border-top: 1px solid var(--border);
+}
+
+.user-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+}
+
+.user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.user-role {
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .version-info {
