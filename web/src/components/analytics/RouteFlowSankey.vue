@@ -4,9 +4,11 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 import {
   SANKEY_GAP,
   SANKEY_NODE_H,
+  SANKEY_V_PAD,
   SANKEY_VIEW_W,
   buildSankeyLayers,
   computeSankeyHeight,
+  requiredColHeight,
 } from './sankeyLayout'
 
 const props = defineProps<{
@@ -59,14 +61,13 @@ interface LayoutNode {
 const layout = computed(() => {
   const nodes: LayoutNode[] = []
   const pos: Record<string, { x: number; y: number; h: number }> = {}
-  const maxTotal = Math.max(
-    ...layers.value.flat().map(n => n.total),
-    1,
-  )
+  const contentH = Math.max(...layers.value.map(requiredColHeight), 1)
+  const innerAvail = H.value - SANKEY_V_PAD
+  const yStart = SANKEY_V_PAD / 2 + Math.max(0, (innerAvail - contentH) / 2)
 
   layers.value.forEach((layerNodes, li) => {
-    let y = 30
-    const colHeight = H.value - 60
+    let y = yStart
+    const colHeight = requiredColHeight(layerNodes)
     const totalLayer = layerNodes.reduce((s, n) => s + n.total, 0) || 1
     const totalGap = Math.max(0, layerNodes.length - 1) * gap
     const available = Math.max(0, colHeight - totalGap)
@@ -77,7 +78,6 @@ const layout = computed(() => {
       nodes.push({ id: n.id, label: n.label, layer: n.layer, x, y, h })
       y += h + gap
     }
-    void maxTotal
   })
   return { nodes, pos }
 })

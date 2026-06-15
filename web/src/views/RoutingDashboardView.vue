@@ -23,7 +23,7 @@ import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
-import { computeSankeyCardHeight, computeSankeyHeight } from '../components/analytics/sankeyLayout'
+import { computeSankeyCardHeight } from '../components/analytics/sankeyLayout'
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
@@ -78,10 +78,6 @@ const heatmapChartHeight = computed(() => {
 
 const sankeyChartHeight = computed(() =>
   Math.max(computeSankeyCardHeight(flowData.value), 400),
-)
-
-const sankeySvgHeight = computed(() =>
-  computeSankeyHeight(flowData.value),
 )
 
 const cellDecisions = ref<AutoRouteDecision[]>([])
@@ -672,7 +668,7 @@ onUnmounted(() => stopPoll())
           </div>
           <div class="card compact-card chart-card" :style="{ minHeight: sankeyChartHeight + 'px' }">
             <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgHeight" />
+            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
           </div>
         </div>
 
