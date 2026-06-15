@@ -80,6 +80,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	// v2.0.1 — per-API-Key customer cost dashboard
 	mux.HandleFunc("/api/admin/auto-route/cost/customer", adminWrap(h.handleCustomerCost))
 	mux.HandleFunc("/api/admin/auto-route/cost/model", adminWrap(h.handleModelCost))
+	// v2.1 — Phase 7.6 routing overrides endpoints
+	mux.HandleFunc("/api/admin/routing/overrides", adminWrap(h.handleRoutingOverridesCollection))
+	mux.HandleFunc("/api/admin/routing/overrides/", adminWrap(h.handleRoutingOverrideItem))
 	// v2.1 — Phase 7.2 auto-route correlation analysis endpoint
 	h.RegisterAutoRouteCorrelationsRoute(mux, adminWrap)
 	// v2.1 — Phase 5 tuning feedback endpoints
