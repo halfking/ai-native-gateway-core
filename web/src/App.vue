@@ -22,6 +22,12 @@ async function loadVersion() {
     const resp = await fetch('/api/system/version', {
       headers: { 'Authorization': `Bearer ${token}` },
     })
+    if (resp.status === 401) {
+      // Token expired — clear and redirect to login.
+      clearAll()
+      router.push('/login')
+      return
+    }
     if (resp.ok) {
       versionInfo.value = await resp.json()
     }
