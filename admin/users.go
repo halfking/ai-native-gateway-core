@@ -209,6 +209,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
+	if err := ValidatePasswordComplexity(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if req.TenantID == "" {
 		req.TenantID = "default"
 	}
@@ -345,6 +349,10 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	}
 	if len(req.Password) < 8 {
 		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
+		return
+	}
+	if err := ValidatePasswordComplexity(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
