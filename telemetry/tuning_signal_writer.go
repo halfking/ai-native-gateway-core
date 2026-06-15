@@ -226,18 +226,25 @@ func (w *tuningWriter) insertBatch(ctx context.Context, signals []TuningSignal) 
 	}
 
 	values := make([]string, 0, len(signals))
-	args := make([]any, 0, len(signals)*17)
+	args := make([]any, 0, len(signals)*18)
 	for i, s := range signals {
-		base := i * 17
+		base := i * 18
 		values = append(values, fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6, base+7,
 			base+8, base+9, base+10, base+11, base+12, base+13, base+14,
-			base+15, base+16, base+17,
+			base+15, base+16, base+17, base+18,
 		))
 		var payloadJSON any
 		if len(s.SignalPayload) > 0 {
 			payloadJSON = string(s.SignalPayload)
+		}
+		// Strategy: empty string defaults to pattern_layered via the
+		// column DEFAULT (or, for old rows, the backfill in
+		// ensureTuningSignalsStrategyColumn).
+		strategy := s.Strategy
+		if strategy == "" {
+			strategy = "pattern_layered"
 		}
 		args = append(args,
 			s.RequestID,
@@ -257,6 +264,7 @@ func (w *tuningWriter) insertBatch(ctx context.Context, signals []TuningSignal) 
 			nullableInt(s.PromptTokens),
 			nullableInt(s.CompletionTokens),
 			payloadJSON,
+			strategy,
 		)
 	}
 
@@ -265,7 +273,7 @@ INSERT INTO tuning_signals (
     request_id, session_id, task_type, classifier, confidence,
     chosen_model, canonical_id, success_score, latency_score, cost_score,
     drift_flag, quality_score, latency_ms, cost_usd, prompt_tokens,
-    completion_tokens, signal_payload
+    completion_tokens, signal_payload, strategy
 ) VALUES ` + joinStrings(values, ",") + `
 ON CONFLICT DO NOTHING`
 
