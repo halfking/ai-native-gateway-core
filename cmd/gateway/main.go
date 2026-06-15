@@ -37,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -46,7 +47,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/sessions"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/redis/go-redis/v9"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -185,7 +185,12 @@ func main() {
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
 			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
-				return relay.StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, toolsRequested)
+				// Strip minimax-private fields from each SSE chunk's
+				// payload envelope (nvext, base_resp, input_sensitive*,
+				// output_sensitive*). Closes the 'base_resp' leak that
+				// was visible in stream chunks from minimax-OpenAI /
+				// minimax-Anthropic upstreams in Phase 12.
+				return relay.StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, relay.StripMinimaxFieldsBody)
 			},
 			auditSink,
 		)
@@ -212,6 +217,20 @@ func main() {
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
+		// Memora: optional context-compression oracle. When the
+		// LLM_GATEWAY_MEMORA_BASE_URL env is set, the executor can ask
+		// Memora for L1 session facts on context overflow and rebuild
+		// the body around them. Disabled by default (no env var).
+		if memoraBase := os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"); memoraBase != "" {
+			memoraClient := memora.NewClient(memora.ClientConfig{
+				BaseURL: memoraBase,
+				APIKey:  os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
+			})
+			exec.Memora = memoraClient
+			slog.Info("memora context-compression oracle enabled", "base_url", memoraBase)
+		} else {
+			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
+		}
 		if dbConn != nil && dbConn.Enabled() {
 			exec.State = credentialstate.NewWriter(dbConn.Pool())
 			exec.DB = dbConn
