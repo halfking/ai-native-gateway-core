@@ -302,6 +302,16 @@ func main() {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
 
+		// Ensure users table exists for multi-tenant admin auth
+		migCtx, migCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := dbConn.EnsureUsersTable(migCtx); err != nil {
+			slog.Error("failed to ensure users table", "error", err)
+		}
+		migCancel()
+
+		// Seed initial admin user if table is empty
+		admin.EnsureSeedAdmin(dbConn.Pool())
+
 		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool()); err != nil {
 			slog.Warn("provider catalog seed failed", "error", err)

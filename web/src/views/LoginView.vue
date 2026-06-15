@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { login } from '../api'
-import { setApiKey } from '../store'
+import { login, getAuthMe } from '../api'
+import { setApiKey, setJwtToken, setUserInfo } from '../store'
 
 const router   = useRouter()
 const username = ref('admin')
@@ -19,7 +19,22 @@ async function handleLogin() {
   loading.value = true
   try {
     const resp = await login(username.value, password.value)
-    setApiKey(resp.api_key)
+    if (resp.access_token) {
+      // JWT-based login: store token + user info
+      setJwtToken(resp.access_token)
+      if (resp.user) {
+        setUserInfo(resp.user)
+      } else {
+        // Fetch user info if not in response
+        try {
+          const me = await getAuthMe()
+          setUserInfo(me)
+        } catch { /* ignore */ }
+      }
+    } else if (resp.api_key) {
+      // Legacy API-key login
+      setApiKey(resp.api_key)
+    }
     router.push('/')
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '登录失败'

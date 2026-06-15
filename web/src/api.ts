@@ -1,4 +1,5 @@
-import { store, clearApiKey } from './store'
+import { store, clearApiKey, clearAll } from './store'
+import type { UserInfo } from './store'
 
 const BASE = ''  // same origin in prod; proxied in dev
 
@@ -9,7 +10,8 @@ function headers(method: string): Record<string, string> {
   if (method !== 'GET') {
     h['Content-Type'] = 'application/json'
   }
-  if (store.apiKey) h['Authorization'] = `Bearer ${store.apiKey}`
+  if (store.jwtToken) h['Authorization'] = `Bearer ${store.jwtToken}`
+  else if (store.apiKey) h['Authorization'] = `Bearer ${store.apiKey}`
   return h
 }
 
@@ -23,7 +25,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     // Clear invalid/stale session synchronously so the next request in
     // the same tick does not carry the stale Bearer token.  (Don't force
     // a redirect — let the user re-login manually.)
-    clearApiKey()
+    clearAll()
     throw new Error('Unauthorized')
   }
   if (!r.ok) {
@@ -54,6 +56,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 // ── Auth ──────────────────────────────────────────────────────────────────
 
 export interface LoginResponse {
+  access_token?: string
+  token_type?: string
+  expires_in?: number
+  user?: UserInfo
+
   api_key: string
   key_prefix: string
   message: string
@@ -2200,4 +2207,60 @@ export interface HealthResponse {
 
 export function getHealth(full = false) {
   return req<HealthResponse>('GET', `/healthz${full ? '?full=true' : ''}`)
+}
+
+// ── User Management (JWT) ──────────────────────────────────────────────────
+
+
+export interface UserListItem {
+  id: number
+  tenant_id: string
+  username: string
+  display_name: string
+  email: string
+  role: string
+  enabled: boolean
+  last_login_at: string | null
+  created_at: string
+}
+
+export function getUsers() {
+  return req<UserListItem[]>('GET', '/api/users')
+}
+
+export function createUser(data: {
+  username: string
+  password: string
+  tenant_id?: string
+  display_name?: string
+  email?: string
+  role?: string
+}) {
+  return req<UserListItem>('POST', '/api/users', data)
+}
+
+export function updateUser(id: number, data: {
+  display_name?: string
+  email?: string
+  role?: string
+  enabled?: boolean
+  password?: string
+}) {
+  return req<UserListItem>('PUT', `/api/users/${id}`, data)
+}
+
+export function deleteUser(id: number) {
+  return req<{ status: string }>('DELETE', `/api/users/${id}`)
+}
+
+export function resetUserPassword(id: number, password: string) {
+  return req<{ status: string }>('PUT', `/api/users/${id}/password`, { password })
+}
+
+export function getAuthMe() {
+  return req<UserInfo>('GET', '/api/auth/me')
+}
+
+export function changeMyPassword(old_password: string, new_password: string) {
+  return req<{ status: string }>('PUT', '/api/auth/change-password', { old_password, new_password })
 }
