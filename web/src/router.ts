@@ -23,6 +23,7 @@ import RoutingDashboardView   from './views/RoutingDashboardView.vue'
 import WorkTypesView          from './views/WorkTypesView.vue'
 import UsersView              from './views/UsersView.vue'
 import AuditLogView          from './views/AuditLogView.vue'
+import SessionContextView     from './views/SessionContextView.vue'
 import ForbiddenView          from './views/ForbiddenView.vue'
 
 function isAuthed(): boolean {
@@ -57,6 +58,7 @@ export const router = createRouter({
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/users',              component: UsersView,           meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
+    { path: '/session-context',   component: SessionContextView,    meta: { requiresSuper: true } },
 
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },
