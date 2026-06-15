@@ -267,9 +267,15 @@ func DefaultKeywords() KeywordSet {
 // (no LLM call). Deterministic, zero-latency, zero-cost. Confidence is
 // 0.7-0.95 for clear cases; 0.5-0.7 for ambiguous cases (triggers LLM
 // fallback in Decider).
+//
+// When tuningStore is non-nil, the classifier reads keywords and thresholds
+// from it on every Classify() call (atomic pointer load, <1ns). This allows
+// runtime parameter changes via the admin API without restart. When nil,
+// the classifier uses the thresholds/keywords passed at construction.
 type HeuristicClassifier struct {
-	thresholds HeuristicThresholds
-	keywords   KeywordSet
+	thresholds  HeuristicThresholds
+	keywords    KeywordSet
+	tuningStore *TuningStore // optional; nil = static mode (tests/legacy)
 }
 
 // NewHeuristicClassifier constructs a classifier with the given thresholds
@@ -285,6 +291,33 @@ func NewHeuristicClassifier(t HeuristicThresholds, k KeywordSet) *HeuristicClass
 	return &HeuristicClassifier{thresholds: t, keywords: k}
 }
 
+// NewHeuristicClassifierWithTuning constructs a classifier backed by a
+// TuningStore. The store provides dynamic keywords and thresholds; the
+// constructor args are used as fallback when the store hasn't loaded yet.
+func NewHeuristicClassifierWithTuning(t HeuristicThresholds, k KeywordSet, ts *TuningStore) *HeuristicClassifier {
+	clf := NewHeuristicClassifier(t, k)
+	clf.tuningStore = ts
+	return clf
+}
+
+// effectiveKeywords returns the keyword set from the tuning store if
+// configured, otherwise the static constructor value.
+func (c *HeuristicClassifier) effectiveKeywords() KeywordSet {
+	if c.tuningStore != nil {
+		return c.tuningStore.Keywords()
+	}
+	return c.keywords
+}
+
+// effectiveLongContextTokens returns the threshold from the tuning store
+// if configured, otherwise the static constructor value.
+func (c *HeuristicClassifier) effectiveLongContextTokens() int {
+	if c.tuningStore != nil {
+		return c.tuningStore.LongContextTokens()
+	}
+	return c.thresholds.LongContextTokens
+}
+
 // Classify implements Classifier.
 //
 // Algorithm (deterministic, pure function of inputs):
@@ -297,15 +330,23 @@ func NewHeuristicClassifier(t HeuristicThresholds, k KeywordSet) *HeuristicClass
 //     - ToolCount >= AgentToolThreshold && HasToolResults → TaskAgent
 //     - 1 <= ToolCount <= FunctionCallToolMax              → TaskFunctionCall
 //
-//  3. Keyword-based scoring (channels sum to 1.0):
+//  3. Pattern-based scoring (regex layer):
+//     - Compiled patterns (see patterns.go) match structural
+//       cues like "每分钟...多少" (math word-problem) or "def foo"
+//       (function definition). Each match assigns a weight 0.55-0.65.
+//     - This layer catches requests that express a task type via
+//       *structure* rather than vocabulary (the "水池问题" gap).
+//
+//  4. Keyword-based scoring (channels sum to 1.0):
 //     - reasoning channel: keywords in Reasoning
 //     - code channel: keywords in Code + HasCodeBlock boost
 //     - creative channel: keywords in Creative
 //
-//  4. Pick highest-scoring channel. Ties broken by priority
-//     (reasoning > code > creative > chat).
+//  5. Merge pattern + keyword scores (take the max per task type),
+//     then pick highest-scoring channel. Ties broken by priority
+//     (reasoning > code > agent > creative > function_call > ...).
 //
-//  5. Confidence = top score (capped at 0.95).
+//  6. Confidence = top score (capped at 0.95).
 func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSignals) (*Classification, error) {
 	// v2.0.3 audit fix #17: nil-keyword-slice protection. If the
 	// caller passes nil for LastUserPrompt/SystemPrompt we still
@@ -323,7 +364,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 			Reason:     "request contains image parts (hard override)",
 		}, nil
 	}
-	if sigs.EstimatedTokens > c.thresholds.LongContextTokens {
+	if sigs.EstimatedTokens > c.effectiveLongContextTokens() {
 		conf := 0.90
 		return &Classification{
 			Primary:    TaskLongContext,
@@ -331,7 +372,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 			Secondary:  []TaskScore{{Task: TaskLongContext, Score: conf}},
 			Signals:    sigs,
 			Classifier: "heuristic",
-			Reason:     fmtTokens(sigs.EstimatedTokens, c.thresholds.LongContextTokens),
+			Reason:     fmtTokens(sigs.EstimatedTokens, c.effectiveLongContextTokens()),
 		}, nil
 	}
 
@@ -355,25 +396,52 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 
 	// Channel 3: keyword scoring
 	text := normaliseForKeyword(sigs.LastUserPrompt, sigs.SystemPrompt)
-	reasoningHits := countKeywordHits(text, c.keywords.Reasoning)
-	codeHits := countKeywordHits(text, c.keywords.Code)
-	creativeHits := countKeywordHits(text, c.keywords.Creative)
+	kw := c.effectiveKeywords()
+
+	// Channel 3a: regex pattern matching (structural cues).
+	// Runs on the same normalised text as keyword scanning. Each matched
+	// pattern seeds a score entry that keyword hits can only *raise*
+	// (never lower). This closes the "水池问题" gap where a math
+	// word-problem has no reasoning keyword but matches a rate×time pattern.
+	patternHits := matchPatterns(text)
+	patternReason := ""
+	for task, pm := range patternHits {
+		// Pattern weight (0.55-0.65) is a *floor*, not a ceiling —
+		// if a later keyword hit scores higher, the max wins.
+		if cur, ok := scores[task]; !ok || pm.Weight > cur {
+			scores[task] = pm.Weight
+		}
+	}
+
+	// Channel 3b: keyword scoring (vocabulary cues).
+	reasoningHits := countKeywordHits(text, kw.Reasoning)
+	codeHits := countKeywordHits(text, kw.Code)
+	creativeHits := countKeywordHits(text, kw.Creative)
 
 	// Per-keyword-hit weight bumped to 0.4 so a single strong hit
 	// (e.g. "prove", "算法") decisively beats the chat baseline.
 	const perHitWeight = 0.4
 	if reasoningHits > 0 {
-		scores[TaskReasoning] = min(1.0, float64(reasoningHits)*perHitWeight)
+		kw := min(1.0, float64(reasoningHits)*perHitWeight)
+		if kw > scores[TaskReasoning] { // max-merge with pattern layer
+			scores[TaskReasoning] = kw
+		}
 	}
 	if codeHits > 0 || sigs.HasCodeBlock {
 		boost := float64(codeHits) * perHitWeight
 		if sigs.HasCodeBlock {
 			boost += 0.3
 		}
-		scores[TaskCode] = min(1.0, boost)
+		kw := min(1.0, boost)
+		if kw > scores[TaskCode] { // max-merge with pattern layer
+			scores[TaskCode] = kw
+		}
 	}
 	if creativeHits > 0 {
-		scores[TaskCreative] = min(1.0, float64(creativeHits)*perHitWeight)
+		kw := min(1.0, float64(creativeHits)*perHitWeight)
+		if kw > scores[TaskCreative] { // max-merge with pattern layer
+			scores[TaskCreative] = kw
+		}
 	}
 
 	// Default baseline for chat (so we always have a non-zero answer)
@@ -391,7 +459,12 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 		winnerScore = min(0.95, winnerScore+0.05)
 	}
 
-	reason := buildReason(winner, reasoningHits, codeHits, creativeHits, sigs.HasCodeBlock)
+	// If the winner was decided (partly or wholly) by a pattern match,
+	// surface the pattern reason for observability.
+	if pm, ok := patternHits[winner]; ok {
+		patternReason = pm.Reason
+	}
+	reason := buildReasonEx(winner, reasoningHits, codeHits, creativeHits, sigs.HasCodeBlock, patternReason)
 
 	return &Classification{
 		Primary:    winner,
@@ -514,6 +587,37 @@ func rankSecondary(scores map[TaskType]float64, winner TaskType) []TaskScore {
 }
 
 func buildReason(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool) string {
+	return buildReasonEx(winner, reasoningHits, codeHits, creativeHits, hasCodeBlock, "")
+}
+
+// buildReasonEx is the extended version that also surfaces a pattern-match
+// reason when the winner was (partly) decided by the regex layer.
+// patternReason is "" when no pattern contributed to the winner.
+func buildReasonEx(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool, patternReason string) string {
+	// If a pattern matched and contributed to the winning task type,
+	// lead with the pattern reason (it's more specific than keyword counts).
+	if patternReason != "" {
+		// Augment with keyword info if both channels fired.
+		kwInfo := ""
+		switch winner {
+		case TaskReasoning:
+			if reasoningHits > 0 {
+				kwInfo = " + " + fmtIntHits("reasoning", reasoningHits)
+			}
+		case TaskCode:
+			if codeHits > 0 {
+				kwInfo = " + " + fmtIntHits("code", codeHits)
+			} else if hasCodeBlock {
+				kwInfo = " + fenced code block"
+			}
+		case TaskCreative:
+			if creativeHits > 0 {
+				kwInfo = " + " + fmtIntHits("creative", creativeHits)
+			}
+		}
+		return patternReason + kwInfo
+	}
+
 	switch winner {
 	case TaskReasoning:
 		return fmtIntHits("reasoning", reasoningHits)
