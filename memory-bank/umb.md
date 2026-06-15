@@ -1,7 +1,7 @@
 # UMB — llm-gateway-go MaaS 积分计费平台
 
 > **最后更新**：2026-06-16
-> **模式**：P1 代码完成 / **184 deploy pending**
+> **模式**：P0+P1 已部署 184 / **镜像 gitsha-399f63c0 seq-202**
 > **任务**：对外 MaaS 平台 — 积分体系 + 套餐 + 加油包 + 租户隔离
 
 ## 🎯 当前任务
@@ -48,6 +48,28 @@
 - `web/src/router.ts` — 三路由
 - `web/src/App.vue` — 侧栏 MaaS 三页
 - `web/src/views/TenantDetailView.vue` — super_admin 钱包/账本
+
+## ✅ 184 部署（2026-06-16 00:39 UTC+8）
+
+| 项 | 值 |
+|----|-----|
+| 子模块 SHA | `399f63c0` |
+| 镜像 | `kx-llm-gateway-go:gitsha-399f63c0` / seq-202 |
+| 主仓 bump | `28ed2e95`（子模块指针） |
+| 部署 tag | `deploy/prod-184-20260616-003929-5c8edaac0706` |
+| healthz | `https://llmgo.kxpms.cn/healthz` → 200 |
+| MaaS API | `/api/maas/{settings,models,plans,wallet,ledger}` 全 200 |
+| 前端 bundle | `/maas/models|pricing|usage` 路由 +「积分」文案已打入 dist |
+
+### 验收备注
+- 登录页副标题已显示「开轩 MaaS 控制面」
+- 未登录访问 `/maas/models` 正确重定向 `/login`（SPA 路由生效）
+- 三页积分 UI（模型单价/钱包余额/消耗流水）需 JWT 登录后目视确认
+
+## 🔜 P2 待办
+- 套餐购买 / 加油包下单流程（支付对接）
+- 非 default 租户隔离端到端验收
+- Dockerfile FROM 迁移 daocloud mirror（pre-deploy Step 4 当前 FAIL）
 
 ## 🔗 参考
 - 方案：`docs/2026-06-16-maas-platform-plan.md`
