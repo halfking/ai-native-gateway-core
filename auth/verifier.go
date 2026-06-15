@@ -44,9 +44,15 @@ type KeyInfo struct {
 
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
 // A per-key value of 0 means "unlimited" (CheckRPM treats limit<=0 as no cap).
+// Negative values (should not exist in DB) fall through to the tier default.
 func (ki *KeyInfo) EffectiveRPM() int {
-	if ki.RateLimitRPM != nil && *ki.RateLimitRPM >= 0 {
-		return *ki.RateLimitRPM
+	if ki.RateLimitRPM != nil {
+		if *ki.RateLimitRPM == 0 {
+			return 0 // explicit unlimited
+		}
+		if *ki.RateLimitRPM > 0 {
+			return *ki.RateLimitRPM
+		}
 	}
 	tier := ki.KeyTier
 	if tier == "" {

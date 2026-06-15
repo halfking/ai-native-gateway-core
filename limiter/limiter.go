@@ -170,7 +170,7 @@ func (s *Semaphore) RecoverStep(targetCapacity int) {
 // Limiter — four-layer concurrency controller
 // ---------------------------------------------------------------------------
 
-// Limiter manages concurrency across four layers.
+// Limiter manages concurrency across five layers.
 type Limiter struct {
 	globalLimit     int
 	poolLimit       int
@@ -181,6 +181,7 @@ type Limiter struct {
 	pools    map[int]*Semaphore // providerID → semaphore
 	creds    map[string]*Semaphore // "providerID/credentialID" → semaphore
 	idents   map[string]*Semaphore // "providerID/credentialID/identityHash" → semaphore
+	keys     map[int]*Semaphore    // keyID → per-key semaphore (limit from DB)
 
 	mu          sync.RWMutex
 	stopCh      chan struct{}
@@ -202,6 +203,7 @@ func NewWithLimits(global, pool, credential, identity int) *Limiter {
 		pools:           make(map[int]*Semaphore),
 		creds:           make(map[string]*Semaphore),
 		idents:          make(map[string]*Semaphore),
+		keys:            make(map[int]*Semaphore),
 		stopCh:          make(chan struct{}),
 	}
 	go l.recoveryLoop()
@@ -275,10 +277,34 @@ func (l *Limiter) Identity(providerID, credentialID int, identityHash string) *S
 	return s
 }
 
-// AcquireAll attempts to acquire tokens across all four layers.
+// Key returns the per-key semaphore for the given API key ID.
+// The limit is dynamic (from DB per-key setting) so capacity is passed in.
+func (l *Limiter) Key(keyID int, limit int) *Semaphore {
+	l.mu.RLock()
+	s, ok := l.keys[keyID]
+	l.mu.RUnlock()
+	if ok {
+		return s
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if s, ok = l.keys[keyID]; ok {
+		return s
+	}
+	s = NewSemaphore(fmt.Sprintf("key_%d", keyID), limit)
+	l.keys[keyID] = s
+	return s
+}
+
+// AcquireAll attempts to acquire tokens across all five layers.
 // Returns a ReleaseFunc that releases all acquired tokens.
 // If any layer is saturated, previously acquired tokens are released.
-func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, identityHash string) (ReleaseFunc, error) {
+//
+// The 5th layer (per-key) is non-blocking: if the key's concurrent limit is
+// reached, the request bypasses this check and continues. This matches the
+// identity-layer behaviour (soft cap).
+func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, identityHash string, keyID int, keyConcurrentLimit int) (ReleaseFunc, error) {
 	// Acquire global (blocking with context)
 	if err := l.global.Acquire(ctx); err != nil {
 		return nil, fmt.Errorf("global limit: %w", err)
@@ -312,7 +338,24 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		)
 	}
 
+	// Acquire per-key concurrent slot (non-blocking — soft cap from DB)
+	var keyAcquired bool
+	if keyID > 0 && keyConcurrentLimit > 0 {
+		keySem := l.Key(keyID, keyConcurrentLimit)
+		keyAcquired = keySem.TryAcquire()
+		if !keyAcquired {
+			slog.Warn("per-key concurrent limit reached, bypassing",
+				"key_id", keyID,
+				"used", keySem.Used(),
+				"capacity", keySem.Capacity(),
+			)
+		}
+	}
+
 	return func() {
+		if keyAcquired {
+			l.Key(keyID, keyConcurrentLimit).Release()
+		}
 		if identAcquired {
 			ident.Release()
 		}

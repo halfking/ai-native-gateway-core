@@ -436,7 +436,7 @@ func (e *Executor) doCompactionUpstream(
 
 	var releaseLimiter func()
 	if e.Limiter != nil && params != nil {
-		rel, err := e.Limiter.AcquireAll(ctx, cand.ProviderID, cand.CredentialID, params.ClientID.IdentityHash)
+		rel, err := e.Limiter.AcquireAll(ctx, cand.ProviderID, cand.CredentialID, params.ClientID.IdentityHash, params.KeyID, params.KeyConcurrentLimit)
 		if err != nil {
 			return nil, fmt.Errorf("compaction: limiter: %w", err)
 		}
