@@ -78,7 +78,8 @@ type Decider struct {
 	index      IndexAccessor // candidate pool
 	profileStore ProfileStore // per-API-Key sticky profile
 	intentCache  *SessionIntentCache // per-session intent cache (v2.0.4)
-	tuningStore  *TuningStore // optional dynamic params (v2.1)
+	tuningStore    *TuningStore    // optional dynamic params (v2.1)
+	overrideStore  *OverrideStore  // optional admin ban/pin overrides (P7.6)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	// Default: ProfileSmart.
@@ -137,6 +138,11 @@ func (d *Decider) SetIntentCache(c *SessionIntentCache) {
 // LLMConfidenceThreshold field.
 func (d *Decider) SetTuningStore(ts *TuningStore) {
 	d.tuningStore = ts
+}
+
+// SetOverrideStore wires admin-authored routing overrides (ban/pin).
+func (d *Decider) SetOverrideStore(store *OverrideStore) {
+	d.overrideStore = store
 }
 
 // effectiveLLMThreshold returns the dynamic threshold from the tuning
@@ -203,6 +209,12 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 
 	// Step 3: score candidates
 	recommended := d.index.Recommend(cls.Primary, sigs, profile, d.TopN)
+	if d.overrideStore != nil {
+		task := string(cls.Primary)
+		prof := string(profile)
+		filtered := d.overrideStore.FilterBanned(recommended, task, prof)
+		recommended = d.overrideStore.PromotePins(filtered, task, prof)
+	}
 
 	// If no candidates matched, return a "no decision" sentinel.
 	if len(recommended) == 0 {
