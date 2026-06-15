@@ -193,12 +193,14 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"task_id":   taskID,
-			"extracted": false,
-		})
-		return
+	if IsTenantAdmin(r) && GetTenantID(r) != "" && GetTenantID(r) != "default" {
+		if !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"task_id":   taskID,
+				"extracted": false,
+			})
+			return
+		}
 	}
 
 	var extractedAt time.Time
