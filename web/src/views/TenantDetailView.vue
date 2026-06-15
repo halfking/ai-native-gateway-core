@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
   getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
   getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits, grantAdminMaasCredits,
@@ -221,6 +221,10 @@ function fmtNum(n?: number) {
   return n.toLocaleString()
 }
 
+function maasLink(path: string) {
+  return { path, query: { tenant: tenantCode.value } }
+}
+
 onMounted(loadTenant)
 watch(() => route.params.tenantId, loadTenant)
 </script>
@@ -287,6 +291,37 @@ watch(() => route.params.tenantId, loadTenant)
           <div class="stat-card">
             <div class="stat-label">总请求数</div>
             <div class="stat-value">{{ fmtNum(tenant.total_requests) }}</div>
+          </div>
+        </div>
+
+        <div class="maas-shortcuts">
+          <h3>MaaS 服务</h3>
+          <p class="maas-shortcuts-desc">以该租户为上下文查看模型定价、账户与消耗（不在平台侧栏展示租户菜单）。</p>
+          <div class="maas-shortcut-grid">
+            <RouterLink :to="maasLink('/maas/models')" class="maas-shortcut-card">
+              <span class="maas-shortcut-icon">🤖</span>
+              <span class="maas-shortcut-label">模型清单</span>
+            </RouterLink>
+            <RouterLink :to="maasLink('/maas/pricing')" class="maas-shortcut-card">
+              <span class="maas-shortcut-icon">💳</span>
+              <span class="maas-shortcut-label">套餐与充值</span>
+            </RouterLink>
+            <RouterLink :to="maasLink('/maas/usage')" class="maas-shortcut-card">
+              <span class="maas-shortcut-icon">📉</span>
+              <span class="maas-shortcut-label">消耗统计</span>
+            </RouterLink>
+            <RouterLink :to="maasLink('/maas/account')" class="maas-shortcut-card">
+              <span class="maas-shortcut-icon">💰</span>
+              <span class="maas-shortcut-label">账户中心</span>
+            </RouterLink>
+            <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('wallet')">
+              <span class="maas-shortcut-icon">👛</span>
+              <span class="maas-shortcut-label">钱包管理</span>
+            </button>
+            <button type="button" class="maas-shortcut-card maas-shortcut-card--tab" @click="switchTab('ledger')">
+              <span class="maas-shortcut-icon">📒</span>
+              <span class="maas-shortcut-label">账本流水</span>
+            </button>
           </div>
         </div>
       </div>
@@ -684,4 +719,48 @@ watch(() => route.params.tenantId, loadTenant)
 .loading { text-align: center; padding: 40px; color: var(--muted); }
 .alert { padding: 8px 12px; border-radius: 4px; font-size: 13px; }
 .alert-danger { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+
+.maas-shortcuts {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.maas-shortcuts h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.maas-shortcuts-desc {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.maas-shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.maas-shortcut-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color .15s, background .15s;
+}
+.maas-shortcut-card:hover {
+  border-color: var(--accent-h);
+  background: rgba(99,102,241,.06);
+}
+.maas-shortcut-card--tab {
+  background: transparent;
+}
+.maas-shortcut-icon { font-size: 20px; }
+.maas-shortcut-label { font-size: 12px; font-weight: 500; }
 </style>

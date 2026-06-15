@@ -5,15 +5,15 @@ import {
   getMaasPlans,
   getMaasTopupPackages,
   getMaasWallet,
+  getAdminMaasWallet,
   getMaasSettings,
   createMaasOrder,
 } from '../../api'
 import type { MaasPlan, MaasTopupPackage, MaasWallet } from '../../api'
-import { isSuperAdmin, isDefaultTenant, isPlatformOpsView, getCurrentTenantId } from '../../store'
+import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 
-const pageTitle = computed(() =>
-  isPlatformOpsView() ? 'MaaS 套餐与加油包' : '套餐与充值',
-)
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const pageTitle = computed(() => ctxPageTitle('套餐与充值'))
 
 const router = useRouter()
 const plans = ref<MaasPlan[]>([])
@@ -24,13 +24,6 @@ const loading = ref(false)
 const buying = ref<number | null>(null)
 const error = ref('')
 const payChannel = ref<'alipay' | 'wechat'>('alipay')
-
-const tenantLabel = computed(() => {
-  const tenantId = getCurrentTenantId()
-  if (isSuperAdmin() && isDefaultTenant()) return '整站数据'
-  if (isDefaultTenant()) return '默认租户'
-  return `租户: ${tenantId}`
-})
 
 function fmtPrice(cents: number) {
   return (cents / 100).toFixed(2)
@@ -47,7 +40,9 @@ async function load() {
     const [planRes, topupRes, walletRes, settingsRes] = await Promise.all([
       getMaasPlans(),
       getMaasTopupPackages(),
-      getMaasWallet(),
+      isAdminTenantView.value
+        ? getAdminMaasWallet(tenantCode.value)
+        : getMaasWallet(),
       getMaasSettings(),
     ])
     plans.value = planRes.items ?? []
@@ -103,13 +98,10 @@ onMounted(load)
     <div class="page-header">
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
-        <span
-          class="tenant-badge"
-          :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }"
-        >
+        <span class="tenant-badge tenant-badge--admin">
           {{ tenantLabel }}
         </span>
-        <select v-model="payChannel" class="channel-select">
+        <select v-if="!isAdminTenantView" v-model="payChannel" class="channel-select">
           <option value="alipay">支付宝</option>
           <option value="wechat">微信支付</option>
         </select>
@@ -140,6 +132,10 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="isAdminTenantView" class="alert alert-info">
+      管理员只读视图：代客下单请在租户详情页「钱包 / 订单」Tab 操作。
+    </div>
+
     <h3 class="section-title">月包套餐</h3>
     <div class="pricing-grid">
       <div v-for="p in plans" :key="p.id" class="pricing-card card">
@@ -151,6 +147,7 @@ onMounted(load)
         </div>
         <div class="pricing-credits">{{ fmtCredits(p.monthly_credits) }} 积分 / 月</div>
         <button
+          v-if="!isAdminTenantView"
           class="btn btn-primary btn-block"
           :disabled="!!buying"
           @click="buyPlan(p)"
@@ -171,6 +168,7 @@ onMounted(load)
         </div>
         <div class="pricing-credits">{{ fmtCredits(t.credits_amount) }} 积分</div>
         <button
+          v-if="!isAdminTenantView"
           class="btn btn-primary btn-block"
           :disabled="!!buying"
           @click="buyTopup(t)"
@@ -297,5 +295,13 @@ onMounted(load)
   background: rgba(239,68,68,.1);
   color: #f87171;
   margin-bottom: 12px;
+}
+.alert-info {
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: rgba(59,130,246,.1);
+  color: #60a5fa;
+  margin-bottom: 12px;
+  font-size: 13px;
 }
 </style>

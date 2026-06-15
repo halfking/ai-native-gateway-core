@@ -13,6 +13,7 @@ import RoutingOverviewView    from './views/RoutingOverviewView.vue'
 import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
 import CorrelationsView       from './views/CorrelationsView.vue'
+import RoutingOverrideView   from './views/RoutingOverrideView.vue'
 import RequestLogsView        from './views/RequestLogsView.vue'
 import ModelsView             from './views/ModelsView.vue'
 import ProviderDetailView     from './views/ProviderDetailView.vue'
@@ -98,6 +99,7 @@ export const router = createRouter({
     { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
+    { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/examples',           component: ExamplesView, meta: { requiresPlatformOps: true } },
 
@@ -120,6 +122,14 @@ router.beforeEach((to) => {
   }
   // 4. Platform ops (super_admin on default tenant) for运维向页面
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
+    return { path: '/' }
+  }
+  // 5. Default-tenant ops must not browse tenant MaaS pages without ?tenant= context
+  if (
+    to.path.startsWith('/maas/') &&
+    isPlatformOpsView() &&
+    typeof to.query.tenant !== 'string'
+  ) {
     return { path: '/' }
   }
 })

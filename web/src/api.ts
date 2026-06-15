@@ -2896,6 +2896,23 @@ export function getAdminMaasWallet(tenantCode: string) {
   return req<MaasWallet>('GET', `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/wallet`)
 }
 
+export function getAdminMaasAccount(tenantCode: string) {
+  return req<MaasAccount>(
+    'GET',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/account`,
+  )
+}
+
+export function getAdminMaasUsageSummary(tenantCode: string, days = 7, limit = 10) {
+  const q = new URLSearchParams()
+  q.set('days', String(days))
+  q.set('limit', String(limit))
+  return req<MaasUsageSummary>(
+    'GET',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/usage/summary?${q.toString()}`,
+  )
+}
+
 export function getAdminMaasLedger(tenantCode: string, limit = 50) {
   return req<{ items: MaasLedgerEntry[] }>(
     'GET',
@@ -2953,4 +2970,64 @@ export const MAAS_ORDER_STATUS_LABELS: Record<string, string> = {
   paid: '已支付',
   cancelled: '已取消',
   expired: '已过期',
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Routing overrides API (Phase 7.6 endpoint)
+// ─────────────────────────────────────────────────────────────────
+
+export interface RoutingOverride {
+  id: number
+  task_type: string
+  profile: string
+  mode: 'pin' | 'ban'
+  model_chosen?: string
+  reason: string
+  created_by?: string
+  expires_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface RoutingOverridesResponse {
+  overrides: RoutingOverride[]
+  count: number
+  filter: { task_type: string; profile: string; active: string }
+}
+
+export interface RoutingOverrideCreate {
+  task_type: string
+  profile?: string
+  mode: 'pin' | 'ban'
+  model_chosen?: string
+  reason: string
+  expires_at?: string
+}
+
+export function getRoutingOverrides(params: {
+  active?: boolean
+  task_type?: string
+  profile?: string
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.active) q.set('active', 'true')
+  if (params.task_type) q.set('task_type', params.task_type)
+  if (params.profile) q.set('profile', params.profile)
+  const path = '/api/admin/routing/overrides' + (q.toString() ? '?' + q : '')
+  return req<RoutingOverridesResponse>('GET', path)
+}
+
+export function createRoutingOverride(body: RoutingOverrideCreate) {
+  return req<{ id: number; status: string; message: string }>('POST',
+    '/api/admin/routing/overrides', body)
+}
+
+export function deleteRoutingOverride(id: number) {
+  return req<{ id: number; status: string; note: string }>('DELETE',
+    `/api/admin/routing/overrides/${id}`)
+}
+
+export function extendRoutingOverride(id: number, expires_at: string | null) {
+  return req<{ id: number; status: string }>('PATCH',
+    `/api/admin/routing/overrides/${id}/extend`, { expires_at })
 }

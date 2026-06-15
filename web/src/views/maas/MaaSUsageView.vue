@@ -1,24 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getMaasLedger, MAAS_LEDGER_TYPE_LABELS } from '../../api'
+import { getMaasLedger, getAdminMaasLedger, MAAS_LEDGER_TYPE_LABELS } from '../../api'
 import type { MaasLedgerEntry } from '../../api'
-import { isSuperAdmin, isDefaultTenant, isPlatformOpsView, getCurrentTenantId } from '../../store'
+import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
 const pageTitle = computed(() =>
-  isPlatformOpsView() ? 'MaaS 积分消耗' : '我的消耗',
+  ctxPageTitle(isAdminTenantView.value ? '消耗统计' : '我的消耗'),
 )
-
-const ledger = ref<MaasLedgerEntry[]>([])
-const loading = ref(false)
-const error = ref('')
-const limit = ref(50)
-
-const tenantLabel = computed(() => {
-  const tenantId = getCurrentTenantId()
-  if (isSuperAdmin() && isDefaultTenant()) return '整站数据'
-  if (isDefaultTenant()) return '默认租户'
-  return `租户: ${tenantId}`
-})
 
 const consumeTotal = computed(() => {
   return ledger.value
@@ -54,7 +43,9 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const res = await getMaasLedger(limit.value)
+    const res = isAdminTenantView.value
+      ? await getAdminMaasLedger(tenantCode.value, limit.value)
+      : await getMaasLedger(limit.value)
     ledger.value = res.items ?? []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
@@ -71,10 +62,7 @@ onMounted(load)
     <div class="page-header">
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
-        <span
-          class="tenant-badge"
-          :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }"
-        >
+        <span class="tenant-badge tenant-badge--admin">
           {{ tenantLabel }}
         </span>
         <select v-model.number="limit" class="limit-select" @change="load">

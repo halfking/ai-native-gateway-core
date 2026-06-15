@@ -3,22 +3,33 @@ import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   getMaasAccount,
+  getAdminMaasAccount,
   type MaasAccount,
   MAAS_LEDGER_TYPE_LABELS,
   MAAS_POOL_LABELS,
   MAAS_ORDER_STATUS_LABELS,
 } from '../../api'
-import { getCurrentTenantId, isPlatformOpsView } from '../../store'
+import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
 const pageTitle = computed(() =>
-  isPlatformOpsView() ? '账户中心' : '我的账户',
+  ctxPageTitle(isAdminTenantView.value ? '账户' : '我的账户'),
 )
 
 const account = ref<MaasAccount | null>(null)
 const loading = ref(false)
 const error = ref('')
 
-const tenantLabel = `租户: ${getCurrentTenantId()}`
+const pricingLink = computed(() =>
+  isAdminTenantView.value
+    ? { path: '/maas/pricing', query: { tenant: tenantCode.value } }
+    : { path: '/maas/pricing' },
+)
+const usageLink = computed(() =>
+  isAdminTenantView.value
+    ? { path: '/maas/usage', query: { tenant: tenantCode.value } }
+    : { path: '/maas/usage' },
+)
 
 function fmtCredits(n: number) {
   return n.toLocaleString('zh-CN')
@@ -60,7 +71,9 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    account.value = await getMaasAccount()
+    account.value = isAdminTenantView.value
+      ? await getAdminMaasAccount(tenantCode.value)
+      : await getMaasAccount()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -77,7 +90,7 @@ onMounted(load)
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <RouterLink to="/maas/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
+        <RouterLink v-if="!isAdminTenantView" to="/maas/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? '加载中…' : '刷新' }}
         </button>
@@ -116,7 +129,7 @@ onMounted(load)
     <div v-if="account" class="section card">
       <div class="section-header">
         <h3>最近订单</h3>
-        <RouterLink to="/maas/pricing" class="link-sm">去购买</RouterLink>
+        <RouterLink v-if="!isAdminTenantView" :to="pricingLink" class="link-sm">去购买</RouterLink>
       </div>
       <table v-if="account.recent_orders.length" class="table">
         <thead>
@@ -150,7 +163,7 @@ onMounted(load)
     <div v-if="account" class="section card">
       <div class="section-header">
         <h3>最近流水</h3>
-        <RouterLink to="/maas/usage" class="link-sm">消耗统计</RouterLink>
+        <RouterLink :to="usageLink" class="link-sm">消耗统计</RouterLink>
       </div>
       <table v-if="account.recent_ledger.length" class="table">
         <thead>
