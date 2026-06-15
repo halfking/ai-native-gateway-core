@@ -1,6 +1,7 @@
 import type { AnalyticsFlow } from '../../api-autoroute'
 
-export const SANKEY_NODE_H = 32
+/** Minimum node height (label readability); keep proportional sizing dominant. */
+export const SANKEY_NODE_H = 18
 export const SANKEY_GAP = 8
 export const SANKEY_V_PAD = 60 // 30 top + 30 bottom inside viewBox
 /** External legend row above the SVG (may wrap to two lines). */
@@ -79,7 +80,8 @@ export function computeSankeyHeight(
   const layers = buildSankeyLayers(data)
   const maxCol = Math.max(...layers.map(requiredColHeight), 1)
   const base = SANKEY_V_PAD + maxCol
-  return Math.max(base, minHeight, SANKEY_MIN_H)
+  // SANKEY_MIN_H applies to empty state only; do not inflate viewBox and stretch nodes.
+  return Math.max(base, minHeight)
 }
 
 /** Full card height: section head + external legend + SVG. */
