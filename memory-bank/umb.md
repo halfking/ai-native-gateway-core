@@ -1,7 +1,7 @@
 # UMB — llm-gateway-go MaaS 积分计费平台
 
 > **最后更新**：2026-06-16
-> **模式**：实施 / P0 收尾
+> **模式**：P1 代码完成 / **184 deploy pending**
 > **任务**：对外 MaaS 平台 — 积分体系 + 套餐 + 加油包 + 租户隔离
 
 ## 🎯 当前任务
@@ -30,15 +30,24 @@
 - `admin/maas_handlers.go`, `admin/logs.go`
 - `web/src/api.ts`, `web/src/views/RequestLogsView.vue`
 
-## 📋 P1 待做（不在本次范围）
+## ✅ P1 已完成（2026-06-16）
 
-| ID | 任务 |
-|----|------|
-| P1-1 | `MaaSModelsView.vue` — 客户向模型清单（积分/1M） |
-| P1-2 | `MaaSPricingView.vue` — 三档月包 + 三档加油包 |
-| P1-3 | `MaaSUsageView.vue` — 积分消耗图表 |
-| P1-4 | TenantDetail 增 订阅/加油/账本 tabs |
-| P1-5 | 导航/路由按租户裁剪 |
+| ID | 任务 | 状态 |
+|----|------|------|
+| P1-1 | `MaaSModelsView.vue` — 客户向模型清单（积分/1M） | ✅ |
+| P1-2 | `MaaSPricingView.vue` — 三档月包 + 三档加油包 + 钱包余额 | ✅ |
+| P1-3 | `MaaSUsageView.vue` — consume 汇总 + 流水表 | ✅ |
+| P1-4 | TenantDetail 增 钱包/账本 tabs + adjust 表单 | ✅ |
+| P1-5 | 导航/路由：/maas/models、/maas/pricing、/maas/usage 全租户可见 | ✅ |
+
+### P1 关键文件
+- `web/src/api.ts` — MaaS 类型与 API 函数
+- `web/src/views/maas/MaaSModelsView.vue`
+- `web/src/views/maas/MaaSPricingView.vue`
+- `web/src/views/maas/MaaSUsageView.vue`
+- `web/src/router.ts` — 三路由
+- `web/src/App.vue` — 侧栏 MaaS 三页
+- `web/src/views/TenantDetailView.vue` — super_admin 钱包/账本
 
 ## 🔗 参考
 - 方案：`docs/2026-06-16-maas-platform-plan.md`

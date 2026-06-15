@@ -1,8 +1,8 @@
 # llm-gateway-go MaaS 平台实施方案
 
-> 版本：v1.0（Plan 模式终稿）
+> 版本：v1.1
 > 日期：2026-06-16
-> 状态：待实施
+> 状态：**P0 ✅ + P1 ✅ 代码完成；184 部署待执行**
 
 ---
 
@@ -136,25 +136,25 @@ credits = ceil(
 
 ## 4. 任务拆解与优先级
 
-### P0 — 数据层 + 扣费闭环（1 周）
+### P0 — 数据层 + 扣费闭环 ✅（commit `39e7f389`）
 
-| ID | 任务 | 验收 |
-|----|------|------|
-| P0-1 | SQL 迁移：settings/plans/topup/wallet/ledger/model_rates + request_logs.credits_charged | 迁移可回滚；startup ensure 幂等 |
-| P0-2 | `pkg/maas` 计费引擎：CalcCredits + Deduct + 402 门禁 | 单元测试 ≥5 场景 |
-| P0-3 | relay 集成：成功请求写 credits_charged + ledger | request_logs 新字段有值 |
-| P0-4 | Admin API：settings/plans CRUD | curl 200 |
-| P0-5 | 租户 API：wallet + models(积分率) | 非 default JWT 403 不能访问 admin 成本 |
+| ID | 任务 | 验收 | 状态 |
+|----|------|------|------|
+| P0-1 | SQL 迁移：settings/plans/topup/wallet/ledger/model_rates + request_logs.credits_charged | 迁移可回滚；startup ensure 幂等 | ✅ |
+| P0-2 | `maas/` 计费引擎：CalcCredits + Deduct + 402 门禁 | 单元测试 ≥5 场景 | ✅ |
+| P0-3 | relay 集成：成功请求写 credits_charged + ledger | request_logs 新字段有值 | ✅ |
+| P0-4 | Admin API：settings/plans CRUD | curl 200 | ✅ |
+| P0-5 | 租户 API：wallet + models(积分率) | 非 default JWT 403 不能访问 admin 成本 | ✅ |
 
-### P1 — 前端三页 + 租户详情（1 周）
+### P1 — 前端三页 + 租户详情 ✅（commit `0549641b`）
 
-| ID | 任务 | 验收 |
-|----|------|------|
-| P1-1 | `MaaSModelsView.vue` | Playwright 截图；列含积分/1M |
-| P1-2 | `MaaSPricingView.vue` | 三档月包+三档加油包展示 |
-| P1-3 | `MaaSUsageView.vue` | 图表用积分；无 USD |
-| P1-4 | TenantDetail 增 订阅/加油/账本 tabs | super_admin 可点进记录 |
-| P1-5 | 导航/路由按租户裁剪 | tenant_admin 看不到提供商 |
+| ID | 任务 | 验收 | 状态 |
+|----|------|------|------|
+| P1-1 | `MaaSModelsView.vue` | Playwright 截图；列含积分/1M | ✅ 代码；生产待 deploy |
+| P1-2 | `MaaSPricingView.vue` | 三档月包+三档加油包展示 | ✅ 代码；生产待 deploy |
+| P1-3 | `MaaSUsageView.vue` | 图表用积分；无 USD | ✅ 代码；生产待 deploy |
+| P1-4 | TenantDetail 增 订阅/加油/账本 tabs | super_admin 可点进记录 | ✅ |
+| P1-5 | 导航/路由按租户裁剪 | tenant_admin 看不到提供商 | ✅ |
 
 ### P2 — 运营与支付（后续）
 
