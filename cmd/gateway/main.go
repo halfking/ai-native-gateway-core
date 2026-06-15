@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -434,6 +435,15 @@ func main() {
 			if adminHandler != nil {
 				adminHandler.SetFeedbackAnalyzer(feedbackAnalyzer)
 			}
+
+			// v2.1: tuning_signals async writer. Wired with the same PG
+			// pool the rest of the system uses; runs an independent
+			// batching goroutine so request_logs is unaffected.
+			telemetry.Adapter.PoolExec = func(ctx context.Context, sql string, args ...any) (telemetry.PgxTag, error) {
+				return dbConn.Pool().Exec(ctx, sql, args...)
+			}
+			telemetry.StartTuningWriter()
+			defer telemetry.StopTuningWriter()
 
 			slog.Info("auto-route decider enabled (with realtime LISTEN/NOTIFY + tuning feedback loop)")
 		}
