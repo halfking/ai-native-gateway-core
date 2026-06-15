@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
@@ -11,10 +12,31 @@ import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
   resolveRouting,
   type RoutingPolicy, type ScoringWeights, type RoutingResolveResponse,
+  type RoutingCandidate,
 } from '../api'
 import SixDimScoreBar from '../components/SixDimScoreBar.vue'
+import ModelPicker from '../components/ModelPicker.vue'
 
-const activeTab = ref<'overview' | 'policy' | 'live'>('overview')
+const RESOLVE_LOG_KEY = 'llmgw_resolve_log'
+const RESOLVE_LOG_MAX = 50
+
+interface ResolveLogEntry {
+  ts: string
+  model: string
+  profile: string
+  path: string
+  routable: number
+  total: number
+  top_cred: number | null
+}
+
+const route = useRoute()
+const activeTab = ref<'overview' | 'policy' | 'live' | 'resolve'>('overview')
+
+function tabFromQuery(q: unknown): typeof activeTab.value | null {
+  if (q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
+  return null
+}
 
 // ── Overview ──────────────────────────────────────────
 const indexData = ref<AutoRouteIndexEntry[]>([])
@@ -178,12 +200,100 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
+// ── Resolve (凭据路由) ─────────────────────────────────
+const modelInput = ref('')
+const clientProfile = ref('')
+const resolution = ref<RoutingResolveResponse | null>(null)
+const resolveCandidates = ref<RoutingCandidate[]>([])
+const resolving = ref(false)
+const resolveErr = ref('')
+const resolved = ref(false)
+const showUnavailable = ref(false)
+const resolveLog = ref<ResolveLogEntry[]>([])
+
+const filteredResolveCandidates = computed(() =>
+  showUnavailable.value ? resolveCandidates.value : resolveCandidates.value.filter(c => c.routable)
+)
+const resolveUnavailableCount = computed(() =>
+  resolveCandidates.value.filter(c => !c.routable).length
+)
+
+function loadResolveLog() {
+  try {
+    const raw = localStorage.getItem(RESOLVE_LOG_KEY)
+    resolveLog.value = raw ? JSON.parse(raw) : []
+  } catch {
+    resolveLog.value = []
+  }
+}
+
+function saveResolveLog() {
+  localStorage.setItem(RESOLVE_LOG_KEY, JSON.stringify(resolveLog.value.slice(0, RESOLVE_LOG_MAX)))
+}
+
+function appendResolveLog(res: RoutingResolveResponse, profile: string) {
+  const routable = res.candidates.filter(c => c.routable).length
+  const top = res.candidates.find(c => c.routable)
+  resolveLog.value.unshift({
+    ts: new Date().toISOString(),
+    model: res.client_model,
+    profile,
+    path: res.resolution_path,
+    routable,
+    total: res.candidates.length,
+    top_cred: top?.credential_id ?? null,
+  })
+  resolveLog.value = resolveLog.value.slice(0, RESOLVE_LOG_MAX)
+  saveResolveLog()
+}
+
+function clearResolveLog() {
+  resolveLog.value = []
+  localStorage.removeItem(RESOLVE_LOG_KEY)
+}
+
+async function onModelPicked(value: string | string[]) {
+  const name = typeof value === 'string' ? value.trim() : ''
+  if (!name) return
+  modelInput.value = name
+  await doResolve()
+}
+
+async function doResolve() {
+  if (!modelInput.value.trim()) return
+  resolving.value = true
+  resolveErr.value = ''
+  try {
+    const profile = clientProfile.value.trim()
+    const res = await resolveRouting(modelInput.value.trim(), profile || undefined)
+    resolution.value = res
+    resolveCandidates.value = res.candidates
+    resolved.value = true
+    appendResolveLog(res, profile)
+  } catch (e: unknown) {
+    resolveErr.value = e instanceof Error ? e.message : '查询失败'
+  } finally {
+    resolving.value = false
+  }
+}
+
+function replayFromLog(entry: ResolveLogEntry) {
+  modelInput.value = entry.model
+  clientProfile.value = entry.profile
+  doResolve()
+}
+
 watch(autoRefresh, (v) => { v ? startPoll() : stopPoll() })
 watch(activeTab, (tab) => {
   if (tab === 'live') { loadAudit(); loadDecisions(); if (autoRefresh.value) startPoll() }
   else stopPoll()
   if (tab === 'policy') { loadPolicy(); loadCosts() }
+  if (tab === 'resolve') loadResolveLog()
 })
+watch(() => route.query.tab, (q) => {
+  const t = tabFromQuery(q)
+  if (t) activeTab.value = t
+}, { immediate: true })
 
 // ── Helpers ───────────────────────────────────────────
 function fmt(n: number | undefined, digits = 2): string {
@@ -231,6 +341,14 @@ const heroChips = computed(() => {
       { label: 'Top模型', value: topModel?.model || '-' },
     ]
   }
+  if (activeTab.value === 'resolve') {
+    const routable = resolveCandidates.value.filter(c => c.routable).length
+    return [
+      { label: '可路由', value: resolved.value ? String(routable) : '-' },
+      { label: '候选', value: resolved.value ? String(resolveCandidates.value.length) : '-' },
+      { label: '记录', value: String(resolveLog.value.length) },
+    ]
+  }
   return [
     { label: '算法', value: 'v' + (policy.value?.algorithm_version ?? '-') },
     { label: 'Tier回退', value: String(policy.value?.tier_fallback_max ?? '-') },
@@ -239,8 +357,11 @@ const heroChips = computed(() => {
 })
 
 onMounted(async () => {
+  const t = tabFromQuery(route.query.tab)
+  if (t) activeTab.value = t
   await loadIndex()
   await loadAudit()
+  if (activeTab.value === 'resolve') loadResolveLog()
 })
 onUnmounted(() => stopPoll())
 </script>
@@ -255,6 +376,7 @@ onUnmounted(() => stopPoll())
           <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
           <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
           <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
+          <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
         </div>
         <router-link to="/routing-v2/work-types" class="nav-link-wt">工作类型</router-link>
         <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
@@ -489,6 +611,124 @@ onUnmounted(() => stopPoll())
             </tbody>
           </table>
           <div v-else class="text-muted">暂无</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Tab D: Resolve (凭据路由) ═══ -->
+    <div v-if="activeTab === 'resolve'" class="tab-content">
+      <div class="card compact-card flat-card">
+        <div class="section-head tight">
+          <span class="layer-tag l2">L2</span>
+          <h3>凭据路由解析</h3>
+        </div>
+        <div class="resolve-row">
+          <div class="resolve-picker">
+            <ModelPicker
+              v-model="modelInput"
+              placeholder="选择模型…"
+              title="凭据路由模型"
+              @update:model-value="onModelPicked"
+            />
+          </div>
+          <input
+            v-model="clientProfile"
+            class="resolve-profile"
+            placeholder="client profile"
+            title="cursor / roocode / cline"
+          />
+          <button class="btn btn-primary btn-sm" :disabled="resolving || !modelInput.trim()" @click="doResolve">
+            {{ resolving ? '查询中…' : '查询路由' }}
+          </button>
+        </div>
+        <div v-if="resolveErr" class="alert alert-danger compact-alert">{{ resolveErr }}</div>
+      </div>
+
+      <div v-if="resolution" class="card compact-card">
+        <div class="section-head tight"><h3>模型解析</h3></div>
+        <div class="resolve-meta">
+          <span><span class="text-muted">客户端：</span><code>{{ resolution.client_model }}</code></span>
+          <span><span class="text-muted">路径：</span>{{ resolution.resolution_path }}</span>
+          <span v-if="resolution.canonical_name"><span class="text-muted">Canonical：</span>{{ resolution.canonical_name }}</span>
+        </div>
+        <div v-if="resolution.plan_order.length" class="plan-order">
+          执行顺序（P2C+粘性）：
+          <span v-for="(p, i) in resolution.plan_order" :key="p.credential_id">
+            {{ i > 0 ? ' → ' : '' }}#{{ p.credential_id }} ({{ p.raw_model }})
+          </span>
+        </div>
+      </div>
+
+      <div v-if="resolved" class="card compact-card">
+        <div class="card-toolbar">
+          <div class="toolbar-left">
+            <span class="layer-tag l2">L2</span>
+            <span class="toolbar-title">路由候选 — {{ modelInput }}</span>
+          </div>
+          <label v-if="resolveUnavailableCount > 0" class="show-unavail">
+            <input type="checkbox" v-model="showUnavailable" />
+            不可用（{{ resolveUnavailableCount }}）
+          </label>
+        </div>
+        <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
+        <div v-else-if="filteredResolveCandidates.length === 0" class="empty-hint">
+          暂无可用凭据 — {{ resolveUnavailableCount }} 个不可用
+        </div>
+        <div v-else class="table-wrap">
+          <table class="dense-table">
+            <thead>
+              <tr>
+                <th>得分</th><th>供应商</th><th>凭据</th><th>上游</th><th>Tier</th><th>计费</th><th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in filteredResolveCandidates" :key="c.credential_id" :style="c.routable ? '' : 'opacity:0.55'">
+                <td>
+                  <span class="score-pill" :class="c.composite_score != null && c.composite_score >= 70 ? 'good' : ''">
+                    {{ c.composite_score != null ? c.composite_score.toFixed(1) : '—' }}
+                  </span>
+                </td>
+                <td>{{ c.provider_name }}</td>
+                <td>
+                  <div>#{{ c.credential_id }}</div>
+                  <div class="text-muted">{{ c.credential_label }}</div>
+                </td>
+                <td><code class="mono-sm">{{ c.model_name }}</code></td>
+                <td>T{{ c.tier }} · w{{ c.weight }}</td>
+                <td>{{ c.billing_mode || 'token' }}<span v-if="c.billing_round === 2" class="text-muted"> R2</span></td>
+                <td>
+                  <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
+                    {{ c.routable ? '可路由' : '不可用' }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-if="resolveLog.length" class="card compact-card">
+        <div class="card-toolbar">
+          <div class="toolbar-left"><span class="toolbar-title">运行记录</span></div>
+          <button class="btn btn-ghost btn-sm" @click="clearResolveLog">清空</button>
+        </div>
+        <div class="table-wrap">
+          <table class="dense-table">
+            <thead>
+              <tr><th>时间</th><th>模型</th><th>Profile</th><th>路径</th><th>可路由</th><th>Top凭据</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(e, i) in resolveLog" :key="i">
+                <td>{{ new Date(e.ts).toLocaleTimeString() }}</td>
+                <td class="model-name">{{ e.model }}</td>
+                <td>{{ e.profile || '—' }}</td>
+                <td class="mono-sm text-muted">{{ e.path }}</td>
+                <td>{{ e.routable }}/{{ e.total }}</td>
+                <td>{{ e.top_cred != null ? '#' + e.top_cred : '—' }}</td>
+                <td><button class="btn btn-ghost btn-sm" @click="replayFromLog(e)">重查</button></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -922,6 +1162,16 @@ onUnmounted(() => stopPoll())
 
 .text-muted { color: var(--muted); font-size: 10px; }
 .text-danger { color: var(--danger); font-size: 10px; }
+
+.resolve-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.resolve-picker { flex: 1; min-width: 200px; }
+.resolve-profile { width: 120px; font-size: 11px; padding: 3px 6px; }
+.resolve-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 11px; }
+.resolve-meta code { font-size: 10px; }
+.plan-order { margin-top: 6px; font-size: 10px; color: var(--muted); word-break: break-all; }
+.mono-sm { font-family: ui-monospace, monospace; font-size: 9px; }
+.show-unavail { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); cursor: pointer; }
+.show-unavail input { width: auto; }
 
 @media (max-width: 768px) {
   .top-bar-head { gap: 6px; }
