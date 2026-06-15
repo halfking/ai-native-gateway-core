@@ -399,7 +399,7 @@ func (e *Executor) executeAnthropic(
 		if tryErr == nil {
 			return result, nil
 		}
-		if cle, ok := tryErr.(*contextLengthHTTPError); ok && cand.ContextWindow != nil {
+		if cle, ok := tryErr.(*contextLengthHTTPError); ok {
 			switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, cle.status) {
 			case ctxLenRetry:
 				bodyBytes, err = e.prepareAnthropicRequestBody(params, cand, sourceBody)
@@ -557,7 +557,7 @@ func (e *Executor) executeAnthropicOnce(
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 		}
 		if !errorsx.IsRetryable(errKind) {
-			if errorsx.IsContextLength(errKind) {
+			if errorsx.IsContextLength(errKind) || shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {
 				return nil, &contextLengthHTTPError{
 					status:  resp.StatusCode,
 					body:    append([]byte(nil), body[:n]...),

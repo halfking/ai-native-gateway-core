@@ -342,8 +342,9 @@ func (e *Executor) executeOpenAI(
 					// Q4 (anthropic-messages passthrough) is skipped: the
 					// body bytes are owned by the Q4 streaming writer and
 					// mid-stream rewriting would break the byte contract.
-					if errorsx.IsContextLength(errKind) &&
-						cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
+					if (errorsx.IsContextLength(errKind) ||
+						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
+						cand.Protocol != "anthropic-messages" {
 						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode) {
 						case ctxLenRetry:
 							bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
