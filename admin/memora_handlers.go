@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -332,55 +331,69 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	sc := parseSessionScope(r)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var apiKeyID *int64
+	where, whereArgs := sessionLogsWhere(taskID, sc)
 	var requestCount int
 	var latestModel *string
 	err := h.db.QueryRow(ctx, `
 		SELECT
-			(SELECT api_key_id FROM request_logs
-			 WHERE gw_task_id = $1 ORDER BY ts DESC LIMIT 1),
 			COUNT(*),
-			(SELECT client_model FROM request_logs
-			 WHERE gw_task_id = $1 ORDER BY ts DESC LIMIT 1)
-		FROM request_logs
-		WHERE gw_task_id = $1
-	`, taskID).Scan(&apiKeyID, &requestCount, &latestModel)
-	if err != nil {
+			(SELECT client_model FROM request_logs `+where+` ORDER BY ts DESC LIMIT 1)
+		FROM request_logs `+where+`
+	`, whereArgs...).Scan(&requestCount, &latestModel)
+	if err != nil || requestCount == 0 {
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
 	}
 
-	var userID string
-	if apiKeyID != nil {
-		userID = fmt.Sprintf("k:%d:%s", *apiKeyID, taskID)
+	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc)
+	userID := ""
+	if err == nil && apiKeyID > 0 {
+		userID = memora.UserID(apiKeyID, taskID)
 	}
 
 	var facts []map[string]any
+	var factsSearchErr string
 	if h.memoraClient != nil && !h.memoraClient.Disabled() && userID != "" {
+		searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
+		var memories []memora.Memory
+		var searchErr error
 		if mc, ok := h.memoraClient.(interface {
+			SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+		}); ok {
+			memories, searchErr = mc.SearchAdmin(searchCtx, userID, "", 100)
+		} else if mc, ok := h.memoraClient.(interface {
 			Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
 		}); ok {
-			searchCtx, searchCancel := context.WithTimeout(ctx, 5*time.Second)
-			memories, searchErr := mc.Search(searchCtx, userID, "", 20)
-			searchCancel()
-			if searchErr == nil {
-				for _, m := range memories {
-					facts = append(facts, map[string]any{
-						"id":     m.ID,
-						"memory": m.Text,
-						"score":  m.Score,
-						"tags":   m.Tags,
-					})
-				}
+			memories, searchErr = mc.Search(searchCtx, userID, "", 100)
+		}
+		searchCancel()
+		if searchErr == nil {
+			for _, m := range memories {
+				facts = append(facts, map[string]any{
+					"id":     m.ID,
+					"memory": m.Text,
+					"score":  m.Score,
+					"tags":   m.Tags,
+				})
 			}
+		} else {
+			factsSearchErr = searchErr.Error()
 		}
 	}
 	if facts == nil {
 		facts = []map[string]any{}
 	}
+
+	var writtenFromLog int
+	var extractedAt *time.Time
+	_ = h.db.QueryRow(ctx, `
+		SELECT written, extracted_at FROM session_memora_extraction_log WHERE task_id = $1
+	`, taskID).Scan(&writtenFromLog, &extractedAt)
 
 	var title string
 	if len(facts) > 0 {
@@ -397,14 +410,27 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"task_id":       taskID,
-		"user_id":       userID,
-		"request_count": requestCount,
-		"facts":         facts,
-		"title":         title,
+		"task_id":           taskID,
+		"user_id":           userID,
+		"request_count":     requestCount,
+		"facts":             facts,
+		"facts_visible":     len(facts),
+		"facts_written":     writtenFromLog,
+		"title":             title,
+		"hours":             sc.Hours,
+		"scoped_session_id": nil,
+	}
+	if sc.SessionID != "" {
+		resp["scoped_session_id"] = sc.SessionID
+	}
+	if factsSearchErr != "" {
+		resp["facts_search_error"] = factsSearchErr
 	}
 	if latestModel != nil {
 		resp["latest_model"] = *latestModel
+	}
+	if extractedAt != nil {
+		resp["extracted_at"] = extractedAt.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -447,15 +473,20 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	limit := 200
+	sc := parseSessionScope(r)
+	limit := 500
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
 			limit = n
 		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+
+	where, args := sessionLogsWhere(taskID, sc)
+	args = append(args, limit)
+	limitArg := "$" + strconv.Itoa(len(args))
 
 	var sessionID *string
 	var totalPromptTokens, totalCompletionTokens int
@@ -479,10 +510,10 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			request_mode,
 			gw_session_id
 		FROM request_logs
-		WHERE gw_task_id = $1
+		`+where+`
 		ORDER BY ts ASC
-		LIMIT $2
-	`, taskID, limit)
+		LIMIT `+limitArg+`
+	`, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -573,8 +604,19 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		"task_id":                  taskID,
 		"session_id":               nilStr(sessionID),
 		"messages":                 messages,
+		"message_count":            len(messages),
+		"request_count":            len(messages),
+		"hours":                    sc.Hours,
+		"scoped_session_id":        scopedSessionIDResp(sc.SessionID),
 		"total_prompt_tokens":      totalPromptTokens,
 		"total_completion_tokens":  totalCompletionTokens,
 		"total_cost_usd":           totalCost,
 	})
+}
+
+func scopedSessionIDResp(sessionID string) any {
+	if sessionID == "" {
+		return nil
+	}
+	return sessionID
 }

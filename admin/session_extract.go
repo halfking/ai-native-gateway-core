@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +77,9 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID)
+	sc := parseSessionScope(r)
+
+	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
@@ -87,15 +90,23 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	turns, err := h.loadSessionPreviewTurns(ctx, taskID, 200)
+	turns, err := h.loadSessionPreviewTurns(ctx, taskID, sc, 500)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	var existingFacts []string
-	searchCtx, searchCancel := context.WithTimeout(ctx, 5*time.Second)
-	memories, searchErr := writer.Search(searchCtx, userID, "", 30)
+	searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
+	var memories []memora.Memory
+	var searchErr error
+	if adminSearcher, ok := writer.(interface {
+		SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	}); ok {
+		memories, searchErr = adminSearcher.SearchAdmin(searchCtx, userID, "", 30)
+	} else {
+		memories, searchErr = writer.Search(searchCtx, userID, "", 30)
+	}
 	searchCancel()
 	if searchErr == nil {
 		for _, m := range memories {
@@ -208,20 +219,24 @@ func (h *Handler) handleSessionExtractionStatus(w http.ResponseWriter, r *http.R
 	})
 }
 
-func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string) (int, error) {
+func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc sessionScope) (int, error) {
+	where, args := sessionLogsWhere(taskID, sc)
 	var apiKeyID *int64
 	err := h.db.QueryRow(ctx, `
 		SELECT api_key_id FROM request_logs
-		WHERE gw_task_id = $1 AND api_key_id IS NOT NULL
+		`+where+` AND api_key_id IS NOT NULL
 		ORDER BY ts DESC LIMIT 1
-	`, taskID).Scan(&apiKeyID)
+	`, args...).Scan(&apiKeyID)
 	if err != nil || apiKeyID == nil {
 		return 0, err
 	}
 	return int(*apiKeyID), nil
 }
 
-func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, limit int) ([]memora.PreviewTurn, error) {
+func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, limit int) ([]memora.PreviewTurn, error) {
+	where, args := sessionLogsWhere(taskID, sc)
+	args = append(args, limit)
+	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			request_preview,
@@ -229,10 +244,10 @@ func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, li
 			work_type,
 			request_mode
 		FROM request_logs
-		WHERE gw_task_id = $1
+		`+where+`
 		ORDER BY ts ASC
-		LIMIT $2
-	`, taskID, limit)
+		LIMIT `+limitArg+`
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
