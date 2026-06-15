@@ -21,6 +21,7 @@ func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/maas/topup-packages", h.admin(h.handleMaasPublicTopup))
 	mux.HandleFunc("/api/maas/wallet", h.admin(h.handleMaasWallet))
 	mux.HandleFunc("/api/maas/ledger", h.admin(h.handleMaasLedger))
+	mux.HandleFunc("/api/maas/usage/summary", h.admin(h.handleMaasUsageSummary))
 }
 
 func (h *Handler) maasSvc() *maas.Service {
@@ -260,6 +261,37 @@ func (h *Handler) handleMaasWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, wallet)
+}
+
+func (h *Handler) handleMaasUsageSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			days = n
+		}
+	}
+	limit := 10
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	tenantID := GetTenantID(r)
+	summary, err := svc.QueryUsageSummary(r.Context(), tenantID, days, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (h *Handler) handleMaasLedger(w http.ResponseWriter, r *http.Request) {

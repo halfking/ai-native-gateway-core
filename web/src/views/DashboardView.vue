@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
+import TenantDashboardView from './TenantDashboardView.vue'
 import {
   getUsageSummary,
   getUsageByModel,
@@ -44,6 +45,8 @@ const tenantLabel = computed(() => {
     return `租户: ${tenantId}`
   }
 })
+
+const showTenantDashboard = computed(() => !isDefaultTenant())
 
 const proxyWarning = computed(() => {
   const p = health.value?.proxy
@@ -150,7 +153,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div>
+  <TenantDashboardView v-if="showTenantDashboard" />
+  <div v-else>
     <div class="page-header">
       <div class="page-header-title">
         <h2>仪表盘</h2>

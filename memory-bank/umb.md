@@ -1,7 +1,7 @@
 # UMB — llm-gateway-go MaaS 积分计费平台
 
 > **最后更新**：2026-06-16
-> **模式**：P0+P1 已部署 184 / **镜像 gitsha-399f63c0 seq-202**
+> **模式**：P0+P1 已部署 184 / **镜像 gitsha-399f63c0 seq-204**
 > **任务**：对外 MaaS 平台 — 积分体系 + 套餐 + 加油包 + 租户隔离
 
 ## 🎯 当前任务
@@ -39,37 +39,50 @@
 | P1-3 | `MaaSUsageView.vue` — consume 汇总 + 流水表 | ✅ |
 | P1-4 | TenantDetail 增 钱包/账本 tabs + adjust 表单 | ✅ |
 | P1-5 | 导航/路由：/maas/models、/maas/pricing、/maas/usage 全租户可见 | ✅ |
+| P1-6 | 普通租户仪表盘 + 导航裁剪 + `/api/maas/usage/summary` | ✅ |
 
 ### P1 关键文件
 - `web/src/api.ts` — MaaS 类型与 API 函数
 - `web/src/views/maas/MaaSModelsView.vue`
 - `web/src/views/maas/MaaSPricingView.vue`
 - `web/src/views/maas/MaaSUsageView.vue`
-- `web/src/router.ts` — 三路由
-- `web/src/App.vue` — 侧栏 MaaS 三页
+- `web/src/views/TenantDashboardView.vue` — 非 default 租户积分仪表盘
+- `maas/usage.go` — QueryUsageSummary（request_logs.credits_charged）
+- `admin/maas_handlers.go` — GET /api/maas/usage/summary
+- `web/src/router.ts` — requiresPlatformOps 守卫
+- `web/src/App.vue` — platformOps 侧栏过滤
 - `web/src/views/TenantDetailView.vue` — super_admin 钱包/账本
 
-## ✅ 184 部署（2026-06-16 00:39 UTC+8）
+## ✅ 184 部署（2026-06-16 00:48 CST）
 
 | 项 | 值 |
 |----|-----|
-| 子模块 SHA | `399f63c0` |
-| 镜像 | `kx-llm-gateway-go:gitsha-399f63c0` / seq-202 |
-| 主仓 bump | `28ed2e95`（子模块指针） |
-| 部署 tag | `deploy/prod-184-20260616-003929-5c8edaac0706` |
-| healthz | `https://llmgo.kxpms.cn/healthz` → 200 |
-| MaaS API | `/api/maas/{settings,models,plans,wallet,ledger}` 全 200 |
-| 前端 bundle | `/maas/models|pricing|usage` 路由 +「积分」文案已打入 dist |
+| 子模块 | `399f63c0`（部署前 `git reset --hard` + `git clean -fd` 清本地脏树） |
+| 主仓 HEAD（post） | `0b61e984` + tag **`deploy/prod-184-20260616-004828-71fbbdeee36a`** |
+| pre checkpoint | `deploy/prod-184/checkpoints/prod-184-20260616-003951-pre.md` |
+| 镜像 | **`kx-llm-gateway-go:gitsha-399f63c0`** / **seq-204** / 容器 `VERSION=1.0.0-399f63c0-2026-06-15` |
+| 脚本 | `./scripts/deploy-llm-gateway-go-184.sh --only app`（`ALLOW_DOCKERHUB_FROM=1`） |
+| rollout | `llm-gateway-go-deployment` successfully rolled out |
+| healthz | **200** `{"status":"ok",...}` |
+| `/api/maas/models` 无鉴权 | **401**（已非 404） |
+| `/api/maas/models` JWT admin | **200** + models JSON |
 
-### 验收备注
-- 登录页副标题已显示「开轩 MaaS 控制面」
-- 未登录访问 `/maas/models` 正确重定向 `/login`（SPA 路由生效）
-- 三页积分 UI（模型单价/钱包余额/消耗流水）需 JWT 登录后目视确认
+### 验收（2026-06-16 00:48）
+
+| 检查项 | 结果 |
+|--------|------|
+| Playwright 登录 + 侧栏三菜单 + `/maas/models` | **FAIL**（Chromium 二进制未就绪；`npx playwright install` 挂起无产出） |
+| API 登录 + MaaS 三接口 | **PASS** |
+| 生产 JS 含「MaaS 模型/套餐/消耗」 | **PASS**（`assets/index-Bp9l-AVY.js`） |
+| pre-deploy-verify Step 4 | **FAIL**（Dockerfile 直连 docker.io；部署旁路 `ALLOW_DOCKERHUB_FROM=1`） |
+
+### 备注
+- 静态 `/version.json` 仍显示旧 `git_sha=9e6eb473`（web 产物未 bump version.json）；以 k8s 镜像 tag / 容器 `VERSION` 为准。
+- `git pull origin main` 本机失败（远程权限）；子模块已在 `399f63c0`。
 
 ## 🔜 P2 待办
 - 套餐购买 / 加油包下单流程（支付对接）
 - 非 default 租户隔离端到端验收
-- Dockerfile FROM 迁移 daocloud mirror（pre-deploy Step 4 当前 FAIL）
 
 ## 🔗 参考
 - 方案：`docs/2026-06-16-maas-platform-plan.md`

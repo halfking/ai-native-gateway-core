@@ -2803,6 +2803,34 @@ export function getMaasLedger(limit = 50) {
   return req<{ items: MaasLedgerEntry[] }>('GET', `/api/maas/ledger?limit=${limit}`)
 }
 
+export interface MaasUsageModelRow {
+  model: string
+  requests: number
+  credits: number
+}
+
+export interface MaasUsageTrendRow {
+  date: string
+  requests: number
+  credits: number
+}
+
+export interface MaasUsageSummary {
+  days: number
+  tenant_id: string
+  total_requests: number
+  total_credits: number
+  by_model: MaasUsageModelRow[]
+  trend: MaasUsageTrendRow[]
+}
+
+export function getMaasUsageSummary(days = 7, limit = 10) {
+  const q = new URLSearchParams()
+  q.set('days', String(days))
+  q.set('limit', String(limit))
+  return req<MaasUsageSummary>('GET', `/api/maas/usage/summary?${q.toString()}`)
+}
+
 export function getAdminMaasWallet(tenantCode: string) {
   return req<MaasWallet>('GET', `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/wallet`)
 }

@@ -91,7 +91,7 @@ credits = ceil(
 /api/maas/plans                   GET      租户：可购套餐
 /api/maas/topup-packages          GET      租户：加油包
 /api/maas/wallet                  GET      租户：余额+月包余量
-/api/maas/usage                   GET      租户：消耗统计（积分）
+/api/maas/usage/summary         GET      租户：积分消耗汇总（by_model + trend）
 /api/maas/ledger                  GET      租户：账本流水
 /api/maas/subscribe               POST     租户：订阅（Phase1 记待支付）
 /api/maas/topup                   POST     租户：购加油包（Phase1 记待支付）
@@ -111,6 +111,23 @@ credits = ceil(
 | `/maas/settings` | 综合设置 | super_admin |
 
 导航：非 default 租户隐藏 提供商/路由全景/租户管理等；显示 MaaS 三页。
+
+### 2.6 租户仪表盘（非 default 租户）
+
+普通租户登录后 `/` 仪表盘**不展示** token/USD 运维指标，改为 MaaS 积分视图：
+
+| 区块 | 数据来源 | 交互 |
+|------|----------|------|
+| 总积分消耗 / 请求次数 / 可用余额 | `GET /api/maas/usage/summary` + `/api/maas/wallet` | 时间窗 1/7/30 天 |
+| 模型请求排行 | `by_model[].requests` | 点击柱子 → 请求明细表 |
+| 各模型用量 | `by_model[]` requests + credits | 点击行 → 明细表 |
+| 使用趋势 | `trend[]` 双图（积分 + 次数） | 点击日期 → 当日明细 |
+
+**权限裁剪**（`isPlatformOpsView` = super_admin ∧ default 租户）：
+
+- 侧栏隐藏：`/pricing`、`/routing-overview`、`/models`、`/examples` 及已有 `super: true` 项
+- 路由守卫：`requiresPlatformOps` 路由重定向 `/`
+- default 租户 super_admin 保持原整站仪表盘（token/USD/提供商统计）
 
 ---
 
