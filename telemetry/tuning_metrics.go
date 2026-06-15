@@ -35,6 +35,13 @@ package telemetry
 //
 //   llm_gateway_llm_circuit_breaker_consecutive_failures
 //     Gauge — current consecutive failure count
+//
+//   llm_gateway_auto_route_strategy_quality_score{strategy,task_type}
+//     Gauge — running quality score per A/B test strategy, by task type
+//
+//   llm_gateway_auto_route_strategy_count{strategy,outcome}
+//     Counter — A/B test signal count, by strategy and outcome
+//       (success / failure / dropped)
 
 import (
 	"time"
@@ -107,6 +114,20 @@ var (
 		Name: "llm_gateway_llm_circuit_breaker_consecutive_failures",
 		Help: "Current consecutive failure count in the LLM circuit breaker.",
 	})
+
+	// strategyQuality is the running quality_score per A/B strategy.
+	// Per-strategy comparison lets admins validate that the pattern
+	// layer actually improves quality before fully rolling it out.
+	strategyQuality = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_gateway_auto_route_strategy_quality_score",
+		Help: "Quality score of auto-route signals, by strategy and task type. A/B test gauge.",
+	}, []string{"strategy", "task_type"})
+
+	// strategyCount counts signals per strategy and outcome.
+	strategyCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_gateway_auto_route_strategy_count",
+		Help: "Auto-route signal count, by strategy and outcome (success/failure).",
+	}, []string{"strategy", "outcome"})
 )
 
 // RecordTuningSignalWritten increments the per-task-type counter and
@@ -163,4 +184,23 @@ func RecordLLMCircuitBreakerState(consecutive int, open bool) {
 	}
 	llmCircuitBreakerState.Set(state)
 	llmCircuitBreakerConsecutiveFailures.Set(float64(consecutive))
+}
+
+// RecordStrategySignal updates the per-strategy gauges. Called from
+// the tuning signal writer after a successful batch insert.
+//
+//   strategy  — Strategy string (baseline_heuristic / pattern_layered / llm_fallback)
+//   taskType  — the classified task type
+//   quality   — quality_score from the signal
+//   success   — true if the request succeeded
+func RecordStrategySignal(strategy, taskType string, quality float64, success bool) {
+	if strategy == "" {
+		strategy = "pattern_layered" // default for A/B disabled
+	}
+	strategyQuality.WithLabelValues(strategy, taskType).Set(quality)
+	outcome := "failure"
+	if success {
+		outcome = "success"
+	}
+	strategyCount.WithLabelValues(strategy, outcome).Inc()
 }
