@@ -83,7 +83,7 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 		// /api/admin/tenants
 		switch r.Method {
 		case http.MethodGet:
-			h.listTenants(w, r)
+			h.listTenantsAdmin(w, r)
 		case http.MethodPost:
 			h.createTenant(w, r)
 		default:
