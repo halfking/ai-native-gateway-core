@@ -2583,3 +2583,41 @@ export function getSessionMessages(taskId: string, limit?: number): Promise<Sess
   const qs = limit != null ? `?limit=${limit}` : ''
   return req<SessionMessagesResponse>('GET', `/api/system/session-messages/${encodeURIComponent(taskId)}${qs}`)
 }
+
+export interface SessionExtractToMemoraResponse {
+  task_id: string
+  user_id: string
+  project_id: string
+  written: number
+  skipped_noise: number
+  skipped_duplicate: number
+  memora_message_ids: string[]
+  extracted_at: string
+  samples: string[]
+  error?: string
+}
+
+export interface SessionExtractionStatusResponse {
+  task_id: string
+  extracted: boolean
+  extracted_at?: string
+  written?: number
+  skipped_noise?: number
+  skipped_duplicate?: number
+  status?: string
+}
+
+export function extractSessionToMemora(taskId: string, dryRun = false): Promise<SessionExtractToMemoraResponse> {
+  return req<SessionExtractToMemoraResponse>(
+    'POST',
+    `/api/system/session-context/${encodeURIComponent(taskId)}/extract-to-memora`,
+    { dry_run: dryRun },
+  )
+}
+
+export function getSessionExtractionStatus(taskId: string): Promise<SessionExtractionStatusResponse> {
+  return req<SessionExtractionStatusResponse>(
+    'GET',
+    `/api/system/session-context/${encodeURIComponent(taskId)}/extraction-status`,
+  )
+}

@@ -173,6 +173,8 @@ func (h *Handler) SetMemoraServices(client interface {
 	Disabled() bool
 	Ping(ctx context.Context) error
 	BaseURL() string
+	AddMessage(ctx context.Context, userID string, messages []memora.Message, info map[string]any) error
+	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
 }, sink interface {
 	Stats() memora.Stats
 }) {
@@ -254,6 +256,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/memora-sessions", h.superAdmin(h.handleMemoraSessions))
 	mux.HandleFunc("/api/system/memora-context/", h.superAdmin(h.handleMemoraContext))
 	mux.HandleFunc("/api/system/session-messages/", h.superAdmin(h.handleSessionMessages))
+	mux.HandleFunc("/api/system/session-context/", h.superAdmin(h.handleSessionContextRoutes))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))

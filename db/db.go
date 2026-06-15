@@ -53,6 +53,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureSessionMemoraExtractionLog(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -336,5 +340,29 @@ func (d *DB) ensureTuningSignalsStrategyColumn(ctx context.Context) error {
 		return err
 	}
 	slog.Info("tuning_signals.strategy column ensured (2 indexes, JSONB backfill)")
+	return nil
+}
+
+func (d *DB) ensureSessionMemoraExtractionLog(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS session_memora_extraction_log (
+		    task_id             TEXT PRIMARY KEY,
+		    extracted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    written             INT NOT NULL DEFAULT 0,
+		    skipped_noise       INT NOT NULL DEFAULT 0,
+		    skipped_duplicate   INT NOT NULL DEFAULT 0,
+		    status              TEXT NOT NULL DEFAULT 'ok',
+		    detail              JSONB
+		);
+		CREATE INDEX IF NOT EXISTS idx_session_memora_extraction_at
+		    ON session_memora_extraction_log (extracted_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("session_memora_extraction_log schema ensured")
 	return nil
 }
