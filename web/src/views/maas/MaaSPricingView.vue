@@ -9,7 +9,11 @@ import {
   createMaasOrder,
 } from '../../api'
 import type { MaasPlan, MaasTopupPackage, MaasWallet } from '../../api'
-import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../../store'
+import { isSuperAdmin, isDefaultTenant, isPlatformOpsView, getCurrentTenantId } from '../../store'
+
+const pageTitle = computed(() =>
+  isPlatformOpsView() ? 'MaaS 套餐与加油包' : '套餐与充值',
+)
 
 const router = useRouter()
 const plans = ref<MaasPlan[]>([])
@@ -97,7 +101,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>MaaS 套餐与加油包</h2>
+      <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span
           class="tenant-badge"

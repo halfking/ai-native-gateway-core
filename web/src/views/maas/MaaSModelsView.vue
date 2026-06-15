@@ -2,7 +2,11 @@
 import { ref, computed, onMounted } from 'vue'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
-import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../../store'
+import { isSuperAdmin, isDefaultTenant, isPlatformOpsView, getCurrentTenantId } from '../../store'
+
+const pageTitle = computed(() =>
+  isPlatformOpsView() ? 'MaaS 模型清单' : '模型清单',
+)
 
 const models = ref<MaasModel[]>([])
 const loading = ref(false)
@@ -49,7 +53,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>MaaS 模型清单</h2>
+      <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span
           class="tenant-badge"

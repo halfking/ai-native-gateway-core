@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   getMaasAccount,
@@ -8,7 +8,11 @@ import {
   MAAS_POOL_LABELS,
   MAAS_ORDER_STATUS_LABELS,
 } from '../../api'
-import { getCurrentTenantId } from '../../store'
+import { getCurrentTenantId, isPlatformOpsView } from '../../store'
+
+const pageTitle = computed(() =>
+  isPlatformOpsView() ? '账户中心' : '我的账户',
+)
 
 const account = ref<MaasAccount | null>(null)
 const loading = ref(false)
@@ -70,7 +74,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
-      <h2>账户中心</h2>
+      <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
         <RouterLink to="/maas/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
