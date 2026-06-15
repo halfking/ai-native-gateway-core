@@ -263,9 +263,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)
 
-		// Phase 2a analytics (matrix / flow / model-task-index).
+		// Phase 2a analytics (matrix / flow / model-task-index / decision-replay).
+		// superAdmin only: these expose cross-tenant credential/model routing
+		// internals and auto-route tuner metrics; tenant_admin must not see them.
 		analyticsH := NewAnalyticsHandlers(h.db)
-		analyticsH.RegisterAnalyticsRoutes(mux, admin)
+		analyticsH.RegisterAnalyticsRoutes(mux, h.superAdmin)
 
 		// Phase 1 work type config CRUD.
 		wtH := NewWorkTypeHandlers(h.db)
