@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
@@ -146,6 +148,77 @@ func (e *Executor) pickCompactionCandidates(ctx context.Context, profile string)
 // credentials within a model) so a single down/saturated credential does
 // not abort recovery. The caller sees ctxLenGiveUp only when the entire
 // chain has been exhausted.
+//
+// tryMemoraCompression is the FIRST attempt at context rebuilding,
+// BEFORE the LLM-summary fallback. It asks Memora for the task's most
+// relevant L1 session facts and rebuilds the body around them as a
+// "dynamic_context" user message. This is strictly best-effort: any
+// failure (Memora down, 0 results, parse error) returns (nil, false)
+// and the caller falls through to the LLM summary path.
+func (e *Executor) tryMemoraCompression(
+	ctx context.Context,
+	params *ExecParams,
+	sourceBody []byte,
+) ([]byte, bool) {
+	if e.Memora == nil || e.Memora.Disabled() || params == nil || len(sourceBody) == 0 {
+		return nil, false
+	}
+	apiKeyID := extractAPIKeyID(params.R, params.ClientID)
+	taskID := memora.TaskID(params.R, sourceBody, apiKeyID)
+	if taskID == "" {
+		return nil, false
+	}
+	userID := memora.UserID(apiKeyID, taskID)
+	if userID == "" {
+		return nil, false
+	}
+	// Build a "what is the user trying to do right now?" query from the
+	// last user/assistant turns. Use the existing extractor so we get
+	// consistent text regardless of wire format.
+	query := buildMemoraQuery(sourceBody, params.ClientProtocol)
+	if query == "" {
+		return nil, false
+	}
+	snippets, err := e.Memora.Search(ctx, userID, query, 8)
+	if err != nil || len(snippets) == 0 {
+		return nil, false
+	}
+	newBody, ok := memora.RebuildBodyWithMemoraSnippets(sourceBody, snippets, 2)
+	if !ok {
+		return nil, false
+	}
+	return newBody, true
+}
+
+// buildMemoraQuery turns the last few messages of an OpenAI/Anthropic
+// conversation into a plain-text query for Memora's /product/search.
+// We deliberately re-use the existing extractConversationText helper so
+// the wire format handling stays in one place.
+func buildMemoraQuery(body []byte, protocol string) string {
+	text, err := extractConversationText(body, protocol)
+	if err != nil || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	// Last ~1500 chars is enough for a query; longer just slows search.
+	if len(text) > 1500 {
+		text = text[len(text)-1500:]
+	}
+	return text
+}
+
+// stableHashKey returns a stable non-negative int hash of the given
+// string. Used as a fallback api_key_id when Resolution.APIKeyID is
+// unavailable. FNV-1a 32-bit; collisions across distinct strings are
+// acceptable (they only widen the user_id namespace).
+func stableHashKey(s string) int {
+	h := uint32(2166136261)
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return int(h & 0x7fffffff)
+}
+
 func (e *Executor) tryLLMContextCompaction(
 	ctx context.Context,
 	params *ExecParams,
@@ -834,6 +907,7 @@ func truncateForLog(b []byte, n int) string {
 
 type contextLengthRecoveryState struct {
 	mechanicalAttempted bool
+	memoraAttempted     bool
 	llmAttempted        bool
 }
 
@@ -885,6 +959,24 @@ func (e *Executor) handleContextLengthRecovery(
 	// state machine is consistent and we never revisit this phase.
 	st.mechanicalAttempted = true
 
+	// Memora L1 retrieval: ask Memora for the task's most relevant
+	// session facts and rebuild the body around them. Best-effort —
+	// any failure (timeout/empty/error) falls through to the LLM
+	// summary path below.
+	if !st.memoraAttempted && e.Memora != nil && !e.Memora.Disabled() {
+		st.memoraAttempted = true
+		if newBody, ok := e.tryMemoraCompression(ctx, params, *sourceBody); ok {
+			*sourceBody = newBody
+			slog.Info("context_length 4xx → memora L1 rebuild retry",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"status", status,
+				"source_bytes", len(*sourceBody),
+			)
+			return ctxLenRetry
+		}
+	}
+
 	if !st.llmAttempted {
 		st.llmAttempted = true
 		newBody, ok := e.tryLLMContextCompaction(ctx, params, targetCand, *sourceBody)
@@ -916,4 +1008,22 @@ func cwLogVal(cw *int) int {
 // classifyContextLengthFromStatus helps tests; re-export pattern from errorsx.
 func classifyContextLengthFromStatus(status int, body []byte) bool {
 	return errorsx.IsContextLength(errorsx.ClassifyErrorWithBody(status, body))
+}
+
+// extractAPIKeyID derives a stable positive integer from the inbound
+// API key. We don't have direct access to the api_keys.id (it's only
+// resolved in auth/verifier.go), so we hash the Bearer token. The
+// resulting user_id is namespaced under "k:" and never collides with
+// real human users in Memora, so collisions across distinct keys
+// only widen the namespace — they don't violate isolation.
+func extractAPIKeyID(r *http.Request, ci identity.ClientIdentity) int {
+	if r != nil {
+		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+			return stableHashKey(auth[7:])
+		}
+	}
+	if ci.IdentityHash != "" {
+		return stableHashKey(ci.IdentityHash)
+	}
+	return 0
 }
