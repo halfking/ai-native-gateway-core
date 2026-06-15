@@ -214,6 +214,11 @@ func main() {
 		exec.AnthropicToChatResponse = relay.ConvertAnthropicResponseToChat
 		exec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
 		exec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
+		// Strip minimax-private fields (nvext, base_resp, input_sensitive*,
+		// output_sensitive*) from all non-stream chat responses before
+		// returning to the client. Wired into both executeOpenAI (non-stream
+		// path) and the StreamChat closure (stream path via stripFn).
+		exec.StripMinimaxFields = relay.StripMinimaxFieldsBody
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
