@@ -20,9 +20,9 @@ func TestFamily(t *testing.T) {
 		{"gpt-4o-mini", "gpt"},
 		{"claude-3-5-sonnet", "claude"},
 		{"claude-3-5-sonnet-20241022", "claude"},
-		{"gemini-pro", "gemin"},
+		{"gemini-pro", "gemini-pro"}, // no digit, no trimming
 		{"", ""},
-		{"noDigitsHere", "noDi"},
+		{"noDigitsHere", "noDigitsHere"},
 	}
 	for _, tt := range tests {
 		got := family(tt.in)
