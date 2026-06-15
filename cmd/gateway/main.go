@@ -468,6 +468,14 @@ func main() {
 			autoRouteListener := bg.NewAutoRouteRealtimeListener(dbConn.Pool(), autoIndexRefresher)
 			autoRouteListener.Start(context.Background())
 
+			// v2.1 (P7.5): TuningViewRefresher keeps the materialised
+			// views (tuning_signals_5m + daily) up to date.
+			tuningViewRefresher := bg.NewTuningViewRefresher(dbConn.Pool())
+			tuningViewRefresher.Start(context.Background())
+			defer func() {
+				tuningViewRefresher.Stop()
+			}()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
