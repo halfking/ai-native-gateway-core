@@ -1,7 +1,7 @@
 # UMB — llm-gateway-go MaaS 积分计费平台
 
 > **最后更新**：2026-06-16
-> **模式**：P0+P1 已部署 184 / **镜像 gitsha-399f63c0 seq-204**
+> **模式**：P0+P1 已部署 184 / **镜像 gitsha-6f912dc4 seq-207**
 > **任务**：对外 MaaS 平台 — 积分体系 + 套餐 + 加油包 + 租户隔离
 
 ## 🎯 当前任务
@@ -53,7 +53,29 @@
 - `web/src/App.vue` — platformOps 侧栏过滤
 - `web/src/views/TenantDetailView.vue` — super_admin 钱包/账本
 
-## ✅ 184 部署（2026-06-16 00:48 CST）
+## ✅ 184 部署（2026-06-16 00:52 CST — 租户仪表盘）
+
+| 项 | 值 |
+|----|-----|
+| 子模块 | **`6f912dc4`**（`224ee6d3` 功能 + `6f912dc4` 先图后表顺序） |
+| 主仓 HEAD（post） | **`e5684f2f`** + tag **`deploy/prod-184-20260616-005215-15a1a46c0200`** |
+| pre checkpoint | `deploy/prod-184/checkpoints/prod-184-20260616-005104-pre.md` |
+| 镜像 | **`kx-llm-gateway-go:gitsha-6f912dc4`** / **seq-207** / `VERSION=1.0.0-6f912dc4-2026-06-15` |
+| 脚本 | `./scripts/deploy-llm-gateway-go-184.sh --only app`（`ALLOW_SUBMODULE_DIRTY=1` `ALLOW_DOCKERHUB_FROM=1`） |
+| rollout | `llm-gateway-go-deployment` successfully rolled out |
+| healthz | **200** |
+| `/api/maas/usage/summary` JWT | **200** + by_model/trend JSON |
+
+### 验收（2026-06-16 00:52）
+
+| 检查项 | 结果 |
+|--------|------|
+| `go test ./maas/...` | **PASS** |
+| `cd web && npm run build` | **PASS** |
+| 非 default 租户侧栏 | 隐藏定价管理/路由总览/模型与标签（`platformOps`） |
+| 非 default `/` 仪表盘 | `TenantDashboardView` 积分+次数，先图后表 |
+
+## ✅ 184 部署（2026-06-16 00:48 CST — P1 MaaS 三页）
 
 | 项 | 值 |
 |----|-----|
