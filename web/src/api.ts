@@ -1,4 +1,4 @@
-import { store, clearApiKey, clearAll } from './store'
+import { store, clearApiKey, clearAll, authBearer } from './store'
 import type { UserInfo } from './store'
 
 const BASE = ''  // same origin in prod; proxied in dev
@@ -10,8 +10,8 @@ function headers(method: string): Record<string, string> {
   if (method !== 'GET') {
     h['Content-Type'] = 'application/json'
   }
-  if (store.jwtToken) h['Authorization'] = `Bearer ${store.jwtToken}`
-  else if (store.apiKey) h['Authorization'] = `Bearer ${store.apiKey}`
+  const bearer = authBearer()
+  if (bearer) h['Authorization'] = `Bearer ${bearer}`
   return h
 }
 
@@ -2489,26 +2489,46 @@ export function pingMemora(): Promise<{ connected: boolean; latency_ms: number; 
 }
 
 export interface MemoraSession {
-  task_id: string
-  session_id?: string
+  task_id: string | null
+  session_id: string | null
+  no_topic: boolean
+  no_topic_label: string | null
+  api_key_prefix: string | null
+  api_key_owner_user: string | null
+  application_code: string | null
   request_count: number
   ok_count: number
   fail_count: number
+  first_activity: string
   last_activity: string
-  latest_model?: string
-  latest_key_prefix?: string
+  latest_model: string | null
 }
 
 export interface MemoraSessionsResponse {
   sessions: MemoraSession[]
   hours: number
+  no_topic_window: number
+  topic_count: number
+  no_topic_count: number
 }
 
-export function getMemoraSessions(params: { q?: string; hours?: number; limit?: number } = {}): Promise<MemoraSessionsResponse> {
+export function getMemoraSessions(params: {
+  q?: string
+  hours?: number
+  limit?: number
+  owner_user?: string
+  key_prefix?: string
+  no_topic_window?: number
+  include_no_topic?: boolean
+} = {}): Promise<MemoraSessionsResponse> {
   const qs = new URLSearchParams()
   if (params.q) qs.set('q', params.q)
   if (params.hours != null) qs.set('hours', String(params.hours))
   if (params.limit != null) qs.set('limit', String(params.limit))
+  if (params.owner_user) qs.set('owner_user', params.owner_user)
+  if (params.key_prefix) qs.set('key_prefix', params.key_prefix)
+  if (params.no_topic_window != null) qs.set('no_topic_window', String(params.no_topic_window))
+  if (params.include_no_topic === false) qs.set('include_no_topic', '0')
   const s = qs.toString()
   return req<MemoraSessionsResponse>('GET', `/api/system/memora-sessions${s ? '?' + s : ''}`)
 }
@@ -2526,8 +2546,40 @@ export interface MemoraContextResponse {
   request_count: number
   latest_model?: string
   facts: MemoraFact[]
+  title: string
 }
 
 export function getMemoraContext(taskId: string): Promise<MemoraContextResponse> {
   return req<MemoraContextResponse>('GET', `/api/system/memora-context/${encodeURIComponent(taskId)}`)
+}
+
+export interface RequestMessage {
+  ts: string
+  request_id: string
+  seq: number
+  direction: 'user' | 'assistant'
+  client_model: string | null
+  outbound_model: string | null
+  prompt_preview: string | null
+  response_preview: string | null
+  prompt_tokens: number
+  completion_tokens: number
+  latency_ms: number
+  cost_usd: number
+  status: string | null
+  error_kind?: string
+}
+
+export interface SessionMessagesResponse {
+  task_id: string
+  session_id: string | null
+  messages: RequestMessage[]
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_cost_usd: number
+}
+
+export function getSessionMessages(taskId: string, limit?: number): Promise<SessionMessagesResponse> {
+  const qs = limit != null ? `?limit=${limit}` : ''
+  return req<SessionMessagesResponse>('GET', `/api/system/session-messages/${encodeURIComponent(taskId)}${qs}`)
 }
