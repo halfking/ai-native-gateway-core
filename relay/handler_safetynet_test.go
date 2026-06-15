@@ -318,6 +318,7 @@ func TestClassifyFailureStage_GatewayEarlyExits(t *testing.T) {
 		"tpm_limit_exceeded",
 		"key_throttled",
 		"budget_exhausted",
+		"insufficient_credits",
 		"missing_key",
 		"invalid_key",
 		"auth_unavailable",

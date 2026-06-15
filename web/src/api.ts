@@ -1418,6 +1418,7 @@ export interface RequestLogRow {
   canonical_name: string | null
   provider_model: string | null
   trace_seq: number | null
+  credits_charged: number | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {

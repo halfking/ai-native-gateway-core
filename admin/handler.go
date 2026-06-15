@@ -310,6 +310,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// Phase 1 work type config CRUD.
 		wtH := NewWorkTypeHandlers(h.db)
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
+
+		h.registerMaasRoutes(mux)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -98,6 +99,7 @@ type ChatHandler struct {
 	// function so unit tests can assert on the safety-net coverage.
 	// See SetRequestLogHook.
 	requestLogHook func(*telemetry.RequestLogEntry)
+	maasSvc         *maas.Service
 	sessionGetter   interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
@@ -125,6 +127,10 @@ func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 	h.telemetryClient = tc
+}
+
+func (h *ChatHandler) SetMaas(svc *maas.Service) {
+	h.maasSvc = svc
 }
 
 // SetRequestLogHook installs an in-memory sink that records every
@@ -299,6 +305,17 @@ func (h *ChatHandler) serveWithExecutor(
 			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
 				logCtx.SetError("budget_exhausted", "budget exhausted")
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
+				return
+			}
+		}
+	}
+
+	// ── MaaS credits pre-check (non-default tenants) ─────────────────────
+	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
+			if _, ok := err.(*maas.InsufficientCreditsError); ok {
+				logCtx.SetError("insufficient_credits", "insufficient credits")
+				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Insufficient credits. Please subscribe or purchase a top-up package.", "insufficient_quota", "insufficient_credits")
 				return
 			}
 		}
@@ -944,6 +961,30 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 	}
 
+	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
+		pt, ct := 0, 0
+		if reqLog.PromptTokens != nil {
+			pt = *reqLog.PromptTokens
+		}
+		if reqLog.CompletionTokens != nil {
+			ct = *reqLog.CompletionTokens
+		}
+		if pt > 0 || ct > 0 {
+			canonical := evt.CanonicalName
+			if canonical == "" {
+				canonical = evt.ClientModel
+			}
+			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct)
+			chargeCancel()
+			if err == nil && charged > 0 {
+				reqLog.CreditsCharged = &charged
+			} else if err != nil {
+				slog.Warn("maas charge failed", "request_id", evt.RequestID, "tenant_id", keyInfo.TenantID, "error", err)
+			}
+		}
+	}
+
 	dl.PromptTokens = reqLog.PromptTokens
 	dl.CompletionTokens = reqLog.CompletionTokens
 	dl.CostUSD = reqLog.CostUSD
@@ -1161,6 +1202,7 @@ func classifyFailureStage(errCode string) string {
 		"tpm_limit_exceeded",
 		"key_throttled",
 		"budget_exhausted",
+		"insufficient_credits",
 		"missing_key",
 		"invalid_key",
 		"auth_unavailable",
