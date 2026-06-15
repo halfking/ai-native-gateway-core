@@ -27,6 +27,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"context"
+	"github.com/jackc/pgx/v5"
 )
 
 // QualityCorrelationRow is a single bucket row.
@@ -207,13 +209,7 @@ func totalSamples(rows []QualityCorrelationRow) int {
 // correlation. Each query returns (bucket, samples, success, quality)
 // and the function uses bucket-index as X and avg_quality as Y
 // (weighted by samples). The result is sorted by |r| desc.
-func computeAllInsights(ctx interface{ Done() <-chan struct{} }, db interface {
-	Query(interface{ Done() <-chan struct{} }, string, ...any) (interface {
-		Next() bool
-		Scan(...any) error
-		Err() error
-	}, error)
-}, days int) []QualityCorrelationInsight {
+func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityCorrelationInsight {
 	predictors := []string{"prompt_length", "tools", "images", "code_block"}
 	results := make([]QualityCorrelationInsight, 0, len(predictors))
 
@@ -229,7 +225,7 @@ func computeAllInsights(ctx interface{ Done() <-chan struct{} }, db interface {
 			var samples int
 			var successRate, avgQuality float64
 			if err := rows.Scan(&bucket, &samples, &successRate,
-				nil, &avgQuality, nil); err != nil {
+				new(any), &avgQuality, new(any)); err != nil {
 				continue
 			}
 			xs = append(xs, float64(bucketIndex(p, bucket)))
@@ -249,7 +245,7 @@ func computeAllInsights(ctx interface{ Done() <-chan struct{} }, db interface {
 			Interpretation: interpretCorrelation(p, r),
 		})
 	}
-	// Sort by abs r desc
+	// Sort by abs r desc (bubble sort, n is tiny)
 	for i := 0; i+1 < len(results); i++ {
 		for j := i + 1; j < len(results); j++ {
 			if results[j].AbsR > results[i].AbsR {
@@ -258,6 +254,12 @@ func computeAllInsights(ctx interface{ Done() <-chan struct{} }, db interface {
 		}
 	}
 	return results
+}
+
+// pgxQueryer is the minimal interface for computeAllInsights.
+// Satisfied by *pgxpool.Pool and *pgx.Tx.
+type pgxQueryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // bucketIndex maps a bucket label to an ordinal index for
