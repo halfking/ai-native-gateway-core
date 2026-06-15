@@ -68,13 +68,23 @@ const metricLabel = computed(() => {
 const isEmpty = computed(() =>
   !props.loading && (!props.data || !props.data.rows.length || !props.data.cols.length)
 )
+
+const ROW_H = 22 // approximate row height (font + padding + border)
+const MAX_TABLE_H = 600
+
+const tableMaxHeight = computed(() => {
+  if (!props.data?.rows?.length) return MAX_TABLE_H
+  const rows = props.data.rows.length
+  const h = (rows + 1) * ROW_H // +1 for header
+  return Math.min(Math.max(h, 120), MAX_TABLE_H)
+})
 </script>
 
 <template>
   <div class="heatmap-wrap">
     <div v-if="loading" class="heatmap-hint">加载热力图…</div>
     <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据 — 等待 Auto 路由流量写入 request_logs</div>
-    <div v-else class="table-scroll">
+    <div v-else class="table-scroll" :style="{ maxHeight: tableMaxHeight + 'px' }">
       <table class="heatmap-table">
         <thead>
           <tr>
@@ -113,7 +123,6 @@ const isEmpty = computed(() =>
 }
 .table-scroll {
   overflow: auto;
-  max-height: 320px;
   -webkit-overflow-scrolling: touch;
 }
 .heatmap-table {
