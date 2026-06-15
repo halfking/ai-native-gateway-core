@@ -268,9 +268,7 @@ func stripChunkFields(line string, stripFn func([]byte) []byte) string {
 	if len(stripped) == 0 {
 		return line
 	}
-	return "data: " + string(stripped) + "
-
-"
+	return "data: " + string(stripped) + "\n"
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
