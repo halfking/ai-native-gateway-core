@@ -41,6 +41,7 @@ const nav = [
   { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
   { path: '/tenants',           label: '租户管理', icon: '👥',    super: true },
   { path: '/users',             label: '用户管理', icon: '👤',    super: true },
+  { path: '/audit-logs',       label: '审计日志', icon: '📋',    super: true },
   { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
   { path: '/models',            label: '模型与标签', icon: '🏷️', super: true },
   { path: '/examples',          label: '请求示例',  icon: '📝' },
