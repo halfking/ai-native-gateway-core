@@ -65,6 +65,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureRoutingOverridesTable(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureRoutingOverridesAudit(pingCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -459,6 +463,40 @@ func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	return nil
 }
 
+
+// ensureRoutingOverridesTable creates the routing_overrides table used by
+// admin CRUD and autoroute OverrideStore (P7.6).
+func (d *DB) ensureRoutingOverridesTable(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS routing_overrides (
+		    id           BIGSERIAL PRIMARY KEY,
+		    task_type    TEXT NOT NULL,
+		    profile      TEXT NOT NULL DEFAULT '',
+		    mode         TEXT NOT NULL CHECK (mode IN ('pin','ban')),
+		    model_chosen TEXT,
+		    reason       TEXT NOT NULL DEFAULT '',
+		    created_by   TEXT,
+		    expires_at   TIMESTAMPTZ,
+		    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_routing_overrides_task_profile
+		    ON routing_overrides (task_type, profile);
+		CREATE INDEX IF NOT EXISTS idx_routing_overrides_expires
+		    ON routing_overrides (expires_at)
+		    WHERE expires_at IS NOT NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_overrides_unique
+		    ON routing_overrides (task_type, profile, COALESCE(model_chosen, ''), mode);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("routing_overrides table ensured")
+	return nil
+}
 
 // ensureRoutingOverridesAudit creates the audit-log table and
 // trigger for routing_overrides (P7.9). Every INSERT, UPDATE, and
