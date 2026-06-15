@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,45 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// limitField distinguishes JSON null (use tier/default), 0 (explicit unlimited),
+// and positive integers (custom limits). All three limit fields must be present
+// on PATCH /api/keys/:id/limits so the handler can always write a full row.
+type limitField struct {
+	set    bool
+	isNull bool
+	value  int
+}
+
+func (f *limitField) UnmarshalJSON(data []byte) error {
+	f.set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		f.isNull = true
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	f.value = n
+	return nil
+}
+
+func (f limitField) sqlArg(max int, fieldName string) (any, error) {
+	if !f.set {
+		return nil, fmt.Errorf("%s is required", fieldName)
+	}
+	if f.isNull {
+		return nil, nil
+	}
+	if f.value == 0 {
+		return 0, nil
+	}
+	if f.value < 1 || f.value > max {
+		return nil, fmt.Errorf("%s must be 0 (unlimited), or between 1 and %d", fieldName, max)
+	}
+	return f.value, nil
+}
 
 type keyActionRoute struct {
 	kind    string
@@ -671,46 +712,35 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 
 func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int) {
 	var body struct {
-		RateLimitRPM        *int `json:"rate_limit_rpm"`
-		RateLimitConcurrent *int `json:"rate_limit_concurrent"`
-		RateLimitTPM        *int `json:"rate_limit_tpm"`
+		RateLimitRPM        limitField `json:"rate_limit_rpm"`
+		RateLimitConcurrent limitField `json:"rate_limit_concurrent"`
+		RateLimitTPM        limitField `json:"rate_limit_tpm"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 
-	// Bound-check. Without this, a single bad PUT could set
-	// rate_limit_rpm=0 (zero-out throttling) or 999999 (oversubscribe
-	// the upstream) and silently break the key. The bounds are
-	// derived from auth/verifier.go tierDefaults: max=300/50.
-	// We double the production tier (60→10000 RPM, 20→1000
-	// concurrent) and 1B TPM as a hard ceiling.
 	const (
 		maxRPM        = 10000
 		maxConcurrent = 1000
 		maxTPM        = 1_000_000_000
 	)
-	if body.RateLimitRPM != nil {
-		if *body.RateLimitRPM < 1 || *body.RateLimitRPM > maxRPM {
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("rate_limit_rpm must be between 1 and %d", maxRPM))
-			return
-		}
+
+	rpmArg, err := body.RateLimitRPM.sqlArg(maxRPM, "rate_limit_rpm")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	if body.RateLimitConcurrent != nil {
-		if *body.RateLimitConcurrent < 1 || *body.RateLimitConcurrent > maxConcurrent {
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("rate_limit_concurrent must be between 1 and %d", maxConcurrent))
-			return
-		}
+	concurrentArg, err := body.RateLimitConcurrent.sqlArg(maxConcurrent, "rate_limit_concurrent")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	if body.RateLimitTPM != nil {
-		if *body.RateLimitTPM < 1 || *body.RateLimitTPM > maxTPM {
-			writeError(w, http.StatusBadRequest,
-				fmt.Sprintf("rate_limit_tpm must be between 1 and %d", maxTPM))
-			return
-		}
+	tpmArg, err := body.RateLimitTPM.sqlArg(maxTPM, "rate_limit_tpm")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -726,49 +756,24 @@ func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int
 		return
 	}
 
-	sets := make([]string, 0, 3)
-	args := make([]any, 0, 4)
-	argIdx := 1
-	if body.RateLimitRPM != nil {
-		sets = append(sets, fmt.Sprintf("rate_limit_rpm = $%d", argIdx))
-		args = append(args, *body.RateLimitRPM)
-		argIdx++
-	}
-	if body.RateLimitConcurrent != nil {
-		sets = append(sets, fmt.Sprintf("rate_limit_concurrent = $%d", argIdx))
-		args = append(args, *body.RateLimitConcurrent)
-		argIdx++
-	}
-	if body.RateLimitTPM != nil {
-		sets = append(sets, fmt.Sprintf("rate_limit_tpm = $%d", argIdx))
-		args = append(args, *body.RateLimitTPM)
-		argIdx++
-	}
-	if len(sets) == 0 {
-		writeError(w, http.StatusBadRequest, "no fields to update")
-		return
-	}
-
-	args = append(args, id)
-	if _, err := h.db.Exec(ctx,
-		fmt.Sprintf("UPDATE api_keys SET %s WHERE id = $%d", strings.Join(sets, ", "), argIdx),
-		args...,
-	); err != nil {
+	if _, err := h.db.Exec(ctx, `
+		UPDATE api_keys
+		SET rate_limit_rpm = $1,
+		    rate_limit_concurrent = $2,
+		    rate_limit_tpm = $3
+		WHERE id = $4
+	`, rpmArg, concurrentArg, tpmArg, id); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
 	}
 
-	resp := map[string]any{"status": "ok", "id": id}
-	if body.RateLimitRPM != nil {
-		resp["rate_limit_rpm"] = *body.RateLimitRPM
-	}
-	if body.RateLimitConcurrent != nil {
-		resp["rate_limit_concurrent"] = *body.RateLimitConcurrent
-	}
-	if body.RateLimitTPM != nil {
-		resp["rate_limit_tpm"] = *body.RateLimitTPM
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"id":                    id,
+		"rate_limit_rpm":        rpmArg,
+		"rate_limit_concurrent": concurrentArg,
+		"rate_limit_tpm":        tpmArg,
+	})
 }
 
 func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
