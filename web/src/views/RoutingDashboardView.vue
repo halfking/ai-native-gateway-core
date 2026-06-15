@@ -23,7 +23,7 @@ import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
-import { computeSankeyHeight } from '../components/analytics/sankeyLayout'
+import { computeSankeyCardHeight, computeSankeyHeight } from '../components/analytics/sankeyLayout'
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
 import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
@@ -71,12 +71,18 @@ const matrixData = ref<AnalyticsMatrix | null>(null)
 const flowData = ref<AnalyticsFlow | null>(null)
 const analyticsLoading = ref(false)
 
-const chartHeight = computed(() => {
+const heatmapChartHeight = computed(() => {
   const rows = matrixData.value?.rows?.length || 0
-  const heatmapH = rows ? (rows + 1) * 22 + 40 : 200
-  const sankeyH = computeSankeyHeight(flowData.value, 0, true) + 36
-  return Math.max(heatmapH, sankeyH, 400)
+  return Math.max(rows ? (rows + 1) * 22 + 40 : 200, 400)
 })
+
+const sankeyChartHeight = computed(() =>
+  Math.max(computeSankeyCardHeight(flowData.value), 400),
+)
+
+const sankeySvgHeight = computed(() =>
+  computeSankeyHeight(flowData.value),
+)
 
 const cellDecisions = ref<AutoRouteDecision[]>([])
 const cellModalOpen = ref(false)
@@ -624,7 +630,7 @@ onUnmounted(() => stopPoll())
           <AnalyticsKpiBar :audit="audit" />
         </div>
         <div class="analytics-charts">
-          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: heatmapChartHeight + 'px' }">
             <div class="card-toolbar">
               <div class="toolbar-left">
                 <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
@@ -660,13 +666,13 @@ onUnmounted(() => stopPoll())
               :metric="analyticsMetric"
               :col-aliases="matrixData?.meta?.col_aliases"
               :loading="analyticsLoading"
-              :min-height="chartHeight"
+              :min-height="heatmapChartHeight"
               @cell-click="onMatrixCellClick"
             />
           </div>
-          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: sankeyChartHeight + 'px' }">
             <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="chartHeight - 36" />
+            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgHeight" />
           </div>
         </div>
 

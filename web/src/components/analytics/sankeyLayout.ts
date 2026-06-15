@@ -3,8 +3,11 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 export const SANKEY_NODE_H = 32
 export const SANKEY_GAP = 8
 export const SANKEY_V_PAD = 60 // 30 top + 30 bottom inside viewBox
-export const SANKEY_LEGEND_EXTRA = 48
+/** External legend row above the SVG (may wrap to two lines). */
+export const SANKEY_DOM_LEGEND_H = 56
+export const SANKEY_SECTION_HEAD_H = 36
 export const SANKEY_MIN_H = 400
+export const SANKEY_VIEW_W = 720
 
 export interface SankeyLayerNode {
   id: string
@@ -64,10 +67,10 @@ export function buildSankeyLayers(data: AnalyticsFlow | null): SankeyLayerNode[]
   return out
 }
 
+/** SVG viewBox height for the Sankey diagram (excludes external legend DOM). */
 export function computeSankeyHeight(
   data: AnalyticsFlow | null,
   minHeight = 0,
-  includeLegend = false,
 ): number {
   if (!data?.nodes?.length) {
     return Math.max(minHeight, SANKEY_MIN_H)
@@ -76,6 +79,15 @@ export function computeSankeyHeight(
   const layers = buildSankeyLayers(data)
   const maxCol = Math.max(...layers.map(requiredColHeight), 1)
   const base = SANKEY_V_PAD + maxCol
-  const legend = includeLegend ? SANKEY_LEGEND_EXTRA : 0
-  return Math.max(base + legend, minHeight, SANKEY_MIN_H)
+  return Math.max(base, minHeight, SANKEY_MIN_H)
+}
+
+/** Full card height: section head + external legend + SVG. */
+export function computeSankeyCardHeight(
+  data: AnalyticsFlow | null,
+  minHeight = 0,
+): number {
+  return SANKEY_SECTION_HEAD_H
+    + SANKEY_DOM_LEGEND_H
+    + computeSankeyHeight(data, minHeight)
 }
