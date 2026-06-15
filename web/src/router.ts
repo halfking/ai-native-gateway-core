@@ -14,6 +14,7 @@ import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
 import CorrelationsView       from './views/CorrelationsView.vue'
 import RoutingOverrideView   from './views/RoutingOverrideView.vue'
+import QualityCorrelationsView from './views/QualityCorrelationsView.vue'
 import RequestLogsView        from './views/RequestLogsView.vue'
 import ModelsView             from './views/ModelsView.vue'
 import ProviderDetailView     from './views/ProviderDetailView.vue'
@@ -100,6 +101,7 @@ export const router = createRouter({
     { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
     { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
     { path: '/routing/overrides',  component: RoutingOverrideView, meta: { requiresSuperAdmin: true } },
+    { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/examples',           component: ExamplesView, meta: { requiresPlatformOps: true } },
 
