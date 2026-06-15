@@ -45,6 +45,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.EnsureTenantsTable(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -200,3 +204,46 @@ func (d *DB) Close() {
 		d.pool.Close()
 	}
 }
+
+// EnsureTenantsTable creates the tenants table and backfills from existing
+// tenant_id values in users and api_keys tables. Idempotent.
+func (d *DB) EnsureTenantsTable(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, tenantsSchemaSQL); err != nil {
+		return err
+	}
+	// Backfill: ensure every distinct tenant_id in users/api_keys has a row in tenants
+	// We use 'default' as the name for new backfilled rows (admin can rename later)
+	_, _ = d.pool.Exec(ctx, `
+		INSERT INTO tenants (code, name, status, description)
+		SELECT DISTINCT tenant_id, '默认租户', 'active', '由数据迁移自动创建'
+		FROM users
+		WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE tenants.code = users.tenant_id)
+	`)
+	_, _ = d.pool.Exec(ctx, `
+		INSERT INTO tenants (code, name, status, description)
+		SELECT DISTINCT tenant_id, '默认租户', 'active', '由数据迁移自动创建'
+		FROM api_keys
+		WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE tenants.code = api_keys.tenant_id)
+	`)
+	slog.Info("tenants schema ensured and backfilled")
+	return nil
+}
+
+// tenantsSchemaSQL mirrors db/migrations/006_tenants_table.sql for startup apply.
+const tenantsSchemaSQL = `
+CREATE TABLE IF NOT EXISTS tenants (
+    code VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'trial', 'suspended', 'expired', 'disabled')),
+    description TEXT NOT NULL DEFAULT '',
+    contact_email VARCHAR(256) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
+CREATE INDEX IF NOT EXISTS idx_tenants_name ON tenants(name);
+`
