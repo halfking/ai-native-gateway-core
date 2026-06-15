@@ -126,6 +126,25 @@ func applyAutoRouteFields(entry *telemetry.RequestLogEntry, c *RequestLogContext
 	if len(c.AutoDecision) > 0 {
 		v := string(c.AutoDecision)
 		entry.AutoDecision = &v
+
+		// P7.2: also populate the 4 promoted columns from the
+		// JSON payload. Parses the same wire format that
+		// relay/auto_route.go emits (autoRouteDecision) so the
+		// columns track the JSONB field exactly. Tolerates partial
+		// JSON or unexpected shapes — missing fields stay NULL.
+		var wire autoRouteDecision
+		if err := json.Unmarshal(c.AutoDecision, &wire); err == nil {
+			if wire.TaskType != "" {
+				entry.TaskTypeChosen = strPtr(wire.TaskType)
+			}
+			if wire.Confidence > 0 {
+				c := wire.Confidence
+				entry.ConfidenceNum = &c
+			}
+			if wire.ChosenModel != "" {
+				entry.ModelChosen = strPtr(wire.ChosenModel)
+			}
+		}
 	}
 	if c.AutoConfidence > 0 {
 		conf := c.AutoConfidence
