@@ -89,3 +89,6 @@ logs/
 
 # Vendored kx-design (use services/shared/kx-design instead)
 kx-design/
+version.json
+web/public/version.json
+web-vue/tsconfig.tsbuildinfo
