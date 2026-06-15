@@ -40,7 +40,7 @@ export function requiredColHeight(layerNodes: Array<{ total: number }>): number 
   }
 
   while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2)
+    const mid = Math.floor((lo + hi) / 2)
     if (sumAt(mid) <= mid) hi = mid
     else lo = mid + 1
   }
