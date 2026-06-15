@@ -273,6 +273,10 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		sessions = append(sessions, entry)
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if sessions == nil {
 		sessions = []map[string]any{}
 	}
@@ -542,6 +546,10 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		}
 		messages = append(messages, msg)
 		seq++
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	if messages == nil {
 		messages = []map[string]any{}
