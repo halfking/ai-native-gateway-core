@@ -11,6 +11,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/memora"
 )
 
+// handleMemoraStatus returns the current Memora connectivity status and
+// sink statistics for the admin UI dashboard.
 func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -57,6 +59,8 @@ func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleMemoraPing performs a manual connectivity test against Memora
+// and returns the result with latency.
 func (h *Handler) handleMemoraPing(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -105,6 +109,9 @@ type sessionRow struct {
 	HourStart        *time.Time
 }
 
+// handleMemoraSessions lists recent task/session activity from
+// request_logs, grouped by gw_task_id. Includes both topic sessions
+// (with gw_task_id) and no-topic sessions (aggregated by api_key + hour).
 func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -307,6 +314,9 @@ func nilStr(s *string) any {
 	return *s
 }
 
+// handleMemoraContext returns the L1 Memora memories stored for a
+// specific task, alongside basic request metadata and a derived title
+// (first Memora fact truncated to 60 chars).
 func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -417,6 +427,10 @@ type requestMessageRow struct {
 	GwSessionID      *string
 }
 
+// handleSessionMessages returns the ordered list of request_logs entries
+// for a specific gw_task_id, suitable for rendering a conversation timeline.
+// Each entry includes direction (user/assistant), prompt/response previews,
+// token counts, latency, cost, and status.
 func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

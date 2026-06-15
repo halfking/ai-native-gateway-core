@@ -31,7 +31,7 @@ func TestLimiterAcquireAll_Concurrent(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 
-			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash)
+			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash, 0, 0)
 			if err != nil {
 				failed.Add(1)
 				return
@@ -77,7 +77,7 @@ func TestLimiterGlobalLimit(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
 
-			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash)
+			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash, 0, 0)
 			if err != nil {
 				blocked.Add(1)
 				return
@@ -116,7 +116,7 @@ func TestLimiterPoolLimit(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
 
-			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash)
+			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash, 0, 0)
 			if err != nil {
 				blocked.Add(1)
 				return
@@ -154,7 +154,7 @@ func TestLimiterCredentialLimit(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
 
-			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash)
+			release, err := l.AcquireAll(ctx, providerID, credentialID, identityHash, 0, 0)
 			if err != nil {
 				blocked.Add(1)
 				return
@@ -277,7 +277,7 @@ func TestLimiterMultiProvider(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 				defer cancel()
 
-				release, err := l.AcquireAll(ctx, provider, 1, fmt.Sprintf("identity-%d", idx))
+				release, err := l.AcquireAll(ctx, provider, 1, fmt.Sprintf("identity-%d", idx), 0, 0)
 				if err == nil {
 					acquired.Add(1)
 					time.Sleep(time.Microsecond)
@@ -301,7 +301,7 @@ func TestLimiterRelease(t *testing.T) {
 
 	identityHash := "test-identity"
 
-	release, err := l.AcquireAll(context.Background(), 1, 1, identityHash)
+	release, err := l.AcquireAll(context.Background(), 1, 1, identityHash, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func BenchmarkLimiterAcquireRelease(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			ctx := context.Background()
-			release, err := l.AcquireAll(ctx, i%10, i%100, fmt.Sprintf("identity-%d", i%50))
+			release, err := l.AcquireAll(ctx, i%10, i%100, fmt.Sprintf("identity-%d", i%50), 0, 0)
 			if err == nil {
 				release()
 			}
@@ -339,7 +339,7 @@ func TestLimiterStats_Concurrent(t *testing.T) {
 	l := NewWithLimits(100, 10, 5, 3)
 	defer l.Stop()
 
-	release, err := l.AcquireAll(context.Background(), 1, 1, "test")
+	release, err := l.AcquireAll(context.Background(), 1, 1, "test", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

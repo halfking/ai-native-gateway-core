@@ -244,8 +244,13 @@ type ExecParams struct {
 	// Empty defaults to "openai-completions". Used by executeAnthropic to
 	// decide whether the body needs Q3 conversion (openai->anthropic).
 	ClientProtocol string
-	SessionKey    string
-	StickyKey     string
+	SessionKey     string
+	StickyKey      string
+	// KeyID is the API key ID from keyInfo.ID. Used for per-key concurrent limiting.
+	KeyID int
+	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.EffectiveConcurrent().
+	// If 0, the per-key concurrent check is skipped.
+	KeyConcurrentLimit int
 }
 
 type ExecuteResult struct {
@@ -417,6 +422,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			cand.ProviderID,
 			cand.CredentialID,
 			params.ClientID.IdentityHash,
+			params.KeyID,
+			params.KeyConcurrentLimit,
 		)
 		if acquireErr != nil {
 			slog.Debug("executor: concurrency limit, skipping candidate",

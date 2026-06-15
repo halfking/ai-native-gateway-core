@@ -176,8 +176,8 @@ func TestLimiterAcquireAllAndRelease(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Acquire all four layers
-	release1, err := l.AcquireAll(ctx, 1, 1, "hash-a")
+	// Acquire all five layers
+	release1, err := l.AcquireAll(ctx, 1, 1, "hash-a", 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestLimiterAcquireAllAndRelease(t *testing.T) {
 	}
 
 	// Acquire another — identity limit is 1, so identity layer should note it
-	release2, err := l.AcquireAll(ctx, 1, 1, "hash-b")
+	release2, err := l.AcquireAll(ctx, 1, 1, "hash-b", 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestLimiterAcquireBlocks(t *testing.T) {
 	ctx := context.Background()
 
 	// Use the only global slot
-	release1, err := l.AcquireAll(ctx, 1, 1, "hash-a")
+	release1, err := l.AcquireAll(ctx, 1, 1, "hash-a", 0, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestLimiterAcquireBlocks(t *testing.T) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
-	_, err = l.AcquireAll(timeoutCtx, 1, 1, "hash-b")
+	_, err = l.AcquireAll(timeoutCtx, 1, 1, "hash-b", 0, 0)
 	if err == nil {
 		t.Fatal("expected error when global limit reached")
 	}
@@ -253,7 +253,7 @@ func TestLimiterConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			release, err := l.AcquireAll(ctx, 1, 1, "hash-x")
+			release, err := l.AcquireAll(ctx, 1, 1, "hash-x", 0, 0)
 			if err != nil {
 				t.Errorf("goroutine %d: acquire error: %v", id, err)
 				return
