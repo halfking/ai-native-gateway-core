@@ -338,10 +338,12 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		)
 	}
 
-	// Acquire per-key concurrent slot (non-blocking — soft cap from DB)
+	// Acquire per-key concurrent slot (non-blocking — soft cap from DB).
+	// keyConcurrentLimit == 0 means "unlimited" → skip per-key check entirely.
 	var keyAcquired bool
+	var keySem *Semaphore
 	if keyID > 0 && keyConcurrentLimit > 0 {
-		keySem := l.Key(keyID, keyConcurrentLimit)
+		keySem = l.Key(keyID, keyConcurrentLimit)
 		keyAcquired = keySem.TryAcquire()
 		if !keyAcquired {
 			slog.Warn("per-key concurrent limit reached, bypassing",
@@ -353,8 +355,8 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 	}
 
 	return func() {
-		if keyAcquired {
-			l.Key(keyID, keyConcurrentLimit).Release()
+		if keyAcquired && keySem != nil {
+			keySem.Release()
 		}
 		if identAcquired {
 			ident.Release()

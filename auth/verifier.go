@@ -65,10 +65,16 @@ func (ki *KeyInfo) EffectiveRPM() int {
 }
 
 // EffectiveConcurrent returns the applicable concurrent limit.
-// A per-key value of 0 means "unlimited" (CheckConcurrent treats limit<=0 as no cap).
+// A per-key value of 0 means "unlimited" (AcquireAll skips per-key check when limit <= 0).
+// Negative values (should not exist in DB) fall through to the tier default.
 func (ki *KeyInfo) EffectiveConcurrent() int {
-	if ki.RateLimitConcurrent != nil && *ki.RateLimitConcurrent >= 0 {
-		return *ki.RateLimitConcurrent
+	if ki.RateLimitConcurrent != nil {
+		if *ki.RateLimitConcurrent == 0 {
+			return 0 // explicit unlimited
+		}
+		if *ki.RateLimitConcurrent > 0 {
+			return *ki.RateLimitConcurrent
+		}
 	}
 	tier := ki.KeyTier
 	if tier == "" {
