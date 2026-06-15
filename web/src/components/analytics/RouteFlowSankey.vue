@@ -10,9 +10,9 @@ const props = defineProps<{
 
 const W = 720
 const colX = [80, 360, 640]
-const nodeH = 18
-const gap = 4
-const MIN_H = 200
+const nodeH = 32
+const gap = 8
+const MIN_H = 400
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
@@ -55,7 +55,7 @@ const layers = computed(() => {
 
 const H = computed(() => {
   const maxNodes = Math.max(...layers.value.map(l => l.length), 1)
-  const h = 24 + maxNodes * (nodeH + gap) + 24
+  const h = 30 + maxNodes * (nodeH + gap) + 30
   return Math.max(h, props.minHeight || 0, MIN_H)
 })
 
@@ -77,11 +77,13 @@ const layout = computed(() => {
   )
 
   layers.value.forEach((layerNodes, li) => {
-    let y = 24
-    const colHeight = H.value - 48
+    let y = 30
+    const colHeight = H.value - 60
     const totalLayer = layerNodes.reduce((s, n) => s + n.total, 0) || 1
+    const totalGap = Math.max(0, layerNodes.length - 1) * gap
+    const available = Math.max(0, colHeight - totalGap)
     for (const n of layerNodes) {
-      const h = Math.max(nodeH, (n.total / totalLayer) * colHeight * 0.85)
+      const h = Math.max(nodeH, (n.total / totalLayer) * available)
       const x = colX[li] - 60
       pos[n.id] = { x, y, h }
       nodes.push({ id: n.id, label: n.label, layer: n.layer, x, y, h })
@@ -106,7 +108,7 @@ function linkPath(sourceId: string, targetId: string): string {
 
 function linkWidth(value: number): number {
   const max = Math.max(...(props.data?.links.map(l => l.value) ?? [1]), 1)
-  return 1 + (value / max) * 10
+  return 1.5 + (value / max) * 12
 }
 
 const isEmpty = computed(() =>
@@ -157,9 +159,9 @@ const TASK_LABELS: Record<string, string> = {
         </span>
       </div>
       <svg :viewBox="`0 0 ${W} ${H}`" class="sankey-svg" preserveAspectRatio="xMidYMid meet">
-        <text :x="colX[0]" y="14" class="layer-title">任务类型</text>
-        <text :x="colX[1]" y="14" class="layer-title">出站模型</text>
-        <text :x="colX[2]" y="14" class="layer-title">供应商</text>
+        <text :x="colX[0]" y="18" class="layer-title">任务类型</text>
+        <text :x="colX[1]" y="18" class="layer-title">出站模型</text>
+        <text :x="colX[2]" y="18" class="layer-title">供应商</text>
 
         <g class="links">
           <path
@@ -196,14 +198,14 @@ const TASK_LABELS: Record<string, string> = {
 </template>
 
 <style scoped>
-.sankey-wrap { width: 100%; }
+.sankey-wrap { width: 100%; display: flex; flex-direction: column; flex: 1; }
 .sankey-hint {
   padding: 16px;
   text-align: center;
   color: var(--muted);
   font-size: 11px;
 }
-.sankey-svg-wrap { overflow-x: auto; }
+.sankey-svg-wrap { overflow-x: auto; display: flex; flex-direction: column; flex: 1; }
 .sankey-legend {
   display: flex;
   gap: 12px;
@@ -237,7 +239,7 @@ const TASK_LABELS: Record<string, string> = {
   display: block;
 }
 .layer-title {
-  font-size: 9px;
+  font-size: 11px;
   fill: var(--muted);
   text-anchor: middle;
   font-weight: 600;
@@ -245,16 +247,18 @@ const TASK_LABELS: Record<string, string> = {
 .flow-link {
   fill: none;
   stroke-linecap: round;
+  opacity: 0.45;
 }
+.flow-link:hover { opacity: 0.75; }
 .flow-node {
   stroke: var(--border);
-  stroke-width: 1;
+  stroke-width: 1.5;
 }
 .flow-node.layer-0 { fill: color-mix(in srgb, var(--accent) 25%, var(--bg-subtle)); }
 .flow-node.layer-1 { fill: color-mix(in srgb, var(--success) 20%, var(--bg-subtle)); }
 .flow-node.layer-2 { fill: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle)); }
 .node-label {
-  font-size: 9px;
+  font-size: 11px;
   fill: var(--text);
   pointer-events: none;
 }
