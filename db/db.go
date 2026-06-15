@@ -49,6 +49,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureTuningSignalsStrategyColumn(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -256,3 +260,81 @@ CREATE TABLE IF NOT EXISTS tenants (
 CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE INDEX IF NOT EXISTS idx_tenants_name ON tenants(name);
 `
+
+
+// ensureTuningSignalsStrategyColumn adds the dedicated `strategy`
+// column to tuning_signals (P7.1). The strategy was previously
+// stored only in signal_payload->>'strategy' (JSONB extract), which
+// is slow and not indexable. This migration promotes it to a
+// proper TEXT column with two indexes:
+//
+//   idx_tuning_signals_strategy_ts    (strategy, ts DESC) — A/B summary
+//   idx_tuning_signals_strategy_task  (strategy, task_type, ts DESC) — breakdown
+//
+// Backward compatibility: rows that pre-date this column have
+// strategy = 'pattern_layered' (the historical default). The
+// handleStrategies endpoint reads from the column directly, but
+// still has a JSONB fallback for old data.
+func (d *DB) ensureTuningSignalsStrategyColumn(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		-- 1. Create the table if it doesn't exist (idempotent for
+		--    fresh deployments that pre-date this column).
+		CREATE TABLE IF NOT EXISTS tuning_signals (
+		    id                BIGSERIAL PRIMARY KEY,
+		    request_id        TEXT NOT NULL,
+		    session_id        TEXT,
+		    ts                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    task_type         TEXT NOT NULL,
+		    classifier        TEXT NOT NULL,
+		    confidence        NUMERIC(4,3),
+		    chosen_model      TEXT,
+		    canonical_id      INT,
+		    success_score     NUMERIC(3,2) NOT NULL DEFAULT 0.5,
+		    latency_score     NUMERIC(3,2) NOT NULL DEFAULT 0.5,
+		    cost_score        NUMERIC(3,2) NOT NULL DEFAULT 0.5,
+		    drift_flag        BOOLEAN NOT NULL DEFAULT FALSE,
+		    quality_score     NUMERIC(3,2) NOT NULL DEFAULT 0.5,
+		    latency_ms        INT,
+		    cost_usd          NUMERIC(10,6),
+		    prompt_tokens     INT,
+		    completion_tokens INT,
+		    signal_payload    JSONB,
+		    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		-- 2. Add the strategy column if it doesn't exist (the main
+		--    migration for deployments that already have the table).
+		ALTER TABLE tuning_signals
+		    ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'pattern_layered'
+		        CHECK (strategy IN ('baseline_heuristic','pattern_layered','llm_fallback'));
+
+		-- 3. Indexes for the A/B breakdown endpoint
+		--    (admin/auto_route_tuning.go::handleStrategies)
+		CREATE INDEX IF NOT EXISTS idx_tuning_signals_strategy_ts
+		    ON tuning_signals (strategy, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_tuning_signals_strategy_task
+		    ON tuning_signals (strategy, task_type, ts DESC)
+		    WHERE task_type IS NOT NULL;
+
+		-- 4. Backfill from the legacy JSONB field. New rows write
+		--    directly to the column; this catches rows from before
+		--    P7.1 that had the strategy only in JSONB.
+		UPDATE tuning_signals
+		SET strategy = COALESCE(
+		    NULLIF(signal_payload->>'strategy', ''),
+		    'pattern_layered'
+		)
+		WHERE strategy = 'pattern_layered'
+		  AND signal_payload ? 'strategy'
+		  AND signal_payload->>'strategy' IN
+		    ('baseline_heuristic','pattern_layered','llm_fallback');
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("tuning_signals.strategy column ensured (2 indexes, JSONB backfill)")
+	return nil
+}
