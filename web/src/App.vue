@@ -42,6 +42,9 @@ watch(isLoggedIn, (loggedIn) => {
 
 const nav = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
+  { path: '/maas/models',       label: 'MaaS 模型', icon: '🤖' },
+  { path: '/maas/pricing',      label: 'MaaS 套餐', icon: '💳' },
+  { path: '/maas/usage',        label: 'MaaS 消耗', icon: '📉' },
   { path: '/providers',         label: '提供商',   icon: '🔌',    super: true },
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
   { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
