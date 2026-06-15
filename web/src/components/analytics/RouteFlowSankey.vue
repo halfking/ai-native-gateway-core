@@ -8,8 +8,8 @@ import {
   SANKEY_VIEW_W,
   buildSankeyLayers,
   computeSankeyHeight,
+  nodeHeightsForColumn,
   requiredColHeight,
-  scaleNodeTotal,
 } from './sankeyLayout'
 
 const props = defineProps<{
@@ -62,23 +62,23 @@ interface LayoutNode {
 const layout = computed(() => {
   const nodes: LayoutNode[] = []
   const pos: Record<string, { x: number; y: number; h: number }> = {}
-  const contentH = Math.max(...layers.value.map(requiredColHeight), 1)
+  const contentH = Math.max(...layers.value.map((ln, i) => requiredColHeight(ln, i)), 1)
   const innerAvail = H.value - SANKEY_V_PAD
   const yStart = SANKEY_V_PAD / 2 + Math.max(0, (innerAvail - contentH) / 2)
 
   layers.value.forEach((layerNodes, li) => {
     let y = yStart
-    const colHeight = requiredColHeight(layerNodes)
-    const totalLayer = layerNodes.reduce((s, n) => s + scaleNodeTotal(n.total), 0) || 1
+    const colHeight = requiredColHeight(layerNodes, li)
     const totalGap = Math.max(0, layerNodes.length - 1) * gap
     const available = Math.max(0, colHeight - totalGap)
-    for (const n of layerNodes) {
-      const h = Math.max(nodeH, (scaleNodeTotal(n.total) / totalLayer) * available)
+    const heights = nodeHeightsForColumn(layerNodes, li, available)
+    layerNodes.forEach((n, i) => {
+      const h = heights[i] ?? nodeH
       const x = colX[li] - 60
       pos[n.id] = { x, y, h }
       nodes.push({ id: n.id, label: n.label, layer: n.layer, x, y, h })
       y += h + gap
-    }
+    })
   })
   return { nodes, pos }
 })
