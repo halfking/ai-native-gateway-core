@@ -173,6 +173,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/me", admin(h.handleAuthMe))
 	mux.HandleFunc("/api/auth/change-password", admin(h.handleChangePassword))
 	mux.HandleFunc("/api/users", h.superAdmin(h.handleUsers))
+	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
