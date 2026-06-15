@@ -26,47 +26,12 @@ const TASK_COLORS: Record<string, string> = {
 }
 const FALLBACK_COLOR = '#94a3b8' // slate-400
 
-function taskKeyFromSource(sourceId: string): string {
-  // sourceId format: "task:<task_type>"
-  if (sourceId.startsWith('task:')) return sourceId.slice(5)
-  return ''
-}
-
 function colorForTask(taskKey: string): string {
   return TASK_COLORS[taskKey] || FALLBACK_COLOR
 }
 
-// Precompute: for each model node, which task sends the most traffic to it.
-const modelTopTask = computed(() => {
-  const map: Record<string, string> = {}
-  if (!props.data) return map
-  const taskFlow: Record<string, Record<string, number>> = {} // model → task → count
-  for (const l of props.data.links) {
-    const taskKey = taskKeyFromSource(l.source)
-    if (!taskKey) continue // this is a model→provider link, skip
-    const modelId = l.target
-    if (!taskFlow[modelId]) taskFlow[modelId] = {}
-    taskFlow[modelId][taskKey] = (taskFlow[modelId][taskKey] || 0) + l.value
-  }
-  for (const [modelId, tasks] of Object.entries(taskFlow)) {
-    let topTask = ''
-    let topVal = 0
-    for (const [tk, v] of Object.entries(tasks)) {
-      if (v > topVal) { topVal = v; topTask = tk }
-    }
-    map[modelId] = topTask
-  }
-  return map
-})
-
-function linkColor(sourceId: string): string {
-  // Layer 0→1: source is "task:xxx"
-  const taskKey = taskKeyFromSource(sourceId)
-  if (taskKey) return colorForTask(taskKey)
-  // Layer 1→2: source is "model:xxx", look up dominant task
-  const topTask = modelTopTask.value[sourceId]
-  if (topTask) return colorForTask(topTask)
-  return FALLBACK_COLOR
+function linkColor(taskType?: string): string {
+  return taskType ? colorForTask(taskType) : FALLBACK_COLOR
 }
 
 const layers = computed(() => {
@@ -157,8 +122,7 @@ const activeTaskTypes = computed(() => {
   const keys = new Set<string>()
   if (!props.data) return []
   for (const l of props.data.links) {
-    const k = taskKeyFromSource(l.source)
-    if (k) keys.add(k)
+    if (l.task_type) keys.add(l.task_type)
   }
   return [...keys]
 })
@@ -196,7 +160,7 @@ const TASK_LABELS: Record<string, string> = {
             :key="'l-' + i"
             :d="linkPath(l.source, l.target)"
             class="flow-link"
-            :stroke="linkColor(l.source)"
+            :stroke="linkColor(l.task_type)"
             :stroke-width="linkWidth(l.value)"
             :opacity="0.35 + (l.value / Math.max(...data!.links.map(x => x.value), 1)) * 0.45"
           />

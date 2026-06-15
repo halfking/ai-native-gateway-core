@@ -247,9 +247,10 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type link struct {
-		Source string  `json:"source"`
-		Target string  `json:"target"`
-		Value  float64 `json:"value"`
+		Source   string  `json:"source"`
+		Target   string  `json:"target"`
+		Value    float64 `json:"value"`
+		TaskType string  `json:"task_type"`
 	}
 	type node struct {
 		ID    string `json:"id"`
@@ -269,14 +270,16 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		dstID := "model:" + dst
 		nodeMap[srcID] = node{ID: srcID, Label: src, Layer: 0}
 		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 1}
-		links = append(links, link{Source: srcID, Target: dstID, Value: val})
+		links = append(links, link{Source: srcID, Target: dstID, Value: val, TaskType: src})
 	}
 	l12Rows.Close()
 
-	// Layer 2→3: outbound_model → provider_name
+	// Layer 2→3: task_type × outbound_model → provider_name
+	// Grouped by task_type so each link carries the original task color.
 	// NOTE: providers table column is display_name, NOT name.
 	l23Query := `
-		SELECT outbound_model AS src,
+		SELECT COALESCE(rl.task_type, 'unknown') AS task_type,
+		       rl.outbound_model AS src,
 		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
 		FROM request_logs rl
@@ -286,7 +289,8 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - $1::interval
 		  AND rl.outbound_model IS NOT NULL
-		GROUP BY outbound_model, p.display_name
+		  AND rl.task_type IS NOT NULL
+		GROUP BY rl.task_type, rl.outbound_model, p.display_name
 	`
 	l23Rows, err := h.db.Query(ctx, l23Query, intervalStr)
 	if err != nil {
@@ -294,9 +298,9 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for l23Rows.Next() {
-		var src, dst string
+		var taskType, src, dst string
 		var val float64
-		if err := l23Rows.Scan(&src, &dst, &val); err != nil || val <= 0 {
+		if err := l23Rows.Scan(&taskType, &src, &dst, &val); err != nil || val <= 0 {
 			continue
 		}
 		srcID := "model:" + src
@@ -305,7 +309,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 			nodeMap[srcID] = node{ID: srcID, Label: src, Layer: 1}
 		}
 		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 2}
-		links = append(links, link{Source: srcID, Target: dstID, Value: val})
+		links = append(links, link{Source: srcID, Target: dstID, Value: val, TaskType: taskType})
 	}
 	l23Rows.Close()
 

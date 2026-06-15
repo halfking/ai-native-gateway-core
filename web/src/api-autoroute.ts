@@ -201,6 +201,7 @@ export interface AnalyticsFlowLink {
   source: string
   target: string
   value: number
+  task_type?: string
 }
 
 export interface AnalyticsFlow {
