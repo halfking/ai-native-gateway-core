@@ -286,6 +286,10 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 			writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 			return
 		}
+		if err := ValidatePasswordComplexity(*req.Password); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "password hash failed")

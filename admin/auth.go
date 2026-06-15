@@ -116,6 +116,14 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate limit by client IP
+	clientIP := clientIPFromRequest(r)
+	if !loginLimiter.Allow(clientIP) {
+		h.auditLog("unknown", "auth.rate_limited", "user", 0, map[string]any{"ip": clientIP})
+		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+
 	var req loginRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -205,7 +213,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if decErr == nil {
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
-			h.auditLog("admin", "auth.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", r.RemoteAddr))
+			loginLimiter.Reset(clientIP)
+			h.auditLog("admin", "auth.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", clientIP))
 			writeJSON(w, http.StatusOK, keyCreatedResponse{
 				APIKey:    decrypted,
 				KeyPrefix: prefix + "****",
@@ -287,4 +296,20 @@ func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 		})
 		next(w, authReq)
 	}
+}
+
+// clientIPFromRequest extracts the client IP, preferring X-Forwarded-For header.
+func clientIPFromRequest(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for i := 0; i < len(xff); i++ {
+			if xff[i] == ',' {
+				return xff[:i]
+			}
+		}
+		return xff
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	return r.RemoteAddr
 }
