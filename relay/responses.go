@@ -321,25 +321,25 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
-		W:             w,
-		R:             r,
-		BodyBytes:     chatBodyBytes,
-		IsStream:      isStream,
+		W:              w,
+		R:              r,
+		BodyBytes:      chatBodyBytes,
+		IsStream:       isStream,
 		SuppressSuccessWrite: !isStream,
-		ClientModel:   clientModel,
-		OutboundModel: outboundForLog,
-		ClientID:      clientID,
-		Transform:     txResult,
-		Resolution:    modelResolution,
-		Candidates:    candidates,
-		Policy:        policy,
-		AuditBuilder:  auditBuilder,
-		Capture:       streamCapture,
-		// OpenAI Responses API emits structured function_call items; XML
-		// coercion is only relevant for chat completions (handler.go).
+		ClientModel:    clientModel,
+		OutboundModel:  outboundForLog,
+		ClientID:       clientID,
+		Transform:      txResult,
+		Resolution:     modelResolution,
+		Candidates:     candidates,
+		Policy:         policy,
+		AuditBuilder:   auditBuilder,
+		Capture:        streamCapture,
 		ToolsRequested: false,
 		StreamWrapper: responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:     buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
+		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
+		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
+		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
 	})
 
 	if execErr != nil {

@@ -341,26 +341,26 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
-		W:             w,
-		R:             r,
-		BodyBytes:     upstreamBody,
-		IsStream:      isStream,
+		W:              w,
+		R:              r,
+		BodyBytes:      upstreamBody,
+		IsStream:       isStream,
 		SuppressSuccessWrite: !isStream,
 		ClientProtocol: "anthropic-messages",
-		ClientModel:   clientModel,
-		OutboundModel: outboundForLog,
-		ClientID:      clientID,
-		Transform:     txResult,
-		Resolution:    modelResolution,
+		ClientModel:    clientModel,
+		OutboundModel:  outboundForLog,
+		ClientID:       clientID,
+		Transform:      txResult,
+		Resolution:     modelResolution,
 		Candidates:    candidates,
-		Policy:        policy,
-		AuditBuilder:  auditBuilder,
-		Capture:       streamCapture,
-		// Anthropic messages endpoint speaks native tool_use; XML coercion
-		// is only relevant for chat completions (handler.go).
+		Policy:         policy,
+		AuditBuilder:   auditBuilder,
+		Capture:        streamCapture,
 		ToolsRequested: false,
 		StreamWrapper: anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:     buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
+		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
+		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
+		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
 	})
 
 	if execErr != nil {
