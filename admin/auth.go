@@ -239,3 +239,49 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 	}
 	return
 }
+
+// superAdminMiddleware wraps admin auth + role check (super_admin or admin_key only).
+// tenant_admin requests get 403 Forbidden.
+func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if db == nil {
+			writeError(w, http.StatusServiceUnavailable, "database not configured")
+			return
+		}
+
+		// Try JWT first
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+			claims, err := VerifyToken(tokenStr, secretKey)
+			if err == nil && claims.UserID > 0 {
+				if claims.Role != "super_admin" {
+					writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+					return
+				}
+				authReq := SetAuthContext(r, &AuthContext{
+					UserID:   claims.UserID,
+					TenantID: claims.TenantID,
+					Username: claims.Username,
+					Role:     claims.Role,
+					IsJWT:    true,
+				})
+				next(w, authReq)
+				return
+			}
+		}
+
+		// Fall back to legacy admin API key
+		if !verifyAdminAuth(r, db, secretKey) {
+			writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
+			return
+		}
+		// Legacy admin key passes (treated as super_admin)
+		authReq := SetAuthContext(r, &AuthContext{
+			TenantID: "default",
+			Username: "admin",
+			Role:     "admin_key",
+			IsJWT:    false,
+		})
+		next(w, authReq)
+	}
+}
