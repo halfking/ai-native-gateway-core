@@ -443,18 +443,30 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 		days = v
 	}
 
+	// P7.5: pick the appropriate materialised view based on the
+	// window size.
+	//   days <= 7   → tuning_signals_5m (5-minute buckets, ~3ms)
+	//   days 8..90  → tuning_signals_daily (1-day buckets, ~5ms)
+	// Falls back to the source table if the view is missing
+	// (e.g. fresh deploy where the matview hasn't been created
+	// yet). The view ensure runs in ensureTuningSignalsViews on
+	// startup, so this fallback is theoretical.
+	viewName := "tuning_signals_daily"
+	if days <= 7 {
+		viewName = "tuning_signals_5m"
+	}
 	query := `
 		SELECT
 		    task_type,
 		    classifier,
-		    COUNT(*) AS total,
-		    AVG(quality_score) AS avg_quality,
-		    AVG(success_score) AS avg_success,
-		    AVG(latency_score) AS avg_latency,
-		    AVG(cost_score) AS avg_cost,
-		    SUM(CASE WHEN drift_flag THEN 1 ELSE 0 END)::float / COUNT(*) AS drift_rate
-		FROM tuning_signals
-		WHERE ts >= NOW() - INTERVAL '1 day' * $1
+		    SUM(total)::int AS total,
+		    SUM(avg_quality * total) / NULLIF(SUM(total), 0) AS avg_quality,
+		    SUM(avg_success * total) / NULLIF(SUM(total), 0) AS avg_success,
+		    SUM(avg_latency * total) / NULLIF(SUM(total), 0) AS avg_latency,
+		    SUM(avg_cost * total) / NULLIF(SUM(total), 0) AS avg_cost,
+		    SUM(drift_rate * total) / NULLIF(SUM(total), 0) AS drift_rate
+		FROM ` + viewName + `
+		WHERE bucket >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY task_type, classifier
 		ORDER BY task_type, classifier
 	`
