@@ -502,6 +502,17 @@ func main() {
 			// runs on every decision.
 			decider.SetOverrideStore(overrideStore)
 
+			// v2.2 (P8.8): AuditTrimmer caps growth of the two
+			// audit tables (routing_overrides_audit from P7.9
+			// trigger, routing_audit_log from P7.9.1 app-level
+			// log) at 90 days. Daily cadence; bounded
+			// LIMIT 5000 per batch to avoid long locks.
+			auditTrimmer := bg.NewAuditTrimmer(dbConn.Pool())
+			auditTrimmer.Start(context.Background())
+			defer func() {
+				auditTrimmer.Stop()
+			}()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
