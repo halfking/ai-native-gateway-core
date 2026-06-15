@@ -7,6 +7,9 @@ const props = defineProps<{
   model?: string
   approximate?: boolean
   dataSource?: 'exact' | 'approximate' | 'mixed'
+  sampleN?: number
+  confidence?: 'high' | 'medium' | 'low'
+  confidenceHint?: string
   loading?: boolean
 }>()
 
@@ -17,6 +20,13 @@ const sourceLabel = computed(() => {
   if (ds === 'exact') return '精确'
   if (ds === 'mixed') return '混合'
   if (ds === 'approximate' || props.approximate) return '近似'
+  return ''
+})
+
+const confidenceLabel = computed(() => {
+  if (props.confidence === 'high') return '高置信'
+  if (props.confidence === 'medium') return '中置信'
+  if (props.confidence === 'low') return '低置信'
   return ''
 })
 
@@ -32,8 +42,11 @@ function widthPct(v: number): string {
     <template v-else>
       <div v-if="model" class="funnel-title">
         <span>{{ model }}</span>
+        <span v-if="sampleN != null && sampleN > 0" class="badge badge-muted">n={{ sampleN }}</span>
         <span v-if="sourceLabel" class="badge badge-muted">{{ sourceLabel }}</span>
+        <span v-if="confidenceLabel" class="badge badge-muted" :title="confidenceHint">{{ confidenceLabel }}</span>
       </div>
+      <div v-if="confidenceHint" class="funnel-hint text-muted">{{ confidenceHint }}</div>
       <div class="funnel-stages">
         <div
           v-for="(s, i) in stages"
@@ -62,7 +75,11 @@ function widthPct(v: number): string {
   gap: 6px;
   font-size: 11px;
   font-weight: 600;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+}
+.funnel-hint {
+  font-size: 9px;
+  margin-bottom: 6px;
 }
 .funnel-stages {
   display: flex;

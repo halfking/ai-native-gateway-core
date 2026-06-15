@@ -325,6 +325,11 @@ export interface AnalyticsFunnelResponse {
     data_source?: 'exact' | 'approximate' | 'mixed'
     blocked?: number
     chosen?: number
+    sample_n?: number
+    trace_rows?: number
+    trace_ratio?: number
+    confidence?: 'high' | 'medium' | 'low'
+    confidence_hint?: string
   }
 }
 
