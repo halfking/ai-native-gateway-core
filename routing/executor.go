@@ -466,6 +466,46 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue
 		}
 
+		// 2026-06-15: IsClientBug kinds (tool_call_id_mismatch,
+		// unsupported_feature, canceled) are upstream-side format
+		// rejections. The credential is healthy, the candidate list is
+		// correct, but THIS particular upstream doesn't support the
+		// request shape (e.g. minimax-anthropic rejects the openai-
+		// style tool wrapper the chat->anthropic Q3 converter emits).
+		// Without this branch, the executor would record a sticky
+		// failure, mark the credential cooling, and bubble 502 to
+		// the client — even when a downstream openai-completions
+		// candidate could have served the request via Q2 reverse
+		// conversion. Skip all side effects and continue to the
+		// next candidate so the next credential gets a turn.
+		{
+			var kind errorsx.ErrorKind
+			if ue, ok := execErr.(*upstreampkg.Error); ok && ue.Kind != "" {
+				kind = ue.Kind
+			} else {
+				kind = errorsx.ClassifyError(execErr, nil)
+			}
+			if errorsx.IsClientBug(kind) {
+				slog.Warn("executor: client-bug kind, trying next candidate",
+					"kind", kind,
+					"credential_id", cand.CredentialID,
+					"provider_id", cand.ProviderID,
+					"raw_model", cand.RawModel,
+					"err", execErr.Error(),
+				)
+				lastErr = execErr
+				lastKind = kind
+				attempts = append(attempts, AttemptRecord{
+					ProviderID:   cand.ProviderID,
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					Kind:         kind,
+					Reason:       execErr.Error(),
+				})
+				continue
+			}
+		}
+
 		// contextLengthExhaustedError: handleContextLengthRecovery
 		// gave up after mechanical trim + the multi-model LLM-summary
 		// chain. This is a property of the model the client asked for

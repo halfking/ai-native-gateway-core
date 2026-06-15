@@ -22,7 +22,49 @@ const (
 	defaultCompactionMinWindow = 800_000
 	defaultCompactionSummaryMaxTokens = 4096
 	compactionSummaryPrefix            = "[Gateway compacted conversation summary — prior turns collapsed to fit context]\n"
+	// heuristicCompactBytePerToken approximates chars-per-token for the
+	// body-size heuristic. Same ratio used by transform.estimateMessageTokens.
+	heuristicCompactBytePerToken = 3.5
+	// heuristicCompactThresholdFraction: when the estimated prompt tokens
+	// exceed this fraction of the candidate's context window, a non-auth
+	// 4xx is treated as a probable context-overflow and the compaction
+	// fallback is attempted.
+	heuristicCompactThresholdFraction = 0.9
 )
+
+// shouldHeuristicCompact decides whether to attempt context compaction as a
+// fallback when the upstream returned a 4xx that is NOT explicitly classified
+// as context_length_exceeded. This catches providers that return non-standard
+// error bodies (or even model_not_found) when the prompt is genuinely too
+// large — the body-size heuristic is the signal.
+//
+// Returns true only when ALL of:
+//   - status is a 4xx client error (not 5xx, not 2xx)
+//   - status is not an auth/billing/rate-limit code (401/402/403/429)
+//   - the error kind is not concurrent overload (that needs a different fix)
+//   - the error kind is not model_not_found (that's a routing issue, not size)
+//   - estimated tokens (len(body)/3.5) exceed 90% of the candidate's context window
+//
+// When ContextWindow is nil (unknown), we cannot heuristically estimate, so
+// this returns false — only the explicit IsContextLength path triggers recovery
+// in that case.
+func shouldHeuristicCompact(status int, kind errorsx.ErrorKind, bodyLen int, contextWindow *int) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	switch status {
+	case 401, 402, 403, 429:
+		return false
+	}
+	if kind == errorsx.KindConcurrent || kind == errorsx.KindModelNotFound {
+		return false
+	}
+	if contextWindow == nil || *contextWindow <= 0 {
+		return false
+	}
+	estimatedTokens := int(float64(bodyLen) / heuristicCompactBytePerToken)
+	return estimatedTokens > int(float64(*contextWindow)*heuristicCompactThresholdFraction)
+}
 
 const compactionSystemPrompt = `You compress long agent conversation history for downstream LLM calls.
 Preserve: user goals, decisions, file paths, errors, tool outcomes, API results, and open tasks.
@@ -810,18 +852,22 @@ func (e *Executor) handleContextLengthRecovery(
 	st *contextLengthRecoveryState,
 	status int,
 ) ctxLenRecoveryAction {
-	if targetCand.ContextWindow == nil || params == nil || sourceBody == nil || st == nil {
+	if params == nil || sourceBody == nil || st == nil {
 		return ctxLenGiveUp
 	}
-	mechanicalFn := func(b []byte) []byte {
-		if params.ClientProtocol == "anthropic-messages" {
-			return transform.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
-		}
-		return transform.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
-	}
 
-	if !st.mechanicalAttempted {
+	// Phase 1: mechanical trim. Only possible when we know the target
+	// model's context window (needed to compute the soft limit). When
+	// ContextWindow is nil, skip straight to the LLM-summary fallback —
+	// summarization does not depend on the target window size.
+	if targetCand.ContextWindow != nil && !st.mechanicalAttempted {
 		st.mechanicalAttempted = true
+		mechanicalFn := func(b []byte) []byte {
+			if params.ClientProtocol == "anthropic-messages" {
+				return transform.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
+			}
+			return transform.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
+		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
 			*sourceBody = trimmed
@@ -835,6 +881,9 @@ func (e *Executor) handleContextLengthRecovery(
 			return ctxLenRetry
 		}
 	}
+	// Mark mechanical as attempted even when skipped (nil window) so the
+	// state machine is consistent and we never revisit this phase.
+	st.mechanicalAttempted = true
 
 	if !st.llmAttempted {
 		st.llmAttempted = true
@@ -844,7 +893,7 @@ func (e *Executor) handleContextLengthRecovery(
 			slog.Info("context_length 4xx → llm summary retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
-				"context_window", *targetCand.ContextWindow,
+				"context_window", cwLogVal(targetCand.ContextWindow),
 				"status", status,
 				"source_bytes", len(*sourceBody),
 			)
@@ -853,6 +902,15 @@ func (e *Executor) handleContextLengthRecovery(
 	}
 
 	return ctxLenGiveUp
+}
+
+// cwLogVal returns a log-safe representation of the context window pointer.
+// Returns -1 when nil so logs clearly distinguish "unknown" from "0".
+func cwLogVal(cw *int) int {
+	if cw == nil {
+		return -1
+	}
+	return *cw
 }
 
 // classifyContextLengthFromStatus helps tests; re-export pattern from errorsx.
