@@ -483,6 +483,25 @@ func main() {
 				tuningViewRefresher.Stop()
 			}()
 
+			// v2.1 (P7.7): OverrideStoreRefresher keeps the
+			// routing_overrides snapshot up to date so admin
+			// POST/PATCH/DELETE operations take effect within
+			// 1 min on the hot path. 1-min cadence (vs 5-min
+			// for tuning signals) because overrides are
+			// operational levers, not analytical.
+			overrideStore := autoroute.NewOverrideStore(dbConn.Pool())
+			if err := overrideStore.Reload(context.Background()); err != nil {
+				slog.Warn("override store initial reload failed", "error", err)
+			}
+			overrideRefresher := bg.NewOverrideStoreRefresher(dbConn.Pool(), overrideStore)
+			overrideRefresher.Start(context.Background())
+			defer func() {
+				overrideRefresher.Stop()
+			}()
+			// Wire the store into the Decider so ban/pin logic
+			// runs on every decision.
+			decider.SetOverrideStore(overrideStore)
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
