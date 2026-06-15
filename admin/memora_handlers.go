@@ -405,8 +405,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
-		writeError(w, http.StatusNotFound, "task not found: "+taskID)
+	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
 	}
 
@@ -558,8 +557,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
-		writeError(w, http.StatusNotFound, "task not found: "+taskID)
+	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
 	}
 
