@@ -57,6 +57,8 @@ type Handler struct {
 	// memoraSink provides write-path stats for the admin UI.
 	memoraSink interface {
 		Stats() memora.Stats
+		Pause()
+		Resume()
 	}
 	refreshMu    sync.Mutex             // guards lazy init of refreshState
 	refreshState *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
@@ -177,6 +179,8 @@ func (h *Handler) SetMemoraServices(client interface {
 	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
 }, sink interface {
 	Stats() memora.Stats
+	Pause()
+	Resume()
 }) {
 	h.memoraClient = client
 	h.memoraSink = sink
@@ -253,6 +257,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/version", admin(h.handleSystemVersion))
 	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))
 	mux.HandleFunc("/api/system/memora-ping", h.admin(h.handleMemoraPing))
+	mux.HandleFunc("/api/system/memora-sink", h.admin(h.handleMemoraSinkControl))
 	mux.HandleFunc("/api/system/memora-sessions", h.superAdmin(h.handleMemoraSessions))
 	mux.HandleFunc("/api/system/memora-context/", h.superAdmin(h.handleMemoraContext))
 	mux.HandleFunc("/api/system/session-messages/", h.superAdmin(h.handleSessionMessages))

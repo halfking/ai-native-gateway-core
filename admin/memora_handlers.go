@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,6 +54,10 @@ func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 			"consecutive_errors": st.ConsecutiveErrors,
 			"last_error":         st.LastError,
 			"last_error_at":      st.LastErrorAt,
+			"paused":             st.Paused,
+		}
+		if st.Paused {
+			resp["sink_paused"] = true
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -89,6 +94,46 @@ func (h *Handler) handleMemoraPing(w http.ResponseWriter, r *http.Request) {
 			"error":       err.Error(),
 		})
 	}
+}
+
+// handleMemoraSinkControl pauses or resumes the async Memora write sink.
+// POST body: {"action":"pause"|"resume"}
+func (h *Handler) handleMemoraSinkControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.memoraSink == nil {
+		writeError(w, http.StatusServiceUnavailable, "memora sink not configured")
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(body.Action)) {
+	case "pause":
+		h.memoraSink.Pause()
+	case "resume":
+		h.memoraSink.Resume()
+	default:
+		writeError(w, http.StatusBadRequest, "action must be pause or resume")
+		return
+	}
+	st := h.memoraSink.Stats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"paused": st.Paused,
+		"sink": map[string]any{
+			"queue_len": st.QueueLen,
+			"queue_cap": st.QueueCap,
+			"processed": st.Processed,
+			"errored":   st.Errored,
+			"paused":    st.Paused,
+		},
+	})
 }
 
 type sessionRow struct {
