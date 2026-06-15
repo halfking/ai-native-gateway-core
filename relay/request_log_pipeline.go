@@ -40,6 +40,7 @@ type RequestLogContext struct {
 	// v2.0 auto-route fields (populated when model="auto" was used)
 	IsAutoRequest  bool
 	TaskType       string
+	WorkType       string // X-Gw-Work-Type header (ACC work type key)
 	AutoProfile    string
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
@@ -84,6 +85,11 @@ func (c *RequestLogContext) SetClientModel(model string) {
 	}
 }
 
+// SetWorkType stores the X-Gw-Work-Type header for request_logs.work_type.
+func (c *RequestLogContext) SetWorkType(wt string) {
+	c.WorkType = strings.TrimSpace(wt)
+}
+
 func (c *RequestLogContext) SetOutboundModel(model string) {
 	if strings.TrimSpace(model) != "" {
 		c.OutboundModel = strings.TrimSpace(model)
@@ -95,8 +101,19 @@ func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.CredentialID = credentialID
 }
 
+func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil || c.WorkType == "" {
+		return
+	}
+	entry.WorkType = strPtr(c.WorkType)
+}
+
 func applyAutoRouteFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
-	if entry == nil || c == nil || !c.IsAutoRequest {
+	if entry == nil || c == nil {
+		return
+	}
+	applyWorkTypeField(entry, c)
+	if !c.IsAutoRequest {
 		return
 	}
 	entry.IsAutoRequest = boolPtr(true)

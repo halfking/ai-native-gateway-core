@@ -168,6 +168,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	startTime := time.Now()
 	logCtx = h.NewRequestLogContext(r, requestID, startTime)
+	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
+		logCtx.SetWorkType(wt)
+	}
 	defer func() {
 		slog.Info("safety_net_defer_fired",
 			"request_id", requestID,
@@ -963,6 +966,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
+	}
+
+	// v2.1: emit implicit feedback signal for the auto-route tuning loop.
+	// Best-effort async write via the dedicated tuning writer; never blocks
+	// the request path on DB latency.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil {
+		latencyMs := 0
+		if reqLog.LatencyMs != nil {
+			latencyMs = *reqLog.LatencyMs
+		}
+		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
 	}
 }
 
@@ -1792,4 +1806,126 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	if probe.Model != "" {
 		*modelOut = probe.Model
 	}
+}
+
+
+// emitTuningSignal computes the implicit feedback signal for an auto-route
+// request and enqueues it for async batched write to tuning_signals.
+//
+// Only called for auto-route requests (model="auto"). All scoring is
+// done in-process (no DB lookup on the hot path) to keep latency <1ms.
+// The DB insert happens asynchronously in the tuning writer goroutine.
+func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, success bool, latencyMs int) {
+	if h == nil || h.telemetryClient == nil {
+		return
+	}
+
+	// Derive classifier string from the request
+	classifier := "heuristic"
+	if reqLog.AutoDecision != nil {
+		// Parse the auto_decision JSON to extract classifier field
+		var d struct {
+			Classifier string `json:"classifier"`
+		}
+		if err := json.Unmarshal([]byte(*reqLog.AutoDecision), &d); err == nil && d.Classifier != "" {
+			classifier = d.Classifier
+		}
+	}
+
+	// Pull values from request log
+	taskType := ""
+	if reqLog.TaskType != nil {
+		taskType = *reqLog.TaskType
+	}
+	chosenModel := ""
+	if reqLog.OutboundModel != nil {
+		chosenModel = *reqLog.OutboundModel
+	}
+	confidence := 0.0
+	if reqLog.AutoConfidence != nil {
+		confidence = *reqLog.AutoConfidence
+	}
+
+	// Latency score: simple normalisation (no p95 lookup on hot path
+	// — the feedback_analyzer will refine baselines over time)
+	latencyScore := 0.5
+	if latencyMs > 0 && latencyMs < 30000 {
+		// Cap at 30s as "bad"; map [0, 30s] → [1.0, 0.0]
+		ratio := float64(latencyMs) / 30000.0
+		if ratio > 1 {
+			ratio = 1
+		}
+		latencyScore = 1.0 - ratio
+	}
+
+	// Cost score: log-scale; assume $0.01 as baseline
+	costScore := 0.5
+	costUSD := 0.0
+	if reqLog.CostUSD != nil {
+		costUSD = *reqLog.CostUSD
+	}
+	if costUSD > 0 {
+		// 0.001 → 0.9, 0.01 → 0.5, 0.1 → 0.1
+		ratio := costUSD / 0.01
+		if ratio > 1 {
+			ratio = 1
+		}
+		costScore = 1.0 - ratio
+	}
+
+	// Drift: cannot detect without session lookup on hot path.
+	// Set false here; the feedback analyzer can do cross-request
+	// analysis when it processes the data.
+	drift := false
+
+	// Composite quality score (kept in sync with autoroute/feedback.go)
+	quality := telemetry.ComputeTuningSignalQuality(success, latencyMs, 0, costUSD, 0, drift)
+
+	// Session ID (for the partial index on session_id)
+	sessionID := ""
+	if reqLog.GwSessionID != nil {
+		sessionID = *reqLog.GwSessionID
+	}
+
+	// Payload: full decision snapshot for future analyzer use
+	var payload []byte
+	if reqLog.AutoDecision != nil {
+		payload = []byte(*reqLog.AutoDecision)
+	}
+
+	// Tokens
+	promptTokens, completionTokens := 0, 0
+	if reqLog.PromptTokens != nil {
+		promptTokens = *reqLog.PromptTokens
+	}
+	if reqLog.CompletionTokens != nil {
+		completionTokens = *reqLog.CompletionTokens
+	}
+
+	sig := telemetry.TuningSignal{
+		RequestID:        reqLog.RequestID,
+		SessionID:        sessionID,
+		TaskType:         taskType,
+		Classifier:       classifier,
+		Confidence:       confidence,
+		ChosenModel:      chosenModel,
+		SuccessScore:     boolToFloat(success),
+		LatencyScore:     latencyScore,
+		CostScore:        costScore,
+		DriftFlag:        drift,
+		QualityScore:     quality,
+		LatencyMs:        latencyMs,
+		CostUSD:          costUSD,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		SignalPayload:    payload,
+	}
+	telemetry.WriteTuningSignal(sig)
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
 }

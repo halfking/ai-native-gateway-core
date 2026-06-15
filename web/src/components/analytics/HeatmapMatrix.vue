@@ -5,6 +5,7 @@ import type { AnalyticsMatrix, AnalyticsMetric } from '../../api-autoroute'
 const props = defineProps<{
   data: AnalyticsMatrix | null
   metric: AnalyticsMetric
+  colAliases?: Record<string, string[]>
   loading?: boolean
 }>()
 
@@ -46,6 +47,14 @@ function fmtValue(value: number): string {
   }
 }
 
+function colTitle(col: string): string {
+  const aliases = props.colAliases?.[col]
+  if (!aliases?.length) return col
+  const extras = aliases.filter(a => a !== col)
+  if (!extras.length) return col
+  return `${col} (别名: ${extras.join(', ')})`
+}
+
 const metricLabel = computed(() => {
   const m: Record<AnalyticsMetric, string> = {
     count: '请求数',
@@ -70,7 +79,7 @@ const isEmpty = computed(() =>
         <thead>
           <tr>
             <th class="corner">{{ metricLabel }}</th>
-            <th v-for="col in data!.cols" :key="col" class="col-head" :title="col">{{ col }}</th>
+            <th v-for="col in data!.cols" :key="col" class="col-head" :title="colTitle(col)">{{ col }}</th>
           </tr>
         </thead>
         <tbody>

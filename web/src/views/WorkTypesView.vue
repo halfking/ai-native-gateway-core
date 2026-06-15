@@ -290,10 +290,11 @@ watch(activeTab, (tab) => {
           </div>
           <div v-if="loading" class="loading-hint">加载…</div>
           <div v-else-if="wtStatsEntries.length" class="dist-col full">
-            <div v-for="e in wtStatsEntries" :key="e.key" class="dist-row">
+            <div v-for="e in wtStatsEntries" :key="e.key" class="dist-row clickable" @click="router.push({ path: '/routing-v2', query: { tab: 'analytics', row: 'work_type', filter: e.key } })">
               <span class="dist-label" :title="e.key">{{ e.label }}</span>
               <div class="dist-bar-bg"><div class="dist-bar-fill accent" :style="{ width: (e.count_24h / wtStatsMax * 100) + '%' }" /></div>
               <span class="dist-count">{{ e.count_24h }}</span>
+              <button class="btn btn-ghost btn-sm wt-analytics-btn" title="在数据分析中查看" @click.stop="router.push({ path: '/routing-v2', query: { tab: 'analytics', row: 'work_type', filter: e.key } })">分析</button>
             </div>
           </div>
           <div v-else class="text-muted">暂无 24h 数据</div>
@@ -569,6 +570,9 @@ watch(activeTab, (tab) => {
 .dist-mini { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .dist-col.full { width: 100%; }
 .dist-col h4 { font-size: 9px; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+.dist-row.clickable { cursor: pointer; }
+.dist-row.clickable:hover { background: var(--bg-subtle); }
+.wt-analytics-btn { margin-left: 4px; padding: 0 4px; font-size: 9px; }
 .dist-row {
   display: grid;
   grid-template-columns: 72px 1fr 28px;

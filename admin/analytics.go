@@ -64,9 +64,10 @@ func parseAnalyticsMetric(raw string) (string, error) {
 	}
 }
 
-// handleMatrix returns a task_type × outbound_model heatmap.
+// handleMatrix returns a row_dim × canonical_model heatmap.
 //
-// Query params: window=24h|7d, row=task_type, metric=count|success_rate|p95_ms|cost_usd
+// Query params: window=24h|7d, row=task_type|work_type, metric=count|success_rate|p95_ms|cost_usd
+// Column keys are canonical model names; meta.col_aliases maps canonical → raw outbound names.
 func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -82,8 +83,8 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	if rowDim == "" {
 		rowDim = "task_type"
 	}
-	if rowDim != "task_type" {
-		writeJSONErr(w, http.StatusBadRequest, "Phase 2a only supports row=task_type")
+	if rowDim != "task_type" && rowDim != "work_type" {
+		writeJSONErr(w, http.StatusBadRequest, "row must be task_type or work_type")
 		return
 	}
 	metric, err := parseAnalyticsMetric(r.URL.Query().Get("metric"))
@@ -107,17 +108,24 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		metricExpr = "COALESCE(SUM(cost_usd), 0)"
 	}
 
+	rowExpr := "COALESCE(task_type, 'unknown')"
+	rowNullFilter := "task_type IS NOT NULL"
+	if rowDim == "work_type" {
+		rowExpr = "COALESCE(NULLIF(work_type, ''), 'unknown')"
+		rowNullFilter = "work_type IS NOT NULL AND work_type <> ''"
+	}
+
 	query := fmt.Sprintf(`
-		SELECT COALESCE(task_type, 'unknown') AS row_key,
+		SELECT %s AS row_key,
 		       outbound_model AS col_key,
 		       %s AS val
 		FROM request_logs
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - $1::interval
-		  AND task_type IS NOT NULL
+		  AND %s
 		  AND outbound_model IS NOT NULL
-		GROUP BY task_type, outbound_model
-	`, metricExpr)
+		GROUP BY row_key, outbound_model
+	`, rowExpr, metricExpr, rowNullFilter)
 
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 	rows, err := h.db.Query(ctx, query, intervalStr)
@@ -129,8 +137,7 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 
 	type cellKey struct{ row, col string }
 	cellMap := map[cellKey]float64{}
-	rowSet := map[string]struct{}{}
-	colSet := map[string]struct{}{}
+	rawColSet := map[string]struct{}{}
 
 	for rows.Next() {
 		var rowKey, colKey string
@@ -138,19 +145,39 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		if err := rows.Scan(&rowKey, &colKey, &val); err != nil {
 			continue
 		}
+		rawColSet[colKey] = struct{}{}
 		cellMap[cellKey{rowKey, colKey}] = val
-		rowSet[rowKey] = struct{}{}
-		colSet[colKey] = struct{}{}
 	}
 
+	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	canonColAliases := map[string][]string{}
+	canonColSet := map[string]struct{}{}
+	rawToCanon := map[string]string{}
+	for raw := range rawColSet {
+		canon := raw
+		if aliasIdx != nil {
+			canon = aliasIdx.canonicalFor(raw)
+		}
+		if canon == "" {
+			canon = normalizeModelName(raw)
+		}
+		rawToCanon[raw] = canon
+		canonColSet[canon] = struct{}{}
+		canonColAliases[canon] = appendUnique(canonColAliases[canon], raw)
+	}
+
+	rowSet := map[string]struct{}{}
+	for k := range cellMap {
+		rowSet[k.row] = struct{}{}
+	}
 	rowKeys := make([]string, 0, len(rowSet))
 	for k := range rowSet {
 		rowKeys = append(rowKeys, k)
 	}
 	sort.Strings(rowKeys)
 
-	colKeys := make([]string, 0, len(colSet))
-	for k := range colSet {
+	colKeys := make([]string, 0, len(canonColSet))
+	for k := range canonColSet {
 		colKeys = append(colKeys, k)
 	}
 	sort.Strings(colKeys)
@@ -159,7 +186,14 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	for i, rk := range rowKeys {
 		cells[i] = make([]float64, len(colKeys))
 		for j, ck := range colKeys {
-			cells[i][j] = cellMap[cellKey{rk, ck}]
+			var sum float64
+			for raw, canon := range rawToCanon {
+				if canon != ck {
+					continue
+				}
+				sum += cellMap[cellKey{rk, raw}]
+			}
+			cells[i][j] = sum
 		}
 	}
 
@@ -167,10 +201,11 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		"rows":  rowKeys,
 		"cols":  colKeys,
 		"cells": cells,
-		"meta": map[string]string{
-			"window": windowLabel,
-			"metric": metric,
-			"row":    rowDim,
+		"meta": map[string]interface{}{
+			"window":      windowLabel,
+			"metric":      metric,
+			"row":         rowDim,
+			"col_aliases": canonColAliases,
 		},
 	})
 }
@@ -544,7 +579,13 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 
 // handleFunnel aggregates L2 credential funnel stats for a model in a time window.
 //
-// Query params: model (required), window=24h|7d
+// Statistics口径:
+//   - exact (routing_decision_log): sums decision_trace.planned_candidates / blocked_candidates
+//     per request; routable = planned − blocked; success = rows where success=true.
+//   - approximate (request_logs): used when no RDL rows match; planned≈requests×3, routable≈routed×2.
+//   - mixed: RDL has request count but empty traces; request_logs supplements stage totals.
+//
+// Query params: model (required, canonical or raw alias), window=24h|7d
 func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -565,18 +606,21 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
+	modelNames, _ := expandModelFilter(ctx, h.db, model)
+
 	type funnelRow struct {
-		requests       int
-		totalPlanned   int
-		totalBlocked   int
-		routable       int
-		chosen         int
-		success        int
+		requests     int
+		totalPlanned int
+		totalBlocked int
+		routable     int
+		chosen       int
+		success      int
 	}
 	var fr funnelRow
+	dataSource := "exact"
 
 	// Primary: routing_decision_log decision_trace aggregates.
-	_ = h.db.QueryRow(ctx, `
+	rdlQuery := `
 		SELECT
 			COUNT(*)::int,
 			COALESCE(SUM(jsonb_array_length(COALESCE(decision_trace->'planned_candidates', '[]'::jsonb))), 0)::int,
@@ -590,17 +634,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		FROM routing_decision_log
 		WHERE ts >= NOW() - $1::interval
 		  AND (
-		    outbound_model = $2 OR canonical_model = $2 OR client_model = $2 OR model = $2
+		    outbound_model = ANY($2) OR canonical_model = ANY($2)
+		    OR client_model = ANY($2) OR model = ANY($2)
 		  )
-	`, intervalStr, model).Scan(
+	`
+	_ = h.db.QueryRow(ctx, rdlQuery, intervalStr, modelNames).Scan(
 		&fr.requests, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
 	)
 
-	approximate := false
 	if fr.requests == 0 {
-		// Fallback: approximate from request_logs for auto-route traffic.
-		approximate = true
+		dataSource = "approximate"
 		var autoReq, routed, ok int
 		if err := h.db.QueryRow(ctx, `
 			SELECT
@@ -610,16 +654,45 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 			FROM request_logs
 			WHERE is_auto_request = TRUE
 			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = $2
-		`, intervalStr, model).Scan(&autoReq, &routed, &ok); err != nil {
+			  AND outbound_model = ANY($2)
+		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
 		fr.requests = autoReq
 		fr.chosen = routed
 		fr.success = ok
-		// Estimate planned/routable from resolve snapshot ratio when no trace data.
 		if autoReq > 0 {
+			fr.totalPlanned = autoReq * 3
+			fr.routable = routed * 2
+			if fr.routable < routed {
+				fr.routable = routed
+			}
+		}
+	} else if fr.totalPlanned == 0 {
+		// RDL rows exist but traces empty — supplement from request_logs.
+		dataSource = "mixed"
+		var autoReq, routed, ok int
+		_ = h.db.QueryRow(ctx, `
+			SELECT
+				COUNT(*)::int,
+				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+				COUNT(*) FILTER (WHERE success IS TRUE)::int
+			FROM request_logs
+			WHERE is_auto_request = TRUE
+			  AND ts >= NOW() - $1::interval
+			  AND outbound_model = ANY($2)
+		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok)
+		if fr.requests == 0 {
+			fr.requests = autoReq
+		}
+		if fr.chosen == 0 {
+			fr.chosen = routed
+		}
+		if fr.success == 0 {
+			fr.success = ok
+		}
+		if fr.totalPlanned == 0 && autoReq > 0 {
 			fr.totalPlanned = autoReq * 3
 			fr.routable = routed * 2
 			if fr.routable < routed {
@@ -639,12 +712,13 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSONOk(w, map[string]interface{}{
-		"model":  model,
-		"window": windowLabel,
+		"model":    model,
+		"window":   windowLabel,
 		"requests": fr.requests,
-		"stages": stages,
+		"stages":   stages,
 		"meta": map[string]interface{}{
-			"approximate": approximate,
+			"approximate": dataSource != "exact",
+			"data_source": dataSource,
 			"blocked":     fr.totalBlocked,
 			"chosen":      fr.chosen,
 		},

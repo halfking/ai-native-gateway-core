@@ -6,10 +6,19 @@ const props = defineProps<{
   stages: AnalyticsFunnelStage[]
   model?: string
   approximate?: boolean
+  dataSource?: 'exact' | 'approximate' | 'mixed'
   loading?: boolean
 }>()
 
 const maxVal = computed(() => Math.max(...props.stages.map(s => s.value), 1))
+
+const sourceLabel = computed(() => {
+  const ds = props.dataSource
+  if (ds === 'exact') return '精确'
+  if (ds === 'mixed') return '混合'
+  if (ds === 'approximate' || props.approximate) return '近似'
+  return ''
+})
 
 function widthPct(v: number): string {
   return `${Math.max(8, (v / maxVal.value) * 100)}%`
@@ -23,7 +32,7 @@ function widthPct(v: number): string {
     <template v-else>
       <div v-if="model" class="funnel-title">
         <span>{{ model }}</span>
-        <span v-if="approximate" class="badge badge-muted">近似</span>
+        <span v-if="sourceLabel" class="badge badge-muted">{{ sourceLabel }}</span>
       </div>
       <div class="funnel-stages">
         <div

@@ -129,6 +129,7 @@ type RequestLogEntry struct {
 	AutoProfile        *string  `json:"auto_profile,omitempty"`
 	AutoDecision       *string  `json:"auto_decision,omitempty"`
 	AutoConfidence     *float64 `json:"auto_confidence,omitempty"`
+	WorkType           *string  `json:"work_type,omitempty"`
 }
 
 func NewClient() *Client {
@@ -394,7 +395,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			usage_source,
 			gw_session_id, gw_task_id,
 			api_key_prefix, api_key_owner_user, application_code,
-			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence
+			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
+			work_type
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -413,7 +415,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$41,
 			$42, $43,
 			$44, $45, $46,
-			$47, $48, $49, CAST($50 AS jsonb), $51
+			$47, $48, $49, CAST($50 AS jsonb), $51,
+			$52
 		)
 	`,
 		entry.RequestID,
@@ -467,6 +470,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.AutoProfile,
 		entry.AutoDecision,
 		entry.AutoConfidence,
+		entry.WorkType,
 	)
 	if err != nil {
 		return err
@@ -618,7 +622,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       task_type = COALESCE($45, rl.task_type),
 		       auto_profile = COALESCE($46, rl.auto_profile),
 		       auto_decision = COALESCE(CAST($47 AS jsonb), rl.auto_decision),
-		       auto_confidence = COALESCE($48, rl.auto_confidence)
+		       auto_confidence = COALESCE($48, rl.auto_confidence),
+		       work_type = COALESCE($49, rl.work_type)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -671,6 +676,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AutoProfile,
 		entry.AutoDecision,
 		entry.AutoConfidence,
+		entry.WorkType,
 	)
 	if err != nil {
 		return err
