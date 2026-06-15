@@ -9,7 +9,7 @@ import {
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
   type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
-  type AnalyticsFunnelStage, type DecisionReplayResponse,
+  type AnalyticsRowDim, type AnalyticsFunnelStage, type DecisionReplayResponse,
 } from '../api-autoroute'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
@@ -23,8 +23,7 @@ import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
 import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
-import DecisionTimeline from '../components/analytics/DecisionTimeline.vue'
-import RadarCompare from '../components/analytics/RadarCompare.vue'
+import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 
 const RESOLVE_LOG_KEY = 'llmgw_resolve_log'
@@ -65,10 +64,12 @@ const audit = ref<AutoRouteAudit>({
 // ── Analytics (Phase 2a) ─────────────────────────────
 const analyticsWindow = ref<AnalyticsWindow>('7d')
 const analyticsMetric = ref<AnalyticsMetric>('count')
+const analyticsRowDim = ref<AnalyticsRowDim>('task_type')
 const matrixData = ref<AnalyticsMatrix | null>(null)
 const flowData = ref<AnalyticsFlow | null>(null)
 const analyticsLoading = ref(false)
 const cellDecisions = ref<AutoRouteDecision[]>([])
+const cellModalOpen = ref(false)
 const cellPopup = ref<{ row: string; col: string; value: number } | null>(null)
 const cellLoading = ref(false)
 const selectedHeatmapTask = ref('')
@@ -77,8 +78,10 @@ const showModelTaskIndex = ref(true)
 const funnelStages = ref<AnalyticsFunnelStage[]>([])
 const funnelLoading = ref(false)
 const funnelApproximate = ref(false)
+const funnelDataSource = ref<'exact' | 'approximate' | 'mixed' | undefined>()
 const decisionReplayCache = ref<Record<string, DecisionReplayResponse | null>>({})
 const decisionReplayLoading = ref('')
+const modalDecisionId = ref('')
 
 const analyticsEmpty = computed(() =>
   !analyticsLoading.value &&
@@ -90,7 +93,7 @@ async function loadAnalytics() {
   analyticsLoading.value = true
   try {
     const [matrix, flow] = await Promise.all([
-      getAnalyticsMatrix(analyticsWindow.value, analyticsMetric.value),
+      getAnalyticsMatrix(analyticsWindow.value, analyticsMetric.value, analyticsRowDim.value),
       getAnalyticsFlow(analyticsWindow.value),
     ])
     matrixData.value = matrix
@@ -104,17 +107,25 @@ async function loadAnalytics() {
 
 async function onMatrixCellClick(row: string, col: string, value: number) {
   cellPopup.value = { row, col, value }
-  selectedHeatmapTask.value = row
+  selectedHeatmapTask.value = analyticsRowDim.value === 'task_type' ? row : ''
   selectedHeatmapModel.value = col
+  cellModalOpen.value = true
   cellLoading.value = true
   cellDecisions.value = []
+  modalDecisionId.value = ''
   funnelStages.value = []
   try {
-    const [decs] = await Promise.all([
-      getAutoRouteDecisions(10, row, undefined, col),
-      loadFunnel(col),
-    ])
-    cellDecisions.value = decs
+    const rowFilter = analyticsRowDim.value === 'work_type'
+      ? { workType: row }
+      : { task: row }
+    cellDecisions.value = await getAutoRouteDecisions(
+      10,
+      rowFilter.task,
+      undefined,
+      col,
+      rowFilter.workType,
+    )
+    await loadFunnel(col)
   } catch (e) {
     console.error('onMatrixCellClick', e)
   } finally {
@@ -132,6 +143,7 @@ async function loadFunnel(model: string) {
     const res = await getAnalyticsFunnel(model, analyticsWindow.value)
     funnelStages.value = res.stages
     funnelApproximate.value = res.meta?.approximate ?? false
+    funnelDataSource.value = res.meta?.data_source
   } catch (e) {
     console.error('loadFunnel', e)
     funnelStages.value = []
@@ -157,15 +169,22 @@ function onExpandDecision(requestId: string) {
   if (expandedDecision.value) loadDecisionReplay(requestId)
 }
 
-function closeCellPopup() {
+function openDecisionModal(requestId: string) {
+  modalDecisionId.value = requestId
+  loadDecisionReplay(requestId)
+}
+
+function closeCellModal() {
+  cellModalOpen.value = false
   cellPopup.value = null
   cellDecisions.value = []
+  modalDecisionId.value = ''
   selectedHeatmapTask.value = ''
   selectedHeatmapModel.value = ''
   funnelStages.value = []
 }
 
-watch([analyticsWindow, analyticsMetric], () => {
+watch([analyticsWindow, analyticsMetric, analyticsRowDim], () => {
   if (activeTab.value === 'analytics') loadAnalytics()
 })
 
@@ -498,6 +517,11 @@ const heroChips = computed(() => {
 onMounted(async () => {
   const t = tabFromQuery(route.query.tab)
   if (t) activeTab.value = t
+  const rowQ = route.query.row
+  if (rowQ === 'work_type' || rowQ === 'task_type') analyticsRowDim.value = rowQ
+  if (route.query.filter && typeof route.query.filter === 'string') {
+    analyticsRowDim.value = 'work_type'
+  }
   await loadIndex()
   await loadAudit()
   if (activeTab.value === 'analytics') await loadAnalytics()
@@ -559,7 +583,7 @@ onUnmounted(() => stopPoll())
         <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
       </div>
       <template v-else>
-        <p class="analytics-hint text-muted">任务×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
+        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
         <div class="card compact-card flat-card">
           <AnalyticsKpiBar :audit="audit" />
         </div>
@@ -567,9 +591,17 @@ onUnmounted(() => stopPoll())
           <div class="card compact-card">
             <div class="card-toolbar">
               <div class="toolbar-left">
-                <span class="toolbar-title">任务 × 模型热力图</span>
+                <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
               </div>
               <div class="toolbar-filters">
+                <button
+                  v-for="rd in (['task_type', 'work_type'] as AnalyticsRowDim[])"
+                  :key="rd"
+                  class="profile-pill"
+                  :class="{ active: analyticsRowDim === rd }"
+                  @click="analyticsRowDim = rd"
+                >{{ rd === 'task_type' ? 'L1任务' : '工作类型' }}</button>
+                <span class="toolbar-divider" />
                 <button
                   v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
                   :key="w"
@@ -590,6 +622,7 @@ onUnmounted(() => stopPoll())
             <HeatmapMatrix
               :data="matrixData"
               :metric="analyticsMetric"
+              :col-aliases="matrixData?.meta?.col_aliases"
               :loading="analyticsLoading"
               @cell-click="onMatrixCellClick"
             />
@@ -620,30 +653,50 @@ onUnmounted(() => stopPoll())
             :stages="funnelStages"
             :model="selectedHeatmapModel"
             :approximate="funnelApproximate"
+            :data-source="funnelDataSource"
             :loading="funnelLoading"
           />
         </div>
       </template>
 
-      <div v-if="cellPopup" class="card compact-card cell-popup">
-        <div class="card-toolbar">
-          <div class="toolbar-left">
-            <span class="toolbar-title">{{ cellPopup.row }} × {{ cellPopup.col }}</span>
-            <span class="text-muted">最近决策</span>
+      <div v-if="cellModalOpen && cellPopup" class="modal-overlay" @click.self="closeCellModal">
+        <div class="modal-panel card compact-card">
+          <div class="card-toolbar">
+            <div class="toolbar-left">
+              <span class="toolbar-title">{{ cellPopup.row }} × {{ cellPopup.col }}</span>
+              <span class="text-muted">最近决策</span>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="closeCellModal">关闭</button>
           </div>
-          <button class="btn btn-ghost btn-sm" @click="closeCellPopup">关闭</button>
+          <div v-if="cellLoading" class="loading-hint">加载…</div>
+          <template v-else>
+            <div v-if="cellDecisions.length" class="compact-decisions">
+              <div
+                v-for="d in cellDecisions"
+                :key="d.request_id"
+                class="dec-row clickable"
+                :class="{ active: modalDecisionId === d.request_id }"
+                @click="openDecisionModal(d.request_id)"
+              >
+                <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
+                <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
+                <span v-if="d.work_type" class="badge badge-gray">{{ d.work_type }}</span>
+                <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
+                <span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span>
+                <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
+              </div>
+            </div>
+            <div v-else class="text-muted">该组合暂无最近决策</div>
+            <DecisionDetail
+              v-if="modalDecisionId"
+              :request-id="modalDecisionId"
+              :l1="decisionReplayCache[modalDecisionId]?.l1 ?? cellDecisions.find(x => x.request_id === modalDecisionId)?.auto_decision"
+              :l2="decisionReplayCache[modalDecisionId]?.l2"
+              :loading="decisionReplayLoading === modalDecisionId"
+              compact
+            />
+          </template>
         </div>
-        <div v-if="cellLoading" class="loading-hint">加载…</div>
-        <div v-else-if="cellDecisions.length" class="compact-decisions">
-          <div v-for="d in cellDecisions" :key="d.request_id" class="dec-row">
-            <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
-            <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
-            <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
-            <span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span>
-            <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
-          </div>
-        </div>
-        <div v-else class="text-muted">该任务×模型组合暂无最近决策</div>
       </div>
     </div>
 
@@ -1046,20 +1099,13 @@ onUnmounted(() => stopPoll())
                 </tr>
                 <tr v-if="expandedDecision === d.request_id" class="detail-row">
                   <td colspan="7">
-                    <div class="decision-detail">
-                      <div v-if="decisionReplayLoading === d.request_id" class="text-muted">加载 L2 回放…</div>
-                      <DecisionTimeline
-                        v-else
-                        compact
-                        :l1="decisionReplayCache[d.request_id]?.l1 ?? d.auto_decision ?? undefined"
-                        :l2="decisionReplayCache[d.request_id]?.l2"
-                      />
-                      <RadarCompare
-                        v-if="(d.auto_decision?.candidates_top3 ?? decisionReplayCache[d.request_id]?.l1?.candidates_top3)?.length"
-                        :candidates="d.auto_decision?.candidates_top3 ?? decisionReplayCache[d.request_id]?.l1?.candidates_top3 ?? []"
-                        :size="180"
-                      />
-                    </div>
+                    <DecisionDetail
+                      :request-id="d.request_id"
+                      :l1="decisionReplayCache[d.request_id]?.l1 ?? d.auto_decision ?? undefined"
+                      :l2="decisionReplayCache[d.request_id]?.l2"
+                      :loading="decisionReplayLoading === d.request_id"
+                      compact
+                    />
                   </td>
                 </tr>
               </template>
@@ -1403,6 +1449,25 @@ onUnmounted(() => stopPoll())
   border-bottom: 1px solid var(--border);
 }
 .dec-row:last-child { border-bottom: none; }
+.dec-row.clickable { cursor: pointer; }
+.dec-row.clickable:hover { background: var(--bg-subtle); }
+.dec-row.active { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modal-panel {
+  width: min(640px, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+}
 
 /* Live tab */
 .live-grid {
