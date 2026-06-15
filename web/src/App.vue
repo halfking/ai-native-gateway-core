@@ -2,7 +2,6 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { store, clearAll, isSuperAdmin as checkSuperAdmin } from './store'
-import MemoraStatusButton from './components/MemoraStatusButton.vue'
 
 const route  = useRoute()
 const router = useRouter()
@@ -91,12 +90,9 @@ function logout() {
         </template>
       </nav>
       <div class="sidebar-footer">
-        <div v-if="store.userInfo" class="user-row">
-          <div class="user-badge">
-            <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-            <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
-          </div>
-          <MemoraStatusButton />
+        <div class="user-badge" v-if="store.userInfo">
+          <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+          <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
         </div>
         <div class="version-info" v-if="versionInfo.version">
           <span class="version-tag">v{{ versionInfo.version }}</span>
@@ -172,18 +168,10 @@ function logout() {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  flex: 1;
-  min-width: 0;
+  margin-bottom: 8px;
   padding: 6px 8px;
   background: rgba(99, 102, 241, 0.08);
   border-radius: 6px;
-}
-
-.user-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
 }
 
 .user-name {
