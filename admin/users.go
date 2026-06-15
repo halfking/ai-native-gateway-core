@@ -216,6 +216,19 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	if req.TenantID == "" {
 		req.TenantID = "default"
 	}
+	// Verify tenant exists and is not disabled
+	ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
+	var tenantStatus string
+	err := h.db.QueryRow(ctxCheck, `SELECT status FROM tenants WHERE code = $1`, req.TenantID).Scan(&tenantStatus)
+	cancelCheck()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "tenant does not exist: "+req.TenantID)
+		return
+	}
+	if tenantStatus == "disabled" {
+		writeError(w, http.StatusBadRequest, "cannot create user in disabled tenant: "+req.TenantID)
+		return
+	}
 	if req.Role == "" {
 		req.Role = "tenant_admin"
 	}
