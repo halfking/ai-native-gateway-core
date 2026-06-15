@@ -214,6 +214,15 @@ func (d *DB) EnsureTenantsTable(ctx context.Context) error {
 	if _, err := d.pool.Exec(ctx, tenantsSchemaSQL); err != nil {
 		return err
 	}
+	// Unconditionally seed the 'default' tenant so it exists even when the
+	// users/api_keys tables are still empty (e.g. first boot before
+	// EnsureUsersTable creates the seed admin). ON CONFLICT makes this safe
+	// to re-run.
+	_, _ = d.pool.Exec(ctx, `
+		INSERT INTO tenants (code, name, status, description)
+		VALUES ('default', '默认租户', 'active', '系统默认租户')
+		ON CONFLICT (code) DO NOTHING
+	`)
 	// Backfill: ensure every distinct tenant_id in users/api_keys has a row in tenants
 	// We use 'default' as the name for new backfilled rows (admin can rename later)
 	_, _ = d.pool.Exec(ctx, `
