@@ -4,6 +4,7 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 import {
   SANKEY_GAP,
   SANKEY_NODE_H,
+  SANKEY_VIEW_W,
   buildSankeyLayers,
   computeSankeyHeight,
 } from './sankeyLayout'
@@ -14,7 +15,7 @@ const props = defineProps<{
   minHeight?: number
 }>()
 
-const W = 720
+const W = SANKEY_VIEW_W
 const colX = [80, 360, 640]
 const nodeH = SANKEY_NODE_H
 const gap = SANKEY_GAP
@@ -148,7 +149,6 @@ const TASK_LABELS: Record<string, string> = {
       <svg
         :viewBox="`0 0 ${W} ${H}`"
         class="sankey-svg"
-        :style="{ height: `${H}px` }"
         preserveAspectRatio="xMidYMin meet"
       >
         <text :x="colX[0]" y="18" class="layer-title">任务类型</text>
@@ -190,7 +190,7 @@ const TASK_LABELS: Record<string, string> = {
 </template>
 
 <style scoped>
-.sankey-wrap { width: 100%; display: flex; flex-direction: column; flex: 1; }
+.sankey-wrap { width: 100%; display: flex; flex-direction: column; }
 .sankey-hint {
   padding: 16px;
   text-align: center;
@@ -198,11 +198,10 @@ const TASK_LABELS: Record<string, string> = {
   font-size: 11px;
 }
 .sankey-svg-wrap {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
 }
 .sankey-legend {
   display: flex;
@@ -233,7 +232,7 @@ const TASK_LABELS: Record<string, string> = {
 .sankey-svg {
   width: 100%;
   min-width: 480px;
-  flex-shrink: 0;
+  height: auto;
   display: block;
 }
 .layer-title {
