@@ -3,11 +3,12 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
-  getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits,
-  MAAS_LEDGER_TYPE_LABELS,
+  getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits, grantAdminMaasCredits,
+  getAdminMaasTenantOrders, confirmAdminMaasOrder,
+  MAAS_LEDGER_TYPE_LABELS, MAAS_POOL_LABELS, MAAS_ORDER_STATUS_LABELS,
   TENANT_STATUS_LABELS, TENANT_STATUS_COLORS,
 } from '../api'
-import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry } from '../api'
+import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
 
 const route = useRoute()
@@ -20,14 +21,19 @@ const keys = ref<TenantKey[]>([])
 const stats = ref<TenantStats | null>(null)
 const loading = ref(false)
 const error = ref('')
-const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger'>('overview')
+const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders'>('overview')
 const statsDays = ref(7)
 const showEdit = ref(false)
 const maasWallet = ref<MaasWallet | null>(null)
 const maasLedger = ref<MaasLedgerEntry[]>([])
+const maasOrders = ref<MaasBillingOrder[]>([])
 const adjustAmount = ref('')
 const adjustNote = ref('')
+const grantAmount = ref('')
+const grantNote = ref('')
 const adjustSaving = ref(false)
+const grantSaving = ref(false)
+const confirmSaving = ref<number | null>(null)
 
 async function loadTenant() {
   loading.value = true
@@ -85,6 +91,15 @@ async function loadLedger() {
   }
 }
 
+async function loadOrders() {
+  try {
+    const res = await getAdminMaasTenantOrders(tenantCode.value, 50)
+    maasOrders.value = res.items ?? []
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载订单失败'
+  }
+}
+
 async function submitAdjust() {
   const amount = parseInt(adjustAmount.value, 10)
   if (!amount || Number.isNaN(amount)) {
@@ -105,8 +120,50 @@ async function submitAdjust() {
   }
 }
 
-function ledgerTypeLabel(t: string) {
-  return MAAS_LEDGER_TYPE_LABELS[t] || t
+async function submitGrant() {
+  const amount = parseInt(grantAmount.value, 10)
+  if (!amount || Number.isNaN(amount) || amount <= 0) {
+    error.value = '请输入有效的信用积分数量'
+    return
+  }
+  grantSaving.value = true
+  error.value = ''
+  try {
+    await grantAdminMaasCredits(tenantCode.value, amount, grantNote.value.trim())
+    grantAmount.value = ''
+    grantNote.value = ''
+    await Promise.all([loadWallet(), loadLedger()])
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '授予失败'
+  } finally {
+    grantSaving.value = false
+  }
+}
+
+async function confirmOrder(orderId: number) {
+  confirmSaving.value = orderId
+  error.value = ''
+  try {
+    await confirmAdminMaasOrder(orderId, '管理员手动确认到账')
+    await Promise.all([loadOrders(), loadWallet(), loadLedger()])
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '确认失败'
+  } finally {
+    confirmSaving.value = null
+  }
+}
+
+function poolLabel(p: string | null | undefined) {
+  if (!p) return '—'
+  return MAAS_POOL_LABELS[p] || p
+}
+
+function orderStatusLabel(s: string) {
+  return MAAS_ORDER_STATUS_LABELS[s] || s
+}
+
+function fmtPrice(cents: number) {
+  return (cents / 100).toFixed(2)
 }
 
 function fmtCredits(n: number) {
@@ -114,13 +171,18 @@ function fmtCredits(n: number) {
   return sign + n.toLocaleString('zh-CN')
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger') {
+function ledgerTypeLabel(t: string) {
+  return MAAS_LEDGER_TYPE_LABELS[t] || t
+}
+
+async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders') {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()
   if (t === 'stats' && !stats.value) await loadStats()
   if (t === 'wallet' && !maasWallet.value) await loadWallet()
   if (t === 'ledger' && maasLedger.value.length === 0) await loadLedger()
+  if (t === 'orders' && maasOrders.value.length === 0) await loadOrders()
 }
 
 async function toggleUserEnabled(u: TenantUser) {
@@ -195,6 +257,7 @@ watch(() => route.params.tenantId, loadTenant)
         <button :class="{ active: activeTab === 'keys' }" @click="switchTab('keys')">密钥 ({{ tenant.api_key_count }})</button>
         <button :class="{ active: activeTab === 'stats' }" @click="switchTab('stats')">统计</button>
         <button :class="{ active: activeTab === 'wallet' }" @click="switchTab('wallet')">钱包</button>
+        <button :class="{ active: activeTab === 'orders' }" @click="switchTab('orders')">订单</button>
         <button :class="{ active: activeTab === 'ledger' }" @click="switchTab('ledger')">账本</button>
       </div>
 
@@ -352,21 +415,40 @@ watch(() => route.params.tenantId, loadTenant)
       <div v-if="activeTab === 'wallet'" class="tab-content">
         <div v-if="maasWallet" class="stat-cards">
           <div class="stat-card">
-            <div class="stat-label">钱包余额</div>
-            <div class="stat-value">{{ maasWallet.balance_credits.toLocaleString('zh-CN') }} 积分</div>
+            <div class="stat-label">订阅额度</div>
+            <div class="stat-value">{{ maasWallet.quota_remaining.toLocaleString('zh-CN') }}</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">月包剩余</div>
-            <div class="stat-value">{{ maasWallet.quota_remaining.toLocaleString('zh-CN') }} 积分</div>
+            <div class="stat-label">信用积分</div>
+            <div class="stat-value">{{ maasWallet.granted_balance.toLocaleString('zh-CN') }}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">充值积分</div>
+            <div class="stat-value">{{ maasWallet.purchased_balance.toLocaleString('zh-CN') }}</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">可用总额</div>
-            <div class="stat-value">{{ maasWallet.total_available.toLocaleString('zh-CN') }} 积分</div>
+            <div class="stat-value">{{ maasWallet.total_available.toLocaleString('zh-CN') }}</div>
           </div>
         </div>
 
         <div class="adjust-form">
-          <h3>手动调整积分</h3>
+          <h3>授予信用积分</h3>
+          <div class="adjust-row">
+            <label>积分数量</label>
+            <input v-model="grantAmount" type="number" min="1" placeholder="正整数" />
+          </div>
+          <div class="adjust-row">
+            <label>备注</label>
+            <input v-model="grantNote" type="text" placeholder="授予原因（可选）" />
+          </div>
+          <button class="btn btn-primary btn-sm" :disabled="grantSaving" @click="submitGrant">
+            {{ grantSaving ? '提交中…' : '授予信用积分' }}
+          </button>
+        </div>
+
+        <div class="adjust-form">
+          <h3>调整充值积分</h3>
           <div class="adjust-row">
             <label>变动数量</label>
             <input v-model="adjustAmount" type="number" placeholder="正数充值，负数扣减" />
@@ -381,6 +463,47 @@ watch(() => route.params.tenantId, loadTenant)
         </div>
       </div>
 
+      <!-- Orders Tab -->
+      <div v-if="activeTab === 'orders'" class="tab-content">
+        <table class="table" style="width:100%">
+          <thead>
+            <tr>
+              <th>订单号</th>
+              <th>类型</th>
+              <th>金额</th>
+              <th>积分</th>
+              <th>状态</th>
+              <th>时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="o in maasOrders" :key="o.id">
+              <td class="mono">{{ o.order_no }}</td>
+              <td>{{ o.order_type === 'subscribe' ? '订阅' : '加油包' }}</td>
+              <td>¥{{ fmtPrice(o.amount_cents) }}</td>
+              <td>{{ o.credits.toLocaleString('zh-CN') }}</td>
+              <td>{{ orderStatusLabel(o.status) }}</td>
+              <td class="mono">{{ fmtTime(o.created_at) }}</td>
+              <td>
+                <button
+                  v-if="o.status === 'pending'"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="confirmSaving === o.id"
+                  @click="confirmOrder(o.id)"
+                >
+                  {{ confirmSaving === o.id ? '确认中…' : '确认到账' }}
+                </button>
+                <span v-else>—</span>
+              </td>
+            </tr>
+            <tr v-if="maasOrders.length === 0">
+              <td colspan="7" style="text-align:center; padding:40px; color: var(--muted)">暂无订单</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- Ledger Tab -->
       <div v-if="activeTab === 'ledger'" class="tab-content">
         <table class="table" style="width:100%">
@@ -388,6 +511,7 @@ watch(() => route.params.tenantId, loadTenant)
             <tr>
               <th>时间</th>
               <th>类型</th>
+              <th>池</th>
               <th style="text-align:right">变动</th>
               <th style="text-align:right">余额</th>
               <th>关联</th>
@@ -398,13 +522,14 @@ watch(() => route.params.tenantId, loadTenant)
             <tr v-for="e in maasLedger" :key="e.id">
               <td class="mono">{{ fmtTime(e.created_at) }}</td>
               <td>{{ ledgerTypeLabel(e.entry_type) }}</td>
+              <td>{{ poolLabel(e.pool) }}</td>
               <td class="mono" style="text-align:right">{{ fmtCredits(e.amount) }}</td>
               <td class="mono" style="text-align:right">{{ e.balance_after.toLocaleString('zh-CN') }}</td>
               <td class="mono">{{ e.ref_type || '—' }} {{ e.ref_id || '' }}</td>
               <td>{{ e.note || '—' }}</td>
             </tr>
             <tr v-if="maasLedger.length === 0">
-              <td colspan="6" style="text-align:center; padding:40px; color: var(--muted)">暂无账本记录</td>
+              <td colspan="7" style="text-align:center; padding:40px; color: var(--muted)">暂无账本记录</td>
             </tr>
           </tbody>
         </table>

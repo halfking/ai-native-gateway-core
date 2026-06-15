@@ -31,7 +31,20 @@ type Settings struct {
 	CentsPerCredit    float64 `json:"cents_per_credit"`
 	BaseCreditsPer1M  int64   `json:"base_credits_per_1m"`
 	CurrencyDisplay   string  `json:"currency_display"`
+	AlipayAccount     string  `json:"alipay_account"`
+	WechatMchID       string  `json:"wechat_mch_id"`
+	StubAlipayQRURL   string  `json:"stub_alipay_qr_url"`
+	StubWechatQRURL   string  `json:"stub_wechat_qr_url"`
 }
+
+// CreditPool identifies which balance pool was affected.
+type CreditPool string
+
+const (
+	PoolSubscription CreditPool = "subscription_quota"
+	PoolGranted      CreditPool = "granted"
+	PoolPurchased    CreditPool = "purchased"
+)
 
 // PreCheckCredits blocks new requests when a non-default tenant has no credits.
 func (s *Service) PreCheckCredits(ctx context.Context, tenantID string) error {
@@ -96,37 +109,52 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 			if err != nil {
 				return 0, err
 			}
+			if err := s.writeLedger(ctx, tx, tenantID, "consume", -use, string(PoolSubscription), "request", requestID, ""); err != nil {
+				return 0, err
+			}
 			remaining -= use
 		}
 	}
 
-	var balance int64
-	if remaining > 0 {
-		err = tx.QueryRow(ctx, `
-			UPDATE tenant_credit_wallets
-			   SET balance_credits = balance_credits - $2, updated_at = now()
-			 WHERE tenant_id = $1 AND balance_credits >= $2
-		 RETURNING balance_credits
-		`, tenantID, remaining).Scan(&balance)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return 0, &InsufficientCreditsError{TenantID: tenantID, Required: amount, Available: quota}
-			}
-			return 0, err
-		}
-	} else {
-		err = tx.QueryRow(ctx, `
-			SELECT balance_credits FROM tenant_credit_wallets WHERE tenant_id = $1
-		`, tenantID).Scan(&balance)
-		if err != nil {
-			return 0, err
-		}
+	var granted, purchased int64
+	err = tx.QueryRow(ctx, `
+		SELECT granted_balance, purchased_balance FROM tenant_credit_wallets WHERE tenant_id = $1 FOR UPDATE
+	`, tenantID).Scan(&granted, &purchased)
+	if err != nil {
+		return 0, err
 	}
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO credit_ledger (tenant_id, entry_type, amount, balance_after, ref_type, ref_id, note)
-		VALUES ($1, 'consume', $2, $3, 'request', $4, '')
-	`, tenantID, -amount, balance, requestID)
+	if remaining > 0 {
+		useGranted := min64(remaining, granted)
+		if useGranted > 0 {
+			granted -= useGranted
+			remaining -= useGranted
+			if err := s.writeLedger(ctx, tx, tenantID, "consume", -useGranted, string(PoolGranted), "request", requestID, ""); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if remaining > 0 {
+		if purchased < remaining {
+			return 0, &InsufficientCreditsError{TenantID: tenantID, Required: amount, Available: quota + granted + purchased}
+		}
+		purchased -= remaining
+		if err := s.writeLedger(ctx, tx, tenantID, "consume", -remaining, string(PoolPurchased), "request", requestID, ""); err != nil {
+			return 0, err
+		}
+		remaining = 0
+	}
+
+	var balance int64
+	err = tx.QueryRow(ctx, `
+		UPDATE tenant_credit_wallets
+		   SET granted_balance = $2,
+		       purchased_balance = $3,
+		       balance_credits = $2 + $3,
+		       updated_at = now()
+		 WHERE tenant_id = $1
+		RETURNING balance_credits
+	`, tenantID, granted, purchased).Scan(&balance)
 	if err != nil {
 		return 0, err
 	}
@@ -138,22 +166,11 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 }
 
 func (s *Service) availableCredits(ctx context.Context, tenantID string) (int64, error) {
-	var balance int64
-	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(balance_credits, 0)
-		FROM tenant_credit_wallets WHERE tenant_id = $1
-	`, tenantID).Scan(&balance)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	w, err := s.GetWallet(ctx, tenantID)
+	if err != nil {
 		return 0, err
 	}
-	var quota int64
-	_ = s.pool.QueryRow(ctx, `
-		SELECT COALESCE(quota_remaining, 0)
-		FROM tenant_subscriptions
-		WHERE tenant_id = $1 AND status = 'active' AND period_end > now()
-		ORDER BY period_end DESC LIMIT 1
-	`, tenantID).Scan(&quota)
-	return balance + quota, nil
+	return w.TotalAvailable, nil
 }
 
 func (s *Service) activeSubscriptionQuota(ctx context.Context, tx pgx.Tx, tenantID string) (subID int, quota int64, err error) {
@@ -199,9 +216,12 @@ func (s *Service) modelRates(ctx context.Context, canonicalName string, base int
 func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	var st Settings
 	err := s.pool.QueryRow(ctx, `
-		SELECT cents_per_credit::float8, base_credits_per_1m, currency_display
+		SELECT cents_per_credit::float8, base_credits_per_1m, currency_display,
+		       COALESCE(alipay_account, ''), COALESCE(wechat_mch_id, ''),
+		       COALESCE(stub_alipay_qr_url, ''), COALESCE(stub_wechat_qr_url, '')
 		FROM maas_settings WHERE id = 1
-	`).Scan(&st.CentsPerCredit, &st.BaseCreditsPer1M, &st.CurrencyDisplay)
+	`).Scan(&st.CentsPerCredit, &st.BaseCreditsPer1M, &st.CurrencyDisplay,
+		&st.AlipayAccount, &st.WechatMchID, &st.StubAlipayQRURL, &st.StubWechatQRURL)
 	return st, err
 }
 
@@ -212,9 +232,14 @@ func (s *Service) UpdateSettings(ctx context.Context, st Settings) error {
 			cents_per_credit = $1,
 			base_credits_per_1m = $2,
 			currency_display = $3,
+			alipay_account = $4,
+			wechat_mch_id = $5,
+			stub_alipay_qr_url = $6,
+			stub_wechat_qr_url = $7,
 			updated_at = now()
 		WHERE id = 1
-	`, st.CentsPerCredit, st.BaseCreditsPer1M, st.CurrencyDisplay)
+	`, st.CentsPerCredit, st.BaseCreditsPer1M, st.CurrencyDisplay,
+		st.AlipayAccount, st.WechatMchID, st.StubAlipayQRURL, st.StubWechatQRURL)
 	return err
 }
 
@@ -288,28 +313,83 @@ func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]To
 	return out, rows.Err()
 }
 
-// WalletView is the tenant-facing balance summary.
+// WalletView is the tenant-facing balance summary (three pools).
 type WalletView struct {
-	TenantID        string `json:"tenant_id"`
-	BalanceCredits  int64  `json:"balance_credits"`
-	QuotaRemaining  int64  `json:"quota_remaining"`
-	TotalAvailable  int64  `json:"total_available"`
+	TenantID         string     `json:"tenant_id"`
+	QuotaRemaining   int64      `json:"quota_remaining"`
+	GrantedBalance   int64      `json:"granted_balance"`
+	PurchasedBalance int64      `json:"purchased_balance"`
+	BalanceCredits   int64      `json:"balance_credits"`
+	TotalAvailable   int64      `json:"total_available"`
+	Subscription     *SubscriptionView `json:"subscription,omitempty"`
+}
+
+// SubscriptionView is the active subscription summary.
+type SubscriptionView struct {
+	PlanID      int       `json:"plan_id"`
+	PlanName    string    `json:"plan_name"`
+	Status      string    `json:"status"`
+	PeriodStart time.Time `json:"period_start"`
+	PeriodEnd   time.Time `json:"period_end"`
+}
+
+// AccountView combines wallet, subscription, and recent ledger for account center.
+type AccountView struct {
+	Wallet       WalletView    `json:"wallet"`
+	RecentLedger []LedgerEntry `json:"recent_ledger"`
+	RecentOrders []BillingOrder `json:"recent_orders"`
 }
 
 func (s *Service) GetWallet(ctx context.Context, tenantID string) (WalletView, error) {
 	w := WalletView{TenantID: tenantID}
 	_ = s.ensureWalletDirect(ctx, tenantID)
 	_ = s.pool.QueryRow(ctx, `
-		SELECT COALESCE(balance_credits, 0) FROM tenant_credit_wallets WHERE tenant_id = $1
-	`, tenantID).Scan(&w.BalanceCredits)
+		SELECT COALESCE(granted_balance, 0), COALESCE(purchased_balance, 0), COALESCE(balance_credits, 0)
+		FROM tenant_credit_wallets WHERE tenant_id = $1
+	`, tenantID).Scan(&w.GrantedBalance, &w.PurchasedBalance, &w.BalanceCredits)
 	_ = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(quota_remaining, 0)
 		FROM tenant_subscriptions
 		WHERE tenant_id = $1 AND status = 'active' AND period_end > now()
 		ORDER BY period_end DESC LIMIT 1
 	`, tenantID).Scan(&w.QuotaRemaining)
-	w.TotalAvailable = w.BalanceCredits + w.QuotaRemaining
+
+	var sub SubscriptionView
+	var planName string
+	err := s.pool.QueryRow(ctx, `
+		SELECT ts.plan_id, sp.name, ts.status, ts.period_start, ts.period_end
+		FROM tenant_subscriptions ts
+		JOIN subscription_plans sp ON sp.id = ts.plan_id
+		WHERE ts.tenant_id = $1 AND ts.status = 'active' AND ts.period_end > now()
+		ORDER BY ts.period_end DESC LIMIT 1
+	`, tenantID).Scan(&sub.PlanID, &planName, &sub.Status, &sub.PeriodStart, &sub.PeriodEnd)
+	if err == nil {
+		sub.PlanName = planName
+		w.Subscription = &sub
+	}
+
+	w.TotalAvailable = w.QuotaRemaining + w.GrantedBalance + w.PurchasedBalance
+	if w.BalanceCredits == 0 {
+		w.BalanceCredits = w.GrantedBalance + w.PurchasedBalance
+	}
 	return w, nil
+}
+
+// GetAccount returns wallet + recent ledger + orders for tenant account center.
+func (s *Service) GetAccount(ctx context.Context, tenantID string) (AccountView, error) {
+	wallet, err := s.GetWallet(ctx, tenantID)
+	if err != nil {
+		return AccountView{}, err
+	}
+	ledger, err := s.ListLedger(ctx, tenantID, 10)
+	if err != nil {
+		return AccountView{}, err
+	}
+	orders, err := s.ListOrders(ctx, tenantID, 5)
+	if err != nil {
+		return AccountView{}, err
+	}
+	return AccountView{Wallet: wallet, RecentLedger: ledger, RecentOrders: orders}, nil
 }
 
 func (s *Service) ensureWalletDirect(ctx context.Context, tenantID string) error {
@@ -365,6 +445,7 @@ type LedgerEntry struct {
 	EntryType    string    `json:"entry_type"`
 	Amount       int64     `json:"amount"`
 	BalanceAfter int64     `json:"balance_after"`
+	Pool         *string   `json:"pool"`
 	RefType      *string   `json:"ref_type"`
 	RefID        *string   `json:"ref_id"`
 	Note         string    `json:"note"`
@@ -376,7 +457,7 @@ func (s *Service) ListLedger(ctx context.Context, tenantID string, limit int) ([
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, entry_type, amount, balance_after, ref_type, ref_id, note, created_at
+		SELECT id, entry_type, amount, balance_after, pool, ref_type, ref_id, note, created_at
 		FROM credit_ledger
 		WHERE tenant_id = $1
 		ORDER BY created_at DESC
@@ -389,7 +470,7 @@ func (s *Service) ListLedger(ctx context.Context, tenantID string, limit int) ([
 	var out []LedgerEntry
 	for rows.Next() {
 		var e LedgerEntry
-		if err := rows.Scan(&e.ID, &e.EntryType, &e.Amount, &e.BalanceAfter, &e.RefType, &e.RefID, &e.Note, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.EntryType, &e.Amount, &e.BalanceAfter, &e.Pool, &e.RefType, &e.RefID, &e.Note, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -397,7 +478,35 @@ func (s *Service) ListLedger(ctx context.Context, tenantID string, limit int) ([
 	return out, rows.Err()
 }
 
-// AdjustCredits adds credits to a tenant wallet (super_admin manual top-up).
+func (s *Service) writeLedger(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount int64, pool, refType, refID, note string) error {
+	var balance int64
+	_ = tx.QueryRow(ctx, `
+		SELECT COALESCE(granted_balance, 0) + COALESCE(purchased_balance, 0)
+		FROM tenant_credit_wallets WHERE tenant_id = $1
+	`, tenantID).Scan(&balance)
+	return s.writeLedgerWithBalance(ctx, tx, tenantID, entryType, amount, balance, pool, refType, refID, note)
+}
+
+func (s *Service) writeLedgerWithBalance(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount, balanceAfter int64, pool, refType, refID, note string) error {
+	var refTypeVal, refIDVal *string
+	if refType != "" {
+		refTypeVal = &refType
+	}
+	if refID != "" {
+		refIDVal = &refID
+	}
+	var poolVal *string
+	if pool != "" {
+		poolVal = &pool
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO credit_ledger (tenant_id, entry_type, amount, balance_after, pool, ref_type, ref_id, note)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, tenantID, entryType, amount, balanceAfter, poolVal, refTypeVal, refIDVal, note)
+	return err
+}
+
+// AdjustCredits adds credits to purchased_balance (super_admin manual top-up).
 func (s *Service) AdjustCredits(ctx context.Context, tenantID string, amount int64, note string) error {
 	if amount == 0 {
 		return fmt.Errorf("adjust amount must be non-zero")
@@ -410,25 +519,38 @@ func (s *Service) AdjustCredits(ctx context.Context, tenantID string, amount int
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
 		return err
 	}
-	var balance int64
-	err = tx.QueryRow(ctx, `
-		UPDATE tenant_credit_wallets
-		   SET balance_credits = balance_credits + $2, updated_at = now()
-		 WHERE tenant_id = $1
-		RETURNING balance_credits
-	`, tenantID, amount).Scan(&balance)
-	if err != nil {
-		return err
-	}
 	entryType := "adjust"
+	pool := string(PoolPurchased)
 	if amount > 0 {
 		entryType = "topup"
 	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO credit_ledger (tenant_id, entry_type, amount, balance_after, ref_type, note)
-		VALUES ($1, $2, $3, $4, 'manual', $5)
-	`, tenantID, entryType, amount, balance, note)
+	var balance int64
+	if amount > 0 {
+		err = tx.QueryRow(ctx, `
+			UPDATE tenant_credit_wallets
+			   SET purchased_balance = purchased_balance + $2,
+			       balance_credits = granted_balance + purchased_balance + $2,
+			       updated_at = now()
+			 WHERE tenant_id = $1
+			RETURNING balance_credits
+		`, tenantID, amount).Scan(&balance)
+	} else {
+		err = tx.QueryRow(ctx, `
+			UPDATE tenant_credit_wallets
+			   SET purchased_balance = purchased_balance + $2,
+			       balance_credits = granted_balance + purchased_balance + $2,
+			       updated_at = now()
+			 WHERE tenant_id = $1 AND purchased_balance + $2 >= 0
+			RETURNING balance_credits
+		`, tenantID, amount).Scan(&balance)
+	}
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("insufficient purchased balance")
+		}
+		return err
+	}
+	if err := s.writeLedgerWithBalance(ctx, tx, tenantID, entryType, amount, balance, pool, "manual", "", note); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

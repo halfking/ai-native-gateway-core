@@ -31,6 +31,8 @@ import ForbiddenView          from './views/ForbiddenView.vue'
 import MaaSModelsView         from './views/maas/MaaSModelsView.vue'
 import MaaSPricingView        from './views/maas/MaaSPricingView.vue'
 import MaaSUsageView          from './views/maas/MaaSUsageView.vue'
+import MaaSAccountView        from './views/maas/MaaSAccountView.vue'
+import MaaSOrderView          from './views/maas/MaaSOrderView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -84,7 +86,9 @@ export const router = createRouter({
 
     // MaaS customer-facing (any authenticated user)
     { path: '/maas/models',        component: MaaSModelsView },
+    { path: '/maas/account',       component: MaaSAccountView },
     { path: '/maas/pricing',       component: MaaSPricingView },
+    { path: '/maas/orders/:id',    component: MaaSOrderView },
     { path: '/maas/usage',         component: MaaSUsageView },
 
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)

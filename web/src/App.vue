@@ -55,11 +55,14 @@ watch(isLoggedIn, (loggedIn) => {
   if (loggedIn) loadVersion()
 }, { immediate: true })
 
-const nav: NavItem[] = [
+const nav = computed((): NavItem[] => {
+  const ops = isPlatformOps.value
+  return [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
-  { path: '/maas/models',       label: 'MaaS 模型', icon: '🤖' },
-  { path: '/maas/pricing',      label: 'MaaS 套餐', icon: '💳' },
-  { path: '/maas/usage',        label: 'MaaS 消耗', icon: '📉' },
+  { path: '/maas/models',       label: ops ? 'MaaS 模型' : '模型清单', icon: '🤖' },
+  { path: '/maas/account',     label: ops ? 'MaaS 账户' : '我的账户', icon: '💰' },
+  { path: '/maas/pricing',      label: ops ? 'MaaS 套餐' : '套餐与充值', icon: '💳' },
+  { path: '/maas/usage',        label: ops ? 'MaaS 消耗' : '我的消耗', icon: '📉' },
   { path: '/providers',         label: '提供商',   icon: '🔌',    super: true },
   { path: '/keys',              label: 'API 密钥', icon: '🔑' },
   { path: '/key-applications',  label: '密钥申请', icon: '📬',    super: true },
@@ -76,6 +79,7 @@ const nav: NavItem[] = [
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
   { path: '/pricing',           label: '定价管理',  icon: '💰', platformOps: true },
 ]
+})
 
 function logout() {
   clearAll()
@@ -95,7 +99,7 @@ function logout() {
         <span>LLM Gateway</span>
       </div>
       <nav class="sidebar-nav">
-        <template v-for="item in nav" :key="item.path">
+        <template v-for="item in nav" :key="item.path + item.label">
           <RouterLink
             v-if="canShowNavItem(item)"
             :to="item.path"
