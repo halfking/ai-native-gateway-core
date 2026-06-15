@@ -364,6 +364,11 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	if req.TenantID == "" {
 		req.TenantID = "default"
 	}
+	// tenant_admin callers may only create keys for their own tenant.
+	if IsTenantAdmin(r) && req.TenantID != GetTenantID(r) {
+		writeError(w, http.StatusForbidden, "forbidden: cannot create key for another tenant")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -578,12 +583,40 @@ func includeRevokedKeys(r *http.Request) bool {
 	return strings.EqualFold(queryString(r, "include_revoked"), "true")
 }
 
+// assertKeyTenantScope verifies that, for tenant_admin callers, the given
+// api_keys row belongs to the caller's own tenant. Super admins and legacy
+// admin keys pass through unrestricted. Returns true when access is allowed;
+// on denial it writes the appropriate 403/404 response and returns false, so
+// callers should `return` immediately on false.
+func (h *Handler) assertKeyTenantScope(w http.ResponseWriter, r *http.Request, id int) bool {
+	if !IsTenantAdmin(r) {
+		return true // super_admin or legacy - no tenant restriction
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	var tenantID string
+	err := h.db.QueryRow(ctx, `SELECT tenant_id FROM api_keys WHERE id = $1`, id).Scan(&tenantID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "key not found")
+		return false
+	}
+	if tenantID != GetTenantID(r) {
+		writeError(w, http.StatusForbidden, "forbidden: key belongs to another tenant")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	appCode := queryString(r, "application")
 	tenantFilter := queryString(r, "tenant")
+	// tenant_admin callers may only ever see their own tenant's keys.
+	if IsTenantAdmin(r) {
+		tenantFilter = GetTenantID(r)
+	}
 	rows, err := h.db.Query(ctx, `
 		SELECT ak.id, ak.key_prefix, ak.owner_user, ak.enabled,
 		       COALESCE(ak.status, 'active') AS status,
@@ -649,6 +682,9 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	cmd, err := h.db.Exec(ctx, `
@@ -668,6 +704,9 @@ func (h *Handler) deleteKey(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -694,6 +733,9 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	h.db.Exec(ctx, `UPDATE api_keys SET enabled = TRUE WHERE id = $1`, id)
@@ -701,6 +743,9 @@ func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, enabled bool) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := h.db.Exec(ctx, `UPDATE api_keys SET enabled = $1 WHERE id = $2`, enabled, id); err != nil {
@@ -711,6 +756,9 @@ func (h *Handler) setKeyEnabled(w http.ResponseWriter, r *http.Request, id int, 
 }
 
 func (h *Handler) updateKeyLimits(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	var body struct {
 		RateLimitRPM        limitField `json:"rate_limit_rpm"`
 		RateLimitConcurrent limitField `json:"rate_limit_concurrent"`
@@ -871,6 +919,9 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	includeRevoked := includeRevokedKeys(r)

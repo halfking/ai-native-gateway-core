@@ -332,7 +332,22 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	h.writeAuditLog(r, "user.update", "user", u.ID, fmt.Sprintf("username=%s", u.Username))
+	// Enrich audit: distinguish enable/disable/role/password changes
+	auditDetail := fmt.Sprintf("username=%s", u.Username)
+	if req.Enabled != nil {
+		if *req.Enabled {
+			auditDetail += " enabled=true"
+		} else {
+			auditDetail += " enabled=false(disabled)"
+		}
+	}
+	if req.Role != nil {
+		auditDetail += fmt.Sprintf(" role=%s", *req.Role)
+	}
+	if req.Password != nil {
+		auditDetail += " password_changed=true"
+	}
+	h.writeAuditLog(r, "user.update", "user", u.ID, auditDetail)
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -348,7 +363,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
-	h.writeAuditLog(r, "user.delete", "user", id, "")
+	h.writeAuditLog(r, "user.delete", "user", id, fmt.Sprintf("user_id=%d", id))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -384,6 +399,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	h.writeAuditLog(r, "user.reset_password", "user", id, fmt.Sprintf("user_id=%d password_reset_by_admin", id))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset"})
 }
 

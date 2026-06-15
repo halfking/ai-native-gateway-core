@@ -1167,6 +1167,13 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 	args := []any{sinceMin}
 	argIdx := 2
 
+	// tenant_admin callers may only see decisions for their own tenant.
+	if IsTenantAdmin(r) {
+		clauses = append(clauses, fmt.Sprintf("rdl.tenant_id = $%d", argIdx))
+		args = append(args, GetTenantID(r))
+		argIdx++
+	}
+
 	if model != "" {
 		clauses = append(clauses, fmt.Sprintf("(rdl.model ILIKE $%d OR rdl.client_model ILIKE $%d OR rdl.outbound_model ILIKE $%d)", argIdx, argIdx, argIdx))
 		args = append(args, "%"+model+"%")
