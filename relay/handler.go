@@ -1903,6 +1903,7 @@ func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, succes
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		SignalPayload:    payload,
+		Strategy:         string(autoroute.AssignStrategy(reqLog.RequestID)),
 	}
 	telemetry.WriteTuningSignal(sig)
 }
