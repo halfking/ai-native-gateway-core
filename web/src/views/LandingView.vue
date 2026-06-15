@@ -1,8 +1,5 @@
 <script setup lang="ts">
 import ServiceLandingPage from '../components/ServiceLandingPage.vue';
-import { useLoginModal } from '../composables/useLoginModal';
-
-const { openLogin } = useLoginModal();
 
 const features = [
   { title: '多租户路由', description: '按租户、模型与凭证智能选路，支持 override 与免费资源池。' },
@@ -19,10 +16,6 @@ const advantages = [
   { title: '平台 SSO', description: 'Casdoor JWT 登录管理面，API Key 兼容运维' },
   { title: '可观测', description: '请求日志、审计与路由决策全链路可查' },
 ];
-
-function goLogin() {
-  openLogin();
-}
 </script>
 
 <template>
@@ -35,11 +28,14 @@ function goLogin() {
       :features="features"
       :advantages="advantages"
       advantages-subtitle="生产级 LLM 基础设施"
-      cta-label="登录管理控制台"
+      hide-cta
       footer-text="开轩 LLM Gateway · llmgo.kxpms.cn"
       accent="#6366f1"
-      @login="goLogin"
-    />
+    >
+      <template #hero-extra>
+        <p class="login-hint">请点击右上角「登录」进入管理控制台</p>
+      </template>
+    </ServiceLandingPage>
   </div>
 </template>
 
@@ -64,5 +60,11 @@ function goLogin() {
 .llmgo-landing :deep(.kx-landing__points li) {
   background: var(--panel, #1a1d27);
   border-color: var(--border, #2a2d3a);
+}
+
+.login-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted, #6b7280);
 }
 </style>
