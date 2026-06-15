@@ -78,6 +78,7 @@ type Decider struct {
 	index      IndexAccessor // candidate pool
 	profileStore ProfileStore // per-API-Key sticky profile
 	intentCache  *SessionIntentCache // per-session intent cache (v2.0.4)
+	tuningStore  *TuningStore // optional dynamic params (v2.1)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	// Default: ProfileSmart.
@@ -128,6 +129,23 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 // to disable session-level caching entirely (every request reclassifies).
 func (d *Decider) SetIntentCache(c *SessionIntentCache) {
 	d.intentCache = c
+}
+
+// SetTuningStore wires a dynamic parameter store. When set, the Decider
+// reads the LLM-fallback threshold from the store on every classify call
+// (atomic pointer load, zero overhead). Pass nil to use the static
+// LLMConfidenceThreshold field.
+func (d *Decider) SetTuningStore(ts *TuningStore) {
+	d.tuningStore = ts
+}
+
+// effectiveLLMThreshold returns the dynamic threshold from the tuning
+// store, or the static field when no store is wired.
+func (d *Decider) effectiveLLMThreshold() float64 {
+	if d.tuningStore != nil {
+		return d.tuningStore.LLMConfidenceThreshold()
+	}
+	return d.LLMConfidenceThreshold
 }
 
 // Decide runs the full pipeline. Returns the Decision (always non-nil on
@@ -300,7 +318,7 @@ func (d *Decider) classify(ctx context.Context, sigs ClassificationSignals, hint
 	if err != nil {
 		return nil, fmt.Errorf("heuristic: %w", err)
 	}
-	if cls.Confidence >= d.LLMConfidenceThreshold {
+	if cls.Confidence >= d.effectiveLLMThreshold() {
 		return cls, nil
 	}
 	if d.fallback == nil {

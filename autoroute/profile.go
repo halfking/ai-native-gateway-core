@@ -79,6 +79,30 @@ func WeightsFor(p Profile) ProfileWeights {
 	return all[ProfileSmart]
 }
 
+// weightsStore is an optional global override source for profile weights.
+// When set (via SetTuningStore), WeightsForDynamic consults it before
+// falling back to compiled defaults. This keeps the hot-path Score()
+// function allocation-free while still supporting runtime tuning.
+var weightsStore *TuningStore
+
+// SetTuningStore wires a global TuningStore for profile-weight lookups.
+// Called once at startup from cmd/gateway/main.go. Pass nil to disable
+// dynamic weights (use compiled defaults).
+func SetTuningStore(ts *TuningStore) {
+	weightsStore = ts
+}
+
+// WeightsForDynamic returns weights from the tuning store if configured,
+// otherwise falls back to WeightsFor (compiled defaults).
+//
+// This is the function Score() calls when a TuningStore is active.
+func WeightsForDynamic(p Profile) ProfileWeights {
+	if weightsStore != nil {
+		return weightsStore.WeightsFor(p)
+	}
+	return WeightsFor(p)
+}
+
 // Sum returns the total weight (used for normalisation in scoring.go).
 // Sum may exceed 100 when a profile intentionally biases a dimension.
 func (w ProfileWeights) Sum() float64 {
