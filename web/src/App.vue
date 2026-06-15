@@ -84,7 +84,7 @@ const nav = computed((): NavItem[] => [
   { path: '/tenants',           label: '租户管理', icon: '👥',    super: true },
   { path: '/users',             label: '用户管理', icon: '👤' },
   { path: '/audit-logs',       label: '审计日志', icon: '📋',    super: true },
-  { path: '/session-context',  label: '会话上下文', icon: '💬',  super: true },
+  { path: '/session-context',  label: '会话上下文', icon: '💬' },
   { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
   { path: '/models',            label: '模型与标签', icon: '🏷️', platformOps: true },
   { path: '/examples',          label: '请求示例',  icon: '📝', platformOps: true },

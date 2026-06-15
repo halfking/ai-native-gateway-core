@@ -74,7 +74,6 @@ export const router = createRouter({
     {
       path: '/session-context',
       component: SessionContextLayout,
-      meta: { requiresSuper: true },
       children: [
         { path: '', component: SessionContextListView },
         { path: ':taskId', component: SessionContextDetailView },

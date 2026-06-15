@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -194,70 +195,8 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
-		WITH base AS (
-			SELECT
-				COALESCE(NULLIF(TRIM(gw_task_id), ''), NULL) AS task_id,
-				COALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) AS session_id,
-				ts,
-				request_status,
-				client_model,
-				COALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix,
-				COALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user,
-				COALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_code
-			FROM request_logs
-			WHERE ts > NOW() - INTERVAL '1 hour' * $1
-		),
-		topic_sessions AS (
-			SELECT
-				task_id,
-				session_id,
-				COUNT(*) AS request_count,
-				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
-				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
-				MIN(ts) AS first_activity,
-				MAX(ts) AS last_activity,
-				(SELECT client_model FROM base b2 WHERE b2.task_id = base.task_id ORDER BY b2.ts DESC LIMIT 1) AS latest_model,
-				(SELECT api_key_prefix FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_prefix,
-				(SELECT api_key_owner_user FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_owner_user,
-				(SELECT application_code FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS application_code,
-				FALSE AS no_topic,
-				NULL::text AS no_topic_label,
-				NULL::timestamptz AS hour_start
-			FROM base
-			WHERE task_id IS NOT NULL
-			GROUP BY task_id, session_id
-		),
-		no_topic_sessions AS (
-			SELECT
-				NULL::text AS task_id,
-				NULL::text AS session_id,
-				COUNT(*) AS request_count,
-				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
-				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
-				MIN(ts) AS first_activity,
-				MAX(ts) AS last_activity,
-				(SELECT client_model FROM base b2 WHERE b2.task_id IS NULL AND b2.api_key_prefix IS NOT DISTINCT FROM base.api_key_prefix ORDER BY b2.ts DESC LIMIT 1) AS latest_model,
-				api_key_prefix,
-				api_key_owner_user,
-				application_code,
-				TRUE AS no_topic,
-				CONCAT(
-					COALESCE(api_key_prefix, '[空]'), ' @ ',
-					DATE_TRUNC('hour', MIN(ts))::text, '~',
-					(DATE_TRUNC('hour', MIN(ts)) + (CASE WHEN $2 = 1 THEN interval '1 hour' WHEN $2 = 2 THEN interval '2 hours' ELSE interval '6 hours' END))::text
-				) AS no_topic_label,
-				DATE_TRUNC('hour', MIN(ts)) AS hour_start
-			FROM base
-			WHERE task_id IS NULL AND api_key_prefix IS NOT NULL
-			GROUP BY api_key_prefix, api_key_owner_user, application_code, DATE_TRUNC('hour', ts)
-		)
-		SELECT * FROM topic_sessions
-		UNION ALL
-		SELECT * FROM no_topic_sessions
-		ORDER BY first_activity DESC
-		LIMIT $3
-	`, hours, noTopicWindow, limit)
+	sql, queryArgs := buildMemoraSessionsSQL(r, hours, noTopicWindow, limit)
+	rows, err := h.db.Query(ctx, sql, queryArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -358,6 +297,91 @@ func nilStr(s *string) any {
 	return *s
 }
 
+// buildMemoraSessionsSQL returns the memora-sessions list query with dynamic
+// placeholder indices. tenant_admin callers get tenant_id scoped to their tenant.
+func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (string, []any) {
+	args := []any{hours}
+	baseWhere := `WHERE ts > NOW() - INTERVAL '1 hour' * $1`
+	argIdx := 2
+	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, argIdx)
+	if tenantFrag != "" {
+		baseWhere += tenantFrag
+		args = append(args, tenantArgs...)
+		argIdx = nextArg
+	}
+	noTopicArg := argIdx
+	args = append(args, noTopicWindow)
+	argIdx++
+	limitArg := argIdx
+	args = append(args, limit)
+
+	sql := fmt.Sprintf(`
+		WITH base AS (
+			SELECT
+				COALESCE(NULLIF(TRIM(gw_task_id), ''), NULL) AS task_id,
+				COALESCE(NULLIF(TRIM(gw_session_id), ''), NULL) AS session_id,
+				ts,
+				request_status,
+				client_model,
+				COALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix,
+				COALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user,
+				COALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_code
+			FROM request_logs
+			%s
+		),
+		topic_sessions AS (
+			SELECT
+				task_id,
+				session_id,
+				COUNT(*) AS request_count,
+				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
+				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
+				MIN(ts) AS first_activity,
+				MAX(ts) AS last_activity,
+				(SELECT client_model FROM base b2 WHERE b2.task_id = base.task_id ORDER BY b2.ts DESC LIMIT 1) AS latest_model,
+				(SELECT api_key_prefix FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_prefix,
+				(SELECT api_key_owner_user FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_owner_user,
+				(SELECT application_code FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS application_code,
+				FALSE AS no_topic,
+				NULL::text AS no_topic_label,
+				NULL::timestamptz AS hour_start
+			FROM base
+			WHERE task_id IS NOT NULL
+			GROUP BY task_id, session_id
+		),
+		no_topic_sessions AS (
+			SELECT
+				NULL::text AS task_id,
+				NULL::text AS session_id,
+				COUNT(*) AS request_count,
+				COUNT(*) FILTER (WHERE request_status = 'success') AS ok_count,
+				COUNT(*) FILTER (WHERE request_status = 'failure') AS fail_count,
+				MIN(ts) AS first_activity,
+				MAX(ts) AS last_activity,
+				(SELECT client_model FROM base b2 WHERE b2.task_id IS NULL AND b2.api_key_prefix IS NOT DISTINCT FROM base.api_key_prefix ORDER BY b2.ts DESC LIMIT 1) AS latest_model,
+				api_key_prefix,
+				api_key_owner_user,
+				application_code,
+				TRUE AS no_topic,
+				CONCAT(
+					COALESCE(api_key_prefix, '[空]'), ' @ ',
+					DATE_TRUNC('hour', MIN(ts))::text, '~',
+					(DATE_TRUNC('hour', MIN(ts)) + (CASE WHEN $%d = 1 THEN interval '1 hour' WHEN $%d = 2 THEN interval '2 hours' ELSE interval '6 hours' END))::text
+				) AS no_topic_label,
+				DATE_TRUNC('hour', MIN(ts)) AS hour_start
+			FROM base
+			WHERE task_id IS NULL AND api_key_prefix IS NOT NULL
+			GROUP BY api_key_prefix, api_key_owner_user, application_code, DATE_TRUNC('hour', ts)
+		)
+		SELECT * FROM topic_sessions
+		UNION ALL
+		SELECT * FROM no_topic_sessions
+		ORDER BY first_activity DESC
+		LIMIT $%d
+	`, baseWhere, noTopicArg, noTopicArg, limitArg)
+	return sql, args
+}
+
 // handleMemoraContext returns the L1 Memora memories stored for a
 // specific task, alongside basic request metadata and a derived title
 // (first Memora fact truncated to 60 chars).
@@ -381,7 +405,12 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	where, whereArgs := sessionLogsWhere(taskID, sc)
+	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
+		writeError(w, http.StatusNotFound, "task not found: "+taskID)
+		return
+	}
+
+	where, whereArgs := sessionLogsWhere(taskID, sc, r)
 	var requestCount int
 	var latestModel *string
 	err := h.db.QueryRow(ctx, `
@@ -395,7 +424,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc)
+	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc, r)
 	userID := ""
 	if err == nil && apiKeyID > 0 {
 		userID = memora.UserID(apiKeyID, taskID)
@@ -529,7 +558,12 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	where, args := sessionLogsWhere(taskID, sc)
+	if IsTenantAdmin(r) && !assertTaskInTenant(ctx, h.db, taskID, GetTenantID(r)) {
+		writeError(w, http.StatusNotFound, "task not found: "+taskID)
+		return
+	}
+
+	where, args := sessionLogsWhere(taskID, sc, r)
 	args = append(args, limit)
 	limitArg := "$" + strconv.Itoa(len(args))
 

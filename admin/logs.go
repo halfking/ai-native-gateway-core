@@ -245,6 +245,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// is already present in requestLogsJoins, so we can filter on ak.tenant_id.
 	if IsTenantAdmin(r) {
 		addFilter("ak.tenant_id = $%d", GetTenantID(r))
+		addFilter("rl.tenant_id = $%d", GetTenantID(r))
 	}
 	if v := queryIntPtr(r, "api_key_id"); v != nil {
 		addFilter("rl.api_key_id = $%d", *v)
