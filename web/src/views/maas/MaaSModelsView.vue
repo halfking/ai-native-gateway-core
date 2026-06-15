@@ -3,9 +3,11 @@ import { ref, computed, onMounted } from 'vue'
 import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import PageBackLink from '../../components/PageBackLink.vue'
 
-const { tenantLabel, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const { tenantLabel, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() => ctxPageTitle('模型清单'))
+const backLink = computed(() => maasBackLink('models'))
 
 const models = ref<MaasModel[]>([])
 const loading = ref(false)
@@ -45,6 +47,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
+      <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge tenant-badge--admin">

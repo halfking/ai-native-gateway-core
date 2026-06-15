@@ -238,7 +238,7 @@ watch(() => route.params.tenantId, loadTenant)
     <div v-else-if="tenant">
       <!-- Header -->
       <div class="tenant-header">
-        <button class="btn-back" @click="router.push('/tenants')">← 返回</button>
+        <button class="btn-back" @click="router.push('/tenants')">← 返回租户列表</button>
         <div class="header-main">
           <h1>
             <strong>{{ tenant.name }}</strong>

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type tenantInfo struct {
@@ -39,6 +41,12 @@ type updateTenantRequest struct {
 	Status       *string `json:"status"`
 	Description  *string `json:"description"`
 	ContactEmail *string `json:"contact_email"`
+}
+
+type createTenantResponse struct {
+	tenantInfo
+	DefaultAdmin    *userInfo `json:"default_admin,omitempty"`
+	InitialPassword string    `json:"initial_password,omitempty"`
 }
 
 type tenantModelBreakdown struct {
@@ -246,11 +254,26 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 		req.Status = "active"
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	adminUsername := DefaultTenantAdminUsername(req.Code)
+	initialPassword := GenerateTenantAdminPassword(req.Code)
+	hash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "password hash failed")
+		return
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
+		return
+	}
+	defer tx.Rollback(ctx)
+
 	var t tenantInfo
-	err := h.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO tenants (code, name, status, description, contact_email)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING code, name, status, description, contact_email, created_at, updated_at
@@ -270,12 +293,51 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	displayName := req.Name + " 管理员"
+	if req.ContactEmail != "" {
+		displayName = req.Name + " Admin"
+	}
+	var admin userInfo
+	err = tx.QueryRow(ctx, `
+		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, enabled)
+		VALUES ($1, $2, $3, $4, $5, 'tenant_admin', TRUE)
+		RETURNING id, tenant_id, username, display_name, email, role, enabled, created_at
+	`, req.Code, adminUsername, string(hash), displayName, req.ContactEmail).Scan(
+		&admin.ID, &admin.TenantID, &admin.Username, &admin.DisplayName, &admin.Email,
+		&admin.Role, &admin.Enabled, &admin.CreatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			writeError(w, http.StatusConflict, "default admin username already exists: "+adminUsername)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "create default admin failed: "+err.Error())
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "transaction commit failed: "+err.Error())
+		return
+	}
+
+	t.UserCount = 1
 	h.auditLog(getActorFromRequest(r), "tenant.create", "tenant", 0, map[string]any{
-		"code":   t.Code,
-		"name":   t.Name,
-		"status": t.Status,
+		"code":           t.Code,
+		"name":           t.Name,
+		"status":         t.Status,
+		"default_admin":  admin.Username,
 	})
-	writeJSON(w, http.StatusCreated, t)
+	h.auditLog(getActorFromRequest(r), "user.create", "user", admin.ID, map[string]any{
+		"username": admin.Username,
+		"role":     admin.Role,
+		"tenant":   admin.TenantID,
+		"source":   "tenant.create.auto",
+	})
+	writeJSON(w, http.StatusCreated, createTenantResponse{
+		tenantInfo:      t,
+		DefaultAdmin:    &admin,
+		InitialPassword: initialPassword,
+	})
 }
 
 // ── getTenant: GET /api/admin/tenants/{code} ──────────────────────

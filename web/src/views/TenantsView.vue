@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant } from '../api'
 import TenantCreateDialog from './TenantCreateDialog.vue'
-import TenantEditDialog from './TenantEditDialog.vue'
 
 const router = useRouter()
 const tenants = ref<Tenant[]>([])
@@ -12,8 +11,6 @@ const loading = ref(false)
 const error = ref('')
 const filterStatus = ref<string>('')
 const showCreate = ref(false)
-const showEdit = ref(false)
-const editTarget = ref<Tenant | null>(null)
 
 async function load() {
   loading.value = true
@@ -50,11 +47,6 @@ function fmtCost(n?: number) {
   return '$' + n.toFixed(2)
 }
 
-function openEdit(t: Tenant) {
-  editTarget.value = { ...t }
-  showEdit.value = true
-}
-
 function goDetail(t: Tenant) {
   router.push(`/tenants/${t.code}`)
 }
@@ -71,7 +63,6 @@ onMounted(load)
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
 
-    <!-- Status filter -->
     <div class="filters">
       <label>状态:</label>
       <select v-model="filterStatus" @change="load">
@@ -82,7 +73,7 @@ onMounted(load)
 
     <div v-if="loading" class="loading">加载中…</div>
 
-    <table v-else class="table" style="width:100%">
+    <table v-else class="table tenants-table" style="width:100%">
       <thead>
         <tr>
           <th>租户名</th>
@@ -94,11 +85,17 @@ onMounted(load)
           <th>总请求</th>
           <th>联系邮箱</th>
           <th>创建时间</th>
-          <th>操作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="t in tenants" :key="t.code">
+        <tr
+          v-for="t in tenants"
+          :key="t.code"
+          class="tenant-row"
+          tabindex="0"
+          @click="goDetail(t)"
+          @keydown.enter="goDetail(t)"
+        >
           <td><strong>{{ t.name }}</strong></td>
           <td><code>{{ t.code }}</code></td>
           <td><span class="badge" :class="statusColor(t.status)">{{ statusLabel(t.status) }}</span></td>
@@ -108,22 +105,14 @@ onMounted(load)
           <td>{{ fmtNum(t.total_requests) }}</td>
           <td>{{ t.contact_email || '-' }}</td>
           <td class="mono">{{ fmtTime(t.created_at) }}</td>
-          <td>
-            <button class="btn btn-ghost btn-sm" @click="goDetail(t)">详情</button>
-            <button class="btn btn-ghost btn-sm" @click="openEdit(t)">编辑</button>
-          </td>
         </tr>
         <tr v-if="tenants.length === 0">
-          <td colspan="10" style="text-align:center; color: var(--muted); padding: 40px">无数据</td>
+          <td colspan="9" style="text-align:center; color: var(--muted); padding: 40px">无数据</td>
         </tr>
       </tbody>
     </table>
 
-    <!-- Create Dialog -->
     <TenantCreateDialog v-if="showCreate" @close="showCreate = false" @created="load" />
-
-    <!-- Edit Dialog -->
-    <TenantEditDialog v-if="showEdit && editTarget" :tenant="editTarget" @close="showEdit = false; editTarget = null" @updated="load" />
   </div>
 </template>
 
@@ -149,6 +138,16 @@ onMounted(load)
   border-radius: 4px;
   color: var(--text);
   font-size: 13px;
+}
+.tenants-table .tenant-row {
+  cursor: pointer;
+}
+.tenants-table .tenant-row:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+.tenants-table .tenant-row:focus-visible {
+  outline: 2px solid var(--accent-h);
+  outline-offset: -2px;
 }
 .badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; }
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }

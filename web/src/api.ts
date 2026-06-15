@@ -2323,6 +2323,11 @@ export interface Tenant {
   total_requests?: number
 }
 
+export interface CreateTenantResponse extends Tenant {
+  default_admin?: TenantUser
+  initial_password?: string
+}
+
 export function getTenantsAdmin(status?: string) {
   const qs = status ? '?status=' + status : ''
   return req<Tenant[]>('GET', '/api/admin/tenants' + qs)
@@ -2339,7 +2344,7 @@ export function createTenant(data: {
   description?: string
   contact_email?: string
 }) {
-  return req<Tenant>('POST', '/api/admin/tenants', data)
+  return req<CreateTenantResponse>('POST', '/api/admin/tenants', data)
 }
 
 export function updateTenant(code: string, data: {
