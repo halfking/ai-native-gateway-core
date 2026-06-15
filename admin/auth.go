@@ -153,6 +153,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
+				h.auditLog(u.Username, "auth.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
 				writeJSON(w, http.StatusOK, map[string]any{
 					"access_token": token,
 					"token_type":   "Bearer",
@@ -203,6 +204,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if decErr == nil {
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
+			h.auditLog("admin", "auth.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", r.RemoteAddr))
 			writeJSON(w, http.StatusOK, keyCreatedResponse{
 				APIKey:    decrypted,
 				KeyPrefix: prefix + "****",

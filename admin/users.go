@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -40,6 +41,30 @@ type updateUserRequest struct {
 	Role        *string `json:"role"`
 	Enabled     *bool   `json:"enabled"`
 	Password    *string `json:"password"`
+}
+
+
+// writeAuditLog inserts a row into routing_audit_log using r's AuthContext (best-effort, async).
+func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details string) {
+	auth := GetAuthContext(r)
+	actor := "unknown"
+	if auth != nil && auth.Username != "" {
+		actor = auth.Username
+	}
+	h.auditLog(actor, action, targetType, targetID, details)
+}
+
+// auditLog inserts a row into routing_audit_log (best-effort, async).
+// Used by login flows where the actor is the username being attempted.
+func (h *Handler) auditLog(actor, action, targetType string, targetID int, details string) {
+	go func() {
+		if h.db == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, details)
+	}()
 }
 
 type changePasswordRequest struct {
@@ -203,6 +228,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create user failed: "+err.Error())
 		return
 	}
+	h.writeAuditLog(r, "user.create", "user", u.ID, fmt.Sprintf("username=%s role=%s tenant=%s", u.Username, u.Role, u.TenantID))
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -271,6 +297,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	h.writeAuditLog(r, "user.update", "user", u.ID, fmt.Sprintf("username=%s", u.Username))
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -286,6 +313,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	h.writeAuditLog(r, "user.delete", "user", id, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -392,5 +420,6 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
+	h.writeAuditLog(r, "user.change_password", "user", auth.UserID, "self")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_changed"})
 }
