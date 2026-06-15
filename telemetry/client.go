@@ -130,6 +130,13 @@ type RequestLogEntry struct {
 	AutoDecision       *string  `json:"auto_decision,omitempty"`
 	AutoConfidence     *float64 `json:"auto_confidence,omitempty"`
 	WorkType           *string  `json:"work_type,omitempty"`
+
+	// P7.2: promoted from auto_decision JSONB to dedicated columns
+	// for indexable queries (see ensureRequestLogAutoDecisionColumns).
+	TaskTypeChosen *string  `json:"task_type_chosen,omitempty"`
+	ConfidenceNum  *float64 `json:"confidence_num,omitempty"`
+	ModelChosen    *string  `json:"model_chosen,omitempty"`
+	StrategyUsed   *string  `json:"strategy_used,omitempty"`
 }
 
 func NewClient() *Client {
