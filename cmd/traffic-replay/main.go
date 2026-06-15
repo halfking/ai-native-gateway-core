@@ -270,14 +270,11 @@ func reclassify(ctx context.Context, decider *autoroute.Decider, r requestRow) (
 	// Reconstruct the classification signals from request_body JSONB
 	sigs := extractSignalsFromBody(r)
 
-	// Run the real Decider
-	decision, err := decider.Decide(ctx, autoroute.DecideRequest{
-		TaskType:    autoroute.TaskType(r.TaskType),
-		Profile:     autoroute.ProfileSmart,
-		Signals:     sigs,
-		SessionID:   "",
-		APIKeyID:    0,
-	})
+	// Run the real Decider. Signature:
+	//   Decide(ctx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
+	// Pass empty defaults: apiKeyID=0 (no sticky), sessionID=""
+	// (no cache), headerProfile="" (decider uses smart default).
+	decision, err := decider.Decide(ctx, sigs, 0, "", autoroute.TaskType(r.TaskType), "")
 	if err != nil {
 		return "", err
 	}
@@ -291,30 +288,25 @@ func reclassify(ctx context.Context, decider *autoroute.Decider, r requestRow) (
 // works on raw bytes (no *http.Request).
 func extractSignalsFromBody(r requestRow) autoroute.ClassificationSignals {
 	sigs := autoroute.ClassificationSignals{
-		LastUserPrompt: r.RequestPreview, // preview is a 200-char snippet
-		PromptTokens:   r.PromptTokens,
+		LastUserPrompt:  r.RequestPreview, // preview is a 200-char snippet
+		EstimatedTokens: r.PromptTokens,
 	}
 
-	// Use the autoroute package's JSON parsing if available;
-	// otherwise fall back to the snippet.
 	if len(r.RequestBody) == 0 {
 		return sigs
 	}
 
-	// Quick scan for tool count (OpenAI chat format)
-	toolCount := strings.Count(string(r.RequestBody), `"type":"function"`)
+	body := string(r.RequestBody)
+
+	// Tool count (OpenAI chat format: "type":"function")
+	toolCount := strings.Count(body, `"type":"function"`)
 	if toolCount > 0 {
-		sigs.HasTools = true
+		sigs.ToolCount = toolCount
 	}
 
-	// Image presence (any image_url content part)
-	if strings.Contains(string(r.RequestBody), `"type":"image_url"`) {
+	// Image presence
+	if strings.Contains(body, `"type":"image_url"`) {
 		sigs.HasImages = true
-	}
-
-	// Code block (triple backtick in body) — use chr(96) ASCII check
-	if strings.Contains(string(r.RequestBody), "```") {
-		sigs.HasCodeBlock = true
 	}
 
 	return sigs
