@@ -16,8 +16,11 @@ var minimaxPrivateFields = []string{
 	"nvext",               // minimax routing extension: nvext.worker_id
 	"audio_content",       // voice-mode specific
 	"name",                // minimax attaches assistant name "MiniMax AI" etc.
-	"input_sensitive",     // minimax safety filter marker
-	"output_sensitive",    // minimax safety filter marker
+	"input_sensitive",          // boolean: input was sensitive
+		"input_sensitive_type",     // string: type classification
+		"output_sensitive",         // boolean: output was sensitive
+		"output_sensitive_type",    // string: type classification
+		"output_sensitive_int",     // int: numeric sensitivity level
 	"service_tier",        // minimax custom field; OpenAI spec is "service_tier" too
 	"base_resp",           // minimax internal status code mirror
 	"request_id",          // some minimax variants
