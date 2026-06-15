@@ -64,7 +64,7 @@ const isEmpty = computed(() =>
 <template>
   <div class="heatmap-wrap">
     <div v-if="loading" class="heatmap-hint">加载热力图…</div>
-    <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据</div>
+    <div v-else-if="isEmpty" class="heatmap-hint">暂无矩阵数据 — 等待 Auto 路由流量写入 request_logs</div>
     <div v-else class="table-scroll">
       <table class="heatmap-table">
         <thead>
@@ -82,7 +82,7 @@ const isEmpty = computed(() =>
               class="heat-cell"
               :class="{ clickable: data!.cells[ri][ci] > 0 }"
               :style="{ background: cellColor(data!.cells[ri][ci]) }"
-              :title="`${row} × ${col}: ${fmtValue(data!.cells[ri][ci])}`"
+              :title="`${row} × ${col}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
               @click="data!.cells[ri][ci] > 0 && emit('cellClick', row, col, data!.cells[ri][ci])"
             >
               {{ fmtValue(data!.cells[ri][ci]) }}
@@ -102,11 +102,32 @@ const isEmpty = computed(() =>
   color: var(--muted);
   font-size: 11px;
 }
-.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll {
+  overflow: auto;
+  max-height: 320px;
+  -webkit-overflow-scrolling: touch;
+}
 .heatmap-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 10px;
+}
+.heatmap-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.heatmap-table tbody th.row-head {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+.heatmap-table thead th.corner {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3;
 }
 .heatmap-table th,
 .heatmap-table td {

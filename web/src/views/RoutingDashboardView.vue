@@ -4,11 +4,12 @@ import { useRoute } from 'vue-router'
 import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
-  getAnalyticsMatrix, getAnalyticsFlow,
+  getAnalyticsMatrix, getAnalyticsFlow, getAnalyticsFunnel, getDecisionReplay,
   DEFAULT_PROFILE_WEIGHTS, TASK_TYPES, TASK_TAGS,
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
   type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
+  type AnalyticsFunnelStage, type DecisionReplayResponse,
 } from '../api-autoroute'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
@@ -21,6 +22,10 @@ import ModelPicker from '../components/ModelPicker.vue'
 import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
 import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
 import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
+import ModelTaskIndexPanel from '../components/analytics/ModelTaskIndexPanel.vue'
+import DecisionTimeline from '../components/analytics/DecisionTimeline.vue'
+import RadarCompare from '../components/analytics/RadarCompare.vue'
+import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 
 const RESOLVE_LOG_KEY = 'llmgw_resolve_log'
 const RESOLVE_LOG_MAX = 50
@@ -66,6 +71,14 @@ const analyticsLoading = ref(false)
 const cellDecisions = ref<AutoRouteDecision[]>([])
 const cellPopup = ref<{ row: string; col: string; value: number } | null>(null)
 const cellLoading = ref(false)
+const selectedHeatmapTask = ref('')
+const selectedHeatmapModel = ref('')
+const showModelTaskIndex = ref(true)
+const funnelStages = ref<AnalyticsFunnelStage[]>([])
+const funnelLoading = ref(false)
+const funnelApproximate = ref(false)
+const decisionReplayCache = ref<Record<string, DecisionReplayResponse | null>>({})
+const decisionReplayLoading = ref('')
 
 const analyticsEmpty = computed(() =>
   !analyticsLoading.value &&
@@ -91,10 +104,17 @@ async function loadAnalytics() {
 
 async function onMatrixCellClick(row: string, col: string, value: number) {
   cellPopup.value = { row, col, value }
+  selectedHeatmapTask.value = row
+  selectedHeatmapModel.value = col
   cellLoading.value = true
   cellDecisions.value = []
+  funnelStages.value = []
   try {
-    cellDecisions.value = await getAutoRouteDecisions(10, row)
+    const [decs] = await Promise.all([
+      getAutoRouteDecisions(10, row, undefined, col),
+      loadFunnel(col),
+    ])
+    cellDecisions.value = decs
   } catch (e) {
     console.error('onMatrixCellClick', e)
   } finally {
@@ -102,9 +122,47 @@ async function onMatrixCellClick(row: string, col: string, value: number) {
   }
 }
 
+async function loadFunnel(model: string) {
+  if (!model) {
+    funnelStages.value = []
+    return
+  }
+  funnelLoading.value = true
+  try {
+    const res = await getAnalyticsFunnel(model, analyticsWindow.value)
+    funnelStages.value = res.stages
+    funnelApproximate.value = res.meta?.approximate ?? false
+  } catch (e) {
+    console.error('loadFunnel', e)
+    funnelStages.value = []
+  } finally {
+    funnelLoading.value = false
+  }
+}
+
+async function loadDecisionReplay(requestId: string) {
+  if (!requestId || decisionReplayCache.value[requestId] !== undefined) return
+  decisionReplayLoading.value = requestId
+  try {
+    decisionReplayCache.value[requestId] = await getDecisionReplay(requestId)
+  } catch {
+    decisionReplayCache.value[requestId] = null
+  } finally {
+    decisionReplayLoading.value = ''
+  }
+}
+
+function onExpandDecision(requestId: string) {
+  expandedDecision.value = expandedDecision.value === requestId ? '' : requestId
+  if (expandedDecision.value) loadDecisionReplay(requestId)
+}
+
 function closeCellPopup() {
   cellPopup.value = null
   cellDecisions.value = []
+  selectedHeatmapTask.value = ''
+  selectedHeatmapModel.value = ''
+  funnelStages.value = []
 }
 
 watch([analyticsWindow, analyticsMetric], () => {
@@ -269,6 +327,17 @@ const resolveErr = ref('')
 const resolved = ref(false)
 const showUnavailable = ref(false)
 const resolveLog = ref<ResolveLogEntry[]>([])
+
+const resolveFunnelStages = computed<AnalyticsFunnelStage[]>(() => {
+  if (!resolveCandidates.value.length) return []
+  const total = resolveCandidates.value.length
+  const routable = resolveCandidates.value.filter(c => c.routable).length
+  return [
+    { key: 'candidates', label: '总候选', value: total, hint: '本次解析候选数' },
+    { key: 'routable', label: '可路由', value: routable, hint: '通过可用性检查' },
+    { key: 'success', label: '首选凭据', value: routable > 0 ? 1 : 0, hint: 'Top 可路由凭据' },
+  ]
+})
 
 const filteredResolveCandidates = computed(() =>
   showUnavailable.value ? resolveCandidates.value : resolveCandidates.value.filter(c => c.routable)
@@ -490,42 +559,69 @@ onUnmounted(() => stopPoll())
         <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
       </div>
       <template v-else>
+        <p class="analytics-hint text-muted">任务×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
         <div class="card compact-card flat-card">
           <AnalyticsKpiBar :audit="audit" />
         </div>
-        <div class="card compact-card">
-          <div class="card-toolbar">
-            <div class="toolbar-left">
-              <span class="toolbar-title">任务 × 模型热力图</span>
+        <div class="analytics-charts">
+          <div class="card compact-card">
+            <div class="card-toolbar">
+              <div class="toolbar-left">
+                <span class="toolbar-title">任务 × 模型热力图</span>
+              </div>
+              <div class="toolbar-filters">
+                <button
+                  v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
+                  :key="w"
+                  class="profile-pill"
+                  :class="{ active: analyticsWindow === w }"
+                  @click="analyticsWindow = w"
+                >{{ w }}</button>
+                <span class="toolbar-divider" />
+                <button
+                  v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"
+                  :key="m"
+                  class="profile-pill"
+                  :class="{ active: analyticsMetric === m }"
+                  @click="analyticsMetric = m"
+                >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
+              </div>
             </div>
-            <div class="toolbar-filters">
-              <button
-                v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
-                :key="w"
-                class="profile-pill"
-                :class="{ active: analyticsWindow === w }"
-                @click="analyticsWindow = w"
-              >{{ w }}</button>
-              <span class="toolbar-divider" />
-              <button
-                v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"
-                :key="m"
-                class="profile-pill"
-                :class="{ active: analyticsMetric === m }"
-                @click="analyticsMetric = m"
-              >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
-            </div>
+            <HeatmapMatrix
+              :data="matrixData"
+              :metric="analyticsMetric"
+              :loading="analyticsLoading"
+              @cell-click="onMatrixCellClick"
+            />
           </div>
-          <HeatmapMatrix
-            :data="matrixData"
-            :metric="analyticsMetric"
-            :loading="analyticsLoading"
-            @cell-click="onMatrixCellClick"
-          />
+          <div class="card compact-card">
+            <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
+            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
+          </div>
         </div>
-        <div class="card compact-card">
-          <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-          <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
+
+        <div v-if="selectedHeatmapTask" class="card compact-card collapsible">
+          <div class="card-toolbar clickable" @click="showModelTaskIndex = !showModelTaskIndex">
+            <div class="toolbar-left">
+              <span class="toolbar-title">模型任务指数</span>
+              <span class="text-muted">{{ selectedHeatmapTask }}</span>
+            </div>
+            <span class="expand-icon">{{ showModelTaskIndex ? '▼' : '▶' }}</span>
+          </div>
+          <ModelTaskIndexPanel v-if="showModelTaskIndex" :task-type="selectedHeatmapTask" :top="10" />
+        </div>
+
+        <div v-if="selectedHeatmapModel" class="card compact-card">
+          <div class="section-head tight">
+            <h3>L2 凭据漏斗</h3>
+            <span class="text-muted">{{ selectedHeatmapModel }} · {{ analyticsWindow }}</span>
+          </div>
+          <CredentialFunnel
+            :stages="funnelStages"
+            :model="selectedHeatmapModel"
+            :approximate="funnelApproximate"
+            :loading="funnelLoading"
+          />
         </div>
       </template>
 
@@ -547,7 +643,7 @@ onUnmounted(() => stopPoll())
             <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
           </div>
         </div>
-        <div v-else class="text-muted">该任务暂无最近决策</div>
+        <div v-else class="text-muted">该任务×模型组合暂无最近决策</div>
       </div>
     </div>
 
@@ -846,6 +942,11 @@ onUnmounted(() => stopPoll())
         </div>
       </div>
 
+      <div v-if="resolved && resolveCandidates.length" class="card compact-card">
+        <div class="section-head tight"><h3>本次 L2 漏斗</h3></div>
+        <CredentialFunnel :stages="resolveFunnelStages" :model="modelInput" />
+      </div>
+
       <div v-if="resolveLog.length" class="card compact-card">
         <div class="card-toolbar">
           <div class="toolbar-left"><span class="toolbar-title">运行记录</span></div>
@@ -934,7 +1035,7 @@ onUnmounted(() => stopPoll())
             <thead><tr><th>时间</th><th>任务</th><th>Profile</th><th>模型</th><th>置信</th><th>状态</th><th></th></tr></thead>
             <tbody>
               <template v-for="d in decisions" :key="d.request_id">
-                <tr class="model-row" @click="expandedDecision = expandedDecision === d.request_id ? '' : d.request_id">
+                <tr class="model-row" @click="onExpandDecision(d.request_id)">
                   <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
                   <td><span class="badge badge-blue">{{ d.task_type || d.auto_decision?.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || d.auto_decision?.profile || '-' }}</td>
@@ -943,15 +1044,21 @@ onUnmounted(() => stopPoll())
                   <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span></td>
                   <td class="expand-icon">{{ expandedDecision === d.request_id ? '▼' : '▶' }}</td>
                 </tr>
-                <tr v-if="expandedDecision === d.request_id && d.auto_decision" class="detail-row">
+                <tr v-if="expandedDecision === d.request_id" class="detail-row">
                   <td colspan="7">
                     <div class="decision-detail">
-                      <span class="text-muted">{{ d.auto_decision.classifier }} · {{ fmt((d.auto_decision.confidence ?? 0) * 100, 1) }}%</span>
-                      <div v-if="d.auto_decision.candidates_top3?.length" class="candidates-compact">
-                        <div v-for="(c, i) in d.auto_decision.candidates_top3" :key="i" class="cand-chip">
-                          #{{ i + 1 }} {{ c.model }} <span class="score-pill sm">{{ fmt(c.composite_score, 1) }}</span>
-                        </div>
-                      </div>
+                      <div v-if="decisionReplayLoading === d.request_id" class="text-muted">加载 L2 回放…</div>
+                      <DecisionTimeline
+                        v-else
+                        compact
+                        :l1="decisionReplayCache[d.request_id]?.l1 ?? d.auto_decision ?? undefined"
+                        :l2="decisionReplayCache[d.request_id]?.l2"
+                      />
+                      <RadarCompare
+                        v-if="(d.auto_decision?.candidates_top3 ?? decisionReplayCache[d.request_id]?.l1?.candidates_top3)?.length"
+                        :candidates="d.auto_decision?.candidates_top3 ?? decisionReplayCache[d.request_id]?.l1?.candidates_top3 ?? []"
+                        :size="180"
+                      />
                     </div>
                   </td>
                 </tr>
@@ -1057,6 +1164,23 @@ onUnmounted(() => stopPoll())
 }
 
 .tab-content { display: flex; flex-direction: column; gap: 8px; }
+.analytics-hint { font-size: 11px; margin: 0 0 4px 2px; }
+.analytics-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 900px) {
+  .analytics-charts { grid-template-columns: 1fr; }
+}
+.card-toolbar.clickable { cursor: pointer; user-select: none; }
+.collapsible .expand-icon { font-size: 10px; color: var(--muted); }
+.decision-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
 
 .chip {
   display: inline-flex; align-items: center; gap: 3px;
