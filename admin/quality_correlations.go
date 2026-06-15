@@ -329,6 +329,7 @@ func bucketIndex(predictor, bucket string) int {
 			return 5
 		}
 		return 6
+	}
 	return 0
 }
 
