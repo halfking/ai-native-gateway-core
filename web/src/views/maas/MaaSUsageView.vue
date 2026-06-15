@@ -3,11 +3,13 @@ import { ref, computed, onMounted } from 'vue'
 import { getMaasLedger, getAdminMaasLedger, MAAS_LEDGER_TYPE_LABELS } from '../../api'
 import type { MaasLedgerEntry } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import PageBackLink from '../../components/PageBackLink.vue'
 
-const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
   ctxPageTitle(isAdminTenantView.value ? '消耗统计' : '我的消耗'),
 )
+const backLink = computed(() => maasBackLink('usage'))
 
 const consumeTotal = computed(() => {
   return ledger.value
@@ -60,6 +62,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
+      <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge tenant-badge--admin">

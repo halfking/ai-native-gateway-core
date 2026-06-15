@@ -11,9 +11,11 @@ import {
 } from '../../api'
 import type { MaasPlan, MaasTopupPackage, MaasWallet } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import PageBackLink from '../../components/PageBackLink.vue'
 
-const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink, tenantQuerySuffix } = useMaasTenantContext()
 const pageTitle = computed(() => ctxPageTitle('套餐与充值'))
+const backLink = computed(() => maasBackLink('pricing'))
 
 const router = useRouter()
 const plans = ref<MaasPlan[]>([])
@@ -65,7 +67,10 @@ async function buyPlan(plan: MaasPlan) {
       plan_id: plan.id,
       payment_channel: payChannel.value,
     })
-    router.push(`/maas/orders/${order.id}`)
+    router.push({
+      path: `/maas/orders/${order.id}`,
+      query: tenantQuerySuffix(),
+    })
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '创建订单失败'
   } finally {
@@ -82,7 +87,10 @@ async function buyTopup(pkg: MaasTopupPackage) {
       package_id: pkg.id,
       payment_channel: payChannel.value,
     })
-    router.push(`/maas/orders/${order.id}`)
+    router.push({
+      path: `/maas/orders/${order.id}`,
+      query: tenantQuerySuffix(),
+    })
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '创建订单失败'
   } finally {
@@ -96,6 +104,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
+      <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge tenant-badge--admin">

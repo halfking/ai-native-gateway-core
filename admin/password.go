@@ -1,9 +1,34 @@
 package admin
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"unicode"
 )
+
+const defaultTenantAdminUserCode = "user"
+
+// DefaultTenantAdminUsername returns the default tenant_admin login name: {tenant_code}user.
+func DefaultTenantAdminUsername(tenantCode string) string {
+	return tenantCode + defaultTenantAdminUserCode
+}
+
+// GenerateTenantAdminPassword returns a one-time initial password for a new tenant admin.
+// Format satisfies ValidatePasswordComplexity (upper, lower, digit, special).
+func GenerateTenantAdminPassword(tenantCode string) string {
+	return fmt.Sprintf("Tenant%s@2026", tenantCode)
+}
+
+// generateRandomPassword returns a 12-char URL-safe random password with mixed case and digits.
+func generateRandomPassword() (string, error) {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	// base64 URL encoding yields upper, lower, digits; append "A1!" for policy compliance.
+	return base64.RawURLEncoding.EncodeToString(b)[:12] + "A1!", nil
+}
 
 // ValidatePasswordComplexity enforces minimum password policy:
 //   - Min 8 chars

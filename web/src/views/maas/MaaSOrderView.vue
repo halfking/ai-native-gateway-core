@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
   getMaasOrder,
   MAAS_ORDER_STATUS_LABELS,
 } from '../../api'
 import type { MaasBillingOrder } from '../../api'
+import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import PageBackLink from '../../components/PageBackLink.vue'
 
 const route = useRoute()
-const router = useRouter()
+const { maasBackLink } = useMaasTenantContext()
 const orderId = computed(() => Number(route.params.id))
+const backLink = computed(() => maasBackLink('order'))
 
 const order = ref<MaasBillingOrder | null>(null)
 const loading = ref(false)
@@ -82,7 +85,7 @@ onUnmounted(() => {
 <template>
   <div>
     <div class="page-header">
-      <button class="btn-back" @click="router.push('/maas/account')">← 返回账户</button>
+      <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
       <h2>订单支付</h2>
     </div>
 
@@ -136,15 +139,6 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 .page-header h2 { margin: 0; }
-.btn-back {
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text);
-}
 .card {
   background: var(--card);
   border: 1px solid var(--border);
