@@ -155,10 +155,11 @@ export function getAutoRouteIndex(top = 20): Promise<AutoRouteIndexEntry[]> {
   return req<AutoRouteIndexEntry[]>('GET', `/api/admin/auto-route/index?top=${top}`)
 }
 
-export function getAutoRouteDecisions(limit = 20, task?: string, profile?: string): Promise<AutoRouteDecision[]> {
+export function getAutoRouteDecisions(limit = 20, task?: string, profile?: string, model?: string): Promise<AutoRouteDecision[]> {
   let q = `/api/admin/auto-route/decisions?limit=${limit}`
   if (task) q += `&task=${encodeURIComponent(task)}`
   if (profile) q += `&profile=${encodeURIComponent(profile)}`
+  if (model) q += `&model=${encodeURIComponent(model)}`
   return req<AutoRouteDecision[]>('GET', q)
 }
 
@@ -243,6 +244,76 @@ export function getModelTaskIndex(task_type?: string, top = 20): Promise<ModelTa
   let q = `/api/admin/auto-route/analytics/model-task-index?top=${top}`
   if (task_type) q += `&task_type=${encodeURIComponent(task_type)}`
   return req<ModelTaskIndexResponse>('GET', q)
+}
+
+// ── Analytics Phase 2b ────────────────────────────────
+
+export interface DecisionReplayL1 {
+  task_type?: string
+  confidence?: number
+  classifier?: string
+  profile?: string
+  chosen_model?: string
+  chosen_credential_id?: number
+  candidates_top3?: Array<{
+    model: string
+    composite_score: number
+    price_score?: number
+    speed_score?: number
+    stability_score?: number
+    match_score?: number
+    pressure_score?: number
+    context_fit?: number
+  }>
+  [key: string]: unknown
+}
+
+export interface DecisionReplayL2 {
+  ts?: string
+  success?: boolean
+  chosen_credential_id?: number
+  chosen_provider_id?: number
+  tier?: number
+  candidates_tried?: number
+  resolution_path?: string
+  canonical_model?: string
+  decision_trace?: Record<string, unknown>
+}
+
+export interface DecisionReplayResponse {
+  request_id: string
+  ts: string
+  success: boolean
+  client_model?: string
+  outbound_model?: string
+  credential_id?: number
+  latency_ms?: number
+  l1: DecisionReplayL1
+  l2?: DecisionReplayL2
+}
+
+export interface AnalyticsFunnelStage {
+  key: string
+  label: string
+  value: number
+  hint?: string
+}
+
+export interface AnalyticsFunnelResponse {
+  model: string
+  window: AnalyticsWindow
+  requests: number
+  stages: AnalyticsFunnelStage[]
+  meta?: { approximate?: boolean; blocked?: number; chosen?: number }
+}
+
+export function getDecisionReplay(requestId: string): Promise<DecisionReplayResponse> {
+  return req<DecisionReplayResponse>('GET', `/api/admin/auto-route/analytics/decision/${encodeURIComponent(requestId)}`)
+}
+
+export function getAnalyticsFunnel(model: string, window: AnalyticsWindow = '7d'): Promise<AnalyticsFunnelResponse> {
+  const q = new URLSearchParams({ model, window })
+  return req<AnalyticsFunnelResponse>('GET', `/api/admin/auto-route/analytics/funnel?${q}`)
 }
 
 export async function simulateAutoRoute(prompt: string, profile: string, hint?: string): Promise<{
