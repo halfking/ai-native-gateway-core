@@ -47,6 +47,7 @@ export interface AutoRouteDecision {
   ts: string
   request_id: string
   task_type?: string
+  work_type?: string
   auto_profile?: string
   auto_confidence?: number
   client_model?: string
@@ -155,14 +156,6 @@ export function getAutoRouteIndex(top = 20): Promise<AutoRouteIndexEntry[]> {
   return req<AutoRouteIndexEntry[]>('GET', `/api/admin/auto-route/index?top=${top}`)
 }
 
-export function getAutoRouteDecisions(limit = 20, task?: string, profile?: string, model?: string): Promise<AutoRouteDecision[]> {
-  let q = `/api/admin/auto-route/decisions?limit=${limit}`
-  if (task) q += `&task=${encodeURIComponent(task)}`
-  if (profile) q += `&profile=${encodeURIComponent(profile)}`
-  if (model) q += `&model=${encodeURIComponent(model)}`
-  return req<AutoRouteDecision[]>('GET', q)
-}
-
 export function getAutoRouteAudit(): Promise<AutoRouteAudit> {
   return req<AutoRouteAudit>('GET', '/api/admin/auto-route/audit')
 }
@@ -184,11 +177,18 @@ export function refreshAutoRouteIndex(): Promise<{ refreshed: boolean; refreshed
 export type AnalyticsMetric = 'count' | 'success_rate' | 'p95_ms' | 'cost_usd'
 export type AnalyticsWindow = '24h' | '7d'
 
+export type AnalyticsRowDim = 'task_type' | 'work_type'
+
 export interface AnalyticsMatrix {
   rows: string[]
   cols: string[]
   cells: number[][]
-  meta: { window: AnalyticsWindow; metric: AnalyticsMetric; row?: string }
+  meta: {
+    window: AnalyticsWindow
+    metric: AnalyticsMetric
+    row?: AnalyticsRowDim
+    col_aliases?: Record<string, string[]>
+  }
 }
 
 export interface AnalyticsFlowNode {
@@ -231,9 +231,25 @@ export interface ModelTaskIndexResponse {
 export function getAnalyticsMatrix(
   window: AnalyticsWindow = '7d',
   metric: AnalyticsMetric = 'count',
+  row: AnalyticsRowDim = 'task_type',
 ): Promise<AnalyticsMatrix> {
-  const q = new URLSearchParams({ window, metric, row: 'task_type' })
+  const q = new URLSearchParams({ window, metric, row })
   return req<AnalyticsMatrix>('GET', `/api/admin/auto-route/analytics/matrix?${q}`)
+}
+
+export function getAutoRouteDecisions(
+  limit = 20,
+  task?: string,
+  profile?: string,
+  model?: string,
+  workType?: string,
+): Promise<AutoRouteDecision[]> {
+  let q = `/api/admin/auto-route/decisions?limit=${limit}`
+  if (task) q += `&task=${encodeURIComponent(task)}`
+  if (profile) q += `&profile=${encodeURIComponent(profile)}`
+  if (model) q += `&model=${encodeURIComponent(model)}`
+  if (workType) q += `&work_type=${encodeURIComponent(workType)}`
+  return req<AutoRouteDecision[]>('GET', q)
 }
 
 export function getAnalyticsFlow(window: AnalyticsWindow = '7d'): Promise<AnalyticsFlow> {
@@ -304,7 +320,12 @@ export interface AnalyticsFunnelResponse {
   window: AnalyticsWindow
   requests: number
   stages: AnalyticsFunnelStage[]
-  meta?: { approximate?: boolean; blocked?: number; chosen?: number }
+  meta?: {
+    approximate?: boolean
+    data_source?: 'exact' | 'approximate' | 'mixed'
+    blocked?: number
+    chosen?: number
+  }
 }
 
 export function getDecisionReplay(requestId: string): Promise<DecisionReplayResponse> {

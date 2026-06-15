@@ -45,6 +45,9 @@ const autoProfileHeader = "X-Gw-Auto-Profile"
 // autoTaskHintHeader is the optional client-provided task hint.
 const autoTaskHintHeader = "X-Gw-Task-Hint"
 
+// autoWorkTypeHeader carries the ACC / client work-type key (finer than L1 task_type).
+const autoWorkTypeHeader = "X-Gw-Work-Type"
+
 // autoRequestMagic is the model name that triggers auto-route mode.
 // Chosen to be OpenAI/Anthropic reserved-name-safe: "auto" is not a
 // real model name (yet — Anthropic uses "auto" for tool_choice but
