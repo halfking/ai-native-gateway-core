@@ -340,7 +340,11 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 func strPtr(s string) *string { return &s }
 
 // MiniMax catalog uses discovery_strategy=manifest with models_endpoint_template=/models.
-// Manual refresh (forceAPI=true) must call the live API, not the stale manifest seed.
+// Manual refresh (forceAPI=true) must call the live API, not the stale manifest seed —
+// but catalog manifest entries that the live list omits are merged in so known-but-
+// unlisted models still surface. Here the live API answers with m2.7/m2.5 while the
+// manifest holds two legacy seeds; the merge appends them, and source reports the
+// composition.
 func TestResolveModelsForCredential_ManifestStrategyForceAPIUsesLiveAPI(t *testing.T) {
 	h := &Handler{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -363,11 +367,96 @@ func TestResolveModelsForCredential_ManifestStrategyForceAPIUsesLiveAPI(t *testi
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if source != "api" {
-		t.Fatalf("source = %q, want api", source)
+	if source != "api+manifest" {
+		t.Fatalf("source = %q, want api+manifest", source)
 	}
-	if len(ids) != 2 || ids[0] != "minimax-m2.7" {
-		t.Fatalf("ids = %v, want live API models", ids)
+	if len(ids) != 4 || ids[0] != "minimax-m2.7" || ids[1] != "minimax-m2.5" {
+		t.Fatalf("ids = %v, want live API models first then manifest seeds", ids)
+	}
+	if ids[2] != "MiniMax-Text-01" || ids[3] != "abab6.5s-chat" {
+		t.Fatalf("merged manifest ids = %v, want legacy seeds appended", ids[2:])
+	}
+}
+
+// glm-5.2 regression: zhipu publishes glm-5.2 (callable) but their /models
+// endpoint still lists up to glm-5.1. The catalog manifest registers glm-5.2
+// as "known but unlisted"; a manual refresh must surface it via the merge.
+func TestResolveModelsForCredential_UnlistedGlm52MergedFromManifest(t *testing.T) {
+	h := &Handler{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-4.6"},{"id":"glm-5"},{"id":"glm-5.1"}]}`))
+	}))
+	defer srv.Close()
+
+	tpl := "/models"
+	// Manifest lists the full known GLM lineup including the unlisted glm-5.2.
+	manifest := `{"models":[{"id":"glm-4.6"},{"id":"glm-5"},{"id":"glm-5.1"},{"id":"glm-5.2"}]}`
+	cred := credentialRowLite{
+		baseURL:            srv.URL,
+		protocol:           "openai-completions",
+		discoveryStrategy:  "manifest",
+		modelsEndpointTpl:  &tpl,
+		modelsManifestJSON: &manifest,
+	}
+
+	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if source != "api+manifest" {
+		t.Fatalf("source = %q, want api+manifest", source)
+	}
+	found := false
+	for _, id := range ids {
+		if id == "glm-5.2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ids = %v, want glm-5.2 merged in from manifest", ids)
+	}
+	// glm-4.6 / glm-5 / glm-5.1 already in live list must NOT be duplicated.
+	seen := make(map[string]int)
+	for _, id := range ids {
+		seen[id]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Fatalf("model %s appeared %d times, want dedup (ids=%v)", id, n, ids)
+		}
+	}
+}
+
+// mergeModelIDs — dedup + order preservation for the live/manifest merge.
+func TestMergeModelIDs_AppendsMissing(t *testing.T) {
+	live := []string{"glm-4.6", "glm-5", "glm-5.1"}
+	manifest := []string{"glm-5", "glm-5.2"} // glm-5 dup, glm-5.2 new
+	got := mergeModelIDs(live, manifest)
+	want := []string{"glm-4.6", "glm-5", "glm-5.1", "glm-5.2"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestMergeModelIDs_CaseInsensitiveDedup(t *testing.T) {
+	live := []string{"GPT-4o"}
+	manifest := []string{"gpt-4o", "gpt-4o-mini"}
+	got := mergeModelIDs(live, manifest)
+	if len(got) != 2 || got[0] != "GPT-4o" || got[1] != "gpt-4o-mini" {
+		t.Fatalf("got %v, want [GPT-4o gpt-4o-mini]", got)
+	}
+}
+
+func TestMergeModelIDs_EmptyManifestReturnsLiveUntouched(t *testing.T) {
+	live := []string{"a", "b"}
+	if got := mergeModelIDs(live, nil); len(got) != 2 {
+		t.Fatalf("got %v, want live unchanged", got)
 	}
 }
 

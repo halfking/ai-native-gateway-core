@@ -84,3 +84,44 @@ func TestModelsEndpointURL(t *testing.T) {
 		})
 	}
 }
+
+// ── mergeManifestModels — merge known-but-unlisted models from catalog ─────
+
+func TestMergeManifestModels_AppendsUnlistedGlm52(t *testing.T) {
+	// zhipu ships glm-5.2 before /models lists it; the catalog manifest
+	// registers it so auto-discovery still surfaces it.
+	live := []string{"glm-4.6", "glm-5", "glm-5.1"}
+	manifest := ptr(`{"models":[{"id":"glm-5.1"},{"id":"glm-5.2"}]}`)
+	got := mergeManifestModels(live, manifest)
+	want := []string{"glm-4.6", "glm-5", "glm-5.1", "glm-5.2"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestMergeManifestModels_NilManifestReturnsLive(t *testing.T) {
+	live := []string{"a", "b"}
+	if got := mergeManifestModels(live, nil); len(got) != 2 || got[0] != "a" {
+		t.Fatalf("got %v, want live unchanged", got)
+	}
+}
+
+func TestMergeManifestModels_MalformedJSONReturnsLive(t *testing.T) {
+	live := []string{"a"}
+	if got := mergeManifestModels(live, ptr("{not json")); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("got %v, want live unchanged on malformed manifest", got)
+	}
+}
+
+func TestMergeManifestModels_CaseInsensitiveDedup(t *testing.T) {
+	live := []string{"GPT-4o"}
+	got := mergeManifestModels(live, ptr(`{"models":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`))
+	if len(got) != 2 || got[0] != "GPT-4o" || got[1] != "gpt-4o-mini" {
+		t.Fatalf("got %v, want [GPT-4o gpt-4o-mini]", got)
+	}
+}
