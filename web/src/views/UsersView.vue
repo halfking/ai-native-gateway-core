@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getUsers, createUser, updateUser, deleteUser, resetUserPassword } from '../api'
+import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
+import type { Tenant } from '../api'
 import { store } from '../store'
 
 interface User {
@@ -21,6 +22,8 @@ const error = ref('')
 const showCreate = ref(false)
 const editUser = ref<User | null>(null)
 const resetPwdUser = ref<User | null>(null)
+const filterTenant = ref<string>('')
+const allTenants = ref<Tenant[]>([])
 const newPwd = ref('')
 
 // Create form
@@ -38,6 +41,10 @@ async function load() {
   error.value = ''
   try {
     users.value = await getUsers()
+    // Filter by tenant if set
+    if (filterTenant.value) {
+      users.value = users.value.filter(u => u.tenant_id === filterTenant.value)
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -102,7 +109,12 @@ function fmtDate(s: string | null) {
   return new Date(s).toLocaleString('zh-CN')
 }
 
-onMounted(load)
+async function loadTenants() {
+  try {
+    allTenants.value = await getTenantsAdmin()
+  } catch { /* ignore */ }
+}
+onMounted(() => { load(); loadTenants() })
 </script>
 
 <template>
@@ -110,6 +122,16 @@ onMounted(load)
     <div class="page-header">
       <h1>👤 用户管理</h1>
       <button class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
+    </div>
+
+    <div class="filters">
+      <label>按租户过滤:</label>
+      <select v-model="filterTenant" @change="load">
+        <option value="">全部租户</option>
+        <option v-for="t in allTenants" :key="t.code" :value="t.code">
+          {{ t.name }} ({{ t.code }})
+        </option>
+      </select>
     </div>
 
     <div v-if="error" class="alert alert-danger" style="margin-bottom:12px">{{ error }}</div>
@@ -173,8 +195,12 @@ onMounted(load)
           <input v-model="form.email" type="email" />
         </div>
         <div class="form-group">
-          <label>租户 ID</label>
-          <input v-model="form.tenant_id" />
+          <label>租户 *</label>
+          <select v-model="form.tenant_id" required>
+            <option v-for="t in allTenants" :key="t.code" :value="t.code">
+              {{ t.name }} ({{ t.code }}) - {{ t.status }}
+            </option>
+          </select>
         </div>
         <div class="form-group">
           <label>角色</label>
