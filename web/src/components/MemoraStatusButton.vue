@@ -7,7 +7,6 @@ import {
   controlMemoraSink,
   type MemoraStatus,
 } from '../api'
-import { isSuperAdmin } from '../store'
 
 const status = ref<MemoraStatus | null>(null)
 const panelOpen = ref(false)
@@ -190,7 +189,6 @@ onUnmounted(() => {
           @click="loadStatus"
         >刷新</button>
         <RouterLink
-          v-if="isSuperAdmin()"
           to="/session-context"
           class="btn btn-sm btn-ghost"
           @click="closePanel"
