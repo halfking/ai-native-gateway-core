@@ -4,9 +4,11 @@ import { useRoute } from 'vue-router'
 import {
   getAutoRouteIndex, getAutoRouteDecisions, getAutoRouteAudit,
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
+  getAnalyticsMatrix, getAnalyticsFlow,
   DEFAULT_PROFILE_WEIGHTS, TASK_TYPES, TASK_TAGS,
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
+  type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
 } from '../api-autoroute'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
@@ -16,6 +18,9 @@ import {
 } from '../api'
 import SixDimScoreBar from '../components/SixDimScoreBar.vue'
 import ModelPicker from '../components/ModelPicker.vue'
+import AnalyticsKpiBar from '../components/analytics/AnalyticsKpiBar.vue'
+import HeatmapMatrix from '../components/analytics/HeatmapMatrix.vue'
+import RouteFlowSankey from '../components/analytics/RouteFlowSankey.vue'
 
 const RESOLVE_LOG_KEY = 'llmgw_resolve_log'
 const RESOLVE_LOG_MAX = 50
@@ -31,10 +36,10 @@ interface ResolveLogEntry {
 }
 
 const route = useRoute()
-const activeTab = ref<'overview' | 'policy' | 'live' | 'resolve'>('overview')
+const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve'>('analytics')
 
 function tabFromQuery(q: unknown): typeof activeTab.value | null {
-  if (q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
+  if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
   return null
 }
 
@@ -50,6 +55,60 @@ const layer2Loading = ref<string>('')
 const audit = ref<AutoRouteAudit>({
   total_auto_requests: 0, success_rate: 0,
   task_distribution: {}, profile_distribution: {}, top_chosen_models: [],
+})
+
+// ── Analytics (Phase 2a) ─────────────────────────────
+const analyticsWindow = ref<AnalyticsWindow>('7d')
+const analyticsMetric = ref<AnalyticsMetric>('count')
+const matrixData = ref<AnalyticsMatrix | null>(null)
+const flowData = ref<AnalyticsFlow | null>(null)
+const analyticsLoading = ref(false)
+const cellDecisions = ref<AutoRouteDecision[]>([])
+const cellPopup = ref<{ row: string; col: string; value: number } | null>(null)
+const cellLoading = ref(false)
+
+const analyticsEmpty = computed(() =>
+  !analyticsLoading.value &&
+  audit.value.total_auto_requests === 0 &&
+  (!matrixData.value || matrixData.value.rows.length === 0)
+)
+
+async function loadAnalytics() {
+  analyticsLoading.value = true
+  try {
+    const [matrix, flow] = await Promise.all([
+      getAnalyticsMatrix(analyticsWindow.value, analyticsMetric.value),
+      getAnalyticsFlow(analyticsWindow.value),
+    ])
+    matrixData.value = matrix
+    flowData.value = flow
+  } catch (e) {
+    console.error('loadAnalytics', e)
+  } finally {
+    analyticsLoading.value = false
+  }
+}
+
+async function onMatrixCellClick(row: string, col: string, value: number) {
+  cellPopup.value = { row, col, value }
+  cellLoading.value = true
+  cellDecisions.value = []
+  try {
+    cellDecisions.value = await getAutoRouteDecisions(10, row)
+  } catch (e) {
+    console.error('onMatrixCellClick', e)
+  } finally {
+    cellLoading.value = false
+  }
+}
+
+function closeCellPopup() {
+  cellPopup.value = null
+  cellDecisions.value = []
+}
+
+watch([analyticsWindow, analyticsMetric], () => {
+  if (activeTab.value === 'analytics') loadAnalytics()
 })
 
 const profileScoreKey = computed(() => {
@@ -285,6 +344,7 @@ function replayFromLog(entry: ResolveLogEntry) {
 
 watch(autoRefresh, (v) => { v ? startPoll() : stopPoll() })
 watch(activeTab, (tab) => {
+  if (tab === 'analytics') { loadAudit(); loadAnalytics() }
   if (tab === 'live') { loadAudit(); loadDecisions(); if (autoRefresh.value) startPoll() }
   else stopPoll()
   if (tab === 'policy') { loadPolicy(); loadCosts() }
@@ -325,6 +385,16 @@ const L1_STEPS = ['Prompt', '8类分类', '6维评分', 'Profile', '选模型']
 const L2_STEPS = ['模型解析', 'Tier回退', '计费轮次', 'P2C得分', '执行/熔断']
 
 const heroChips = computed(() => {
+  if (activeTab.value === 'analytics') {
+    const topTask = distEntries(audit.value.task_distribution)[0]
+    const topModel = audit.value.top_chosen_models[0]
+    return [
+      { label: 'Auto', value: String(audit.value.total_auto_requests) },
+      { label: '成功率', value: fmt(audit.value.success_rate * 100, 1) + '%' },
+      { label: 'Top任务', value: topTask?.[0] || '-' },
+      { label: 'Top模型', value: topModel?.model || '-' },
+    ]
+  }
   if (activeTab.value === 'overview') {
     return [
       { label: '候选', value: String(indexData.value.length) },
@@ -361,6 +431,7 @@ onMounted(async () => {
   if (t) activeTab.value = t
   await loadIndex()
   await loadAudit()
+  if (activeTab.value === 'analytics') await loadAnalytics()
   if (activeTab.value === 'resolve') loadResolveLog()
 })
 onUnmounted(() => stopPoll())
@@ -373,13 +444,14 @@ onUnmounted(() => stopPoll())
       <div class="top-bar-head">
         <h2>路由全景</h2>
         <div class="seg-tabs">
+          <button class="seg-tab" :class="{ active: activeTab === 'analytics' }" @click="activeTab = 'analytics'">数据分析</button>
           <button class="seg-tab" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">两层路由</button>
           <button class="seg-tab" :class="{ active: activeTab === 'policy' }" @click="activeTab = 'policy'">策略配置</button>
           <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
           <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
         </div>
         <router-link to="/routing-v2/work-types" class="nav-link-wt">工作类型</router-link>
-        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
+        <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
 
       <!-- L1 / L2 pipeline -->
@@ -409,6 +481,73 @@ onUnmounted(() => stopPoll())
 
       <div class="hero-stats">
         <span v-for="c in heroChips" :key="c.label" class="chip">{{ c.label }} <strong>{{ c.value }}</strong></span>
+      </div>
+    </div>
+
+    <!-- ═══ Tab: Analytics ═══ -->
+    <div v-if="activeTab === 'analytics'" class="tab-content">
+      <div v-if="analyticsEmpty" class="card compact-card empty-state">
+        <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
+      </div>
+      <template v-else>
+        <div class="card compact-card flat-card">
+          <AnalyticsKpiBar :audit="audit" />
+        </div>
+        <div class="card compact-card">
+          <div class="card-toolbar">
+            <div class="toolbar-left">
+              <span class="toolbar-title">任务 × 模型热力图</span>
+            </div>
+            <div class="toolbar-filters">
+              <button
+                v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
+                :key="w"
+                class="profile-pill"
+                :class="{ active: analyticsWindow === w }"
+                @click="analyticsWindow = w"
+              >{{ w }}</button>
+              <span class="toolbar-divider" />
+              <button
+                v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"
+                :key="m"
+                class="profile-pill"
+                :class="{ active: analyticsMetric === m }"
+                @click="analyticsMetric = m"
+              >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
+            </div>
+          </div>
+          <HeatmapMatrix
+            :data="matrixData"
+            :metric="analyticsMetric"
+            :loading="analyticsLoading"
+            @cell-click="onMatrixCellClick"
+          />
+        </div>
+        <div class="card compact-card">
+          <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
+          <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
+        </div>
+      </template>
+
+      <div v-if="cellPopup" class="card compact-card cell-popup">
+        <div class="card-toolbar">
+          <div class="toolbar-left">
+            <span class="toolbar-title">{{ cellPopup.row }} × {{ cellPopup.col }}</span>
+            <span class="text-muted">最近决策</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" @click="closeCellPopup">关闭</button>
+        </div>
+        <div v-if="cellLoading" class="loading-hint">加载…</div>
+        <div v-else-if="cellDecisions.length" class="compact-decisions">
+          <div v-for="d in cellDecisions" :key="d.request_id" class="dec-row">
+            <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
+            <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
+            <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
+            <span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span>
+            <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
+          </div>
+        </div>
+        <div v-else class="text-muted">该任务暂无最近决策</div>
       </div>
     </div>
 
@@ -1112,6 +1251,34 @@ onUnmounted(() => stopPoll())
 
 .compact-alert { padding: 4px 8px; margin-bottom: 0; font-size: 11px; }
 .empty-hint { text-align: center; color: var(--muted); font-size: 11px; padding: 16px; }
+.empty-state {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 24px 16px;
+}
+.empty-state p { margin: 0; }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-h);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+  padding: 0;
+}
+.cell-popup { margin-top: 4px; }
+.compact-decisions { display: flex; flex-direction: column; gap: 4px; }
+.dec-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dec-row:last-child { border-bottom: none; }
 
 /* Live tab */
 .live-grid {
