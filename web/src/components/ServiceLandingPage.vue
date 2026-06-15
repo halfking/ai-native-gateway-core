@@ -34,7 +34,7 @@ const props = withDefaults(
     ctaLabel: '登录开始使用',
     footerText: '开轩启圭 · 企业智能工作台',
     accent: '',
-    hideCta: false,
+    hideCta: true,
   },
 );
 
