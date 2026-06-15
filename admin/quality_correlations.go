@@ -87,9 +87,10 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 		"tools":         true,
 		"images":        true,
 		"code_block":    true,
+		"language":      true,
 	}
 	if !allowedBy[by] {
-		writeJSONErr(w, http.StatusBadRequest, "by must be prompt_length|tools|images|code_block")
+		writeJSONErr(w, http.StatusBadRequest, "by must be prompt_length|tools|images|code_block|language")
 		return
 	}
 
@@ -177,6 +178,21 @@ func buildBreakdownQuery(by string) (string, error) {
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
+	case "language":
+		// Heuristic language detection on request_preview.
+		// CASE is ordered most-specific-first. The default
+		// 'en' is a catch-all (most "other" Latin-script
+		// prompts end up here).
+		bucketExpr = `
+			CASE
+				WHEN request_preview ~ '\x{4E00}-\x{9FFF}' THEN 'zh'
+				WHEN request_preview ~ '\x{3040}-\x{309F}' THEN 'ja'
+				WHEN request_preview ~ '\x{30A0}-\x{30FF}' THEN 'ja'
+				WHEN request_preview ~ '\x{AC00}-\x{D7AF}' THEN 'ko'
+				WHEN request_preview ~ '\x{0400}-\x{04FF}' THEN 'ru'
+				WHEN request_preview ~ '\x{0600}-\x{06FF}' THEN 'ar'
+				ELSE 'en'
+			END`
 	default:
 		return "", nil // unreachable: caller already validated
 	}
@@ -210,7 +226,7 @@ func totalSamples(rows []QualityCorrelationRow) int {
 // and the function uses bucket-index as X and avg_quality as Y
 // (weighted by samples). The result is sorted by |r| desc.
 func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityCorrelationInsight {
-	predictors := []string{"prompt_length", "tools", "images", "code_block"}
+	predictors := []string{"prompt_length", "tools", "images", "code_block", "language"}
 	results := make([]QualityCorrelationInsight, 0, len(predictors))
 
 	for _, p := range predictors {
@@ -296,7 +312,23 @@ func bucketIndex(predictor, bucket string) int {
 			return 1
 		}
 		return 0
-	}
+	case "language":
+		// Alphabetical order so the X axis is consistent
+		switch bucket {
+		case "ar":
+			return 0
+		case "en":
+			return 1
+		case "ja":
+			return 2
+		case "ko":
+			return 3
+		case "ru":
+			return 4
+		case "zh":
+			return 5
+		}
+		return 6
 	return 0
 }
 
