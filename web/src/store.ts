@@ -60,3 +60,21 @@ export function clearAll() {
 export function isAuthenticated(): boolean {
   return !!(store.jwtToken || store.apiKey)
 }
+
+// Returns true if current user is super_admin or legacy admin key
+export function isSuperAdmin(): boolean {
+  // Only check JWT role; legacy admin_key auth is no longer supported
+  return store.userInfo?.role === 'super_admin'
+}
+
+// Returns true if current tenant is default (整站数据)
+export function isDefaultTenant(): boolean {
+  // If no user info (not logged in), treat as default tenant
+  if (!store.userInfo) return true
+  return store.userInfo.tenant_id === 'default'
+}
+
+// Returns current tenant ID or 'default'
+export function getCurrentTenantId(): string {
+  return store.userInfo?.tenant_id || 'default'
+}

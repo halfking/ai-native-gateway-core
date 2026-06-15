@@ -11,6 +11,7 @@ import {
   type RequestLogsResponse,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -34,6 +35,32 @@ const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
 const detailTab = ref<'request' | 'response'>('request')
+
+// Tenant info for display
+const tenantLabel = computed(() => {
+  const tenantId = getCurrentTenantId()
+  const isAdmin = isSuperAdmin()
+  const isDefault = isDefaultTenant()
+  
+  if (isAdmin && isDefault) {
+    return '整站数据'
+  } else if (isDefault) {
+    return '默认租户'
+  } else {
+    return `租户: ${tenantId}`
+  }
+})
+
+// Non-default tenants can only view last 3 days (72 hours)
+const maxHoursForTenant = computed(() => isDefaultTenant() ? 168 : 72)
+
+// Validate hours when tenant changes
+function validateHours() {
+  const maxHours = maxHoursForTenant.value
+  if (hours.value > maxHours) {
+    hours.value = maxHours
+  }
+}
 
 async function loadKeys() {
   try {
@@ -418,7 +445,16 @@ onMounted(async () => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">请求日志</h2>
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
+          {{ tenantLabel }}
+        </span>
+        <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
+      </div>
+    </div>
+
+    <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
+      非 default 租户只能查看最近 3 天的请求日志
     </div>
 
     <div class="compact-filter-bar compact-filter-bar--stacked">
@@ -427,11 +463,12 @@ onMounted(async () => {
           <option value="">全部 Key</option>
           <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
         </select>
-        <select v-model="hours" class="cf-select cf-hours" title="时间范围">
+        <select v-model="hours" class="cf-select cf-hours" title="时间范围" @change="validateHours">
           <option :value="1">1小时</option>
           <option :value="6">6小时</option>
           <option :value="24">24小时</option>
-          <option :value="168">7天</option>
+          <option :value="72">3天</option>
+          <option :value="168" :disabled="!isDefaultTenant()">7天</option>
         </select>
         <select v-model="successFilter" class="cf-select cf-status" title="结果">
           <option value="">全部</option>
@@ -790,6 +827,24 @@ onMounted(async () => {
 }
 .trace-summary {
   border-left: 3px solid var(--accent, #3b82f6);
+}
+.tenant-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--surface-secondary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+.tenant-badge--admin {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+.tenant-badge--default {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
 }
 </style>
 

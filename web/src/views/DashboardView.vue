@@ -15,6 +15,7 @@ import {
   type ModelDiscoveryStatusResponse,
   type HealthResponse,
 } from '../api'
+import { store, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const days    = ref(7)
 const summary = ref<UsageSummary | null>(null)
@@ -27,6 +28,21 @@ const loading = ref(false)
 const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
 let healthPollTimer: ReturnType<typeof setInterval> | null = null
+
+// Tenant info display
+const tenantLabel = computed(() => {
+  const tenantId = getCurrentTenantId()
+  const isAdmin = isSuperAdmin()
+  const isDefault = isDefaultTenant()
+  
+  if (isAdmin && isDefault) {
+    return '整站数据'
+  } else if (isDefault) {
+    return '默认租户'
+  } else {
+    return `租户: ${tenantId}`
+  }
+})
 
 const proxyWarning = computed(() => {
   const p = health.value?.proxy
@@ -139,6 +155,9 @@ onUnmounted(() => {
     <div class="page-header">
       <h2>仪表盘</h2>
       <div style="display:flex;gap:8px;align-items:center">
+        <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
+          {{ tenantLabel }}
+        </span>
         <select v-model.number="days" style="width:100px" @change="load">
           <option :value="1">今日</option>
           <option :value="7">近 7 天</option>
@@ -304,6 +323,27 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 16px;
+}
+
+.tenant-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--surface-secondary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+
+.tenant-badge--admin {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.tenant-badge--default {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
 }
 
 .proxy-warning-banner {
