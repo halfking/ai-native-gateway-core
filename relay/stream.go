@@ -216,6 +216,10 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 			line = replaceModelInChunk(line, clientModel, discoveredUpstream)
 		}
 
+		if stripFn != nil {
+			line = stripChunkFields(line, stripFn)
+		}
+
 		payload := extractPayload(line)
 		if payload != "" && capture != nil {
 			finishReason := ExtractFinishReason(payload)
@@ -247,6 +251,26 @@ func extractPayload(line string) string {
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	return strings.TrimSpace(payload)
+}
+
+// stripChunkFields applies stripFn to the JSON payload of a "data: {...}" line.
+// Non-data lines (event:, comment:, blank) are returned unchanged.
+func stripChunkFields(line string, stripFn func([]byte) []byte) string {
+	if !strings.HasPrefix(line, "data: ") || stripFn == nil {
+		return line
+	}
+	payload := strings.TrimPrefix(line, "data: ")
+	payload = strings.TrimSpace(payload)
+	if payload == "" || payload == "[DONE]" {
+		return line
+	}
+	stripped := stripFn([]byte(payload))
+	if len(stripped) == 0 {
+		return line
+	}
+	return "data: " + string(stripped) + "
+
+"
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
