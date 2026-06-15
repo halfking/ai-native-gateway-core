@@ -178,6 +178,73 @@ export function refreshAutoRouteIndex(): Promise<{ refreshed: boolean; refreshed
   return req('POST', '/api/admin/auto-route/refresh')
 }
 
+// ── Analytics (Phase 2a) ──────────────────────────────
+
+export type AnalyticsMetric = 'count' | 'success_rate' | 'p95_ms' | 'cost_usd'
+export type AnalyticsWindow = '24h' | '7d'
+
+export interface AnalyticsMatrix {
+  rows: string[]
+  cols: string[]
+  cells: number[][]
+  meta: { window: AnalyticsWindow; metric: AnalyticsMetric; row?: string }
+}
+
+export interface AnalyticsFlowNode {
+  id: string
+  label: string
+  layer: number
+}
+
+export interface AnalyticsFlowLink {
+  source: string
+  target: string
+  value: number
+}
+
+export interface AnalyticsFlow {
+  nodes: AnalyticsFlowNode[]
+  links: AnalyticsFlowLink[]
+  meta?: { window: AnalyticsWindow }
+}
+
+export interface ModelTaskIndexItem {
+  canonical_id?: number
+  canonical_name?: string
+  task_type: string
+  sample_count?: number
+  success_rate?: number
+  avg_latency_ms?: number
+  p95_latency_ms?: number
+  avg_cost_per_1k_usd?: number
+  primary_credential_id?: number
+  updated_at?: string
+}
+
+export interface ModelTaskIndexResponse {
+  bucket: string | null
+  items: ModelTaskIndexItem[]
+  warning?: string
+}
+
+export function getAnalyticsMatrix(
+  window: AnalyticsWindow = '7d',
+  metric: AnalyticsMetric = 'count',
+): Promise<AnalyticsMatrix> {
+  const q = new URLSearchParams({ window, metric, row: 'task_type' })
+  return req<AnalyticsMatrix>('GET', `/api/admin/auto-route/analytics/matrix?${q}`)
+}
+
+export function getAnalyticsFlow(window: AnalyticsWindow = '7d'): Promise<AnalyticsFlow> {
+  return req<AnalyticsFlow>('GET', `/api/admin/auto-route/analytics/flow?window=${window}`)
+}
+
+export function getModelTaskIndex(task_type?: string, top = 20): Promise<ModelTaskIndexResponse> {
+  let q = `/api/admin/auto-route/analytics/model-task-index?top=${top}`
+  if (task_type) q += `&task_type=${encodeURIComponent(task_type)}`
+  return req<ModelTaskIndexResponse>('GET', q)
+}
+
 export async function simulateAutoRoute(prompt: string, profile: string, hint?: string): Promise<{
   status: number
   decision?: Record<string, unknown>

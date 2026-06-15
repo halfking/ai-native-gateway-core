@@ -247,6 +247,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		autoH.RegisterAutoRouteRoutes(mux, admin)
 
+		// Phase 2a analytics (matrix / flow / model-task-index).
+		analyticsH := NewAnalyticsHandlers(h.db)
+		analyticsH.RegisterAnalyticsRoutes(mux, admin)
+
 		// Phase 1 work type config CRUD.
 		wtH := NewWorkTypeHandlers(h.db)
 		wtH.RegisterWorkTypeRoutes(mux, admin)
