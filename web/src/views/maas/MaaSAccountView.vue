@@ -10,11 +10,13 @@ import {
   MAAS_ORDER_STATUS_LABELS,
 } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
+import PageBackLink from '../../components/PageBackLink.vue'
 
-const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle } = useMaasTenantContext()
+const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
   ctxPageTitle(isAdminTenantView.value ? '账户' : '我的账户'),
 )
+const backLink = computed(() => maasBackLink('account'))
 
 const account = ref<MaasAccount | null>(null)
 const loading = ref(false)
@@ -87,6 +89,7 @@ onMounted(load)
 <template>
   <div>
     <div class="page-header">
+      <PageBackLink v-if="backLink" :to="backLink.to" :label="backLink.label" />
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
