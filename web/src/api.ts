@@ -2723,3 +2723,107 @@ export function getAutoRouteCorrelations(params: {
   const path = '/api/admin/auto-route/correlations' + (q.toString() ? '?' + q : '')
   return req<AutoRouteCorrelationsResponse>('GET', path)
 }
+
+// ── MaaS (积分计费) ─────────────────────────────────────────────────────
+
+export interface MaasPublicSettings {
+  cents_per_credit: number
+  base_credits_per_1m: number
+  currency_display: string
+}
+
+export interface MaasModel {
+  canonical_name: string
+  display_name: string
+  credits_per_1m_in: number
+  credits_per_1m_out: number
+}
+
+export interface MaasPlan {
+  id: number
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  monthly_credits: number
+  enabled: boolean
+  sort_order: number
+}
+
+export interface MaasTopupPackage {
+  id: number
+  code: string
+  tier: string
+  name: string
+  price_cents: number
+  credits_amount: number
+  enabled: boolean
+  sort_order: number
+}
+
+export interface MaasWallet {
+  tenant_id: string
+  balance_credits: number
+  quota_remaining: number
+  total_available: number
+}
+
+export interface MaasLedgerEntry {
+  id: number
+  entry_type: string
+  amount: number
+  balance_after: number
+  ref_type: string | null
+  ref_id: string | null
+  note: string
+  created_at: string
+}
+
+export function getMaasSettings() {
+  return req<MaasPublicSettings>('GET', '/api/maas/settings')
+}
+
+export function getMaasModels() {
+  return req<{ items: MaasModel[] }>('GET', '/api/maas/models')
+}
+
+export function getMaasPlans() {
+  return req<{ items: MaasPlan[] }>('GET', '/api/maas/plans')
+}
+
+export function getMaasTopupPackages() {
+  return req<{ items: MaasTopupPackage[] }>('GET', '/api/maas/topup-packages')
+}
+
+export function getMaasWallet() {
+  return req<MaasWallet>('GET', '/api/maas/wallet')
+}
+
+export function getMaasLedger(limit = 50) {
+  return req<{ items: MaasLedgerEntry[] }>('GET', `/api/maas/ledger?limit=${limit}`)
+}
+
+export function getAdminMaasWallet(tenantCode: string) {
+  return req<MaasWallet>('GET', `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/wallet`)
+}
+
+export function getAdminMaasLedger(tenantCode: string, limit = 50) {
+  return req<{ items: MaasLedgerEntry[] }>(
+    'GET',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/ledger?limit=${limit}`,
+  )
+}
+
+export function adjustAdminMaasCredits(tenantCode: string, amount: number, note: string) {
+  return req<{ status: string }>(
+    'POST',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/adjust`,
+    { amount, note },
+  )
+}
+
+export const MAAS_LEDGER_TYPE_LABELS: Record<string, string> = {
+  consume: '消耗',
+  topup: '充值',
+  adjust: '调整',
+}

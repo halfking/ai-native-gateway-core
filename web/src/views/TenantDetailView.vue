@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getTenant, getTenantUsers, getTenantKeys, getTenantStats, getUsers, updateUser, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
-import type { Tenant, TenantUser, TenantKey, TenantStats, UserListItem } from '../api'
+import {
+  getTenant, getTenantUsers, getTenantKeys, getTenantStats, updateUser,
+  getAdminMaasWallet, getAdminMaasLedger, adjustAdminMaasCredits,
+  MAAS_LEDGER_TYPE_LABELS,
+  TENANT_STATUS_LABELS, TENANT_STATUS_COLORS,
+} from '../api'
+import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
 
 const route = useRoute()
@@ -15,9 +20,14 @@ const keys = ref<TenantKey[]>([])
 const stats = ref<TenantStats | null>(null)
 const loading = ref(false)
 const error = ref('')
-const activeTab = ref<'overview' | 'users' | 'keys' | 'stats'>('overview')
+const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger'>('overview')
 const statsDays = ref(7)
 const showEdit = ref(false)
+const maasWallet = ref<MaasWallet | null>(null)
+const maasLedger = ref<MaasLedgerEntry[]>([])
+const adjustAmount = ref('')
+const adjustNote = ref('')
+const adjustSaving = ref(false)
 
 async function loadTenant() {
   loading.value = true
@@ -58,11 +68,59 @@ async function loadStats() {
   }
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats') {
+async function loadWallet() {
+  try {
+    maasWallet.value = await getAdminMaasWallet(tenantCode.value)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载钱包失败'
+  }
+}
+
+async function loadLedger() {
+  try {
+    const res = await getAdminMaasLedger(tenantCode.value, 100)
+    maasLedger.value = res.items ?? []
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '加载账本失败'
+  }
+}
+
+async function submitAdjust() {
+  const amount = parseInt(adjustAmount.value, 10)
+  if (!amount || Number.isNaN(amount)) {
+    error.value = '请输入有效的积分数量'
+    return
+  }
+  adjustSaving.value = true
+  error.value = ''
+  try {
+    await adjustAdminMaasCredits(tenantCode.value, amount, adjustNote.value.trim())
+    adjustAmount.value = ''
+    adjustNote.value = ''
+    await Promise.all([loadWallet(), loadLedger()])
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '调整失败'
+  } finally {
+    adjustSaving.value = false
+  }
+}
+
+function ledgerTypeLabel(t: string) {
+  return MAAS_LEDGER_TYPE_LABELS[t] || t
+}
+
+function fmtCredits(n: number) {
+  const sign = n > 0 ? '+' : ''
+  return sign + n.toLocaleString('zh-CN')
+}
+
+async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger') {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()
   if (t === 'stats' && !stats.value) await loadStats()
+  if (t === 'wallet' && !maasWallet.value) await loadWallet()
+  if (t === 'ledger' && maasLedger.value.length === 0) await loadLedger()
 }
 
 async function toggleUserEnabled(u: TenantUser) {
@@ -136,6 +194,8 @@ watch(() => route.params.tenantId, loadTenant)
         <button :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户 ({{ tenant.user_count }})</button>
         <button :class="{ active: activeTab === 'keys' }" @click="switchTab('keys')">密钥 ({{ tenant.api_key_count }})</button>
         <button :class="{ active: activeTab === 'stats' }" @click="switchTab('stats')">统计</button>
+        <button :class="{ active: activeTab === 'wallet' }" @click="switchTab('wallet')">钱包</button>
+        <button :class="{ active: activeTab === 'ledger' }" @click="switchTab('ledger')">账本</button>
       </div>
 
       <!-- Overview Tab -->
@@ -287,6 +347,68 @@ watch(() => route.params.tenantId, loadTenant)
           </table>
         </div>
       </div>
+
+      <!-- Wallet Tab -->
+      <div v-if="activeTab === 'wallet'" class="tab-content">
+        <div v-if="maasWallet" class="stat-cards">
+          <div class="stat-card">
+            <div class="stat-label">钱包余额</div>
+            <div class="stat-value">{{ maasWallet.balance_credits.toLocaleString('zh-CN') }} 积分</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">月包剩余</div>
+            <div class="stat-value">{{ maasWallet.quota_remaining.toLocaleString('zh-CN') }} 积分</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">可用总额</div>
+            <div class="stat-value">{{ maasWallet.total_available.toLocaleString('zh-CN') }} 积分</div>
+          </div>
+        </div>
+
+        <div class="adjust-form">
+          <h3>手动调整积分</h3>
+          <div class="adjust-row">
+            <label>变动数量</label>
+            <input v-model="adjustAmount" type="number" placeholder="正数充值，负数扣减" />
+          </div>
+          <div class="adjust-row">
+            <label>备注</label>
+            <input v-model="adjustNote" type="text" placeholder="调整原因（可选）" />
+          </div>
+          <button class="btn btn-primary btn-sm" :disabled="adjustSaving" @click="submitAdjust">
+            {{ adjustSaving ? '提交中…' : '提交调整' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Ledger Tab -->
+      <div v-if="activeTab === 'ledger'" class="tab-content">
+        <table class="table" style="width:100%">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th style="text-align:right">变动</th>
+              <th style="text-align:right">余额</th>
+              <th>关联</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in maasLedger" :key="e.id">
+              <td class="mono">{{ fmtTime(e.created_at) }}</td>
+              <td>{{ ledgerTypeLabel(e.entry_type) }}</td>
+              <td class="mono" style="text-align:right">{{ fmtCredits(e.amount) }}</td>
+              <td class="mono" style="text-align:right">{{ e.balance_after.toLocaleString('zh-CN') }}</td>
+              <td class="mono">{{ e.ref_type || '—' }} {{ e.ref_id || '' }}</td>
+              <td>{{ e.note || '—' }}</td>
+            </tr>
+            <tr v-if="maasLedger.length === 0">
+              <td colspan="6" style="text-align:center; padding:40px; color: var(--muted)">暂无账本记录</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <TenantEditDialog v-if="showEdit && tenant" :tenant="tenant" @close="showEdit = false; loadTenant()" @updated="loadTenant" />
@@ -407,6 +529,33 @@ watch(() => route.params.tenantId, loadTenant)
   font-size: 13px;
 }
 .stats-tables h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
+.adjust-form {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.adjust-form h3 { font-size: 14px; margin: 0 0 12px; color: var(--muted); }
+.adjust-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.adjust-row label {
+  width: 80px;
+  font-size: 13px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.adjust-row input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
 .loading { text-align: center; padding: 40px; color: var(--muted); }
 .alert { padding: 8px 12px; border-radius: 4px; font-size: 13px; }
 .alert-danger { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
