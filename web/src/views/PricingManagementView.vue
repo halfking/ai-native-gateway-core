@@ -376,7 +376,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { store, isReadOnlyMode } from '../store'
+import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const readOnly = computed(() => isReadOnlyMode())
@@ -528,10 +528,10 @@ function buildCoverageByCred(offers: Offer[]) {
   coverageByCred.value = arr
 }
 
-const authHeaders = () => {
-  const key = store.apiKey
-  return { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }
-}
+const authHeaders = () => ({
+  'Authorization': `Bearer ${authBearer()}`,
+  'Content-Type': 'application/json',
+})
 
 const filteredFamilies = computed(() => {
   if (!filters.value.search) return families.value
@@ -854,7 +854,7 @@ async function importCsv() {
     fd.append('file', importFile.value)
     const res = await fetch(`${API}/import`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${store.apiKey}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${authBearer()}`, 'Content-Type': 'application/json' },
       body: fd,
     })
     const data = await res.json()

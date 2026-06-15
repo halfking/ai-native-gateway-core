@@ -1,11 +1,11 @@
 // api-work-types.ts — Phase 1 work type admin API bindings
 
-import { store } from './store'
+import { store, authBearer } from './store'
 
 const BASE = ''
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { Authorization: `Bearer ${store.apiKey}` }
+  const headers: Record<string, string> = { Authorization: `Bearer ${authBearer()}` }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const resp = await fetch(BASE + path, {
     method,

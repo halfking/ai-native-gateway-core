@@ -35,6 +35,18 @@ export function setJwtToken(token: string) {
   localStorage.setItem(JWT_KEY, token)
 }
 
+// Returns the token that should go into the `Authorization: Bearer` header.
+// Prefers the JWT (username/password login); falls back to the legacy API key.
+// Empty when logged out — callers then get a 401 and redirect to /login.
+//
+// All admin-API fetch wrappers MUST use this instead of reading store.apiKey
+// directly: a JWT login leaves store.apiKey empty, so hardcoding store.apiKey
+// sends an empty bearer and 401s every admin endpoint. See api-autoroute.ts,
+// api-work-types.ts, PricingManagementView.vue.
+export function authBearer(): string {
+  return store.jwtToken || store.apiKey || ''
+}
+
 export function setUserInfo(user: UserInfo | null) {
   store.userInfo = user
   if (user) {
