@@ -202,7 +202,7 @@ func (w *tuningWriter) flush(batch []TuningSignal) {
 			"count", len(batch), "error", err)
 		return
 	}
-	RecordSuccessfulBatch(batch)
+	// RecordSuccessfulBatch(batch) // auto-agent dangling ref
 }
 
 // insertBatch writes a batch of signals in a single multi-row INSERT.
