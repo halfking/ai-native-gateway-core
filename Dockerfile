@@ -7,7 +7,7 @@
 # build context.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 golang:1.25-alpine AS builder
+FROM --platform=linux/amd64 kx-base:go AS builder
 
 RUN apk add --no-cache git ca-certificates nodejs npm
 
