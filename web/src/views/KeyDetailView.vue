@@ -38,10 +38,16 @@ const limitsSaving = ref(false)
 const limitsErr = ref('')
 const limitsSuccess = ref('')
 
-type LimitMode = 'default' | 'custom'
+type LimitMode = 'default' | 'unlimited' | 'custom'
 const rpmMode = ref<LimitMode>('default')
 const concurrentMode = ref<LimitMode>('default')
 const tpmMode = ref<LimitMode>('default')
+
+function limitModeFromValue(v: number | null | undefined, supportsUnlimited: boolean): LimitMode {
+  if (v == null) return 'default'
+  if (supportsUnlimited && v === 0) return 'unlimited'
+  return 'custom'
+}
 
 function initLimitsForm() {
   const k = keyInfo.value
@@ -51,11 +57,9 @@ function initLimitsForm() {
     rate_limit_concurrent: k.rate_limit_concurrent ?? null,
     rate_limit_tpm: k.rate_limit_tpm ?? null,
   }
-  // 'unlimited' was removed: backend rejects 0; "default" (= null) is
-  // the only way to opt out of a per-key limit.
-  rpmMode.value = k.rate_limit_rpm == null ? 'default' : 'custom'
-  concurrentMode.value = k.rate_limit_concurrent == null ? 'default' : 'custom'
-  tpmMode.value = k.rate_limit_tpm == null ? 'default' : 'custom'
+  rpmMode.value = limitModeFromValue(k.rate_limit_rpm, true)
+  concurrentMode.value = limitModeFromValue(k.rate_limit_concurrent, true)
+  tpmMode.value = limitModeFromValue(k.rate_limit_tpm, false)
   limitsErr.value = ''
   limitsSuccess.value = ''
 }
@@ -67,12 +71,34 @@ function openLimitsEditor() {
 
 function modeToValue(mode: LimitMode, current: number | null | undefined): number | null {
   if (mode === 'default') return null
-  return current ?? 0
+  if (mode === 'unlimited') return 0
+  return current ?? null
+}
+
+function validateLimitsForm(): string | null {
+  if (rpmMode.value === 'custom') {
+    const v = limitsForm.value.rate_limit_rpm
+    if (v == null || v < 1) return 'RPM 自定义值必须 ≥ 1'
+  }
+  if (concurrentMode.value === 'custom') {
+    const v = limitsForm.value.rate_limit_concurrent
+    if (v == null || v < 1) return '并发自定义值必须 ≥ 1'
+  }
+  if (tpmMode.value === 'custom') {
+    const v = limitsForm.value.rate_limit_tpm
+    if (v == null || v < 1) return 'TPM 自定义值必须 ≥ 1'
+  }
+  return null
 }
 
 async function saveLimits() {
   limitsErr.value = ''
   limitsSuccess.value = ''
+  const validationErr = validateLimitsForm()
+  if (validationErr) {
+    limitsErr.value = validationErr
+    return
+  }
   limitsSaving.value = true
   try {
     const data: UpdateKeyLimitsRequest = {
@@ -388,6 +414,23 @@ function fmtNum(n: number | string | null | undefined, decimals = 0): string {
   return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
+function formatRpmLimit(v: number | null | undefined): string {
+  if (v == null) return '默认'
+  if (v === 0) return '无限制'
+  return `${v} RPM`
+}
+
+function formatConcurrentLimit(v: number | null | undefined): string {
+  if (v == null) return '默认'
+  if (v === 0) return '无限制'
+  return String(v)
+}
+
+function formatTpmLimit(v: number | null | undefined): string {
+  if (v == null || v === 0) return '不限制'
+  return `${fmtNum(v)} TPM`
+}
+
 function fmtCost(n: number | string | null | undefined): string {
   if (n == null) return '$0.00'
   return '$' + Number(n).toFixed(6)
@@ -539,15 +582,15 @@ watch(keyId, async () => {
           </div>
           <div class="key-info-item">
             <span class="key-info-label">RPM</span>
-            <span class="key-info-value">{{ keyInfo.rate_limit_rpm != null ? keyInfo.rate_limit_rpm + ' RPM' : '默认' }}</span>
+            <span class="key-info-value">{{ formatRpmLimit(keyInfo.rate_limit_rpm) }}</span>
           </div>
           <div class="key-info-item">
             <span class="key-info-label">并发</span>
-            <span class="key-info-value">{{ keyInfo.rate_limit_concurrent != null ? keyInfo.rate_limit_concurrent : '默认' }}</span>
+            <span class="key-info-value">{{ formatConcurrentLimit(keyInfo.rate_limit_concurrent) }}</span>
           </div>
           <div class="key-info-item">
             <span class="key-info-label">TPM</span>
-            <span class="key-info-value">{{ keyInfo.rate_limit_tpm != null ? fmtNum(keyInfo.rate_limit_tpm) + ' TPM' : '不限制' }}</span>
+            <span class="key-info-value">{{ formatTpmLimit(keyInfo.rate_limit_tpm) }}</span>
           </div>
           <div class="key-info-item">
             <span class="key-info-label">最后使用</span>
@@ -566,6 +609,7 @@ watch(keyId, async () => {
               <label>RPM（每分钟请求数）</label>
 <div class="limit-options">
                 <label><input type="radio" v-model="rpmMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="rpmMode" value="unlimited"> 无限制</label>
                 <label><input type="radio" v-model="rpmMode" value="custom"> 自定义</label>
               </div>
               <input v-if="rpmMode === 'custom'" v-model.number="limitsForm.rate_limit_rpm" type="number" min="1" placeholder="输入 RPM">
@@ -575,6 +619,7 @@ watch(keyId, async () => {
               <label>并发（同时请求数）</label>
               <div class="limit-options">
                 <label><input type="radio" v-model="concurrentMode" value="default"> 默认</label>
+                <label><input type="radio" v-model="concurrentMode" value="unlimited"> 无限制</label>
                 <label><input type="radio" v-model="concurrentMode" value="custom"> 自定义</label>
               </div>
               <input v-if="concurrentMode === 'custom'" v-model.number="limitsForm.rate_limit_concurrent" type="number" min="1" placeholder="输入并发数">
