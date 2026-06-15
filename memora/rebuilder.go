@@ -31,7 +31,7 @@ const compactionSnippetPrefix = "[Gateway injected Memora context — earlier ta
 // request.
 func RebuildBodyWithMemoraSnippets(origBody []byte, snippets []Memory, keepRecentPairs int) ([]byte, bool) {
 	if len(snippets) == 0 {
-		return origBody, false
+		return nil, false
 	}
 	if keepRecentPairs <= 0 {
 		keepRecentPairs = 2
@@ -48,33 +48,33 @@ func RebuildBodyWithMemoraSnippets(origBody []byte, snippets []Memory, keepRecen
 		Messages json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(origBody, &probe); err != nil {
-		return origBody, false
+		return nil, false
 	}
 	if len(probe.Messages) == 0 {
-		return origBody, false
+		return nil, false
 	}
 
 	// Split tail (last keepRecentPairs*2) from head.
 	allMsgs := decodeMessages(probe.Messages)
 	if len(allMsgs) == 0 {
-		return origBody, false
+		return nil, false
 	}
-	headMsgs, tailMsgs := splitHeadAndTail(allMsgs, keepRecentPairs*2)
+	headMsgs, tailMsgs := splitSystemAndTail(allMsgs, keepRecentPairs*2)
 	if len(headMsgs) == 0 && len(tailMsgs) == 0 {
-		return origBody, false
+		return nil, false
 	}
 
 	// Build the dynamic_context user message.
 	plainText := buildPlainText(snippets)
 	if strings.TrimSpace(plainText) == "" {
-		return origBody, false
+		return nil, false
 	}
 	dynCtx, err := json.Marshal(map[string]any{
 		"role":    "user",
 		"content": compactionSnippetPrefix + plainText,
 	})
 	if err != nil {
-		return origBody, false
+		return nil, false
 	}
 
 	// Reassemble: head (any system messages) + dynamic_context + tail
@@ -84,7 +84,7 @@ func RebuildBodyWithMemoraSnippets(origBody []byte, snippets []Memory, keepRecen
 	merged = append(merged, tailMsgs...)
 	newMsgs, err := json.Marshal(merged)
 	if err != nil {
-		return origBody, false
+		return nil, false
 	}
 
 	// Splice newMsgs into the original body, preserving every other top-level
@@ -93,7 +93,7 @@ func RebuildBodyWithMemoraSnippets(origBody []byte, snippets []Memory, keepRecen
 	// transport that does byte-equality checks.
 	spliced, ok := spliceMessagesRaw(origBody, newMsgs)
 	if !ok {
-		return origBody, false
+		return nil, false
 	}
 	return spliced, true
 }
@@ -125,14 +125,37 @@ func decodeMessages(raw json.RawMessage) []json.RawMessage {
 	return out
 }
 
-// splitHeadAndTail returns (head, tail) where tail is the last `tailMax`
-// raw messages and head is everything before. If the array is shorter
-// than tailMax, head is empty and tail is the full array.
-func splitHeadAndTail(msgs []json.RawMessage, tailMax int) (head, tail []json.RawMessage) {
-	if len(msgs) <= tailMax {
-		return nil, msgs
+// splitSystemAndTail returns (head, tail) where head contains ONLY the
+// leading system messages (preserved as the model identity) and tail
+// contains the last tailMax non-system messages. The dynamic_context
+// user message is spliced between head and tail.
+//
+// Tighter than "split at len-tailMax": even when the conversation is
+// shorter than tailMax, system messages are peeled off so the dynamic
+// context lands in the right place (after system, before user/assistant).
+func splitSystemAndTail(msgs []json.RawMessage, tailMax int) (head, tail []json.RawMessage) {
+	// Peel off leading system messages.
+	i := 0
+	for i < len(msgs) && isSystemMessage(msgs[i]) {
+		head = append(head, msgs[i])
+		i++
 	}
-	return msgs[:len(msgs)-tailMax], msgs[len(msgs)-tailMax:]
+	rest := msgs[i:]
+	if len(rest) <= tailMax {
+		return head, rest
+	}
+	return head, rest[len(rest)-tailMax:]
+}
+
+// isSystemMessage returns true if the message has role=system.
+func isSystemMessage(raw json.RawMessage) bool {
+	var probe struct {
+		Role string `json:"role"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	return probe.Role == "system"
 }
 
 // spliceMessagesRaw replaces the "messages":[...] value in origBody with
@@ -202,7 +225,7 @@ found:
 	var out []byte
 	out = append(out, origBody[:i]...)
 	out = append(out, newMsgs...)
-	out = append(out, origBody[end:]...)
+	out = append(out, origBody[end+1:]...)
 	return out, true
 }
 
