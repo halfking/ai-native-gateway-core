@@ -373,13 +373,26 @@ func isCrossFamily(a, b string) bool {
 	return family(a) != family(b)
 }
 
+// family extracts the model family from a canonical model
+// name. Used to classify a divergence as "cross-family" or
+// "minor (same family, different version)".
+//
+// Algorithm: strip everything from the first digit onward,
+// then strip a trailing dash. This makes
+//   gpt-4o, gpt-4o-2024-08-06, gpt-4o-mini  →  all "gpt"
+//   claude-3-5-sonnet, claude-3-5-sonnet-20241022  →  both "claude"
+//   gemini-pro  →  "gemini" (no digit; fall back to len-5 prefix)
 func family(name string) string {
-	// Strip everything from the first digit onward (gpt-4o → gpt,
-	// claude-3-5-sonnet-20241022 → claude)
-	for i, c := range name {
-		if c >= '0' && c <= '9' {
-			return name[:i]
+	// Strip everything from the first digit onward
+	for i := 0; i < len(name); i++ {
+		if name[i] >= '0' && name[i] <= '9' {
+			name = name[:i]
+			break
 		}
+	}
+	// Strip a trailing dash (so "gpt-" becomes "gpt")
+	if len(name) > 0 && name[len(name)-1] == '-' {
+		name = name[:len(name)-1]
 	}
 	if len(name) > 5 {
 		return name[:5]
