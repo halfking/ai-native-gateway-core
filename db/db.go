@@ -65,6 +65,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureRoutingOverridesAudit(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -452,5 +456,100 @@ func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 		return err
 	}
 	slog.Info("tuning_signals views ensured (5m + daily, 2 supporting indexes)")
+	return nil
+}
+
+
+// ensureRoutingOverridesAudit creates the audit-log table and
+// trigger for routing_overrides (P7.9). Every INSERT, UPDATE, and
+// DELETE is logged with the actor (from app.current_admin session
+// GUC), the action type, and the row state before/after.
+//
+// Why a trigger: the audit log is correctness-critical. A trigger
+// in the same transaction as the DML guarantees atomic audit (no
+// missed writes on crash). An application-level log could miss
+// writes if the app crashes between DML and log write.
+func (d *DB) ensureRoutingOverridesAudit(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS routing_overrides_audit (
+		    id              BIGSERIAL PRIMARY KEY,
+		    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    action          TEXT NOT NULL
+		                    CHECK (action IN ('insert','update','delete')),
+		    override_id     BIGINT,
+		    task_type       TEXT,
+		    profile         TEXT,
+		    mode            TEXT,
+		    model_chosen    TEXT,
+		    reason          TEXT,
+		    expires_at      TIMESTAMPTZ,
+		    old_expires_at  TIMESTAMPTZ,
+		    actor           TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_ts
+		    ON routing_overrides_audit (ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_actor_ts
+		    ON routing_overrides_audit (actor, ts DESC)
+		    WHERE actor IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_override_ts
+		    ON routing_overrides_audit (override_id, ts DESC)
+		    WHERE override_id IS NOT NULL;
+
+		CREATE OR REPLACE FUNCTION routing_overrides_audit_fn()
+		RETURNS TRIGGER AS $$
+		DECLARE
+		    v_actor TEXT := COALESCE(
+		        NULLIF(current_setting('app.current_admin', true), ''),
+		        'system'
+		    );
+		BEGIN
+		    IF (TG_OP = 'INSERT') THEN
+		        INSERT INTO routing_overrides_audit
+		            (action, override_id, task_type, profile, mode,
+		             model_chosen, reason, expires_at, actor)
+		        VALUES
+		            ('insert', NEW.id, NEW.task_type, NEW.profile, NEW.mode,
+		             NEW.model_chosen, NEW.reason, NEW.expires_at, v_actor);
+		        RETURN NEW;
+		    ELSIF (TG_OP = 'UPDATE') THEN
+		        IF NEW.expires_at IS DISTINCT FROM OLD.expires_at
+		           OR NEW.reason IS DISTINCT FROM OLD.reason
+		           OR NEW.model_chosen IS DISTINCT FROM OLD.model_chosen
+		        THEN
+		            INSERT INTO routing_overrides_audit
+		                (action, override_id, task_type, profile, mode,
+		                 model_chosen, reason, expires_at, old_expires_at,
+		                 actor)
+		            VALUES
+		                ('update', NEW.id, NEW.task_type, NEW.profile, NEW.mode,
+		                 NEW.model_chosen, NEW.reason, NEW.expires_at,
+		                 OLD.expires_at, v_actor);
+		        END IF;
+		        RETURN NEW;
+		    ELSIF (TG_OP = 'DELETE') THEN
+		        INSERT INTO routing_overrides_audit
+		            (action, override_id, task_type, profile, mode,
+		             model_chosen, reason, expires_at, actor)
+		        VALUES
+		            ('delete', OLD.id, OLD.task_type, OLD.profile, OLD.mode,
+		             OLD.model_chosen, OLD.reason, OLD.expires_at, v_actor);
+		        RETURN OLD;
+		    END IF;
+		    RETURN NULL;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS routing_overrides_audit_trg ON routing_overrides;
+		CREATE TRIGGER routing_overrides_audit_trg
+		    AFTER INSERT OR UPDATE OR DELETE ON routing_overrides
+		    FOR EACH ROW EXECUTE FUNCTION routing_overrides_audit_fn();
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("routing_overrides_audit ensured (table + 3 indexes + trigger)")
 	return nil
 }
