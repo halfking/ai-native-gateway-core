@@ -292,11 +292,6 @@ watch(() => route.params.tenantId, loadTenant)
   </div>
 </template>
 
-<script lang="ts">
-import TenantEditDialog from './TenantEditDialog.vue'
-export default { components: { TenantEditDialog } }
-</script>
-
 <style scoped>
 .tenant-header {
   display: flex;

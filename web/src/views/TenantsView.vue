@@ -125,13 +125,6 @@ onMounted(load)
   </div>
 </template>
 
-<script lang="ts">
-import TenantCreateDialog from './TenantCreateDialog.vue'
-import TenantEditDialog from './TenantEditDialog.vue'
-
-export default { components: { TenantCreateDialog, TenantEditDialog } }
-</script>
-
 <style scoped>
 .page-header {
   display: flex;
