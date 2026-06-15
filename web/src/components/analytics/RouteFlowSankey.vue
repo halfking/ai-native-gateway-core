@@ -5,6 +5,7 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 const props = defineProps<{
   data: AnalyticsFlow | null
   loading?: boolean
+  minHeight?: number
 }>()
 
 const W = 720
@@ -55,7 +56,7 @@ const layers = computed(() => {
 const H = computed(() => {
   const maxNodes = Math.max(...layers.value.map(l => l.length), 1)
   const h = 24 + maxNodes * (nodeH + gap) + 24
-  return Math.max(h, MIN_H)
+  return Math.max(h, props.minHeight || 0, MIN_H)
 })
 
 interface LayoutNode {

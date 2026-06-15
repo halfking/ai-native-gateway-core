@@ -69,6 +69,25 @@ const analyticsRowDim = ref<AnalyticsRowDim>('task_type')
 const matrixData = ref<AnalyticsMatrix | null>(null)
 const flowData = ref<AnalyticsFlow | null>(null)
 const analyticsLoading = ref(false)
+
+const chartHeight = computed(() => {
+  const rows = matrixData.value?.rows?.length || 0
+  const heatmapH = rows ? (rows + 1) * 22 + 40 : 200
+
+  let sankeyMaxNodes = 1
+  if (flowData.value?.nodes?.length) {
+    const layers: Record<number, number> = {}
+    for (const n of flowData.value.nodes) {
+      const l = Math.min(Math.max(n.layer, 0), 2)
+      layers[l] = (layers[l] || 0) + 1
+    }
+    sankeyMaxNodes = Math.max(...Object.values(layers), 1)
+  }
+  const sankeyH = 24 + sankeyMaxNodes * 22 + 24
+
+  return Math.max(heatmapH, sankeyH, 200)
+})
+
 const cellDecisions = ref<AutoRouteDecision[]>([])
 const cellModalOpen = ref(false)
 const cellPopup = ref<{ row: string; col: string; value: number } | null>(null)
@@ -615,7 +634,7 @@ onUnmounted(() => stopPoll())
           <AnalyticsKpiBar :audit="audit" />
         </div>
         <div class="analytics-charts">
-          <div class="card compact-card">
+          <div class="card compact-card" :style="{ minHeight: chartHeight + 'px' }">
             <div class="card-toolbar">
               <div class="toolbar-left">
                 <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
@@ -651,12 +670,13 @@ onUnmounted(() => stopPoll())
               :metric="analyticsMetric"
               :col-aliases="matrixData?.meta?.col_aliases"
               :loading="analyticsLoading"
+              :min-height="chartHeight"
               @cell-click="onMatrixCellClick"
             />
           </div>
-          <div class="card compact-card">
+          <div class="card compact-card" :style="{ minHeight: chartHeight + 'px' }">
             <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" />
+            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="chartHeight" />
           </div>
         </div>
 
