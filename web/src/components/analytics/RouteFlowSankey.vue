@@ -12,7 +12,6 @@ const colX = [80, 360, 640]
 const nodeH = 18
 const gap = 4
 const MIN_H = 200
-const MAX_H = 600
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
@@ -56,7 +55,7 @@ const layers = computed(() => {
 const H = computed(() => {
   const maxNodes = Math.max(...layers.value.map(l => l.length), 1)
   const h = 24 + maxNodes * (nodeH + gap) + 24
-  return Math.min(Math.max(h, MIN_H), MAX_H)
+  return Math.max(h, MIN_H)
 })
 
 interface LayoutNode {
