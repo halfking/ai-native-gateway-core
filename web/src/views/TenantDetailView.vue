@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getTenant, getTenantUsers, getTenantKeys, getTenantStats, getUsers, updateUser, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant, TenantUser, TenantKey, TenantStats, UserListItem } from '../api'
+import TenantEditDialog from './TenantEditDialog.vue'
 
 const route = useRoute()
 const router = useRouter()

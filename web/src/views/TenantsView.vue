@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant } from '../api'
+import TenantCreateDialog from './TenantCreateDialog.vue'
+import TenantEditDialog from './TenantEditDialog.vue'
 
 const router = useRouter()
 const tenants = ref<Tenant[]>([])
