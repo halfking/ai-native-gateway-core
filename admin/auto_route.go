@@ -39,6 +39,13 @@ type AutoRouteHandlers struct {
 	indexRefresher interface {
 		RefreshOnce(ctx context.Context) error
 	}
+
+	// feedbackAnalyzer is optional. When set, the tuning/admin
+	// endpoints can trigger on-demand analyzer runs.
+	// v2.1 — wired from cmd/gateway/main.go when in full mode.
+	feedbackAnalyzer interface {
+		AnalyzeOnce(ctx context.Context) error
+	}
 }
 
 // NewAutoRouteHandlers constructs the handler set.
@@ -54,6 +61,14 @@ func (h *AutoRouteHandlers) SetIndexRefresher(r interface {
 	h.indexRefresher = r
 }
 
+// SetFeedbackAnalyzer wires the daily analyzer so the tuning endpoints
+// can trigger an immediate analysis run.
+func (h *AutoRouteHandlers) SetFeedbackAnalyzer(a interface {
+	AnalyzeOnce(ctx context.Context) error
+}) {
+	h.feedbackAnalyzer = a
+}
+
 // RegisterAutoRouteRoutes mounts the endpoints onto the admin mux.
 // adminWrap is the bearer-token middleware (shared with peak handlers).
 func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
@@ -67,6 +82,7 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	mux.HandleFunc("/api/admin/auto-route/cost/model", adminWrap(h.handleModelCost))
 	// v2.1 — Phase 5 tuning feedback endpoints
 	tuning := NewTuningHandlers(h)
+	tuning.SetAnalyzer(h.feedbackAnalyzer)
 	tuning.RegisterTuningRoutes(mux, adminWrap)
 }
 
@@ -76,7 +92,8 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 // Query params:
 //   - limit : max rows (default 50, max 500)
 //   - task  : filter by task_type (optional)
-//   - model : filter by outbound_model (optional)
+//   - work_type : filter by work_type column (optional)
+//   - model : filter by outbound_model — accepts canonical or raw alias (optional)
 //   - profile : filter by auto_profile (optional)
 func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -88,6 +105,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		limit = v
 	}
 	task := r.URL.Query().Get("task")
+	workType := strings.TrimSpace(r.URL.Query().Get("work_type"))
 	model := strings.TrimSpace(r.URL.Query().Get("model"))
 	profile := r.URL.Query().Get("profile")
 
@@ -97,7 +115,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	query := `
 		SELECT ts, request_id, api_key_id, task_type, auto_profile,
 		       auto_confidence, client_model, outbound_model,
-		       credential_id, auto_decision, success, latency_ms
+		       credential_id, auto_decision, success, latency_ms, work_type
 		FROM request_logs
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'
@@ -107,9 +125,17 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		args = append(args, task)
 		query += fmt.Sprintf(" AND task_type = $%d", len(args))
 	}
+	if workType != "" {
+		args = append(args, workType)
+		query += fmt.Sprintf(" AND work_type = $%d", len(args))
+	}
 	if model != "" {
-		args = append(args, model)
-		query += fmt.Sprintf(" AND outbound_model = $%d", len(args))
+		names, _ := expandModelFilter(ctx, h.db, model)
+		if len(names) == 0 {
+			names = []string{model}
+		}
+		args = append(args, names)
+		query += fmt.Sprintf(" AND outbound_model = ANY($%d)", len(args))
 	}
 	if profile != "" {
 		args = append(args, profile)
@@ -129,6 +155,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	for rows.Next() {
 		var ts time.Time
 		var reqID, taskType, prof, clientModel, outbound string
+		var workTypeVal sql.NullString
 		var apiKeyID, credentialID *int
 		var confidence *float64
 		var decision *string
@@ -136,7 +163,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		var latency *int
 		if err := rows.Scan(&ts, &reqID, &apiKeyID, &taskType, &prof,
 			&confidence, &clientModel, &outbound, &credentialID, &decision,
-			&success, &latency); err != nil {
+			&success, &latency, &workTypeVal); err != nil {
 			continue
 		}
 		entry := map[string]interface{}{
@@ -147,6 +174,9 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 			"client_model":   clientModel,
 			"outbound_model": outbound,
 			"success":        success,
+		}
+		if workTypeVal.Valid && workTypeVal.String != "" {
+			entry["work_type"] = workTypeVal.String
 		}
 		if apiKeyID != nil {
 			entry["api_key_id"] = *apiKeyID

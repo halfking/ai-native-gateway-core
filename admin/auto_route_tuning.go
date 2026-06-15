@@ -54,11 +54,22 @@ const maxRejectBodyBytes = 64 * 1024
 // the TuningStore for instant-apply after approval.
 type TuningHandlers struct {
 	parent *AutoRouteHandlers
+
+	analyzer interface {
+		AnalyzeOnce(ctx context.Context) error
+	}
 }
 
 // NewTuningHandlers constructs the handler set. parent provides the DB pool.
 func NewTuningHandlers(parent *AutoRouteHandlers) *TuningHandlers {
 	return &TuningHandlers{parent: parent}
+}
+
+// SetAnalyzer wires the feedback analyzer (for on-demand runs).
+func (h *TuningHandlers) SetAnalyzer(a interface {
+	AnalyzeOnce(ctx context.Context) error
+}) {
+	h.analyzer = a
 }
 
 // RegisterTuningRoutes mounts the 4 endpoints onto the admin mux.

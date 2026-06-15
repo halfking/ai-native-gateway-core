@@ -43,6 +43,9 @@ type Handler struct {
 	autoIndexRefresher interface {
 		RefreshOnce(ctx context.Context) error
 	}
+	feedbackAnalyzer interface {
+		AnalyzeOnce(ctx context.Context) error
+	}
 	refreshMu   sync.Mutex               // guards lazy init of refreshState
 	refreshState *providerRefreshState   // per-provider "refresh model list" tracking (see providers.go)
 }
@@ -143,6 +146,13 @@ func (h *Handler) SetAutoIndexRefresher(r interface {
 	RefreshOnce(ctx context.Context) error
 }) {
 	h.autoIndexRefresher = r
+}
+
+// SetFeedbackAnalyzer wires the daily feedback analyzer for tuning endpoints.
+func (h *Handler) SetFeedbackAnalyzer(a interface {
+	AnalyzeOnce(ctx context.Context) error
+}) {
+	h.feedbackAnalyzer = a
 }
 
 func (h *Handler) fpSlotsDefaultLimit() int {
@@ -247,6 +257,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		autoH := NewAutoRouteHandlers(h.db)
 		if h.autoIndexRefresher != nil {
 			autoH.SetIndexRefresher(h.autoIndexRefresher)
+		}
+		if h.feedbackAnalyzer != nil {
+			autoH.SetFeedbackAnalyzer(h.feedbackAnalyzer)
 		}
 		autoH.RegisterAutoRouteRoutes(mux, admin)
 

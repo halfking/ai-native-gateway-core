@@ -168,6 +168,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	startTime := time.Now()
 	logCtx = h.NewRequestLogContext(r, requestID, startTime)
+	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
+		logCtx.SetWorkType(wt)
+	}
 	defer func() {
 		slog.Info("safety_net_defer_fired",
 			"request_id", requestID,
@@ -966,10 +969,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 
 	// v2.1: emit implicit feedback signal for the auto-route tuning loop.
-	// Best-effort async write via the dedicated tuning writer; never
-	// blocks the request path on DB latency.
+	// Best-effort async write via the dedicated tuning writer; never blocks
+	// the request path on DB latency.
 	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest && reqLog.TaskType != nil {
-		h.emitTuningSignal(reqLog, result.Success, result.LatencyMs)
+		latencyMs := 0
+		if reqLog.LatencyMs != nil {
+			latencyMs = *reqLog.LatencyMs
+		}
+		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
 	}
 }
 
@@ -1807,6 +1814,7 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 //
 // Only called for auto-route requests (model="auto"). All scoring is
 // done in-process (no DB lookup on the hot path) to keep latency <1ms.
+// The DB insert happens asynchronously in the tuning writer goroutine.
 func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, success bool, latencyMs int) {
 	if h == nil || h.telemetryClient == nil {
 		return
@@ -1857,7 +1865,8 @@ func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, succes
 		costScore = 1.0 - ratio
 	}
 
-	quality := telemetry.ComputeTuningSignalQuality(success, latencyMs, 0, costUSD, 0, false)
+	drift := false
+	quality := telemetry.ComputeTuningSignalQuality(success, latencyMs, 0, costUSD, 0, drift)
 
 	sessionID := ""
 	if reqLog.GwSessionID != nil {
@@ -1887,7 +1896,7 @@ func (h *ChatHandler) emitTuningSignal(reqLog *telemetry.RequestLogEntry, succes
 		SuccessScore:     boolToFloat(success),
 		LatencyScore:     latencyScore,
 		CostScore:        costScore,
-		DriftFlag:        false,
+		DriftFlag:        drift,
 		QualityScore:     quality,
 		LatencyMs:        latencyMs,
 		CostUSD:          costUSD,
