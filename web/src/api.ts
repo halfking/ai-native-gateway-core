@@ -2451,3 +2451,79 @@ export function getTuningStrategies(days = 7) {
   return req<StrategyResponse>('GET',
     `/api/admin/auto-route/tuning/strategies?days=${days}`)
 }
+
+// ── Memora session memory status ───────────────────────────────────────
+
+export interface MemoraSinkStats {
+  enqueued: number
+  dropped: number
+  processed: number
+  errored: number
+  queue_len: number
+  queue_cap: number
+  consecutive_errors: number
+  last_error: string | null
+  last_error_at: string | null
+}
+
+export interface MemoraStatus {
+  enabled: boolean
+  base_url: string | null
+  connected: boolean
+  last_error: string | null
+  last_error_at: string | null
+  ping_latency_ms: number | null
+  sink: MemoraSinkStats | null
+}
+
+export function getMemoraStatus(): Promise<MemoraStatus> {
+  return req<MemoraStatus>('GET', '/api/system/memora-status')
+}
+
+export function pingMemora(): Promise<{ connected: boolean; latency_ms: number; error: string | null }> {
+  return req('POST', '/api/system/memora-ping')
+}
+
+export interface MemoraSession {
+  task_id: string
+  session_id?: string
+  request_count: number
+  ok_count: number
+  fail_count: number
+  last_activity: string
+  latest_model?: string
+  latest_key_prefix?: string
+}
+
+export interface MemoraSessionsResponse {
+  sessions: MemoraSession[]
+  hours: number
+}
+
+export function getMemoraSessions(params: { q?: string; hours?: number; limit?: number } = {}): Promise<MemoraSessionsResponse> {
+  const qs = new URLSearchParams()
+  if (params.q) qs.set('q', params.q)
+  if (params.hours != null) qs.set('hours', String(params.hours))
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  const s = qs.toString()
+  return req<MemoraSessionsResponse>('GET', `/api/system/memora-sessions${s ? '?' + s : ''}`)
+}
+
+export interface MemoraFact {
+  id: string
+  memory: string
+  score: number
+  tags: string[] | null
+}
+
+export interface MemoraContextResponse {
+  task_id: string
+  user_id: string
+  request_count: number
+  latest_model?: string
+  facts: MemoraFact[]
+}
+
+export function getMemoraContext(taskId: string): Promise<MemoraContextResponse> {
+  return req<MemoraContextResponse>('GET', `/api/system/memora-context/${encodeURIComponent(taskId)}`)
+}

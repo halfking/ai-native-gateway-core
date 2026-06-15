@@ -8,12 +8,15 @@ import {
   getHotApiKeys,
   getModelDiscoveryStatus,
   getHealth,
+  getMemoraStatus,
+  pingMemora,
   type UsageSummary,
   type ModelUsage,
   type DashboardOverview,
   type HotApiKeyEntry,
   type ModelDiscoveryStatusResponse,
   type HealthResponse,
+  type MemoraStatus,
 } from '../api'
 import { store, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
@@ -24,10 +27,13 @@ const models  = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
 const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
 const health = ref<HealthResponse | null>(null)
+const memoraStatus = ref<MemoraStatus | null>(null)
+const memoraPinging = ref(false)
 const loading = ref(false)
 const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
 let healthPollTimer: ReturnType<typeof setInterval> | null = null
+let memoraPollTimer: ReturnType<typeof setInterval> | null = null
 
 // Tenant info display
 const tenantLabel = computed(() => {
@@ -122,6 +128,16 @@ async function loadHealth() {
   }
 }
 
+async function loadMemora() {
+  try { memoraStatus.value = await getMemoraStatus() } catch { /* non-blocking */ }
+}
+
+async function handleMemoraPing() {
+  memoraPinging.value = true
+  try { await pingMemora(); await loadMemora() } catch { /* silent */ }
+  finally { memoraPinging.value = false }
+}
+
 function scheduleDiscoveryPoll() {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   discoveryPollTimer = setInterval(() => {
@@ -131,15 +147,16 @@ function scheduleDiscoveryPoll() {
 
 function scheduleHealthPoll() {
   if (healthPollTimer) clearInterval(healthPollTimer)
-  healthPollTimer = setInterval(() => {
-    void loadHealth()
-  }, 30000)
+  healthPollTimer = setInterval(() => { void loadHealth() }, 30000)
+  if (memoraPollTimer) clearInterval(memoraPollTimer)
+  memoraPollTimer = setInterval(() => { void loadMemora() }, 30000)
 }
 
 onMounted(() => {
   void load()
   void loadDiscoveryStatus()
   void loadHealth()
+  void loadMemora()
   scheduleDiscoveryPoll()
   scheduleHealthPoll()
 })
@@ -147,6 +164,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   if (healthPollTimer) clearInterval(healthPollTimer)
+  if (memoraPollTimer) clearInterval(memoraPollTimer)
 })
 </script>
 
@@ -177,6 +195,37 @@ onUnmounted(() => {
       <strong>⚠ 出口代理不可达</strong>
       <span>已配置代理 <code>{{ proxyWarning.proxy }}</code> 探测失败，{{ proxyWarning.detail }}</span>
       <span class="proxy-warning-hint">代理恢复后系统将自动重新启用</span>
+    </div>
+
+    <div
+      v-if="memoraStatus && memoraStatus.enabled && !memoraStatus.connected"
+      class="memora-banner memora-banner--error"
+    >
+      <strong>⚠ Memora 连接失败</strong>
+      <span v-if="memoraStatus.last_error"><code>{{ memoraStatus.last_error }}</code></span>
+      <span v-if="memoraStatus.sink && memoraStatus.sink.errored > 0">
+        已累计 {{ memoraStatus.sink.errored }} 次写入失败
+        <template v-if="memoraStatus.sink.consecutive_errors > 0">（连续 {{ memoraStatus.sink.consecutive_errors }} 次）</template>
+      </span>
+      <button class="btn btn-ghost btn-sm" @click="handleMemoraPing" :disabled="memoraPinging">
+        {{ memoraPinging ? '检测中…' : '重新检测' }}
+      </button>
+    </div>
+    <div
+      v-else-if="memoraStatus && memoraStatus.enabled && memoraStatus.connected"
+      class="memora-banner memora-banner--ok"
+    >
+      <span>✅ Memora 已连接</span>
+      <span v-if="memoraStatus.base_url"><code>{{ memoraStatus.base_url }}</code></span>
+      <span v-if="memoraStatus.sink">
+        队列 {{ memoraStatus.sink.queue_len }}/{{ memoraStatus.sink.queue_cap }}
+        · 已写入 {{ memoraStatus.sink.processed }}
+        <template v-if="memoraStatus.sink.errored > 0"> · 失败 {{ memoraStatus.sink.errored }}</template>
+      </span>
+      <button class="btn btn-ghost btn-sm" @click="handleMemoraPing" :disabled="memoraPinging">
+        {{ memoraPinging ? '检测中…' : '检测连通性' }}
+      </button>
+      <RouterLink to="/session-context" class="btn btn-ghost btn-sm">查看会话上下文</RouterLink>
     </div>
 
     <div
@@ -384,4 +433,16 @@ onUnmounted(() => {
 .dashboard-fail-link:hover {
   color: var(--accent);
 }
+
+/* Memora status banners */
+.memora-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-radius: 6px; margin-bottom: 12px;
+  font-size: 13px; line-height: 1.5; flex-wrap: wrap;
+}
+.memora-banner strong { white-space: nowrap; }
+.memora-banner code { font-size: 12px; opacity: 0.85; }
+.memora-banner--error { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+.memora-banner--ok { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+.memora-banner .btn { margin-left: auto; }
 </style>

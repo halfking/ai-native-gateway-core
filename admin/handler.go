@@ -46,8 +46,21 @@ type Handler struct {
 	feedbackAnalyzer interface {
 		AnalyzeOnce(ctx context.Context) error
 	}
-	refreshMu   sync.Mutex               // guards lazy init of refreshState
-	refreshState *providerRefreshState   // per-provider "refresh model list" tracking (see providers.go)
+	// memoraClient provides connectivity status for the admin UI.
+	// Structural interface avoids importing the memora package directly.
+	memoraClient interface {
+		Disabled() bool
+		Ping(ctx context.Context) error
+		BaseURL() string
+	}
+	// memoraSink provides write-path stats for the admin UI.
+	// Stats() returns any to avoid coupling to memora.Stats; the
+	// handler type-asserts to memora.Stats in the endpoint.
+	memoraSink interface {
+		Stats() any
+	}
+	refreshMu    sync.Mutex             // guards lazy init of refreshState
+	refreshState *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -155,6 +168,19 @@ func (h *Handler) SetFeedbackAnalyzer(a interface {
 	h.feedbackAnalyzer = a
 }
 
+// SetMemoraServices wires the Memora client and sink so the admin UI
+// can display connectivity status and sink statistics.
+func (h *Handler) SetMemoraServices(client interface {
+	Disabled() bool
+	Ping(ctx context.Context) error
+	BaseURL() string
+}, sink interface {
+	Stats() any
+}) {
+	h.memoraClient = client
+	h.memoraSink = sink
+}
+
 func (h *Handler) fpSlotsDefaultLimit() int {
 	if h.fpSlots == nil {
 		return 5
@@ -224,6 +250,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/tags", h.superAdmin(h.handleTags))
 	mux.HandleFunc("/api/system/background-tasks", h.admin(h.handleSystemTasks))
 	mux.HandleFunc("/api/system/version", admin(h.handleSystemVersion))
+	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))
+	mux.HandleFunc("/api/system/memora-ping", h.admin(h.handleMemoraPing))
+	mux.HandleFunc("/api/system/memora-sessions", h.admin(h.handleMemoraSessions))
+	mux.HandleFunc("/api/system/memora-context/", h.admin(h.handleMemoraContext))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
