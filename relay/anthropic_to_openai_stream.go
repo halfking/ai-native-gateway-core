@@ -450,14 +450,27 @@ func emitErrorChunk(w http.ResponseWriter, code, message string, flusher http.Fl
 // short in-memory io.NopCloser(strings.NewReader(...)) that needs
 // to drain synchronously.
 func readSSEEvent(_ context.Context, reader io.Reader, _ streamRuntimeConfig) (eventType string, data []byte, err error) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	// v2.0.4 fix: previously used bufio.NewScanner(reader) on each call,
+	// which created a NEW scanner every invocation. The scanner's
+	// internal buffer pre-read bytes beyond the current event, and those
+	// bytes were lost when the next call created a new scanner.
+	//
+	// Fix: use the passed-in *bufio.Reader directly via ReadString('\n').
+	// This preserves the reader's internal buffer across calls.
+	br, ok := reader.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(reader)
+	}
 	var dataLines []string
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, rerr := br.ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			if len(dataLines) == 0 {
-				return "", nil, nil
+				if rerr != nil {
+					return eventType, nil, rerr
+				}
+				continue // skip blank lines between events
 			}
 			return eventType, []byte(strings.Join(dataLines, "\n")), nil
 		}
@@ -469,14 +482,13 @@ func readSSEEvent(_ context.Context, reader io.Reader, _ streamRuntimeConfig) (e
 		case strings.HasPrefix(line, ":"):
 			// SSE comment (heartbeat) — ignore.
 		}
+		if rerr != nil {
+			if len(dataLines) > 0 {
+				return eventType, []byte(strings.Join(dataLines, "\n")), nil
+			}
+			return eventType, nil, io.EOF
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		return eventType, nil, err
-	}
-	if len(dataLines) > 0 {
-		return eventType, []byte(strings.Join(dataLines, "\n")), nil
-	}
-	return eventType, nil, io.EOF
 }
 
 var _ = fmt.Sprintf
