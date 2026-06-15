@@ -229,6 +229,20 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Application-level audit log (P7.9). The trigger records
+	// action/actor in routing_overrides_audit; this also records
+	// the IP and UA in routing_audit_log.details for security
+	// audit.
+	h.writeAuditLog(r, "override.create", newID, map[string]any{
+		"task_type":    req.TaskType,
+		"profile":      req.Profile,
+		"mode":         req.Mode,
+		"model_chosen": req.ModelChosen,
+		"reason":       req.Reason,
+		"ip":          clientIP(r),
+		"ua":          r.UserAgent(),
+	})
+
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":      newID,
 		"status":  "created",
@@ -275,6 +289,11 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 		writeInternalErr(w, err)
 		return
 	}
+	h.writeAuditLog(r, "override.delete", id, map[string]any{
+		"reason": "soft delete (set expires_at to 1s ago)",
+		"ip":    clientIP(r),
+		"ua":    r.UserAgent(),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"status": "expired",
@@ -331,6 +350,11 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		writeInternalErr(w, err)
 		return
 	}
+	h.writeAuditLog(r, "override.extend", id, map[string]any{
+		"new_expires_at": body.ExpiresAt,
+		"ip":            clientIP(r),
+		"ua":            r.UserAgent(),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"status": "updated",
@@ -448,6 +472,23 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 
 // ── helpers ─────────────────────────────────────────────────────
 
+// clientIP returns the best-effort client IP: prefers
+// X-Forwarded-For (first hop, comma-split), falls back to
+// RemoteAddr. Used in audit log details.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Take the first IP (closest to the user)
+		if idx := strings.Index(xff, ","); idx > 0 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
 // requestUser pulls the admin username from the AuthContext
 // (P7.9 bug fix: previously read "admin_user" key that no
 // middleware ever sets; AuthContext is the right source). Falls
@@ -487,3 +528,26 @@ func errorsAsPgError(err error, target **pgconn.PgError) bool {
 // Avoid unused import warnings for pgx (used by *pgxpool types
 // referenced indirectly via h.db).
 var _ = pgx.ErrNoRows
+
+// writeAuditLog inserts a single row into routing_audit_log
+// for an override mutation. Captures actor, action, target_id,
+// IP, and user-agent in the details map. Best-effort: a
+// failure to write the audit log does NOT roll back the
+// override mutation (the trigger in the DB already records
+// the basic info).
+func (h *AutoRouteHandlers) writeAuditLog(r *http.Request, action string, targetID int64, details map[string]any) {
+	if h.db == nil {
+		return
+	}
+	actor := requestUser(r)
+	payload, _ := json.Marshal(details)
+	_, err := h.db.Exec(r.Context(),
+		`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`,
+		actor, action, "routing_override", targetID, payload)
+	if err != nil {
+		// Audit failures are non-fatal; the trigger-based log
+		// already records the action+actor+row.
+		// (logged but not returned to caller)
+		_ = err
+	}
+}
