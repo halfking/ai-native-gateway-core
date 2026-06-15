@@ -43,18 +43,17 @@ func (h *Handler) handleMemoraStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if h.memoraSink != nil {
-		if st, ok := h.memoraSink.Stats().(memora.Stats); ok {
-			resp["sink"] = map[string]any{
-				"enqueued":           st.Enqueued,
-				"dropped":            st.Dropped,
-				"processed":          st.Processed,
-				"errored":            st.Errored,
-				"queue_len":          st.QueueLen,
-				"queue_cap":          st.QueueCap,
-				"consecutive_errors": st.ConsecutiveErrors,
-				"last_error":         st.LastError,
-				"last_error_at":      st.LastErrorAt,
-			}
+		st := h.memoraSink.Stats()
+		resp["sink"] = map[string]any{
+			"enqueued":           st.Enqueued,
+			"dropped":            st.Dropped,
+			"processed":          st.Processed,
+			"errored":            st.Errored,
+			"queue_len":          st.QueueLen,
+			"queue_cap":          st.QueueCap,
+			"consecutive_errors": st.ConsecutiveErrors,
+			"last_error":         st.LastError,
+			"last_error_at":      st.LastErrorAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
