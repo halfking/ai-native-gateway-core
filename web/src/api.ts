@@ -2763,9 +2763,48 @@ export interface MaasTopupPackage {
 
 export interface MaasWallet {
   tenant_id: string
-  balance_credits: number
   quota_remaining: number
+  granted_balance: number
+  purchased_balance: number
+  balance_credits: number
   total_available: number
+  subscription?: {
+    plan_id: number
+    plan_name: string
+    status: string
+    period_start: string
+    period_end: string
+  }
+}
+
+export interface MaasBillingOrder {
+  id: number
+  order_no: string
+  tenant_id: string
+  order_type: 'subscribe' | 'topup'
+  status: 'pending' | 'paid' | 'cancelled' | 'expired'
+  amount_cents: number
+  credits: number
+  plan_id?: number
+  package_id?: number
+  plan_name?: string
+  package_name?: string
+  payment_channel: 'alipay' | 'wechat' | 'manual'
+  qr_payload: string
+  qr_url: string
+  payment_hint?: string
+  stub_mode?: boolean
+  paid_at?: string
+  expires_at: string
+  note: string
+  created_at: string
+  updated_at: string
+}
+
+export interface MaasAccount {
+  wallet: MaasWallet
+  recent_ledger: MaasLedgerEntry[]
+  recent_orders: MaasBillingOrder[]
 }
 
 export interface MaasLedgerEntry {
@@ -2773,6 +2812,7 @@ export interface MaasLedgerEntry {
   entry_type: string
   amount: number
   balance_after: number
+  pool: string | null
   ref_type: string | null
   ref_id: string | null
   note: string
@@ -2797,6 +2837,27 @@ export function getMaasTopupPackages() {
 
 export function getMaasWallet() {
   return req<MaasWallet>('GET', '/api/maas/wallet')
+}
+
+export function getMaasAccount() {
+  return req<MaasAccount>('GET', '/api/maas/account')
+}
+
+export function getMaasOrders(limit = 20) {
+  return req<{ items: MaasBillingOrder[] }>('GET', `/api/maas/orders?limit=${limit}`)
+}
+
+export function getMaasOrder(id: number) {
+  return req<MaasBillingOrder>('GET', `/api/maas/orders/${id}`)
+}
+
+export function createMaasOrder(body: {
+  type: 'subscribe' | 'topup'
+  plan_id?: number
+  package_id?: number
+  payment_channel?: 'alipay' | 'wechat'
+}) {
+  return req<MaasBillingOrder>('POST', '/api/maas/orders', body)
 }
 
 export function getMaasLedger(limit = 50) {
@@ -2850,8 +2911,46 @@ export function adjustAdminMaasCredits(tenantCode: string, amount: number, note:
   )
 }
 
+export function grantAdminMaasCredits(tenantCode: string, grantedCredits: number, note: string) {
+  return req<{ status: string }>(
+    'POST',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/grant`,
+    { granted_credits: grantedCredits, note },
+  )
+}
+
+export function getAdminMaasOrders(limit = 50) {
+  return req<{ items: MaasBillingOrder[] }>('GET', `/api/admin/maas/orders?limit=${limit}`)
+}
+
+export function getAdminMaasTenantOrders(tenantCode: string, limit = 20) {
+  return req<{ items: MaasBillingOrder[] }>(
+    'GET',
+    `/api/admin/maas/tenants/${encodeURIComponent(tenantCode)}/orders?limit=${limit}`,
+  )
+}
+
+export function confirmAdminMaasOrder(orderId: number, note = '') {
+  return req<{ status: string }>('POST', `/api/admin/maas/orders/${orderId}/confirm`, { note })
+}
+
 export const MAAS_LEDGER_TYPE_LABELS: Record<string, string> = {
   consume: '消耗',
   topup: '充值',
+  subscribe: '订阅',
   adjust: '调整',
+  refund: '退款',
+}
+
+export const MAAS_POOL_LABELS: Record<string, string> = {
+  subscription_quota: '订阅额度',
+  granted: '信用积分',
+  purchased: '充值积分',
+}
+
+export const MAAS_ORDER_STATUS_LABELS: Record<string, string> = {
+  pending: '待支付',
+  paid: '已支付',
+  cancelled: '已取消',
+  expired: '已过期',
 }

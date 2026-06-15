@@ -170,8 +170,8 @@ onMounted(load)
         <div class="label">可用积分</div>
         <div class="value">{{ fmtNum(wallet.total_available) }}</div>
         <div class="sub">
-          余额 {{ fmtNum(wallet.balance_credits) }} · 月包 {{ fmtNum(wallet.quota_remaining) }}
-          <RouterLink to="/maas/pricing" class="link-sm">充值</RouterLink>
+          订阅 {{ fmtNum(wallet.quota_remaining) }} · 信用 {{ fmtNum(wallet.granted_balance) }} · 充值 {{ fmtNum(wallet.purchased_balance) }}
+          <RouterLink to="/maas/account" class="link-sm">账户</RouterLink>
         </div>
       </div>
     </div>
