@@ -2,6 +2,14 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 
 /** Minimum node height (label readability); keep proportional sizing dominant. */
 export const SANKEY_NODE_H = 18
+/** Sublinear exponent for node height — dampens high-traffic nodes (pow(x, 0.6)). */
+export const SANKEY_HEIGHT_EXPONENT = 0.6
+
+/** Map raw flow total to layout weight (sublinear so large nodes don't dominate). */
+export function scaleNodeTotal(total: number): number {
+  if (total <= 0) return 0
+  return Math.pow(total, SANKEY_HEIGHT_EXPONENT)
+}
 export const SANKEY_GAP = 8
 export const SANKEY_V_PAD = 60 // 30 top + 30 bottom inside viewBox
 /** External legend row above the SVG (may wrap to two lines). */
@@ -23,12 +31,13 @@ export function requiredColHeight(layerNodes: Array<{ total: number }>): number 
   if (!n) return 0
 
   const totalGap = (n - 1) * SANKEY_GAP
-  const totalLayer = layerNodes.reduce((s, nd) => s + nd.total, 0) || 1
+  const totalLayer = layerNodes.reduce((s, nd) => s + scaleNodeTotal(nd.total), 0) || 1
 
   const sumAt = (available: number) => {
     let sum = 0
     for (const nd of layerNodes) {
-      sum += Math.max(SANKEY_NODE_H, (nd.total / totalLayer) * available)
+      const w = scaleNodeTotal(nd.total)
+      sum += Math.max(SANKEY_NODE_H, (w / totalLayer) * available)
     }
     return sum
   }

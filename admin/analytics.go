@@ -211,7 +211,8 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 }
 
 // handleFlow returns a 3-layer Sankey dataset:
-// task_type → outbound_model → provider_name.
+// task_type → canonical_model → provider_name.
+// Middle column uses standard/canonical model names (same as matrix cols), not raw outbound names.
 func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -227,9 +228,21 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
+	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
+	canonModel := func(raw string) string {
+		canon := raw
+		if aliasIdx != nil {
+			canon = aliasIdx.canonicalFor(raw)
+		}
+		if canon == "" {
+			canon = normalizeModelName(raw)
+		}
+		return canon
+	}
+
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-	// Layer 1→2: task_type → outbound_model
+	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
 	l12Query := `
 		SELECT COALESCE(task_type, 'unknown') AS src,
 		       outbound_model AS dst,
@@ -257,24 +270,37 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		Label string `json:"label"`
 		Layer int    `json:"layer"`
 	}
+	type linkKey struct {
+		source, target string
+	}
+	type l23Key struct {
+		source, target, taskType string
+	}
 	links := make([]link, 0)
 	nodeMap := map[string]node{}
+	l12Agg := map[linkKey]float64{}
 
 	for l12Rows.Next() {
-		var src, dst string
+		var src, dstRaw string
 		var val float64
-		if err := l12Rows.Scan(&src, &dst, &val); err != nil || val <= 0 {
+		if err := l12Rows.Scan(&src, &dstRaw, &val); err != nil || val <= 0 {
 			continue
 		}
+		dstCanon := canonModel(dstRaw)
 		srcID := "task:" + src
-		dstID := "model:" + dst
+		dstID := "model:" + dstCanon
 		nodeMap[srcID] = node{ID: srcID, Label: src, Layer: 0}
-		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 1}
-		links = append(links, link{Source: srcID, Target: dstID, Value: val, TaskType: src})
+		nodeMap[dstID] = node{ID: dstID, Label: dstCanon, Layer: 1}
+		k := linkKey{source: srcID, target: dstID}
+		l12Agg[k] += val
 	}
 	l12Rows.Close()
+	for k, val := range l12Agg {
+		taskType := strings.TrimPrefix(k.source, "task:")
+		links = append(links, link{Source: k.source, Target: k.target, Value: val, TaskType: taskType})
+	}
 
-	// Layer 2→3: task_type × outbound_model → provider_name
+	// Layer 2→3: task_type × canonical_model → provider_name
 	// Grouped by task_type so each link carries the original task color.
 	// NOTE: providers table column is display_name, NOT name.
 	l23Query := `
@@ -297,21 +323,25 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		writeInternalErr(w, err)
 		return
 	}
+	l23Agg := map[l23Key]float64{}
 	for l23Rows.Next() {
-		var taskType, src, dst string
+		var taskType, srcRaw, dst string
 		var val float64
-		if err := l23Rows.Scan(&taskType, &src, &dst, &val); err != nil || val <= 0 {
+		if err := l23Rows.Scan(&taskType, &srcRaw, &dst, &val); err != nil || val <= 0 {
 			continue
 		}
-		srcID := "model:" + src
+		srcCanon := canonModel(srcRaw)
+		srcID := "model:" + srcCanon
 		dstID := "prov:" + dst
-		if _, ok := nodeMap[srcID]; !ok {
-			nodeMap[srcID] = node{ID: srcID, Label: src, Layer: 1}
-		}
+		nodeMap[srcID] = node{ID: srcID, Label: srcCanon, Layer: 1}
 		nodeMap[dstID] = node{ID: dstID, Label: dst, Layer: 2}
-		links = append(links, link{Source: srcID, Target: dstID, Value: val, TaskType: taskType})
+		k := l23Key{source: srcID, target: dstID, taskType: taskType}
+		l23Agg[k] += val
 	}
 	l23Rows.Close()
+	for k, val := range l23Agg {
+		links = append(links, link{Source: k.source, Target: k.target, Value: val, TaskType: k.taskType})
+	}
 
 	nodes := make([]node, 0, len(nodeMap))
 	for _, n := range nodeMap {
