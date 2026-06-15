@@ -210,11 +210,11 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: 99px;
   border: 1px solid var(--border);
   background: var(--bg);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   cursor: pointer;
   transition: border-color .15s, color .15s;
@@ -249,8 +249,8 @@ onUnmounted(() => {
 
 .memora-panel {
   position: absolute;
-  bottom: calc(100% + 8px);
-  right: 0;
+  top: calc(100% + 8px);
+  left: 0;
   z-index: 201;
   width: min(300px, 88vw);
   padding: 12px;

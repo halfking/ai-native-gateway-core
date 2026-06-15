@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { RouterLink } from 'vue-router'
+import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import {
   getUsageSummary,
   getUsageByModel,
@@ -151,8 +152,11 @@ onUnmounted(() => {
 <template>
   <div>
     <div class="page-header">
-      <h2>仪表盘</h2>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div class="page-header-title">
+        <h2>仪表盘</h2>
+        <MemoraStatusButton />
+      </div>
+      <div class="page-header-actions">
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
@@ -381,5 +385,17 @@ onUnmounted(() => {
 }
 .dashboard-fail-link:hover {
   color: var(--accent);
+}
+
+.page-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 </style>
