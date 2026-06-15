@@ -54,17 +54,18 @@ func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targ
 	h.auditLog(actor, action, targetType, targetID, details)
 }
 
-// auditLog inserts a row into routing_audit_log (best-effort, async).
-// Used by login flows where the actor is the username being attempted.
+// auditLog inserts a row into routing_audit_log synchronously (3s timeout).
+// Errors are logged but do not block the caller.
 func (h *Handler) auditLog(actor, action, targetType string, targetID int, details string) {
-	go func() {
-		if h.db == nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, details)
-	}()
+	if h.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := h.db.Exec(ctx, `INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`, actor, action, targetType, targetID, details)
+	if err != nil {
+		slog.Warn("audit_log insert failed", "action", action, "actor", actor, "error", err)
+	}
 }
 
 type changePasswordRequest struct {
