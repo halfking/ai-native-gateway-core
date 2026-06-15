@@ -9,7 +9,6 @@ import KeyDetailView          from './views/KeyDetailView.vue'
 import KeyApplicationsView    from './views/KeyApplicationsView.vue'
 import CatalogView            from './views/CatalogView.vue'
 import ExamplesView           from './views/ExamplesView.vue'
-import RoutingTestView        from './views/RoutingTestView.vue'
 import RoutingOverviewView    from './views/RoutingOverviewView.vue'
 import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
@@ -60,7 +59,7 @@ export const router = createRouter({
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
-    { path: '/routing',            component: RoutingTestView },
+    { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
     { path: '/routing-overview',   component: RoutingOverviewView },
     { path: '/routing-decisions',  component: DecisionsView },
     { path: '/request-logs',       component: RequestLogsView },
