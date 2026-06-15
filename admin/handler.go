@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -54,10 +55,8 @@ type Handler struct {
 		BaseURL() string
 	}
 	// memoraSink provides write-path stats for the admin UI.
-	// Stats() returns any to avoid coupling to memora.Stats; the
-	// handler type-asserts to memora.Stats in the endpoint.
 	memoraSink interface {
-		Stats() any
+		Stats() memora.Stats
 	}
 	refreshMu    sync.Mutex             // guards lazy init of refreshState
 	refreshState *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
@@ -175,7 +174,7 @@ func (h *Handler) SetMemoraServices(client interface {
 	Ping(ctx context.Context) error
 	BaseURL() string
 }, sink interface {
-	Stats() any
+	Stats() memora.Stats
 }) {
 	h.memoraClient = client
 	h.memoraSink = sink
