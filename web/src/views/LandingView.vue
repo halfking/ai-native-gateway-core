@@ -28,14 +28,10 @@ const advantages = [
       :features="features"
       :advantages="advantages"
       advantages-subtitle="生产级 LLM 基础设施"
-      hide-cta
       footer-text="开轩 LLM Gateway · llmgo.kxpms.cn"
       accent="#6366f1"
-    >
-      <template #hero-extra>
-        <p class="login-hint">请点击右上角「登录」进入管理控制台</p>
-      </template>
-    </ServiceLandingPage>
+      :hide-cta="true"
+    />
   </div>
 </template>
 
@@ -60,11 +56,5 @@ const advantages = [
 .llmgo-landing :deep(.kx-landing__points li) {
   background: var(--panel, #1a1d27);
   border-color: var(--border, #2a2d3a);
-}
-
-.login-hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-muted, #6b7280);
 }
 </style>
