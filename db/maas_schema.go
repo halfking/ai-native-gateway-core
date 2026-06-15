@@ -9,11 +9,17 @@ import (
 //go:embed migrations/007_maas_billing.sql
 var maasBillingSchemaSQL string
 
+//go:embed migrations/008_billing_orders.sql
+var maasBillingOrdersSQL string
+
 func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
 	if _, err := d.pool.Exec(ctx, maasBillingSchemaSQL); err != nil {
+		return err
+	}
+	if _, err := d.pool.Exec(ctx, maasBillingOrdersSQL); err != nil {
 		return err
 	}
 	// Ensure default tenant has a wallet row.
@@ -22,6 +28,6 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 		SELECT code FROM tenants
 		ON CONFLICT (tenant_id) DO NOTHING
 	`)
-	slog.Info("maas billing schema ensured (settings, plans, wallets, ledger, credits_charged)")
+	slog.Info("maas billing schema ensured (settings, plans, wallets, ledger, orders, three-pool)")
 	return nil
 }

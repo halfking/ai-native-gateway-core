@@ -173,14 +173,57 @@ credits = ceil(
 | P1-4 | TenantDetail 增 订阅/加油/账本 tabs | super_admin 可点进记录 | ✅ |
 | P1-5 | 导航/路由按租户裁剪 | tenant_admin 看不到提供商 | ✅ |
 
-### P2 — 运营与支付（后续）
+### P2 — 租户账户体系 + 订单占位支付 ✅
+
+| ID | 任务 | 验收 | 状态 |
+|----|------|------|------|
+| P2-1 | 三池钱包 migration 008 + EnsureMaasSchema | granted/purchased 列 + billing_orders | ✅ |
+| P2-2 | 扣费顺序：订阅额度 → 信用 → 充值；ledger.pool | go test ./maas/... PASS | ✅ |
+| P2-3 | 订单 CRUD + StubQRProvider 占位支付 | 创建订单 → 二维码占位 + 订单号 | ✅ |
+| P2-4 | 租户页：/maas/account、/maas/orders/:id、Pricing 购买流 | npm run build PASS | ✅ |
+| P2-5 | Admin：grant 信用积分、确认到账、订单列表 | TenantDetail 钱包/订单/账本 tab | ✅ |
+| P2-6 | 真实支付宝/微信 API 对接 | 待老板提供账号 | ⏳ |
+
+#### P2 积分三池模型
+
+| 池 | DB 字段 | 来源 | 扣费顺序 |
+|----|---------|------|----------|
+| 订阅额度 | tenant_subscriptions.quota_remaining | 月包订单确认 | 1（周期内，到期清零） |
+| 信用积分 | tenant_credit_wallets.granted_balance | Admin grant | 2 |
+| 充值积分 | tenant_credit_wallets.purchased_balance | 加油包/手动 adjust | 3 |
+
+#### P2 订单流
+
+```
+租户选套餐/加油包 → POST /api/maas/orders → pending 订单 + StubQR
+→ /maas/orders/:id 展示占位二维码 + 订单号
+→ Admin POST /api/admin/maas/orders/:id/confirm → 到账（订阅激活 / 充值积分）
+```
+
+#### P2 页面分工（不重叠）
+
+| 路由 | 职责 |
+|------|------|
+| `/` 仪表盘 | 消耗摘要 + 三池余额一行 |
+| `/maas/account` | **账户入口**：三池余额、订阅、最近订单/流水 |
+| `/maas/pricing` | 套餐选购 → 创建订单 |
+| `/maas/orders/:id` | 订单支付（占位 QR） |
+| `/maas/usage` | 消耗统计（按模型/趋势） |
+| `/tenants/:id` admin | 三池 + grant + 订单确认 + 账本 |
+
+#### 支付宝/微信接入点（待账号）
+
+1. `maas_settings.alipay_account` / `wechat_mch_id` — 填入后 StubQRProvider 退出 stub 模式
+2. `maas/payment.go` — 实现 `AlipayQRProvider` / `WechatQRProvider` 替换 `StubQRProvider`
+3. 新增 webhook 路由 — 支付回调自动 `ConfirmOrder`（当前仅 manual confirm）
+
+### P2 后续
 
 | ID | 任务 |
 |----|------|
-| P2-1 | 支付网关对接（微信/支付宝） |
-| P2-2 | 发票与订单表 |
-| P2-3 | 模型差异化费率批量导入 |
-| P2-4 | 告警：余额<阈值邮件/webhook |
+| P2-7 | 发票与对账导出 |
+| P2-8 | 模型差异化费率批量导入 |
+| P2-9 | 告警：余额<阈值邮件/webhook |
 
 ### 可并行
 

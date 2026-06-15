@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   getMaasPlans,
   getMaasTopupPackages,
   getMaasWallet,
   getMaasSettings,
+  createMaasOrder,
 } from '../../api'
 import type { MaasPlan, MaasTopupPackage, MaasWallet } from '../../api'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../../store'
 
+const router = useRouter()
 const plans = ref<MaasPlan[]>([])
 const topups = ref<MaasTopupPackage[]>([])
 const wallet = ref<MaasWallet | null>(null)
 const currencyDisplay = ref('CNY')
 const loading = ref(false)
+const buying = ref<number | null>(null)
 const error = ref('')
+const payChannel = ref<'alipay' | 'wechat'>('alipay')
 
 const tenantLabel = computed(() => {
   const tenantId = getCurrentTenantId()
@@ -52,6 +57,40 @@ async function load() {
   }
 }
 
+async function buyPlan(plan: MaasPlan) {
+  buying.value = plan.id
+  error.value = ''
+  try {
+    const order = await createMaasOrder({
+      type: 'subscribe',
+      plan_id: plan.id,
+      payment_channel: payChannel.value,
+    })
+    router.push(`/maas/orders/${order.id}`)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '创建订单失败'
+  } finally {
+    buying.value = null
+  }
+}
+
+async function buyTopup(pkg: MaasTopupPackage) {
+  buying.value = pkg.id + 10000
+  error.value = ''
+  try {
+    const order = await createMaasOrder({
+      type: 'topup',
+      package_id: pkg.id,
+      payment_channel: payChannel.value,
+    })
+    router.push(`/maas/orders/${order.id}`)
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : '创建订单失败'
+  } finally {
+    buying.value = null
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -66,6 +105,10 @@ onMounted(load)
         >
           {{ tenantLabel }}
         </span>
+        <select v-model="payChannel" class="channel-select">
+          <option value="alipay">支付宝</option>
+          <option value="wechat">微信支付</option>
+        </select>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? '加载中…' : '刷新' }}
         </button>
@@ -76,16 +119,20 @@ onMounted(load)
 
     <div v-if="wallet" class="wallet-card card">
       <div class="wallet-stat">
-        <div class="wallet-label">钱包余额</div>
-        <div class="wallet-value">{{ fmtCredits(wallet.balance_credits) }} <span class="unit">积分</span></div>
+        <div class="wallet-label">订阅额度</div>
+        <div class="wallet-value">{{ fmtCredits(wallet.quota_remaining) }}</div>
       </div>
       <div class="wallet-stat">
-        <div class="wallet-label">月包剩余额度</div>
-        <div class="wallet-value">{{ fmtCredits(wallet.quota_remaining) }} <span class="unit">积分</span></div>
+        <div class="wallet-label">信用积分</div>
+        <div class="wallet-value">{{ fmtCredits(wallet.granted_balance) }}</div>
+      </div>
+      <div class="wallet-stat">
+        <div class="wallet-label">充值积分</div>
+        <div class="wallet-value">{{ fmtCredits(wallet.purchased_balance) }}</div>
       </div>
       <div class="wallet-stat wallet-stat--highlight">
         <div class="wallet-label">可用总额</div>
-        <div class="wallet-value">{{ fmtCredits(wallet.total_available) }} <span class="unit">积分</span></div>
+        <div class="wallet-value">{{ fmtCredits(wallet.total_available) }}</div>
       </div>
     </div>
 
@@ -101,12 +148,11 @@ onMounted(load)
         <div class="pricing-credits">{{ fmtCredits(p.monthly_credits) }} 积分 / 月</div>
         <button
           class="btn btn-primary btn-block"
-          disabled
-          title="联系管理员开通"
+          :disabled="!!buying"
+          @click="buyPlan(p)"
         >
-          购买
+          {{ buying === p.id ? '创建订单…' : '立即购买' }}
         </button>
-        <div class="buy-hint">联系管理员开通</div>
       </div>
       <div v-if="!loading && plans.length === 0" class="empty-card">暂无可用月包</div>
     </div>
@@ -122,12 +168,11 @@ onMounted(load)
         <div class="pricing-credits">{{ fmtCredits(t.credits_amount) }} 积分</div>
         <button
           class="btn btn-primary btn-block"
-          disabled
-          title="联系管理员开通"
+          :disabled="!!buying"
+          @click="buyTopup(t)"
         >
-          购买
+          {{ buying === t.id + 10000 ? '创建订单…' : '立即购买' }}
         </button>
-        <div class="buy-hint">联系管理员开通</div>
       </div>
       <div v-if="!loading && topups.length === 0" class="empty-card">暂无可用加油包</div>
     </div>
@@ -140,6 +185,14 @@ onMounted(load)
   align-items: center;
   gap: 10px;
 }
+.channel-select {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
 .card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -147,7 +200,7 @@ onMounted(load)
 }
 .wallet-card {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 16px;
   padding: 20px;
   margin-bottom: 24px;
@@ -158,14 +211,9 @@ onMounted(load)
   margin-bottom: 6px;
 }
 .wallet-value {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text);
-}
-.wallet-value .unit {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted);
 }
 .wallet-stat--highlight .wallet-value {
   color: var(--accent-h);
@@ -199,30 +247,19 @@ onMounted(load)
   margin: 0;
   font-size: 16px;
 }
-.pricing-price {
-  margin: 4px 0;
-}
+.pricing-price { margin: 4px 0; }
 .price-num {
   font-size: 28px;
   font-weight: 700;
   color: var(--accent-h);
 }
-.price-period {
-  font-size: 13px;
-  color: var(--muted);
-}
+.price-period { font-size: 13px; color: var(--muted); }
 .pricing-credits {
   font-size: 13px;
   color: var(--muted);
   margin-bottom: 8px;
 }
-.btn-block {
-  width: 100%;
-}
-.buy-hint {
-  font-size: 11px;
-  color: var(--muted);
-}
+.btn-block { width: 100%; }
 .empty-card {
   grid-column: 1 / -1;
   text-align: center;
@@ -249,5 +286,12 @@ onMounted(load)
 .tenant-badge--default {
   background: rgba(34, 197, 94, 0.1);
   color: #22c55e;
+}
+.alert-danger {
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: rgba(239,68,68,.1);
+  color: #f87171;
+  margin-bottom: 12px;
 }
 </style>

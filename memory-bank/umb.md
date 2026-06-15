@@ -102,9 +102,32 @@
 - 静态 `/version.json` 仍显示旧 `git_sha=9e6eb473`（web 产物未 bump version.json）；以 k8s 镜像 tag / 容器 `VERSION` 为准。
 - `git pull origin main` 本机失败（远程权限）；子模块已在 `399f63c0`。
 
-## 🔜 P2 待办
-- 套餐购买 / 加油包下单流程（支付对接）
-- 非 default 租户隔离端到端验收
+## ✅ P2 已完成（2026-06-16 — 三池账户 + 订单占位）
+
+| ID | 任务 | 状态 |
+|----|------|------|
+| P2-1 | `008_billing_orders.sql` 三池 + billing_orders + payment 占位字段 | ✅ |
+| P2-2 | 扣费三池顺序 + ledger.pool | ✅ |
+| P2-3 | 订单 CRUD + `StubQRProvider` | ✅ |
+| P2-4 | `/maas/account` + `/maas/orders/:id` + Pricing 购买 | ✅ |
+| P2-5 | Admin grant / confirm / 订单 tab | ✅ |
+| P2-6 | 真实支付宝/微信 API | ⏳ 待账号 |
+
+### P2 关键文件
+- `db/migrations/008_billing_orders.sql`
+- `maas/payment.go`, `maas/orders.go`
+- `maas/service.go` — 三池 ChargeRequest / GrantCredits / GetAccount
+- `admin/maas_handlers.go` — account/orders/grant/confirm API
+- `web/src/views/maas/MaaSAccountView.vue`, `MaaSOrderView.vue`
+
+### 支付宝接入点
+- 配置 `maas_settings.alipay_account` / `wechat_mch_id`
+- 扩展 `maas/payment.go` 实现真实 Provider + webhook
+
+## 🔜 P2 后续
+- 支付 webhook 自动确认
+- 发票与对账导出
+- 余额低阈值告警
 
 ## 🔗 参考
 - 方案：`docs/2026-06-16-maas-platform-plan.md`
