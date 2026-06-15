@@ -57,6 +57,41 @@ func (c *Client) Disabled() bool {
 	return c == nil || c.baseURL == ""
 }
 
+// BaseURL returns the configured Memora base URL (for status display).
+func (c *Client) BaseURL() string {
+	if c == nil {
+		return ""
+	}
+	return c.baseURL
+}
+
+// Ping tests connectivity to the Memora service. Returns nil if the
+// service responds (even with a non-2xx status, since that proves the
+// server is alive). Returns an error only on transport failure.
+// Disabled clients silently return nil.
+func (c *Client) Ping(ctx context.Context) error {
+	if c.Disabled() {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet,
+		c.baseURL+"/product/search", nil)
+	if err != nil {
+		return err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 256))
+	return nil
+}
+
 // Message is the unit of conversation passed to MemOS /product/add.
 type Message struct {
 	Role    string `json:"role"`
@@ -73,10 +108,31 @@ type Memory struct {
 }
 
 // AddMessage persists a message pair to Memora. Best-effort.
+// Retries up to 2 times on transient errors (network / 5xx).
 func (c *Client) AddMessage(ctx context.Context, userID string, messages []Message, info map[string]any) error {
 	if c.Disabled() || len(messages) == 0 || userID == "" {
 		return nil
 	}
+	var lastErr error
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt <= 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 3 // 100ms → 300ms
+		}
+		lastErr = c.addMessageOnce(ctx, userID, messages, info)
+		if lastErr == nil || !isRetryable(lastErr) {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []Message, info map[string]any) error {
 	if info == nil {
 		info = map[string]any{}
 	}
@@ -89,7 +145,9 @@ func (c *Client) AddMessage(ctx context.Context, userID string, messages []Messa
 	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	cctx, cancel := context.WithTimeout(ctx, c.addTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
 		c.baseURL+"/product/add", &buf)
 	if err != nil {
 		return err
@@ -98,10 +156,6 @@ func (c *Client) AddMessage(ctx context.Context, userID string, messages []Messa
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
-	cctx, cancel := context.WithTimeout(ctx, c.addTimeout)
-	defer cancel()
-	req = req.WithContext(cctx)
-
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -109,10 +163,33 @@ func (c *Client) AddMessage(ctx context.Context, userID string, messages []Messa
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("memos add status=%d body=%s", resp.StatusCode, string(body))
+		return &httpError{status: resp.StatusCode, body: string(body)}
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// httpError captures a Memora HTTP error for retry classification.
+type httpError struct {
+	status int
+	body   string
+}
+
+func (e *httpError) Error() string {
+	return fmt.Sprintf("memos status=%d body=%s", e.status, e.body)
+}
+
+// isRetryable returns true for errors worth retrying: network/transport
+// errors and server-side 5xx responses. Client 4xx errors are not retried.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if he, ok := err.(*httpError); ok {
+		return he.status >= 500
+	}
+	// Transport errors (connection refused, reset, timeout) are retryable.
+	return true
 }
 
 // Search queries Memora for the top-K facts most relevant to query.

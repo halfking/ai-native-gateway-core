@@ -65,6 +65,7 @@ func main() {
 	// Declared at the top so both the executor wiring and the
 	// graceful-shutdown sequence can reference it.
 	var memoraSink *memora.Sink
+	var memoraClient *memora.Client
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -231,7 +232,7 @@ func main() {
 		// Memora for L1 session facts on context overflow and rebuild
 		// the body around them. Disabled by default (no env var).
 		if memoraBase := os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"); memoraBase != "" {
-			memoraClient := memora.NewClient(memora.ClientConfig{
+			memoraClient = memora.NewClient(memora.ClientConfig{
 				BaseURL: memoraBase,
 				APIKey:  os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 			})
@@ -498,6 +499,9 @@ func main() {
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
 			adminHandler.SetFpSlots(fpSlots)
 			adminHandler.SetPeakCollector(peakCollector)
+		}
+		if memoraClient != nil {
+			adminHandler.SetMemoraServices(memoraClient, memoraSink)
 		}
 
 		// v2.0.2 audit fix #6: admin auto-route refresh endpoint needs
