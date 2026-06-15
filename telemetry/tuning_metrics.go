@@ -128,6 +128,14 @@ var (
 		Name: "llm_gateway_auto_route_strategy_count",
 		Help: "Auto-route signal count, by strategy and outcome (success/failure).",
 	}, []string{"strategy", "outcome"})
+
+	// llmHTTPStatusClass counts HTTP status classes from the LLM
+	// fallback endpoint. Status classes: 2xx / 3xx / 4xx / 5xx /
+	// timeout / network_error.
+	llmHTTPStatusClass = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llm_gateway_llm_http_status_class_total",
+		Help: "LLM fallback endpoint HTTP status code class distribution.",
+	}, []string{"status_class"})
 )
 
 // RecordTuningSignalWritten increments the per-task-type counter and
@@ -203,4 +211,11 @@ func RecordStrategySignal(strategy, taskType string, quality float64, success bo
 		outcome = "success"
 	}
 	strategyCount.WithLabelValues(strategy, outcome).Inc()
+}
+
+// RecordLLMHTTPStatus increments the LLM HTTP status class counter.
+// statusClass is one of: "2xx", "3xx", "4xx", "5xx", "timeout",
+// "network_error".
+func RecordLLMHTTPStatus(statusClass string) {
+	llmHTTPStatusClass.WithLabelValues(statusClass).Inc()
 }
