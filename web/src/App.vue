@@ -82,7 +82,7 @@ function logout() {
             v-if="!item.super || isSuperAdmin"
             :to="item.path"
             class="nav-item"
-            :class="{ active: route.path === item.path }"
+            :class="{ active: route.path === item.path || (item.path !== '/' && route.path.startsWith(item.path + '/')) }"
           >
             <span class="nav-icon">{{ item.icon }}</span>
             <span>{{ item.label }}</span>

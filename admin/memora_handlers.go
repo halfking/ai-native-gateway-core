@@ -201,7 +201,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 				CONCAT(
 					COALESCE(api_key_prefix, '[空]'), ' @ ',
 					DATE_TRUNC('hour', MIN(ts))::text, '~',
-					(DATE_TRUNC('hour', MIN(ts)) + (CASE WHEN $2 = 1 THEN '1 hour' WHEN $2 = 2 THEN '2 hour' ELSE '6 hour' END))::text
+					(DATE_TRUNC('hour', MIN(ts)) + (CASE WHEN $2 = 1 THEN interval '1 hour' WHEN $2 = 2 THEN interval '2 hours' ELSE interval '6 hours' END))::text
 				) AS no_topic_label,
 				DATE_TRUNC('hour', MIN(ts)) AS hour_start
 			FROM base
