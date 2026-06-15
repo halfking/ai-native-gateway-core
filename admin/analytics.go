@@ -274,9 +274,10 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	l12Rows.Close()
 
 	// Layer 2→3: outbound_model → provider_name
+	// NOTE: providers table column is display_name, NOT name.
 	l23Query := `
 		SELECT outbound_model AS src,
-		       COALESCE(p.name, 'unknown') AS dst,
+		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
 		FROM request_logs rl
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
@@ -285,7 +286,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - $1::interval
 		  AND rl.outbound_model IS NOT NULL
-		GROUP BY outbound_model, p.name
+		GROUP BY outbound_model, p.display_name
 	`
 	l23Rows, err := h.db.Query(ctx, l23Query, intervalStr)
 	if err != nil {
