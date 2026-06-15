@@ -23,7 +23,9 @@ import RoutingDashboardView   from './views/RoutingDashboardView.vue'
 import WorkTypesView          from './views/WorkTypesView.vue'
 import UsersView              from './views/UsersView.vue'
 import AuditLogView          from './views/AuditLogView.vue'
-import SessionContextView     from './views/SessionContextView.vue'
+import SessionContextLayout      from './layouts/SessionContextLayout.vue'
+import SessionContextListView    from './views/session-context/SessionContextListView.vue'
+import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
 import ForbiddenView          from './views/ForbiddenView.vue'
 
 function isAuthed(): boolean {
@@ -57,7 +59,15 @@ export const router = createRouter({
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
-    { path: '/session-context',   component: SessionContextView,    meta: { requiresSuper: true } },
+    {
+      path: '/session-context',
+      component: SessionContextLayout,
+      meta: { requiresSuper: true },
+      children: [
+        { path: '', component: SessionContextListView },
+        { path: ':taskId', component: SessionContextDetailView },
+      ],
+    },
 
     // Both super_admin and tenant_admin (read-only for tenant_admin)
     { path: '/users',              component: UsersView },
