@@ -61,10 +61,25 @@ export function isAuthenticated(): boolean {
   return !!(store.jwtToken || store.apiKey)
 }
 
-// Returns true if current user is super_admin or legacy admin key
+// Returns true if current user is super_admin
+// For JWT users: checks role === 'super_admin'
+// For legacy API key users (no JWT, only apiKey): treated as super_admin
 export function isSuperAdmin(): boolean {
-  // Only check JWT role; legacy admin_key auth is no longer supported
+  // Legacy API key auth: no JWT but has apiKey → super_admin
+  if (!store.jwtToken && store.apiKey) return true
+  // JWT auth: check role
   return store.userInfo?.role === 'super_admin'
+}
+
+// Returns true if current user is tenant_admin
+export function isTenantAdmin(): boolean {
+  if (!store.jwtToken && store.apiKey) return false // legacy API key is super_admin
+  return store.userInfo?.role === 'tenant_admin'
+}
+
+// Returns true if current user is read-only (non-default tenant tenant_admin)
+export function isReadOnlyMode(): boolean {
+  return isTenantAdmin() && !isDefaultTenant()
 }
 
 // Returns true if current tenant is default (整站数据)

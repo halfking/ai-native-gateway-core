@@ -17,7 +17,21 @@ func (h *Handler) handlePricing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block write operations for tenant_admin (import, bulk-update, copy, auto-inherit)
+	writeEndpoints := map[string]bool{
+		"import":         true,
+		"bulk-update":    true,
+		"copy":           true,
+		"auto-inherit":   true,
+	}
+
 	remaining := r.URL.Path[len("/api/pricing/"):]
+	if writeEndpoints[remaining] {
+		if RequireSuperAdminForWrite(w, r) {
+			return
+		}
+	}
+
 	switch {
 	case remaining == "tree":
 		h.pricingTree(w, r)

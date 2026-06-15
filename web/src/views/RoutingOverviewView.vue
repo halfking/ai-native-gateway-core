@@ -6,12 +6,14 @@ import {
   type RoutingTreeCredential,
   type RoutingTreeSeries,
 } from '../api'
+import { isReadOnlyMode } from '../store'
 
 const tree = ref<RoutingModelTreeResponse>({ featured: [], series: [], unmapped: [] })
 const loading = ref(false)
 const error = ref('')
 const search = ref('')
 const featuredOnly = ref(false)
+const readOnly = computed(() => isReadOnlyMode())
 
 function isCredentialRoutable(c: RoutingTreeCredential): boolean {
   return c.runtime_routable
@@ -150,6 +152,10 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
+      📖 您是租户管理员，只能查看模型路由总览，不能查看凭据路由详情（供应商、凭据、价格、状态等已隐藏）。
+    </div>
+
     <div class="card toolbar">
       <input v-model="search" placeholder="搜索模型、版本、供应商或凭据…" />
       <span class="badge badge-gray">{{ filteredSeries.length }} 个系列</span>
@@ -164,7 +170,8 @@ onMounted(load)
       <section v-for="series in filteredSeries" :key="series.series" class="series-block">
         <div class="series-header">
           <h3>{{ series.series }}</h3>
-          <span class="badge badge-blue">{{ credentialCount(series) }} 个供应商凭据</span>
+          <span v-if="!readOnly" class="badge badge-blue">{{ credentialCount(series) }} 个供应商凭据</span>
+          <span v-else class="badge badge-gray">{{ (series as any).generations?.reduce((s: number, g: any) => s + g.variants.reduce((vs: number, v: any) => vs + (v.credential_count || 0), 0), 0) || 0 }} 个模型变体</span>
         </div>
 
         <div v-for="generation in series.generations" :key="generation.generation" class="generation-block">
@@ -181,7 +188,21 @@ onMounted(load)
               </div>
             </div>
 
-            <div class="credential-grid">
+            <!-- Read-only mode (tenant_admin): show only model availability, not credential details -->
+            <div v-if="readOnly" class="readonly-summary">
+              <div class="readonly-info">
+                <span :class="(variant as any).available ? 'status-ok' : 'status-bad'">
+                  {{ (variant as any).available ? '✓ 可路由' : '✗ 暂不可路由' }}
+                </span>
+                <span class="readonly-meta">
+                  凭据数: {{ (variant as any).credential_count || 0 }}
+                  （详情已隐藏）
+                </span>
+              </div>
+            </div>
+
+            <!-- Full mode (super_admin): show all credential details -->
+            <div v-else class="credential-grid">
               <article v-for="cred in variant.credentials" :key="`${cred.provider_id}-${cred.credential_id}-${cred.raw_model_name}`" class="credential-card">
                 <div class="credential-top">
                   <strong>{{ cred.provider_name }}</strong>
@@ -244,6 +265,32 @@ onMounted(load)
 .badge-blue { background: #dbeafe; color: #1e40af; }
 .badge-amber { background: #fef3c7; color: #92400e; }
 .badge-purple { background: #ede9fe; color: #5b21b6; }
+
+.readonly-summary {
+  padding: 10px 12px;
+  background: var(--bg-subtle, #fafafa);
+  border-radius: 6px;
+  border: 1px solid var(--border, #e5e7eb);
+}
+.readonly-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+.status-ok {
+  color: var(--success, #15803d);
+  font-weight: 600;
+}
+.status-bad {
+  color: var(--danger, #b91c1c);
+  font-weight: 600;
+}
+.readonly-meta {
+  color: var(--muted, #6b7280);
+  font-size: 11px;
+}
+
 @media (max-width: 720px) {
   .toolbar, .variant-head { flex-direction: column; align-items: stretch; }
   .tag-row { justify-content: flex-start; }

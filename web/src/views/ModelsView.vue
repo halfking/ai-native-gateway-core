@@ -12,6 +12,9 @@ import TagEditor from '../components/TagEditor.vue'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import { useFilterChips } from '../composables/useFilterChips'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
+import { isReadOnlyMode } from '../store'
+
+const readOnly = computed(() => isReadOnlyMode())
 
 type ModelStatus = 'active' | 'disabled' | 'deprecated' | 'hidden'
 
@@ -517,13 +520,17 @@ onMounted(async () => {
       <h2>模型管理</h2>
       <div style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
-        <button class="btn btn-primary btn-sm" @click="showCreateModal = true">
+        <button v-if="!readOnly" class="btn btn-primary btn-sm" @click="showCreateModal = true">
           新增模型
         </button>
-        <button class="btn btn-ghost btn-sm" :disabled="discovering" @click="runDiscovery">
+        <button v-if="!readOnly" class="btn btn-ghost btn-sm" :disabled="discovering" @click="runDiscovery">
           {{ discovering ? '扫描中…' : '扫描供应商模型' }}
         </button>
       </div>
+    </div>
+
+    <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
+      📖 您是租户管理员，当前为只读模式。模型目录仅供查看，不能创建、编辑或删除模型。
     </div>
 
     <!-- 发现任务状态 -->

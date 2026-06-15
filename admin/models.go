@@ -18,6 +18,11 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block write operations for tenant_admin
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+
 	remaining := r.URL.Path[len("/api/models/"):]
 
 	if remaining == "" {
@@ -106,6 +111,10 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleModelsRoot(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	// Block write operations for tenant_admin
+	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
 	if r.Method == http.MethodGet {

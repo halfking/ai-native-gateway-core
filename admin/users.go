@@ -175,7 +175,15 @@ func (h *Handler) handleUsers(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	rows, err := h.db.Query(ctx, `SELECT id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at FROM users ORDER BY id`)
+	// tenant_admin can only list users in their own tenant
+	query := `SELECT id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at FROM users`
+	args := []any{}
+	if IsTenantAdmin(r) {
+		query += ` WHERE tenant_id = $1`
+		args = append(args, GetTenantID(r))
+	}
+	query += ` ORDER BY id`
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
@@ -215,6 +223,17 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TenantID == "" {
 		req.TenantID = "default"
+	}
+	// tenant_admin can only create users in their own tenant, and only with role tenant_admin
+	if IsTenantAdmin(r) {
+		if req.TenantID != GetTenantID(r) {
+			writeError(w, http.StatusForbidden, "tenant_admin can only create users in own tenant")
+			return
+		}
+		if req.Role == "super_admin" {
+			writeError(w, http.StatusForbidden, "tenant_admin cannot create super_admin users")
+			return
+		}
 	}
 	// Verify tenant exists and is not disabled
 	ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
@@ -268,6 +287,26 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+	// tenant_admin can only update users in their own tenant
+	if IsTenantAdmin(r) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		var userTenant string
+		err := h.db.QueryRow(ctx, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
+		cancel()
+		if err != nil {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if userTenant != GetTenantID(r) {
+			writeError(w, http.StatusForbidden, "tenant_admin can only update users in own tenant")
+			return
+		}
+		// tenant_admin cannot promote users to super_admin
+		if req.Role != nil && *req.Role == "super_admin" {
+			writeError(w, http.StatusForbidden, "tenant_admin cannot set super_admin role")
+			return
+		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -352,6 +391,21 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
+	// tenant_admin can only delete users in their own tenant
+	if IsTenantAdmin(r) {
+		ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
+		var userTenant string
+		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
+		cancelCheck()
+		if err != nil {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if userTenant != GetTenantID(r) {
+			writeError(w, http.StatusForbidden, "tenant_admin can only delete users in own tenant")
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	tag, err := h.db.Exec(ctx, "DELETE FROM users WHERE id = $1", id)
@@ -368,6 +422,21 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id int) {
+	// tenant_admin can only reset passwords for users in their own tenant
+	if IsTenantAdmin(r) {
+		ctxCheck, cancelCheck := context.WithTimeout(r.Context(), 3*time.Second)
+		var userTenant string
+		err := h.db.QueryRow(ctxCheck, `SELECT tenant_id FROM users WHERE id = $1`, id).Scan(&userTenant)
+		cancelCheck()
+		if err != nil {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if userTenant != GetTenantID(r) {
+			writeError(w, http.StatusForbidden, "tenant_admin can only reset passwords for users in own tenant")
+			return
+		}
+	}
 	var req struct {
 		Password string `json:"password"`
 	}
