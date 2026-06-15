@@ -28,6 +28,9 @@ func main() {
 	providerID := flag.Int("provider", 0, "only test this provider id (0 = all)")
 	jsonOut := flag.Bool("json", false, "emit JSON report")
 	doUpsert := flag.Bool("upsert", false, "also run discoverAndUpsertForCredential (refresh path)")
+	probeURL := flag.String("probe-url", "", "diagnostic: fetch this URL using credential from -probe-cred and dump raw response + parsed models")
+	probeCred := flag.Int("probe-cred", 0, "credential id to use with -probe-url")
+	chatProbe := flag.String("chat-probe", "", "diagnostic: test if this model is callable via credential from -probe-cred (detects unlisted-but-available models)")
 	flag.Parse()
 
 	cfg := config.Load()
@@ -46,6 +49,15 @@ func main() {
 	h := admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
 	if kr, kerr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kerr == nil {
 		h.SetKeyring(kr)
+	}
+
+	if *probeURL != "" && *probeCred > 0 {
+		runProbe(h, *probeCred, *probeURL)
+		return
+	}
+	if *chatProbe != "" && *probeCred > 0 {
+		runChatProbe(h, *probeCred, *chatProbe)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -150,3 +162,40 @@ func printUpsertSummary(results []admin.CredentialModelUpsertResult) {
 		os.Exit(1)
 	}
 }
+
+// runProbe fetches a single URL with a credential's auth headers and prints
+// the HTTP status, the parsed model list, and the raw response body. Used to
+// diagnose model-discovery mismatches (e.g. vendor exposes glm-5.2 under a
+// different base path than the configured one).
+func runProbe(h *admin.Handler, credID int, url string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	status, rawBody, models, err := h.DebugFetchVendorModelsRaw(ctx, credID, url)
+	fmt.Printf("URL:    %s\n", url)
+	fmt.Printf("CredID: %d\n", credID)
+	fmt.Printf("Status: %d\n", status)
+	if err != nil {
+		fmt.Printf("Error:  %v\n", err)
+	}
+	fmt.Printf("Models (%d): %v\n", len(models), models)
+	fmt.Println("--- raw body ---")
+	fmt.Println(string(rawBody))
+}
+
+// runChatProbe tests whether a model is callable (even if not listed by /models)
+// by issuing a minimal chat completion. A 200 means the model works.
+func runChatProbe(h *admin.Handler, credID int, model string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	status, body, err := h.DebugChatProbe(ctx, credID, model)
+	fmt.Printf("Model:  %s\n", model)
+	fmt.Printf("CredID: %d\n", credID)
+	fmt.Printf("Status: %d\n", status)
+	if err != nil {
+		fmt.Printf("Error:  %v\n", err)
+	}
+	fmt.Println("--- response body ---")
+	fmt.Println(string(body))
+}
+
+

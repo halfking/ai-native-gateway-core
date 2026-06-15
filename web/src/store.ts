@@ -1,9 +1,23 @@
 import { reactive } from 'vue'
 
 const KEY = 'llmgw_api_key'
+const JWT_KEY = 'llmgw_jwt_token'
+const USER_KEY = 'llmgw_user_info'
+
+export interface UserInfo {
+  id: number
+  tenant_id: string
+  username: string
+  display_name: string
+  email: string
+  role: string
+  enabled: boolean
+}
 
 export const store = reactive({
   apiKey: localStorage.getItem(KEY) ?? '',
+  jwtToken: localStorage.getItem(JWT_KEY) ?? '',
+  userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
 })
 
 export function setApiKey(k: string) {
@@ -14,4 +28,35 @@ export function setApiKey(k: string) {
 export function clearApiKey() {
   store.apiKey = ''
   localStorage.removeItem(KEY)
+}
+
+export function setJwtToken(token: string) {
+  store.jwtToken = token
+  localStorage.setItem(JWT_KEY, token)
+}
+
+export function setUserInfo(user: UserInfo | null) {
+  store.userInfo = user
+  if (user) {
+    localStorage.setItem(USER_KEY, JSON.stringify(user))
+  } else {
+    localStorage.removeItem(USER_KEY)
+  }
+}
+
+export function clearJwt() {
+  store.jwtToken = ''
+  store.userInfo = null
+  localStorage.removeItem(JWT_KEY)
+  localStorage.removeItem(USER_KEY)
+}
+
+export function clearAll() {
+  clearApiKey()
+  clearJwt()
+}
+
+// Returns true if we have any valid auth credential (JWT or legacy API key).
+export function isAuthenticated(): boolean {
+  return !!(store.jwtToken || store.apiKey)
 }

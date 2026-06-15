@@ -3284,6 +3284,29 @@ func (h *Handler) loadCredentialRowLite(ctx context.Context, providerID, credID 
 	return c, err
 }
 
+// loadCredentialRowLiteAny loads a credential by id alone (no provider
+// scoping); used only by diagnostic probes that already know the cred id.
+func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (credentialRowLite, error) {
+	var c credentialRowLite
+	err := h.db.QueryRow(ctx, `
+		SELECT
+			c.id, COALESCE(c.label,''), p.id, p.display_name,
+			COALESCE(p.base_url,''), COALESCE(p.protocol,''),
+			COALESCE(p.catalog_code, ''),
+			c.secret_ciphertext,
+			pc.models_endpoint_template,
+			COALESCE(pc.discovery_strategy, 'auto'),
+			pc.models_manifest_json
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
+		WHERE c.id = $1
+	`, credID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
+		&c.baseURL, &c.protocol, &c.catalogCode,
+		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)
+	return c, err
+}
+
 // resolveModelsEndpointURL maps catalog template + base_url to the models list URL.
 func resolveModelsEndpointURL(baseURL string, template *string) (url string, explicitTemplate bool) {
 	if template == nil {
@@ -3676,6 +3699,73 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 	}
 
 	return parseVendorModelsBody(body)
+}
+
+// DebugFetchVendorModelsRaw is a diagnostic helper: it fetches the given URL
+// with the credential's auth headers and returns the HTTP status, the raw
+// response body, and the parsed model IDs. It exists purely to support
+// the verify-model-fetch CLI probe and is not wired to any HTTP route.
+func (h *Handler) DebugFetchVendorModelsRaw(ctx context.Context, credID int, url string) (status int, rawBody []byte, models []string, err error) {
+	cred, err := h.loadCredentialRowLiteAny(ctx, credID)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("load credential: %w", err)
+	}
+	apiKey, decErr := h.decryptCredStr(string(cred.secretCipher))
+	if decErr != nil {
+		return 0, nil, nil, fmt.Errorf("decrypt credential: %w", decErr)
+	}
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if rerr != nil {
+		return 0, nil, nil, rerr
+	}
+	setModelsAuthHeaders(req, cred.protocol, apiKey)
+	h.applyCatalogHeaderProfile(ctx, req, cred.catalogCode)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	status = resp.StatusCode
+	rawBody, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if status == http.StatusOK {
+		models, err = parseVendorModelsBody(rawBody)
+	}
+	return status, rawBody, models, err
+}
+
+// DebugChatProbe issues a minimal chat completion against the credential's
+// base URL for the given model name, returning the HTTP status and a short
+// body preview. It is used to detect models that are callable but not listed
+// by the vendor's /models endpoint.
+func (h *Handler) DebugChatProbe(ctx context.Context, credID int, model string) (status int, body []byte, err error) {
+	cred, err := h.loadCredentialRowLiteAny(ctx, credID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("load credential: %w", err)
+	}
+	apiKey, decErr := h.decryptCredStr(string(cred.secretCipher))
+	if decErr != nil {
+		return 0, nil, fmt.Errorf("decrypt credential: %w", decErr)
+	}
+	base := strings.TrimRight(strings.TrimSpace(cred.baseURL), "/")
+	payload := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`)
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(payload))
+	if rerr != nil {
+		return 0, nil, rerr
+	}
+	setModelsAuthHeaders(req, cred.protocol, apiKey)
+	h.applyCatalogHeaderProfile(ctx, req, cred.catalogCode)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	status = resp.StatusCode
+	body, _ = io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return status, body, nil
 }
 
 // fetchVendorModelsFromURLs tries catalog-resolved candidate URLs in order;

@@ -67,6 +67,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		AvgLatencyMs        float64 `json:"avg_latency_ms"`
 		SuccessRate         float64 `json:"success_rate"`
 	}
+	tid := EffectiveTenantID(r)
 	row := h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(*)                                        AS total_requests,
@@ -79,9 +80,9 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 				/ NULLIF(COUNT(*), 0), 1.0
 			)                                               AS success_rate
 		FROM usage_ledger
-		WHERE tenant_id = 'default'
+		WHERE tenant_id = $2
 		  AND ts >= now() - ($1 * INTERVAL '1 day')
-	`, days)
+	`, days, tid)
 	if err := row.Scan(
 		&summary.TotalRequests,
 		&summary.TotalPromptTokens,
@@ -107,6 +108,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	tid := EffectiveTenantID(r)
 	var overview struct {
 		TotalAPIKeys           int `json:"total_api_keys"`
 		ActiveAPIKeys          int `json:"active_api_keys"`
@@ -124,7 +126,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 		WITH usage_window AS (
 			SELECT *
 			  FROM usage_ledger
-			 WHERE tenant_id = 'default'
+			 WHERE tenant_id = $2
 			   AND ts >= now() - ($1 * INTERVAL '1 day')
 		),
 		active_key_window AS (
@@ -138,17 +140,17 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 			 WHERE raw_model_name IS NOT NULL OR canonical_id IS NOT NULL
 		)
 		SELECT
-			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = 'default')                                                  AS total_api_keys,
-			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = 'default' AND enabled = TRUE)                               AS active_api_keys,
+			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = $2)                                                  AS total_api_keys,
+			(SELECT COUNT(*) FROM api_keys WHERE tenant_id = $2 AND enabled = TRUE)                               AS active_api_keys,
 			(SELECT COALESCE(cnt, 0) FROM active_key_window)                                                             AS active_api_keys_in_window,
 			(SELECT COUNT(*) FROM models_canonical)                                                                      AS total_models,
 			(SELECT COALESCE(cnt, 0) FROM active_model_window)                                                           AS active_models_in_window,
-			(SELECT COUNT(*) FROM providers WHERE tenant_id = 'default')                                                  AS total_providers,
-			(SELECT COUNT(*) FROM providers WHERE tenant_id = 'default' AND enabled = TRUE)                              AS active_providers,
+			(SELECT COUNT(*) FROM providers WHERE tenant_id = $2)                                                  AS total_providers,
+			(SELECT COUNT(*) FROM providers WHERE tenant_id = $2 AND enabled = TRUE)                              AS active_providers,
 			(SELECT COUNT(*) FROM models_canonical mc WHERE COALESCE(mc.status, 'active') <> 'active')                    AS offline_models,
-			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = 'default' AND COALESCE(c.status, 'active') <> 'active') AS offline_credentials,
-			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = 'default')                                            AS total_credentials
-	`, days)
+			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = $2 AND COALESCE(c.status, 'active') <> 'active') AS offline_credentials,
+			(SELECT COUNT(*) FROM credentials c WHERE c.tenant_id = $2)                                            AS total_credentials
+	`, days, tid)
 	if err := row.Scan(
 		&overview.TotalAPIKeys,
 		&overview.ActiveAPIKeys,
@@ -184,6 +186,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tid := EffectiveTenantID(r)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -198,13 +201,13 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 		FROM usage_ledger ul
 		LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
 		LEFT JOIN applications app ON app.id = ak.application_id
-		WHERE ul.tenant_id = 'default'
+		WHERE ul.tenant_id = $3
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		  AND ul.api_key_id IS NOT NULL
 		GROUP BY ul.api_key_id, ak.key_prefix, app.code, ak.owner_user
 		ORDER BY total_tokens DESC, total_cost_usd DESC, request_count DESC
 		LIMIT $2
-	`, days, limit)
+	`, days, limit, tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "hot-keys query failed: "+err.Error())
 		return
@@ -258,6 +261,7 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tid := EffectiveTenantID(r)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -272,12 +276,12 @@ func (h *Handler) usageByProvider(w http.ResponseWriter, r *http.Request) {
 		FROM usage_ledger u
 		JOIN credentials c ON c.id = u.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		WHERE u.tenant_id = 'default'
+		WHERE u.tenant_id = $3
 		  AND u.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY p.id, p.display_name, p.code
 		ORDER BY total_cost_usd DESC, request_count DESC
 		LIMIT $2
-	`, days, limit)
+	`, days, limit, tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "by-provider query failed: "+err.Error())
 		return
@@ -326,6 +330,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tid := EffectiveTenantID(r)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -338,12 +343,12 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 			COALESCE(AVG(ul.latency_ms), 0.0)                              AS avg_latency_ms
 		FROM usage_ledger ul
 		LEFT JOIN providers p ON p.id = ul.provider_id
-		WHERE ul.tenant_id = 'default'
+		WHERE ul.tenant_id = $3
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY ul.raw_model_name, p.code
 		ORDER BY total_cost_usd DESC, total_requests DESC
 		LIMIT $2
-	`, days, limit)
+	`, days, limit, tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "by-model query failed: "+err.Error())
 		return
@@ -393,6 +398,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tid := EffectiveTenantID(r)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -404,12 +410,12 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 			COALESCE(SUM(ul.completion_tokens), 0)         AS completion_tokens
 		FROM usage_ledger ul
 		LEFT JOIN api_keys ak ON ak.id = ul.api_key_id
-		WHERE ul.tenant_id = 'default'
+		WHERE ul.tenant_id = $3
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY ul.api_key_id, ak.key_prefix
 		ORDER BY cost_usd DESC
 		LIMIT $2
-	`, days, limit)
+	`, days, limit, tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "by-key query failed: "+err.Error())
 		return
@@ -844,6 +850,7 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	tid := EffectiveTenantID(r)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
@@ -857,11 +864,11 @@ func (h *Handler) usageByApplication(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT ul.canonical_id) AS unique_models
 		FROM usage_ledger ul
 		LEFT JOIN applications app ON app.id = ul.application_id
-		WHERE ul.tenant_id = 'default'
+		WHERE ul.tenant_id = $2
 		  AND ul.ts >= now() - ($1 * INTERVAL '1 day')
 		GROUP BY app.code
 		ORDER BY total_cost_usd DESC
-	`, days)
+	`, days, tid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "by-application query failed: "+err.Error())
 		return
@@ -909,13 +916,14 @@ func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyI
 	}
 
 	var spentUSD float64
+	tid := EffectiveTenantID(r)
 	if err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(cost_usd), 0.0)
 		FROM usage_ledger
-		WHERE tenant_id = 'default'
+		WHERE tenant_id = $3
 		  AND api_key_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
-	`, keyID, days).Scan(&spentUSD); err != nil {
+	`, keyID, days, tid).Scan(&spentUSD); err != nil {
 		slog.Warn("usageKeyRemaining: spend query failed", "key_id", keyID, "error", err)
 	}
 
@@ -939,6 +947,10 @@ func (h *Handler) usageKeyRemaining(w http.ResponseWriter, r *http.Request, keyI
 
 func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 	tenantID := queryString(r, "tenant")
+	// tenant_admin: can only view their own tenant's usage.
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	}
 	if tenantID == "" {
 		writeError(w, http.StatusBadRequest, "tenant parameter required")
 		return
@@ -991,6 +1003,46 @@ func (h *Handler) usageByTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listTenants(w http.ResponseWriter, r *http.Request) {
+	// tenant_admin: can only see their own tenant.
+	if IsTenantAdmin(r) {
+		tid := GetTenantID(r)
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		rows, err := h.db.Query(ctx, `
+			SELECT
+				ak.tenant_id,
+				COUNT(*) AS key_count,
+				COALESCE(SUM(ak.total_requests), 0) AS total_requests,
+				COALESCE(SUM(ak.total_prompt_tokens + ak.total_completion_tokens), 0) AS total_tokens,
+				COALESCE(SUM(ak.total_cost_usd), 0)::float8 AS total_cost_usd
+			FROM api_keys ak
+			WHERE ak.tenant_id = $1
+			GROUP BY ak.tenant_id
+		`, tid)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "tenants query failed: "+err.Error())
+			return
+		}
+		defer rows.Close()
+		type tenantSummary struct {
+			TenantID     string  `json:"tenant_id"`
+			KeyCount     int     `json:"key_count"`
+			TotalReqs    int64   `json:"total_requests"`
+			TotalTokens  int64   `json:"total_tokens"`
+			TotalCostUSD float64 `json:"total_cost_usd"`
+		}
+		tenants := make([]tenantSummary, 0)
+		for rows.Next() {
+			var t tenantSummary
+			if err := rows.Scan(&t.TenantID, &t.KeyCount, &t.TotalReqs, &t.TotalTokens, &t.TotalCostUSD); err != nil {
+				continue
+			}
+			tenants = append(tenants, t)
+		}
+		writeJSON(w, http.StatusOK, tenants)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 

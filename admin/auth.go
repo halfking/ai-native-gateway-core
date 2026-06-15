@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"strings"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type loginRequest struct {
@@ -70,11 +72,37 @@ func adminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			writeError(w, http.StatusServiceUnavailable, "database not configured")
 			return
 		}
+
+		// ── Try JWT auth first ───────────────────────────────────────
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+			claims, err := VerifyToken(tokenStr, secretKey)
+			if err == nil && claims.UserID > 0 {
+				authReq := SetAuthContext(r, &AuthContext{
+					UserID:   claims.UserID,
+					TenantID: claims.TenantID,
+					Username: claims.Username,
+					Role:     claims.Role,
+					IsJWT:    true,
+				})
+				next(w, authReq)
+				return
+			}
+		}
+
+		// ── Fall back to legacy admin API key auth ───────────────────
 		if !verifyAdminAuth(r, db, secretKey) {
 			writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
 			return
 		}
-		next(w, r)
+		// Inject legacy admin context (super_admin, default tenant)
+		authReq := SetAuthContext(r, &AuthContext{
+			TenantID: "default",
+			Username: "admin",
+			Role:     "admin_key",
+			IsJWT:    false,
+		})
+		next(w, authReq)
 	}
 }
 
@@ -94,6 +122,56 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Try JWT auth (users table) first ──────────────────────────────
+	if req.Username != "" && req.Password != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		var u struct {
+			ID           int
+			TenantID     string
+			Username     string
+			PasswordHash string
+			DisplayName  string
+			Role         string
+			Enabled      bool
+		}
+		err := h.db.QueryRow(ctx, `
+			SELECT id, tenant_id, username, password_hash, display_name, role, enabled
+			FROM users WHERE username = $1
+		`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Role, &u.Enabled)
+
+		if err == nil && u.Enabled {
+			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) == nil {
+				// Update last_login_at
+				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
+
+				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret)
+				if signErr != nil {
+					slog.Error("handleLogin: sign jwt failed", "error", signErr)
+					writeError(w, http.StatusInternalServerError, "token generation failed")
+					return
+				}
+
+				writeJSON(w, http.StatusOK, map[string]any{
+					"access_token": token,
+					"token_type":   "Bearer",
+					"expires_at":   expiresAt.Format(time.RFC3339),
+					"user": map[string]any{
+						"id":           u.ID,
+						"tenant_id":    u.TenantID,
+						"username":     u.Username,
+						"display_name": u.DisplayName,
+						"role":         u.Role,
+						"enabled":      u.Enabled,
+					},
+				})
+				return
+			}
+		}
+	}
+
+	// ── Fall back to legacy admin key auth ────────────────────────────
 	if subtle.ConstantTimeCompare([]byte(req.Username), []byte("admin")) != 1 ||
 		subtle.ConstantTimeCompare([]byte(req.Password), []byte(getAdminPassword())) != 1 {
 		writeError(w, http.StatusUnauthorized, "Invalid credentials")

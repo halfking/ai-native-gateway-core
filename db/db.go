@@ -89,6 +89,38 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	return nil
 }
 
+// EnsureUsersTable creates the users table for multi-tenant admin auth.
+func (d *DB) EnsureUsersTable(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, usersSchemaSQL)
+	if err != nil {
+		return err
+	}
+	slog.Info("users schema ensured")
+	return nil
+}
+
+// usersSchemaSQL mirrors db/migrations/001_users_table.sql for startup apply.
+const usersSchemaSQL = `
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL DEFAULT 'default',
+    username VARCHAR(128) NOT NULL UNIQUE,
+    password_hash VARCHAR(256) NOT NULL,
+    display_name VARCHAR(128) NOT NULL DEFAULT '',
+    email VARCHAR(256) NOT NULL DEFAULT '',
+    role VARCHAR(32) NOT NULL DEFAULT 'tenant_admin',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_login_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+`
+
 // workTypeSchemaSQL mirrors db/migrations/002_work_types.sql for startup apply.
 const workTypeSchemaSQL = `
 CREATE TABLE IF NOT EXISTS work_type_config (
