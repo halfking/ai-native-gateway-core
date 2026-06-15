@@ -43,8 +43,9 @@ type KeyInfo struct {
 }
 
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
+// A per-key value of 0 means "unlimited" (CheckRPM treats limit<=0 as no cap).
 func (ki *KeyInfo) EffectiveRPM() int {
-	if ki.RateLimitRPM != nil && *ki.RateLimitRPM > 0 {
+	if ki.RateLimitRPM != nil && *ki.RateLimitRPM >= 0 {
 		return *ki.RateLimitRPM
 	}
 	tier := ki.KeyTier
@@ -58,8 +59,9 @@ func (ki *KeyInfo) EffectiveRPM() int {
 }
 
 // EffectiveConcurrent returns the applicable concurrent limit.
+// A per-key value of 0 means "unlimited" (CheckConcurrent treats limit<=0 as no cap).
 func (ki *KeyInfo) EffectiveConcurrent() int {
-	if ki.RateLimitConcurrent != nil && *ki.RateLimitConcurrent > 0 {
+	if ki.RateLimitConcurrent != nil && *ki.RateLimitConcurrent >= 0 {
 		return *ki.RateLimitConcurrent
 	}
 	tier := ki.KeyTier

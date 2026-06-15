@@ -48,3 +48,52 @@ func TestIsBudgetExceeded(t *testing.T) {
 		t.Error("should not recognize InvalidKeyError as budget exceeded")
 	}
 }
+
+func intPtr(v int) *int { return &v }
+
+func TestEffectiveRPM(t *testing.T) {
+	tests := []struct {
+		name     string
+		rpm      *int
+		tier     string
+		expected int
+	}{
+		{"nil falls back to default tier", nil, "default", 12},
+		{"nil falls back to production tier", nil, "production", 60},
+		{"0 means unlimited", intPtr(0), "default", 0},
+		{"0 means unlimited even on production tier", intPtr(0), "production", 0},
+		{"positive value used as-is", intPtr(100), "default", 100},
+		{"empty tier defaults to default", intPtr(50), "", 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ki := &KeyInfo{RateLimitRPM: tt.rpm, KeyTier: tt.tier}
+			if got := ki.EffectiveRPM(); got != tt.expected {
+				t.Errorf("EffectiveRPM() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEffectiveConcurrent(t *testing.T) {
+	tests := []struct {
+		name     string
+		conc     *int
+		tier     string
+		expected int
+	}{
+		{"nil falls back to default tier", nil, "default", 6},
+		{"nil falls back to production tier", nil, "production", 20},
+		{"0 means unlimited", intPtr(0), "default", 0},
+		{"0 means unlimited even on production tier", intPtr(0), "production", 0},
+		{"positive value used as-is", intPtr(50), "default", 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ki := &KeyInfo{RateLimitConcurrent: tt.conc, KeyTier: tt.tier}
+			if got := ki.EffectiveConcurrent(); got != tt.expected {
+				t.Errorf("EffectiveConcurrent() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
