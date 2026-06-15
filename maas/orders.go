@@ -272,7 +272,7 @@ func (s *Service) ListOrders(ctx context.Context, tenantID string, limit int) ([
 		o.PackageName = packageName
 		out = append(out, o)
 	}
-	return out, rows.Err()
+	return jsonSlice(out), rows.Err()
 }
 
 func (s *Service) enrichOrderPaymentHint(ctx context.Context, o *BillingOrder) {

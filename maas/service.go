@@ -287,7 +287,7 @@ func (s *Service) ListPlans(ctx context.Context, enabledOnly bool) ([]Plan, erro
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return jsonSlice(out), rows.Err()
 }
 
 func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]TopupPackage, error) {
@@ -310,7 +310,7 @@ func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]To
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return jsonSlice(out), rows.Err()
 }
 
 // WalletView is the tenant-facing balance summary (three pools).
@@ -389,7 +389,11 @@ func (s *Service) GetAccount(ctx context.Context, tenantID string) (AccountView,
 	if err != nil {
 		return AccountView{}, err
 	}
-	return AccountView{Wallet: wallet, RecentLedger: ledger, RecentOrders: orders}, nil
+	return AccountView{
+		Wallet:       wallet,
+		RecentLedger: jsonSlice(ledger),
+		RecentOrders: jsonSlice(orders),
+	}, nil
 }
 
 func (s *Service) ensureWalletDirect(ctx context.Context, tenantID string) error {
@@ -436,7 +440,7 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	return jsonSlice(out), rows.Err()
 }
 
 // LedgerEntry is one credit ledger row.
@@ -475,7 +479,7 @@ func (s *Service) ListLedger(ctx context.Context, tenantID string, limit int) ([
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	return jsonSlice(out), rows.Err()
 }
 
 func (s *Service) writeLedger(ctx context.Context, tx pgx.Tx, tenantID, entryType string, amount int64, pool, refType, refID, note string) error {

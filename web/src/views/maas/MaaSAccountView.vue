@@ -73,10 +73,16 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    account.value = isAdminTenantView.value
+    const raw = isAdminTenantView.value
       ? await getAdminMaasAccount(tenantCode.value)
       : await getMaasAccount()
+    account.value = {
+      ...raw,
+      recent_ledger: raw.recent_ledger ?? [],
+      recent_orders: raw.recent_orders ?? [],
+    }
   } catch (e: unknown) {
+    account.value = null
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
@@ -101,6 +107,7 @@ onMounted(load)
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+    <div v-else-if="loading && !account" class="empty">加载中…</div>
 
     <div v-if="account" class="wallet-grid">
       <div class="wallet-card card">
@@ -191,6 +198,10 @@ onMounted(load)
         </tbody>
       </table>
       <div v-else class="empty">暂无流水</div>
+    </div>
+
+    <div v-else-if="!loading && !error" class="section card empty">
+      暂无账户数据，请稍后刷新或联系管理员。
     </div>
   </div>
 </template>

@@ -132,6 +132,8 @@ func (s *Service) QueryUsageSummary(ctx context.Context, tenantID string, days, 
 		}
 		out.Trend = append(out.Trend, row)
 	}
+	out.ByModel = jsonSlice(out.ByModel)
+	out.Trend = jsonSlice(out.Trend)
 	return out, trendRows.Err()
 }
 
