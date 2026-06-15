@@ -186,7 +186,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
-	mux.HandleFunc("/api/users/", admin(h.handleUsers))
+	mux.HandleFunc("/api/users/", h.superAdmin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
@@ -261,7 +261,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		if h.feedbackAnalyzer != nil {
 			autoH.SetFeedbackAnalyzer(h.feedbackAnalyzer)
 		}
-		autoH.RegisterAutoRouteRoutes(mux, admin)
+		autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)
 
 		// Phase 2a analytics (matrix / flow / model-task-index).
 		analyticsH := NewAnalyticsHandlers(h.db)
@@ -269,7 +269,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		// Phase 1 work type config CRUD.
 		wtH := NewWorkTypeHandlers(h.db)
-		wtH.RegisterWorkTypeRoutes(mux, admin)
+		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
 	}
 }
 
