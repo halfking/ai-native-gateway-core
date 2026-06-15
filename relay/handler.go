@@ -283,14 +283,10 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 
-	// ── RPM rate limit ──────────────────────────────────────────────────
-	if keyInfo != nil && h.rateLimiter != nil && !keyInfo.IsInternal {
-		rpmLimit := keyInfo.EffectiveRPM()
-		if !h.rateLimiter.CheckRPM(keyInfo.ID, rpmLimit) {
-			_, remaining := h.rateLimiter.RPMStatus(keyInfo.ID, rpmLimit)
-			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rpmLimit))
-			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
-			w.Header().Set("Retry-After", "60")
+	// ── RPM rate limit (unified via checkGatewayRateLimit) ──────────────
+	if rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
 			logCtx.SetError("rate_limit_exceeded", "rate limit exceeded")
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
