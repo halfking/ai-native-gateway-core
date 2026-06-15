@@ -4,8 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getMemoraContext,
   getSessionMessages,
+  extractSessionToMemora,
+  getSessionExtractionStatus,
   type MemoraContextResponse,
   type SessionMessagesResponse,
+  type SessionExtractionStatusResponse,
 } from '../../api'
 import {
   displayKey,
@@ -36,6 +39,11 @@ const contextLoading = ref(false)
 const contextError = ref('')
 const messagesLoading = ref(false)
 const messagesError = ref('')
+
+const extractionStatus = ref<SessionExtractionStatusResponse | null>(null)
+const extracting = ref(false)
+const extractResult = ref('')
+const extractError = ref('')
 
 const pageTitle = computed(() => {
   if (isNoTopic.value) return '无主题会话'
@@ -70,6 +78,32 @@ async function loadTimeline() {
   }
 }
 
+async function loadExtractionStatus() {
+  if (isNoTopic.value || !taskId.value) return
+  try {
+    extractionStatus.value = await getSessionExtractionStatus(taskId.value)
+  } catch {
+    extractionStatus.value = null
+  }
+}
+
+async function doExtractToMemora() {
+  if (isNoTopic.value || !taskId.value || extracting.value) return
+  extracting.value = true
+  extractResult.value = ''
+  extractError.value = ''
+  try {
+    const resp = await extractSessionToMemora(taskId.value)
+    extractResult.value = `已写入 ${resp.written} 条，跳过噪音 ${resp.skipped_noise}、重复 ${resp.skipped_duplicate}`
+    await loadExtractionStatus()
+    await loadContext()
+  } catch (e: unknown) {
+    extractError.value = e instanceof Error ? e.message : '提炼失败'
+  } finally {
+    extracting.value = false
+  }
+}
+
 function switchTab(tab: 'facts' | 'timeline') {
   activeTab.value = tab
   router.replace({ query: { ...route.query, tab: tab === 'facts' ? undefined : tab } })
@@ -79,6 +113,7 @@ function switchTab(tab: 'facts' | 'timeline') {
 onMounted(() => {
   if (!isNoTopic.value) {
     loadContext()
+    loadExtractionStatus()
     if (activeTab.value === 'timeline') loadTimeline()
   }
 })
@@ -86,8 +121,14 @@ onMounted(() => {
 watch(taskId, () => {
   contextData.value = null
   messagesData.value = null
+  extractionStatus.value = null
+  extractResult.value = ''
+  extractError.value = ''
   activeTab.value = 'facts'
-  if (!isNoTopic.value) loadContext()
+  if (!isNoTopic.value) {
+    loadContext()
+    loadExtractionStatus()
+  }
 })
 </script>
 
@@ -107,12 +148,24 @@ watch(taskId, () => {
           <div v-if="contextData?.latest_model"><span class="meta-lbl">模型</span>{{ contextData.latest_model }}</div>
         </div>
         <div class="detail-actions">
+          <button
+            class="btn btn-primary btn-sm"
+            :disabled="extracting"
+            @click="doExtractToMemora"
+          >{{ extracting ? '提炼中…' : '提炼入 Memora' }}</button>
+          <span
+            v-if="extractionStatus?.extracted"
+            class="badge badge-green"
+            :title="extractionStatus.extracted_at"
+          >已提炼 {{ extractionStatus.written ?? 0 }} 条</span>
           <a
             :href="`/request-logs?gw_task=${encodeURIComponent(taskId)}`"
             target="_blank"
             class="btn btn-ghost btn-sm"
           >原始日志 →</a>
         </div>
+        <p v-if="extractResult" class="extract-ok">{{ extractResult }}</p>
+        <p v-if="extractError" class="extract-err">{{ extractError }}</p>
       </template>
     </div>
 
@@ -218,7 +271,9 @@ watch(taskId, () => {
   margin-bottom: 8px;
 }
 .meta-lbl { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; }
-.detail-actions { display: flex; gap: 6px; }
+.detail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.extract-ok { margin: 6px 0 0; font-size: 11px; color: var(--success); }
+.extract-err { margin: 6px 0 0; font-size: 11px; color: var(--danger); }
 .detail-tabs { align-self: flex-start; }
 .seg-tabs {
   display: inline-flex;
