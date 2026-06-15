@@ -68,12 +68,7 @@ func verifyAdminAuth(r *http.Request, db *pgxpool.Pool, secretKey string) bool {
 
 func adminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if db == nil {
-			writeError(w, http.StatusServiceUnavailable, "database not configured")
-			return
-		}
-
-		// ── Try JWT auth first ───────────────────────────────────────
+		// ── Try JWT auth first (no DB needed) ─────────────────
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 			claims, err := VerifyToken(tokenStr, secretKey)
@@ -90,11 +85,14 @@ func adminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			}
 		}
 
-		// ── Fall back to legacy admin API key auth ───────────────────
-		if !verifyAdminAuth(r, db, secretKey) {
-			writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
+		// No Bearer header → 401 (no auth attempted)
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		// Bearer header present but JWT failed → 401
+		writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
+		return
 		// Inject legacy admin context (super_admin, default tenant)
 		authReq := SetAuthContext(r, &AuthContext{
 			TenantID: "default",
@@ -256,12 +254,7 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 // tenant_admin requests get 403 Forbidden.
 func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if db == nil {
-			writeError(w, http.StatusServiceUnavailable, "database not configured")
-			return
-		}
-
-		// Try JWT first
+		// Try JWT first (no DB needed)
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 			claims, err := VerifyToken(tokenStr, secretKey)
@@ -282,11 +275,14 @@ func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 			}
 		}
 
-		// Fall back to legacy admin API key
-		if !verifyAdminAuth(r, db, secretKey) {
-			writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
+		// No Bearer header → 401
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		// Bearer present but invalid → 401
+		writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
+		return
 		// Legacy admin key passes (treated as super_admin)
 		authReq := SetAuthContext(r, &AuthContext{
 			TenantID: "default",
