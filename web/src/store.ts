@@ -105,3 +105,8 @@ export function isDefaultTenant(): boolean {
 export function getCurrentTenantId(): string {
   return store.userInfo?.tenant_id || 'default'
 }
+
+// Platform ops UI: super_admin on default tenant (整站运维视图)
+export function isPlatformOpsView(): boolean {
+  return isSuperAdmin() && isDefaultTenant()
+}

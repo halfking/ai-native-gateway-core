@@ -1,12 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { store, clearAll, isSuperAdmin as checkSuperAdmin } from './store'
+import { store, clearAll, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
 
 const route  = useRoute()
 const router = useRouter()
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
 const isSuperAdmin = computed(() => checkSuperAdmin())
+const isPlatformOps = computed(() => checkPlatformOps())
+
+type NavItem = {
+  path: string
+  label: string
+  icon: string
+  super?: boolean
+  platformOps?: boolean
+}
+
+function canShowNavItem(item: NavItem): boolean {
+  if (item.super && !isSuperAdmin.value) return false
+  if (item.platformOps && !isPlatformOps.value) return false
+  return true
+}
 
 const versionInfo = ref<{
   version?: string
@@ -40,7 +55,7 @@ watch(isLoggedIn, (loggedIn) => {
   if (loggedIn) loadVersion()
 }, { immediate: true })
 
-const nav = [
+const nav: NavItem[] = [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
   { path: '/maas/models',       label: 'MaaS 模型', icon: '🤖' },
   { path: '/maas/pricing',      label: 'MaaS 套餐', icon: '💳' },
@@ -53,13 +68,13 @@ const nav = [
   { path: '/audit-logs',       label: '审计日志', icon: '📋',    super: true },
   { path: '/session-context',  label: '会话上下文', icon: '💬',  super: true },
   { path: '/catalog',           label: '模型目录',  icon: '📋',    super: true },
-  { path: '/models',            label: '模型与标签', icon: '🏷️' },
-  { path: '/examples',          label: '请求示例',  icon: '📝' },
+  { path: '/models',            label: '模型与标签', icon: '🏷️', platformOps: true },
+  { path: '/examples',          label: '请求示例',  icon: '📝', platformOps: true },
   { path: '/routing-v2',        label: '路由全景',  icon: '🗺️', super: true },
-  { path: '/routing-overview',  label: '路由总览',  icon: '🗺️' },
+  { path: '/routing-overview',  label: '路由总览',  icon: '🗺️', platformOps: true },
   { path: '/free-pool',         label: '免费资源',  icon: '🎁',    super: true },
   { path: '/request-logs',      label: '请求日志',  icon: '📋' },
-  { path: '/pricing',           label: '定价管理',  icon: '💰' },
+  { path: '/pricing',           label: '定价管理',  icon: '💰', platformOps: true },
 ]
 
 function logout() {
@@ -82,7 +97,7 @@ function logout() {
       <nav class="sidebar-nav">
         <template v-for="item in nav" :key="item.path">
           <RouterLink
-            v-if="!item.super || isSuperAdmin"
+            v-if="canShowNavItem(item)"
             :to="item.path"
             class="nav-item"
             :class="{ active: route.path === item.path || (item.path !== '/' && route.path.startsWith(item.path + '/')) }"

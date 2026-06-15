@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { store } from './store'
+import { store, isDefaultTenant } from './store'
 
 import LoginView              from './views/LoginView.vue'
 import DashboardView          from './views/DashboardView.vue'
@@ -42,6 +42,10 @@ function isSuperAdmin(): boolean {
   return store.userInfo?.role === 'super_admin'
 }
 
+function isPlatformOpsView(): boolean {
+  return isSuperAdmin() && isDefaultTenant()
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -73,10 +77,10 @@ export const router = createRouter({
       ],
     },
 
-    // Both super_admin and tenant_admin (read-only for tenant_admin)
+    // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
-    { path: '/models',             component: ModelsView },
-    { path: '/pricing',            component: PricingManagementView },
+    { path: '/models',             component: ModelsView, meta: { requiresPlatformOps: true } },
+    { path: '/pricing',            component: PricingManagementView, meta: { requiresPlatformOps: true } },
 
     // MaaS customer-facing (any authenticated user)
     { path: '/maas/models',        component: MaaSModelsView },
@@ -87,11 +91,11 @@ export const router = createRouter({
     { path: '/keys',               component: KeysView },
     { path: '/keys/:id',           component: KeyDetailView },
     { path: '/routing',            redirect: { path: '/routing-v2', query: { tab: 'resolve' } } },
-    { path: '/routing-overview',   component: RoutingOverviewView },
-    { path: '/routing-decisions',  component: DecisionsView },
-    { path: '/correlations',       component: CorrelationsView, meta: { requiresSuperAdmin: true } },
+    { path: '/routing-overview',   component: RoutingOverviewView, meta: { requiresPlatformOps: true } },
+    { path: '/routing-decisions',  component: DecisionsView, meta: { requiresPlatformOps: true } },
+    { path: '/correlations',       component: CorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
-    { path: '/examples',           component: ExamplesView },
+    { path: '/examples',           component: ExamplesView, meta: { requiresPlatformOps: true } },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
@@ -109,5 +113,9 @@ router.beforeEach((to) => {
   // 3. Super-admin role check
   if (to.meta.requiresSuper && !isSuperAdmin()) {
     return { path: '/forbidden' }
+  }
+  // 4. Platform ops (super_admin on default tenant) for运维向页面
+  if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
+    return { path: '/' }
   }
 })
