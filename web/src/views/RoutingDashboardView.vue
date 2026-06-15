@@ -83,9 +83,9 @@ const chartHeight = computed(() => {
     }
     sankeyMaxNodes = Math.max(...Object.values(layers), 1)
   }
-  const sankeyH = 24 + sankeyMaxNodes * 22 + 24
+  const sankeyH = 30 + sankeyMaxNodes * 40 + 30
 
-  return Math.max(heatmapH, sankeyH, 200)
+  return Math.max(heatmapH, sankeyH, 400)
 })
 
 const cellDecisions = ref<AutoRouteDecision[]>([])
