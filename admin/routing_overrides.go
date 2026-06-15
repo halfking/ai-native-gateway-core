@@ -448,14 +448,16 @@ func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r
 
 // ── helpers ─────────────────────────────────────────────────────
 
-// requestUser pulls the admin username from the request context.
+// requestUser pulls the admin username from the AuthContext
+// (P7.9 bug fix: previously read "admin_user" key that no
+// middleware ever sets; AuthContext is the right source). Falls
+// back to "admin" if AuthContext is missing (e.g. in tests).
 func requestUser(r *http.Request) string {
-	if v := r.Context().Value("admin_user"); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
+	auth := GetAuthContext(r)
+	if auth != nil && auth.Username != "" {
+		return auth.Username
 	}
-	return ""
+	return "admin"
 }
 
 // isUniqueViolation returns true if err is a Postgres unique-constraint
