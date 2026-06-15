@@ -424,7 +424,13 @@ func main() {
 			)
 			decider := autoroute.NewDecider(
 				classifier,
-				nil,
+				// v2.1: LLM fallback classifier. Default uses
+				// DisabledCaller (no LLM call performed). Production
+				// can swap in a real LLM endpoint via env var
+				// LLMGatewayAutoLLMEndpoint; the wrapper is here
+				// so the dependency-graph and metrics are wired
+				// before the first low-confidence heuristic result.
+				autoroute.NewLLMFallbackClassifierWithCaller(buildAutoLLMCaller()),
 				autoIdx,
 				// v2.0.3 audit fix #14: switch from in-memory
 				// (process-local) sticky to DB-backed (cluster-wide).
@@ -480,6 +486,10 @@ func main() {
 		if autoIndexRefresher != nil && adminHandler != nil {
 			adminHandler.SetAutoIndexRefresher(autoIndexRefresher)
 		}
+
+		bg.StartWorkTypeACCSync(context.Background(), dbConn.Pool(), func(ctx context.Context) error {
+			return admin.SyncWorkTypesFromACCForBG(ctx, dbConn.Pool())
+		})
 	}
 
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
@@ -637,4 +647,13 @@ func main() {
 	}
 
 	slog.Info("gateway stopped")
+}
+
+
+// buildAutoLLMCaller returns the LLMCaller to use for the auto-route
+// fallback classifier. Currently returns DisabledCaller (no LLM call).
+// Future: read LLMGatewayAutoLLMEndpoint and return an HTTP-based
+// caller when the env var is set.
+func buildAutoLLMCaller() autoroute.LLMCaller {
+	return autoroute.DisabledCaller{}
 }
