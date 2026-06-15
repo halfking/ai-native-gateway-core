@@ -28,7 +28,7 @@ func TestParseSessionScope_QueryParams(t *testing.T) {
 }
 
 func TestSessionLogsWhere_WithSession(t *testing.T) {
-	clause, args := sessionLogsWhere("default", sessionScope{Hours: 24, SessionID: "abc"})
+	clause, args := sessionLogsWhere("default", sessionScope{Hours: 24, SessionID: "abc"}, nil)
 	if len(args) != 3 {
 		t.Fatalf("expected 3 args, got %d", len(args))
 	}

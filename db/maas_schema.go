@@ -12,6 +12,9 @@ var maasBillingSchemaSQL string
 //go:embed migrations/008_billing_orders.sql
 var maasBillingOrdersSQL string
 
+//go:embed migrations/009_request_logs_tenant_backfill.sql
+var requestLogsTenantBackfillSQL string
+
 func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -20,6 +23,9 @@ func (d *DB) EnsureMaasSchema(ctx context.Context) error {
 		return err
 	}
 	if _, err := d.pool.Exec(ctx, maasBillingOrdersSQL); err != nil {
+		return err
+	}
+	if _, err := d.pool.Exec(ctx, requestLogsTenantBackfillSQL); err != nil {
 		return err
 	}
 	// Ensure default tenant has a wallet row.

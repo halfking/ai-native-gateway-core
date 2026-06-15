@@ -258,10 +258,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))
 	mux.HandleFunc("/api/system/memora-ping", h.admin(h.handleMemoraPing))
 	mux.HandleFunc("/api/system/memora-sink", h.admin(h.handleMemoraSinkControl))
-	mux.HandleFunc("/api/system/memora-sessions", h.superAdmin(h.handleMemoraSessions))
-	mux.HandleFunc("/api/system/memora-context/", h.superAdmin(h.handleMemoraContext))
-	mux.HandleFunc("/api/system/session-messages/", h.superAdmin(h.handleSessionMessages))
-	mux.HandleFunc("/api/system/session-context/", h.superAdmin(h.handleSessionContextRoutes))
+	mux.HandleFunc("/api/system/memora-sessions", h.admin(h.handleMemoraSessions))
+	mux.HandleFunc("/api/system/memora-context/", h.admin(h.handleMemoraContext))
+	mux.HandleFunc("/api/system/session-messages/", h.admin(h.handleSessionMessages))
+	mux.HandleFunc("/api/system/session-context/", h.admin(h.handleSessionContextRoutes))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
@@ -284,7 +284,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys", h.superAdmin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
-	mux.HandleFunc("/api/config/default-limits", h.superAdmin(h.handleDefaultLimits))
+	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
 
 	// Peak concurrency + auto-tune endpoints (Phase 2).
 	if h.db != nil {
@@ -377,11 +377,16 @@ func queryOptionalBool(r *http.Request, key string) *bool {
 // handleDefaultLimits handles GET and PUT /api/config/default-limits
 // It stores the default limits in the database (app_settings table).
 func (h *Handler) handleDefaultLimits(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		h.getDefaultLimits(w, r)
-	} else if r.Method == http.MethodPut {
+	case http.MethodPut:
+		if !IsSuperAdminOrLegacy(r) {
+			writeError(w, http.StatusForbidden, "super_admin role required to modify default limits")
+			return
+		}
 		h.setDefaultLimits(w, r)
-	} else {
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
