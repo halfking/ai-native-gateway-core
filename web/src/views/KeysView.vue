@@ -2,7 +2,7 @@
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
-import { store, clearApiKey } from '../store'
+import { store, clearApiKey, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
 
 const router = useRouter()
@@ -257,7 +257,13 @@ async function load() {
 
 function openNew() {
   newApp.value = 'default'
-  newTenant.value = 'default'
+  // For non-default tenants, default to current tenant and disable selection
+  const tenantId = getCurrentTenantId()
+  if (isDefaultTenant()) {
+    newTenant.value = 'default'
+  } else {
+    newTenant.value = tenantId
+  }
   newKeyAlias.value = ''
   newOwner.value = ''
   newBudget.value = ''
@@ -808,7 +814,15 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-group">
             <label>租户（默认 default）</label>
-            <input v-model="newTenant" placeholder="default" />
+            <input 
+              v-model="newTenant" 
+              placeholder="default"
+              :disabled="!isDefaultTenant()"
+              :title="isDefaultTenant() ? '可修改租户' : '非 default 租户只能签发当前租户的密钥'"
+            />
+            <span v-if="!isDefaultTenant()" class="hint">
+              非 default 租户只能签发当前租户（{{ getCurrentTenantId() }}）的密钥
+            </span>
           </div>
           <div class="form-group">
             <label>应用代码 *</label>
