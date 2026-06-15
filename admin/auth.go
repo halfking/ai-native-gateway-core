@@ -85,22 +85,24 @@ func adminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			}
 		}
 
-		// No Bearer header → 401 (no auth attempted)
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "authentication required")
+		// ── Fall back to legacy admin API key (DB lookup) ──────
+		// Restored after f88a96aa regression: the previous code returned 401
+		// unconditionally when JWT verification failed, leaving this branch
+		// as dead code. Admin API keys (sk-...) registered in the api_keys
+		// table with application code 'admin' must still authenticate.
+		if db != nil && verifyAdminAuth(r, db, secretKey) {
+			authReq := SetAuthContext(r, &AuthContext{
+				TenantID: "default",
+				Username: "admin",
+				Role:     "admin_key",
+				IsJWT:    false,
+			})
+			next(w, authReq)
 			return
 		}
-		// Bearer header present but JWT failed → 401
-		writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
-		return
-		// Inject legacy admin context (super_admin, default tenant)
-		authReq := SetAuthContext(r, &AuthContext{
-			TenantID: "default",
-			Username: "admin",
-			Role:     "admin_key",
-			IsJWT:    false,
-		})
-		next(w, authReq)
+
+		// No valid JWT and no valid API key → 401
+		writeError(w, http.StatusUnauthorized, "authentication required")
 	}
 }
 
@@ -285,22 +287,21 @@ func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 			}
 		}
 
-		// No Bearer header → 401
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			writeError(w, http.StatusUnauthorized, "authentication required")
+		// Fall back to legacy admin API key (DB lookup).
+		// Restored after f88a96aa regression.
+		if db != nil && verifyAdminAuth(r, db, secretKey) {
+			authReq := SetAuthContext(r, &AuthContext{
+				TenantID: "default",
+				Username: "admin",
+				Role:     "admin_key",
+				IsJWT:    false,
+			})
+			next(w, authReq)
 			return
 		}
-		// Bearer present but invalid → 401
-		writeError(w, http.StatusUnauthorized, "Invalid or expired API key")
-		return
-		// Legacy admin key passes (treated as super_admin)
-		authReq := SetAuthContext(r, &AuthContext{
-			TenantID: "default",
-			Username: "admin",
-			Role:     "admin_key",
-			IsJWT:    false,
-		})
-		next(w, authReq)
+
+		// No valid JWT and no valid API key → 401
+		writeError(w, http.StatusUnauthorized, "authentication required")
 	}
 }
 
