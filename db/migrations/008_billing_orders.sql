@@ -57,3 +57,12 @@ CREATE INDEX IF NOT EXISTS idx_billing_orders_tenant
 
 CREATE INDEX IF NOT EXISTS idx_billing_orders_status
     ON billing_orders (status, created_at DESC);
+
+--
+-- Round 33 (2026-06-16) — Pattern A RLS for billing_orders.
+-- Every order belongs to a tenant; orders should only be visible to
+-- that tenant.
+--
+ALTER TABLE public.billing_orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_billing_orders ON public.billing_orders
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
