@@ -9,6 +9,7 @@ import KeyDetailView          from './views/KeyDetailView.vue'
 import KeyApplicationsView    from './views/KeyApplicationsView.vue'
 import CatalogView            from './views/CatalogView.vue'
 import ExamplesView           from './views/ExamplesView.vue'
+import ChatView               from './views/ChatView.vue'
 import RoutingOverviewView    from './views/RoutingOverviewView.vue'
 import RoutingPolicyView      from './views/RoutingPolicyView.vue'
 import DecisionsView          from './views/DecisionsView.vue'
@@ -104,7 +105,8 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuperAdmin: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
-    { path: '/examples',           component: ExamplesView, meta: { requiresPlatformOps: true } },
+    { path: '/examples',           component: ExamplesView },
+    { path: '/chat',               component: ChatView },
 
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

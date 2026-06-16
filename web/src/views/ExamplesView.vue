@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { resolveRouting, getAvailableModels, type AvailableModelsResponse } from '../api'
-import { store } from '../store'
+import { ref, computed } from 'vue'
+import { resolveRouting } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import { useGatewayApiKey } from '../composables/useGatewayApiKey'
+
+const { apiKey: gatewayApiKey } = useGatewayApiKey()
 
 const selectedModel = ref('glm-4-flash')
-const realApiKey = computed(() => store.apiKey || '')
+const realApiKey = computed(() => gatewayApiKey.value || '')
 const maskedApiKey = computed(() => {
   const k = realApiKey.value
   if (!k) return '<YOUR_API_KEY>'
@@ -224,17 +226,105 @@ const exampleTitle: Record<ExampleId, string> = {
   js: 'JavaScript Chat 测试',
   models: '列出模型测试',
 }
+
+type ClientGuideId = 'cherry' | 'cursor' | 'claude' | 'roocode'
+const openGuide = ref<ClientGuideId | null>('cherry')
+
+interface ClientGuide {
+  id: ClientGuideId
+  name: string
+  icon: string
+  steps: string[]
+  mcpNote?: string
+}
+
+const clientGuides = computed((): ClientGuide[] => [
+  {
+    id: 'cherry',
+    name: 'Cherry Studio',
+    icon: '🍒',
+    steps: [
+      '打开 Cherry Studio → 设置 → 模型服务 → 添加 OpenAI 兼容提供商',
+      `API 地址（Base URL）：${baseUrl.value}`,
+      'API Key：在左侧「API 密钥」创建或复制你的 sk-* 密钥',
+      '模型：填写网关支持的模型 ID（如 glm-4-flash），或使用 auto 开启自动路由',
+      '保存后可在对话窗口选择该提供商下的模型',
+    ],
+    mcpNote: 'MCP：设置 → MCP 服务器 → 导入配置。Memora 端点 https://mcp.kxpms.cn/memora/mcp，Header 填 Authorization: Bearer <MEMORA_API_KEY>（与 LLM 密钥不同，需在 ACC 申请 memora scope）。',
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor IDE',
+    icon: '⌨️',
+    steps: [
+      'Cursor Settings（Cmd/Ctrl+Shift+J）→ Models',
+      'OpenAI API Key → 填入你的 sk-* 网关密钥',
+      `开启 Override OpenAI Base URL → ${baseUrl.value}`,
+      '点击 Verify 验证连通性',
+      'Add Custom Model：添加 glm-5.1、minimax-m3、deepseek-v4-pro 等（完整列表见下方「列出模型」示例）',
+      '可选：请求头 X-Client-Profile: cursor、X-Request-Mode: agent 用于 Agent 模式优化',
+    ],
+    mcpNote: 'MCP：Cursor Settings → MCP，可导入 mcp.kxpms.cn 的 acc/memora/trendradar 服务（需对应 scope 的 API Key）。',
+  },
+  {
+    id: 'claude',
+    name: 'Claude Desktop',
+    icon: '🤖',
+    steps: [
+      'Claude Desktop 本身走 Anthropic 账号；若需接入开轩 MCP 工具：',
+      '编辑 claude_desktop_config.json（macOS: ~/Library/Application Support/Claude/）',
+      '添加 HTTP MCP：url https://mcp.kxpms.cn/memora/mcp，headers.Authorization = Bearer <MEMORA_API_KEY>',
+      'Quit & Reopen Claude Desktop 生效（需 ≥ 1.0 版本）',
+      `LLM 对话走网关：使用支持 OpenAI 协议的客户端，Base URL ${baseUrl.value}`,
+    ],
+  },
+  {
+    id: 'roocode',
+    name: 'Roo Code / VS Code',
+    icon: '🧩',
+    steps: [
+      '扩展设置中选择 OpenAI Compatible 提供商',
+      `Base URL：${baseUrl.value}`,
+      'API Key：你的 sk-* 网关密钥',
+      '模型：与 Cherry Studio 相同，支持 auto 或具体模型 ID',
+      '可选 Header：X-Client-Profile: roocode',
+    ],
+    mcpNote: 'VS Code / Roo Code MCP：在 mcp.json 中配置 streamable-http 类型端点，参考仓库 docs/clients/roocode-mcp.json。',
+  },
+])
+
+function toggleGuide(id: ClientGuideId) {
+  openGuide.value = openGuide.value === id ? null : id
+}
 </script>
 
 <template>
   <div>
     <div class="page-header">
-      <h2>请求示例</h2>
+      <h2>接入指南</h2>
     </div>
 
     <p style="color:var(--muted);margin-bottom:12px">
-      网关兼容 OpenAI API 协议。将 <code>base_url</code> 指向此网关即可使用任意支持的模型。
+      网关兼容 OpenAI API 协议。将 <code>base_url</code> 指向此网关即可使用任意支持的模型；也可在侧栏「对话」直接网页聊天。
     </p>
+
+    <h3 class="section-heading">常用客户端配置</h3>
+    <div class="guide-list">
+      <div v-for="g in clientGuides" :key="g.id" class="card guide-card">
+        <button type="button" class="guide-header" @click="toggleGuide(g.id)">
+          <span class="guide-title"><span class="guide-icon">{{ g.icon }}</span> {{ g.name }}</span>
+          <span class="guide-chevron">{{ openGuide === g.id ? '▼' : '▶' }}</span>
+        </button>
+        <div v-show="openGuide === g.id" class="guide-body">
+          <ol class="guide-steps">
+            <li v-for="(step, i) in g.steps" :key="i">{{ step }}</li>
+          </ol>
+          <p v-if="g.mcpNote" class="guide-mcp">{{ g.mcpNote }}</p>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="section-heading" style="margin-top:28px">API 请求示例</h3>
     <p v-if="realApiKey" class="key-hint">
       示例代码中的 API Key 已脱敏显示；点击「测试」将使用当前登录密钥。复制示例后请自行替换为真实 Key。
       <button type="button" class="btn btn-ghost btn-sm" @click="copyCode('realkey', realApiKey)">
@@ -460,5 +550,80 @@ const exampleTitle: Record<ExampleId, string> = {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 16px;
+}
+
+.section-heading {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.guide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.guide-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.guide-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+}
+
+.guide-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.guide-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-icon {
+  font-size: 18px;
+}
+
+.guide-chevron {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.guide-body {
+  padding: 0 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.guide-steps {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.guide-mcp {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
 }
 </style>
