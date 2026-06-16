@@ -56,7 +56,7 @@ export const router = createRouter({
   routes: [
     { path: '/login',              component: LoginView, meta: { public: true } },
     { path: '/forbidden',          component: ForbiddenView, meta: { public: true } },
-    { path: '/',                   component: HomeView },
+    { path: '/',                   component: HomeView, meta: { public: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
     { path: '/providers',          component: ProvidersView,       meta: { requiresSuper: true } },
@@ -111,9 +111,9 @@ export const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  // 1. Auth check — unauthenticated users see dual-column login page
+  // 1. Auth check — unauthenticated users land on home, not full-page login
   if (!to.meta.public && !isAuthed()) {
-    return { path: '/login', query: { redirect: to.fullPath } }
+    return { path: '/', query: { login: '1', redirect: to.fullPath } }
   }
   // 2. Bounce authed users away from /login
   if (to.path === '/login' && isAuthed()) {

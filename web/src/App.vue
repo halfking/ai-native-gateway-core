@@ -2,8 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { store, clearAll, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
+import LoginModal from './components/LoginModal.vue'
+import { useLoginModal } from './composables/useLoginModal'
+
 const route  = useRoute()
 const router = useRouter()
+const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
@@ -41,7 +45,8 @@ async function loadVersion() {
     })
     if (resp.status === 401) {
       clearAll()
-      router.push('/login')
+      router.push('/')
+      openLogin()
       return
     }
     if (resp.ok) {
@@ -53,8 +58,19 @@ async function loadVersion() {
 }
 
 watch(isLoggedIn, (loggedIn) => {
-  if (loggedIn) loadVersion()
+  if (loggedIn) {
+    closeLogin()
+    loadVersion()
+  }
 }, { immediate: true })
+
+watch(
+  () => route.query.login,
+  (login) => {
+    if (login && !isLoggedIn.value) openLogin()
+  },
+  { immediate: true },
+)
 
 const nav = computed((): NavItem[] => [
   { path: '/',                  label: '仪表盘',  icon: '📊' },
@@ -81,7 +97,7 @@ const nav = computed((): NavItem[] => [
 
 function logout() {
   clearAll()
-  router.push('/login')
+  router.push('/')
 }
 </script>
 
@@ -126,7 +142,25 @@ function logout() {
       <RouterView />
     </main>
   </div>
-  <RouterView v-else />
+  <div v-else class="guest-layout">
+    <header class="guest-header">
+      <div class="guest-brand">
+        <svg width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <circle cx="16" cy="16" r="14" fill="#6366f1"/>
+          <text x="16" y="21" text-anchor="middle" font-size="16" fill="white"
+            font-family="Arial,sans-serif" font-weight="bold">G</text>
+        </svg>
+        <span>LLM Gateway</span>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">
+        登录
+      </button>
+    </header>
+    <main class="guest-main">
+      <RouterView />
+    </main>
+    <LoginModal v-model="showLoginModal" />
+  </div>
 </template>
 
 <style scoped>
@@ -240,4 +274,47 @@ function logout() {
   padding: 24px;
 }
 
+.guest-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.guest-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.guest-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.guest-login-btn {
+  flex-shrink: 0;
+}
+
+.guest-main {
+  flex: 1;
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .guest-header {
+    padding: 12px 16px;
+  }
+}
 </style>
