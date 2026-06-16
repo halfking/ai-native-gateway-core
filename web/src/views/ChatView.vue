@@ -61,7 +61,6 @@ async function send() {
     model: selectedModel.value,
     messages: payloadMessages,
     max_tokens: 2048,
-    stream: true,
   }
 
   try {
@@ -71,55 +70,27 @@ async function send() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: false }),
     })
 
+    const raw = await resp.text()
     if (!resp.ok) {
-      const errText = await resp.text()
       let msg = `HTTP ${resp.status}`
       try {
-        const j = JSON.parse(errText)
-        msg = j?.error?.message || j?.error || errText || msg
+        const j = JSON.parse(raw)
+        msg = j?.error?.message || j?.error || raw || msg
       } catch {
-        msg = errText || msg
+        msg = raw || msg
       }
       throw new Error(msg)
     }
 
-    const reader = resp.body?.getReader()
-    if (!reader) {
-      throw new Error('浏览器不支持流式响应')
-    }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const data = line.slice(6).trim()
-        if (data === '[DONE]') continue
-        try {
-          const chunk = JSON.parse(data)
-          const delta = chunk?.choices?.[0]?.delta?.content
-          if (delta) {
-            messages.value[assistantIdx].content += delta
-            await scrollToBottom()
-          }
-        } catch {
-          /* skip malformed chunk */
-        }
-      }
-    }
-
-    if (!messages.value[assistantIdx].content) {
-      messages.value[assistantIdx].content = '（空响应）'
+    try {
+      const data = JSON.parse(raw)
+      const content = data?.choices?.[0]?.message?.content
+      messages.value[assistantIdx].content = content || raw.slice(0, 2000) || '（空响应）'
+    } catch {
+      messages.value[assistantIdx].content = raw.slice(0, 2000) || '（空响应）'
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : '发送失败'
@@ -191,7 +162,7 @@ function onKeydown(e: KeyboardEvent) {
           :class="msg.role"
         >
           <div class="bubble-role">{{ msg.role === 'user' ? '你' : '助手' }}</div>
-          <div class="bubble-content">{{ msg.content }}<span v-if="sending && i === messages.length - 1 && msg.role === 'assistant'" class="cursor-blink">▍</span></div>
+          <div class="bubble-content">{{ msg.content }}</div>
         </div>
       </div>
 
