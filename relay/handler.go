@@ -37,6 +37,19 @@ const maxBodySize = 32 << 20
 
 func MaxBodySize() int { return maxBodySize }
 
+func sanitizeGwSessionHeader(v string) string {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return ""
+	}
+	// V2 gateway sessions are always gw_<uuid>. Treat plain UUID-style
+	// values as client metadata/session identifiers, not gateway session IDs.
+	if !strings.HasPrefix(s, "gw_") {
+		return ""
+	}
+	return s
+}
+
 // ServiceID maps an API key to a (providerID, credentialID) pair.
 type ServiceID struct {
 	ProviderID   int
@@ -330,7 +343,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
 	var sessionInfo *sessions.Session
-	sessionID := r.Header.Get("X-Gw-Session-Id")
+	sessionID := sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
