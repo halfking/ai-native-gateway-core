@@ -141,8 +141,12 @@ type RequestLogEntry struct {
 }
 
 func NewClient() *Client {
+	return newClientWithBufSize(4096)
+}
+
+func newClientWithBufSize(bufSize int) *Client {
 	c := &Client{
-		queue: make(chan any, 4096),
+		queue: make(chan any, bufSize),
 		done:  make(chan struct{}),
 	}
 	c.wg.Add(1)

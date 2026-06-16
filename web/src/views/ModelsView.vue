@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   listModels, listTags, patchModelTags, resetModelTags,
   listModelFamilies, createModel, getModel, updateModel,
@@ -8,11 +9,49 @@ import {
   type ModelCanonical, type ModelDetail, type ModelFamily, type TagNamespaceGroup,
   type DiscoverModelsResult, type ModelDiscoveryRun, type Provider,
 } from '../api'
-import TagEditor from '../components/TagEditor.vue'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+import CatalogPanel from '../components/CatalogPanel.vue'
 import { useFilterChips } from '../composables/useFilterChips'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
-import { isReadOnlyMode } from '../store'
+import { isReadOnlyMode, isPlatformOpsView } from '../store'
+
+type PageTab = 'canonical' | 'catalog'
+
+const route = useRoute()
+const router = useRouter()
+const isPlatformOps = computed(() => isPlatformOpsView())
+const activeTab = ref<PageTab>(isPlatformOps.value ? 'canonical' : 'catalog')
+
+function tabFromQuery(q: unknown): PageTab | null {
+  if (q === 'canonical' || q === 'models') return 'canonical'
+  if (q === 'catalog') return 'catalog'
+  return null
+}
+
+function setTab(tab: PageTab) {
+  if (tab === 'canonical' && !isPlatformOps.value) return
+  activeTab.value = tab
+  const nextQuery = { ...route.query }
+  if (tab === 'canonical') delete nextQuery.tab
+  else nextQuery.tab = tab
+  router.replace({ path: '/models', query: nextQuery })
+}
+
+function syncTabFromRoute() {
+  const fromQuery = tabFromQuery(route.query.tab)
+  if (fromQuery === 'canonical' && !isPlatformOps.value) {
+    router.replace({ path: '/models', query: { tab: 'catalog' } })
+    activeTab.value = 'catalog'
+    return
+  }
+  if (fromQuery) {
+    activeTab.value = fromQuery
+    return
+  }
+  activeTab.value = isPlatformOps.value ? 'canonical' : 'catalog'
+}
+
+watch(() => route.query.tab, syncTabFromRoute)
 
 const readOnly = computed(() => isReadOnlyMode())
 
@@ -509,16 +548,16 @@ function healthLabel(status?: string): string {
 }
 
 onMounted(async () => {
+  syncTabFromRoute()
   await reloadAll()
-  await loadDiscoveryStatus()
 })
 </script>
 
 <template>
   <div>
     <div class="page-header">
-      <h2>模型管理</h2>
-      <div style="display:flex;gap:8px;align-items:center">
+      <h2>模型与目录</h2>
+      <div v-if="activeTab === 'canonical'" style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
         <button v-if="!readOnly" class="btn btn-primary btn-sm" @click="showCreateModal = true">
           新增模型
@@ -529,6 +568,29 @@ onMounted(async () => {
       </div>
     </div>
 
+    <div class="tab-bar" style="margin-bottom:16px">
+      <button
+        v-if="isPlatformOps"
+        type="button"
+        class="tab-btn"
+        :class="{ active: activeTab === 'canonical' }"
+        @click="setTab('canonical')"
+      >
+        规范模型 <span class="tab-count">{{ filtered.length }}</span>
+      </button>
+      <button
+        type="button"
+        class="tab-btn"
+        :class="{ active: activeTab === 'catalog' }"
+        @click="setTab('catalog')"
+      >
+        提供商目录
+      </button>
+    </div>
+
+    <CatalogPanel v-if="activeTab === 'catalog'" />
+
+    <template v-else>
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
       📖 您是租户管理员，当前为只读模式。模型目录仅供查看，不能创建、编辑或删除模型。
     </div>
@@ -926,10 +988,34 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.tab-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+.tab-btn {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.02);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.tab-btn:hover:not(.active) { color: var(--text); }
+.tab-btn.active {
+  border-color: var(--primary, #6366f1);
+  color: var(--text);
+  font-weight: 600;
+  outline: 2px solid color-mix(in srgb, var(--primary, #6366f1) 24%, transparent);
+}
+.tab-count {
+  font-size: 11px;
+  opacity: .75;
+  margin-left: 2px;
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;

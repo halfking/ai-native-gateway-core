@@ -128,6 +128,9 @@ func mustParse(raw string) *url.URL {
 // ---------------------------------------------------------------------------
 
 func TestMultiTurnChatNonStreaming(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	fakeUpstream, tt := newFakeUpstream(t)
 	defer fakeUpstream.Close()
 
@@ -192,6 +195,9 @@ func TestMultiTurnChatNonStreaming(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMultiTurnChatStreaming(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	fakeUpstream, tt := newFakeUpstream(t)
 	defer fakeUpstream.Close()
 

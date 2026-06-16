@@ -358,7 +358,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		Capture:        streamCapture,
 		ToolsRequested: false,
 		StreamWrapper: anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed()),
+		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel),
 		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
 		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
 	})
@@ -860,9 +860,16 @@ func apiKeyIDPtr(ki *auth.KeyInfo) *int {
 	return nil
 }
 
-func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID, endUser, fpSeed string) string {
+func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID, endUser, fpSeed, clientModel string) string {
 	if sessionID != "" {
-		return routing.BuildSessionStickyKey(tenantID, appID, apiKeyID, clientProfile, sessionID)
+		// Include client model so mid-session model switches get a fresh sticky
+		// bucket instead of reusing the credential pinned by the first model.
+		model := strings.TrimSpace(strings.ToLower(clientModel))
+		if model == "" {
+			model = "default"
+		}
+		scopedSession := sessionID + ":" + model
+		return routing.BuildSessionStickyKey(tenantID, appID, apiKeyID, clientProfile, scopedSession)
 	}
 	return routing.BuildStickyKey(tenantID, appID, apiKeyID, endUser, fpSeed)
 }

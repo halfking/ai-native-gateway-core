@@ -89,6 +89,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	tuning := NewTuningHandlers(h)
 	tuning.SetAnalyzer(h.feedbackAnalyzer)
 	tuning.RegisterTuningRoutes(mux, adminWrap)
+	// v2.1 — P8.2 quality correlations endpoint
+	mux.HandleFunc("/api/admin/auto-route/quality-correlations",
+		adminWrap(h.handleQualityCorrelations))
 }
 
 // handleDecisions returns the most recent N auto-route decisions from

@@ -5,6 +5,12 @@ export interface ChatCompletionMessage {
   content: string
 }
 
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
 export interface ChatCompletionOptions {
   apiKey: string
   model: string
@@ -20,6 +26,9 @@ export interface ChatCompletionOptions {
 export interface ChatCompletionResult {
   content: string
   gwSessionId: string | null
+  usage: TokenUsage | null
+  /** Canonical model actually used (from X-Gw-Auto-Decision or explicit selection) */
+  resolvedModel: string | null
 }
 
 export class SessionForbiddenError extends Error {
@@ -35,6 +44,26 @@ export function isSessionForbiddenError(e: unknown): boolean {
   if (e instanceof SessionForbiddenError) return true
   const msg = e instanceof Error ? e.message : String(e)
   return msg.includes('session not owned') || msg.includes('SESSION_FORBIDDEN')
+}
+
+export function emptyTokenUsage(): TokenUsage {
+  return { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+}
+
+export function addTokenUsage(a: TokenUsage, b: TokenUsage | null | undefined): TokenUsage {
+  if (!b) return { ...a }
+  return {
+    promptTokens: a.promptTokens + b.promptTokens,
+    completionTokens: a.completionTokens + b.completionTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+  }
+}
+
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}k`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
 }
 
 function parseForbiddenFromResponse(status: number, raw: string): SessionForbiddenError | null {
@@ -96,17 +125,68 @@ function buildHeaders(apiKey: string, taskId: string, gwSessionId: string | null
   return headers
 }
 
-function parseSseDelta(line: string): string {
-  const trimmed = line.trim()
-  if (!trimmed.startsWith('data:')) return ''
-  const payload = trimmed.slice(5).trim()
-  if (!payload || payload === '[DONE]') return ''
-  try {
-    const obj = JSON.parse(payload)
-    return obj?.choices?.[0]?.delta?.content ?? ''
-  } catch {
-    return ''
+function numField(obj: Record<string, unknown>, ...keys: string[]): number {
+  for (const k of keys) {
+    const v = obj[k]
+    if (typeof v === 'number' && Number.isFinite(v)) return v
   }
+  return 0
+}
+
+export function parseUsageFromObject(obj: unknown): TokenUsage | null {
+  if (!obj || typeof obj !== 'object') return null
+  const usage = (obj as Record<string, unknown>).usage ?? obj
+  if (!usage || typeof usage !== 'object') return null
+  const u = usage as Record<string, unknown>
+  const promptTokens = numField(u, 'prompt_tokens', 'input_tokens')
+  const completionTokens = numField(u, 'completion_tokens', 'output_tokens')
+  let totalTokens = numField(u, 'total_tokens')
+  if (totalTokens === 0 && (promptTokens > 0 || completionTokens > 0)) {
+    totalTokens = promptTokens + completionTokens
+  }
+  if (promptTokens === 0 && completionTokens === 0 && totalTokens === 0) return null
+  return { promptTokens, completionTokens, totalTokens }
+}
+
+/** Parse X-Gw-Auto-Decision for chosen canonical model (auto routing). */
+export function parseAutoDecisionModel(header: string | null): string | null {
+  if (!header) return null
+  try {
+    const j = JSON.parse(header) as { chosen_model?: string }
+    const m = j.chosen_model?.trim()
+    return m || null
+  } catch {
+    return null
+  }
+}
+
+function parseSsePayload(line: string): { delta: string; usage: TokenUsage | null; model: string | null } {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data:')) return { delta: '', usage: null, model: null }
+  const payload = trimmed.slice(5).trim()
+  if (!payload || payload === '[DONE]') return { delta: '', usage: null, model: null }
+  try {
+    const obj = JSON.parse(payload) as Record<string, unknown>
+    const delta =
+      (obj?.choices as Array<{ delta?: { content?: string } }> | undefined)?.[0]?.delta?.content ?? ''
+    const usage = parseUsageFromObject(obj)
+    const model = typeof obj.model === 'string' ? obj.model : null
+    return { delta: delta || '', usage, model }
+  } catch {
+    return { delta: '', usage: null, model: null }
+  }
+}
+
+function resolveModelName(
+  requestedModel: string,
+  autoHeader: string | null,
+  streamModel: string | null,
+): string | null {
+  const fromAuto = parseAutoDecisionModel(autoHeader)
+  if (fromAuto) return fromAuto
+  if (requestedModel && requestedModel !== 'auto') return requestedModel
+  if (streamModel && streamModel !== 'auto') return streamModel
+  return null
 }
 
 /**
@@ -138,6 +218,8 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     gwSessionId = resumeHdr
   }
 
+  const autoDecisionHdr = resp.headers.get('X-Gw-Auto-Decision')
+
   if (!resp.ok) {
     const raw = await resp.text()
     const forbidden = parseForbiddenFromResponse(resp.status, raw)
@@ -164,9 +246,21 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     try {
       const data = JSON.parse(raw)
       const content = data?.choices?.[0]?.message?.content ?? ''
-      return { content: content || raw.slice(0, 2000) || '（空响应）', gwSessionId }
+      const usage = parseUsageFromObject(data)
+      const resolvedModel = resolveModelName(opts.model, autoDecisionHdr, data?.model ?? null)
+      return {
+        content: content || raw.slice(0, 2000) || '（空响应）',
+        gwSessionId,
+        usage,
+        resolvedModel,
+      }
     } catch {
-      return { content: raw.slice(0, 2000) || '（空响应）', gwSessionId }
+      return {
+        content: raw.slice(0, 2000) || '（空响应）',
+        gwSessionId,
+        usage: null,
+        resolvedModel: resolveModelName(opts.model, autoDecisionHdr, null),
+      }
     }
   }
 
@@ -174,6 +268,8 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
   const decoder = new TextDecoder()
   let buffer = ''
   let content = ''
+  let latestUsage: TokenUsage | null = null
+  let streamModel: string | null = null
 
   while (true) {
     const { done, value } = await reader.read()
@@ -182,7 +278,9 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     const lines = buffer.split('\n')
     buffer = lines.pop() ?? ''
     for (const line of lines) {
-      const delta = parseSseDelta(line)
+      const { delta, usage, model } = parseSsePayload(line)
+      if (model) streamModel = model
+      if (usage) latestUsage = usage
       if (delta) {
         content += delta
         opts.onDelta?.(delta)
@@ -191,12 +289,21 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
   }
 
   if (buffer.trim()) {
-    const delta = parseSseDelta(buffer)
+    const { delta, usage, model } = parseSsePayload(buffer)
+    if (model) streamModel = model
+    if (usage) latestUsage = usage
     if (delta) {
       content += delta
       opts.onDelta?.(delta)
     }
   }
 
-  return { content: content || '（空响应）', gwSessionId }
+  const resolvedModel = resolveModelName(opts.model, autoDecisionHdr, streamModel)
+
+  return {
+    content: content || '（空响应）',
+    gwSessionId,
+    usage: latestUsage,
+    resolvedModel,
+  }
 }

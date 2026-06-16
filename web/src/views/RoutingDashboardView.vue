@@ -593,13 +593,18 @@ onUnmounted(() => stopPoll())
           <button class="seg-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">实时决策</button>
           <button class="seg-tab" :class="{ active: activeTab === 'resolve' }" @click="activeTab = 'resolve'">凭据路由</button>
         </div>
-        <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">
-          工作类型
-          <template v-if="wtSyncMeta">
-            <span class="chip-inline">{{ wtSyncMeta.enabled_count }} 启用</span>
-            <span class="chip-inline">{{ wtSyncMeta.route_count }} 映射</span>
-          </template>
-        </router-link>
+        <div class="nav-chips">
+          <router-link to="/routing-v2/work-types" class="nav-link-wt chip-link">
+            工作类型
+            <template v-if="wtSyncMeta">
+              <span class="chip-inline">{{ wtSyncMeta.enabled_count }} 启用</span>
+              <span class="chip-inline">{{ wtSyncMeta.route_count }} 映射</span>
+            </template>
+          </router-link>
+          <router-link to="/routing-overview" class="nav-link-wt chip-link">
+            模型路由全景
+          </router-link>
+        </div>
         <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
 
@@ -1198,6 +1203,7 @@ onUnmounted(() => stopPoll())
 }
 .top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; }
 .refresh-btn { margin-left: auto; }
+.nav-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .nav-link-wt {
   font-size: 11px;
   color: var(--accent-h);

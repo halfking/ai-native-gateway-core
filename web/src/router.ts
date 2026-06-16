@@ -7,7 +7,6 @@ import ProvidersView          from './views/ProvidersView.vue'
 import KeysView               from './views/KeysView.vue'
 import KeyDetailView          from './views/KeyDetailView.vue'
 import KeyApplicationsView    from './views/KeyApplicationsView.vue'
-import CatalogView            from './views/CatalogView.vue'
 import ExamplesView           from './views/ExamplesView.vue'
 import ChatView               from './views/ChatView.vue'
 import RoutingOverviewView    from './views/RoutingOverviewView.vue'
@@ -63,7 +62,7 @@ export const router = createRouter({
     { path: '/providers',          component: ProvidersView,       meta: { requiresSuper: true } },
     { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresSuper: true } },
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
-    { path: '/catalog',            component: CatalogView,         meta: { requiresSuper: true } },
+    { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
@@ -84,7 +83,7 @@ export const router = createRouter({
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
-    { path: '/models',             component: ModelsView, meta: { requiresPlatformOps: true } },
+    { path: '/models',             component: ModelsView, meta: { requiresSuper: true } },
     { path: '/pricing',            component: PricingManagementView, meta: { requiresPlatformOps: true } },
 
     // MaaS customer-facing (any authenticated user)

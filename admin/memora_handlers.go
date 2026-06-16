@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -212,6 +213,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 			&s.APIKeyPrefix, &s.APIKeyOwnerUser, &s.ApplicationCode,
 			&s.NoTopic, &s.NoTopicLabel, &s.HourStart,
 		); err != nil {
+			slog.Warn("memora: skip corrupt session row", "error", err)
 			continue
 		}
 
@@ -608,6 +610,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			&m.CostUSD, &m.RequestStatus, &m.ErrorKind,
 			&m.WorkType, &m.RequestMode, &m.GwSessionID,
 		); err != nil {
+			slog.Warn("memora: skip corrupt message row", "error", err)
 			continue
 		}
 

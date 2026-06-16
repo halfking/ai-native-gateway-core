@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { getCatalog, type CatalogEntry } from '../api'
-import ActiveFilterChips from '../components/ActiveFilterChips.vue'
+import ActiveFilterChips from './ActiveFilterChips.vue'
 import { useFilterChips } from '../composables/useFilterChips'
 
 const entries  = ref<CatalogEntry[]>([])
@@ -128,8 +128,7 @@ onMounted(load)
 
 <template>
   <div>
-    <div class="page-header">
-      <h2>模型目录</h2>
+    <div class="panel-toolbar">
       <span class="badge badge-gray">{{ filtered.length }} 个提供商</span>
     </div>
 
@@ -184,6 +183,12 @@ onMounted(load)
 </template>
 
 <style scoped>
+.panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
 .filter-bar {
   display: flex;
   align-items: center;

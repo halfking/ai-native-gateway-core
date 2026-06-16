@@ -1,21 +1,74 @@
 package sessions
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/auth"
 )
 
 type Handler struct {
-	manager *Manager
+	manager     *Manager
+	keyVerifier *auth.KeyVerifier
 }
 
 func NewHandler(manager *Manager) *Handler {
 	return &Handler{manager: manager}
 }
 
+func (h *Handler) SetAuth(kv *auth.KeyVerifier) {
+	h.keyVerifier = kv
+}
+
+func extractBearerToken(r *http.Request) string {
+	if authHdr := r.Header.Get("Authorization"); authHdr != "" {
+		if strings.HasPrefix(authHdr, "Bearer ") {
+			return strings.TrimPrefix(authHdr, "Bearer ")
+		}
+		if strings.HasPrefix(authHdr, "bearer ") {
+			return strings.TrimPrefix(authHdr, "bearer ")
+		}
+	}
+	if key := r.Header.Get("x-api-key"); key != "" {
+		return key
+	}
+	return ""
+}
+
+// authenticate verifies sk-* API keys and injects api_key_id + tenant_id into context.
+func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (context.Context, bool) {
+	if h.keyVerifier == nil || !h.keyVerifier.Enabled() {
+		return r.Context(), true
+	}
+	rawKey := extractBearerToken(r)
+	if rawKey == "" {
+		writeErrorJSON(w, http.StatusUnauthorized, "", "Missing API key", "authentication_error", "MISSING_KEY")
+		return nil, false
+	}
+	ki, err := h.keyVerifier.Verify(r.Context(), rawKey)
+	if err != nil {
+		if _, ok := err.(*auth.InvalidKeyError); ok {
+			writeErrorJSON(w, http.StatusUnauthorized, "", "Invalid or expired API key", "authentication_error", "INVALID_KEY")
+		} else {
+			writeErrorJSON(w, http.StatusServiceUnavailable, "", "Authentication service temporarily unavailable", "server_error", "AUTH_UNAVAILABLE")
+		}
+		return nil, false
+	}
+	ctx := SetAPIKeyID(r.Context(), ki.ID)
+	ctx = SetTenantID(ctx, ki.TenantID)
+	return ctx, true
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	r = r.WithContext(ctx)
+
 	path := r.URL.Path
 
 	if path == "/v1/sessions" && r.Method == http.MethodPost {
@@ -74,7 +127,12 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	var body createSessionRequest
 	json.NewDecoder(r.Body).Decode(&body)
 
-	session, err := h.manager.Create(r.Context(), apiKeyID, tenantID, deviceSeed)
+	taskID := body.TaskID
+	if taskID == "" {
+		taskID = r.Header.Get("X-Gw-Task-Id")
+	}
+
+	session, err := h.manager.CreateV2(r.Context(), apiKeyID, tenantID, deviceSeed, taskID)
 	if err != nil {
 		writeErrorJSON(w, http.StatusInternalServerError, "", "failed to create session", "session_error", "SESSION_CREATE_FAILED")
 		return

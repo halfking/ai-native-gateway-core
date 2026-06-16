@@ -1,3 +1,31 @@
+// Package maas implements MaaS (Model-as-a-Service) billing and
+// subscription management.
+//
+// IMPORTANT — System-global design (round 24 audit, 2026-06-16)
+//
+// Four tables in this package are SYSTEM-GLOBAL (no tenant_id column
+// because they are platform-wide catalogs/config):
+//   - maas_settings:            singleton (id=1 CHECK) pricing strategy
+//   - subscription_plans:       plan catalog shared by all tenants
+//   - topup_packages:           top-up SKU catalog
+//   - model_credit_rates:       per-model credit cost rates
+//
+// The remaining four tables ARE tenant-scoped (have tenant_id column
+// with FK to tenants table and WHERE tenant_id = $1 in queries):
+//   - tenant_credit_wallets:    per-tenant balance (tenant_id FK)
+//   - tenant_subscriptions:     per-tenant plan subscription (tenant_id FK)
+//   - credit_ledger:            per-tenant transaction log (tenant_id FK)
+//   - billing_orders:           per-tenant billing orders (tenant_id FK)
+//
+// This split is intentional: catalog tables are global (single source
+// of truth), while wallet/subscription/order tables carry tenant_id
+// and are filtered by EffectiveTenantID. The auth layer enforces
+// superAdmin on catalog endpoints; user endpoints check tenant_id.
+//
+// DO NOT add tenant_id filter to catalog queries. Tenant-scoped
+// queries already have WHERE tenant_id = $1.
+//
+// See docs/llm-gateway-go/multi-tenant-2026-06-15.md for audit history.
 package maas
 
 import (
