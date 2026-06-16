@@ -1,16 +1,25 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { getAvailableModels, type PopularModel } from '../api'
-import { chatCompletion } from '../composables/useChatCompletions'
+import { chatCompletion, isSessionForbiddenError } from '../composables/useChatCompletions'
 import { useChatSessions } from '../composables/useChatSessions'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
+import ApiKeySelectModal from '../components/ApiKeySelectModal.vue'
 import GatewayApiKeyPicker from '../components/GatewayApiKeyPicker.vue'
+
+interface SendOptions {
+  text?: string
+  skipAppendUser?: boolean
+  isAutoRetry?: boolean
+}
 
 const {
   apiKey,
   loading: keyLoading,
   error: keyError,
   showPicker,
+  showKeyModal,
+  keyModalReason,
   candidateKeys,
   picking,
   selectedKeyId,
@@ -18,6 +27,8 @@ const {
   resolve: resolveApiKey,
   selectKey,
   openPicker,
+  openKeyModal,
+  closeKeyModal,
   formatApiKeyLabel,
 } = useGatewayApiKey()
 const {
@@ -37,6 +48,8 @@ const input = ref('')
 const sending = ref(false)
 const sendError = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
+const pendingRetryText = ref<string | null>(null)
+const autoRetriedForMessage = ref(false)
 
 const selectedModel = computed({
   get: () => activeSession.value?.model ?? 'auto',
@@ -48,7 +61,10 @@ const messages = computed(() => activeSession.value?.messages ?? [])
 const currentKeyLabel = computed(() => {
   if (selectedKeyMeta.value) return formatApiKeyLabel(selectedKeyMeta.value)
   const match = candidateKeys.value.find((k) => k.id === selectedKeyId.value)
-  return match ? formatApiKeyLabel(match) : selectedKeyId.value ? `密钥 #${selectedKeyId.value}` : ''
+  if (match) return formatApiKeyLabel(match)
+  if (selectedKeyId.value) return `密钥 #${selectedKeyId.value}`
+  if (keyLoading.value) return '加载中…'
+  return '未选择'
 })
 
 onMounted(async () => {
@@ -62,6 +78,8 @@ onMounted(async () => {
 
 watch(activeId, async () => {
   sendError.value = ''
+  pendingRetryText.value = null
+  autoRetriedForMessage.value = false
   await scrollToBottom()
 })
 
@@ -79,15 +97,36 @@ function formatSessionTime(ts: number): string {
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
-async function onSelectApiKey(id: number) {
+function stripFailedAssistantTail(msgs: { role: string; content: string }[]) {
+  const copy = [...msgs]
+  const last = copy[copy.length - 1]
+  if (
+    last?.role === 'assistant' &&
+    (!last.content || last.content.startsWith('错误：'))
+  ) {
+    copy.pop()
+  }
+  return copy
+}
+
+async function onSelectApiKey(id: number, opts?: { autoRetry?: boolean }) {
   const prevId = selectedKeyId.value
   const ok = await selectKey(id)
-  if (ok) {
-    if (prevId != null && prevId !== id) {
-      clearAllGwSessionIds()
-    }
-    sendError.value = ''
+  if (!ok) return false
+
+  if (prevId != null && prevId !== id) {
+    clearAllGwSessionIds()
   }
+  sendError.value = ''
+
+  if (opts?.autoRetry && pendingRetryText.value && !autoRetriedForMessage.value) {
+    const retryText = pendingRetryText.value
+    pendingRetryText.value = null
+    autoRetriedForMessage.value = true
+    closeKeyModal()
+    await send({ text: retryText, skipAppendUser: true, isAutoRetry: true })
+  }
+  return true
 }
 
 async function onKeySelectorChange(e: Event) {
@@ -97,33 +136,60 @@ async function onKeySelectorChange(e: Event) {
   await onSelectApiKey(id)
 }
 
+async function onKeyModalSelect(id: number) {
+  const shouldAutoRetry =
+    keyModalReason.value === 'session-forbidden' &&
+    pendingRetryText.value != null &&
+    !autoRetriedForMessage.value
+  await onSelectApiKey(id, { autoRetry: shouldAutoRetry })
+}
+
+function onKeyModalClose() {
+  if (keyModalReason.value === 'session-forbidden') return
+  closeKeyModal()
+}
+
 watch(selectedKeyId, (id, prev) => {
   if (id != null && prev != null && id !== prev) {
     clearAllGwSessionIds()
   }
 })
 
-async function send() {
-  const text = input.value.trim()
+async function send(opts?: SendOptions) {
+  const text = (opts?.text ?? input.value).trim()
   if (!text || sending.value || !activeSession.value) return
+
+  if (!opts?.isAutoRetry) {
+    autoRetriedForMessage.value = false
+    pendingRetryText.value = null
+  }
 
   sendError.value = ''
   const key = apiKey.value || (await resolveApiKey())
   if (!key) {
     sendError.value = keyError.value || '无法获取 API 密钥'
+    openKeyModal('manual')
     return
   }
   if (!selectedKeyId.value) {
-    sendError.value = '无法确定 API 密钥，请切换或重新选择'
-    openPicker()
+    sendError.value = '无法确定 API 密钥，请选择一把密钥'
+    openKeyModal('manual')
     return
   }
 
   const { gwSessionId, taskId } = ensureSessionApiKey(selectedKeyId.value)
   const session = activeSession.value!
-  const nextMessages = [...session.messages, { role: 'user' as const, content: text }]
-  updateActive({ messages: nextMessages })
-  input.value = ''
+  let nextMessages = session.messages
+
+  if (opts?.skipAppendUser) {
+    nextMessages = stripFailedAssistantTail(session.messages)
+    updateActive({ messages: nextMessages })
+  } else {
+    nextMessages = [...session.messages, { role: 'user' as const, content: text }]
+    updateActive({ messages: nextMessages })
+    input.value = ''
+  }
+
   await scrollToBottom()
 
   sending.value = true
@@ -157,7 +223,17 @@ async function send() {
     if (result.gwSessionId) {
       setGwSessionId(result.gwSessionId, selectedKeyId.value)
     }
+    pendingRetryText.value = null
   } catch (e: unknown) {
+    if (isSessionForbiddenError(e) && !opts?.isAutoRetry) {
+      pendingRetryText.value = text
+      sendError.value = '当前 API 密钥无法访问此会话，请选择正确的密钥'
+      const errMsgs = stripFailedAssistantTail(activeSession.value?.messages ?? withPlaceholder)
+      updateActive({ messages: errMsgs })
+      openKeyModal('session-forbidden')
+      return
+    }
+
     const msg = e instanceof Error ? e.message : '发送失败'
     sendError.value = msg
     const errMsgs = [...(activeSession.value?.messages ?? withPlaceholder)]
@@ -175,6 +251,8 @@ function clearChat() {
   startNewSession(selectedModel.value)
   sendError.value = ''
   input.value = ''
+  pendingRetryText.value = null
+  autoRetriedForMessage.value = false
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -193,32 +271,31 @@ function onKeydown(e: KeyboardEvent) {
         <p class="chat-subtitle">通过 OpenAI 兼容接口直接与网关模型对话</p>
       </div>
       <div class="chat-controls">
-        <div v-if="apiKey && !keyLoading" class="key-indicator">
-          <span class="key-indicator__label">密钥</span>
-          <span class="key-indicator__value" :title="currentKeyLabel">{{ currentKeyLabel || '已加载' }}</span>
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm"
-            :disabled="sending || picking"
-            @click="openPicker"
-          >
-            切换密钥
-          </button>
-        </div>
-        <label v-if="apiKey && candidateKeys.length > 1" class="model-label key-label">
-          快速切换
+        <label class="model-label key-label">
+          API 密钥
           <select
             class="model-select key-select"
             :value="selectedKeyId ?? ''"
             :disabled="sending || picking || keyLoading"
+            :title="currentKeyLabel"
             @change="onKeySelectorChange"
           >
-            <option v-if="!selectedKeyId" disabled value="">选择密钥…</option>
+            <option value="" disabled>
+              {{ keyLoading ? '加载中…' : candidateKeys.length ? '选择密钥…' : '无可用密钥' }}
+            </option>
             <option v-for="k in candidateKeys" :key="k.id" :value="k.id">
               {{ formatApiKeyLabel(k) }}
             </option>
           </select>
         </label>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          :disabled="sending || picking"
+          @click="openKeyModal('manual')"
+        >
+          选择密钥
+        </button>
         <label class="model-label">
           模型
           <select v-model="selectedModel" class="model-select" :disabled="sending">
@@ -244,12 +321,23 @@ function onKeydown(e: KeyboardEvent) {
       :keys="candidateKeys"
       :loading="picking"
       :error="keyError"
-      @select="onSelectApiKey"
+      @select="(id) => onSelectApiKey(id)"
     />
-    <div v-else-if="keyError" class="alert alert-danger">
+    <div v-else-if="keyError && !apiKey" class="alert alert-danger">
       {{ keyError }}
       <RouterLink to="/keys?redirect=/chat" class="link-inline">前往 API 密钥</RouterLink>
     </div>
+
+    <ApiKeySelectModal
+      :visible="showKeyModal"
+      :keys="candidateKeys"
+      :loading="picking"
+      :error="keyError"
+      :reason="keyModalReason"
+      :selected-id="selectedKeyId"
+      @select="onKeyModalSelect"
+      @close="onKeyModalClose"
+    />
 
     <div class="chat-body">
       <aside class="session-sidebar card">
@@ -311,7 +399,7 @@ function onKeydown(e: KeyboardEvent) {
             type="button"
             class="btn btn-primary send-btn"
             :disabled="sending || keyLoading || showPicker || !input.trim()"
-            @click="send"
+            @click="send()"
           >
             {{ sending ? '生成中…' : '发送' }}
           </button>
@@ -348,6 +436,7 @@ function onKeydown(e: KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .model-label {
@@ -375,32 +464,6 @@ function onKeydown(e: KeyboardEvent) {
 .key-select {
   min-width: 180px;
   max-width: 280px;
-}
-
-.key-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  background: rgba(99, 102, 241, 0.08);
-  max-width: min(360px, 100%);
-}
-
-.key-indicator__label {
-  font-size: 12px;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-
-.key-indicator__value {
-  font-size: 13px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 
 .chat-body {

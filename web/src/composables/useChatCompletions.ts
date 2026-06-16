@@ -22,6 +22,39 @@ export interface ChatCompletionResult {
   gwSessionId: string | null
 }
 
+export class SessionForbiddenError extends Error {
+  readonly code = 'SESSION_FORBIDDEN'
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'SessionForbiddenError'
+  }
+}
+
+export function isSessionForbiddenError(e: unknown): boolean {
+  if (e instanceof SessionForbiddenError) return true
+  const msg = e instanceof Error ? e.message : String(e)
+  return msg.includes('session not owned') || msg.includes('SESSION_FORBIDDEN')
+}
+
+function parseForbiddenFromResponse(status: number, raw: string): SessionForbiddenError | null {
+  if (status !== 403) return null
+  let msg = raw || `HTTP ${status}`
+  let code: string | undefined
+  try {
+    const j = JSON.parse(raw)
+    code = j?.error?.code as string | undefined
+    const inner = j?.error?.message || j?.error || raw
+    msg = typeof inner === 'string' ? inner : JSON.stringify(inner)
+  } catch {
+    msg = raw || msg
+  }
+  if (code === 'SESSION_FORBIDDEN' || msg.includes('session not owned')) {
+    return new SessionForbiddenError(msg)
+  }
+  return null
+}
+
 const DEVICE_SEED_KEY = 'llmgw_device_seed'
 
 function deviceSeed(): string {
@@ -107,30 +140,22 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
 
   if (!resp.ok) {
     const raw = await resp.text()
+    const forbidden = parseForbiddenFromResponse(resp.status, raw)
+    if (forbidden && !opts._sessionRetry) {
+      return chatCompletion({ ...opts, gwSessionId: null, _sessionRetry: true })
+    }
+    if (forbidden) {
+      throw forbidden
+    }
     let msg = `HTTP ${resp.status}`
     try {
       const j = JSON.parse(raw)
-      msg = j?.error?.message || j?.error || raw || msg
+      const inner = j?.error?.message || j?.error || raw
+      msg = typeof inner === 'string' ? inner : JSON.stringify(inner)
     } catch {
       msg = raw || msg
     }
-    const msgStr = typeof msg === 'string' ? msg : JSON.stringify(msg)
-    const code = (() => {
-      try {
-        const j = JSON.parse(raw)
-        return j?.error?.code as string | undefined
-      } catch {
-        return undefined
-      }
-    })()
-    if (
-      !opts._sessionRetry &&
-      resp.status === 403 &&
-      (code === 'SESSION_FORBIDDEN' || msgStr.includes('session not owned'))
-    ) {
-      return chatCompletion({ ...opts, gwSessionId: null, _sessionRetry: true })
-    }
-    throw new Error(msgStr)
+    throw new Error(msg)
   }
 
   const ct = resp.headers.get('Content-Type') ?? ''

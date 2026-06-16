@@ -1,0 +1,13 @@
+# Frontend-only patch: layer new web/dist onto an existing runtime image.
+ARG BASE_IMAGE=kx-llm-gateway-go:latest
+FROM ${BASE_IMAGE}
+
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ARG BUILD_SEQ="0"
+
+USER root
+COPY web/dist /opt/llm-gateway-go/web/dist
+RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > VERSION && \
+    echo "${BUILD_SEQ}" > .deploy_seq
+USER llmgw
