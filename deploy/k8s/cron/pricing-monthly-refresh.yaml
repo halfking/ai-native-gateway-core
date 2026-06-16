@@ -150,5 +150,3 @@ spec:
           - name: pricing-refresh-work
             persistentVolumeClaim:
               claimName: pricing-refresh-work
-YAMLEOF
-echo "Wrote $(wc -l < /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/deploy/k8s/cron/pricing-monthly-refresh.yaml) lines"
