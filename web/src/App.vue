@@ -128,15 +128,22 @@ function logout() {
     <main class="main-content">
       <header class="main-header">
         <div class="main-header-right">
-          <div class="header-user" v-if="store.userInfo">
-            <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-            <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
+          <div class="header-meta">
+            <template v-if="store.userInfo">
+              <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+              <span class="meta-sep" aria-hidden="true">·</span>
+              <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
+            </template>
+            <template v-if="versionInfo.version">
+              <span v-if="store.userInfo" class="meta-sep" aria-hidden="true">·</span>
+              <span class="version-tag">v{{ versionInfo.version }}</span>
+              <template v-if="versionInfo.build_seq != null">
+                <span class="meta-sep" aria-hidden="true">·</span>
+                <span class="version-build">#{{ versionInfo.build_seq }}</span>
+              </template>
+            </template>
           </div>
-          <div class="header-version" v-if="versionInfo.version">
-            <span class="version-tag">v{{ versionInfo.version }}</span>
-            <span class="version-build" v-if="versionInfo.build_seq != null">build #{{ versionInfo.build_seq }}</span>
-          </div>
-          <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
+          <button class="btn btn-ghost btn-sm" @click="logout">退出</button>
         </div>
       </header>
       <section class="main-body">
@@ -220,11 +227,19 @@ function logout() {
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
+  white-space: nowrap;
 }
 
 .user-role {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+}
+
+.meta-sep {
+  color: var(--muted);
+  opacity: 0.5;
+  user-select: none;
 }
 
 .version-tag {
@@ -232,13 +247,14 @@ function logout() {
   font-weight: 600;
   color: var(--accent-h);
   font-family: 'SF Mono', 'Fira Code', monospace;
+  white-space: nowrap;
 }
 
 .version-build {
-  font-size: 10px;
-  color: var(--text);
+  font-size: 11px;
+  color: var(--muted);
   font-family: 'SF Mono', 'Fira Code', monospace;
-  opacity: 0.85;
+  white-space: nowrap;
 }
 
 .main-content {
@@ -253,8 +269,8 @@ function logout() {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  min-height: 56px;
-  padding: 10px 24px;
+  min-height: 40px;
+  padding: 6px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--sidebar);
 }
@@ -262,27 +278,25 @@ function logout() {
 .main-header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  min-width: 0;
 }
 
-.header-user {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px 8px;
-  background: rgba(99, 102, 241, 0.08);
-  border-radius: 6px;
-}
-
-.header-version {
+.header-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
+  padding: 4px 10px;
   background: rgba(99, 102, 241, 0.08);
   border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .main-body {
@@ -331,7 +345,7 @@ function logout() {
 
 @media (max-width: 640px) {
   .main-header {
-    padding: 10px 12px;
+    padding: 6px 12px;
   }
 
   .main-body {
@@ -342,10 +356,10 @@ function logout() {
     gap: 8px;
   }
 
-  .header-version {
-    order: 3;
-    width: 100%;
-    justify-content: flex-end;
+  .header-meta {
+    padding: 4px 8px;
+    gap: 4px;
+    font-size: 10px;
   }
 
   .guest-header {
