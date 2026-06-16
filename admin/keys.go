@@ -874,7 +874,11 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 	var dcp, owner, keyAlias *string
 	var rpm *int
 	var budget *float64
-	err := h.db.QueryRow(ctx, `
+	// R46 multi-tenant: tenant_admin callers may only verify keys in their own
+	// tenant. Without this scope, a tenant_admin who obtains another tenant's
+	// raw key could learn its tenant_id/application/owner metadata. Super_admin
+	// and legacy admin_key verify across all tenants.
+	query := `
 		SELECT ak.id, ak.tenant_id, ak.application_id, app.code,
 		       COALESCE(ak.default_client_profile, app.default_client_profile), ak.owner_user,
 		       ak.rate_limit_rpm, ak.budget_usd, ak.key_alias
@@ -883,7 +887,13 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 		WHERE ak.key_hash = $1 AND ak.enabled = TRUE
 		  AND COALESCE(ak.status, 'active') <> 'revoked'
 		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
-	`, keyHash).Scan(&id, &tenantID, &appID, &appCode, &dcp, &owner, &rpm, &budget, &keyAlias)
+	`
+	args := []any{keyHash}
+	if IsTenantAdmin(r) {
+		query += ` AND ak.tenant_id = $2`
+		args = append(args, GetTenantID(r))
+	}
+	err := h.db.QueryRow(ctx, query, args...).Scan(&id, &tenantID, &appID, &appCode, &dcp, &owner, &rpm, &budget, &keyAlias)
 	if err == nil {
 		result.Valid = true
 		result.KeyID = &id
@@ -1309,6 +1319,15 @@ func (h *Handler) adminApplyForKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) patchApplicationProfile(w http.ResponseWriter, r *http.Request, code string) {
+	// R46 multi-tenant: this mutates the platform-default tenant's application
+	// profile (tenant_id='default'), which is a super-admin-only operation.
+	// The route is mounted under admin() (tenant_admin reachable), so an
+	// explicit role gate is required to prevent a tenant_admin from changing
+	// the default tenant's default_client_profile (cross-tenant write).
+	if IsTenantAdmin(r) {
+		writeError(w, http.StatusForbidden, "super_admin role required to modify application profile")
+		return
+	}
 	var req struct {
 		DefaultClientProfile *string `json:"default_client_profile"`
 	}
@@ -1344,6 +1363,13 @@ func (h *Handler) patchApplicationProfile(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
+	// R46 multi-tenant: tenant_admin may only patch keys in their own tenant.
+	// Without this guard a tenant_admin could PATCH /api/keys/<id> for any key
+	// id and modify default_client_profile/owner_user/remark/key_alias of
+	// another tenant's key (cross-tenant write, Pattern A violation).
+	if !h.assertKeyTenantScope(w, r, id) {
+		return
+	}
 	var req struct {
 		DefaultClientProfile *string `json:"default_client_profile"`
 		OwnerUser            *string `json:"owner_user"`
