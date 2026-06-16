@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/config"
@@ -54,6 +55,17 @@ import (
 )
 
 func main() {
+	// Round 39 (2026-06-16) — initialize OTel tracer.
+	// Default-disabled; activates only when OTEL_EXPORTER_OTLP_ENDPOINT
+	// is set. The shutdown function flushes pending spans before
+	// process exit (called via os.Exit defer in the bg block).
+	tracerShutdown := observability.InitTracer("llm-gateway-go", "1.0.0")
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		tracerShutdown(ctx)
+	}()
+
 	// Package-level singletons declared early so the executor wiring
 	// (lines ~196) and the shutdown sequence (lines ~500) can both
 	// reference them. Actual construction happens in the bg block
@@ -578,6 +590,9 @@ func main() {
 
 	if sessionMgr != nil {
 		sessionHandler := sessions.NewHandler(sessionMgr)
+		if keyVerifier.Enabled() {
+			sessionHandler.SetAuth(keyVerifier)
+		}
 		mux.Handle("/v1/sessions", sessionHandler)
 		mux.Handle("/v1/sessions/", sessionHandler)
 		mux.Handle("/v1/gw/sessions", sessionHandler)
