@@ -4,8 +4,18 @@ import { getAvailableModels, type PopularModel } from '../api'
 import { chatCompletion } from '../composables/useChatCompletions'
 import { useChatSessions } from '../composables/useChatSessions'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
+import GatewayApiKeyPicker from '../components/GatewayApiKeyPicker.vue'
 
-const { apiKey, loading: keyLoading, error: keyError, resolve: resolveApiKey } = useGatewayApiKey()
+const {
+  apiKey,
+  loading: keyLoading,
+  error: keyError,
+  showPicker,
+  candidateKeys,
+  picking,
+  resolve: resolveApiKey,
+  selectKey,
+} = useGatewayApiKey()
 const {
   sessions,
   activeId,
@@ -55,6 +65,11 @@ function formatSessionTime(ts: number): string {
     return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   }
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+async function onSelectApiKey(id: number) {
+  const ok = await selectKey(id)
+  if (ok) sendError.value = ''
 }
 
 async function send() {
@@ -161,9 +176,16 @@ function onKeydown(e: KeyboardEvent) {
     </div>
 
     <div v-if="keyLoading" class="alert alert-info">正在加载 API 密钥…</div>
+    <GatewayApiKeyPicker
+      v-else-if="showPicker"
+      :keys="candidateKeys"
+      :loading="picking"
+      :error="keyError"
+      @select="onSelectApiKey"
+    />
     <div v-else-if="keyError" class="alert alert-danger">
       {{ keyError }}
-      <RouterLink to="/keys" class="link-inline">前往 API 密钥</RouterLink>
+      <RouterLink to="/keys?redirect=/chat" class="link-inline">前往 API 密钥</RouterLink>
     </div>
 
     <div class="chat-body">
@@ -219,13 +241,13 @@ function onKeydown(e: KeyboardEvent) {
             class="chat-input"
             rows="3"
             placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-            :disabled="sending || keyLoading"
+            :disabled="sending || keyLoading || showPicker"
             @keydown="onKeydown"
           />
           <button
             type="button"
             class="btn btn-primary send-btn"
-            :disabled="sending || keyLoading || !input.trim()"
+            :disabled="sending || keyLoading || showPicker || !input.trim()"
             @click="send"
           >
             {{ sending ? '生成中…' : '发送' }}

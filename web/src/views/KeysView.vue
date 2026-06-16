@@ -1,11 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
-import { store, clearApiKey, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
 
 const router = useRouter()
+const route = useRoute()
+
+const redirectAfter = computed(() => {
+  const r = route.query.redirect
+  return typeof r === 'string' && r.startsWith('/') ? r : ''
+})
 
 const keys = ref<ApiKey[]>([])
 const selectedKey = ref<ApiKey | null>(null)
@@ -518,7 +524,41 @@ function openDefaultLimits() {
   loadDefaultLimits()
 }
 
-onMounted(() => { load(); loadDefaultLimits() })
+async function useCreatedKeyAndReturn() {
+  const created = createdKey.value
+  if (!created?.api_key) return
+  setApiKey(created.api_key)
+  setPreferredChatKeyId(created.id)
+  showNew.value = false
+  createdKey.value = null
+  const dest = redirectAfter.value
+  if (dest) {
+    await router.push(dest)
+  }
+}
+
+async function useExistingKeyAndReturn(k: ApiKey) {
+  try {
+    const result = await revealKey(k.id)
+    setApiKey(result.api_key)
+    setPreferredChatKeyId(k.id)
+    const dest = redirectAfter.value
+    if (dest) await router.push(dest)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '获取密钥失败'
+    error.value = msg.includes('no ciphertext')
+      ? '此密钥无法还原完整内容，请重新签发'
+      : msg
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadDefaultLimits()
+  if (route.query.action === 'create') {
+    openNew()
+  }
+})
 onBeforeUnmount(() => {
   if (copyNoticeTimer) window.clearTimeout(copyNoticeTimer)
   if (serverConflictTimer) window.clearTimeout(serverConflictTimer)
@@ -534,6 +574,11 @@ onBeforeUnmount(() => {
         <button class="btn btn-ghost" @click="openDefaultLimits">⚙ 默认限制</button>
         <button class="btn btn-primary" @click="openNew">+ 签发密钥</button>
       </div>
+    </div>
+
+    <div v-if="redirectAfter" class="alert alert-info">
+      选择或签发密钥后将自动返回
+      <RouterLink :to="redirectAfter" class="link-inline">{{ redirectAfter }}</RouterLink>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
@@ -601,6 +646,7 @@ onBeforeUnmount(() => {
             <th>到期</th>
             <th>最后使用</th>
             <th>备注</th>
+            <th v-if="redirectAfter">返回</th>
           </tr>
         </thead>
         <tbody>
@@ -655,6 +701,16 @@ onBeforeUnmount(() => {
             <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
               {{ k.remark || '—' }}
+            </td>
+            <td v-if="redirectAfter">
+              <button
+                v-if="keyState(k) === 'active'"
+                type="button"
+                class="btn btn-primary btn-xs"
+                @click.stop="useExistingKeyAndReturn(k)"
+              >
+                使用并返回
+              </button>
             </td>
           </tr>
         </tbody>
@@ -779,8 +835,15 @@ onBeforeUnmount(() => {
             </button>
             <span class="hint">{{ createdKey.api_key ? '可多次点击复制' : '后端未返回有效密钥，请检查接口返回' }}</span>
           </div>
-          <div style="text-align:right;margin-top:16px">
-            <button class="btn btn-primary" @click="showNew = false">我已保存，关闭</button>
+          <div style="text-align:right;margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+            <button
+              v-if="redirectAfter && createdKey.api_key"
+              class="btn btn-primary"
+              @click="useCreatedKeyAndReturn"
+            >
+              使用此密钥并返回
+            </button>
+            <button class="btn btn-ghost" @click="showNew = false">我已保存，关闭</button>
           </div>
         </template>
 

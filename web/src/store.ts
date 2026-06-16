@@ -3,6 +3,7 @@ import { reactive } from 'vue'
 const KEY = 'llmgw_api_key'
 const JWT_KEY = 'llmgw_jwt_token'
 const USER_KEY = 'llmgw_user_info'
+const PREFERRED_CHAT_KEY_PREFIX = 'llmgw_preferred_key_id:'
 
 export interface UserInfo {
   id: number
@@ -28,6 +29,27 @@ export function setApiKey(k: string) {
 export function clearApiKey() {
   store.apiKey = ''
   localStorage.removeItem(KEY)
+}
+
+/** Per-user preferred API key id for /chat (sk-* resolved via reveal). */
+export function preferredChatKeyStorageKey(): string {
+  const uid = store.userInfo?.id ?? 'legacy'
+  return `${PREFERRED_CHAT_KEY_PREFIX}${uid}`
+}
+
+export function getPreferredChatKeyId(): number | null {
+  const raw = localStorage.getItem(preferredChatKeyStorageKey())
+  if (!raw) return null
+  const n = Number.parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+export function setPreferredChatKeyId(id: number) {
+  localStorage.setItem(preferredChatKeyStorageKey(), String(id))
+}
+
+export function clearPreferredChatKeyId() {
+  localStorage.removeItem(preferredChatKeyStorageKey())
 }
 
 export function setJwtToken(token: string) {
