@@ -43,11 +43,17 @@ const lifecycleStatuses = [
   { value: 'retired', label: 'retired (退役)' },
 ]
 
-function statusBadge(s: string) {
+function statusBadge(s: string, manualDisabled?: boolean) {
+  if (manualDisabled) return 'badge-red'
   if (s === 'active') return 'badge-green'
   if (s === 'disabled' || s === 'quota_expired' || s === 'quarantine') return 'badge-red'
   if (s === 'cooling' || s === 'degraded') return 'badge-amber'
   return 'badge-gray'
+}
+
+function statusLabel(s: string, manualDisabled?: boolean) {
+  if (manualDisabled) return '停用'
+  return s
 }
 
 function healthBadge(s?: string | null) {
@@ -333,9 +339,8 @@ function onTagsInput(ev: Event) {
               <div class="cred-meta">#{{ c.id }} · {{ c.trust_level }}</div>
             </td>
             <td>
-              <span class="badge" :class="statusBadge(c.status)">{{ c.status }}</span>
+              <span class="badge" :class="statusBadge(c.status, c.manual_disabled)">{{ statusLabel(c.status, c.manual_disabled) }}</span>
               <div class="cell-sub">{{ c.lifecycle_status }}</div>
-              <div v-if="c.manual_disabled" class="cell-sub cell-sub--danger">🔒 手工已禁用</div>
             </td>
             <td>
               <span class="badge" :class="healthBadge(c.health_status)">{{ healthLabel(c.health_status) }}</span>
