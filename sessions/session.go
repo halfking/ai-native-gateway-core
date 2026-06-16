@@ -278,6 +278,29 @@ func (sm *Manager) Touch(ctx context.Context, sessionID string) error {
 	})
 }
 
+// BindAPIKey claims an orphan session (api_key_id=0) created before auth was wired.
+func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error {
+	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
+	if err != nil || len(data) == 0 {
+		return ErrSessionNotFound
+	}
+	oldAPIKeyID, _ := strconv.Atoi(data["api_key_id"])
+	if oldAPIKeyID != 0 {
+		return fmt.Errorf("session already bound to api key %d", oldAPIKeyID)
+	}
+
+	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
+	pipe := sm.redis.client.Pipeline()
+	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
+		"api_key_id": strconv.Itoa(apiKeyID),
+		"tenant_id":  tenantID,
+	})
+	pipe.SAdd(ctx, activeKeyRedis, sessionID)
+	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
 func (sm *Manager) UpdateCacheInfo(ctx context.Context, sessionID string, cacheInfo CacheInfo) error {
 	cacheInfoJSON, _ := json.Marshal(cacheInfo)
 	return sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{

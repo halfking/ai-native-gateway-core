@@ -770,28 +770,67 @@ func (h *Handler) pricingCopy(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	for _, targetID := range req.TargetOfferIDs {
 		setClauses := []string{"pricing_source = 'copied'", "pricing_updated_at = now()"}
+		var args []any
+		argIdx := 1
 		for _, field := range req.CopyFields {
 			if !allowedFields[field] {
 				continue
 			}
 			switch field {
 			case "unit_price_in_per_1m":
-				setClauses = append(setClauses, "unit_price_in_per_1m = "+nullableFloat(source.PriceIn))
+				if source.PriceIn != nil {
+					args = append(args, *source.PriceIn)
+					setClauses = append(setClauses, fmt.Sprintf("unit_price_in_per_1m = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "unit_price_in_per_1m = NULL")
+				}
 			case "unit_price_out_per_1m":
-				setClauses = append(setClauses, "unit_price_out_per_1m = "+nullableFloat(source.PriceOut))
+				if source.PriceOut != nil {
+					args = append(args, *source.PriceOut)
+					setClauses = append(setClauses, fmt.Sprintf("unit_price_out_per_1m = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "unit_price_out_per_1m = NULL")
+				}
 			case "cache_read_price_per_1m":
-				setClauses = append(setClauses, "cache_read_price_per_1m = "+nullableFloat(source.CacheRead))
+				if source.CacheRead != nil {
+					args = append(args, *source.CacheRead)
+					setClauses = append(setClauses, fmt.Sprintf("cache_read_price_per_1m = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "cache_read_price_per_1m = NULL")
+				}
 			case "cache_write_price_per_1m":
-				setClauses = append(setClauses, "cache_write_price_per_1m = "+nullableFloat(source.CacheWrite))
+				if source.CacheWrite != nil {
+					args = append(args, *source.CacheWrite)
+					setClauses = append(setClauses, fmt.Sprintf("cache_write_price_per_1m = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "cache_write_price_per_1m = NULL")
+				}
 			case "currency":
-				setClauses = append(setClauses, "currency = "+nullableStr(source.Currency))
+				if source.Currency != nil {
+					args = append(args, *source.Currency)
+					setClauses = append(setClauses, fmt.Sprintf("currency = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "currency = NULL")
+				}
 			case "billing_mode":
-				setClauses = append(setClauses, "billing_mode = "+nullableStr(source.BillingMode))
+				if source.BillingMode != nil {
+					args = append(args, *source.BillingMode)
+					setClauses = append(setClauses, fmt.Sprintf("billing_mode = $%d", argIdx))
+					argIdx++
+				} else {
+					setClauses = append(setClauses, "billing_mode = NULL")
+				}
 			}
 		}
-		query := fmt.Sprintf("UPDATE model_offers SET %s WHERE id = %d",
-			strings.Join(setClauses, ", "), targetID)
-		tag, err := h.db.Exec(ctx, query)
+		args = append(args, targetID)
+		query := fmt.Sprintf("UPDATE model_offers SET %s WHERE id = $%d",
+			strings.Join(setClauses, ", "), argIdx)
+		tag, err := h.db.Exec(ctx, query, args...)
 		if err != nil {
 			continue
 		}

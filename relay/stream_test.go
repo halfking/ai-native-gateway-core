@@ -232,6 +232,9 @@ func TestReplaceModelInResponse_ToolCallsResponse(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingModelReplacementE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	upstreamModel := "claude-sonnet-4-5-20250929"
 	clientModel := "claude-sonnet-4.5"
 
@@ -311,6 +314,9 @@ func TestStreamingModelReplacementE2E(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNonStreamingModelReplacementE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	upstreamModel := "gpt-4o-2024-08-06"
 	clientModel := "gpt-4o"
 
@@ -368,6 +374,9 @@ func TestNonStreamingModelReplacementE2E(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingToolCallsE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	upstreamModel := "claude-sonnet-4-5-20250929"
 	clientModel := "claude-sonnet-4.5"
 
@@ -434,6 +443,9 @@ func TestStreamingToolCallsE2E(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingSSEEmptyLineHandling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -480,6 +492,9 @@ func TestStreamingSSEEmptyLineHandling(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStreamingWithUsageChunk(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test (needs database)")
+	}
 	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)

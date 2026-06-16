@@ -16,8 +16,7 @@ func TestClient_Disabled(t *testing.T) {
 }
 
 func TestClient_QueueFull(t *testing.T) {
-	c := NewClient()
-	c.queue = make(chan any, 2)
+	c := newClientWithBufSize(2)
 
 	for i := 0; i < 10; i++ {
 		c.EmitDecisionLog(&DecisionLogEntry{
@@ -26,6 +25,23 @@ func TestClient_QueueFull(t *testing.T) {
 			Success:   true,
 		})
 	}
+
+	c.Stop()
+}
+
+func TestClient_QueueFull_SyncFallback(t *testing.T) {
+	c := newClientWithBufSize(1)
+
+	// Fill the queue so the next Emit hits the default (sync) path.
+	// Worker doesn't drain during test, so buffer fills after 1 item.
+	c.EmitDecisionLog(&DecisionLogEntry{RequestID: "fill", Model: "test", Success: true})
+
+	// This emit should hit the default case (sync insert) without blocking.
+	c.EmitDecisionLog(&DecisionLogEntry{
+		RequestID: "sync",
+		Model:     "test",
+		Success:   true,
+	})
 
 	c.Stop()
 }

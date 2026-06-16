@@ -4,11 +4,15 @@ import { useRoute } from 'vue-router'
 import {
   getRequestLogs,
   getRequestLogDetail,
+  getSessionSummary,
+  sessionSummaryToMemora,
   getKeys,
   type RequestLogRow,
   type RequestLogDetail,
   type ApiKey,
   type RequestLogsResponse,
+  type SessionSummaryResponse,
+  type SessionSummaryToMemoraResponse,
 } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
@@ -26,6 +30,12 @@ const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
 const gwTaskFilter = ref('')
+const summaryLoading = ref(false)
+const summaryError = ref<string | null>(null)
+const summaryResult = ref<SessionSummaryResponse | null>(null)
+const memoraLoading = ref(false)
+const memoraError = ref<string | null>(null)
+const memoraResult = ref<SessionSummaryToMemoraResponse['memora'] | null>(null)
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -194,7 +204,79 @@ function filterBySession(sessionId: string | null | undefined) {
 function clearTraceFilter() {
   gwTaskFilter.value = ''
   gwSessionFilter.value = ''
+  summaryError.value = null
+  summaryResult.value = null
+  memoraError.value = null
+  memoraResult.value = null
   resetPageAndLoad()
+}
+
+const canSummarizeSession = computed(() => gwSessionFilter.value.trim().length > 0)
+
+async function generateSessionSummary() {
+  const sid = gwSessionFilter.value.trim()
+  if (!sid) return
+  summaryLoading.value = true
+  summaryError.value = null
+  summaryResult.value = null
+  try {
+    summaryResult.value = await getSessionSummary(sid)
+  } catch (e: unknown) {
+    summaryError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function summaryExportContent(data: SessionSummaryResponse): string {
+  const lines: string[] = []
+  lines.push('# 会话总结')
+  lines.push('')
+  lines.push(`- Session ID: ${data.meta.session_id}`)
+  lines.push(`- 时间范围: ${fmtTs(data.meta.data_from)} ~ ${fmtTs(data.meta.data_to)}`)
+  lines.push(`- 日志条数: ${data.meta.log_count}`)
+  lines.push(`- 生成时间: ${fmtTs(data.meta.generated_at)}`)
+  lines.push('')
+  lines.push('## 摘要')
+  lines.push(data.summary)
+  if (data.key_points && data.key_points.length) {
+    lines.push('')
+    lines.push('## 关键要点')
+    for (const p of data.key_points) lines.push(`- ${p}`)
+  }
+  return lines.join('\n')
+}
+
+function exportSessionSummary(format: 'md' | 'txt' = 'md') {
+  if (!summaryResult.value) return
+  const content = summaryExportContent(summaryResult.value)
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const day = new Date().toISOString().slice(0, 10)
+  a.href = url
+  a.download = `session-summary-${summaryResult.value.meta.session_id}-${day}.${format}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+async function writeSummaryToMemora() {
+  const sid = gwSessionFilter.value.trim()
+  if (!sid) return
+  memoraLoading.value = true
+  memoraError.value = null
+  memoraResult.value = null
+  try {
+    const resp = await sessionSummaryToMemora(sid)
+    summaryResult.value = { summary: resp.summary, key_points: resp.key_points, meta: resp.meta }
+    memoraResult.value = resp.memora
+  } catch (e: unknown) {
+    memoraError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    memoraLoading.value = false
+  }
 }
 
 function routeProviderLine(r: RequestLogRow): string {
@@ -561,6 +643,45 @@ onMounted(async () => {
       <span v-if="gwTaskFilter" style="color:var(--muted)">任务: {{ gwTaskFilter }}</span>
       <span v-if="gwSessionFilter" style="color:var(--muted)">会话: {{ shortHash(gwSessionFilter) }}</span>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="clearTraceFilter">清除脉络筛选</button>
+    </div>
+
+    <div v-if="canSummarizeSession" class="card" style="margin-bottom:12px;padding:12px">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <strong>会话总结</strong>
+        <span style="color:var(--muted);font-size:12px">仅在会话 ID 筛选下可用</span>
+        <button class="btn btn-primary btn-sm" :disabled="summaryLoading" @click="generateSessionSummary">
+          {{ summaryLoading ? '总结中…' : '生成总结' }}
+        </button>
+        <button
+          v-if="summaryResult"
+          class="btn btn-ghost btn-sm"
+          @click="exportSessionSummary('md')"
+        >导出 Markdown</button>
+        <button
+          v-if="summaryResult"
+          class="btn btn-ghost btn-sm"
+          @click="exportSessionSummary('txt')"
+        >导出 TXT</button>
+        <button
+          class="btn btn-ghost btn-sm"
+          :disabled="memoraLoading"
+          @click="writeSummaryToMemora"
+        >{{ memoraLoading ? '写入中…' : '写入 Memora' }}</button>
+      </div>
+      <p v-if="summaryError" style="margin:8px 0 0;color:var(--danger)">{{ summaryError }}</p>
+      <p v-if="memoraError" style="margin:8px 0 0;color:var(--danger)">Memora: {{ memoraError }}</p>
+      <p v-if="memoraResult" style="margin:8px 0 0;color:var(--success, #22c55e)">
+        已写入 Memora：{{ memoraResult.written }} 条（{{ memoraResult.status }}）
+      </p>
+      <div v-if="summaryResult" style="margin-top:10px;font-size:12px">
+        <div style="color:var(--muted);margin-bottom:6px">
+          范围：{{ fmtTs(summaryResult.meta.data_from) }} ~ {{ fmtTs(summaryResult.meta.data_to) }} · {{ summaryResult.meta.log_count }} 条
+        </div>
+        <div style="white-space:pre-wrap;line-height:1.6">{{ summaryResult.summary }}</div>
+        <ul v-if="summaryResult.key_points?.length" style="margin:8px 0 0;padding-left:18px">
+          <li v-for="(p, i) in summaryResult.key_points" :key="i">{{ p }}</li>
+        </ul>
+      </div>
     </div>
 
     <div class="card" style="overflow-x:auto">

@@ -168,6 +168,14 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		h.listTopModels(w, r)
 		return
 	}
+	if remaining == "session-summary" {
+		h.handleSessionSummary(w, r)
+		return
+	}
+	if remaining == "session-summary-to-memora" {
+		h.handleSessionSummaryToMemora(w, r)
+		return
+	}
 	h.getLog(w, r)
 }
 
