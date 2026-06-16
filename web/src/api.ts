@@ -115,6 +115,31 @@ export async function createGatewaySession(
   return r.json()
 }
 
+/** Delete a gateway session (sk-* auth). Best-effort cleanup when removing a chat. */
+export async function deleteGatewaySession(apiKey: string, sessionId: string): Promise<void> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+  }
+  const deviceSeed = localStorage.getItem('llmgw_device_seed') ?? 'default'
+  headers['X-Device-Seed'] = deviceSeed
+
+  const r = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+    headers,
+  })
+  if (!r.ok && r.status !== 404) {
+    const text = await r.text()
+    let msg = `HTTP ${r.status}`
+    try {
+      const j = JSON.parse(text)
+      msg = j?.error?.message || text || msg
+    } catch {
+      msg = text || msg
+    }
+    throw new Error(msg)
+  }
+}
+
 // ── Catalog ──────────────────────────────────────────────────────────────
 
 export interface CatalogEntry {
@@ -1472,6 +1497,37 @@ export interface RequestLogsResponse {
   count: number
 }
 
+export interface SessionSummaryMeta {
+  session_id: string
+  log_count: number
+  data_from: string
+  data_to: string
+  generated_at: string
+  api_key_id: number
+  model: string
+}
+
+export interface SessionSummaryResponse {
+  summary: string
+  key_points: string[]
+  meta: SessionSummaryMeta
+}
+
+export interface MemoraWriteResult {
+  written: number
+  user_id: string
+  project_id: string
+  status: string
+  error?: string
+}
+
+export interface SessionSummaryToMemoraResponse {
+  summary: string
+  key_points: string[]
+  meta: SessionSummaryMeta
+  memora: MemoraWriteResult
+}
+
 export interface TopRequestModel {
   canonical_id: number | null
   canonical_name: string
@@ -1533,6 +1589,18 @@ export function getRequestLogTopModels(params: { from?: string; to?: string; lim
   if (params.limit != null) qs.set('limit', String(params.limit))
   const s = qs.toString()
   return req<{ items: TopRequestModel[] }>('GET', `/api/logs/top-models${s ? '?' + s : ''}`)
+}
+
+export function getSessionSummary(gwSessionId: string) {
+  return req<SessionSummaryResponse>('POST', '/api/logs/session-summary', {
+    gw_session_id: gwSessionId,
+  })
+}
+
+export function sessionSummaryToMemora(gwSessionId: string) {
+  return req<SessionSummaryToMemoraResponse>('POST', '/api/logs/session-summary-to-memora', {
+    gw_session_id: gwSessionId,
+  })
 }
 
 export function probeModel(model: string, messages?: Array<{role: string; content: string}>, maxTokens = 20, clientProfile = 'roocode') {

@@ -7,7 +7,7 @@
 # build context.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 kx-base:go AS builder
+FROM --platform=linux/amd64 kx-base:go-vue AS builder
 
 RUN apk add --no-cache git ca-certificates nodejs npm
 

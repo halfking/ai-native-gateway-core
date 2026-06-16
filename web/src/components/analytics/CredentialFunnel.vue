@@ -54,13 +54,14 @@ function widthPct(v: number): string {
           class="funnel-stage"
           :title="s.hint"
         >
-          <div
-            class="funnel-bar"
-            :style="{ width: widthPct(s.value), zIndex: stages.length - i }"
-          >
-            <span class="funnel-label">{{ s.label }}</span>
-            <strong class="funnel-value">{{ s.value }}</strong>
+          <span class="funnel-label">{{ s.label }}</span>
+          <div class="funnel-bar-track">
+            <div
+              class="funnel-bar"
+              :style="{ width: widthPct(s.value), zIndex: stages.length - i }"
+            />
           </div>
+          <strong class="funnel-value">{{ s.value }}</strong>
         </div>
       </div>
     </template>
@@ -84,20 +85,23 @@ function widthPct(v: number): string {
 .funnel-stages {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 4px;
 }
 .funnel-stage {
   width: 100%;
-  display: flex;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: minmax(4.5em, auto) 1fr minmax(2em, auto);
+  align-items: center;
+  gap: 8px;
 }
-.funnel-bar {
+.funnel-bar-track {
+  min-height: 32px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+}
+.funnel-bar {
   min-height: 32px;
-  padding: 4px 12px;
+  min-width: 24px;
   background: color-mix(in srgb, var(--accent) 22%, var(--bg-subtle));
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   clip-path: polygon(4% 0%, 96% 0%, 100% 100%, 0% 100%);
@@ -111,8 +115,17 @@ function widthPct(v: number): string {
   background: color-mix(in srgb, #3fb950 22%, var(--bg-subtle));
   border-color: color-mix(in srgb, #3fb950 35%, var(--border));
 }
-.funnel-label { font-size: 10px; color: var(--muted); }
-.funnel-value { font-size: 13px; font-variant-numeric: tabular-nums; }
+.funnel-label {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.funnel-value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
 .badge-muted {
   font-size: 9px;
   padding: 1px 5px;

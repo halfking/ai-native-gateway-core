@@ -207,7 +207,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	// JWT-authenticated routes (JWT or admin key)
-	mux.HandleFunc("/v1/keys/apply", h.handleV1KeysApply)
+	mux.Handle("/v1/keys/apply", h.admin(h.handleV1KeysApply))
 
 	admin := h.admin
 	// JWT-authenticated routes (JWT or admin key)

@@ -226,11 +226,17 @@ func totalSamples(rows []QualityCorrelationRow) int {
 // and the function uses bucket-index as X and avg_quality as Y
 // (weighted by samples). The result is sorted by |r| desc.
 func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityCorrelationInsight {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	predictors := []string{"prompt_length", "tools", "images", "code_block", "language"}
 	results := make([]QualityCorrelationInsight, 0, len(predictors))
 
 	for _, p := range predictors {
-		q, _ := buildBreakdownQuery(p)
+		q, err := buildBreakdownQuery(p)
+		if err != nil {
+			continue
+		}
 		rows, err := db.Query(ctx, q, days)
 		if err != nil {
 			continue
@@ -247,6 +253,10 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityC
 			xs = append(xs, float64(bucketIndex(p, bucket)))
 			ys = append(ys, avgQuality)
 			ws = append(ws, float64(samples))
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			continue
 		}
 		if len(xs) < 2 {
 			continue

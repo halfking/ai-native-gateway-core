@@ -1,4 +1,4 @@
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { ApiKey } from '../api'
 import { getKeys, revealKey } from '../api'
 import {
@@ -8,7 +8,11 @@ import {
   setPreferredChatKeyId,
   clearPreferredChatKeyId,
 } from '../store'
-import { formatApiKeyLabel, isActiveApiKey, isNoCiphertextError } from '../utils/apiKey'
+import {
+  filterKeysForCurrentUser,
+  formatApiKeyLabel,
+  isRevealFailureError,
+} from '../utils/apiKey'
 
 function keyMatchesPrefix(fullKey: string, prefix: string): boolean {
   const bare = prefix.replace(/\*+$/, '')
@@ -24,19 +28,34 @@ export function useGatewayApiKey() {
   const showKeyModal = ref(false)
   const keyModalReason = ref<'session-forbidden' | 'manual'>('manual')
   const candidateKeys = ref<ApiKey[]>([])
+  const unrevealableKeyIds = ref<Set<number>>(new Set())
   const picking = ref(false)
   const selectedKeyId = ref<number | null>(getPreferredChatKeyId())
   const selectedKeyMeta = ref<ApiKey | null>(null)
+
+  const hasNoKeys = computed(() => !loading.value && candidateKeys.value.length === 0)
+  const revealableKeys = computed(() =>
+    candidateKeys.value.filter((k) => !unrevealableKeyIds.value.has(k.id)),
+  )
 
   function syncSelectedMeta(id: number | null) {
     selectedKeyMeta.value = id ? candidateKeys.value.find((k) => k.id === id) ?? null : null
   }
 
+  function markUnrevealable(id: number) {
+    const next = new Set(unrevealableKeyIds.value)
+    next.add(id)
+    unrevealableKeyIds.value = next
+  }
+
   async function loadActiveKeys(): Promise<ApiKey[]> {
     const keys = await getKeys()
-    const active = keys.filter(isActiveApiKey)
-    candidateKeys.value = active
-    return active
+    const scoped = filterKeysForCurrentUser(keys)
+    candidateKeys.value = scoped
+    unrevealableKeyIds.value = new Set(
+      [...unrevealableKeyIds.value].filter((id) => scoped.some((k) => k.id === id)),
+    )
+    return scoped
   }
 
   function useStoredApiKey(): string {
@@ -48,7 +67,10 @@ export function useGatewayApiKey() {
     try {
       const revealed = await revealKey(id)
       const key = revealed.api_key
-      if (!key) return null
+      if (!key) {
+        markUnrevealable(id)
+        return null
+      }
       apiKey.value = key
       setApiKey(key)
       setPreferredChatKeyId(id)
@@ -59,7 +81,10 @@ export function useGatewayApiKey() {
       return key
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (isNoCiphertextError(msg)) return null
+      if (isRevealFailureError(msg)) {
+        markUnrevealable(id)
+        return null
+      }
       throw e
     }
   }
@@ -76,20 +101,35 @@ export function useGatewayApiKey() {
       if (!ordered.some((x) => x.id === k.id)) ordered.push(k)
     }
 
+    const failed: number[] = []
     for (const k of ordered) {
       const key = await tryRevealKey(k.id)
       if (key) return key
+      failed.push(k.id)
     }
 
     if (preferredId) clearPreferredChatKeyId()
-    candidateKeys.value = active
-    showPicker.value = true
-    error.value =
-      active.length === 1
-        ? '当前密钥无法还原完整内容（历史密钥未保存密文）。请重新签发或选择其他密钥。'
-        : '没有可自动还原的密钥，请从下方选择或重新签发。'
     apiKey.value = ''
     selectedKeyId.value = null
+    syncSelectedMeta(null)
+
+    if (!active.length) {
+      error.value = '没有可用的 API 密钥，请先在「API 密钥」页面申请或创建'
+      showPicker.value = false
+      return ''
+    }
+
+    if (failed.length === active.length) {
+      error.value =
+        active.length === 1
+          ? '当前密钥无法还原完整内容，请重新签发或选择其他密钥。'
+          : '所选密钥均无法还原完整内容，请重新签发或前往密钥管理。'
+      showPicker.value = true
+      return ''
+    }
+
+    showPicker.value = true
+    error.value = '没有可自动还原的密钥，请从下方选择一把可用密钥。'
     return ''
   }
 
@@ -114,10 +154,11 @@ export function useGatewayApiKey() {
     try {
       const active = await loadActiveKeys()
       if (!active.length) {
-        error.value = '没有可用的 API 密钥，请先在「API 密钥」页面创建或启用'
+        error.value = '没有可用的 API 密钥，请先在「API 密钥」页面申请或创建'
         showPicker.value = false
         apiKey.value = ''
         selectedKeyId.value = null
+        syncSelectedMeta(null)
         return ''
       }
 
@@ -136,6 +177,7 @@ export function useGatewayApiKey() {
       error.value = e instanceof Error ? e.message : '获取 API 密钥失败'
       apiKey.value = ''
       selectedKeyId.value = null
+      syncSelectedMeta(null)
       return ''
     } finally {
       loading.value = false
@@ -153,7 +195,7 @@ export function useGatewayApiKey() {
       const key = await tryRevealKey(id)
       if (!key) {
         error.value =
-          '此密钥无法还原完整内容（创建时未保存密文）。请重新签发或选择其他密钥。'
+          '此密钥无法还原完整内容（密文缺失或解密失败）。请重新签发或选择其他密钥。'
         return false
       }
       return true
@@ -177,6 +219,9 @@ export function useGatewayApiKey() {
     showKeyModal,
     keyModalReason,
     candidateKeys,
+    revealableKeys,
+    unrevealableKeyIds,
+    hasNoKeys,
     picking,
     selectedKeyId,
     selectedKeyMeta,
