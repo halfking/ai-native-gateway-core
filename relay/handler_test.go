@@ -202,3 +202,25 @@ func TestClassifyStreamInterruption_UnknownReason(t *testing.T) {
 		t.Error("unknown/empty reason with chunks>0 should default to error")
 	}
 }
+
+func TestSanitizeGwSessionHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "spaces", in: "   ", want: ""},
+		{name: "valid gw session", in: "gw_123", want: "gw_123"},
+		{name: "trim valid gw session", in: "  gw_abc  ", want: "gw_abc"},
+		{name: "plain uuid rejected", in: "44007f85-5199-4d61-a7ef-73f5419dcdff", want: ""},
+		{name: "legacy random rejected", in: "sess-001", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeGwSessionHeader(tc.in); got != tc.want {
+				t.Fatalf("sanitizeGwSessionHeader(%q)=%q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
