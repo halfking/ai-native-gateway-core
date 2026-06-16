@@ -7,6 +7,7 @@ import { formatApiKeyLabel } from '../utils/apiKey'
 const props = defineProps<{
   visible: boolean
   keys: ApiKey[]
+  unrevealableIds?: Set<number>
   loading?: boolean
   error?: string
   reason?: 'session-forbidden' | 'manual'
@@ -35,6 +36,10 @@ const redirectPath = computed(() => {
   const r = route.path
   return r.startsWith('/chat') ? '/chat' : r
 })
+
+function isUnrevealable(id: number): boolean {
+  return props.unrevealableIds?.has(id) ?? false
+}
 
 function goKeys(action?: string) {
   const query: Record<string, string> = { redirect: redirectPath.value }
@@ -67,23 +72,36 @@ function goKeys(action?: string) {
         <p class="modal-panel__hint">{{ hint }}</p>
         <div v-if="error" class="alert alert-danger">{{ error }}</div>
         <ul class="key-list">
-          <li v-for="k in keys" :key="k.id" class="key-list__item">
+          <li v-for="k in keys" :key="k.id" class="key-list__item" :class="{ 'key-list__item--disabled': isUnrevealable(k.id) }">
             <div class="key-list__meta">
-              <span class="key-list__label">{{ formatApiKeyLabel(k) }}</span>
+              <span class="key-list__label">
+                {{ formatApiKeyLabel(k) }}
+                <span v-if="isUnrevealable(k.id)" class="key-list__badge">无法还原</span>
+              </span>
               <span class="key-list__sub">{{ k.tenant_id }} · {{ k.owner_user || '—' }}</span>
             </div>
             <button
               type="button"
               class="btn btn-primary btn-sm"
               :class="{ 'btn-ghost': selectedId === k.id }"
-              :disabled="loading"
+              :disabled="loading || isUnrevealable(k.id)"
               @click="emit('select', k.id)"
             >
-              {{ loading ? '加载中…' : selectedId === k.id ? '当前密钥' : '使用此密钥' }}
+              {{
+                loading
+                  ? '加载中…'
+                  : isUnrevealable(k.id)
+                    ? '不可选'
+                    : selectedId === k.id
+                      ? '当前密钥'
+                      : '使用此密钥'
+              }}
             </button>
           </li>
         </ul>
-        <div v-if="!keys.length" class="key-list__empty">没有可用的密钥。</div>
+        <div v-if="!keys.length" class="key-list__empty">
+          没有可用的密钥。请先申请或创建 API 密钥。
+        </div>
         <div class="modal-panel__actions">
           <button type="button" class="btn btn-ghost btn-sm" @click="goKeys('create')">签发新密钥</button>
           <button type="button" class="btn btn-ghost btn-sm" @click="goKeys()">前往 API 密钥管理</button>
@@ -185,6 +203,17 @@ function goKeys(action?: string) {
 .key-list__sub {
   font-size: 12px;
   color: var(--muted);
+}
+
+.key-list__item--disabled {
+  opacity: 0.72;
+}
+
+.key-list__badge {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #f59e0b;
 }
 
 .key-list__empty {
