@@ -190,7 +190,10 @@ func (s *Service) CreateOrder(ctx context.Context, tenantID string, req CreateOr
 
 // GetOrder returns one order by ID, optionally scoped to tenant.
 func (s *Service) GetOrder(ctx context.Context, orderID int64, tenantID string) (BillingOrder, error) {
-	o, err := s.scanOrder(ctx, `
+	// R46 multi-tenant: scope by tenant_id in the WHERE clause (defense-in-depth)
+	// rather than fetching then checking in Go, so the row is never read across
+	// tenants. tenantID == "" means super_admin (all tenants).
+	query := `
 		SELECT bo.id, bo.order_no, bo.tenant_id, bo.order_type, bo.status,
 		       bo.amount_cents, bo.credits, bo.plan_id, bo.package_id,
 		       bo.payment_channel, bo.qr_payload, bo.qr_url,
@@ -200,12 +203,15 @@ func (s *Service) GetOrder(ctx context.Context, orderID int64, tenantID string) 
 		LEFT JOIN subscription_plans sp ON sp.id = bo.plan_id
 		LEFT JOIN topup_packages tp ON tp.id = bo.package_id
 		WHERE bo.id = $1
-	`, orderID)
+	`
+	args := []any{orderID}
+	if tenantID != "" {
+		query += ` AND bo.tenant_id = $2`
+		args = append(args, tenantID)
+	}
+	o, err := s.scanOrder(ctx, query, args...)
 	if err != nil {
 		return BillingOrder{}, err
-	}
-	if tenantID != "" && o.TenantID != tenantID {
-		return BillingOrder{}, pgx.ErrNoRows
 	}
 	s.enrichOrderPaymentHint(ctx, &o)
 	return o, nil
