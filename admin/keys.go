@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // limitField distinguishes JSON null (use tier/default), 0 (explicit unlimited),
@@ -723,13 +725,32 @@ func (h *Handler) revealKey(w http.ResponseWriter, r *http.Request, id int) {
 		writeError(w, http.StatusNotFound, "no ciphertext stored")
 		return
 	}
+	if !isRevealableKeyCiphertext(ciphertext) {
+		writeError(w, http.StatusConflict, "no ciphertext stored")
+		return
+	}
 
 	plaintext, err := h.decryptCredStr(ciphertext)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "decryption failed")
+		slog.Warn("revealKey: decryption failed", "key_id", id, "error", err)
+		writeError(w, http.StatusConflict, "no ciphertext stored")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"api_key": plaintext})
+	writeJSON(w, http.StatusOK, map[string]any{"key_id": id, "api_key": plaintext})
+}
+
+// isRevealableKeyCiphertext returns false for empty or placeholder values that
+// are neither v1 AES-GCM envelopes nor plausible Fernet tokens (e.g. probe rows
+// with key_ciphertext='test-cipher' that would otherwise fail decrypt).
+func isRevealableKeyCiphertext(ciphertext string) bool {
+	if ciphertext == "" {
+		return false
+	}
+	if secret.IsV1Envelope(ciphertext) {
+		return true
+	}
+	// Fernet wire tokens are base64url; shortest valid token is ~57 bytes.
+	return len(ciphertext) >= 57
 }
 
 func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
