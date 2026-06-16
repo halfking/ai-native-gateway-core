@@ -257,19 +257,21 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 
-			var resp *http.Response
-			var uErr *upstreampkg.Error
-			if e.Upstream != nil {
-				resp, uErr = e.Upstream.Do(req)
-			} else {
-				var doErr error
-				resp, doErr = httpClient.Do(req)
-				if doErr != nil {
-					uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
-				}
+		reqStart := time.Now()
+		var resp *http.Response
+		var uErr *upstreampkg.Error
+		if e.Upstream != nil {
+			resp, uErr = e.Upstream.Do(req)
+		} else {
+			var doErr error
+			resp, doErr = httpClient.Do(req)
+			if doErr != nil {
+				uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
 			}
+		}
+		upstreamLatency := time.Since(reqStart)
 
-			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+		if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
 				if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
@@ -287,19 +289,30 @@ func (e *Executor) executeOpenAI(
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-				if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
-					slog.Info("model_not_found skip offer",
+			if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
+				if upstreamLatency > 10*time.Second {
+					slog.Warn("model_not_found reclassified as transient (slow upstream response)",
 						"credential_id", cand.CredentialID,
 						"model", cand.RawModel,
 						"status", resp.StatusCode,
+						"upstream_latency_ms", upstreamLatency.Milliseconds(),
 						"body_preview", string(body[:min(n, 120)]),
 					)
-					return nil, &modelNotFoundError{
-						credentialID: cand.CredentialID,
-						rawModel:     cand.RawModel,
-						body:         string(body[:n]),
-					}
+					return nil, &retryableError{err: fmt.Errorf("upstream %d model_not_found after %dms (slow, reclassified transient)", resp.StatusCode, upstreamLatency.Milliseconds())}
 				}
+				slog.Info("model_not_found skip offer",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"status", resp.StatusCode,
+					"upstream_latency_ms", upstreamLatency.Milliseconds(),
+					"body_preview", string(body[:min(n, 120)]),
+				)
+				return nil, &modelNotFoundError{
+					credentialID: cand.CredentialID,
+					rawModel:     cand.RawModel,
+					body:         string(body[:n]),
+				}
+			}
 
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 					resp.StatusCode != 429 && resp.StatusCode != 401 &&

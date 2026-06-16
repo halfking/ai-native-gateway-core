@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	maxRetries      = 2
-	retryBaseDelay  = 500 * time.Millisecond
-	defaultTimeout  = 120 * time.Second
-	connectTimeout  = 10 * time.Second
+	maxRetries       = 2
+	retryBaseDelay   = 500 * time.Millisecond
+	defaultTimeout   = 120 * time.Second
+	connectTimeout   = 10 * time.Second
+	headerTimeout    = 60 * time.Second
 )
 
 type ErrorKind = errorsx.ErrorKind
@@ -62,8 +63,9 @@ func New() *Client {
 		hc: &http.Client{
 			Timeout: defaultTimeout,
 			Transport: &http.Transport{
-				Proxy: proxy.ProxyFunc(),
-				IdleConnTimeout: 90 * time.Second,
+				Proxy:               proxy.ProxyFunc(),
+				IdleConnTimeout:     90 * time.Second,
+				ResponseHeaderTimeout: headerTimeout,
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
 					KeepAlive: 30 * time.Second,
