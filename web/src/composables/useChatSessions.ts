@@ -10,6 +10,8 @@ export interface ChatSession {
   id: string
   taskId: string
   gwSessionId: string | null
+  /** API key id that owns gwSessionId; mismatch → discard gw session */
+  apiKeyId: number | null
   title: string
   messages: ChatMessage[]
   model: string
@@ -42,12 +44,20 @@ function titleFromFirstUserMessage(messages: ChatMessage[]): string {
   return t.length <= TITLE_MAX_LEN ? t : `${t.slice(0, TITLE_MAX_LEN)}…`
 }
 
+function normalizeSession(raw: ChatSession): ChatSession {
+  return {
+    ...raw,
+    apiKeyId: raw.apiKeyId ?? null,
+    gwSessionId: raw.apiKeyId == null && raw.gwSessionId ? null : (raw.gwSessionId ?? null),
+  }
+}
+
 function loadAll(): ChatSession[] {
   try {
     const raw = localStorage.getItem(storageKey())
     if (!raw) return []
     const parsed = JSON.parse(raw) as ChatSession[]
-    return Array.isArray(parsed) ? parsed : []
+    return Array.isArray(parsed) ? parsed.map(normalizeSession) : []
   } catch {
     return []
   }
@@ -75,6 +85,7 @@ export function useChatSessions() {
       id: newSessionId(),
       taskId: newTaskId(),
       gwSessionId: null,
+      apiKeyId: null,
       title: '新对话',
       messages: [],
       model,
@@ -109,12 +120,16 @@ export function useChatSessions() {
     return createSession(model)
   }
 
-  function updateActive(patch: Partial<Pick<ChatSession, 'messages' | 'model' | 'gwSessionId' | 'title'>>) {
+  function updateActive(
+    patch: Partial<Pick<ChatSession, 'messages' | 'model' | 'gwSessionId' | 'apiKeyId' | 'taskId' | 'title'>>,
+  ) {
     const s = activeSession.value
     if (!s) return
     if (patch.messages !== undefined) s.messages = patch.messages
     if (patch.model !== undefined) s.model = patch.model
     if (patch.gwSessionId !== undefined) s.gwSessionId = patch.gwSessionId
+    if (patch.apiKeyId !== undefined) s.apiKeyId = patch.apiKeyId
+    if (patch.taskId !== undefined) s.taskId = patch.taskId
     if (patch.title !== undefined) s.title = patch.title
     s.updatedAt = Date.now()
     if (s.messages.length > 0 && s.title === '新对话') {
@@ -123,8 +138,48 @@ export function useChatSessions() {
     persist()
   }
 
-  function setGwSessionId(gwSessionId: string) {
-    updateActive({ gwSessionId })
+  function setGwSessionId(gwSessionId: string, apiKeyId?: number | null) {
+    updateActive({
+      gwSessionId,
+      ...(apiKeyId !== undefined ? { apiKeyId } : {}),
+    })
+  }
+
+  /** Drop gateway session binding when API key changes or ownership mismatches. */
+  function resetGatewayBinding(apiKeyId: number | null) {
+    const s = activeSession.value
+    if (!s) return
+    if (s.apiKeyId === apiKeyId && s.gwSessionId) return
+    updateActive({
+      apiKeyId,
+      gwSessionId: null,
+      taskId: newTaskId(),
+    })
+  }
+
+  function ensureSessionApiKey(apiKeyId: number): { gwSessionId: string | null; taskId: string } {
+    const s = activeSession.value ?? ensureActive()
+    if (s.apiKeyId != null && s.apiKeyId !== apiKeyId) {
+      updateActive({ apiKeyId, gwSessionId: null, taskId: newTaskId() })
+    } else if (s.apiKeyId == null) {
+      updateActive({ apiKeyId })
+    }
+    const current = activeSession.value!
+    return { gwSessionId: current.gwSessionId, taskId: current.taskId }
+  }
+
+  /** Drop gateway session bindings when switching API key. */
+  function clearAllGwSessionIds() {
+    let changed = false
+    for (const s of sessions.value) {
+      if (s.gwSessionId || s.apiKeyId != null) {
+        s.gwSessionId = null
+        s.apiKeyId = null
+        s.taskId = newTaskId()
+        changed = true
+      }
+    }
+    if (changed) persist()
   }
 
   // Reload when user identity changes (login/logout).
@@ -151,6 +206,9 @@ export function useChatSessions() {
     startNewSession,
     updateActive,
     setGwSessionId,
+    resetGatewayBinding,
+    ensureSessionApiKey,
+    clearAllGwSessionIds,
     titleFromFirstUserMessage,
   }
 }

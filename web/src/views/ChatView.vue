@@ -13,8 +13,12 @@ const {
   showPicker,
   candidateKeys,
   picking,
+  selectedKeyId,
+  selectedKeyMeta,
   resolve: resolveApiKey,
   selectKey,
+  openPicker,
+  formatApiKeyLabel,
 } = useGatewayApiKey()
 const {
   sessions,
@@ -24,6 +28,8 @@ const {
   startNewSession,
   updateActive,
   setGwSessionId,
+  ensureSessionApiKey,
+  clearAllGwSessionIds,
 } = useChatSessions()
 
 const popularModels = ref<PopularModel[]>([])
@@ -38,6 +44,12 @@ const selectedModel = computed({
 })
 
 const messages = computed(() => activeSession.value?.messages ?? [])
+
+const currentKeyLabel = computed(() => {
+  if (selectedKeyMeta.value) return formatApiKeyLabel(selectedKeyMeta.value)
+  const match = candidateKeys.value.find((k) => k.id === selectedKeyId.value)
+  return match ? formatApiKeyLabel(match) : selectedKeyId.value ? `密钥 #${selectedKeyId.value}` : ''
+})
 
 onMounted(async () => {
   try {
@@ -68,9 +80,28 @@ function formatSessionTime(ts: number): string {
 }
 
 async function onSelectApiKey(id: number) {
+  const prevId = selectedKeyId.value
   const ok = await selectKey(id)
-  if (ok) sendError.value = ''
+  if (ok) {
+    if (prevId != null && prevId !== id) {
+      clearAllGwSessionIds()
+    }
+    sendError.value = ''
+  }
 }
+
+async function onKeySelectorChange(e: Event) {
+  const raw = (e.target as HTMLSelectElement).value
+  const id = Number.parseInt(raw, 10)
+  if (!Number.isFinite(id) || id <= 0) return
+  await onSelectApiKey(id)
+}
+
+watch(selectedKeyId, (id, prev) => {
+  if (id != null && prev != null && id !== prev) {
+    clearAllGwSessionIds()
+  }
+})
 
 async function send() {
   const text = input.value.trim()
@@ -82,8 +113,14 @@ async function send() {
     sendError.value = keyError.value || '无法获取 API 密钥'
     return
   }
+  if (!selectedKeyId.value) {
+    sendError.value = '无法确定 API 密钥，请切换或重新选择'
+    openPicker()
+    return
+  }
 
-  const session = activeSession.value
+  const { gwSessionId, taskId } = ensureSessionApiKey(selectedKeyId.value)
+  const session = activeSession.value!
   const nextMessages = [...session.messages, { role: 'user' as const, content: text }]
   updateActive({ messages: nextMessages })
   input.value = ''
@@ -99,8 +136,8 @@ async function send() {
       apiKey: key,
       model: selectedModel.value,
       messages: nextMessages,
-      taskId: session.taskId,
-      gwSessionId: session.gwSessionId,
+      taskId,
+      gwSessionId,
       onDelta: (delta) => {
         const current = activeSession.value
         if (!current || current.id !== session.id) return
@@ -118,7 +155,7 @@ async function send() {
       updateActive({ messages: finalMsgs })
     }
     if (result.gwSessionId) {
-      setGwSessionId(result.gwSessionId)
+      setGwSessionId(result.gwSessionId, selectedKeyId.value)
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : '发送失败'
@@ -156,6 +193,32 @@ function onKeydown(e: KeyboardEvent) {
         <p class="chat-subtitle">通过 OpenAI 兼容接口直接与网关模型对话</p>
       </div>
       <div class="chat-controls">
+        <div v-if="apiKey && !keyLoading" class="key-indicator">
+          <span class="key-indicator__label">密钥</span>
+          <span class="key-indicator__value" :title="currentKeyLabel">{{ currentKeyLabel || '已加载' }}</span>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="sending || picking"
+            @click="openPicker"
+          >
+            切换密钥
+          </button>
+        </div>
+        <label v-if="apiKey && candidateKeys.length > 1" class="model-label key-label">
+          快速切换
+          <select
+            class="model-select key-select"
+            :value="selectedKeyId ?? ''"
+            :disabled="sending || picking || keyLoading"
+            @change="onKeySelectorChange"
+          >
+            <option v-if="!selectedKeyId" disabled value="">选择密钥…</option>
+            <option v-for="k in candidateKeys" :key="k.id" :value="k.id">
+              {{ formatApiKeyLabel(k) }}
+            </option>
+          </select>
+        </label>
         <label class="model-label">
           模型
           <select v-model="selectedModel" class="model-select" :disabled="sending">
@@ -303,6 +366,41 @@ function onKeydown(e: KeyboardEvent) {
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
+}
+
+.key-label {
+  flex-wrap: wrap;
+}
+
+.key-select {
+  min-width: 180px;
+  max-width: 280px;
+}
+
+.key-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.08);
+  max-width: min(360px, 100%);
+}
+
+.key-indicator__label {
+  font-size: 12px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.key-indicator__value {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .chat-body {
