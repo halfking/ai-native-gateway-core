@@ -1,9 +1,11 @@
 // api-autoroute.ts — v2.0 auto-route admin API bindings.
 // Backend endpoints: admin/auto_route.go RegisterAutoRouteRoutes
 
+import { getKeys, revealKey, type ApiKey } from './api'
 import { store, authBearer } from './store'
 
 const BASE = ''
+let _relayApiKeyCache = ''
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'Authorization': `Bearer ${authBearer()}` }
@@ -350,12 +352,13 @@ export async function simulateAutoRoute(prompt: string, profile: string, hint?: 
   error?: string
 }> {
   try {
-    // This hits the relay endpoint /v1/chat/completions, NOT an admin API.
-    // Relay auth consumes a real sk-... API key (KeyVerifier DB lookup), not
-    // the admin JWT, so store.apiKey is intentional here even when logged in
-    // via JWT. Do not switch this to authBearer().
+    const relayApiKey = await resolveRelayApiKey()
+    if (!relayApiKey) {
+      return { status: 0, error: '未找到可用的 sk-* 密钥，请先在「对话」页选择密钥或在「API 密钥」页创建可还原密钥。' }
+    }
+
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${store.apiKey}`,
+      'Authorization': `Bearer ${relayApiKey}`,
       'Content-Type': 'application/json',
       'X-Gw-Auto-Profile': profile,
     }
@@ -380,4 +383,33 @@ export async function simulateAutoRoute(prompt: string, profile: string, hint?: 
   } catch (e) {
     return { status: 0, error: String(e) }
   }
+}
+
+function isActiveKey(k: ApiKey): boolean {
+  if (k.status !== 'active' || !k.enabled) return false
+  if (k.expires_at && new Date(k.expires_at).getTime() <= Date.now()) return false
+  return true
+}
+
+async function resolveRelayApiKey(): Promise<string> {
+  if (store.apiKey?.startsWith('sk-')) {
+    _relayApiKeyCache = store.apiKey
+    return store.apiKey
+  }
+  if (_relayApiKeyCache.startsWith('sk-')) return _relayApiKeyCache
+
+  const keys = await getKeys()
+  const active = keys.filter(isActiveKey)
+  for (const key of active) {
+    try {
+      const revealed = await revealKey(key.id)
+      if (revealed.api_key?.startsWith('sk-')) {
+        _relayApiKeyCache = revealed.api_key
+        return revealed.api_key
+      }
+    } catch {
+      // continue trying next key
+    }
+  }
+  return ''
 }
