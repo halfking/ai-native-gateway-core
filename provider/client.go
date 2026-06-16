@@ -393,7 +393,15 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}
-	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{modelname.NormalizeRouteKey(model)}}, nil
+	stdName := modelname.NormalizeRouteKey(model)
+	if stdName != "" {
+		_, _ = c.dbPool.Exec(ctx, `
+			INSERT INTO models_canonical (canonical_name, family, source, status)
+			VALUES ($1, 'unknown', 'auto_discovered', 'active')
+			ON CONFLICT (canonical_name) DO NOTHING
+		`, stdName)
+	}
+	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{stdName}}, nil
 }
 
 func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile string) ([]string, error) {
