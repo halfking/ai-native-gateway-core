@@ -119,11 +119,11 @@ async function onSelectApiKey(id: number, opts?: { autoRetry?: boolean }) {
   }
   sendError.value = ''
 
+  closeKeyModal()
   if (opts?.autoRetry && pendingRetryText.value && !autoRetriedForMessage.value) {
     const retryText = pendingRetryText.value
     pendingRetryText.value = null
     autoRetriedForMessage.value = true
-    closeKeyModal()
     await send({ text: retryText, skipAppendUser: true, isAutoRetry: true })
   }
   return true
