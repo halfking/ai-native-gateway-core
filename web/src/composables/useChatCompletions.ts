@@ -13,6 +13,8 @@ export interface ChatCompletionOptions {
   gwSessionId: string | null
   maxTokens?: number
   onDelta?: (text: string) => void
+  /** Internal: one-shot retry after SESSION_FORBIDDEN */
+  _sessionRetry?: boolean
 }
 
 export interface ChatCompletionResult {
@@ -112,7 +114,23 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     } catch {
       msg = raw || msg
     }
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    const msgStr = typeof msg === 'string' ? msg : JSON.stringify(msg)
+    const code = (() => {
+      try {
+        const j = JSON.parse(raw)
+        return j?.error?.code as string | undefined
+      } catch {
+        return undefined
+      }
+    })()
+    if (
+      !opts._sessionRetry &&
+      resp.status === 403 &&
+      (code === 'SESSION_FORBIDDEN' || msgStr.includes('session not owned'))
+    ) {
+      return chatCompletion({ ...opts, gwSessionId: null, _sessionRetry: true })
+    }
+    throw new Error(msgStr)
   }
 
   const ct = resp.headers.get('Content-Type') ?? ''
