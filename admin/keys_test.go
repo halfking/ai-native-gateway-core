@@ -342,3 +342,23 @@ func TestLookupKeyConflict_MethodAndNilDB(t *testing.T) {
 	})
 }
 
+func TestIsRevealableKeyCiphertext(t *testing.T) {
+	tests := []struct {
+		name string
+		ct   string
+		want bool
+	}{
+		{"empty", "", false},
+		{"probe placeholder", "test-cipher", false},
+		{"v1 envelope prefix", "v1:legacy:abc", true},
+		{"short legacy", "gAAAAA", false},
+		{"plausible fernet length", strings.Repeat("A", 57), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRevealableKeyCiphertext(tt.ct); got != tt.want {
+				t.Fatalf("isRevealableKeyCiphertext(%q) = %v, want %v", tt.ct, got, tt.want)
+			}
+		})
+	}
+}
