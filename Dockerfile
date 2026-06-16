@@ -9,7 +9,11 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
 FROM --platform=linux/amd64 kx-base:go-vue AS builder
 
-RUN apk add --no-cache git ca-certificates nodejs npm
+# Defensive: kx-base:go-vue (Alpine 3.23) already provides git/ca-certificates,
+# nodejs + npm. Reinstall only if missing so the build works on any base variant.
+RUN apk add --no-cache git ca-certificates nodejs npm 2>/dev/null \
+ || apk add --no-cache git ca-certificates 2>/dev/null \
+ || (apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates nodejs npm && rm -rf /var/lib/apt/lists/*)
 
 WORKDIR /src
 COPY go.mod go.sum ./

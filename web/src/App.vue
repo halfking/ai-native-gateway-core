@@ -124,21 +124,24 @@ function logout() {
           </RouterLink>
         </template>
       </nav>
-      <div class="sidebar-footer">
-        <div class="user-badge" v-if="store.userInfo">
-          <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-          <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
-        </div>
-        <div class="version-info" v-if="versionInfo.version">
-          <span class="version-tag">v{{ versionInfo.version }}</span>
-          <span class="version-build" v-if="versionInfo.build_seq != null">build #{{ versionInfo.build_seq }}</span>
-          <span class="version-date" v-if="versionInfo.build_date">{{ versionInfo.build_date }}</span>
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
-      </div>
     </aside>
     <main class="main-content">
-      <RouterView />
+      <header class="main-header">
+        <div class="main-header-right">
+          <div class="header-user" v-if="store.userInfo">
+            <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
+            <span class="user-role">{{ store.userInfo.role === 'super_admin' ? '超级管理员' : '租户管理员' }}</span>
+          </div>
+          <div class="header-version" v-if="versionInfo.version">
+            <span class="version-tag">v{{ versionInfo.version }}</span>
+            <span class="version-build" v-if="versionInfo.build_seq != null">build #{{ versionInfo.build_seq }}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm" @click="logout">退出登录</button>
+        </div>
+      </header>
+      <section class="main-body">
+        <RouterView />
+      </section>
     </main>
   </div>
   <div v-else class="guest-layout">
@@ -195,6 +198,7 @@ function logout() {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -212,21 +216,6 @@ function logout() {
 
 .nav-icon { font-size: 15px; }
 
-.sidebar-footer {
-  padding: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.user-badge {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: rgba(99, 102, 241, 0.08);
-  border-radius: 6px;
-}
-
 .user-name {
   font-size: 12px;
   font-weight: 600;
@@ -236,16 +225,6 @@ function logout() {
 .user-role {
   font-size: 10px;
   color: var(--muted);
-}
-
-.version-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: rgba(99, 102, 241, 0.08);
-  border-radius: 6px;
 }
 
 .version-tag {
@@ -262,12 +241,51 @@ function logout() {
   opacity: 0.85;
 }
 
-.version-date {
-  font-size: 10px;
-  color: var(--muted);
+.main-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.main-content {
+.main-header {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 56px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+.main-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.header-user {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+}
+
+.header-version {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+}
+
+.main-body {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
@@ -312,6 +330,24 @@ function logout() {
 }
 
 @media (max-width: 640px) {
+  .main-header {
+    padding: 10px 12px;
+  }
+
+  .main-body {
+    padding: 12px;
+  }
+
+  .main-header-right {
+    gap: 8px;
+  }
+
+  .header-version {
+    order: 3;
+    width: 100%;
+    justify-content: flex-end;
+  }
+
   .guest-header {
     padding: 12px 16px;
   }
