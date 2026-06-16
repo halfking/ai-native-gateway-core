@@ -1,24 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { getAvailableModels, type PopularModel } from '../api'
+import { chatCompletion } from '../composables/useChatCompletions'
+import { useChatSessions } from '../composables/useChatSessions'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
 
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-}
-
 const { apiKey, loading: keyLoading, error: keyError, resolve: resolveApiKey } = useGatewayApiKey()
+const {
+  sessions,
+  activeId,
+  activeSession,
+  switchSession,
+  startNewSession,
+  updateActive,
+  setGwSessionId,
+} = useChatSessions()
 
-const selectedModel = ref('auto')
 const popularModels = ref<PopularModel[]>([])
-const messages = ref<ChatMessage[]>([])
 const input = ref('')
 const sending = ref(false)
 const sendError = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
-const baseUrl = computed(() => `${window.location.origin}/v1`)
+const selectedModel = computed({
+  get: () => activeSession.value?.model ?? 'auto',
+  set: (v: string) => updateActive({ model: v }),
+})
+
+const messages = computed(() => activeSession.value?.messages ?? [])
 
 onMounted(async () => {
   try {
@@ -29,14 +38,28 @@ onMounted(async () => {
   }
 })
 
+watch(activeId, async () => {
+  sendError.value = ''
+  await scrollToBottom()
+})
+
 async function scrollToBottom() {
   await nextTick()
   messagesEl.value?.scrollTo({ top: messagesEl.value.scrollHeight, behavior: 'smooth' })
 }
 
+function formatSessionTime(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
 async function send() {
   const text = input.value.trim()
-  if (!text || sending.value) return
+  if (!text || sending.value || !activeSession.value) return
 
   sendError.value = ''
   const key = apiKey.value || (await resolveApiKey())
@@ -45,58 +68,50 @@ async function send() {
     return
   }
 
-  messages.value.push({ role: 'user', content: text })
+  const session = activeSession.value
+  const nextMessages = [...session.messages, { role: 'user' as const, content: text }]
+  updateActive({ messages: nextMessages })
   input.value = ''
   await scrollToBottom()
 
   sending.value = true
-  const assistantIdx = messages.value.length
-  messages.value.push({ role: 'assistant', content: '' })
-
-  const payloadMessages = messages.value
-    .filter((_, i) => i !== assistantIdx)
-    .map(({ role, content }) => ({ role, content }))
-
-  const payload = {
-    model: selectedModel.value,
-    messages: payloadMessages,
-    max_tokens: 2048,
-  }
+  const assistantIdx = nextMessages.length
+  const withPlaceholder = [...nextMessages, { role: 'assistant' as const, content: '' }]
+  updateActive({ messages: withPlaceholder })
 
   try {
-    const resp = await fetch(`${baseUrl.value}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
+    const result = await chatCompletion({
+      apiKey: key,
+      model: selectedModel.value,
+      messages: nextMessages,
+      taskId: session.taskId,
+      gwSessionId: session.gwSessionId,
+      onDelta: (delta) => {
+        const current = activeSession.value
+        if (!current || current.id !== session.id) return
+        const msgs = [...current.messages]
+        if (msgs[assistantIdx]) {
+          msgs[assistantIdx] = { ...msgs[assistantIdx], content: msgs[assistantIdx].content + delta }
+          updateActive({ messages: msgs })
+        }
       },
-      body: JSON.stringify({ ...payload, stream: false }),
     })
 
-    const raw = await resp.text()
-    if (!resp.ok) {
-      let msg = `HTTP ${resp.status}`
-      try {
-        const j = JSON.parse(raw)
-        msg = j?.error?.message || j?.error || raw || msg
-      } catch {
-        msg = raw || msg
-      }
-      throw new Error(msg)
+    const finalMsgs = [...(activeSession.value?.messages ?? withPlaceholder)]
+    if (finalMsgs[assistantIdx]) {
+      finalMsgs[assistantIdx] = { role: 'assistant', content: result.content }
+      updateActive({ messages: finalMsgs })
     }
-
-    try {
-      const data = JSON.parse(raw)
-      const content = data?.choices?.[0]?.message?.content
-      messages.value[assistantIdx].content = content || raw.slice(0, 2000) || '（空响应）'
-    } catch {
-      messages.value[assistantIdx].content = raw.slice(0, 2000) || '（空响应）'
+    if (result.gwSessionId) {
+      setGwSessionId(result.gwSessionId)
     }
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : '发送失败'
     sendError.value = msg
-    if (!messages.value[assistantIdx].content) {
-      messages.value[assistantIdx].content = `错误：${msg}`
+    const errMsgs = [...(activeSession.value?.messages ?? withPlaceholder)]
+    if (errMsgs[assistantIdx] && !errMsgs[assistantIdx].content) {
+      errMsgs[assistantIdx] = { role: 'assistant', content: `错误：${msg}` }
+      updateActive({ messages: errMsgs })
     }
   } finally {
     sending.value = false
@@ -105,8 +120,9 @@ async function send() {
 }
 
 function clearChat() {
-  messages.value = []
+  startNewSession(selectedModel.value)
   sendError.value = ''
+  input.value = ''
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -150,41 +166,71 @@ function onKeydown(e: KeyboardEvent) {
       <RouterLink to="/keys" class="link-inline">前往 API 密钥</RouterLink>
     </div>
 
-    <div class="chat-layout card">
-      <div ref="messagesEl" class="chat-messages">
-        <div v-if="!messages.length" class="chat-empty">
-          <p>输入消息开始对话。选择 <code>auto</code> 将由网关自动挑选合适模型。</p>
+    <div class="chat-body">
+      <aside class="session-sidebar card">
+        <div class="session-sidebar__head">
+          <span class="session-sidebar__title">会话</span>
+          <button type="button" class="btn btn-ghost btn-sm" :disabled="sending" @click="clearChat">
+            + 新建
+          </button>
         </div>
-        <div
-          v-for="(msg, i) in messages"
-          :key="i"
-          class="chat-bubble"
-          :class="msg.role"
-        >
-          <div class="bubble-role">{{ msg.role === 'user' ? '你' : '助手' }}</div>
-          <div class="bubble-content">{{ msg.content }}</div>
+        <ul class="session-list">
+          <li
+            v-for="s in sessions"
+            :key="s.id"
+            class="session-item"
+            :class="{ active: s.id === activeId }"
+          >
+            <button
+              type="button"
+              class="session-item__btn"
+              :disabled="sending"
+              @click="switchSession(s.id)"
+            >
+              <span class="session-item__title">{{ s.title }}</span>
+              <span class="session-item__meta">{{ formatSessionTime(s.updatedAt) }}</span>
+            </button>
+          </li>
+          <li v-if="!sessions.length" class="session-empty">暂无会话</li>
+        </ul>
+      </aside>
+
+      <div class="chat-layout card">
+        <div ref="messagesEl" class="chat-messages">
+          <div v-if="!messages.length" class="chat-empty">
+            <p>输入消息开始对话。选择 <code>auto</code> 将由网关自动挑选合适模型。</p>
+          </div>
+          <div
+            v-for="(msg, i) in messages"
+            :key="i"
+            class="chat-bubble"
+            :class="msg.role"
+          >
+            <div class="bubble-role">{{ msg.role === 'user' ? '你' : '助手' }}</div>
+            <div class="bubble-content">{{ msg.content }}<span v-if="sending && i === messages.length - 1 && msg.role === 'assistant' && !msg.content" class="cursor-blink">▍</span></div>
+          </div>
         </div>
-      </div>
 
-      <div v-if="sendError" class="alert alert-danger chat-error">{{ sendError }}</div>
+        <div v-if="sendError" class="alert alert-danger chat-error">{{ sendError }}</div>
 
-      <div class="chat-input-row">
-        <textarea
-          v-model="input"
-          class="chat-input"
-          rows="3"
-          placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-          :disabled="sending || keyLoading"
-          @keydown="onKeydown"
-        />
-        <button
-          type="button"
-          class="btn btn-primary send-btn"
-          :disabled="sending || keyLoading || !input.trim()"
-          @click="send"
-        >
-          {{ sending ? '生成中…' : '发送' }}
-        </button>
+        <div class="chat-input-row">
+          <textarea
+            v-model="input"
+            class="chat-input"
+            rows="3"
+            placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+            :disabled="sending || keyLoading"
+            @keydown="onKeydown"
+          />
+          <button
+            type="button"
+            class="btn btn-primary send-btn"
+            :disabled="sending || keyLoading || !input.trim()"
+            @click="send"
+          >
+            {{ sending ? '生成中…' : '发送' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -235,6 +281,88 @@ function onKeydown(e: KeyboardEvent) {
   background: var(--bg);
   color: var(--text);
   font-size: 13px;
+}
+
+.chat-body {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  min-height: 0;
+}
+
+.session-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.session-sidebar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-sidebar__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.session-item__btn {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-item__btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.session-item.active .session-item__btn {
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.session-item__title {
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item__meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.session-empty {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .chat-layout {
@@ -336,5 +464,16 @@ function onKeydown(e: KeyboardEvent) {
 .link-inline {
   margin-left: 8px;
   color: var(--accent-h);
+}
+
+@media (max-width: 768px) {
+  .chat-body {
+    flex-direction: column;
+  }
+
+  .session-sidebar {
+    width: 100%;
+    max-height: 140px;
+  }
 }
 </style>
