@@ -187,9 +187,9 @@ func TestClassifyError_EOFWithoutDoneIsStreamTimeout(t *testing.T) {
 	}
 }
 
-func TestClassifyResponseBody_ModelNotFoundGo404(t *testing.T) {
-	if got := ClassifyResponseBody([]byte("404 page not found")); got != KindModelNotFound {
-		t.Fatalf("expected KindModelNotFound for Go default 404 body, got %q", got)
+func TestClassifyResponseBody_GoDefault404_IsTransient(t *testing.T) {
+	if got := ClassifyResponseBody([]byte("404 page not found")); got != "" {
+		t.Fatalf("expected empty (no match) for Go default 404 body, got %q; generic web-server 404 must NOT be classified as KindModelNotFound", got)
 	}
 }
 
