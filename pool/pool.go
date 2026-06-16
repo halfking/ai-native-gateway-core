@@ -110,6 +110,7 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		MaxIdleConns:        maxConnsPerHost,
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		IdleConnTimeout:     idleConnTimeout,
+		ResponseHeaderTimeout: 60 * time.Second,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
