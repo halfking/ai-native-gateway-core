@@ -41,7 +41,7 @@ export function formatSessionExport(opts: {
   usage?: TokenUsage
 }): string {
   const lines = [
-    title,
+    opts.title,
     `模型: ${opts.modelLabel}`,
     `导出时间: ${new Date().toLocaleString('zh-CN')}`,
   ]
