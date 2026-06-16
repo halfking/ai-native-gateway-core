@@ -104,3 +104,34 @@ VALUES
     ('topup-medium', 'medium', '加油包 · 中', 5000, 55000, 2),
     ('topup-large', 'large', '加油包 · 大', 10000, 120000, 3)
 ON CONFLICT (code) DO NOTHING;
+
+--
+-- Round 33 (2026-06-16) — Pattern A RLS for billing tables.
+-- Note: request_logs is the hottest write path (every LLM call writes
+-- one row). RLS USING clause is evaluated on every query; for INSERT
+-- the GUC must be set on the connection BEFORE the INSERT. R33 assumes
+-- the application already sets app.current_tenant per connection.
+-- If write performance degrades, consider adding a service-role
+-- bypass policy (CREATE POLICY ... AS PERMISSIVE FOR ALL TO service_role).
+--
+
+-- request_logs: every LLM request is tenant-scoped (ALTER TABLE earlier
+-- in this migration added tenant_id; RLS keeps SELECTs filtered)
+ALTER TABLE public.request_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_request_logs ON public.request_logs
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+-- tenant_credit_wallets: per-tenant balance, only own tenant visible
+ALTER TABLE public.tenant_credit_wallets ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wallets
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+-- tenant_subscriptions: subscription history per tenant
+ALTER TABLE public.tenant_subscriptions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_tenant_subscriptions ON public.tenant_subscriptions
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+-- credit_ledger: every credit movement is tenant-scoped
+ALTER TABLE public.credit_ledger ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
