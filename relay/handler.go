@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"go.opentelemetry.io/otel/trace"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/auth"
@@ -117,6 +119,7 @@ type ChatHandler struct {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
 		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
+		BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 	}
 }
 
@@ -161,10 +164,11 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
-		Get(ctx context.Context, id string) (*sessions.Session, error)
-		Touch(ctx context.Context, id string) error
-		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
-	}) {
+	Get(ctx context.Context, id string) (*sessions.Session, error)
+	Touch(ctx context.Context, id string) error
+	CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
+	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
+}) {
 	h.sessionGetter = sg
 }
 
@@ -291,6 +295,15 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
+
+		// Round 38 (2026-06-16) — emit multi-tenant OTel span
+		// attributes per docs/multi-tenant-otel-design.md §3.1.
+		// llm-gateway-go is Pattern A (direct tenant_id from
+		// auth.KeyInfo). Every authenticated request now carries
+		// tenant.id so production debugging can filter Jaeger.
+		span := trace.SpanFromContext(r.Context())
+		observability.SetTenantAttrs(span, keyInfo.TenantID, "api_key",
+			fmt.Sprintf("key_%d", keyInfo.ID))
 	}
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
@@ -388,9 +401,21 @@ func (h *ChatHandler) serveWithExecutor(
 			sessionInfo = si
 			logCtx.SetSession(si)
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
-				logCtx.SetError("session_forbidden", "session not owned by this api key")
-				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
-				return
+				if si.APIKeyID == 0 {
+					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
+						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
+						logCtx.SetError("session_forbidden", "session not owned by this api key")
+						writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+						return
+					}
+					si.APIKeyID = keyInfo.ID
+					si.TenantID = keyInfo.TenantID
+					sessionInfo = si
+				} else {
+					logCtx.SetError("session_forbidden", "session not owned by this api key")
+					writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+					return
+				}
 			}
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -582,7 +607,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if sessionInfo != nil {
 		sessionKey = sessionInfo.SessionKey
 	}
-	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed())
+	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
 
 	upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
 	if convErr != nil {
