@@ -21,6 +21,8 @@ export function useGatewayApiKey() {
   const loading = ref(false)
   const error = ref('')
   const showPicker = ref(false)
+  const showKeyModal = ref(false)
+  const keyModalReason = ref<'session-forbidden' | 'manual'>('manual')
   const candidateKeys = ref<ApiKey[]>([])
   const picking = ref(false)
   const selectedKeyId = ref<number | null>(getPreferredChatKeyId())
@@ -96,6 +98,16 @@ export function useGatewayApiKey() {
     void loadActiveKeys()
   }
 
+  function openKeyModal(reason: 'session-forbidden' | 'manual' = 'manual') {
+    keyModalReason.value = reason
+    showKeyModal.value = true
+    void loadActiveKeys()
+  }
+
+  function closeKeyModal() {
+    showKeyModal.value = false
+  }
+
   async function resolve(): Promise<string> {
     loading.value = true
     error.value = ''
@@ -162,6 +174,8 @@ export function useGatewayApiKey() {
     loading,
     error,
     showPicker,
+    showKeyModal,
+    keyModalReason,
     candidateKeys,
     picking,
     selectedKeyId,
@@ -169,6 +183,9 @@ export function useGatewayApiKey() {
     resolve,
     selectKey,
     openPicker,
+    openKeyModal,
+    closeKeyModal,
+    loadActiveKeys,
     formatApiKeyLabel,
   }
 }
