@@ -74,6 +74,47 @@ export function login(username: string, password: string) {
   return req<LoginResponse>('POST', '/api/auth/token', { username, password })
 }
 
+// ── Gateway sessions (OpenAI-compatible /v1/sessions) ───────────────────
+
+export interface GatewaySessionCreated {
+  session_id: string
+  session_key: string
+  expires_at: string
+  created_at: string
+}
+
+/** Create a gw_ session for /v1/chat/completions (sk-* auth, not JWT). */
+export async function createGatewaySession(
+  apiKey: string,
+  taskId?: string,
+): Promise<GatewaySessionCreated> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  }
+  if (taskId) headers['X-Gw-Task-Id'] = taskId
+  const deviceSeed = localStorage.getItem('llmgw_device_seed') ?? 'default'
+  headers['X-Device-Seed'] = deviceSeed
+
+  const r = await fetch('/v1/sessions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(taskId ? { task_id: taskId } : {}),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    let msg = `HTTP ${r.status}`
+    try {
+      const j = JSON.parse(text)
+      msg = j?.error?.message || text || msg
+    } catch {
+      msg = text || msg
+    }
+    throw new Error(msg)
+  }
+  return r.json()
+}
+
 // ── Catalog ──────────────────────────────────────────────────────────────
 
 export interface CatalogEntry {
