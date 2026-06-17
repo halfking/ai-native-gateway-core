@@ -281,9 +281,28 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   color: var(--text);
 }
 .tabs .tab-btn.active {
-  color: var(--text);
+  color: var(--accent);
   border-bottom-color: var(--accent);
   font-weight: 600;
+}
+
+/* Tab badge — small red count next to a tab label (e.g. probe failures) */
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  line-height: 18px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 9px;
+  vertical-align: middle;
+}
+.tab-badge-red {
+  background: #d73a49;
+  color: #fff;
 }
 
 /* Provider detail: top overview + settings tab share the same 3-column card row */
