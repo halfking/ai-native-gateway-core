@@ -10,6 +10,7 @@ import {
   getHotApiKeys,
   getModelDiscoveryStatus,
   getHealth,
+  getRecentModelFailures,
   type UsageSummary,
   type ModelUsage,
   type DashboardOverview,
@@ -25,11 +26,13 @@ const overview = ref<DashboardOverview | null>(null)
 const models  = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
 const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
+const recentModelFailures = ref<{ raw_model_name: string; creds_affected: number; total_failures: number; last_failed_at: string; sample_error_code: string }[]>([])
 const health = ref<HealthResponse | null>(null)
 const loading = ref(false)
 const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
 let healthPollTimer: ReturnType<typeof setInterval> | null = null
+let probeFailuresPollTimer: ReturnType<typeof setInterval> | null = null
 
 // Tenant info display
 const tenantLabel = computed(() => {
@@ -126,6 +129,15 @@ async function loadHealth() {
   }
 }
 
+async function loadRecentProbeFailures() {
+  try {
+    const r = await getRecentModelFailures({ limit: 10 })
+    recentModelFailures.value = r.models
+  } catch {
+    /* non-blocking */
+  }
+}
+
 function scheduleDiscoveryPoll() {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   discoveryPollTimer = setInterval(() => {
@@ -142,14 +154,24 @@ onMounted(() => {
   void load()
   void loadDiscoveryStatus()
   void loadHealth()
+  void loadRecentProbeFailures()
   scheduleDiscoveryPoll()
   scheduleHealthPoll()
+  scheduleProbeFailuresPoll()
 })
 
 onUnmounted(() => {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   if (healthPollTimer) clearInterval(healthPollTimer)
+  if (probeFailuresPollTimer) clearInterval(probeFailuresPollTimer)
 })
+
+function scheduleProbeFailuresPoll() {
+  if (probeFailuresPollTimer) clearInterval(probeFailuresPollTimer)
+  probeFailuresPollTimer = setInterval(() => {
+    void loadRecentProbeFailures()
+  }, 30000) // 30s — cheap endpoint
+}
 </script>
 
 <template>
@@ -203,6 +225,32 @@ onUnmounted(() => {
       <span>最近模型发现：{{ discoveryStatus.latest.status }}</span>
       <span>{{ fmtDate(discoveryStatus.latest.finished_at || discoveryStatus.latest.started_at) }}</span>
       <RouterLink to="/models">模型页</RouterLink>
+    </div>
+
+    <!-- 模型发现 · 最近测试失败计数（spec 2026-06-18-model-probe-rounds） -->
+    <div
+      v-if="recentModelFailures.length > 0"
+      class="probe-failures-banner"
+    >
+      <strong>模型发现 · 最近 6h 测试失败</strong>
+      <span class="probe-failures-count">
+        {{ recentModelFailures.reduce((s, m) => s + m.total_failures, 0) }} 次失败 ·
+        {{ recentModelFailures.length }} 个模型
+      </span>
+      <details class="probe-failures-details">
+        <summary>查看失败列表</summary>
+        <ul>
+          <li v-for="m in recentModelFailures" :key="m.raw_model_name">
+            <code class="mono-sm">{{ m.raw_model_name }}</code>
+            <span class="probe-failures-meta">
+              {{ m.total_failures }} 次 · 涉及 {{ m.creds_affected }} 个凭据 ·
+              最近 {{ fmtDate(m.last_failed_at) }} ·
+              错误 <code>{{ m.sample_error_code || '—' }}</code>
+            </span>
+          </li>
+        </ul>
+      </details>
+      <RouterLink to="/routing-v2?tab=resolve&row=model">路由全景</RouterLink>
     </div>
 
     <div class="stat-grid" v-if="summary && overview">
@@ -401,5 +449,55 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* Model probe failures (spec 2026-06-18-model-probe-rounds) */
+.probe-failures-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  background: rgba(215, 58, 73, 0.06);
+  border: 1px solid rgba(215, 58, 73, 0.30);
+  color: var(--text);
+}
+.probe-failures-banner strong {
+  color: var(--danger);
+}
+.probe-failures-count {
+  color: var(--text-secondary, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+.probe-failures-details {
+  flex: 1 1 100%;
+  margin-top: 4px;
+}
+.probe-failures-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+  user-select: none;
+}
+.probe-failures-details ul {
+  margin: 8px 0 0;
+  padding: 0 0 0 16px;
+  list-style: disc;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.probe-failures-details li {
+  margin: 2px 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.probe-failures-meta {
+  color: var(--text-secondary, #6b7280);
+  font-size: 11px;
 }
 </style>

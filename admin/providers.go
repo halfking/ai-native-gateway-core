@@ -259,6 +259,20 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "probe-history":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleProviderProbeHistory(w, r, providerID)
+	case "probe-history/recent-failures":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleProviderProbeHistoryRecentFailures(w, r, providerID)
+	case "probe-history/trigger":
+		h.handleProviderProbeHistoryTrigger(w, r, providerID)
 	case "batch-recover":
 		if r.Method == http.MethodPost {
 			h.batchRecoverCredentials(w, r, providerID)

@@ -381,6 +381,7 @@ func main() {
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
 	var defaultProbePicker *bg.DefaultProbePicker
+	var modelProbe *bg.ModelProbeRunner
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var taxonomySync *bg.TaxonomySync
@@ -410,6 +411,16 @@ func main() {
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
 			defaultProbePicker = bg.NewDefaultProbePicker(dbConn.Pool())
 			defaultProbePicker.Start(context.Background())
+
+			// 2026-06-18: per-model re-probe of failing bindings.  Runs
+			// every 10 minutes; flips the binding back to routable as
+			// soon as the upstream issue clears, but never overwrites
+			// manual_disable.
+			modelProbe = bg.NewModelProbeRunner(dbConn.Pool(), fernetKey)
+			if keyring != nil {
+				modelProbe.SetKeyring(keyring)
+			}
+			modelProbe.Start(context.Background())
 		}
 
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
@@ -554,6 +565,9 @@ func main() {
 		if adminHandler != nil {
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
+			if modelProbe != nil {
+				adminHandler.SetModelProbeRunner(modelProbe)
+			}
 			adminHandler.SetFpSlots(fpSlots)
 			adminHandler.SetPeakCollector(peakCollector)
 		}
@@ -707,6 +721,9 @@ func main() {
 	}
 	if credCycler != nil {
 		credCycler.Stop()
+	}
+	if modelProbe != nil {
+		modelProbe.Stop()
 	}
 	if taxonomySync != nil {
 		taxonomySync.Stop()

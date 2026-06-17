@@ -835,6 +835,66 @@ export function getRoutableSummary(providerId: number) {
   }>('GET', `/api/providers/${providerId}/routable-summary`)
 }
 
+// ── Probe history (per-model auto-test) ─────────────────────────────────
+
+export interface ProbeRun {
+  id: number
+  credential_id: number
+  raw_model_name: string
+  status: 'ok' | 'http_4xx' | 'http_5xx' | 'network' | 'auth' | 'skipped' | 'unknown'
+  http_status: number | null
+  error_code: string
+  error_message: string
+  latency_ms: number
+  state_change: 'recovered' | 'broke' | 'unchanged'
+  state_applied: boolean
+  triggered_by: 'scheduler' | 'manual'
+  created_at: string
+}
+
+export function getProviderProbeHistory(providerId: number, opts?: { limit?: number; status?: string }) {
+  const params = new URLSearchParams()
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  if (opts?.status) params.set('status', opts.status)
+  const qs = params.toString()
+  return req<{
+    provider_id: number
+    count: number
+    runs: ProbeRun[]
+  }>('GET', `/api/providers/${providerId}/probe-history${qs ? `?${qs}` : ''}`)
+}
+
+export function getProviderRecentProbeFailures(providerId: number) {
+  return req<{
+    provider_id: number
+    window: string
+    models: { raw_model_name: string; failed_count: number; last_failed_at: string; sample_error_code: string }[]
+  }>('GET', `/api/providers/${providerId}/probe-history/recent-failures`)
+}
+
+export function triggerProviderProbe(providerId: number, credentialId: number, rawModelName: string) {
+  return req<{ triggered: boolean }>('POST', `/api/providers/${providerId}/probe-history/trigger`, {
+    credential_id: credentialId,
+    raw_model_name: rawModelName,
+  })
+}
+
+export function getRecentModelFailures(opts?: { limit?: number }) {
+  const params = new URLSearchParams()
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  const qs = params.toString()
+  return req<{
+    window: string
+    models: {
+      raw_model_name: string
+      creds_affected: number
+      total_failures: number
+      last_failed_at: string
+      sample_error_code: string
+    }[]
+  }>('GET', `/api/routing/recent-model-failures${qs ? `?${qs}` : ''}`)
+}
+
 // ── Keys ─────────────────────────────────────────────────────────────────
 
 export interface ApiKey {

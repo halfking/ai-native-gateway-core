@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse } from '../api'
+import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
 import OverviewCards from './provider-detail/OverviewCards.vue'
 import CredsTab from './provider-detail/CredsTab.vue'
 import ModelsTab from './provider-detail/ModelsTab.vue'
 import LogsTab from './provider-detail/LogsTab.vue'
 import DiagTab from './provider-detail/DiagTab.vue'
 import SettingsTab from './provider-detail/SettingsTab.vue'
+import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +23,7 @@ const creds = ref<ProviderCredential[]>([])
 const loading = ref(false)
 const error = ref('')
 const tab = ref('creds')
+const probeFailureCount = ref(0)
 
 const diagLoading = ref(false)
 const diagResult = ref<DiagnoseProviderResponse | null>(null)
@@ -33,6 +35,14 @@ async function load() {
   try {
     provider.value = await getProviderDetail(providerId.value)
     creds.value = await getProviderCredentials(providerId.value)
+    // Best-effort: badge count for the "自动测试" tab. Failure here
+    // must not block the main load.
+    try {
+      const failures = await getProviderRecentProbeFailures(providerId.value)
+      probeFailureCount.value = failures.models.reduce((sum, m) => sum + m.failed_count, 0)
+    } catch {
+      probeFailureCount.value = 0
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -124,6 +134,16 @@ watch(providerId, () => {
         <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">模型</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">请求日志</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">诊断</button>
+        <button
+          type="button"
+          class="tab-btn"
+          :class="{ active: tab === 'probe' }"
+          @click="tab = 'probe'"
+          :title="'查看自动测试记录（每 10 分钟对失败绑定重新探测）'"
+        >
+          自动测试
+          <span v-if="probeFailureCount > 0" class="tab-badge tab-badge-red">{{ probeFailureCount }}</span>
+        </button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
       </div>
 
@@ -131,6 +151,7 @@ watch(providerId, () => {
       <ModelsTab v-if="tab==='models'" :provider-id="providerId" />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />
       <DiagTab v-if="tab==='diag'" :provider-id="providerId" />
+      <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" />
       <SettingsTab v-if="tab==='settings'" :provider="provider" @refresh="load" />
     </template>
   </div>

@@ -31,6 +31,7 @@ type Handler struct {
 	taxSync     *bg.TaxonomySync
 	probeV2     *bg.CredentialProbeV2    // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker   // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner     // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	fpSlots     *credentialfpslot.Manager
 	peakCollector interface {
 		Acquire(credID int64, model string)
@@ -136,6 +137,11 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 	h.probePicker = picker
 }
 
+// SetModelProbeRunner wires the per-model re-probe worker (spec
+// 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
+// without the manual-trigger endpoint if the worker isn't running.
+func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
 func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {
 	h.fpSlots = m
 }
@@ -220,6 +226,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
+	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
 	mux.HandleFunc("/api/routing/policy", h.superAdmin(h.handleRoutingPolicy))
 	mux.HandleFunc("/api/routing/featured", h.superAdmin(h.handleRoutingFeatured))
