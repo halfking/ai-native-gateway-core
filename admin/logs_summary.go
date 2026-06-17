@@ -187,10 +187,10 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 	args = append(args, tenantArgs...)
 
 	rows, err := h.db.Query(ctx, `
-		SELECT ts, request_preview, response_preview,
+		SELECT rl.ts, rl.request_preview, rl.response_preview,
 		       `+requestLogStatusExpr+` AS request_status,
-		       error_kind, client_model
-		FROM request_logs
+		       rl.error_kind, rl.client_model
+		FROM request_logs rl
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT 300
