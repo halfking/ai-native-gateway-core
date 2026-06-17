@@ -265,8 +265,15 @@ export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
 
-export function checkCredential(providerId: number, credId: number) {
-  return req<CredentialCheckResult>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
+export async function checkCredential(providerId: number, credId: number) {
+  const { task_id } = await req<{ task_id: number; status: string }>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/check`,
+  )
+  const task = await pollTask(task_id)
+  if (task.status === 'failed') {
+    throw new Error(task.error || 'credential check failed')
+  }
+  return (task.result ?? {}) as CredentialCheckResult
 }
 
 export async function diagnoseProvider(providerId: number, opts: { force?: boolean } = {}) {
@@ -2612,6 +2619,7 @@ export function controlMemoraSink(action: 'pause' | 'resume'): Promise<{ paused:
 export interface MemoraSession {
   task_id: string | null
   session_id: string | null
+  title?: string | null
   no_topic: boolean
   no_topic_label: string | null
   api_key_prefix: string | null
@@ -2784,6 +2792,34 @@ export function getSessionExtractionStatus(taskId: string): Promise<SessionExtra
   return req<SessionExtractionStatusResponse>(
     'GET',
     `/api/system/session-context/${encodeURIComponent(taskId)}/extraction-status`,
+  )
+}
+
+export interface SessionTitleMeta {
+  task_id: string
+  scoped_session_id?: string
+  log_count: number
+  generated_at: string
+  api_key_id: number
+  model: string
+}
+
+export interface SessionTitleResponse {
+  title: string
+  meta: SessionTitleMeta
+}
+
+export function summarizeSessionTitle(
+  taskId: string,
+  scope?: SessionScopeParams,
+): Promise<SessionTitleResponse> {
+  const qs = new URLSearchParams()
+  appendSessionScopeQS(qs, scope)
+  const s = qs.toString()
+  return req<SessionTitleResponse>(
+    'POST',
+    `/api/system/session-context/${encodeURIComponent(taskId)}/summarize-title${s ? '?' + s : ''}`,
+    {},
   )
 }
 

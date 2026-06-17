@@ -6,6 +6,7 @@ import {
   getSessionMessages,
   extractSessionToMemora,
   getSessionExtractionStatus,
+  summarizeSessionTitle,
   type MemoraContextResponse,
   type SessionMessagesResponse,
   type SessionExtractionStatusResponse,
@@ -51,8 +52,14 @@ const extracting = ref(false)
 const extractResult = ref('')
 const extractError = ref('')
 
+const summarizingTitle = ref(false)
+const titleResult = ref('')
+const titleError = ref('')
+const localTitle = ref('')
+
 const pageTitle = computed(() => {
   if (isNoTopic.value) return '无主题会话'
+  if (localTitle.value) return localTitle.value
   return contextData.value?.title || taskId.value || '会话详情'
 })
 
@@ -62,6 +69,9 @@ async function loadContext() {
   contextError.value = ''
   try {
     contextData.value = await getMemoraContext(taskId.value, sessionScopeToParams(sessionScope.value))
+    if (contextData.value?.title && contextData.value.title !== '[无标题]') {
+      localTitle.value = contextData.value.title
+    }
   } catch (e: unknown) {
     contextData.value = null
     contextError.value = e instanceof Error ? e.message : '加载 Memora 事实失败'
@@ -90,6 +100,23 @@ async function loadExtractionStatus() {
     extractionStatus.value = await getSessionExtractionStatus(taskId.value)
   } catch {
     extractionStatus.value = null
+  }
+}
+
+async function doSummarizeTitle() {
+  if (isNoTopic.value || !taskId.value || summarizingTitle.value) return
+  summarizingTitle.value = true
+  titleResult.value = ''
+  titleError.value = ''
+  try {
+    const resp = await summarizeSessionTitle(taskId.value, sessionScopeToParams(sessionScope.value))
+    localTitle.value = resp.title
+    if (contextData.value) contextData.value.title = resp.title
+    titleResult.value = '会话标题已更新'
+  } catch (e: unknown) {
+    titleError.value = e instanceof Error ? e.message : '标题生成失败'
+  } finally {
+    summarizingTitle.value = false
   }
 }
 
@@ -132,6 +159,9 @@ watch(
     extractionStatus.value = null
     extractResult.value = ''
     extractError.value = ''
+    localTitle.value = ''
+    titleResult.value = ''
+    titleError.value = ''
     if (!isNoTopic.value) {
       loadContext()
       loadExtractionStatus()
@@ -165,6 +195,14 @@ watch(
         <div class="detail-actions">
           <button
             class="btn btn-primary btn-sm"
+            :disabled="summarizingTitle"
+            @click="doSummarizeTitle"
+          >
+            <span v-if="summarizingTitle" class="btn-spinner" aria-hidden="true" />
+            {{ summarizingTitle ? '生成中…' : '总结会话标题' }}
+          </button>
+          <button
+            class="btn btn-primary btn-sm"
             :disabled="extracting"
             @click="doExtractToMemora"
           >{{ extracting ? '提炼中…' : '提炼入 Memora' }}</button>
@@ -179,6 +217,8 @@ watch(
             class="btn btn-ghost btn-sm"
           >原始日志 →</a>
         </div>
+        <p v-if="titleResult" class="extract-ok">{{ titleResult }}</p>
+        <p v-if="titleError" class="extract-err">{{ titleError }}</p>
         <p v-if="extractResult" class="extract-ok">{{ extractResult }}</p>
         <p v-if="extractError" class="extract-err">{{ extractError }}</p>
       </template>
@@ -302,6 +342,18 @@ watch(
 .meta-lbl { display: block; font-size: 10px; color: var(--muted); text-transform: uppercase; }
 .stats-line { margin-bottom: 8px; font-size: 11px; }
 .detail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .badge-yellow { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
 .extract-ok { margin: 6px 0 0; font-size: 11px; color: var(--success); }
 .extract-err { margin: 6px 0 0; font-size: 11px; color: var(--danger); }

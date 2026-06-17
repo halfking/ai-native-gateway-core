@@ -57,6 +57,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureSessionTitles(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureTuningSignalsViews(pingCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -383,6 +387,29 @@ func (d *DB) ensureSessionMemoraExtractionLog(ctx context.Context) error {
 	return nil
 }
 
+func (d *DB) ensureSessionTitles(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS session_titles (
+		    task_id             TEXT NOT NULL,
+		    scoped_session_id   TEXT NOT NULL DEFAULT '',
+		    title               TEXT NOT NULL,
+		    generated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    model               TEXT,
+		    api_key_id          INT,
+		    PRIMARY KEY (task_id, scoped_session_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_session_titles_generated_at
+		    ON session_titles (generated_at DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("session_titles schema ensured")
+	return nil
+}
 
 // ensureTuningSignalsViews creates two pre-aggregated views on
 // tuning_signals (P7.5). The /tuning/accuracy endpoint's GROUP BY
