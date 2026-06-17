@@ -49,20 +49,22 @@ CREATE INDEX IF NOT EXISTS idx_mps_due
     ON model_probe_state (next_retry_at)
     WHERE state IN ('unknown', 'recovering');
 
--- Backoff schedule: 1m → 5m → 15m → 60m (capped).
--- We pass consecutive_failures; returns the next attempt interval.
--- The function is small enough to be inlined; we keep it as a SQL
--- function for testability and so admins can see it in pg_proc.
+-- Backoff schedule: 30s → 2m → 5m → 15m (capped). Tuned to be short
+-- enough to recover quickly from transient blips while still easing
+-- load on a failing upstream. We pass consecutive_failures; returns
+-- the next attempt interval. The function is small enough to be
+-- inlined; we keep it as a SQL function for testability and so admins
+-- can see it in pg_proc.
 CREATE OR REPLACE FUNCTION model_probe_backoff(consecutive_failures INTEGER)
     RETURNS INTERVAL
     LANGUAGE SQL
     IMMUTABLE
 AS $$
     SELECT CASE
-        WHEN consecutive_failures <= 0 THEN INTERVAL '1 minute'
-        WHEN consecutive_failures = 1  THEN INTERVAL '5 minutes'
-        WHEN consecutive_failures = 2  THEN INTERVAL '15 minutes'
-        ELSE                                  INTERVAL '60 minutes'
+        WHEN consecutive_failures <= 0 THEN INTERVAL '30 seconds'
+        WHEN consecutive_failures = 1  THEN INTERVAL '2 minutes'
+        WHEN consecutive_failures = 2  THEN INTERVAL '5 minutes'
+        ELSE                                  INTERVAL '15 minutes'
     END;
 $$;
 

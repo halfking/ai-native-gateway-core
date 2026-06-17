@@ -87,6 +87,17 @@ func TestComputeConsensus_HealthyConfirmed_OneMoreFailure(t *testing.T) {
 	}
 }
 
+func TestComputeConsensus_HealthyConfirmed_WatchdogSuccess(t *testing.T) {
+	// A watchdog success on a healthy_confirmed binding stays there
+	// and does NOT re-fire 'recovered' (that would spam the state
+	// change log on every 2h tick).
+	sc, applied, succ, fail, st := computeConsensusForTest("ok", "healthy_confirmed", 5, 0)
+	if sc != "unchanged" || !applied || succ != 6 || fail != 0 || st != "healthy_confirmed" {
+		t.Errorf("watchdog success: got (%s,%v,%d,%d,%s) want (unchanged,true,6,0,healthy_confirmed)",
+			sc, applied, succ, fail, st)
+	}
+}
+
 // computeConsensusForTest is a thin wrapper that takes ints (not strings)
 // for the success/fail counters so the test signatures stay readable.
 func computeConsensusForTest(status, prevState string, prevSucc, prevFail int) (
