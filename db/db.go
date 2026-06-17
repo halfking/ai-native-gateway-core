@@ -113,7 +113,14 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS request_status TEXT,
 		    ADD COLUMN IF NOT EXISTS api_key_prefix TEXT,
 		    ADD COLUMN IF NOT EXISTS api_key_owner_user TEXT,
-		    ADD COLUMN IF NOT EXISTS application_code TEXT;
+		    ADD COLUMN IF NOT EXISTS application_code TEXT,
+		    -- Round 47 (2026-06-18) compression v7 T1: parent-child chain tracking.
+		    -- See db/migrations/013_compression_columns.sql and
+		    -- docs/llm-gateway-go/2026-06-18-compression-v7-final.md §3.1.
+		    ADD COLUMN IF NOT EXISTS parent_request_id TEXT,
+		    ADD COLUMN IF NOT EXISTS compression_reason TEXT,
+		    ADD COLUMN IF NOT EXISTS compression_strategy TEXT,
+		    ADD COLUMN IF NOT EXISTS compression_meta JSONB;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -123,11 +130,14 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_request_logs_status_ts
 		    ON request_logs (request_status, ts DESC)
 		    WHERE request_status IS NOT NULL AND request_status <> '';
+		CREATE INDEX IF NOT EXISTS idx_request_logs_parent_ts
+		    ON request_logs (parent_request_id, ts DESC)
+		    WHERE parent_request_id IS NOT NULL;
 	`)
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta)")
 	return nil
 }
 
