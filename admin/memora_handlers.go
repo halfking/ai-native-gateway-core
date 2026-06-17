@@ -269,6 +269,40 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	titleKeys := make([][2]string, 0, len(sessions))
+	for _, s := range sessions {
+		if s["no_topic"] == true {
+			continue
+		}
+		taskID, _ := s["task_id"].(string)
+		if taskID == "" || taskID == "[空]" {
+			continue
+		}
+		sessID := ""
+		if v, ok := s["session_id"].(string); ok && v != "" && v != "[空]" {
+			sessID = v
+		}
+		titleKeys = append(titleKeys, [2]string{taskID, sessID})
+	}
+	titleMap := h.loadSessionTitlesBatch(ctx, titleKeys)
+	for _, s := range sessions {
+		if s["no_topic"] == true {
+			continue
+		}
+		taskID, _ := s["task_id"].(string)
+		if taskID == "" || taskID == "[空]" {
+			continue
+		}
+		sessID := ""
+		if v, ok := s["session_id"].(string); ok && v != "" && v != "[空]" {
+			sessID = v
+		}
+		if title, ok := titleMap[sessionTitleMapKey(taskID, sessID)]; ok {
+			s["title"] = title
+		}
+	}
+
 	if sessions == nil {
 		sessions = []map[string]any{}
 	}
@@ -471,7 +505,9 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	`, taskID).Scan(&writtenFromLog, &extractedAt)
 
 	var title string
-	if len(facts) > 0 {
+	if stored, ok := h.loadStoredSessionTitle(ctx, taskID, sc.SessionID); ok {
+		title = stored
+	} else if len(facts) > 0 {
 		if mem, ok := facts[0]["memory"].(string); ok && len(mem) > 0 {
 			if len(mem) > 60 {
 				title = mem[:60] + "..."

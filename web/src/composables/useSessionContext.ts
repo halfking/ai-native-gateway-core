@@ -124,6 +124,7 @@ export function useSessionList() {
 
 export function displayTitle(s: MemoraSession): string {
   if (s.no_topic) return s.no_topic_label || '[无主题会话]'
+  if (s.title && s.title.trim()) return s.title.trim()
   return s.task_id || '[无标题]'
 }
 

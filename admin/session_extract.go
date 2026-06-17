@@ -17,6 +17,7 @@ const sessionContextPrefix = "/api/system/session-context/"
 // handleSessionContextRoutes dispatches session-context sub-routes:
 //   - POST .../{taskId}/extract-to-memora
 //   - GET  .../{taskId}/extraction-status
+//   - POST .../{taskId}/summarize-title
 func (h *Handler) handleSessionContextRoutes(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, sessionContextPrefix)
 	rest = strings.Trim(rest, "/")
@@ -47,6 +48,12 @@ func (h *Handler) handleSessionContextRoutes(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		h.handleSessionExtractionStatus(w, r, taskID)
+	case "summarize-title":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleSessionSummarizeTitle(w, r, taskID)
 	default:
 		writeError(w, http.StatusNotFound, "unknown session-context route")
 	}
