@@ -42,6 +42,7 @@ AS $body$
 $body$;
 
 -- Users: every tenant has its own user pool. RLS filters by tenant_id.
+-- Uses CREATE OR REPLACE to be idempotent across deployments.
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation_users ON public.users
+CREATE OR REPLACE POLICY tenant_isolation_users ON public.users
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
