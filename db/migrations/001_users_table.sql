@@ -42,7 +42,8 @@ AS $body$
 $body$;
 
 -- Users: every tenant has its own user pool. RLS filters by tenant_id.
--- Uses CREATE OR REPLACE to be idempotent across deployments.
+-- Uses DROP IF EXISTS + CREATE POLICY for idempotency (PG has no CREATE OR REPLACE POLICY).
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-CREATE OR REPLACE POLICY tenant_isolation_users ON public.users
+DROP POLICY IF EXISTS tenant_isolation_users ON public.users;
+CREATE POLICY tenant_isolation_users ON public.users
   USING ((tenant_id)::text = (public.get_current_tenant())::text);

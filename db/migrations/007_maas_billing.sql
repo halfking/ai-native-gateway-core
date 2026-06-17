@@ -1,5 +1,5 @@
 -- Migration 007: MaaS billing — credits, plans, wallets, ledger
--- Idempotent: uses IF NOT EXISTS and CREATE OR REPLACE POLICY, safe to run multiple times.
+-- Idempotent: uses IF NOT EXISTS and DROP IF EXISTS + CREATE POLICY, safe to run multiple times.
 
 ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS credits_charged BIGINT;
@@ -117,22 +117,26 @@ ON CONFLICT (code) DO NOTHING;
 
 -- request_logs: every LLM request is tenant-scoped (ALTER TABLE earlier
 -- in this migration added tenant_id; RLS keeps SELECTs filtered)
--- Uses CREATE OR REPLACE POLICY to be idempotent across deployments.
+-- Uses DROP IF EXISTS + CREATE POLICY for idempotency (PG has no CREATE OR REPLACE POLICY).
 ALTER TABLE public.request_logs ENABLE ROW LEVEL SECURITY;
-CREATE OR REPLACE POLICY tenant_isolation_request_logs ON public.request_logs
+DROP POLICY IF EXISTS tenant_isolation_request_logs ON public.request_logs;
+CREATE POLICY tenant_isolation_request_logs ON public.request_logs
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
 
 -- tenant_credit_wallets: per-tenant balance, only own tenant visible
 ALTER TABLE public.tenant_credit_wallets ENABLE ROW LEVEL SECURITY;
-CREATE OR REPLACE POLICY tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wallets
+DROP POLICY IF EXISTS tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wallets;
+CREATE POLICY tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wallets
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
 
 -- tenant_subscriptions: subscription history per tenant
 ALTER TABLE public.tenant_subscriptions ENABLE ROW LEVEL SECURITY;
-CREATE OR REPLACE POLICY tenant_isolation_tenant_subscriptions ON public.tenant_subscriptions
+DROP POLICY IF EXISTS tenant_isolation_tenant_subscriptions ON public.tenant_subscriptions;
+CREATE POLICY tenant_isolation_tenant_subscriptions ON public.tenant_subscriptions
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
 
 -- credit_ledger: every credit movement is tenant-scoped
 ALTER TABLE public.credit_ledger ENABLE ROW LEVEL SECURITY;
-CREATE OR REPLACE POLICY tenant_isolation_credit_ledger ON public.credit_ledger
+DROP POLICY IF EXISTS tenant_isolation_credit_ledger ON public.credit_ledger;
+CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
