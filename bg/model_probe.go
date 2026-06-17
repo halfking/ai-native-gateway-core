@@ -1,29 +1,32 @@
 // Package bg — model_probe.go
 //
-// ModelProbeRunner periodically re-tests credentials × models that are
-// currently failing so we can flip them back to routable the moment the
-// upstream issue clears.  Two key invariants:
+// ModelProbeRunner uses a CONSENSUS strategy with exponential backoff to
+// flip credential×model bindings back to routable.
 //
-//  1. Manual overrides always win.
-//     If credentials.manual_disabled=TRUE or credential_model_bindings
-//     is set to model_manual_disabled, we record a 'skipped' run but
-//     never flip the model back on.
+// State machine (per credential × model, stored in model_probe_state):
 //
-//  2. We never mark a credential as routable just because one probe
-//     passed — health_status still has to move to 'healthy' through
-//     the normal probe-v2 / cycler path, and the v_routable_credential_models
-//     view checks it.
+//   unknown  ─┐
+//             │  first failure observed by the worker → 'recovering'
+//   recovering  ◀──┘
+//      │  consecutive successes → +1; backoff resets to 1m
+//      │  consecutive failures  → reset successes, +1 failure, longer backoff
+//      ↓
+//   healthy_confirmed    (3 consecutive ok)  ← state flips here
+//      │  any subsequent failure → back to 'recovering'
+//      ↓
+//   broken_confirmed     (3 consecutive fail) ← stops probing
 //
-// Algorithm per tick (default 10 min):
-//   1. Pick all (credential, model) pairs from credential_model_bindings
-//      where the binding is currently NOT routable AND the last probe
-//      attempt was a real failure (not skipped, not manual_disable).
-//   2. Send a 1-token chat completion to the upstream.
-//   3. On success: write probe_runs row with status=ok, state_change=recovered.
-//      Caller (v_routable_credential_models view) will start routing again
-//      automatically once health_status also moves to healthy.
-//   4. On failure: write probe_runs row with status=<classified>.
-//      No state change — keeps the credential unroutable.
+// Backoff schedule (model_probe_backoff SQL function):
+//   consecutive_failures = 0 → 1 min
+//   consecutive_failures = 1 → 5 min
+//   consecutive_failures = 2 → 15 min
+//   consecutive_failures = 3 → 60 min (and stop — broken_confirmed)
+//
+// CRITICAL invariant: a model that's manually disabled NEVER gets
+// auto-recovered.  The runner re-checks c.manual_disabled on every
+// iteration and the SQL WHERE clause filters out manual bindings.
+//
+// Spec: 2026-06-18-model-probe-rounds (v2: consensus + backoff)
 package bg
 
 import (
@@ -42,26 +45,34 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-// ModelProbeRunner runs every Interval.  It looks at non-routable
-// (credential, model) pairs from v_routable_credential_models and
-// re-tests them, recording each attempt to model_probe_runs.
+const (
+	// RequiredConsensus is the number of consecutive successes (or
+	// failures) needed before state flips.  Tuned by ops; do not
+	// lower without re-reading spec §v2.
+	RequiredConsensus = 3
+
+	// MaxBatchPerCycle caps the number of probes per tick so a flood
+	// of failures can't hammer the upstream all at once.
+	MaxBatchPerCycle = 20
+
+	// ProbeInterval is how often the cycle ticker fires.
+	ProbeInterval = 10 * time.Minute
+)
+
+// ModelProbeRunner is the v2 (consensus + backoff) implementation.
 type ModelProbeRunner struct {
-	db       *pgxpool.Pool
-	encKey   []byte
-	keyring  *secret.Keyring
-	interval time.Duration
-	batch    int
-	cancel   context.CancelFunc
-	done     chan struct{}
+	db      *pgxpool.Pool
+	encKey  []byte
+	keyring *secret.Keyring
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 func NewModelProbeRunner(db *pgxpool.Pool, encKey []byte) *ModelProbeRunner {
 	return &ModelProbeRunner{
-		db:       db,
-		encKey:   encKey,
-		interval: 10 * time.Minute,
-		batch:    20, // per-tick cap so a flood of failures doesn't hammer the upstream
-		done:     make(chan struct{}),
+		db:     db,
+		encKey: encKey,
+		done:   make(chan struct{}),
 	}
 }
 
@@ -70,7 +81,11 @@ func (r *ModelProbeRunner) SetKeyring(kr *secret.Keyring) { r.keyring = kr }
 func (r *ModelProbeRunner) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	go r.run(ctx)
-	slog.Info("model probe runner started", "interval", r.interval, "batch", r.batch)
+	slog.Info("model probe runner v2 (consensus+backoff) started",
+		"interval", ProbeInterval,
+		"required_consensus", RequiredConsensus,
+		"max_batch", MaxBatchPerCycle,
+	)
 }
 
 func (r *ModelProbeRunner) Stop() {
@@ -83,10 +98,10 @@ func (r *ModelProbeRunner) Stop() {
 func (r *ModelProbeRunner) run(ctx context.Context) {
 	defer close(r.done)
 
-	ticker := time.NewTicker(r.interval)
+	ticker := time.NewTicker(ProbeInterval)
 	defer ticker.Stop()
 
-	r.cycle(ctx) // run once on start
+	r.cycle(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,143 +112,264 @@ func (r *ModelProbeRunner) run(ctx context.Context) {
 	}
 }
 
-// probeTarget is the (credential, model, base_url, protocol, api_key)
-// tuple we test.
-type probeTarget struct {
-	CredentialID   int
-	RawModel       string
-	BaseURL        string
-	Protocol       string
-	APIKey         string
-	ManualDisabled bool
+// queued is the in-memory snapshot of a (credential, model) row that's
+// due for a probe this cycle.
+type queued struct {
+	t       probeTarget
+	state   string
+	succCnt int
+	failCnt int
 }
 
+// cycle runs one probe pass.  Picks up to MaxBatchPerCycle bindings
+// whose next_retry_at has elapsed, runs a probe, updates the consensus
+// state and writes a model_probe_runs row.
 func (r *ModelProbeRunner) cycle(ctx context.Context) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	// Pick the next batch of failing bindings.
 	rows, err := r.db.Query(timeoutCtx, `
-		SELECT cmb.credential_id,
-		       pm.raw_model_name,
-		       COALESCE(p.base_url, ''),
-		       COALESCE(p.protocol, 'openai-completions'),
-		       c.secret_ciphertext,
-		       COALESCE(c.manual_disabled, FALSE)
+		SELECT cmb.credential_id, pm.raw_model_name,
+		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
+		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
+		       COALESCE(mps.consecutive_failures, 0), COALESCE(mps.total_attempts, 0)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN v_routable_credential_models v
+		       ON v.credential_id = cmb.credential_id
+		      AND v.raw_model_name = pm.raw_model_name
+		LEFT JOIN model_probe_state mps
+		       ON mps.credential_id = cmb.credential_id
+		      AND mps.raw_model_name = pm.raw_model_name
 		WHERE COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.availability_state, 'ready') NOT IN ('suspended')
 		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
-		  -- Skip rows that the operator has explicitly marked as broken
-		  -- (we never auto-recover manual_disable).
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') <> 'manual'
-		  -- Only test things currently failing.
-		  AND v_is_routable_for(cmb.credential_id, pm.raw_model_name) = FALSE
-		-- Prioritise recent failures first, but don't repeat-storm
-		-- (skip rows we tested in the last 5 minutes).
-		AND NOT EXISTS (
-		    SELECT 1 FROM model_probe_runs mpr
-		    WHERE mpr.credential_id = cmb.credential_id
-		      AND mpr.raw_model_name = pm.raw_model_name
-		      AND mpr.created_at > NOW() - INTERVAL '5 minutes'
-		)
-		ORDER BY cmb.id
+		  AND (
+		      COALESCE(v.is_routable, FALSE) = FALSE
+		      OR mps.state = 'recovering'
+		  )
+		  AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed'
+		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
+		ORDER BY mps.next_retry_at NULLS FIRST, cmb.id
 		LIMIT $1
-	`, r.batch)
+	`, MaxBatchPerCycle)
 	if err != nil {
-		// View v_is_routable_for may not exist on older deployments;
-		// fall back to a direct join so this code still runs.
-		slog.Warn("model probe: target query failed (trying fallback)", "error", err)
-		rows, err = r.db.Query(timeoutCtx, `
-			SELECT cmb.credential_id, pm.raw_model_name,
-			       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
-			       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
-			FROM credential_model_bindings cmb
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			JOIN credentials c ON c.id = cmb.credential_id
-			JOIN providers p ON p.id = c.provider_id
-			LEFT JOIN v_routable_credential_models v
-			       ON v.credential_id = cmb.credential_id
-			      AND v.raw_model_name = pm.raw_model_name
-			WHERE COALESCE(c.status, 'active') = 'active'
-			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
-			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-			  AND COALESCE(p.enabled, FALSE) = TRUE
-			  AND COALESCE(cmb.unavailable_reason, '') <> 'manual'
-			  AND COALESCE(v.is_routable, FALSE) = FALSE
-			  AND NOT EXISTS (
-			      SELECT 1 FROM model_probe_runs mpr
-			      WHERE mpr.credential_id = cmb.credential_id
-			        AND mpr.raw_model_name = pm.raw_model_name
-			        AND mpr.created_at > NOW() - INTERVAL '5 minutes'
-			  )
-			ORDER BY cmb.id
-			LIMIT $1
-		`, r.batch)
-		if err != nil {
-			slog.Warn("model probe: fallback query also failed", "error", err)
-			return
-		}
+		slog.Warn("model probe v2: target query failed", "error", err)
+		return
 	}
 	defer rows.Close()
 
-	tested := 0
-	recovered := 0
+	var due []queued
 	for rows.Next() {
-		var t probeTarget
+		var q queued
 		var ciphertext []byte
-		if err := rows.Scan(&t.CredentialID, &t.RawModel, &t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled); err != nil {
+		if err := rows.Scan(
+			&q.t.CredentialID, &q.t.RawModel, &q.t.BaseURL, &q.t.Protocol,
+			&ciphertext, &q.t.ManualDisabled,
+			&q.state, &q.succCnt, &q.failCnt,
+		); err != nil {
 			continue
 		}
-
 		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 		if decErr != nil {
-			r.recordRun(timeoutCtx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
+			// Decrypt failure counts as a hard auth failure; record
+			// the run + apply the consensus rule.
+			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
+			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
+				"unchanged", false, "scheduler", q.state, q.succCnt, q.failCnt)
 			continue
 		}
-		t.APIKey = apiKey
+		q.t.APIKey = apiKey
+		due = append(due, q)
+	}
+	if len(due) == 0 {
+		return
+	}
 
-		// Manual-disabled re-check: the SQL WHERE already filtered these
-		// out, but between query and probe the operator could have flipped
-		// the flag.  We re-check at the request level so a manual disable
-		// in flight is never overwritten by a passing probe.
-		if t.ManualDisabled {
-			r.recordRun(timeoutCtx, t, "skipped", nil, "manual_disabled",
-				"credential is manually disabled; probe will not auto-recover", 0,
+	tested := 0
+	recovered := 0
+	confirmedBroken := 0
+	for _, q := range due {
+		// Last-second manual_disable recheck.  SQL filters these out,
+		// but between query and probe the operator could have flipped
+		// the flag — we never want a passing probe to auto-recover a
+		// manually-disabled binding.
+		if q.t.ManualDisabled {
+			r.recordRun(timeoutCtx, q.t, "skipped", nil, "manual_disabled",
+				"credential manually disabled; probe skipped", 0,
 				"unchanged", false, "scheduler")
 			continue
 		}
 
-		status, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, t)
-		stateChange := "unchanged"
-		applied := true
-		if status == "ok" {
-			// Don't immediately flip cmb.unavailable_reason — the view
-			// will re-evaluate on the next request once health_status
-			// also clears.  We just record that the upstream accepted
-			// the call.
-			stateChange = "recovered"
-			recovered++
-		}
-		r.recordRun(timeoutCtx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "scheduler")
+		status, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
+
+		stateChange, applied, _, _, _ := r.computeConsensus(
+			status, q.state, q.succCnt, q.failCnt,
+		)
+
+		r.recordRun(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
+			stateChange, applied, "scheduler")
+		r.applyResult(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
+			stateChange, applied, "scheduler", q.state, q.succCnt, q.failCnt)
+
 		tested++
+		switch stateChange {
+		case "recovered":
+			recovered++
+		case "broke":
+			confirmedBroken++
+		}
 	}
 
-	if tested > 0 {
-		slog.Info("model probe: cycle complete",
-			"tested", tested, "recovered", recovered)
+	slog.Info("model probe v2: cycle complete",
+		"tested", tested,
+		"recovered", recovered,
+		"broken_confirmed", confirmedBroken,
+		"required_consensus", RequiredConsensus,
+	)
+}
+
+// computeConsensus returns the new (state_change, applied, succ, fail, newState)
+// tuple for one probe result, applying the consensus rule.
+//
+// Consensus rules (per RequiredConsensus = 3):
+//   - success: succ++; fail = 0
+//     if succ >= 3 → newState = 'healthy_confirmed', state_change = 'recovered'
+//     else          newState = 'recovering',         state_change = 'unchanged'
+//   - failure: fail++; succ = 0
+//     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke' (informational only — binding is already unroutable)
+//     else          newState = 'recovering',        state_change = 'unchanged'
+//   - skipped: no state change.
+func (r *ModelProbeRunner) computeConsensus(
+	status, prevState string, prevSucc, prevFail int,
+) (stateChange string, applied bool, newSucc, newFail int, newState string) {
+	newSucc = prevSucc
+	newFail = prevFail
+	newState = prevState
+	stateChange = "unchanged"
+	applied = true
+
+	switch status {
+	case "ok":
+		newSucc = prevSucc + 1
+		newFail = 0
+		newState = "recovering"
+		if newSucc >= RequiredConsensus {
+			newState = "healthy_confirmed"
+			stateChange = "recovered"
+		}
+	case "skipped":
+		// Don't touch counters.  (Manual-disable, suspended, etc.)
+		applied = false
+		stateChange = "unchanged"
+	default:
+		// any failure (http_4xx, http_5xx, network, auth, unknown)
+		newFail = prevFail + 1
+		newSucc = 0
+		newState = "recovering"
+		if newFail >= RequiredConsensus {
+			newState = "broken_confirmed"
+			stateChange = "broke"
+		}
+	}
+	return
+}
+
+// applyResult upserts model_probe_state with the consensus outcome.
+// next_retry_at is computed by the SQL function model_probe_backoff(N)
+// for 'recovering' state, with longer intervals for the
+// healthy_confirmed watchdog and broken_confirmed stop.
+func (r *ModelProbeRunner) applyResult(
+	ctx context.Context, t probeTarget,
+	status string, httpStatus *int, errCode, errMsg string, latencyMs int,
+	stateChange string, applied bool, triggeredBy string,
+	prevState string, prevSucc, prevFail int,
+) {
+	_, _, newSucc, newFail, newState := r.computeConsensus(
+		status, prevState, prevSucc, prevFail,
+	)
+
+	var nextRetryExpr string
+	switch newState {
+	case "healthy_confirmed":
+		// Watchdog: re-probe every 2h to catch silent regressions.
+		nextRetryExpr = "NOW() + INTERVAL '2 hours'"
+	case "broken_confirmed":
+		// Stop probing; require operator to nudge.
+		nextRetryExpr = "NOW() + INTERVAL '7 days'"
+	default:
+		// recovering: schedule next attempt per the backoff schedule.
+		nextRetryExpr = "NOW() + model_probe_backoff($5)"
+	}
+
+	q := `
+		INSERT INTO model_probe_state
+		    (credential_id, raw_model_name, state,
+		     consecutive_successes, consecutive_failures, total_attempts,
+		     last_attempt_at, next_retry_at, last_status,
+		     last_state_change_at, last_state_change_run)
+		VALUES ($1, $2, $3, $4, $5, 1, NOW(), ` + nextRetryExpr + `, $7,
+		        CASE WHEN $8 IN ('recovered','broke') THEN NOW() ELSE NULL END,
+		        CASE WHEN $8 IN ('recovered','broke') THEN
+		            (SELECT id FROM model_probe_runs
+		             WHERE credential_id = $1 AND raw_model_name = $2
+		             ORDER BY id DESC LIMIT 1)
+		        ELSE NULL END)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		    state                  = EXCLUDED.state,
+		    consecutive_successes  = EXCLUDED.consecutive_successes,
+		    consecutive_failures   = EXCLUDED.consecutive_failures,
+		    total_attempts         = model_probe_state.total_attempts + 1,
+		    last_attempt_at        = NOW(),
+		    next_retry_at          = EXCLUDED.next_retry_at,
+		    last_status            = EXCLUDED.last_status,
+		    last_state_change_at   = COALESCE(EXCLUDED.last_state_change_at, model_probe_state.last_state_change_at),
+		    last_state_change_run  = COALESCE(EXCLUDED.last_state_change_run, model_probe_state.last_state_change_run)
+	`
+	if _, err := r.db.Exec(ctx, q,
+		t.CredentialID, t.RawModel, newState,
+		newSucc, newFail,
+		status, stateChange,
+	); err != nil {
+		slog.Warn("model probe v2: applyResult failed",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"error", err)
 	}
 }
 
-// probeModel fires a one-shot minimal chat completion at the upstream and
-// classifies the response.
+// recordRun inserts a row in model_probe_runs for traceability.
+func (r *ModelProbeRunner) recordRun(
+	ctx context.Context, t probeTarget,
+	status string, httpStatus *int, errCode, errMsg string,
+	latencyMs int, stateChange string, applied bool, triggeredBy string,
+) {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO model_probe_runs
+		    (tenant_id, credential_id, raw_model_name, status,
+		     http_status, error_code, error_message, latency_ms,
+		     state_change, state_applied, triggered_by)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11)
+	`, "default", t.CredentialID, t.RawModel, status,
+		httpStatus, errCode, errMsg, latencyMs,
+		stateChange, applied, triggeredBy)
+	if err != nil {
+		slog.Warn("model probe v2: recordRun failed",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"error", err)
+	}
+}
+
+// probeModel fires a one-shot minimal chat completion at the upstream.
 func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	status string, httpStatus int, errCode, errMsg string, latencyMs int,
 ) {
@@ -289,45 +425,32 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	}
 }
 
-func (r *ModelProbeRunner) recordRun(
-	ctx context.Context, t probeTarget,
-	status string, httpStatus *int, errCode, errMsg string,
-	latencyMs int, stateChange string, applied bool, triggeredBy string,
-) {
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO model_probe_runs
-		    (tenant_id, credential_id, raw_model_name, status,
-		     http_status, error_code, error_message, latency_ms,
-		     state_change, state_applied, triggered_by)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11)
-	`, "default", t.CredentialID, t.RawModel, status,
-		httpStatus, errCode, errMsg, latencyMs,
-		stateChange, applied, triggeredBy)
-	if err != nil {
-		slog.Warn("model probe: recordRun failed",
-			"credential_id", t.CredentialID,
-			"raw_model", t.RawModel,
-			"error", err)
-	}
-}
-
-// TriggerManual lets the admin API kick off a single probe outside the
-// scheduler.  Writes triggered_by='manual'.
+// TriggerManual fires one off-schedule probe for a single binding.  It
+// still goes through the consensus logic — a single manual trigger is
+// just one data point, not an override.
 func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, rawModel string) error {
 	row := r.db.QueryRow(ctx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
-		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
+		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
+		       COALESCE(mps.consecutive_failures, 0)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN model_probe_state mps
+		       ON mps.credential_id = cmb.credential_id
+		      AND mps.raw_model_name = pm.raw_model_name
 		WHERE cmb.credential_id = $1 AND pm.raw_model_name = $2
 		LIMIT 1
 	`, credentialID, rawModel)
 	var t probeTarget
 	var ciphertext []byte
-	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled); err != nil {
+	var prevState string
+	var prevSucc, prevFail int
+	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.BaseURL, &t.Protocol,
+		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("binding not found")
 		}
@@ -336,18 +459,107 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
 		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
+		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
+			"unchanged", false, "manual", prevState, prevSucc, prevFail)
 		return decErr
 	}
 	t.APIKey = apiKey
 
 	status, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
-	stateChange := "unchanged"
-	applied := true
-	if status == "ok" {
-		stateChange = "recovered"
-	}
+	stateChange, applied, _, _, _ := r.computeConsensus(status, prevState, prevSucc, prevFail)
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
+	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
+		prevState, prevSucc, prevFail)
 	return nil
+}
+
+// probeTarget is the (credential, model, base_url, protocol, api_key)
+// tuple we test.
+type probeTarget struct {
+	CredentialID   int
+	RawModel       string
+	BaseURL        string
+	Protocol       string
+	APIKey         string
+	ManualDisabled bool
+}
+
+// GetState returns the current consensus state for a binding (used by
+// the admin API to show "2/3 successful — next attempt in 4m").
+func (r *ModelProbeRunner) GetState(ctx context.Context, credentialID int, rawModel string) (*ProbeStateRow, error) {
+	row := r.db.QueryRow(ctx, `
+		SELECT credential_id, raw_model_name, state,
+		       consecutive_successes, consecutive_failures, total_attempts,
+		       last_attempt_at, next_retry_at, last_status,
+		       last_state_change_at, last_state_change_run
+		FROM model_probe_state
+		WHERE credential_id = $1 AND raw_model_name = $2
+	`, credentialID, rawModel)
+	var s ProbeStateRow
+	err := row.Scan(&s.CredentialID, &s.RawModel, &s.State,
+		&s.ConsecutiveSuccesses, &s.ConsecutiveFailures, &s.TotalAttempts,
+		&s.LastAttemptAt, &s.NextRetryAt, &s.LastStatus,
+		&s.LastStateChangeAt, &s.LastStateChangeRun)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// ListStates returns all probe states for a given provider, optionally
+// filtered by state.  Used by the providers-page "自动测试" tab.
+func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, stateFilter string) ([]ProbeStateRow, error) {
+	args := []any{providerID}
+	q := `
+		SELECT mps.credential_id, mps.raw_model_name, mps.state,
+		       mps.consecutive_successes, mps.consecutive_failures, mps.total_attempts,
+		       mps.last_attempt_at, mps.next_retry_at, mps.last_status,
+		       mps.last_state_change_at, mps.last_state_change_run
+		FROM model_probe_state mps
+		JOIN credentials c ON c.id = mps.credential_id
+		WHERE c.provider_id = $1
+	`
+	if stateFilter != "" {
+		q += " AND mps.state = $2"
+		args = append(args, stateFilter)
+	}
+	q += " ORDER BY mps.next_retry_at NULLS FIRST LIMIT 200"
+
+	rows, err := r.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProbeStateRow
+	for rows.Next() {
+		var s ProbeStateRow
+		if err := rows.Scan(&s.CredentialID, &s.RawModel, &s.State,
+			&s.ConsecutiveSuccesses, &s.ConsecutiveFailures, &s.TotalAttempts,
+			&s.LastAttemptAt, &s.NextRetryAt, &s.LastStatus,
+			&s.LastStateChangeAt, &s.LastStateChangeRun); err != nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// ProbeStateRow is the row shape returned by GetState / ListStates.
+type ProbeStateRow struct {
+	CredentialID         int        `json:"credential_id"`
+	RawModel             string     `json:"raw_model_name"`
+	State                string     `json:"state"`
+	ConsecutiveSuccesses int        `json:"consecutive_successes"`
+	ConsecutiveFailures  int        `json:"consecutive_failures"`
+	TotalAttempts        int        `json:"total_attempts"`
+	LastAttemptAt        *time.Time `json:"last_attempt_at"`
+	NextRetryAt          time.Time  `json:"next_retry_at"`
+	LastStatus           *string    `json:"last_status"`
+	LastStateChangeAt    *time.Time `json:"last_state_change_at"`
+	LastStateChangeRun   *int64     `json:"last_state_change_run"`
 }
 
 func truncate(s string, n int) string {

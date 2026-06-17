@@ -1,10 +1,11 @@
 // admin/probe_history.go — probe-run history endpoints
 //
-// Three small endpoints, all behind superAdmin():
+// Endpoints, all behind superAdmin():
 //
 //   GET    /api/providers/:id/probe-history?limit=50
 //   GET    /api/providers/:id/probe-history/recent-failures
 //   POST   /api/providers/:id/probe-history/trigger
+//   GET    /api/providers/:id/probe-states?state=recovering
 //   GET    /api/routing/recent-model-failures  (used by model discovery badge)
 //
 // Spec: 2026-06-18-model-probe-rounds
@@ -189,6 +190,28 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"triggered": true})
+}
+
+// handleProviderProbeStates returns the current consensus state for
+// every (credential, model) under a provider.  Used by the providers-
+// page "自动测试" tab to show "2/3 successful — next attempt in 4m".
+// Optional ?state=recovering filter.
+func (h *Handler) handleProviderProbeStates(w http.ResponseWriter, r *http.Request, providerID int) {
+	if h.modelProbe == nil {
+		writeError(w, http.StatusServiceUnavailable, "model probe runner not configured")
+		return
+	}
+	stateFilter := r.URL.Query().Get("state")
+	rows, err := h.modelProbe.ListStates(r.Context(), providerID, stateFilter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id":  providerID,
+		"state_filter": stateFilter,
+		"states":       rows,
+	})
 }
 
 // handleRoutingRecentModelFailures is the global "model discovery"
