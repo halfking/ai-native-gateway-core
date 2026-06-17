@@ -17,8 +17,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/bg"
 )
 
 // probeRunResponse is the row shape sent to the UI.
@@ -270,20 +268,4 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		"window": "6h",
 		"models": out,
 	})
-}
-
-// We need access to the model probe runner.  The Handler struct already
-// holds a *pgxpool.Pool and an *bg package import — we add a new field
-// set by the wiring code in main / cmd/llm-gateway-go.
-// To keep this file self-contained we declare a thin interface that
-// matches (*bg.ModelProbeRunner).TriggerManual.
-type modelProbeRunner interface {
-	TriggerManual(ctx context.Context, credentialID int, rawModel string) error
-}
-
-// Patch the Handler struct via a tiny adapter so the existing wiring
-// code can pass the concrete *bg.ModelProbeRunner.
-func init() {
-	// Compile-time guard: bg.ModelProbeRunner must satisfy modelProbeRunner.
-	var _ modelProbeRunner = (*bg.ModelProbeRunner)(nil)
 }

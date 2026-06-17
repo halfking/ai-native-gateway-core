@@ -133,7 +133,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
-		       COALESCE(mps.consecutive_failures, 0), COALESCE(mps.total_attempts, 0)
+		       COALESCE(mps.consecutive_failures, 0)
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		JOIN credentials c ON c.id = cmb.credential_id
@@ -182,9 +182,10 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		if decErr != nil {
 			// Decrypt failure counts as a hard auth failure; record
 			// the run + apply the consensus rule.
+			_, _, ns, nf, nst := r.computeConsensus("auth", q.state, q.succCnt, q.failCnt)
 			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
 			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
-				"unchanged", false, "scheduler", q.state, q.succCnt, q.failCnt)
+				"unchanged", false, "scheduler", ns, nf, nst)
 			continue
 		}
 		q.t.APIKey = apiKey
@@ -211,14 +212,14 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 
 		status, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
 
-		stateChange, applied, _, _, _ := r.computeConsensus(
+		stateChange, applied, newSucc, newFail, newState := r.computeConsensus(
 			status, q.state, q.succCnt, q.failCnt,
 		)
 
 		r.recordRun(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
 			stateChange, applied, "scheduler")
 		r.applyResult(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
-			stateChange, applied, "scheduler", q.state, q.succCnt, q.failCnt)
+			stateChange, applied, "scheduler", newSucc, newFail, newState)
 
 		tested++
 		switch stateChange {
@@ -261,6 +262,14 @@ func (r *ModelProbeRunner) computeConsensus(
 	case "ok":
 		newSucc = prevSucc + 1
 		newFail = 0
+		// If already healthy_confirmed, a watchdog success keeps us
+		// there but does NOT re-fire the 'recovered' event — that
+		// would spam the state_change log on every 2h watchdog tick.
+		if prevState == "healthy_confirmed" {
+			newState = "healthy_confirmed"
+			stateChange = "unchanged"
+			break
+		}
 		newState = "recovering"
 		if newSucc >= RequiredConsensus {
 			newState = "healthy_confirmed"
@@ -287,15 +296,16 @@ func (r *ModelProbeRunner) computeConsensus(
 // next_retry_at is computed by the SQL function model_probe_backoff(N)
 // for 'recovering' state, with longer intervals for the
 // healthy_confirmed watchdog and broken_confirmed stop.
+//
+// Receives the pre-computed consensus result so we don't recompute it
+// (the caller already has it).  This avoids the DRY trap of two
+// computeConsensus calls that must agree.
 func (r *ModelProbeRunner) applyResult(
 	ctx context.Context, t probeTarget,
 	status string, httpStatus *int, errCode, errMsg string, latencyMs int,
 	stateChange string, applied bool, triggeredBy string,
-	prevState string, prevSucc, prevFail int,
+	newSucc, newFail int, newState string,
 ) {
-	_, _, newSucc, newFail, newState := r.computeConsensus(
-		status, prevState, prevSucc, prevFail,
-	)
 
 	var nextRetryExpr string
 	switch newState {
@@ -316,9 +326,9 @@ func (r *ModelProbeRunner) applyResult(
 		     consecutive_successes, consecutive_failures, total_attempts,
 		     last_attempt_at, next_retry_at, last_status,
 		     last_state_change_at, last_state_change_run)
-		VALUES ($1, $2, $3, $4, $5, 1, NOW(), ` + nextRetryExpr + `, $7,
-		        CASE WHEN $8 IN ('recovered','broke') THEN NOW() ELSE NULL END,
-		        CASE WHEN $8 IN ('recovered','broke') THEN
+		VALUES ($1, $2, $3, $4, $5, 1, NOW(), ` + nextRetryExpr + `, $6,
+		        CASE WHEN $7 IN ('recovered','broke') THEN NOW() ELSE NULL END,
+		        CASE WHEN $7 IN ('recovered','broke') THEN
 		            (SELECT id FROM model_probe_runs
 		             WHERE credential_id = $1 AND raw_model_name = $2
 		             ORDER BY id DESC LIMIT 1)
@@ -458,18 +468,19 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	}
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
+		_, _, ns, nf, nst := r.computeConsensus("auth", prevState, prevSucc, prevFail)
 		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
 		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
-			"unchanged", false, "manual", prevState, prevSucc, prevFail)
+			"unchanged", false, "manual", ns, nf, nst)
 		return decErr
 	}
 	t.APIKey = apiKey
 
 	status, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
-	stateChange, applied, _, _, _ := r.computeConsensus(status, prevState, prevSucc, prevFail)
+	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, prevState, prevSucc, prevFail)
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
-		prevState, prevSucc, prevFail)
+		newSucc, newFail, newState)
 	return nil
 }
 
