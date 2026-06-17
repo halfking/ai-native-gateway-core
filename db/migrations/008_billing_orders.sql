@@ -64,5 +64,5 @@ CREATE INDEX IF NOT EXISTS idx_billing_orders_status
 -- that tenant.
 --
 ALTER TABLE public.billing_orders ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant_isolation_billing_orders ON public.billing_orders
+CREATE OR REPLACE POLICY tenant_isolation_billing_orders ON public.billing_orders
   USING ((tenant_id)::text = (public.get_current_tenant())::text);
