@@ -1,6 +1,9 @@
 package admin
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNormalizeSessionTitle(t *testing.T) {
 	cases := []struct {
@@ -31,6 +34,21 @@ func TestIsValidSessionTitle(t *testing.T) {
 	}
 	if !isValidSessionTitle("部署鉴权修复") {
 		t.Fatal("expected valid title")
+	}
+}
+
+func TestRequestLogStatusExprRequiresRLAlias(t *testing.T) {
+	if !strings.Contains(requestLogStatusExpr, "rl.") {
+		t.Fatal("requestLogStatusExpr must reference request_logs alias rl")
+	}
+	// loadTaskLogsForTitle / loadSessionLogsForSummary must use FROM request_logs rl.
+	const fromClause = "FROM request_logs rl"
+	q := `
+		SELECT rl.ts, ` + requestLogStatusExpr + ` AS request_status
+		` + fromClause + `
+		WHERE gw_task_id = $1`
+	if !strings.Contains(q, fromClause) {
+		t.Fatalf("title/summary log queries must include %q", fromClause)
 	}
 }
 

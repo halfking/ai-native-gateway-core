@@ -65,6 +65,22 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	// Ensure get_current_tenant() function exists before MaaS schema
+	// (007_maas_billing.sql / 008_billing_orders.sql depend on it for RLS policies).
+	// The function is also defined in 001_users_table.sql / usersSchemaSQL,
+	// but those run after db.Open() returns (in main.go). On fresh databases
+	// this ordering would cause the POLICY CREATE to fail. CREATE OR REPLACE
+	// makes this idempotent regardless of order.
+	if _, err := db.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.get_current_tenant()
+		RETURNS text
+		LANGUAGE sql
+		STABLE
+		AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
+	`); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.EnsureMaasSchema(pingCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -151,6 +167,10 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation_users ON public.users;
+CREATE POLICY tenant_isolation_users ON public.users
+  USING ((tenant_id)::text = (public.get_current_tenant())::text);
 `
 
 // workTypeSchemaSQL mirrors db/migrations/002_work_types.sql for startup apply.

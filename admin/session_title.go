@@ -108,10 +108,10 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 	args = append(args, 300)
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
-		SELECT ts, request_preview, response_preview,
+		SELECT rl.ts, rl.request_preview, rl.response_preview,
 		       `+requestLogStatusExpr+` AS request_status,
-		       error_kind, client_model
-		FROM request_logs
+		       rl.error_kind, rl.client_model
+		FROM request_logs rl
 		`+where+`
 		ORDER BY ts ASC
 		LIMIT `+limitArg+`
