@@ -67,7 +67,18 @@ function healthLabel(s?: string | null) {
   if (s === 'healthy') return '正常'
   if (s === 'warning') return '警示'
   if (s === 'unreachable') return '不可达'
+  if (s === 'error') return '错误'
   return '未探测'
+}
+
+function probeResultMsg(r: { health_status?: string | null; probe_ok?: boolean; health_source?: string | null }) {
+  const status = healthLabel(r.health_status)
+  const detail = r.health_source === 'models'
+    ? '模型接口正常'
+    : r.probe_ok
+      ? '探活通过'
+      : '不可用'
+  return `${status} · ${detail}`
 }
 
 function timeText(v?: string | null) {
@@ -167,8 +178,14 @@ async function checkSelected() {
   checkMsg.value = ''
   try {
     const r = await checkCredential(props.provider.id, c.id)
-    checkMsg.value = `${r.health_status} · ${r.probe_ok ? '探活通过' : '不可用'}`
-    setTimeout(() => emit('refresh'), 3000)
+    if (r.health_status) {
+      c.health_status = r.health_status as ProviderCredential['health_status']
+      c.health_checked_at = new Date().toISOString()
+      if (r.health_error != null) c.health_error = r.health_error
+      if (r.health_probe_model != null) c.health_probe_model = r.health_probe_model
+    }
+    checkMsg.value = probeResultMsg(r)
+    emit('refresh')
   } catch (e: unknown) {
     checkMsg.value = e instanceof Error ? e.message : '检测失败'
   } finally {
@@ -422,11 +439,13 @@ function onTagsInput(ev: Event) {
             <div v-if="selected.health_probe_model" class="cell-sub">probe: {{ selected.health_probe_model }}</div>
             <div v-if="selected.health_error" class="cell-sub cell-sub--danger">{{ selected.health_error }}</div>
             <div class="btn-row">
-              <button class="btn btn-sm" :disabled="checking" @click="checkSelected">
-                {{ checking ? '检测中…' : '立即检测' }}
-              </button>
+              <button class="btn btn-sm" :disabled="checking" @click="checkSelected">立即检测</button>
             </div>
-            <div v-if="checkMsg" class="cell-sub">{{ checkMsg }}</div>
+            <div v-if="checking" class="probe-status probe-status--loading" role="status" aria-live="polite">
+              <span class="probe-spinner" aria-hidden="true"></span>
+              正在探活…
+            </div>
+            <div v-else-if="checkMsg" class="cell-sub">{{ checkMsg }}</div>
           </div>
 
           <div class="drawer-section">
@@ -663,5 +682,29 @@ function onTagsInput(ev: Event) {
 .drawer-section--danger {
   padding-top: 12px;
   border-top: 1px dashed var(--border);
+}
+.probe-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.probe-status--loading {
+  color: var(--accent, #6366f1);
+}
+.probe-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(99, 102, 241, 0.3);
+  border-top-color: var(--accent, #6366f1);
+  border-radius: 50%;
+  animation: probe-spin 0.8s linear infinite;
+}
+@keyframes probe-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
