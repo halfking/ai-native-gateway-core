@@ -37,31 +37,37 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	}
 	slog.Info("postgres connected")
 	db := &DB{pool: pool}
-	if err := db.ensureRequestLogSchema(pingCtx); err != nil {
+	// Use the parent ctx (no 3s timeout) for schema migrations. The
+	// pingCtx above is only for the initial Ping() check; reusing it
+	// for the migrations makes a real DB with many tables (15+ ALTER/
+	// CREATE INDEX / MATERIALIZED VIEW statements) time out at boot.
+	migCtx, migCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer migCancel()
+	if err := db.ensureRequestLogSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureWorkTypeSchema(pingCtx); err != nil {
+	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.EnsureTenantsTable(pingCtx); err != nil {
+	if err := db.EnsureTenantsTable(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureTuningSignalsStrategyColumn(pingCtx); err != nil {
+	if err := db.ensureTuningSignalsStrategyColumn(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureSessionMemoraExtractionLog(pingCtx); err != nil {
+	if err := db.ensureSessionMemoraExtractionLog(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureSessionTitles(pingCtx); err != nil {
+	if err := db.ensureSessionTitles(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureTuningSignalsViews(pingCtx); err != nil {
+	if err := db.ensureTuningSignalsViews(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -71,7 +77,7 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	// but those run after db.Open() returns (in main.go). On fresh databases
 	// this ordering would cause the POLICY CREATE to fail. CREATE OR REPLACE
 	// makes this idempotent regardless of order.
-	if _, err := db.pool.Exec(ctx, `
+	if _, err := db.pool.Exec(migCtx, `
 		CREATE OR REPLACE FUNCTION public.get_current_tenant()
 		RETURNS text
 		LANGUAGE sql
@@ -81,15 +87,15 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.EnsureMaasSchema(pingCtx); err != nil {
+	if err := db.EnsureMaasSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureRoutingOverridesTable(pingCtx); err != nil {
+	if err := db.ensureRoutingOverridesTable(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureRoutingOverridesAudit(pingCtx); err != nil {
+	if err := db.ensureRoutingOverridesAudit(migCtx); err != nil {
 		pool.Close()
 		return nil, err
 	}
