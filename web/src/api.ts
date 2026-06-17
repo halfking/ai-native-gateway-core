@@ -852,6 +852,20 @@ export interface ProbeRun {
   created_at: string
 }
 
+export interface ProbeState {
+  credential_id: number
+  raw_model_name: string
+  state: 'unknown' | 'recovering' | 'healthy_confirmed' | 'broken_confirmed'
+  consecutive_successes: number
+  consecutive_failures: number
+  total_attempts: number
+  last_attempt_at: string | null
+  next_retry_at: string
+  last_status: string | null
+  last_state_change_at: string | null
+  last_state_change_run: number | null
+}
+
 export function getProviderProbeHistory(providerId: number, opts?: { limit?: number; status?: string }) {
   const params = new URLSearchParams()
   if (opts?.limit) params.set('limit', String(opts.limit))
@@ -870,6 +884,17 @@ export function getProviderRecentProbeFailures(providerId: number) {
     window: string
     models: { raw_model_name: string; failed_count: number; last_failed_at: string; sample_error_code: string }[]
   }>('GET', `/api/providers/${providerId}/probe-history/recent-failures`)
+}
+
+export function getProviderProbeStates(providerId: number, opts?: { state?: string }) {
+  const params = new URLSearchParams()
+  if (opts?.state) params.set('state', opts.state)
+  const qs = params.toString()
+  return req<{
+    provider_id: number
+    state_filter: string
+    states: ProbeState[]
+  }>('GET', `/api/providers/${providerId}/probe-states${qs ? `?${qs}` : ''}`)
 }
 
 export function triggerProviderProbe(providerId: number, credentialId: number, rawModelName: string) {
