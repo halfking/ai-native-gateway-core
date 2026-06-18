@@ -16,8 +16,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-var _ = sync.Mutex{} // keep import live if pendingCapturer is later moved
-
 const (
 	streamBufSize       = 64 * 1024
 	sseKeepaliveComment = ": keep-alive\n\n"

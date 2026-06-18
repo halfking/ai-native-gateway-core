@@ -70,6 +70,11 @@ func (s *PendingSweeper) Start(ctx context.Context) {
 func (s *PendingSweeper) Stop() {
 	if s.cancel != nil {
 		s.cancel()
+	} else {
+		// Start() was never called — the done channel was
+		// never closed by run(). Return immediately rather
+		// than deadlocking on <-s.done.
+		return
 	}
 	<-s.done
 }
