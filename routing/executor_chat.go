@@ -247,9 +247,22 @@ func (e *Executor) executeOpenAI(
 			if params.IsStream {
 				timeout = e.StreamTimeout
 			}
-			ctx, cancel := context.WithTimeout(params.R.Context(), timeout)
+			// Track C (2026-06-18): when the request carries a session
+			// id (X-Gw-Session-Id or X-Session-Id), decouple the
+			// upstream HTTP context from the client request context.
+			// The client can disconnect mid-stream and we still want
+			// to read the rest of the upstream response so we can
+			// cache it for the client to pick up on reconnect (see
+			// pending/ and sessions/handler.go C3).
+			//
+			// Without a session id, the original behaviour is
+			// preserved: client disconnect cancels the upstream
+			// request immediately. We do not cache responses for
+			// stateless clients because there is no way for them
+			// to retrieve the cached body on reconnect.
+			upCtx, cancel := e.upstreamContext(params, timeout)
 			defer cancel()
-			req = req.WithContext(ctx)
+			req = req.WithContext(upCtx)
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
@@ -651,4 +664,49 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 // without introducing a cycle).
 func strPtrCompat(s string) *string {
 	return &s
+}
+
+// hasSessionID reports whether the request carries a gateway session
+// id (X-Gw-Session-Id). When true, the executor decouples the
+// upstream context from the client context so a client disconnect
+// does not cancel the vendor request — the response is cached for
+// the client to pick up on reconnect (see pending/ Store + the GET
+// endpoint in sessions/handler.go).
+//
+// Track C (2026-06-18). Mirrors the X-Session-Id → X-Gw-Session-Id
+// fallback used in relay/handler.go, but here we only care about
+// "is the client claiming session tracking" — the actual lookup
+// happens earlier in the handler.
+func hasSessionID(params *ExecParams) bool {
+	if params == nil || params.R == nil {
+		return false
+	}
+	if v := params.R.Header.Get("X-Gw-Session-Id"); v != "" {
+		return true
+	}
+	if v := params.R.Header.Get("X-Session-Id"); v != "" {
+		return true
+	}
+	return false
+}
+
+// upstreamContext (Track C, 2026-06-18) returns the context used for
+// the upstream HTTP call. When the request carries a session id,
+// the context is decoupled from the client request context so a
+// client disconnect does not cancel the vendor request. Otherwise,
+// the original behaviour is preserved (client disconnect cancels
+// upstream immediately) to avoid wasting vendor budget on requests
+// the client will not retrieve.
+//
+// The decoupling is intentionally minimal in C1: we do NOT yet
+// implement the response buffering or the cache write — those are
+// C2 (stream.go) and C4 (executor.go async retry). C1 only proves
+// the "upstream does not cancel on client disconnect" building
+// block. The timeout is still respected, so a stuck vendor is
+// bounded regardless of client state.
+func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if hasSessionID(params) {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	return context.WithTimeout(params.R.Context(), timeout)
 }
