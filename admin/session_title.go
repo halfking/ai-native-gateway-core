@@ -74,7 +74,7 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	model := pickSummaryModel(logs)
+	model := sessionTitleModel(logs)
 
 	title, err := callSessionTitleLLM(ctx, r, apiKey, model, taskID, corpus)
 	if err != nil {
@@ -136,17 +136,30 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 	return logs, rows.Err()
 }
 
+func sessionTitleModel(logs []sessionLogForSummary) string {
+	// Use a stable chat model for titles. pickSummaryModel mirrors the session's
+	// last client_model, which may be a reasoning model that echoes
+	// <think> or similar markers instead of a plain Chinese title.
+	_ = logs
+	return "gpt-4o-mini"
+}
+
 func callSessionTitleLLM(ctx context.Context, r *http.Request, apiKey, model, taskID, corpus string) (string, error) {
+	turnHint := strings.Count(corpus, "\n[")
+	if turnHint < 1 {
+		turnHint = 1
+	}
 	payload := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
 			{
 				"role": "system",
-				"content": "你是会话标题生成助手。根据会话日志用中文生成一个简短准确的标题（不超过18字），概括会话核心主题与结果。只输出标题本身，不要引号、编号或解释。",
+				"content": "你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。" +
+					"只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。",
 			},
 			{
 				"role": "user",
-				"content": "请为以下会话生成标题（语料已清洗，格式 [时间][角色] 内容）：\n" + corpus,
+				"content": fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus),
 			},
 		},
 		"temperature": 0.2,
@@ -200,6 +213,7 @@ func callSessionTitleLLM(ctx context.Context, r *http.Request, apiKey, model, ta
 
 func normalizeSessionTitle(raw string) string {
 	s := strings.TrimSpace(raw)
+	s = reXMLLikeTag.ReplaceAllString(s, "")
 	s = strings.Trim(s, `"'「」『』""`)
 	if idx := strings.IndexAny(s, "\n\r"); idx >= 0 {
 		s = strings.TrimSpace(s[:idx])
@@ -210,6 +224,7 @@ func normalizeSessionTitle(raw string) string {
 			s = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(s, "标题:"), "标题："))
 		}
 	}
+	s = strings.Join(strings.Fields(s), " ")
 	if utf8.RuneCountInString(s) > sessionTitleMaxRunes {
 		runes := []rune(s)
 		s = string(runes[:sessionTitleMaxRunes]) + "…"
@@ -222,11 +237,27 @@ func isValidSessionTitle(title string) bool {
 	if utf8.RuneCountInString(s) < 2 {
 		return false
 	}
+	if strings.ContainsAny(s, "<>") {
+		return false
+	}
 	lower := strings.ToLower(s)
+	if strings.Contains(lower, "redacted") || strings.Contains(lower, "thinking") {
+		return false
+	}
 	if strings.Contains(lower, "无法") && strings.Contains(lower, "标题") {
 		return false
 	}
 	if strings.Contains(lower, "无足够") || strings.Contains(lower, "信息不足") {
+		return false
+	}
+	// Reject titles that are mostly ASCII (likely tag names / placeholders).
+	ascii := 0
+	for _, r := range s {
+		if r < 128 {
+			ascii++
+		}
+	}
+	if ascii*2 > len([]rune(s)) {
 		return false
 	}
 	return true
