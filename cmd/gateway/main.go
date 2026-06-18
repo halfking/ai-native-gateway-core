@@ -160,6 +160,8 @@ func main() {
 	var sessionMgr *sessions.Manager
 	var fpSlotRedis *redis.Client
 	var pendingStore *pending.Store
+	var redisClientForCache *sessions.RedisClient
+	var routingExec *routing.Executor
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -169,6 +171,7 @@ func main() {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
 			sessionMgr = sessions.NewManager(redisClient, ttl)
 			chatHandler.SetSessionGetter(sessionMgr)
+			redisClientForCache = redisClient
 			fpSlotRedis = redis.NewClient(&redis.Options{
 				Addr:     cfg.RedisAddr,
 				Password: cfg.RedisPassword,
@@ -210,7 +213,7 @@ func main() {
 		}
 		router := routing.NewRouter(stickyCache, lim)
 		norm := relay.NewNormalizer()
-		exec := routing.NewExecutor(
+		routingExec = routing.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
 			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
@@ -266,15 +269,15 @@ func main() {
 			},
 			auditSink,
 		)
-		exec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
-		exec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
-		exec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
-		exec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+		routingExec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
+		routingExec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
+		routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
+		routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
 		// Q3 streaming: openai client -> anthropic upstream. Translates
 		// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
 		// doesn't choke on event: ... lines. Fixes the "供应商错误"
 		// symptom on minimax-M2.7 / minimax-M3 etc. (Q3 model routes).
-		exec.AnthropicToOpenAIStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, cap *audit.StreamCapture) routing.StreamOutcome {
+		routingExec.AnthropicToOpenAIStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, cap *audit.StreamCapture) routing.StreamOutcome {
 			// relay.StreamOutcome and routing.StreamOutcome are
 			// structurally identical; explicit conversion to bridge the
 			// import boundary (routing can't import relay).
@@ -283,17 +286,17 @@ func main() {
 		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
 		// chat.completion JSON. Fixes the missing `content` field on
 		// minimax-M2.7 non-stream responses.
-		exec.AnthropicToChatResponse = relay.ConvertAnthropicResponseToChat
-		exec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
-		exec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
+		routingExec.AnthropicToChatResponse = relay.ConvertAnthropicResponseToChat
+		routingExec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
+		routingExec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
 		// Strip minimax-private fields (nvext, base_resp, input_sensitive*,
 		// output_sensitive*) from all non-stream chat responses before
 		// returning to the client. Wired into both executeOpenAI (non-stream
 		// path) and the StreamChat closure (stream path via stripFn).
-		exec.StripMinimaxFields = relay.StripMinimaxFieldsBody
-		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
-		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
-		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
+		routingExec.StripMinimaxFields = relay.StripMinimaxFieldsBody
+		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
+		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
+		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
 		// MnfStreak (Step 6, 2026-06-18): client hot-path breaker
 		// for persistent model_not_found. When the same sticky
 		// session accumulates M MnfStickyBreakThreshold
@@ -311,39 +314,39 @@ func main() {
 				mnfStreakCap = n
 			}
 		}
-		exec.MnfStreak = routing.NewMnfStreak(mnfStreakCap)
-		exec.MnfStickyBreakThreshold = 3
-		exec.MnfStreakEnabled = true
+		routingExec.MnfStreak = routing.NewMnfStreak(mnfStreakCap)
+		routingExec.MnfStickyBreakThreshold = 3
+		routingExec.MnfStreakEnabled = true
 		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_ENABLED"); v == "false" || v == "0" {
-			exec.MnfStreakEnabled = false
+			routingExec.MnfStreakEnabled = false
 			slog.Warn("mnf_streak_disabled_via_env")
 		}
 		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_THRESHOLD"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				exec.MnfStickyBreakThreshold = n
+				routingExec.MnfStickyBreakThreshold = n
 			}
 		}
 		slog.Info("mnf_streak_enabled",
-			"threshold", exec.MnfStickyBreakThreshold,
+			"threshold", routingExec.MnfStickyBreakThreshold,
 			"capacity", mnfStreakCap,
 		)
 		// BUG-4 fix: mnf_cooling temporarily disables a binding when
 		// it accumulates too many model_not_found errors in 10 min.
-		exec.MnfCoolThreshold = 5
-		exec.MnfCoolMinutes = 2
+		routingExec.MnfCoolThreshold = 5
+		routingExec.MnfCoolMinutes = 2
 		if v := os.Getenv("LLM_GATEWAY_MNF_COOL_THRESHOLD"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				exec.MnfCoolThreshold = n
+				routingExec.MnfCoolThreshold = n
 			}
 		}
 		if v := os.Getenv("LLM_GATEWAY_MNF_COOL_MINUTES"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				exec.MnfCoolMinutes = n
+				routingExec.MnfCoolMinutes = n
 			}
 		}
 		slog.Info("mnf_cooling_enabled",
-			"threshold", exec.MnfCoolThreshold,
-			"cool_minutes", exec.MnfCoolMinutes,
+			"threshold", routingExec.MnfCoolThreshold,
+			"cool_minutes", routingExec.MnfCoolMinutes,
 		)
 		// Track C C4 (2026-06-18): wire the pending response cache
 		// into the executor so it can demote a slow synchronous
@@ -351,29 +354,29 @@ func main() {
 		// budget), 300s long (async total deadline), 2 fallback
 		// credentials. Override via env for emergency rollback.
 		if pendingStore != nil {
-			exec.PendingStore = pendingStore
-			exec.AsyncShortTimeout = 15 * time.Second
-			exec.AsyncLongTimeout = 300 * time.Second
-			exec.AsyncMaxFallbackCreds = 2
+			routingExec.PendingStore = pendingStore
+			routingExec.AsyncShortTimeout = 15 * time.Second
+			routingExec.AsyncLongTimeout = 300 * time.Second
+			routingExec.AsyncMaxFallbackCreds = 2
 			if v := os.Getenv("LLM_GATEWAY_ASYNC_SHORT_TIMEOUT"); v != "" {
 				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					exec.AsyncShortTimeout = time.Duration(n) * time.Second
+					routingExec.AsyncShortTimeout = time.Duration(n) * time.Second
 				}
 			}
 			if v := os.Getenv("LLM_GATEWAY_ASYNC_LONG_TIMEOUT"); v != "" {
 				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					exec.AsyncLongTimeout = time.Duration(n) * time.Second
+					routingExec.AsyncLongTimeout = time.Duration(n) * time.Second
 				}
 			}
 			if v := os.Getenv("LLM_GATEWAY_ASYNC_MAX_FALLBACK_CREDS"); v != "" {
 				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-					exec.AsyncMaxFallbackCreds = n
+					routingExec.AsyncMaxFallbackCreds = n
 				}
 			}
 			slog.Info("async_pending_enabled",
-				"short_timeout", exec.AsyncShortTimeout,
-				"long_timeout", exec.AsyncLongTimeout,
-				"max_fallback_creds", exec.AsyncMaxFallbackCreds,
+				"short_timeout", routingExec.AsyncShortTimeout,
+				"long_timeout", routingExec.AsyncLongTimeout,
+				"max_fallback_creds", routingExec.AsyncMaxFallbackCreds,
 			)
 		}
 // Round 47 compression v7 T16: build the unified compression dispatcher.
@@ -381,10 +384,10 @@ func main() {
 // user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
 // All three modes (off / auto_threshold / on_4xx) are nil-safe so a
 // misconfigured install degrades gracefully to ModeOff.
-exec.Compressor = compressor.NewCompressor()
+routingExec.Compressor = compressor.NewCompressor()
 slog.Info("compressor initialized",
-	"mode", exec.Compressor.Mode().String(),
-	"window_fraction", exec.Compressor.Estimator().Fraction(),
+	"mode", routingExec.Compressor.Mode().String(),
+	"window_fraction", routingExec.Compressor.Estimator().Fraction(),
 )
 
 // Memora: optional context-compression oracle. When the
@@ -396,34 +399,34 @@ slog.Info("compressor initialized",
 				BaseURL: memoraBase,
 				APIKey:  os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 			})
-			exec.Memora = memoraClient
+			routingExec.Memora = memoraClient
 			// Async sink: fire-and-forget write buffer for L1 session
 			// memory persistence. 2 workers / 2048-deep queue is enough
 			// for the write volume (one enqueue per successful request).
 			memoraSink = memora.NewSink(memoraClient, 2, 2048)
 			memoraSink.Start()
-			exec.MemoraSink = memoraSink
+			routingExec.MemoraSink = memoraSink
 			slog.Info("memora context-compression oracle enabled", "base_url", memoraBase)
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
 		if dbConn != nil && dbConn.Enabled() {
-			exec.State = credentialstate.NewWriter(dbConn.Pool())
-			exec.DB = dbConn
-			exec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
+			routingExec.State = credentialstate.NewWriter(dbConn.Pool())
+			routingExec.DB = dbConn
+			routingExec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
-		exec.FpSlots = fpSlots
-		exec.Provider = providerClient
+		routingExec.FpSlots = fpSlots
+		routingExec.Provider = providerClient
 		// Inject peak collector (after bg workers have started it).
 		if peakCollector != nil {
-			exec.PeakCollector = peakCollector
+			routingExec.PeakCollector = peakCollector
 		}
 		// Enable disguise mode if configured.
 		if cfg.EnableDisguise {
-			exec.DisguisePool = disguise.DefaultPool
+			routingExec.DisguisePool = disguise.DefaultPool
 			slog.Info("disguise mode enabled")
 		}
-		chatHandler.SetExecutor(exec, providerClient, stickyCache)
+		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
 		// Default 100 entries / 5 min TTL; override via env.
 		idempotentCap := 100
@@ -443,6 +446,7 @@ slog.Info("compressor initialized",
 			"cap", idempotentCap,
 			"ttl_seconds", idempotentTTL,
 		)
+
 		slog.Info("routing executor enabled")
 	} else {
 		slog.Warn("routing executor disabled (no database connection)")
@@ -469,6 +473,23 @@ slog.Info("compressor initialized",
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
 		slog.Info("telemetry emission enabled")
+	}
+
+	// v3 (2026-06-19) session-level intelligent compression.
+	// Builds SessionCache (L1+L2+L3) and SessionCompressor (orchestrator),
+	// then wires them into the chat handler. Feature-flagged via
+	// LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE so the deploy can roll back
+	// instantly without code change. Captures `exec` from the outer scope.
+	if redisClientForCache != nil && dbConn != nil && dbConn.Enabled() && telemetryClient.Enabled() && !compressorSessionDisabled() {
+		scCache := compressor.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
+		scDeps := compressor.SessionCompressorDeps{
+			Cache:          scCache,
+			CompactionDeps: NewDependenciesFromExecutor(routingExec),
+		}
+		chatHandler.SetSessionCompressor(compressor.NewSessionCompressor(scDeps))
+		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
+	} else {
+		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
 	}
 
 	if dbConn != nil && dbConn.Enabled() {
