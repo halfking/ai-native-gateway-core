@@ -282,14 +282,20 @@ func (h *Handler) handleNoTopicSessionSummarizeTitle(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	model := sessionTitleModel(logs)
 
-	title, err := callSessionTitleLLM(ctx, r, apiKey, model, virtualTaskID, corpus)
+	turnHint := strings.Count(corpus, "\n[")
+	if turnHint < 1 {
+		turnHint = 1
+	}
+	userContent := fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus)
+
+	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, virtualTaskID, userContent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
 		return
 	}
-	title = normalizeSessionTitle(title)
+	title := normalizeSessionTitle(llmRes.Content)
+	model := llmRes.ResolvedModel
 	if !isValidSessionTitle(title) {
 		writeError(w, http.StatusBadGateway, "标题结果无效，请稍后重试")
 		return

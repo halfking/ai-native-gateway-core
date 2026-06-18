@@ -1,11 +1,9 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -120,7 +118,7 @@ func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	model := pickSummaryModel(logs)
+	model := adminLLMModelAuto
 
 	// Check cache
 	cacheKey := fmt.Sprintf("%s:%d", req.GwSessionID, len(logs))
@@ -144,10 +142,13 @@ func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	summary, keyPoints, err := callSessionSummaryLLM(ctx, r, apiKey, model, req.GwSessionID, corpus)
+	summary, keyPoints, resolvedModel, err := h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
 		return
+	}
+	if resolvedModel != "" {
+		model = resolvedModel
 	}
 	if !isValidSummary(summary, keyPoints) {
 		writeError(w, http.StatusBadGateway, "总结结果无效，请稍后重试")
@@ -302,77 +303,16 @@ func sanitizeSummaryText(raw string) string {
 	return strings.TrimSpace(s)
 }
 
-func pickSummaryModel(logs []sessionLogForSummary) string {
-	// Use a stable chat model for summaries. Mirroring the session's last
-	// client_model may pick a reasoning model that echoes <think>
-	// or similar markers instead of plain Chinese summary JSON.
-	_ = logs
-	return "gpt-4o-mini"
-}
-
-func callSessionSummaryLLM(ctx context.Context, r *http.Request, apiKey, model, sessionID, corpus string) (summary string, keyPoints []string, err error) {
-	payload := map[string]any{
-		"model": model,
-		"messages": []map[string]string{
-			{
-				"role": "system",
-				"content": `你是会话日志分析助手。请严格输出 JSON，格式如下：
-{"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
-要求：
-- summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
-- key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
-- 不要输出 JSON 以外的任何文本
-- 如果语料中包含错误信息，务必在总结中提及`,
-			},
-			{
-				"role": "user",
-				"content": "请总结以下会话日志（语料已清洗，格式 [时间][角色] 内容）：\n" + corpus,
-			},
-		},
-		"temperature": 0.2,
-	}
-	body, _ := json.Marshal(payload)
-	endpoint := gatewayEndpointFromRequest(r) + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+func (h *Handler) callSessionSummaryLLM(ctx context.Context, r *http.Request, apiKey, sessionID, corpus string) (summary string, keyPoints []string, model string, err error) {
+	userContent := "请总结以下会话日志（语料已清洗，格式 [时间][角色] 内容）：\n" + corpus
+	res, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionSummary, sessionID, userContent)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("X-Gw-Session-Id", sessionID)
-	req.Header.Set("X-Device-Seed", "admin-session-summary")
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(raw))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return "", nil, fmt.Errorf("%s", msg)
-	}
-
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", nil, err
-	}
-	if len(out.Choices) == 0 {
-		return "", nil, fmt.Errorf("empty completion")
-	}
-	content := strings.TrimSpace(out.Choices[0].Message.Content)
+	model = res.ResolvedModel
+	content := strings.TrimSpace(res.Content)
 	if content == "" {
-		return "", nil, fmt.Errorf("empty completion content")
+		return "", nil, model, fmt.Errorf("empty completion content")
 	}
 	var parsed struct {
 		Summary   string   `json:"summary"`
@@ -380,7 +320,7 @@ func callSessionSummaryLLM(ctx context.Context, r *http.Request, apiKey, model, 
 	}
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		s := sanitizeSummaryText(content)
-		return s, nil, nil
+		return s, nil, model, nil
 	}
 	keyPoints = make([]string, 0, len(parsed.KeyPoints))
 	for _, p := range parsed.KeyPoints {
@@ -389,7 +329,7 @@ func callSessionSummaryLLM(ctx context.Context, r *http.Request, apiKey, model, 
 			keyPoints = append(keyPoints, pp)
 		}
 	}
-	return strings.TrimSpace(parsed.Summary), keyPoints, nil
+	return strings.TrimSpace(parsed.Summary), keyPoints, model, nil
 }
 
 func gatewayEndpointFromRequest(r *http.Request) string {
@@ -508,7 +448,7 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	model := pickSummaryModel(logs)
+	model := adminLLMModelAuto
 
 	// Check cache first
 	cacheKey := fmt.Sprintf("%s:%d", req.GwSessionID, len(logs))
@@ -521,10 +461,14 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if summary == "" {
-		summary, keyPoints, err = callSessionSummaryLLM(ctx, r, apiKey, model, req.GwSessionID, corpus)
+		var resolvedModel string
+		summary, keyPoints, resolvedModel, err = h.callSessionSummaryLLM(ctx, r, apiKey, req.GwSessionID, corpus)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "总结生成失败: "+err.Error())
 			return
+		}
+		if resolvedModel != "" {
+			model = resolvedModel
 		}
 		if !isValidSummary(summary, keyPoints) {
 			writeError(w, http.StatusBadGateway, "总结结果无效，请稍后重试")

@@ -272,6 +272,7 @@ type workTypeConfig struct {
 	DefaultProfile   string     `json:"default_profile"`
 	Tags             []string   `json:"tags"`
 	PromptKeywords   []string   `json:"prompt_keywords"`
+	SystemPrompt     *string    `json:"system_prompt,omitempty"`
 	ACCTaskType      *string    `json:"acc_task_type,omitempty"`
 	Enabled          bool       `json:"enabled"`
 	SortOrder        int        `json:"sort_order"`
@@ -295,7 +296,7 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 	includeDisabled := r.URL.Query().Get("include_disabled") == "true"
 	query := `
 		SELECT key, label, category, l1_task_type, default_profile,
-		       tags, prompt_keywords, acc_task_type, enabled, sort_order,
+		       tags, prompt_keywords, system_prompt, acc_task_type, enabled, sort_order,
 		       synced_from_acc_at, updated_at
 		FROM work_type_config
 	`
@@ -312,12 +313,22 @@ func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request)
 	defer rows.Close()
 
 	out := make([]workTypeConfig, 0)
+	keys := make([]string, 0)
 	for rows.Next() {
 		wt, err := scanWorkType(rows)
 		if err != nil {
 			continue
 		}
 		out = append(out, wt)
+		keys = append(keys, wt.Key)
+	}
+	routeMap, err := h.fetchRoutesForKeys(ctx, keys)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	for i := range out {
+		out[i].ModelRoutes = routeMap[out[i].Key]
 	}
 	writeJSONOk(w, out)
 }
@@ -417,6 +428,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 		"l1_task_type":    "l1_task_type",
 		"default_profile": "default_profile",
 		"acc_task_type":   "acc_task_type",
+		"system_prompt":   "system_prompt",
 	}
 	for jsonKey, col := range stringFields {
 		if v, ok := req[jsonKey]; ok {
@@ -526,6 +538,20 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		return
 	}
 
+	// Drop empty rows and enforce at most 3 model routes per work type.
+	filtered := make([]modelRoute, 0, len(routes))
+	for _, rt := range routes {
+		if strings.TrimSpace(rt.CanonicalName) == "" {
+			continue
+		}
+		filtered = append(filtered, rt)
+	}
+	if len(filtered) > 3 {
+		writeJSONErr(w, http.StatusBadRequest, "at most 3 model routes allowed per work type")
+		return
+	}
+	routes = filtered
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -585,7 +611,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 func (h *WorkTypeHandlers) fetchWorkType(ctx context.Context, key string) (workTypeConfig, error) {
 	row := h.db.QueryRow(ctx, `
 		SELECT key, label, category, l1_task_type, default_profile,
-		       tags, prompt_keywords, acc_task_type, enabled, sort_order,
+		       tags, prompt_keywords, system_prompt, acc_task_type, enabled, sort_order,
 		       synced_from_acc_at, updated_at
 		FROM work_type_config WHERE key = $1
 	`, key)
@@ -598,6 +624,7 @@ func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]model
 		FROM work_type_model_route
 		WHERE work_type_key = $1
 		ORDER BY weight DESC, canonical_name
+		LIMIT 3
 	`, key)
 	if err != nil {
 		return nil, err
@@ -618,6 +645,38 @@ func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]model
 	return out, nil
 }
 
+func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string) (map[string][]modelRoute, error) {
+	out := make(map[string][]modelRoute, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT work_type_key, id, canonical_name, weight, min_score, enabled
+		FROM work_type_model_route
+		WHERE work_type_key = ANY($1)
+		ORDER BY work_type_key, weight DESC, canonical_name
+	`, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var rt modelRoute
+		var weight, minScore float64
+		if err := rows.Scan(&key, &rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled); err != nil {
+			continue
+		}
+		rt.Weight = weight
+		rt.MinScore = minScore
+		if len(out[key]) >= 3 {
+			continue
+		}
+		out[key] = append(out[key], rt)
+	}
+	return out, nil
+}
+
 type scannable interface {
 	Scan(dest ...any) error
 }
@@ -632,7 +691,7 @@ func scanWorkTypeRow(row scannable) (workTypeConfig, error) {
 	var syncedAt *time.Time
 	err := row.Scan(
 		&wt.Key, &wt.Label, &wt.Category, &wt.L1TaskType, &wt.DefaultProfile,
-		&wt.Tags, &wt.PromptKeywords, &accTask, &wt.Enabled, &wt.SortOrder,
+		&wt.Tags, &wt.PromptKeywords, &wt.SystemPrompt, &accTask, &wt.Enabled, &wt.SortOrder,
 		&syncedAt, &wt.UpdatedAt,
 	)
 	if err != nil {
