@@ -58,13 +58,9 @@ func TestIsValidSummary(t *testing.T) {
 	}
 }
 
-func TestPickSummaryModel_UsesStableChatModel(t *testing.T) {
-	m := "o3-mini"
-	logs := []sessionLogForSummary{
-		{ClientModel: &m},
-	}
-	if got := pickSummaryModel(logs); got != "gpt-4o-mini" {
-		t.Fatalf("pickSummaryModel = %q, want gpt-4o-mini", got)
+func TestPickSummaryModel_UsesAutoRouting(t *testing.T) {
+	if got := adminLLMModelAuto; got != "auto" {
+		t.Fatalf("admin summary model = %q, want auto", got)
 	}
 }
 
@@ -72,7 +68,7 @@ func TestSessionSummaryCache_Expiry(t *testing.T) {
 	cs := &cachedSessionSummary{
 		Summary:   "test summary",
 		KeyPoints: []string{"a", "b"},
-		Model:     "gpt-4o-mini",
+		Model:     "auto",
 		KeyID:     1,
 		CachedAt:  time.Now().Add(-15 * time.Minute),
 	}
@@ -83,7 +79,7 @@ func TestSessionSummaryCache_Expiry(t *testing.T) {
 	cs2 := &cachedSessionSummary{
 		Summary:   "fresh",
 		KeyPoints: []string{"c"},
-		Model:     "gpt-4o-mini",
+		Model:     "auto",
 		KeyID:     1,
 		CachedAt:  time.Now(),
 	}
@@ -97,7 +93,7 @@ func TestSessionSummaryCache_StoreLoad(t *testing.T) {
 	sessionSummaryCache.Store(key, &cachedSessionSummary{
 		Summary:   "cached summary",
 		KeyPoints: []string{"point1"},
-		Model:     "gpt-4o-mini",
+		Model:     "auto",
 		KeyID:     1,
 		CachedAt:  time.Now(),
 	})
