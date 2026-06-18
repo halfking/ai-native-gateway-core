@@ -311,47 +311,63 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 
 	includeMemora := parseIncludeMemora(r, limit)
 	if includeMemora && h.memoraClient != nil {
-		var previewInputs []sessionPreviewInput
-		for i, s := range sessions {
-			if s["no_topic"] == true {
-				continue
-			}
-			taskID, _ := s["task_id"].(string)
-			if taskID == "" || taskID == "[空]" {
-				continue
-			}
-			sessID := ""
-			if v, ok := s["session_id"].(string); ok && v != "" && v != "[空]" {
-				sessID = v
-			}
-			apiKeyID := 0
-			switch v := s["api_key_id"].(type) {
-			case int64:
-				apiKeyID = int(v)
-			case int:
-				apiKeyID = v
-			case float64:
-				apiKeyID = int(v)
-			}
-			tenantID, _ := s["tenant_id"].(string)
-			previewInputs = append(previewInputs, sessionPreviewInput{
-				Index:     i,
-				TaskID:    taskID,
-				SessionID: sessID,
-				APIKeyID:  apiKeyID,
-				TenantID:  tenantID,
-			})
-		}
-		if len(previewInputs) > 0 {
-			searchClient, _ := h.memoraClient.(memoraSearchClient)
-			previewResults := batchMemoraPreviews(ctx, searchClient, previewInputs)
-			for _, pr := range previewResults {
-				if pr.Index < 0 || pr.Index >= len(sessions) {
+		if !memoraReachable(ctx, h.memoraClient) {
+			for i, s := range sessions {
+				if s["no_topic"] == true {
 					continue
 				}
-				sessions[pr.Index]["memora_status"] = pr.Status
-				if pr.Preview != "" {
-					sessions[pr.Index]["memora_preview"] = pr.Preview
+				sessions[i]["memora_status"] = "unavailable"
+			}
+		} else {
+			listTenantID := ""
+			if IsTenantAdmin(r) {
+				listTenantID = GetTenantID(r)
+			}
+			var previewInputs []sessionPreviewInput
+			for i, s := range sessions {
+				if s["no_topic"] == true {
+					continue
+				}
+				taskID, _ := s["task_id"].(string)
+				if taskID == "" || taskID == "[空]" {
+					continue
+				}
+				sessID := ""
+				if v, ok := s["session_id"].(string); ok && v != "" && v != "[空]" {
+					sessID = v
+				}
+				apiKeyID := 0
+				switch v := s["api_key_id"].(type) {
+				case int64:
+					apiKeyID = int(v)
+				case int:
+					apiKeyID = v
+				case float64:
+					apiKeyID = int(v)
+				}
+				tenantID, _ := s["tenant_id"].(string)
+				if tenantID == "" {
+					tenantID = listTenantID
+				}
+				previewInputs = append(previewInputs, sessionPreviewInput{
+					Index:     i,
+					TaskID:    taskID,
+					SessionID: sessID,
+					APIKeyID:  apiKeyID,
+					TenantID:  tenantID,
+				})
+			}
+			if len(previewInputs) > 0 {
+				searchClient, _ := h.memoraClient.(memoraSearchClient)
+				previewResults := batchMemoraPreviews(ctx, searchClient, previewInputs)
+				for _, pr := range previewResults {
+					if pr.Index < 0 || pr.Index >= len(sessions) {
+						continue
+					}
+					sessions[pr.Index]["memora_status"] = pr.Status
+					if pr.Preview != "" {
+						sessions[pr.Index]["memora_preview"] = pr.Preview
+					}
 				}
 			}
 		}
@@ -529,7 +545,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	if h.memoraClient != nil && !h.memoraClient.Disabled() && apiKeyID > 0 {
 		searchClient, _ := h.memoraClient.(memoraSearchClient)
 		searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
-		blocks, searchErr := searchMergedFacts(searchCtx, searchClient, tenantID, apiKeyID, taskID, sc.SessionID)
+		blocks, searchErr := searchMergedFacts(searchCtx, searchClient, tenantID, apiKeyID, taskID, sc.SessionID, memoraSearchTopK)
 		searchCancel()
 		if searchErr == nil {
 			readableBlocks = blocks

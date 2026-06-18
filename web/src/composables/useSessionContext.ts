@@ -94,7 +94,7 @@ export function useSessionList() {
     try {
       const resp = await getMemoraSessions({
         ...filters,
-        include_memora: true,
+        include_memora: false,
         limit: 20,
       })
       sessions.value = resp.sessions
@@ -134,6 +134,9 @@ export function displayTitle(s: MemoraSession): string {
 
 export function displayMemoraPreview(s: MemoraSession): string {
   if (s.no_topic) return '—'
+  if (!s.memora_status) return '—'
+  if (s.memora_status === 'unavailable') return 'Memora 不可用'
+  if (s.memora_status === 'error') return 'Memora 检索失败'
   const preview = s.memora_preview?.trim()
   if (preview) return preview
   return 'Memora中没有'
