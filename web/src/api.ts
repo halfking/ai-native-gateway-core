@@ -1577,6 +1577,16 @@ export interface RequestLogRow {
   provider_model: string | null
   trace_seq: number | null
   credits_charged: number | null
+
+  // Round 47 compression v7: parent-child chain tracking.
+  // Populated when a request was rewritten by the compressor (either
+  // pre-request mode=1 auto_threshold or post-error mode=2 on_4xx).
+  // parent_request_id points to the pre-compression request_id;
+  // compression_* describe the strategy + payload.
+  parent_request_id: string | null
+  compression_reason: 'mode_1_auto_threshold' | 'mode_2_on_4xx' | null
+  compression_strategy: 'mechanical_trim' | 'memora_l1_inject' | 'llm_summary' | 'noop' | null
+  compression_meta: any | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
