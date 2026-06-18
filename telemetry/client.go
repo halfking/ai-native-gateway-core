@@ -150,6 +150,16 @@ type RequestLogEntry struct {
 	CompressionReason   *string         `json:"compression_reason,omitempty"`
 	CompressionStrategy *string         `json:"compression_strategy,omitempty"`
 	CompressionMeta     json.RawMessage `json:"compression_meta,omitempty"`
+
+	// v3 (2026-06-19) session-level outbound body T23.
+	// Mirrors 4 columns added by db/migrations/016_outbound_body.sql.
+	// Populated by compressor.SessionCompressor when the session cache
+	// rewrites the body (delta-append + optional sliding-window summary).
+	// NULL means no session compressor was active for this request.
+	OutboundBody      json.RawMessage `json:"outbound_body,omitempty"`
+	OutboundMsgCount  *int            `json:"outbound_msg_count,omitempty"`
+	OutboundTokenEst  *int            `json:"outbound_token_est,omitempty"`
+	OutboundMsgHashes json.RawMessage `json:"outbound_msg_hashes,omitempty"`
 }
 
 func NewClient() *Client {
@@ -422,7 +432,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
 			work_type, credits_charged,
 			-- Round 47 compression v7 T2: parent-child chain (4 columns).
-			parent_request_id, compression_reason, compression_strategy, compression_meta
+			parent_request_id, compression_reason, compression_strategy, compression_meta,
+			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
+			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -443,7 +455,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$44, $45, $46,
 			$47, $48, $49, CAST($50 AS jsonb), $51,
 			$52, $53,
-			$54, $55, $56, CAST($57 AS jsonb)
+			$54, $55, $56, CAST($57 AS jsonb),
+			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb)
 		)
 	`,
 		entry.RequestID,
@@ -504,6 +517,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.CompressionReason,
 		entry.CompressionStrategy,
 		entry.CompressionMeta,
+		// v3 (2026-06-19) T23: session-level outbound body payload.
+		entry.OutboundBody,
+		entry.OutboundMsgCount,
+		entry.OutboundTokenEst,
+		entry.OutboundMsgHashes,
 	)
 	if err != nil {
 		return err
@@ -662,7 +680,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       parent_request_id = COALESCE($51, rl.parent_request_id),
 		       compression_reason = COALESCE($52, rl.compression_reason),
 		       compression_strategy = COALESCE($53, rl.compression_strategy),
-		       compression_meta = COALESCE(CAST($54 AS jsonb), rl.compression_meta)
+		       compression_meta = COALESCE(CAST($54 AS jsonb), rl.compression_meta),
+		       -- v3 (2026-06-19) T23: session-level outbound body payload.
+		       outbound_body      = COALESCE(CAST($55 AS jsonb), rl.outbound_body),
+		       outbound_msg_count = COALESCE($56, rl.outbound_msg_count),
+		       outbound_token_est = COALESCE($57, rl.outbound_token_est),
+		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), rl.outbound_msg_hashes)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -722,6 +745,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.CompressionReason,
 		entry.CompressionStrategy,
 		entry.CompressionMeta,
+		// v3 (2026-06-19) T23: session-level outbound body payload.
+		entry.OutboundBody,
+		entry.OutboundMsgCount,
+		entry.OutboundTokenEst,
+		entry.OutboundMsgHashes,
 	)
 	if err != nil {
 		return err
