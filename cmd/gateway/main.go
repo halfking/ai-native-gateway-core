@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -240,6 +241,39 @@ func main() {
 		exec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		exec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		exec.StreamRetryThreshold = cfg.StreamRetryThreshold
+		// MnfStreak (Step 6, 2026-06-18): client hot-path breaker
+		// for persistent model_not_found. When the same sticky
+		// session accumulates M MnfStickyBreakThreshold
+		// model_not_found responses from the same credential, the
+		// sticky binding is deleted so the next request re-picks.
+		// See routing/mnf_streak.go.
+		//
+		// Defaults: enabled, threshold 3, cap 10000. Override via
+		// env (LLM_GATEWAY_MNF_STREAK_ENABLED / _THRESHOLD /
+		// _CAPACITY) for emergency rollback — set _ENABLED=false
+		// to disable without removing the code path.
+		mnfStreakCap := 10000
+		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_CAPACITY"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				mnfStreakCap = n
+			}
+		}
+		exec.MnfStreak = routing.NewMnfStreak(mnfStreakCap)
+		exec.MnfStickyBreakThreshold = 3
+		exec.MnfStreakEnabled = true
+		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_ENABLED"); v == "false" || v == "0" {
+			exec.MnfStreakEnabled = false
+			slog.Warn("mnf_streak_disabled_via_env")
+		}
+		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_THRESHOLD"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				exec.MnfStickyBreakThreshold = n
+			}
+		}
+		slog.Info("mnf_streak_enabled",
+			"threshold", exec.MnfStickyBreakThreshold,
+			"capacity", mnfStreakCap,
+		)
 		// Memora: optional context-compression oracle. When the
 		// LLM_GATEWAY_MEMORA_BASE_URL env is set, the executor can ask
 		// Memora for L1 session facts on context overflow and rebuild
