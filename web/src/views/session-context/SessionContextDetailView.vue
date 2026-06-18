@@ -3,22 +3,19 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getMemoraContext,
-  getSessionMessages,
   extractSessionToMemora,
   getSessionExtractionStatus,
   summarizeSessionTitle,
   type MemoraContextResponse,
-  type SessionMessagesResponse,
+  type ReadableBlock,
   type SessionExtractionStatusResponse,
 } from '../../api'
 import {
   buildSessionQueryParams,
-  fmtCost,
   fmtScore,
-  fmtTime,
+  sessionScopeToParams,
   listBackQueryFromRoute,
   parseSessionScopeFromRoute,
-  sessionScopeToParams,
   tagClass,
   type useSessionFilters,
 } from '../../composables/useSessionContext'
@@ -33,19 +30,11 @@ const isNoTopic = computed(() => taskId.value === '_no-topic')
 const sessionScope = computed(() =>
   parseSessionScopeFromRoute(route, filters.hours.value),
 )
-const listExpectedCount = computed(() => sessionScope.value.rc)
 const backListQuery = computed(() => listBackQueryFromRoute(route))
 
-const activeTab = ref<'facts' | 'timeline'>(
-  route.query.tab === 'timeline' ? 'timeline' : 'facts',
-)
-
 const contextData = ref<MemoraContextResponse | null>(null)
-const messagesData = ref<SessionMessagesResponse | null>(null)
 const contextLoading = ref(false)
 const contextError = ref('')
-const messagesLoading = ref(false)
-const messagesError = ref('')
 
 const extractionStatus = ref<SessionExtractionStatusResponse | null>(null)
 const extracting = ref(false)
@@ -57,11 +46,39 @@ const titleResult = ref('')
 const titleError = ref('')
 const localTitle = ref('')
 
+const readableBlocks = computed<ReadableBlock[]>(() => {
+  if (contextData.value?.readable_blocks?.length) {
+    return contextData.value.readable_blocks
+  }
+  return (contextData.value?.facts || []).map(f => ({
+    id: f.id,
+    text: f.memory,
+    kind: f.kind || 'text',
+    source: f.source || 'task',
+    tags: f.tags,
+    score: f.score,
+  }))
+})
+
+const hasReadableContent = computed(() => readableBlocks.value.length > 0)
+
+const requestLogsHref = computed(() => {
+  const qs = new URLSearchParams()
+  qs.set('gw_task', taskId.value)
+  if (sessionScope.value.session_id) qs.set('gw_session_id', sessionScope.value.session_id)
+  if (sessionScope.value.hours) qs.set('hours', String(sessionScope.value.hours))
+  return `/request-logs?${qs.toString()}`
+})
+
 const pageTitle = computed(() => {
   if (isNoTopic.value) return '无主题会话'
   if (localTitle.value) return localTitle.value
   return contextData.value?.title || taskId.value || '会话详情'
 })
+
+function sourceLabel(source: string) {
+  return source === 'gw-session' ? '会话总结' : '任务提炼'
+}
 
 async function loadContext() {
   if (isNoTopic.value || !taskId.value) return
@@ -74,23 +91,9 @@ async function loadContext() {
     }
   } catch (e: unknown) {
     contextData.value = null
-    contextError.value = e instanceof Error ? e.message : '加载 Memora 事实失败'
+    contextError.value = e instanceof Error ? e.message : '加载 Memora 可读内容失败'
   } finally {
     contextLoading.value = false
-  }
-}
-
-async function loadTimeline() {
-  if (isNoTopic.value || !taskId.value) return
-  messagesLoading.value = true
-  messagesError.value = ''
-  try {
-    messagesData.value = await getSessionMessages(taskId.value, sessionScopeToParams(sessionScope.value))
-  } catch (e: unknown) {
-    messagesData.value = null
-    messagesError.value = e instanceof Error ? e.message : '加载对话线索失败'
-  } finally {
-    messagesLoading.value = false
   }
 }
 
@@ -137,17 +140,13 @@ async function doExtractToMemora() {
   }
 }
 
-function switchTab(tab: 'facts' | 'timeline') {
-  activeTab.value = tab
-  router.replace({ query: { ...route.query, tab: tab === 'facts' ? undefined : tab } })
-  if (tab === 'timeline' && !messagesData.value && !messagesLoading.value) loadTimeline()
-}
-
 onMounted(() => {
+  if (route.query.tab === 'timeline') {
+    router.replace({ query: { ...route.query, tab: undefined } })
+  }
   if (!isNoTopic.value) {
     loadContext()
     loadExtractionStatus()
-    if (activeTab.value === 'timeline') loadTimeline()
   }
 })
 
@@ -155,7 +154,6 @@ watch(
   () => [taskId.value, route.query.hours, route.query.session_id, route.query.rc] as const,
   () => {
     contextData.value = null
-    messagesData.value = null
     extractionStatus.value = null
     extractResult.value = ''
     extractError.value = ''
@@ -165,7 +163,6 @@ watch(
     if (!isNoTopic.value) {
       loadContext()
       loadExtractionStatus()
-      if (activeTab.value === 'timeline') loadTimeline()
     }
   },
 )
@@ -182,13 +179,14 @@ watch(
       <template v-else>
         <div class="meta-grid">
           <div><span class="meta-lbl">Task</span><code>{{ taskId }}</code></div>
+          <div v-if="sessionScope.session_id"><span class="meta-lbl">Session</span><code>{{ sessionScope.session_id }}</code></div>
           <div v-if="contextData"><span class="meta-lbl">用户</span>{{ contextData.user_id || '—' }}</div>
           <div v-if="contextData"><span class="meta-lbl">请求数</span>{{ contextData.request_count }}</div>
           <div v-if="contextData"><span class="meta-lbl">时间窗</span>{{ contextData.hours ?? sessionScope.hours }}h</div>
           <div v-if="contextData?.latest_model"><span class="meta-lbl">模型</span>{{ contextData.latest_model }}</div>
         </div>
         <div v-if="contextData" class="stats-line text-muted">
-          Memora：可见 {{ contextData.facts_visible ?? contextData.facts.length }} 条
+          Memora 可读块 {{ readableBlocks.length }} 条
           · 已写入 {{ contextData.facts_written ?? extractionStatus?.written ?? 0 }} 条
           · 线索 {{ contextData.request_count }} 条（{{ sessionScope.hours }}h 窗）
         </div>
@@ -211,11 +209,6 @@ watch(
             class="badge badge-green"
             :title="extractionStatus.extracted_at"
           >已写入 {{ extractionStatus.written ?? 0 }} 条</span>
-          <a
-            :href="`/request-logs?gw_task=${encodeURIComponent(taskId)}`"
-            target="_blank"
-            class="btn btn-ghost btn-sm"
-          >原始日志 →</a>
         </div>
         <p v-if="titleResult" class="extract-ok">{{ titleResult }}</p>
         <p v-if="titleError" class="extract-err">{{ titleError }}</p>
@@ -226,7 +219,7 @@ watch(
 
     <template v-if="isNoTopic">
       <div class="card compact-card state-box">
-        <p>无主题会话不存储 Memora 记忆，也无法查看对话线索。</p>
+        <p>无主题会话不存储 Memora 记忆，也无法查看可读内容。</p>
         <p class="text-muted">
           可通过
           <a :href="`/request-logs?hours=${route.query.hours || filters.hours.value}`" target="_blank">请求日志</a>
@@ -236,92 +229,43 @@ watch(
     </template>
 
     <template v-else>
-      <div class="seg-tabs detail-tabs">
-        <button class="seg-tab" :class="{ active: activeTab === 'facts' }" @click="switchTab('facts')">
-          Memora 事实
-          <span v-if="contextData" class="badge badge-gray">{{ contextData.facts_visible ?? contextData.facts.length }}</span>
-        </button>
-        <button class="seg-tab" :class="{ active: activeTab === 'timeline' }" @click="switchTab('timeline')">
-          对话线索
-          <span v-if="messagesData" class="badge badge-gray">{{ messagesData.messages.length }}</span>
-          <span
-            v-if="listExpectedCount != null && messagesData"
-            class="badge"
-            :class="messagesData.messages.length === listExpectedCount ? 'badge-green' : 'badge-yellow'"
-          >与列表一致 {{ listExpectedCount }} 条</span>
-        </button>
-      </div>
+      <div class="card compact-card">
+        <div class="section-head">
+          <h4 class="section-title">可读内容</h4>
+          <span v-if="readableBlocks.length" class="badge badge-gray">{{ readableBlocks.length }}</span>
+        </div>
 
-      <div v-if="activeTab === 'facts'" class="card compact-card">
-        <div v-if="contextLoading" class="state-box">加载 Memora 事实…</div>
+        <div v-if="contextLoading" class="state-box">加载 Memora 可读内容…</div>
         <div v-else-if="contextError" class="state-box">
           <p>{{ contextError }}</p>
           <button class="btn btn-ghost btn-sm" @click="loadContext">重试</button>
         </div>
-        <div v-else-if="!contextData || contextData.facts.length === 0" class="state-box">
-          <p>该会话暂无可见 Memora 事实</p>
+        <div v-else-if="!hasReadableContent" class="state-box empty-memora">
+          <p class="empty-title">Memora中没有</p>
           <p v-if="(contextData?.facts_written ?? 0) > 0" class="text-muted">
-            已写入 {{ contextData?.facts_written }} 条（检索可能仍在索引，或超过可见上限 100 条）
+            已写入 {{ contextData?.facts_written }} 条（检索可能仍在索引，或超过可见上限）
           </p>
           <p v-if="contextData?.facts_search_error" class="extract-err">{{ contextData.facts_search_error }}</p>
+          <p v-else class="text-muted">点击上方「提炼入 Memora」将对话中的有用信息写入记忆。</p>
         </div>
-        <div v-else class="facts-list">
-          <div v-for="(f, i) in contextData.facts" :key="f.id" class="fact-item">
-            <div class="fact-head">
-              <span class="fact-idx">#{{ i + 1 }}</span>
-              <span v-if="f.score" class="badge badge-green">{{ fmtScore(f.score) }}</span>
-              <span v-for="t in (f.tags || [])" :key="t" :class="'badge ' + tagClass(f.tags)">{{ t }}</span>
+        <div v-else class="blocks-list">
+          <div v-for="(block, i) in readableBlocks" :key="block.id || i" class="block-item">
+            <div class="block-head">
+              <span class="block-idx">#{{ i + 1 }}</span>
+              <span class="badge badge-blue">{{ sourceLabel(block.source) }}</span>
+              <span v-if="block.kind === 'json'" class="badge badge-purple">JSON</span>
+              <span v-if="block.score" class="badge badge-green">{{ fmtScore(block.score) }}</span>
+              <span v-for="t in (block.tags || [])" :key="t" :class="'badge ' + tagClass(block.tags)">{{ t }}</span>
             </div>
-            <div class="fact-body">{{ f.memory }}</div>
+            <pre v-if="block.kind === 'json'" class="json-block">{{ block.text }}</pre>
+            <div v-else class="block-body">{{ block.text }}</div>
           </div>
         </div>
-      </div>
 
-      <div v-if="activeTab === 'timeline'" class="card compact-card">
-        <div v-if="messagesLoading" class="state-box">加载对话线索…</div>
-        <div v-else-if="messagesError" class="state-box">
-          <p>{{ messagesError }}</p>
-          <button class="btn btn-ghost btn-sm" @click="loadTimeline">重试</button>
-        </div>
-        <div v-else-if="!messagesData || messagesData.messages.length === 0" class="state-box">
-          该会话暂无请求记录
-        </div>
-        <div v-else>
-          <div class="timeline-summary text-muted">
-            <template v-if="listExpectedCount != null">
-              与列表一致 {{ messagesData.messages.length }}/{{ listExpectedCount }} 条（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
-            </template>
-            <template v-else>
-              共 {{ messagesData.messages.length }} 条请求（{{ messagesData.hours ?? sessionScope.hours }}h 窗）；
-            </template>
-            {{ messagesData.total_prompt_tokens }} prompt tokens，
-            {{ messagesData.total_completion_tokens }} completion tokens，
-            {{ fmtCost(messagesData.total_cost_usd) }}
-          </div>
-          <div class="timeline">
-            <div v-for="msg in messagesData.messages" :key="msg.request_id" class="timeline-row">
-              <div class="timeline-side">
-                <span class="seq">#{{ msg.seq }}</span>
-                <span class="text-muted">{{ fmtTime(msg.ts) }}</span>
-                <span>{{ msg.direction === 'user' ? '👤' : '🤖' }}</span>
-              </div>
-              <div class="timeline-main">
-                <div class="prompt">{{ msg.prompt_preview || '—' }}</div>
-                <div v-if="msg.response_preview" class="response">{{ msg.response_preview }}</div>
-                <div class="meta-line text-muted">
-                  <span class="badge badge-gray">{{ msg.client_model || '—' }}</span>
-                  <span>{{ msg.prompt_tokens }} tok</span>
-                  <span>{{ msg.latency_ms }}ms</span>
-                  <span v-if="msg.cost_usd > 0">{{ fmtCost(msg.cost_usd) }}</span>
-                  <span
-                    class="status-pill"
-                    :class="msg.status === 'success' ? 'ok' : msg.status === 'failure' ? 'fail' : 'pending'"
-                  >{{ msg.status || 'unknown' }}</span>
-                  <span v-if="msg.error_kind" class="fail-text">{{ msg.error_kind }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+        <div v-if="contextData" class="raw-logs-link">
+          <a :href="requestLogsHref" target="_blank" class="btn btn-ghost btn-sm">
+            查看原始请求日志 ({{ contextData.request_count }} 条) →
+          </a>
         </div>
       </div>
     </template>
@@ -355,75 +299,29 @@ watch(
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .badge-yellow { background: rgba(210, 153, 34, 0.2); color: var(--warning); }
+.badge-purple { background: rgba(163, 113, 247, 0.2); color: #a371f7; }
 .extract-ok { margin: 6px 0 0; font-size: 11px; color: var(--success); }
 .extract-err { margin: 6px 0 0; font-size: 11px; color: var(--danger); }
-.detail-tabs { align-self: flex-start; }
-.seg-tabs {
-  display: inline-flex;
-  gap: 1px;
-  padding: 2px;
+.section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.section-title { margin: 0; font-size: 13px; font-weight: 600; }
+.blocks-list { display: flex; flex-direction: column; gap: 8px; }
+.block-item { border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+.block-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.block-idx { font-size: 11px; color: var(--muted); font-weight: 600; }
+.block-body { font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.json-block {
+  margin: 0;
+  padding: 8px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.seg-tab {
-  padding: 3px 10px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  font-size: 11px;
-  color: var(--muted);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.seg-tab.active {
-  background: var(--card);
-  color: var(--text);
-  font-weight: 600;
-}
-.facts-list { display: flex; flex-direction: column; gap: 8px; }
-.fact-item { border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
-.fact-head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
-.fact-idx { font-size: 11px; color: var(--muted); font-weight: 600; }
-.fact-body { font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.timeline-summary { margin-bottom: 8px; font-size: 11px; }
-.timeline { display: flex; flex-direction: column; }
-.timeline-row {
-  display: flex;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-.timeline-side {
-  width: 52px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  font-size: 10px;
-}
-.seq { font-weight: 600; color: var(--muted); }
-.timeline-main { flex: 1; min-width: 0; }
-.prompt { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-.response {
-  margin-top: 4px;
-  padding: 6px 8px;
-  background: var(--bg-subtle);
-  border-left: 3px solid var(--border);
   border-radius: 4px;
   font-size: 11px;
-  color: var(--muted);
+  line-height: 1.45;
+  overflow-x: auto;
   white-space: pre-wrap;
+  word-break: break-word;
 }
-.meta-line { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; font-size: 10px; }
-.status-pill { padding: 0 6px; border-radius: 10px; font-size: 10px; }
-.status-pill.ok { background: rgba(63, 185, 80, 0.15); color: var(--success); }
-.status-pill.fail { background: rgba(248, 81, 73, 0.15); color: var(--danger); }
-.status-pill.pending { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
-.fail-text { color: var(--danger); }
+.raw-logs-link { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+.empty-memora .empty-title { font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
 .state-box { padding: 24px; text-align: center; font-size: 12px; color: var(--muted); }
 .text-muted { color: var(--muted); font-size: 11px; }
 </style>

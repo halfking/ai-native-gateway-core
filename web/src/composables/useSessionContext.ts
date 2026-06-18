@@ -92,7 +92,11 @@ export function useSessionList() {
     loading.value = true
     error.value = ''
     try {
-      const resp = await getMemoraSessions(filters)
+      const resp = await getMemoraSessions({
+        ...filters,
+        include_memora: true,
+        limit: 20,
+      })
       sessions.value = resp.sessions
       meta.value = {
         hours: resp.hours,
@@ -126,6 +130,17 @@ export function displayTitle(s: MemoraSession): string {
   if (s.no_topic) return s.no_topic_label || '[无主题会话]'
   if (s.title && s.title.trim()) return s.title.trim()
   return s.task_id || '[无标题]'
+}
+
+export function displayMemoraPreview(s: MemoraSession): string {
+  if (s.no_topic) return '—'
+  const preview = s.memora_preview?.trim()
+  if (preview) return preview
+  return 'Memora中没有'
+}
+
+export function hasMemoraPreview(s: MemoraSession): boolean {
+  return Boolean(s.memora_preview?.trim())
 }
 
 export function displayUser(s: MemoraSession): string {

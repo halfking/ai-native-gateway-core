@@ -150,6 +150,7 @@ type sessionRow struct {
 	APIKeyPrefix     *string
 	APIKeyOwnerUser  *string
 	ApplicationCode  *string
+	APIKeyID         *int64
 	NoTopic          bool
 	NoTopicLabel     *string
 	HourStart        *time.Time
@@ -211,6 +212,7 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 			&s.TaskID, &s.SessionID, &s.RequestCount, &s.OkCount, &s.FailCount,
 			&s.FirstActivity, &s.LastActivity, &s.LatestModel,
 			&s.APIKeyPrefix, &s.APIKeyOwnerUser, &s.ApplicationCode,
+			&s.APIKeyID,
 			&s.NoTopic, &s.NoTopicLabel, &s.HourStart,
 		); err != nil {
 			slog.Warn("memora: skip corrupt session row", "error", err)
@@ -259,9 +261,13 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 			entry["task_id"] = nil
 			entry["session_id"] = nil
 			entry["no_topic_label"] = nilStr(s.NoTopicLabel)
+			entry["memora_status"] = "skipped"
 		} else {
 			entry["task_id"] = nilStr(s.TaskID)
 			entry["session_id"] = nilStr(s.SessionID)
+			if s.APIKeyID != nil {
+				entry["api_key_id"] = *s.APIKeyID
+			}
 		}
 		sessions = append(sessions, entry)
 	}
@@ -300,6 +306,52 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		if title, ok := titleMap[sessionTitleMapKey(taskID, sessID)]; ok {
 			s["title"] = title
+		}
+	}
+
+	includeMemora := parseIncludeMemora(r, limit)
+	if includeMemora && h.memoraClient != nil {
+		var previewInputs []sessionPreviewInput
+		for i, s := range sessions {
+			if s["no_topic"] == true {
+				continue
+			}
+			taskID, _ := s["task_id"].(string)
+			if taskID == "" || taskID == "[空]" {
+				continue
+			}
+			sessID := ""
+			if v, ok := s["session_id"].(string); ok && v != "" && v != "[空]" {
+				sessID = v
+			}
+			apiKeyID := 0
+			switch v := s["api_key_id"].(type) {
+			case int64:
+				apiKeyID = int(v)
+			case int:
+				apiKeyID = v
+			case float64:
+				apiKeyID = int(v)
+			}
+			previewInputs = append(previewInputs, sessionPreviewInput{
+				Index:     i,
+				TaskID:    taskID,
+				SessionID: sessID,
+				APIKeyID:  apiKeyID,
+			})
+		}
+		if len(previewInputs) > 0 {
+			searchClient, _ := h.memoraClient.(memoraSearchClient)
+			previewResults := batchMemoraPreviews(ctx, searchClient, previewInputs)
+			for _, pr := range previewResults {
+				if pr.Index < 0 || pr.Index >= len(sessions) {
+					continue
+				}
+				sessions[pr.Index]["memora_status"] = pr.Status
+				if pr.Preview != "" {
+					sessions[pr.Index]["memora_preview"] = pr.Preview
+				}
+			}
 		}
 	}
 
@@ -359,6 +411,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				ts,
 				request_status,
 				client_model,
+				api_key_id,
 				COALESCE(NULLIF(TRIM(api_key_prefix), ''), NULL) AS api_key_prefix,
 				COALESCE(NULLIF(TRIM(api_key_owner_user), ''), NULL) AS api_key_owner_user,
 				COALESCE(NULLIF(TRIM(application_code), ''), NULL) AS application_code
@@ -378,6 +431,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				(SELECT api_key_prefix FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_prefix,
 				(SELECT api_key_owner_user FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS api_key_owner_user,
 				(SELECT application_code FROM base b2 WHERE b2.task_id = base.task_id LIMIT 1) AS application_code,
+				(SELECT api_key_id FROM base b2 WHERE b2.task_id = base.task_id AND b2.api_key_id IS NOT NULL LIMIT 1) AS api_key_id,
 				FALSE AS no_topic,
 				NULL::text AS no_topic_label,
 				NULL::timestamptz AS hour_start
@@ -398,6 +452,7 @@ func buildMemoraSessionsSQL(r *http.Request, hours, noTopicWindow, limit int) (s
 				api_key_prefix,
 				api_key_owner_user,
 				application_code,
+				NULL::bigint AS api_key_id,
 				TRUE AS no_topic,
 				CONCAT(
 					COALESCE(api_key_prefix, '[空]'), ' @ ',
@@ -466,28 +521,23 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var facts []map[string]any
+	var readableBlocks []readableBlock
 	var factsSearchErr string
-	if h.memoraClient != nil && !h.memoraClient.Disabled() && userID != "" {
+	if h.memoraClient != nil && !h.memoraClient.Disabled() && apiKeyID > 0 {
+		searchClient, _ := h.memoraClient.(memoraSearchClient)
 		searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
-		var memories []memora.Memory
-		var searchErr error
-		if mc, ok := h.memoraClient.(interface {
-			SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
-		}); ok {
-			memories, searchErr = mc.SearchAdmin(searchCtx, userID, "", 100)
-		} else if mc, ok := h.memoraClient.(interface {
-			Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
-		}); ok {
-			memories, searchErr = mc.Search(searchCtx, userID, "", 100)
-		}
+		blocks, searchErr := searchMergedFacts(searchCtx, searchClient, apiKeyID, taskID, sc.SessionID)
 		searchCancel()
 		if searchErr == nil {
-			for _, m := range memories {
+			readableBlocks = blocks
+			for _, b := range blocks {
 				facts = append(facts, map[string]any{
-					"id":     m.ID,
-					"memory": m.Text,
-					"score":  m.Score,
-					"tags":   m.Tags,
+					"id":     b.ID,
+					"memory": b.Text,
+					"score":  b.Score,
+					"tags":   b.Tags,
+					"kind":   b.Kind,
+					"source": b.Source,
 				})
 			}
 		} else {
@@ -525,6 +575,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 		"user_id":           userID,
 		"request_count":     requestCount,
 		"facts":             facts,
+		"readable_blocks":   readableBlocksToMaps(readableBlocks),
 		"facts_visible":     len(facts),
 		"facts_written":     writtenFromLog,
 		"title":             title,

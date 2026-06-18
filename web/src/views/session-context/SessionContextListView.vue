@@ -6,6 +6,8 @@ import {
   displayKey,
   displayTitle,
   displayUser,
+  displayMemoraPreview,
+  hasMemoraPreview,
   fmtDate,
   sessionRowKey,
   buildSessionQueryParams,
@@ -131,6 +133,7 @@ onMounted(() => {
               <th>用户</th>
               <th>Key</th>
               <th>标题 / 会话</th>
+              <th>可读摘要</th>
               <th class="num">消息</th>
               <th>模型</th>
               <th>开始时间</th>
@@ -153,6 +156,11 @@ onMounted(() => {
               <td class="ellipsis">{{ displayUser(s) }}</td>
               <td class="mono ellipsis">{{ displayKey(s) }}</td>
               <td class="ellipsis" :title="displayTitle(s)">{{ displayTitle(s) }}</td>
+              <td
+                class="ellipsis preview-col"
+                :class="{ 'preview-empty': !hasMemoraPreview(s) }"
+                :title="displayMemoraPreview(s)"
+              >{{ displayMemoraPreview(s) }}</td>
               <td class="num">
                 <span class="count-chip">{{ s.request_count }}</span>
                 <span v-if="s.fail_count > 0" class="fail-chip">{{ s.fail_count }} 失败</span>
@@ -197,6 +205,8 @@ onMounted(() => {
 .num { text-align: right; white-space: nowrap; }
 .mono { font-family: ui-monospace, monospace; font-size: 11px; }
 .ellipsis { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-col { max-width: 280px; font-size: 11px; line-height: 1.4; }
+.preview-empty { color: var(--muted); font-style: italic; }
 .count-chip {
   display: inline-block;
   background: rgba(99, 102, 241, 0.15);

@@ -2716,6 +2716,8 @@ export interface MemoraSession {
   first_activity: string
   last_activity: string
   latest_model: string | null
+  memora_preview?: string | null
+  memora_status?: 'ok' | 'empty' | 'error' | 'skipped' | null
 }
 
 export interface MemoraSessionsResponse {
@@ -2734,6 +2736,7 @@ export function getMemoraSessions(params: {
   key_prefix?: string
   no_topic_window?: number
   include_no_topic?: boolean
+  include_memora?: boolean
 } = {}): Promise<MemoraSessionsResponse> {
   const qs = new URLSearchParams()
   if (params.q) qs.set('q', params.q)
@@ -2743,6 +2746,7 @@ export function getMemoraSessions(params: {
   if (params.key_prefix) qs.set('key_prefix', params.key_prefix)
   if (params.no_topic_window != null) qs.set('no_topic_window', String(params.no_topic_window))
   if (params.include_no_topic === false) qs.set('include_no_topic', '0')
+  if (params.include_memora) qs.set('include_memora', '1')
   const s = qs.toString()
   return req<MemoraSessionsResponse>('GET', `/api/system/memora-sessions${s ? '?' + s : ''}`)
 }
@@ -2752,6 +2756,17 @@ export interface MemoraFact {
   memory: string
   score: number
   tags: string[] | null
+  kind?: 'text' | 'json'
+  source?: 'task' | 'gw-session'
+}
+
+export interface ReadableBlock {
+  id: string
+  text: string
+  kind: 'text' | 'json'
+  source: 'task' | 'gw-session'
+  tags?: string[] | null
+  score?: number
 }
 
 export interface MemoraContextResponse {
@@ -2760,6 +2775,7 @@ export interface MemoraContextResponse {
   request_count: number
   latest_model?: string
   facts: MemoraFact[]
+  readable_blocks?: ReadableBlock[]
   facts_visible?: number
   facts_written?: number
   hours?: number
