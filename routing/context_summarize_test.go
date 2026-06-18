@@ -599,3 +599,110 @@ func TestHandleContextLengthRecovery_WithWindow_DoesBothPhases(t *testing.T) {
 		t.Fatal("body should have shrunk after mechanical trim")
 	}
 }
+
+// ── Round 47 compression v7 T-NEW-4 unit tests ────────────────────────────────
+
+func TestBuildPreRequestTrimMeta_NoTrim(t *testing.T) {
+	// bytesBefore == bytesAfter → no trim → nil
+	if got := buildPreRequestTrimMeta(1000, 1000, nil); got != nil {
+		t.Fatalf("expected nil when bytes unchanged, got %s", got)
+	}
+	// bytesAfter > bytesBefore (e.g. body grew due to encoding) → also nil
+	if got := buildPreRequestTrimMeta(900, 1000, nil); got != nil {
+		t.Fatalf("expected nil when bytes grew, got %s", got)
+	}
+}
+
+func TestBuildPreRequestTrimMeta_WithTrim(t *testing.T) {
+	cw := 131072
+	meta := buildPreRequestTrimMeta(430894, 387523, &cw)
+	if meta == nil {
+		t.Fatal("expected non-nil meta when bytes shrank")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(meta, &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["trim_phase"] != "pre_request" {
+		t.Errorf("trim_phase = %v, want pre_request", m["trim_phase"])
+	}
+	if m["bytes_before"].(float64) != 430894 {
+		t.Errorf("bytes_before = %v, want 430894", m["bytes_before"])
+	}
+	if m["bytes_after"].(float64) != 387523 {
+		t.Errorf("bytes_after = %v, want 387523", m["bytes_after"])
+	}
+	if m["context_window_used"].(float64) != float64(cw) {
+		t.Errorf("context_window_used = %v, want %d", m["context_window_used"], cw)
+	}
+	if _, ok := m["reason_detail"]; !ok {
+		t.Error("reason_detail field missing")
+	}
+}
+
+func TestBuildPreRequestTrimMeta_NilContextWindow(t *testing.T) {
+	meta := buildPreRequestTrimMeta(1000, 800, nil)
+	if meta == nil {
+		t.Fatal("expected non-nil meta")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(meta, &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, present := m["context_window_used"]; present {
+		t.Errorf("context_window_used should be absent when contextWindow is nil, got %v", m["context_window_used"])
+	}
+}
+
+func TestMergeCompressionMeta_BothNil(t *testing.T) {
+	if got := mergeCompressionMeta(nil, nil); got != nil {
+		t.Fatalf("expected nil for nil+nil, got %s", got)
+	}
+}
+
+func TestMergeCompressionMeta_OnlyRecovery(t *testing.T) {
+	recovery := []byte(`{"reason_detail":"4xx_recovery","bytes_before":500}`)
+	got := mergeCompressionMeta(recovery, nil)
+	if string(got) != string(recovery) {
+		t.Fatalf("expected recovery meta unchanged, got %s", got)
+	}
+}
+
+func TestMergeCompressionMeta_OnlyPreTrim(t *testing.T) {
+	preTrim := []byte(`{"trim_phase":"pre_request","bytes_before":430894}`)
+	got := mergeCompressionMeta(nil, preTrim)
+	if string(got) != string(preTrim) {
+		t.Fatalf("expected preTrim meta unchanged, got %s", got)
+	}
+}
+
+func TestMergeCompressionMeta_BothPresent(t *testing.T) {
+	recovery := []byte(`{"reason_detail":"4xx_recovery","bytes_before":387523,"bytes_after":300000}`)
+	preTrim := []byte(`{"trim_phase":"pre_request","bytes_before":430894,"bytes_after":387523}`)
+	got := mergeCompressionMeta(recovery, preTrim)
+	if got == nil {
+		t.Fatal("expected non-nil merged meta")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	// 4xx recovery wins on shared keys (bytes_before, bytes_after)
+	if m["bytes_before"].(float64) != 387523 {
+		t.Errorf("bytes_before = %v, want 387523 (4xx recovery wins)", m["bytes_before"])
+	}
+	// pre_request-only fields survive
+	if m["trim_phase"] != "pre_request" {
+		t.Errorf("trim_phase = %v, want pre_request", m["trim_phase"])
+	}
+	// phases array is added
+	phases, ok := m["phases"]
+	if !ok {
+		t.Error("phases field missing from merged meta")
+	}
+	// should include both phases
+	pSlice, ok := phases.([]any)
+	if !ok || len(pSlice) < 2 {
+		t.Errorf("phases should have 2 entries, got %v", phases)
+	}
+}

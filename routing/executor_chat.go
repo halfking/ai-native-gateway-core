@@ -468,14 +468,20 @@ func (e *Executor) executeOpenAI(
 						"benign_eof", isBenignEOF,
 					)
 
-					if isBenignEOF {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-						return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-						}, nil
+				if isBenignEOF {
+					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+					return &ExecuteResult{
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+						// Round 47 T-NEW-4: stream success path also records
+						// pre-request trim metadata so emitTelemetry can write
+						// compression_meta for streaming requests.
+						CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+						CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+						CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					}, nil
 					} else if isResumable {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
@@ -521,6 +527,12 @@ func (e *Executor) executeOpenAI(
 					Candidate:   cand,
 					LatencyMs:   latencyMs,
 					RequestBody: append([]byte(nil), bodyBytes...),
+					// Round 47 T-NEW-4: stream success path (ClientIsStreaming=true,
+					// StreamChat handled the write) also records pre-request trim
+					// metadata so emitTelemetry can write compression_meta.
+					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
 				}, nil
 			}
 			defer resp.Body.Close()
@@ -706,6 +718,9 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 // with the relay package's strPtr (we can't import relay from routing
 // without introducing a cycle).
 func strPtrCompat(s string) *string {
+	if s == "" {
+		return nil
+	}
 	return &s
 }
 
