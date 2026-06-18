@@ -689,6 +689,12 @@ slog.Info("compressor initialized",
 		if autoIndexRefresher != nil && adminHandler != nil {
 			adminHandler.SetAutoIndexRefresher(autoIndexRefresher)
 		}
+		// Track C C7 (2026-06-18): wire the pending response cache
+		// into the admin handler so the /api/admin/pending-responses*
+		// endpoints can list, inspect, and manually clear entries.
+		if pendingStore != nil && adminHandler != nil {
+			adminHandler.SetPendingStore(pendingStore)
+		}
 
 		bg.StartWorkTypeACCSync(context.Background(), dbConn.Pool(), func(ctx context.Context) error {
 			return admin.SyncWorkTypesFromACCForBG(ctx, dbConn.Pool())

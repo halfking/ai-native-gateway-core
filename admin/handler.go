@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -33,6 +34,12 @@ type Handler struct {
 	probePicker *bg.DefaultProbePicker   // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner     // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	fpSlots     *credentialfpslot.Manager
+	// pendingStore (Track C C7, 2026-06-18) is the durable cache
+	// for client reconnect and vendor async retry. nil disables
+	// the /api/admin/pending-responses* endpoints; the GET
+	// endpoint on /v1/sessions/{id}/pending-response is
+	// unaffected (it lives in the sessions package, not here).
+	pendingStore *pending.Store
 	peakCollector interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
@@ -168,6 +175,15 @@ func (h *Handler) SetAutoIndexRefresher(r interface {
 	h.autoIndexRefresher = r
 }
 
+// SetPendingStore (Track C C7, 2026-06-18) injects the durable
+// pending response cache. nil disables the /api/admin/pending-
+// responses* endpoints; the operator can still hit the public
+// /v1/sessions/{id}/pending-response endpoint (lives in
+// sessions/handler.go, not here).
+func (h *Handler) SetPendingStore(s *pending.Store) {
+	h.pendingStore = s
+}
+
 // SetFeedbackAnalyzer wires the daily feedback analyzer for tuning endpoints.
 func (h *Handler) SetFeedbackAnalyzer(a interface {
 	AnalyzeOnce(ctx context.Context) error
@@ -292,6 +308,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
 	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
+
+	// Track C C7 (2026-06-18): pending response admin API.
+	// Three endpoints, all under the standard admin auth wrap.
+	// The /stats path is a peer of the list endpoint, registered
+	// BEFORE the catch-all /api/admin/pending-responses/ to
+	// avoid the slash-suffix path swallowing the literal "stats".
+	mux.HandleFunc("/api/admin/pending-responses/stats", admin(h.handlePendingStats))
+	mux.HandleFunc("/api/admin/pending-responses", admin(h.handlePendingList))
+	mux.HandleFunc("/api/admin/pending-responses/", admin(h.handlePendingSubrouter))
 
 	// Peak concurrency + auto-tune endpoints (Phase 2).
 	if h.db != nil {
