@@ -120,7 +120,13 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS parent_request_id TEXT,
 		    ADD COLUMN IF NOT EXISTS compression_reason TEXT,
 		    ADD COLUMN IF NOT EXISTS compression_strategy TEXT,
-		    ADD COLUMN IF NOT EXISTS compression_meta JSONB;
+		    ADD COLUMN IF NOT EXISTS compression_meta JSONB,
+		    -- v3 (2026-06-19) session-level outbound body T23.
+		    -- See db/migrations/016_outbound_body.sql.
+		    ADD COLUMN IF NOT EXISTS outbound_body       JSONB,
+		    ADD COLUMN IF NOT EXISTS outbound_msg_count  INT,
+		    ADD COLUMN IF NOT EXISTS outbound_token_est  INT,
+		    ADD COLUMN IF NOT EXISTS outbound_msg_hashes JSONB;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -133,11 +139,20 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_request_logs_parent_ts
 		    ON request_logs (parent_request_id, ts DESC)
 		    WHERE parent_request_id IS NOT NULL;
+		-- v3 T23: session outbound lookup (used by SessionCache L3 fallback).
+		CREATE INDEX IF NOT EXISTS idx_request_logs_session_outbound
+		    ON public.request_logs (gw_session_id, ts DESC)
+		    WHERE gw_session_id IS NOT NULL
+		      AND outbound_body IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_request_logs_outbound_msg_count
+		    ON public.request_logs (tenant_id, ts DESC)
+		    WHERE outbound_msg_count IS NOT NULL
+		      AND outbound_msg_count > 0;
 	`)
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes)")
 	return nil
 }
 
