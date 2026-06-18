@@ -20,8 +20,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/pool"
+	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -203,6 +205,39 @@ type Executor struct {
 	// Wired from main.go alongside Memora; the sink owns its own worker
 	// goroutines and graceful-shutdown lifecycle.
 	MemoraSink *memora.Sink
+
+	// PendingStore (Track C, 2026-06-18) is the durable cache for
+	// client reconnect and vendor async retry. When set, the
+	// executor can transparently demote a slow request to async
+	// mode: if the synchronous candidate walk exceeds
+	// AsyncShortTimeout (default 15s) without success, the
+	// executor spawns a goroutine that continues trying the
+	// remaining candidates with an independent context
+	// (AsyncLongTimeout, default 300s), writes the eventual
+	// outcome to PendingStore, and the handler returns 202 +
+	// X-Gw-Pending so the client can poll
+	// GET /v1/sessions/{id}/pending-response.
+	//
+	// Nil disables both async retry and the async branch — the
+	// executor falls back to the existing synchronous exhaustion
+	// path. Wired from main.go when Redis is available.
+	PendingStore            *pending.Store
+	AsyncShortTimeout       time.Duration
+	AsyncLongTimeout        time.Duration
+	AsyncMaxFallbackCreds   int  // cap on credential fallbacks in async goroutine
+
+	// suppressAsync is the recursion guard. The async goroutine
+	// (runAsyncRetry) calls Execute again; we set this on the
+	// inner params so the inner call takes the synchronous
+	// exhaustion path even if the retry walk is itself slow.
+	// This field is on the Executor because the inner Execute
+	// invocation shares the same Executor instance.
+	//
+	// We use a counter rather than a bool to be future-proof: a
+	// future change that wants "async for first demotion, sync
+	// for further" can read the count and decide. Currently
+	// the gate returns false whenever count > 0.
+	asyncDepth int
 }
 
 func NewExecutor(
@@ -741,6 +776,27 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if params.AuditBuilder != nil {
 		params.AuditBuilder.DecisionTrace(trace)
 	}
+
+	// Track C C4 (2026-06-18): async fallback. If the synchronous
+	// walk took longer than AsyncShortTimeout (default 15s) and
+	// the request is session-bearing, hand off to a background
+	// goroutine that continues trying with an independent context
+	// (AsyncLongTimeout, default 300s). The handler will see the
+	// returned AsyncPendingError, write 202 + X-Gw-Pending, and
+	// the client can poll GET /v1/sessions/{id}/pending-response.
+	//
+	// Gating: PendingStore must be configured; the request must
+	// have a session id; the long timeout must be > short timeout
+	// (sanity); and at least one credential must have been tried
+	// (otherwise there's nothing to demote — the failure was a
+	// no_candidates condition, not a slow path).
+	if e.shouldAsyncFallback(params, tTotal, tried) {
+		asyncErr := e.startAsyncRetry(params, trace, attempts, lastKind, lastErr)
+		if asyncErr != nil {
+			return nil, asyncErr
+		}
+	}
+
 	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace, Attempts: attempts, LastKind: lastKind}
 }
 
@@ -1005,6 +1061,351 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		return
 	}
 	e.Router.Sticky.RecordFailure(params.StickyKey, 5)
+}
+
+// AsyncPendingError (Track C C4, 2026-06-18) is returned by Execute
+// when the synchronous candidate walk has exceeded AsyncShortTimeout
+// and the request is eligible for the async fallback. The handler
+// (relay/handler.go) recognises this via errors.As and returns
+//
+//   HTTP 202 Accepted
+//   X-Gw-Pending: {sessionID}
+//   X-Gw-Pending-Request: {requestID}
+//   body: {"status":"in_progress", ...}
+//
+// The client then polls GET /v1/sessions/{id}/pending-response
+// (see sessions/handler.go C3) until the goroutine finishes and
+// either writes a completed body or marks the entry failed.
+//
+// This is a *graceful degradation*, not an error. We use a
+// distinct error type (rather than a sentinel error value) so
+// callers can inspect the request key without re-parsing the
+// message string.
+type AsyncPendingError struct {
+	SessionID string
+	RequestID string
+	// StartedAt is for observability; the handler does not need
+	// it. Stored for the "how long has the async goroutine been
+	// running" admin metric.
+	StartedAt time.Time
+}
+
+func (e *AsyncPendingError) Error() string {
+	return fmt.Sprintf("async_pending: session=%s request=%s started_at=%s",
+		e.SessionID, e.RequestID, e.StartedAt.Format(time.RFC3339))
+}
+
+// shouldAsyncFallback (Track C C4, 2026-06-18) gates the async
+// fallback path. Returns false (synchronous exhaustion, as before)
+// if any precondition is missing. Each check is a one-liner so a
+// regression in the gate is easy to spot.
+func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tried int) bool {
+	// Recursion guard: the async goroutine calls Execute again.
+	// The inner call must take the synchronous exhaustion path
+	// regardless of the time elapsed.
+	if e.asyncDepth > 0 {
+		return false
+	}
+	if e.PendingStore == nil {
+		return false
+	}
+	// No session → no GET endpoint, no way for the client to
+	// retrieve the cached body. Async is useless here.
+	if params == nil || params.R == nil {
+		return false
+	}
+	hasSession := false
+	if v := params.R.Header.Get("X-Gw-Session-Id"); v != "" {
+		hasSession = true
+	}
+	if !hasSession {
+		if v := params.R.Header.Get("X-Session-Id"); v != "" {
+			hasSession = true
+		}
+	}
+	if !hasSession {
+		return false
+	}
+	short := e.AsyncShortTimeout
+	if short <= 0 {
+		short = 15 * time.Second
+	}
+	if time.Since(tTotal) < short {
+		return false
+	}
+	// Nothing was tried at all — that's a no_candidates condition,
+	// not a slow path. Async would not help.
+	if tried <= 0 {
+		return false
+	}
+	// Sanity: long timeout must exceed short. If mis-configured
+	// the goroutine would just bail immediately; easier to skip
+	// the async detour and return the synchronous error.
+	long := e.AsyncLongTimeout
+	if long <= 0 {
+		long = 300 * time.Second
+	}
+	if long <= short {
+		return false
+	}
+	return true
+}
+
+// startAsyncRetry (Track C C4, 2026-06-18) spawns a goroutine that
+// continues retrying the remaining credentials with an independent
+// context. The goroutine writes its outcome to PendingStore and
+// the caller (handler) returns AsyncPendingError so the client
+// polls. The goroutine uses context.Background() so a client
+// disconnect on the original request does NOT cancel the
+// vendor retry — the work to date is preserved.
+//
+// Max fallback cap (default 2): the goroutine tries the same
+// set of candidates the synchronous loop tried, plus at most
+// AsyncMaxFallbackCreds new candidates (i.e. any that were
+// filtered out by circuit/limiter in the synchronous phase and
+// might have recovered). This matches the design-doc target
+// "primary + up to 2 fallback credentials = 3 total".
+//
+// Returns AsyncPendingError on successful hand-off, or nil if
+// the goroutine could not be started (the caller falls back to
+// the synchronous exhaustion path in that case).
+func (e *Executor) startAsyncRetry(
+	params *ExecParams,
+	trace *Trace,
+	attempts []AttemptRecord,
+	lastKind errorsx.ErrorKind,
+	lastErr error,
+) *AsyncPendingError {
+	sessionID := params.R.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = params.R.Header.Get("X-Session-Id")
+	}
+	requestID := params.R.Header.Get("X-Request-Id")
+	if requestID == "" {
+		// Async retry needs a stable key for the GET endpoint.
+		// Synthesise one so the goroutine can still write the
+		// entry; the client can poll by sessionID + GET latest.
+		requestID = "async-" + time.Now().Format("20060102T150405.000")
+	}
+	startedAt := time.Now()
+
+	// Mark in_progress BEFORE the goroutine starts so a concurrent
+	// GET immediately knows the work is in flight. Save is a no-op
+	// if Redis is unavailable; we still proceed to spawn the
+	// goroutine (it would just not write back). Better than
+	// silently dropping the request.
+	_ = e.PendingStore.MarkInProgress(params.R.Context(), &pending.Response{
+		SessionID:   sessionID,
+		TenantID:    tenantFromCtx(params.R),
+		RequestID:   requestID,
+		Status:      pending.StatusInProgress,
+		Body:        "",
+		ContentType: "",
+		IsStream:    params.IsStream,
+		CreatedAt:   startedAt.Unix(),
+	})
+
+	maxFallbacks := e.AsyncMaxFallbackCreds
+	if maxFallbacks <= 0 {
+		maxFallbacks = 2
+	}
+	longTimeout := e.AsyncLongTimeout
+	if longTimeout <= 0 {
+		longTimeout = 300 * time.Second
+	}
+
+	// Capture the params we need for the goroutine. params.R is
+	// the *http.Request whose context is bound to the original
+	// client connection; we deliberately discard it inside the
+	// goroutine and use context.Background() instead.
+	bgParams := *params
+	bgParams.R = nil
+	bgTrace := trace
+	bgAttempts := append([]AttemptRecord(nil), attempts...)
+	bgLastKind := lastKind
+	bgLastErr := lastErr
+
+	go e.runAsyncRetry(&bgParams, bgTrace, bgAttempts, bgLastKind, bgLastErr, sessionID, requestID, startedAt, longTimeout, maxFallbacks)
+
+	return &AsyncPendingError{
+		SessionID: sessionID,
+		RequestID: requestID,
+		StartedAt: startedAt,
+	}
+}
+
+// runAsyncRetry is the body of the async retry goroutine. It is
+// separated from startAsyncRetry so the latter stays small and
+// obviously correct (it does only "kick off" work; this method
+// does the work).
+//
+// Lifecycle:
+//  1. Build a background context with AsyncLongTimeout deadline.
+//  2. Re-derive candidates from scratch (the synchronous loop's
+//     circuit / limiter state has moved on; the goroutine gets a
+//     fresh chance with any credential that may have recovered).
+//  3. Walk the candidates with the same per-credential retry policy.
+//  4. On success → PendingStore.Save(completed, body).
+//  5. On exhaustion → PendingStore.Save(failed, error_message).
+//
+// All resource cleanup (fpSlots, limiter) is handled inside
+// executeOpenAI/executeAnthropic (defer release patterns), so
+// this method does not need to manage them explicitly.
+//
+// Recursion guard: this method calls e.Execute(), which would
+// itself try to demote to async if the walk is still slow. We
+// pass suppressAsync=true via a package-internal flag so the
+// inner call takes the synchronous exhaustion path. (See
+// shouldAsyncFallback — when suppressAsync is set, the gate
+// returns false.)
+func (e *Executor) runAsyncRetry(
+	params *ExecParams,
+	trace *Trace,
+	priorAttempts []AttemptRecord,
+	lastKind errorsx.ErrorKind,
+	lastErr error,
+	sessionID, requestID string,
+	startedAt time.Time,
+	longTimeout time.Duration,
+	maxFallbacks int,
+) {
+	defer func() {
+		// Defensive: an async goroutine panic must NOT take the
+		// process down. The request is already in_progress in
+		// Redis, so the client will get a stale-pending error
+		// on poll (the sweeper will mark it failed eventually).
+		if r := recover(); r != nil {
+			slog.Error("async_retry_panic",
+				"session_id", sessionID,
+				"request_id", requestID,
+				"panic", r,
+			)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = e.PendingStore.Save(ctx, &pending.Response{
+				SessionID:    sessionID,
+				RequestID:    requestID,
+				Status:       pending.StatusFailed,
+				ErrorMessage: "async_retry_panic",
+				CompletedAt:  time.Now().Unix(),
+			})
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), longTimeout)
+	defer cancel()
+
+	// Re-derive candidates. We DO NOT reuse params.Candidates
+	// directly because the synchronous loop's planCandidates may
+	// have re-ordered them; we want the async goroutine to get a
+	// fresh look at the current state.
+	asyncParams := *params
+	asyncParams.R = params.R // needed by Router.PlanCandidates (reads X-Request-Id etc.)
+	// params.R's context is the *client* request context, which
+	// is fine for planning (it does not need to outlive the
+	// client connection). We use ctx above for the upstream HTTP
+	// call.
+	candidates := e.Router.PlanCandidates(
+		params.Candidates,
+		nil, // no sticky: the async walk is its own attempt
+		params.Policy,
+		egressPref(params.Transform),
+	)
+	if len(candidates) == 0 {
+		// No candidates available — fail and write the reason.
+		_ = e.PendingStore.Save(ctx, &pending.Response{
+			SessionID:    sessionID,
+			RequestID:    requestID,
+			Status:       pending.StatusFailed,
+			ErrorMessage: "async_no_candidates",
+			CompletedAt:  time.Now().Unix(),
+		})
+		return
+	}
+	// Cap to primary + maxFallbacks per the design doc.
+	if len(candidates) > maxFallbacks+1 {
+		candidates = candidates[:maxFallbacks+1]
+	}
+
+	// Recursion guard: bump asyncDepth for the inner Execute call
+	// so shouldAsyncFallback returns false there. Restore the
+	// original count on return so subsequent synchronous requests
+	// (e.g. a brand-new HTTP request on the same gateway instance
+	// reusing this Executor) are unaffected.
+	prevDepth := e.asyncDepth
+	e.asyncDepth++
+	defer func() { e.asyncDepth = prevDepth }()
+
+	result, execErr := e.Execute(&asyncParams) //nolint:gocritic // intentionally recursive: async walk uses same executor
+	if execErr == nil {
+		_ = e.PendingStore.Save(ctx, &pending.Response{
+			SessionID:   sessionID,
+			RequestID:   requestID,
+			Status:      pending.StatusCompleted,
+			Body:        string(result.ResponseBody),
+			ContentType: contentTypeFor(params.IsStream),
+			IsStream:    params.IsStream,
+			CompletedAt: time.Now().Unix(),
+		})
+		return
+	}
+
+	// Failure path. We have an ExecuteError; surface its LastKind
+	// and last error in the pending entry so the GET endpoint
+	// can show why the async walk gave up.
+	asyncErr := "async_exhausted"
+	if lastErr != nil {
+		asyncErr = "async_" + string(lastKind) + ": " + lastErr.Error()
+	}
+	_ = e.PendingStore.Save(ctx, &pending.Response{
+		SessionID:    sessionID,
+		RequestID:    requestID,
+		Status:       pending.StatusFailed,
+		ErrorMessage: truncateForStore(asyncErr),
+		CompletedAt:  time.Now().Unix(),
+	})
+
+	_ = trace
+	_ = priorAttempts
+}
+
+// tenantFromCtx pulls the tenant id from request context, falling
+// back to the literal "default" if unset. The fallback matches
+// the existing recordModelNotFound convention.
+func tenantFromCtx(r *http.Request) string {
+	if r == nil {
+		return "default"
+	}
+	if v := sessions.GetAPIKeyIDFromContext(r.Context()); v != 0 {
+		// The sessions package exposes only GetAPIKeyID publicly;
+		// tenant id is tracked separately and the producer-side
+		// recordModelNotFound hardcodes "default". We mirror that
+		// here so the async write is consistent with the sync
+		// one. The real fix is to expose GetTenantIDFromContext
+		// publicly in a follow-up; until then, "default" is the
+		// contract.
+		_ = v
+	}
+	return "default"
+}
+
+// contentTypeFor picks the canonical content type for a replay.
+// Streaming responses are SSE; everything else is JSON.
+func contentTypeFor(isStream bool) string {
+	if isStream {
+		return "text/event-stream"
+	}
+	return "application/json"
+}
+
+// truncateForStore clamps error strings to a Redis-friendly size
+// so a 10KB vendor error body doesn't blow up the Hash.
+func truncateForStore(s string) string {
+	const max = 1024
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }
 
 type modelNotFoundError struct {

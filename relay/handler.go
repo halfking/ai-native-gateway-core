@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -656,6 +657,36 @@ func (h *ChatHandler) serveWithExecutor(
 			providerID = intPtr(candidates[0].ProviderID)
 			credentialID = intPtr(candidates[0].CredentialID)
 		}
+
+		// Track C C4 (2026-06-18): the executor demoted a slow
+		// request to async mode. Surface 202 + X-Gw-Pending so the
+		// client knows to poll GET /v1/sessions/{id}/pending-response
+		// (see sessions/handler.go C3). The body is a small JSON
+		// status object; the real response lands in pending store
+		// when the async goroutine completes.
+		var asyncErr *routing.AsyncPendingError
+		if errors.As(execErr, &asyncErr) {
+			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
+			w.Header().Set("X-Gw-Pending-Request", asyncErr.RequestID)
+			w.Header().Set("Retry-After", "5")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":         "in_progress",
+				"session_id":     asyncErr.SessionID,
+				"request_id":     asyncErr.RequestID,
+				"retry_after":    5,
+				"started_at":     asyncErr.StartedAt.Format(time.RFC3339),
+				"poll_url":       "/v1/sessions/" + asyncErr.SessionID + "/pending-response?request_id=" + asyncErr.RequestID,
+			})
+			slog.Info("async_pending_dispatched",
+				"session_id", asyncErr.SessionID,
+				"request_id", asyncErr.RequestID,
+				"model", clientModel,
+			)
+			return
+		}
+
 		errCode := "provider_error"
 		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok && execErrTyped.Exhausted {
 			// Step 6 (2026-06-18): preserve backward-compat error.code
