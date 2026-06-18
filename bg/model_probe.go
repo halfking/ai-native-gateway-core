@@ -37,6 +37,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -130,7 +131,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 
 	rows, err := r.db.Query(timeoutCtx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
-		       COALESCE(pm.outbound_model_name, pm.raw_model_name),
+		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
@@ -184,7 +185,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		if decErr != nil {
 			// Decrypt failure counts as a hard auth failure; record
 			// the run + apply the consensus rule.
-			_, _, ns, nf, nst := r.computeConsensus("auth", q.state, q.succCnt, q.failCnt)
+			_, _, ns, nf, nst := r.computeConsensus("auth", q.state, "decrypt_error", q.succCnt, q.failCnt)
 			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
 			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 				"unchanged", false, "scheduler", ns, nf, nst)
@@ -215,7 +216,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		status, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
 
 		stateChange, applied, newSucc, newFail, newState := r.computeConsensus(
-			status, q.state, q.succCnt, q.failCnt,
+			status, q.state, errCode, q.succCnt, q.failCnt,
 		)
 
 		r.recordRun(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
@@ -250,9 +251,12 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 //   - failure: fail++; succ = 0
 //     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke' (informational only — binding is already unroutable)
 //     else          newState = 'recovering',        state_change = 'unchanged'
-//   - skipped: no state change.
+//   - skipped (manual_disabled, suspended, endpoint_unresolved): no state change.
+//   - skipped + errCode "endpoint_id_required": clear failure counters and reset
+//     to 'recovering' so broken_confirmed bindings re-enter the probe queue once
+//     the operator sets outbound_model_name.
 func (r *ModelProbeRunner) computeConsensus(
-	status, prevState string, prevSucc, prevFail int,
+	status, prevState, errCode string, prevSucc, prevFail int,
 ) (stateChange string, applied bool, newSucc, newFail int, newState string) {
 	newSucc = prevSucc
 	newFail = prevFail
@@ -278,9 +282,22 @@ func (r *ModelProbeRunner) computeConsensus(
 			stateChange = "recovered"
 		}
 	case "skipped":
-		// Don't touch counters.  (Manual-disable, suspended, etc.)
-		applied = false
-		stateChange = "unchanged"
+		if errCode == "endpoint_id_required" {
+			// The probe was skipped because the model requires an endpoint ID
+			// (outbound_model_name) that has not been configured yet.  Prior
+			// probes may have incorrectly driven this binding to
+			// 'broken_confirmed' by using raw_model_name → 404.  Clear the
+			// failure counters and reset to 'recovering' so the binding
+			// re-enters the probe queue once outbound_model_name is set.
+			newSucc = 0
+			newFail = 0
+			newState = "recovering"
+			applied = true
+		} else {
+			// manual_disabled, suspended, endpoint_unresolved, etc.
+			applied = false
+			stateChange = "unchanged"
+		}
 	default:
 		// any failure (http_4xx, http_5xx, network, auth, unknown)
 		newFail = prevFail + 1
@@ -392,11 +409,17 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	}
 	endpoint := upstreamurl.ChatCompletionsURL(t.BaseURL)
 
-	// BUG-3 fix: use OutboundModel (COALESCE(outbound_model_name, raw_model_name))
-	// for the upstream request body. Some providers (e.g. Volcano Ark) require
-	// an endpoint ID (e.g. "ep-20241227") as the model field, not the raw model
-	// name (e.g. "minimax-m3"). Using raw_model_name here caused every probe to
-	// return 404, permanently marking the binding as broken.
+	// Some providers (e.g. Volcano Ark) require a deployment endpoint ID
+	// (e.g. "ep-20241227XXXX") as the model field rather than the raw model
+	// name (e.g. "minimax-m3", "glm-5.1").  When outbound_model_name is set,
+	// it carries that endpoint ID and we use it.  When it is empty, we fall
+	// back to raw_model_name and let the upstream tell us whether the name is
+	// acceptable.  If the upstream returns a 404 that explicitly says the
+	// model/endpoint was not found (e.g. Volcano Ark's
+	// "InvalidEndpointOrModel.NotFound"), we treat the probe as skipped with
+	// error code "endpoint_id_required" so the binding is NOT driven to
+	// broken_confirmed.  The operator must set outbound_model_name to the
+	// correct endpoint ID for the probe to start passing.
 	modelField := t.OutboundModel
 	if modelField == "" {
 		modelField = t.RawModel
@@ -428,23 +451,53 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	httpStatus = resp.StatusCode
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	respBodyStr := string(respBody)
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return "ok", httpStatus, "", "", latencyMs
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return "auth", httpStatus, http.StatusText(resp.StatusCode), truncate(string(respBody), 500), latencyMs
+		return "auth", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode == 404:
-		return "http_4xx", httpStatus, "model_not_found", truncate(string(respBody), 500), latencyMs
+		// If the provider says the model/endpoint doesn't exist AND we used
+		// the raw model name (outbound_model_name was not configured), this
+		// means the binding needs an endpoint ID to be testable.  Treat as
+		// skipped rather than a real failure so the probe state stays in
+		// 'recovering' and does not reach 'broken_confirmed'.
+		if t.OutboundModel == "" && isEndpointIDRequiredError(respBodyStr) {
+			return "skipped", httpStatus, "endpoint_id_required",
+				"model requires an endpoint ID (outbound_model_name); set it to enable probing: " + truncate(respBodyStr, 300),
+				latencyMs
+		}
+		return "http_4xx", httpStatus, "model_not_found", truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode == 429:
-		return "http_4xx", httpStatus, "rate_limited", truncate(string(respBody), 500), latencyMs
+		return "http_4xx", httpStatus, "rate_limited", truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		return "http_4xx", httpStatus, http.StatusText(resp.StatusCode), truncate(string(respBody), 500), latencyMs
+		return "http_4xx", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode >= 500:
-		return "http_5xx", httpStatus, http.StatusText(resp.StatusCode), truncate(string(respBody), 500), latencyMs
+		return "http_5xx", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	default:
-		return "unknown", httpStatus, http.StatusText(resp.StatusCode), truncate(string(respBody), 500), latencyMs
+		return "unknown", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	}
+}
+
+// isEndpointIDRequiredError reports whether a 404 response body indicates
+// that the provider requires a deployment endpoint ID rather than a plain
+// model name.  Currently recognises:
+//   - Volcano Ark (火山方舟): "InvalidEndpointOrModel.NotFound"
+//   - Generic phrasing: "endpoint" + "not found" or "does not exist"
+func isEndpointIDRequiredError(body string) bool {
+	// Volcano Ark explicit code
+	if strings.Contains(body, "InvalidEndpointOrModel") {
+		return true
+	}
+	// Generic heuristic: body mentions both "endpoint" and a not-found phrase
+	lbody := strings.ToLower(body)
+	if strings.Contains(lbody, "endpoint") &&
+		(strings.Contains(lbody, "not found") || strings.Contains(lbody, "does not exist") || strings.Contains(lbody, "no access")) {
+		return true
+	}
+	return false
 }
 
 // TriggerManual fires one off-schedule probe for a single binding.  It
@@ -453,7 +506,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, rawModel string) error {
 	row := r.db.QueryRow(ctx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
-		       COALESCE(pm.outbound_model_name, pm.raw_model_name),
+		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
@@ -481,7 +534,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	}
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
-		_, _, ns, nf, nst := r.computeConsensus("auth", prevState, prevSucc, prevFail)
+		_, _, ns, nf, nst := r.computeConsensus("auth", prevState, "decrypt_error", prevSucc, prevFail)
 		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
 		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 			"unchanged", false, "manual", ns, nf, nst)
@@ -490,7 +543,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	t.APIKey = apiKey
 
 	status, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
-	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, prevState, prevSucc, prevFail)
+	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, prevState, errCode, prevSucc, prevFail)
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
