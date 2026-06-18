@@ -5,7 +5,8 @@ import { store, clearAll, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as 
 import LoginModal from './components/LoginModal.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
-import { NAV_GROUPS, visibleNavGroups, isNavItemActive } from './config/appNav'
+import { useNavAccordion } from './composables/useNavAccordion'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,12 +18,25 @@ const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
+const navPrimaryItems = computed(() =>
+  visibleNavItems(NAV_PRIMARY_ITEMS, {
+    isSuperAdmin: isSuperAdmin.value,
+    isPlatformOps: isPlatformOps.value,
+    isTenantPortal: isTenantPortal.value,
+  }),
+)
+
 const navGroups = computed(() =>
   visibleNavGroups(NAV_GROUPS, {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
   }),
+)
+
+const { toggleGroup, isGroupExpanded, groupHasActive } = useNavAccordion(
+  navGroups,
+  computed(() => route.path),
 )
 
 const versionInfo = ref<{
@@ -100,19 +114,51 @@ function logout() {
       </div>
 
       <nav class="sidebar-nav">
-        <section v-for="group in navGroups" :key="group.id" class="nav-group">
-          <div v-if="!collapsed" class="nav-group-label">{{ group.label }}</div>
+        <div v-if="navPrimaryItems.length" class="nav-primary">
           <RouterLink
-            v-for="item in group.items"
+            v-for="item in navPrimaryItems"
             :key="item.path + item.label"
             :to="item.path"
-            class="nav-item"
+            class="nav-item nav-item-primary"
             :class="{ active: isNavItemActive(item.path, route.path) }"
             :title="collapsed ? item.label : undefined"
           >
             <span class="nav-icon">{{ item.icon }}</span>
             <span v-show="!collapsed" class="nav-label">{{ item.label }}</span>
           </RouterLink>
+        </div>
+
+        <section v-for="group in navGroups" :key="group.id" class="nav-group">
+          <button
+            v-if="!collapsed"
+            type="button"
+            class="nav-group-header"
+            :class="{
+              expanded: isGroupExpanded(group.id),
+              'has-active': groupHasActive(group.id),
+            }"
+            :aria-expanded="isGroupExpanded(group.id)"
+            @click="toggleGroup(group.id)"
+          >
+            <span class="nav-group-title">{{ group.label }}</span>
+            <span class="nav-group-chevron" aria-hidden="true" />
+          </button>
+          <div
+            v-show="collapsed || isGroupExpanded(group.id)"
+            class="nav-group-items"
+          >
+            <RouterLink
+              v-for="item in group.items"
+              :key="item.path + item.label"
+              :to="item.path"
+              class="nav-item"
+              :class="{ active: isNavItemActive(item.path, route.path) }"
+              :title="collapsed ? item.label : undefined"
+            >
+              <span class="nav-icon">{{ item.icon }}</span>
+              <span v-show="!collapsed" class="nav-label">{{ item.label }}</span>
+            </RouterLink>
+          </div>
         </section>
       </nav>
 
@@ -241,6 +287,19 @@ function logout() {
   overflow-y: auto;
 }
 
+.nav-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-item-primary {
+  font-weight: 500;
+}
+
 .nav-group + .nav-group {
   margin-top: 8px;
   padding-top: 8px;
@@ -260,6 +319,65 @@ function logout() {
   color: var(--muted);
   text-transform: none;
   user-select: none;
+}
+
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  margin-bottom: 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+
+.nav-group-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.nav-group-header.expanded,
+.nav-group-header.has-active {
+  color: var(--text);
+}
+
+.nav-group-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-group-chevron {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  opacity: 0.55;
+  transition: transform 0.15s ease;
+}
+
+.nav-group-header.expanded .nav-group-chevron {
+  transform: rotate(90deg);
+}
+
+.nav-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .nav-item {

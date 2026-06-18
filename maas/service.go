@@ -32,10 +32,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/catalog"
 )
 
 // Service handles tenant credit wallets, plans, and consumption.
@@ -492,7 +494,7 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 	rows, err := s.pool.Query(ctx, `
 		SELECT mc.canonical_name,
 		       COALESCE(NULLIF(TRIM(mc.display_name), ''), mc.canonical_name),
-		       COALESCE(NULLIF(TRIM(mf.vendor), ''), NULLIF(TRIM(mc.family), ''), '其他') AS vendor,
+		       COALESCE(NULLIF(TRIM(mf.vendor), ''), '') AS db_vendor,
 		       mc.family,
 		       NULLIF(TRIM(mf.display_name), '') AS family_display_name,
 		       mc.context_window,
@@ -505,7 +507,7 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN model_credit_rates mcr ON mcr.canonical_id = mc.id
 		WHERE COALESCE(mc.status, 'active') = 'active'
-		ORDER BY vendor, mc.canonical_name
+		ORDER BY mc.canonical_name
 	`)
 	if err != nil {
 		return nil, err
@@ -516,14 +518,23 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 	for rows.Next() {
 		var r ModelRateRow
 		var stored storedModelRates
+		var dbVendor string
+		var family *string
 		if err := rows.Scan(
-			&r.CanonicalName, &r.DisplayName, &r.Vendor, &r.Family, &r.FamilyDisplayName,
+			&r.CanonicalName, &r.DisplayName, &dbVendor, &family, &r.FamilyDisplayName,
 			&r.ContextWindow, &r.Modality,
 			&stored.In, &stored.Out, &stored.CacheIn, &stored.CacheOut,
 			&stored.ManualIn, &stored.ManualOut, &stored.ManualCacheIn, &stored.ManualCacheOut,
 		); err != nil {
 			return nil, err
 		}
+		familyID := ""
+		if family != nil {
+			familyID = *family
+			r.Family = family
+		}
+		r.Vendor = catalog.ResolveVendor(r.CanonicalName, familyID, dbVendor)
+		r.Modality = catalog.EffectiveModality(r.CanonicalName, r.Modality)
 		eff := effectiveModelRates(stored, global)
 		r.CreditsPer1MIn = eff.In
 		r.CreditsPer1MOut = eff.Out
@@ -532,6 +543,12 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 		r.BillingMode = "token"
 		out = append(out, r)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Vendor != out[j].Vendor {
+			return out[i].Vendor < out[j].Vendor
+		}
+		return out[i].CanonicalName < out[j].CanonicalName
+	})
 	return jsonSlice(out), rows.Err()
 }
 

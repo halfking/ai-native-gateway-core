@@ -4,6 +4,9 @@ import { getMaasModels } from '../../api'
 import type { MaasModel } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
+import ModelCatalogFilterBar from '../../components/ModelCatalogFilterBar.vue'
+import { useModelCatalogFilters } from '../../composables/useModelCatalogFilters'
+import { vendorLabelZh } from '../../utils/modelCatalog'
 
 const { tenantLabel, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() => ctxPageTitle('标准模型'))
@@ -12,7 +15,38 @@ const backLink = computed(() => maasBackLink('models'))
 const models = ref<MaasModel[]>([])
 const loading = ref(false)
 const error = ref('')
-const search = ref('')
+
+const {
+  pickedModel,
+  filterVendor,
+  filtered,
+  vendorOptions,
+  clearFilters,
+} = useModelCatalogFilters<MaasModel>({
+  items: models,
+  getVendor: (m) => m.vendor?.trim() || '其他',
+  getCanonicalName: (m) => m.canonical_name,
+  getDisplayName: (m) => m.display_name,
+  getSearchExtras: (m) => [
+    m.family_display_name ?? '',
+    m.family ?? '',
+    m.modality,
+    vendorLabelZh(m.vendor?.trim() || '其他'),
+  ],
+})
+
+const vendorGroups = computed(() => {
+  const map = new Map<string, MaasModel[]>()
+  for (const m of filtered.value) {
+    const vendor = m.vendor?.trim() || '其他'
+    const list = map.get(vendor) ?? []
+    list.push(m)
+    map.set(vendor, list)
+  }
+  return [...map.entries()]
+    .sort(([a], [b]) => vendorLabelZh(a).localeCompare(vendorLabelZh(b), 'zh-CN'))
+    .map(([vendor, items]) => ({ vendor, vendorLabel: vendorLabelZh(vendor), items }))
+})
 
 const MODALITY_LABELS: Record<string, string> = {
   text: '文本',
@@ -32,36 +66,6 @@ const rateCols = [
   { key: 'cache_in', label: '缓存读/1M' },
   { key: 'cache_out', label: '缓存写/1M' },
 ] as const
-
-const filtered = computed(() => {
-  const q = search.value.trim().toLowerCase()
-  if (!q) return models.value
-  return models.value.filter((m) => {
-    const hay = [
-      m.canonical_name,
-      m.display_name,
-      m.vendor,
-      m.family_display_name ?? '',
-      m.modality,
-    ]
-      .join(' ')
-      .toLowerCase()
-    return hay.includes(q)
-  })
-})
-
-const vendorGroups = computed(() => {
-  const map = new Map<string, MaasModel[]>()
-  for (const m of filtered.value) {
-    const vendor = m.vendor?.trim() || '其他'
-    const list = map.get(vendor) ?? []
-    list.push(m)
-    map.set(vendor, list)
-  }
-  return [...map.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))
-    .map(([vendor, items]) => ({ vendor, items }))
-})
 
 function fmtCredits(n: number) {
   return n.toLocaleString('zh-CN')
@@ -109,16 +113,21 @@ onMounted(load)
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <input
-          v-model="search"
-          class="search-input"
-          placeholder="搜索模型、厂商…"
-        />
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? '加载中…' : '刷新' }}
         </button>
       </div>
     </div>
+
+    <ModelCatalogFilterBar
+      v-model:picked-model="pickedModel"
+      v-model:filter-vendor="filterVendor"
+      :vendor-options="vendorOptions"
+      :count="filtered.length"
+      picker-title="标准模型 · 筛选"
+      picker-placeholder="选择标准模型…"
+      @clear="clearFilters"
+    />
 
     <p class="page-desc">
       平台标准模型目录，按模型原厂分组。计费含输入 / 输出 / 缓存读 / 缓存写，均按每百万 Token 扣积分。
@@ -130,7 +139,7 @@ onMounted(load)
 
     <div v-for="group in vendorGroups" :key="group.vendor" class="vendor-section card">
       <div class="vendor-header">
-        <h3>{{ group.vendor }}</h3>
+        <h3>{{ group.vendorLabel }}</h3>
         <span class="vendor-count">{{ group.items.length }} 个模型</span>
       </div>
       <div class="table-wrap">

@@ -20,12 +20,12 @@ export type NavGroup = {
   items: NavItem[]
 }
 
+/** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
+export const NAV_PRIMARY_ITEMS: NavItem[] = [
+  { path: '/', label: '总览', icon: '📊', platformOps: true },
+]
+
 export const NAV_GROUPS: NavGroup[] = [
-  {
-    id: 'dashboard',
-    label: '仪表盘',
-    items: [{ path: '/', label: '总览', icon: '📊' }],
-  },
   {
     id: 'tenant-portal',
     label: '我的服务',
@@ -88,6 +88,13 @@ export function canShowNavItem(
   if (item.tenantOnly && !opts.isTenantPortal) return false
   if (item.hideForTenant && opts.isTenantPortal) return false
   return true
+}
+
+export function visibleNavItems(
+  items: NavItem[],
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+): NavItem[] {
+  return items.filter((item) => canShowNavItem(item, opts))
 }
 
 export function visibleNavGroups(

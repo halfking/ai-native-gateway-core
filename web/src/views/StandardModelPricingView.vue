@@ -10,10 +10,10 @@ import {
   type MaasAdminSettings,
   type MaasModelRateUpsert,
 } from '../api'
-import ModelPicker from '../components/ModelPicker.vue'
+import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
+import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 
 type RateField = 'in' | 'out' | 'cache_in' | 'cache_out'
-type FilterMode = 'all' | 'custom' | 'default' | 'partial'
 
 const loading = ref(false)
 const savingSettings = ref(false)
@@ -21,9 +21,36 @@ const error = ref('')
 const settingsMsg = ref('')
 const models = ref<AdminMaasModelRate[]>([])
 const settings = ref<MaasAdminSettings | null>(null)
-const search = ref('')
-const filterVendor = ref('')
-const filterMode = ref<FilterMode>('all')
+
+function isFullyManual(m: AdminMaasModelRate) {
+  return m.manual_in && m.manual_out && m.manual_cache_in && m.manual_cache_out
+}
+
+const pricingStatusOptions = [
+  { value: 'default', label: '仅全局基准' },
+  { value: 'custom', label: '含手工定价' },
+  { value: 'partial', label: '部分手工' },
+]
+
+const {
+  pickedModel,
+  filterVendor,
+  extraFilter: filterMode,
+  vendorOptions,
+  filtered,
+  clearFilters: clearCatalogFilters,
+} = useModelCatalogFilters<AdminMaasModelRate>({
+  items: models,
+  getVendor: (m) => m.vendor?.trim() || '其他',
+  getCanonicalName: (m) => m.canonical_name,
+  getDisplayName: (m) => m.display_name,
+  matchExtra: (m, mode) => {
+    if (mode === 'custom') return m.is_custom
+    if (mode === 'default') return !m.is_custom
+    if (mode === 'partial') return m.is_custom && !isFullyManual(m)
+    return true
+  },
+})
 
 const editRow = ref<AdminMaasModelRate | null>(null)
 const editForm = ref<MaasModelRateUpsert>(emptyEditForm())
@@ -42,38 +69,6 @@ function emptyEditForm(): MaasModelRateUpsert {
   }
 }
 
-const vendorOptions = computed(() => {
-  const set = new Set<string>()
-  for (const m of models.value) {
-    if (m.vendor) set.add(m.vendor)
-  }
-  return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN'))
-})
-
-const filtered = computed(() => {
-  let rows = models.value
-  const q = search.value.trim().toLowerCase()
-  if (q) {
-    rows = rows.filter(
-      (m) =>
-        m.canonical_name.toLowerCase().includes(q) ||
-        m.display_name.toLowerCase().includes(q) ||
-        (m.vendor ?? '').toLowerCase().includes(q),
-    )
-  }
-  if (filterVendor.value) {
-    rows = rows.filter((m) => m.vendor === filterVendor.value)
-  }
-  if (filterMode.value === 'custom') {
-    rows = rows.filter((m) => m.is_custom)
-  } else if (filterMode.value === 'default') {
-    rows = rows.filter((m) => !m.is_custom)
-  } else if (filterMode.value === 'partial') {
-    rows = rows.filter((m) => m.is_custom && !isFullyManual(m))
-  }
-  return rows
-})
-
 const customCount = computed(() => models.value.filter((m) => m.is_custom).length)
 const defaultCount = computed(() => models.value.length - customCount.value)
 
@@ -83,10 +78,6 @@ const discountPercent = computed({
     if (settings.value) settings.value.global_discount = Math.min(100, Math.max(1, v)) / 100
   },
 })
-
-function isFullyManual(m: AdminMaasModelRate) {
-  return m.manual_in && m.manual_out && m.manual_cache_in && m.manual_cache_out
-}
 
 function manualCount(m: AdminMaasModelRate) {
   return [m.manual_in, m.manual_out, m.manual_cache_in, m.manual_cache_out].filter(Boolean).length
@@ -314,22 +305,18 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="compact-filter-bar">
-      <div class="cf-grow" style="min-width:200px">
-        <ModelPicker v-model="search" placeholder="搜索标准模型…" title="定价管理 · 模型筛选" />
-      </div>
-      <select v-model="filterVendor" class="cf-select">
-        <option value="">全部厂家</option>
-        <option v-for="v in vendorOptions" :key="v" :value="v">{{ v }}</option>
-      </select>
-      <select v-model="filterMode" class="cf-select cf-source">
-        <option value="all">全部</option>
-        <option value="default">仅全局基准</option>
-        <option value="custom">含手工定价</option>
-        <option value="partial">部分手工</option>
-      </select>
-      <span class="cf-meta">共 {{ filtered.length }} 个</span>
-    </div>
+    <ModelCatalogFilterBar
+      v-model:picked-model="pickedModel"
+      v-model:filter-vendor="filterVendor"
+      v-model:extra-filter="filterMode"
+      :vendor-options="vendorOptions"
+      :count="filtered.length"
+      picker-title="定价管理 · 模型筛选"
+      picker-placeholder="搜索标准模型…"
+      status-label="全部定价"
+      :status-options="pricingStatusOptions"
+      @clear="clearCatalogFilters"
+    />
 
     <div class="card table-wrap">
       <table class="data-table pricing-table">
