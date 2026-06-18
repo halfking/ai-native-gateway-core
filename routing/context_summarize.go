@@ -910,6 +910,13 @@ type contextLengthRecoveryState struct {
 	mechanicalAttempted bool
 	memoraAttempted     bool
 	llmAttempted        bool
+	// Round 47 compression v7 T-NEW-1: track the strategy that actually
+	// produced the rebuild so we can report it on the request_logs row.
+	// Only the last successful tier wins (lower tiers short-circuit on
+	// success), matching the v7 §3.4 "mechanical → memora → llm" cascade.
+	lastStrategy string
+	lastReason   string
+	lastMeta     []byte // JSON-serialised compression_meta for request_logs
 }
 
 type ctxLenRecoveryAction int
@@ -931,6 +938,13 @@ func (e *Executor) handleContextLengthRecovery(
 		return ctxLenGiveUp
 	}
 
+	// Round 47 compression v7 T-NEW-1: capture bytes_before for compression_meta.
+	// Set on the state struct so the successful tier can attach it to the
+	// request_logs row.
+	st.lastMeta = nil
+	st.lastReason = "mode_2_on_4xx"
+	st.lastStrategy = "noop"
+
 	// Phase 1: mechanical trim. Only possible when we know the target
 	// model's context window (needed to compute the soft limit). When
 	// ContextWindow is nil, skip straight to the LLM-summary fallback —
@@ -945,14 +959,18 @@ func (e *Executor) handleContextLengthRecovery(
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
+			before := len(*sourceBody)
 			*sourceBody = trimmed
 			slog.Info("context_length 4xx → mechanical trim retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
 				"context_window", *targetCand.ContextWindow,
 				"status", status,
-				"source_bytes", len(*sourceBody),
+				"source_bytes", before,
+				"after_bytes", len(*sourceBody),
 			)
+			st.lastStrategy = "mechanical_trim"
+			st.lastMeta = buildCompressionMeta(targetCand.ContextWindow, before, len(*sourceBody))
 			return ctxLenRetry
 		}
 	}
@@ -967,13 +985,17 @@ func (e *Executor) handleContextLengthRecovery(
 	if !st.memoraAttempted && e.Memora != nil && !e.Memora.Disabled() {
 		st.memoraAttempted = true
 		if newBody, ok := e.tryMemoraCompression(ctx, params, *sourceBody); ok {
+			before := len(*sourceBody)
 			*sourceBody = newBody
 			slog.Info("context_length 4xx → memora L1 rebuild retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
 				"status", status,
-				"source_bytes", len(*sourceBody),
+				"source_bytes", before,
+				"after_bytes", len(*sourceBody),
 			)
+			st.lastStrategy = "memora_l1_inject"
+			st.lastMeta = buildCompressionMeta(targetCand.ContextWindow, before, len(*sourceBody))
 			return ctxLenRetry
 		}
 	}
@@ -982,19 +1004,47 @@ func (e *Executor) handleContextLengthRecovery(
 		st.llmAttempted = true
 		newBody, ok := e.tryLLMContextCompaction(ctx, params, targetCand, *sourceBody)
 		if ok {
+			before := len(*sourceBody)
 			*sourceBody = newBody
 			slog.Info("context_length 4xx → llm summary retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
 				"context_window", cwLogVal(targetCand.ContextWindow),
 				"status", status,
-				"source_bytes", len(*sourceBody),
+				"source_bytes", before,
+				"after_bytes", len(*sourceBody),
 			)
+			st.lastStrategy = "llm_summary"
+			st.lastMeta = buildCompressionMeta(targetCand.ContextWindow, before, len(*sourceBody))
 			return ctxLenRetry
 		}
 	}
 
 	return ctxLenGiveUp
+}
+
+// buildCompressionMeta serialises the v7 §3.2 compression_meta JSONB
+// payload that relay/handler.go will write into request_logs.
+//
+// We keep this helper in routing/ (not compressor/) because the recovery
+// flow runs inside routing/context_summarize.go which the T-NEW-2 refactor
+// will eventually relocate. Until then, this small helper avoids pulling
+// the compressor package into routing just for JSON marshalling.
+func buildCompressionMeta(contextWindow *int, bytesBefore, bytesAfter int) []byte {
+	tokensBefore := bytesBefore * 10 / 35 // chars/3.5 → ×10/35 ≈ tokens
+	tokensAfter := bytesAfter * 10 / 35
+	meta := map[string]any{
+		"tokens_before": tokensBefore,
+		"tokens_after":  tokensAfter,
+		"bytes_before":  bytesBefore,
+		"bytes_after":   bytesAfter,
+		"reason_detail": "4xx context_length recovery",
+	}
+	if contextWindow != nil {
+		meta["context_window_used"] = *contextWindow
+	}
+	out, _ := json.Marshal(meta)
+	return out
 }
 
 // cwLogVal returns a log-safe representation of the context window pointer.

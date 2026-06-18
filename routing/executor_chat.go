@@ -514,6 +514,13 @@ func (e *Executor) executeOpenAI(
 				LatencyMs:    latencyMs,
 				RequestBody:  append([]byte(nil), bodyBytes...),
 				ResponseBody: append([]byte(nil), respBody...),
+				// Round 47 compression v7 T-NEW-2: surface the compression
+				// event captured by handleContextLengthRecovery so
+				// relay/handler.go emitTelemetry can write it to
+				// request_logs.compression_*.
+				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+				CompressionMeta:     contextLenRecovery.lastMeta,
 			}, nil
 		}()
 
@@ -637,3 +644,11 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 // The real implementation is in executor_anthropic.go; it lives there
 // (not in this file) so that OpenAI-shape assumptions cannot leak into
 // the Anthropic path.
+
+// strPtrCompat returns a pointer to the given string. Used by the
+// compression v7 fields which need a pointer helper that doesn't conflict
+// with the relay package's strPtr (we can't import relay from routing
+// without introducing a cycle).
+func strPtrCompat(s string) *string {
+	return &s
+}
