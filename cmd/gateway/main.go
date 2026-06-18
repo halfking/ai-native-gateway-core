@@ -242,17 +242,23 @@ func main() {
 				if pc != nil {
 					if body, state, ok := pc.Snapshot(); ok {
 						saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
-						_ = pendingStore.Save(saveCtx, &pending.Response{
+						if err := pendingStore.Save(saveCtx, &pending.Response{
 							SessionID:    relay.SessionIDFromResp(resp),
 							RequestID:    relay.RequestIDFromResp(resp),
 							Status:       pending.Status(state.Status),
 							Body:         string(body),
 							ContentType:  "text/event-stream",
 							IsStream:     true,
-							CreatedAt:    time.Now().Add(-time.Duration(pc.BytesCaptured()) * time.Microsecond).Unix(),
+							CreatedAt:    time.Now().Unix(),
 							CompletedAt:  state.CompletedAt,
 							ErrorMessage: state.ErrMessage,
-						})
+						}); err != nil {
+							slog.Warn("pending_save_failed",
+								"session_id", relay.SessionIDFromResp(resp),
+								"request_id", relay.RequestIDFromResp(resp),
+								"error", err,
+							)
+						}
 						saveCancel()
 					}
 				}

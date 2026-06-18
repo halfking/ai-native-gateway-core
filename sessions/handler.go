@@ -390,6 +390,7 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 	// (only sessionID + tenantID), so we use the session row as the
 	// ownership anchor.
 	apiKeyID := GetAPIKeyIDFromContext(r.Context())
+	tenantID := getTenantIDFromContext(r.Context())
 	if h.manager != nil {
 		if session, err := h.manager.Get(r.Context(), sessionID); err == nil && session != nil {
 			if session.GetAPIKeyID() != apiKeyID {
@@ -404,6 +405,13 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 	// session that was later deleted. We do not want to 404 in that
 	// case just because the session row is gone — the cached body
 	// is still useful to the client.
+	//
+	// Audit fix #14 (2026-06-18): when the session row is missing
+	// (Redis outage or deleted session), we cannot verify ownership
+	// via the session row. As a secondary guard, we check the
+	// pending entry's TenantID against the request's tenant ID.
+	// This prevents a tenant-A user from reading tenant-B's cached
+	// response when the session manager is down.
 
 	requestID := r.URL.Query().Get("request_id")
 
@@ -421,6 +429,19 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	if !found || entry == nil {
+		writeErrorJSON(w, http.StatusNotFound, "",
+			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
+		return
+	}
+
+	// Audit fix #14 (2026-06-18): secondary tenant isolation
+	// check. When the session row was missing (Redis outage or
+	// deleted session), the primary ownership check above was
+	// skipped. We now verify the pending entry's TenantID
+	// against the request's tenant ID. A mismatch means a
+	// tenant-A user is trying to read tenant-B's cached body —
+	// return 404 (not 403, to avoid leaking existence).
+	if entry.TenantID != "" && entry.TenantID != tenantID && tenantID != "default" {
 		writeErrorJSON(w, http.StatusNotFound, "",
 			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
 		return

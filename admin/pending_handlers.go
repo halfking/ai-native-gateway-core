@@ -84,7 +84,6 @@ func (a *pendingStoreAdapter) list(ctx pendingListContext) ([]listEntry, error) 
 	// admin list endpoint will be enhanced in a follow-up
 	// to scan all statuses. The sweeper workload is the
 	// primary use case for the existing primitive.
-	_ = ctx
 	results := make([]listEntry, 0, len(raw))
 	for _, e := range raw {
 		age := time.Now().Unix() - e.CreatedAt
