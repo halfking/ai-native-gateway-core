@@ -284,6 +284,37 @@ func main() {
 			"threshold", exec.MnfStickyBreakThreshold,
 			"capacity", mnfStreakCap,
 		)
+		// Track C C4 (2026-06-18): wire the pending response cache
+		// into the executor so it can demote a slow synchronous
+		// walk to async mode. Defaults: 15s short (synchronous
+		// budget), 300s long (async total deadline), 2 fallback
+		// credentials. Override via env for emergency rollback.
+		if pendingStore != nil {
+			exec.PendingStore = pendingStore
+			exec.AsyncShortTimeout = 15 * time.Second
+			exec.AsyncLongTimeout = 300 * time.Second
+			exec.AsyncMaxFallbackCreds = 2
+			if v := os.Getenv("LLM_GATEWAY_ASYNC_SHORT_TIMEOUT"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					exec.AsyncShortTimeout = time.Duration(n) * time.Second
+				}
+			}
+			if v := os.Getenv("LLM_GATEWAY_ASYNC_LONG_TIMEOUT"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					exec.AsyncLongTimeout = time.Duration(n) * time.Second
+				}
+			}
+			if v := os.Getenv("LLM_GATEWAY_ASYNC_MAX_FALLBACK_CREDS"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+					exec.AsyncMaxFallbackCreds = n
+				}
+			}
+			slog.Info("async_pending_enabled",
+				"short_timeout", exec.AsyncShortTimeout,
+				"long_timeout", exec.AsyncLongTimeout,
+				"max_fallback_creds", exec.AsyncMaxFallbackCreds,
+			)
+		}
 // Round 47 compression v7 T16: build the unified compression dispatcher.
 // The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
 // user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
