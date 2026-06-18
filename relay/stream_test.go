@@ -276,6 +276,7 @@ func TestStreamingModelReplacementE2E(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -344,6 +345,7 @@ func TestNonStreamingModelReplacementE2E(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -409,6 +411,7 @@ func TestStreamingToolCallsE2E(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -468,6 +471,7 @@ func TestStreamingSSEEmptyLineHandling(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -518,6 +522,7 @@ func TestStreamingWithUsageChunk(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -598,7 +603,7 @@ func TestMaybeSendKeepalive(t *testing.T) {
 func TestReadNextStreamLineEOF(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader(""))
 	lastSend := time.Now()
-	result := readNextStreamLine(context.Background(), reader, httptest.NewRecorder(), &lastSend, streamRuntimeConfig{streamChunkTimeout: time.Second})
+	result := readNextStreamLine(context.Background(), reader, nil, httptest.NewRecorder(), &lastSend, streamRuntimeConfig{streamChunkTimeout: time.Second})
 	if !result.EOF {
 		t.Fatal("expected EOF result")
 	}

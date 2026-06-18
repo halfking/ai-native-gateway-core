@@ -323,6 +323,17 @@ func (s *Store) ListStaleInProgress(ctx context.Context, staleBefore time.Time, 
 // "pending_response:{sid}:{rid}" and returns the two halves.
 // Returns ok=false for the index key (which is
 // "pending_response:index:{sid}" — different shape).
+//
+// BUG-3 fix (2026-06-19): use LastIndexByte instead of IndexByte.
+// requestID is always a UUID (no colons), so the last ':' is the
+// canonical separator between sessionID and requestID. Using the
+// first ':' silently truncates sessionIDs that contain ':' (e.g.
+// a future "tenant:uuid" format), causing the sweeper to mark the
+// wrong entry as failed.
+//
+// Invariant: requestID MUST NOT contain ':'. Current sources:
+//   - uuid.NewString()                    → 36-char hex+dash  ✓
+//   - "async-" + "20060102T150405.000"    → no colons         ✓
 func splitEntryKey(k string) (sessionID, requestID string, ok bool) {
 	const entryPrefix = "pending_response:"
 	if !strings.HasPrefix(k, entryPrefix) {
@@ -333,8 +344,9 @@ func splitEntryKey(k string) (sessionID, requestID string, ok bool) {
 	if strings.HasPrefix(rest, "index:") {
 		return "", "", false
 	}
-	// Expect exactly one ':' separator between sid and rid.
-	idx := strings.IndexByte(rest, ':')
+	// Use the LAST ':' as separator so sessionIDs with ':' are handled
+	// correctly. requestID is guaranteed colon-free (see invariant above).
+	idx := strings.LastIndexByte(rest, ':')
 	if idx <= 0 || idx == len(rest)-1 {
 		return "", "", false
 	}

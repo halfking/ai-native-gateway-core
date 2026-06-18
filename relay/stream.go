@@ -116,7 +116,12 @@ func StreamChatWithPendingCapture(
 		ctx = context.Background()
 	}
 
-	reader := bufio.NewReaderSize(resp.Body, streamBufSize)
+	// BUG-1 fix (2026-06-19): hold a reference to the raw body as an
+	// io.ReadCloser so readLineWithTimeoutAndCloser can close it on timeout,
+	// unblocking the ReadString goroutine immediately instead of leaking it
+	// until StreamTimeout (up to 900 s on the session path).
+	bodyCloser := resp.Body
+	reader := bufio.NewReaderSize(bodyCloser, streamBufSize)
 	discoveredUpstream := ""
 	lastSend := time.Now()
 	chunkCount := 0 // Track number of chunks sent
@@ -129,7 +134,7 @@ func StreamChatWithPendingCapture(
 	}
 
 	// ── First-byte timeout ──────────────────────────────────────────
-	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
+	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
@@ -196,7 +201,7 @@ func StreamChatWithPendingCapture(
 		default:
 		}
 
-		readResult := readNextStreamLine(ctx, reader, w, &lastSend, runtimeCfg)
+		readResult := readNextStreamLine(ctx, reader, bodyCloser, w, &lastSend, runtimeCfg)
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadEOF:
@@ -327,15 +332,27 @@ func stripChunkFields(line string, stripFn func([]byte) []byte) string {
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader).ReadLine(ctx, timeout)
+	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+}
+
+// readLineWithTimeoutAndCloser is like readLineWithTimeout but also takes the
+// underlying io.ReadCloser. On timeout it closes the closer to unblock the
+// ReadString goroutine, then drains the channel — eliminating the goroutine
+// leak that existed in the plain readLineWithTimeout path (BUG-1 fix).
+func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
+	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
 }
 
 type timedLineReader struct {
 	reader *bufio.Reader
+	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
+	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
+	// immediately rather than leaking until the TCP connection is closed.
+	closer io.ReadCloser
 }
 
-func newTimedLineReader(reader *bufio.Reader) *timedLineReader {
-	return &timedLineReader{reader: reader}
+func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
+	return &timedLineReader{reader: reader, closer: closer}
 }
 
 func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
@@ -358,9 +375,23 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 	}()
 
 	select {
-	case r := <-ch:
-		return r.line, r.err
+	case res := <-ch:
+		return res.line, res.err
 	case <-readCtx.Done():
+		// BUG-1 fix (2026-06-19): close the underlying body to force the
+		// blocked ReadString goroutine to return an error immediately.
+		// Without this, the goroutine would leak until resp.Body.Close()
+		// is called by the deferred cleanup in StreamChatWithPendingCapture,
+		// which can be minutes later on the session path (context.Background).
+		// After Close(), drain the channel so the goroutine completes before
+		// we return — zero goroutine leak guarantee.
+		if r.closer != nil {
+			_ = r.closer.Close()
+		}
+		// Drain: the goroutine returns shortly after Close() because
+		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
+		// The buffered channel (size 1) ensures this never blocks forever.
+		<-ch
 		if readCtx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("stream read timeout")
 		}
@@ -544,10 +575,17 @@ func (p *pendingCapturer) markInterrupted(reason string) {
 	p.finalized = true
 }
 
-// finalize records the terminal state. A client_cancel with
-// a full buffer counts as "completed" because we have the
-// body for replay; other interrupted reasons count as
-// "failed" so the replay surfaces the error to the client.
+// finalize records the terminal state. A client_cancel with a non-empty
+// buffer counts as "completed" because we have the body for replay.
+// Other interrupted reasons count as "failed" so the replay surfaces
+// the error to the client.
+//
+// BUG-4 fix (2026-06-19): if the client cancels before any chunk arrives
+// (p.bytes == 0), mark the entry "failed" rather than "completed". An
+// empty-body "completed" entry is misleading — the GET endpoint already
+// guards against it (returning 404 for empty body) but the Status field
+// itself is wrong, and any future code path inspecting Status == "completed"
+// would misread it as a successful, replayable response.
 func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 	if p == nil {
 		return
@@ -558,9 +596,19 @@ func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 		return
 	}
 	if outcome.Interrupted {
-		if outcome.Reason == "client_cancel" {
+		if outcome.Reason == "client_cancel" && p.bytes > 0 {
+			// Client disconnected but we captured at least one chunk —
+			// the body is replayable.
 			p.finalState = PendingFinalState{
 				Status:      "completed",
+				CompletedAt: time.Now().Unix(),
+			}
+		} else if outcome.Reason == "client_cancel" {
+			// Client cancelled before the first byte arrived. Nothing to
+			// replay; mark failed so the GET endpoint returns a clear error.
+			p.finalState = PendingFinalState{
+				Status:      "failed",
+				ErrMessage:  "client_cancel_before_first_chunk",
 				CompletedAt: time.Now().Unix(),
 			}
 		} else {

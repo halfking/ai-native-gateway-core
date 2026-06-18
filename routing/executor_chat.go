@@ -159,15 +159,40 @@ func (e *Executor) executeOpenAI(
 
 	contextLenRecovery := contextLengthRecoveryState{}
 
+	// BUG-2 fix (2026-06-19): compute timeout once outside the retry loop.
+	// Previously the timeout was computed inside the anonymous closure, which
+	// caused it to be recomputed on every attempt — minor but cleaner here.
+	timeout := e.UpstreamTimeout
+	if params.IsStream {
+		timeout = e.StreamTimeout
+	}
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			// BUG-5 design note (2026-06-19): for session requests the upstream
+			// HTTP call uses context.Background() (C1) so client disconnect does
+			// NOT cancel the vendor call. However, the backoff select below still
+			// uses params.R.Context() — a client disconnect *during* the sleep
+			// aborts the retry loop. This asymmetry is intentional: avoid burning
+			// vendor quota on retries when the client clearly gave up, while still
+			// completing an in-flight vendor call so the response can be cached.
 			select {
 			case <-params.R.Context().Done():
 				return nil, params.R.Context().Err()
 			case <-time.After(delay):
 			}
 		}
+
+		// BUG-2 fix (2026-06-19): create the upstream context at loop scope
+		// (not inside the closure with defer cancel()). For the session path,
+		// upstreamContext returns a context.WithTimeout(context.Background(),
+		// streamTimeout) whose timer goroutine previously lived until the outer
+		// function returned if the closure happened to return a retryableError.
+		// By calling upCancel() explicitly at the end of every attempt we
+		// release the timer immediately, reducing unnecessary timer goroutine
+		// accumulation under rapid-retry scenarios.
+		upCtx, upCancel := e.upstreamContext(params, timeout)
 
 		result, tryErr := func() (*ExecuteResult, error) {
 			var reqPool *pool.Pool
@@ -178,8 +203,12 @@ func (e *Executor) executeOpenAI(
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
 
+			// BUG-2 fix: use upCtx (created at loop scope) directly so the
+			// request carries the correct context from the start. Previously
+			// the request was created with params.R.Context() and then replaced
+			// via req.WithContext(upCtx) — that's equivalent but wasteful.
 			req, err := http.NewRequestWithContext(
-				params.R.Context(),
+				upCtx,
 				http.MethodPost,
 				upstreamURL,
 				bytes.NewReader(bodyBytes),
@@ -254,32 +283,18 @@ func (e *Executor) executeOpenAI(
 			}
 			if httpClient == nil {
 				httpClient = http.DefaultClient
-			} else if err := reqPool.Acquire(params.R.Context()); err != nil {
+			} else if err := reqPool.Acquire(upCtx); err != nil {
 				return nil, err
 			} else {
 				defer reqPool.Release()
 			}
 
-			timeout := e.UpstreamTimeout
-			if params.IsStream {
-				timeout = e.StreamTimeout
-			}
-			// Track C (2026-06-18): when the request carries a session
-			// id (X-Gw-Session-Id or X-Session-Id), decouple the
-			// upstream HTTP context from the client request context.
-			// The client can disconnect mid-stream and we still want
-			// to read the rest of the upstream response so we can
-			// cache it for the client to pick up on reconnect (see
-			// pending/ and sessions/handler.go C3).
-			//
-			// Without a session id, the original behaviour is
-			// preserved: client disconnect cancels the upstream
-			// request immediately. We do not cache responses for
-			// stateless clients because there is no way for them
-			// to retrieve the cached body on reconnect.
-			upCtx, cancel := e.upstreamContext(params, timeout)
-			defer cancel()
-			req = req.WithContext(upCtx)
+			// Track C (2026-06-18): upCtx is set at loop scope above.
+			// For session requests it is context.WithTimeout(background, streamTimeout)
+			// so client disconnect does not cancel the vendor call; the response
+			// is cached for reconnect via pending/ and sessions/handler.go C3.
+			// For stateless requests upCtx inherits params.R.Context() so client
+			// disconnect still cancels the vendor call immediately.
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
@@ -557,6 +572,10 @@ func (e *Executor) executeOpenAI(
 		}()
 
 		if tryErr == nil {
+			// BUG-2 fix: cancel the upstream context immediately on success.
+			// The timer goroutine is released without waiting for the outer
+			// function to return.
+			upCancel()
 			// Memora persistence (fire-and-forget). We enqueue the
 			// request conversation + non-stream response body so L1
 			// session memory accumulates facts for later retrieval on
@@ -564,6 +583,11 @@ func (e *Executor) executeOpenAI(
 			e.enqueueMemoraWrite(params, sourceBody, result.ResponseBody)
 			return result, nil
 		}
+		// BUG-2 fix: always cancel the upstream context at the end of each
+		// attempt to release the timer goroutine created by
+		// context.WithTimeout immediately, regardless of whether the attempt
+		// succeeded or failed.
+		upCancel()
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
 		}

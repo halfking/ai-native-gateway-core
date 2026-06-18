@@ -85,7 +85,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		ctx = context.Background()
 	}
 
-	reader := bufio.NewReaderSize(resp.Body, streamBufSize)
+	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
+	// chunk timeout, unblocking the ReadString goroutine immediately.
+	bodyCloser := resp.Body
+	reader := bufio.NewReaderSize(bodyCloser, streamBufSize)
 	lastSend := time.Now()
 
 	finalFinishReason := ""
@@ -276,7 +279,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 
 	for {
-		readResult := readNextStreamLine(ctx, reader, w, &lastSend, runtimeCfg)
+		readResult := readNextStreamLine(ctx, reader, bodyCloser, w, &lastSend, runtimeCfg)
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadCanceled:

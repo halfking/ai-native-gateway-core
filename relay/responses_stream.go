@@ -103,7 +103,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		ctx = context.Background()
 	}
 
-	reader := bufio.NewReaderSize(resp.Body, streamBufSize)
+	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
+	// chunk timeout, unblocking the ReadString goroutine immediately.
+	bodyCloser := resp.Body
+	reader := bufio.NewReaderSize(bodyCloser, streamBufSize)
 	lastSend := time.Now()
 
 	fullText := ""
@@ -111,7 +114,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	promptTokens := 0
 	completionTokens := 0
 
-	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
+	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
@@ -197,7 +200,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 	for {
 		stop := false
-		readResult := readNextStreamLine(ctx, reader, w, &lastSend, runtimeCfg)
+		readResult := readNextStreamLine(ctx, reader, bodyCloser, w, &lastSend, runtimeCfg)
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadCanceled:
