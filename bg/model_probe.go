@@ -37,11 +37,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -464,8 +464,8 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 		// means the binding needs an endpoint ID to be testable.  Treat as
 		// skipped rather than a real failure so the probe state stays in
 		// 'recovering' and does not reach 'broken_confirmed'.
-		if t.OutboundModel == "" && isEndpointIDRequiredError(respBodyStr) {
-			return "skipped", httpStatus, "endpoint_id_required",
+		if t.OutboundModel == "" && probeutil.IsEndpointIDRequiredError(respBodyStr) {
+			return "skipped", httpStatus, probeutil.EndpointIDRequiredErrCode,
 				"model requires an endpoint ID (outbound_model_name); set it to enable probing: " + truncate(respBodyStr, 300),
 				latencyMs
 		}
@@ -481,24 +481,8 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	}
 }
 
-// isEndpointIDRequiredError reports whether a 404 response body indicates
-// that the provider requires a deployment endpoint ID rather than a plain
-// model name.  Currently recognises:
-//   - Volcano Ark (火山方舟): "InvalidEndpointOrModel.NotFound"
-//   - Generic phrasing: "endpoint" + "not found" or "does not exist"
-func isEndpointIDRequiredError(body string) bool {
-	// Volcano Ark explicit code
-	if strings.Contains(body, "InvalidEndpointOrModel") {
-		return true
-	}
-	// Generic heuristic: body mentions both "endpoint" and a not-found phrase
-	lbody := strings.ToLower(body)
-	if strings.Contains(lbody, "endpoint") &&
-		(strings.Contains(lbody, "not found") || strings.Contains(lbody, "does not exist") || strings.Contains(lbody, "no access")) {
-		return true
-	}
-	return false
-}
+// isEndpointIDRequiredError has moved to internal/probeutil.IsEndpointIDRequiredError.
+// Imported as probeutil below.
 
 // TriggerManual fires one off-schedule probe for a single binding.  It
 // still goes through the consensus logic — a single manual trigger is

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -1557,6 +1558,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 		StatusCode       int    `json:"status_code"`
 		LatencyMs        int    `json:"latency_ms"`
 		Error            string `json:"error,omitempty"`
+		ErrorCode        string `json:"error_code,omitempty"`
 		ModelInResponse  string `json:"model_in_response,omitempty"`
 	}
 
@@ -1632,9 +1634,11 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 
 		var testModel string
 		err := h.db.QueryRow(ctx, `
-			SELECT mo.raw_model_name FROM model_offers mo
+			SELECT COALESCE(NULLIF(mo.outbound_model_name, ''), mo.raw_model_name) AS probe_model
+			FROM model_offers mo
 			JOIN credentials c ON c.id = mo.credential_id
 			WHERE c.provider_id = $1 AND mo.available = TRUE
+			ORDER BY mo.id
 			LIMIT 1
 		`, providerID).Scan(&testModel)
 		if err != nil {
@@ -1654,11 +1658,16 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 				Error:     chatErr.Error(),
 			}
 		} else {
-			cd.ChatProbe = chatProbe{
+			cp := chatProbe{
 				StatusCode:      chatResp.statusCode,
 				LatencyMs:       chatLatency,
 				ModelInResponse: chatResp.modelInResponse,
+				ErrorCode:       chatResp.errorCode,
 			}
+			if chatResp.errorCode == probeutil.EndpointIDRequiredErrCode {
+				cp.Error = "此模型（如火山方舟 minimax-m3 / glm-5.1）需要 endpoint ID（outbound_model_name），请在 Models 标签页设置"
+			}
+			cd.ChatProbe = cp
 		}
 
 		credDiags = append(credDiags, cd)
@@ -2088,6 +2097,10 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 type chatResult struct {
 	statusCode      int
 	modelInResponse string
+	// errorCode is set when the 404 body indicates the provider requires
+	// an endpoint ID (outbound_model_name) rather than a raw model name.
+	// The diagnose UI uses this to render a friendly hint.
+	errorCode string
 }
 
 func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, error) {
@@ -2122,6 +2135,12 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 		if json.Unmarshal(respBody, &chatResp) == nil {
 			result.modelInResponse = chatResp.Model
 		}
+	} else if resp.StatusCode == http.StatusNotFound &&
+		probeutil.IsEndpointIDRequiredError(string(respBody)) {
+		// 404 + "InvalidEndpointOrModel" / "endpoint not found" — the chosen
+		// probe model needs an endpoint ID.  Surface this so the diagnose UI
+		// can render a hint instead of a misleading "404 model not found".
+		result.errorCode = probeutil.EndpointIDRequiredErrCode
 	}
 
 	return result, nil
@@ -2503,6 +2522,12 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	var req struct {
 		StandardizedName *string `json:"standardized_name"`
 		CanonicalID      *int    `json:"canonical_id"`
+		// OutboundModelName is the upstream-side model identifier — e.g. a
+		// Volcano Ark endpoint ID like "ep-20241227XXXX".  When set, the
+		// gateway uses this instead of raw_model_name when calling the
+		// provider's chat completions / messages endpoint.  Pass an empty
+		// string to clear it (revert to raw_model_name).
+		OutboundModelName *string `json:"outbound_model_name"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -2541,21 +2566,44 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
 	}
 
+	// outbound_model_name is independent of canonical_id / standardized_name;
+	// a model can have an endpoint ID without being mapped to a canonical row.
+	// Use NULLIF('') so that an explicit empty string clears the column
+	// (reverting to raw_model_name at query time).
+	if req.OutboundModelName != nil {
+		if _, err := h.db.Exec(ctx, `
+			UPDATE model_offers
+			SET outbound_model_name = NULLIF($1, ''),
+			    updated_at = NOW()
+			WHERE id = $2
+		`, *req.OutboundModelName, offerID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update outbound_model_name failed: "+err.Error())
+			return
+		}
+		slog.Info("model_offers.outbound_model_name updated",
+			"offer_id", offerID,
+			"raw_model_name", rawName,
+			"provider_id", providerID,
+			"new_value", *req.OutboundModelName,
+		)
+	}
+
 	var result struct {
 		ID               int     `json:"id"`
 		RawModelName     string  `json:"raw_model_name"`
 		StandardizedName *string `json:"standardized_name"`
 		CanonicalID      *int    `json:"canonical_id"`
 		CanonicalName    *string `json:"canonical_name"`
+		OutboundModelName *string `json:"outbound_model_name"`
 	}
 	h.db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
-		       mc.canonical_name
+		       mc.canonical_name, mo.outbound_model_name
 		FROM model_offers mo
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
-		&result.CanonicalID, &result.CanonicalName)
+		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName)
 
 	writeJSON(w, http.StatusOK, result)
 }

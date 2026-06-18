@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -306,6 +307,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	bodyStr := string(body)
 	if resp.StatusCode == 200 {
 		return true, ""
 	}
@@ -317,6 +319,13 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	}
 	if resp.StatusCode == 402 {
 		return false, "402 payment required"
+	}
+	if resp.StatusCode == 404 && probeutil.IsEndpointIDRequiredError(bodyStr) {
+		// Volcano Ark and similar providers: this model needs an endpoint ID
+		// (outbound_model_name) to be callable.  Use the canonical error code
+		// so classifyProbeFailure can map it to a non-fatal state instead of
+		// marking the credential unreachable and blocking all routing.
+		return false, fmt.Sprintf("%s: %s", probeutil.EndpointIDRequiredErrCode, truncateBody(body))
 	}
 	return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))
 }
@@ -389,6 +398,19 @@ func classifyProbeFailure(errMsg string) probeResult {
 		pr.QuotaState = "periodic_exhausted"
 		pr.HealthError = errMsg
 		pr.StateReasonCode = "balance_low"
+	case strings.Contains(errMsg, probeutil.EndpointIDRequiredErrCode):
+		// 404 InvalidEndpointOrModel — the credential itself is reachable and
+		// authenticated, but the chosen default_probe_model needs an endpoint
+		// ID (outbound_model_name) to be callable.  We mark health=warning so
+		// admins see something is wrong, but availability_state stays "ready"
+		// so routing for the OTHER models on this credential is NOT blocked.
+		// admin will see state_reason_code="endpoint_id_required" and can
+		// either set outbound_model_name on the binding or pick a different
+		// default_probe_model.
+		pr.HealthStatus = "warning"
+		pr.AvailabilityState = "ready"
+		pr.HealthError = errMsg
+		pr.StateReasonCode = probeutil.EndpointIDRequiredErrCode
 	default:
 		pr.HealthStatus = "unreachable"
 		pr.AvailabilityState = "unreachable"
