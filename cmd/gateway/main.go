@@ -406,6 +406,25 @@ slog.Info("compressor initialized",
 			slog.Info("disguise mode enabled")
 		}
 		chatHandler.SetExecutor(exec, providerClient, stickyCache)
+		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
+		// Default 100 entries / 5 min TTL; override via env.
+		idempotentCap := 100
+		idempotentTTL := 300 // seconds
+		if v := os.Getenv("LLM_GATEWAY_IDEMPOTENT_CAP"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				idempotentCap = n
+			}
+		}
+		if v := os.Getenv("LLM_GATEWAY_IDEMPOTENT_TTL"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				idempotentTTL = n
+			}
+		}
+		chatHandler.SetIdempotentCache(relay.NewIdempotentCache(idempotentCap, time.Duration(idempotentTTL)*time.Second))
+		slog.Info("idempotent_cache_enabled",
+			"cap", idempotentCap,
+			"ttl_seconds", idempotentTTL,
+		)
 		slog.Info("routing executor enabled")
 	} else {
 		slog.Warn("routing executor disabled (no database connection)")
