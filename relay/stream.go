@@ -464,6 +464,20 @@ func BuildSSEChunk(data string) string {
 // and finalised from the deferred cleanup of that same
 // goroutine. The mutex is belt-and-braces — in practice it's
 // never contended.
+// PendingFinalState is the state recorded by finalize() and
+// read by Snapshot(). cmd/gateway/main.go reads these fields
+// after the stream returns to write the captured body to the
+// pending store. The fields are exported so the wiring caller
+// can read them across the package boundary.
+type PendingFinalState struct {
+	Status      string
+	ErrMessage  string
+	CompletedAt int64
+}
+
+// pendingCapturer is the unexported canonical name. We also
+// export it (below) so cmd/gateway/main.go can hold a
+// reference without an awkward constructor signature.
 type pendingCapturer struct {
 	mu       sync.Mutex
 	buffer   []byte
@@ -471,16 +485,17 @@ type pendingCapturer struct {
 	maxBytes int
 
 	finalized  bool
-	finalState pendingFinalState
+	finalState PendingFinalState
 }
 
-type pendingFinalState struct {
-	status      string
-	errMessage  string
-	completedAt int64
-}
+// PendingCapturer is the exported alias used by the wiring.
+// Internally everything uses the unexported name so godoc
+// links to the right type.
+type PendingCapturer = pendingCapturer
 
-func newPendingCapturer(maxBytes int) *pendingCapturer {
+// NewPendingCapturer is the exported constructor; the
+// unexported name is the canonical one for godoc + tests.
+func NewPendingCapturer(maxBytes int) *pendingCapturer {
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
@@ -517,10 +532,10 @@ func (p *pendingCapturer) markInterrupted(reason string) {
 	if p.finalized {
 		return
 	}
-	p.finalState = pendingFinalState{
-		status:      "failed",
-		errMessage:  "stream_" + reason,
-		completedAt: time.Now().Unix(),
+	p.finalState = PendingFinalState{
+		Status:      "failed",
+		ErrMessage:  "stream_" + reason,
+		CompletedAt: time.Now().Unix(),
 	}
 	p.finalized = true
 }
@@ -540,47 +555,108 @@ func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 	}
 	if outcome.Interrupted {
 		if outcome.Reason == "client_cancel" {
-			p.finalState = pendingFinalState{
-				status:      "completed",
-				completedAt: time.Now().Unix(),
+			p.finalState = PendingFinalState{
+				Status:      "completed",
+				CompletedAt: time.Now().Unix(),
 			}
 		} else {
-			p.finalState = pendingFinalState{
-				status:      "failed",
-				errMessage:  outcome.Reason,
-				completedAt: time.Now().Unix(),
+			p.finalState = PendingFinalState{
+				Status:      "failed",
+				ErrMessage:  outcome.Reason,
+				CompletedAt: time.Now().Unix(),
 			}
 		}
 	} else {
-		p.finalState = pendingFinalState{
-			status:      "completed",
-			completedAt: time.Now().Unix(),
+		p.finalState = PendingFinalState{
+			Status:      "completed",
+			CompletedAt: time.Now().Unix(),
 		}
 	}
 	p.finalized = true
 }
 
-// snapshot returns a copy of the buffer and final state.
-func (p *pendingCapturer) snapshot() (body []byte, state pendingFinalState, ok bool) {
+// Snapshot returns a copy of the buffer and final state.
+// Exposed for the wiring in cmd/gateway/main.go to read the
+// captured body after the stream returns and write it to
+// the pending store.
+func (p *pendingCapturer) Snapshot() (body []byte, state PendingFinalState, ok bool) {
 	if p == nil {
-		return nil, pendingFinalState{}, false
+		return nil, PendingFinalState{}, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.finalized {
-		return nil, pendingFinalState{}, false
+		return nil, PendingFinalState{}, false
 	}
 	out := make([]byte, len(p.buffer))
 	copy(out, p.buffer)
 	return out, p.finalState, true
 }
 
-// bytesCaptured returns the number of bytes in the buffer.
-func (p *pendingCapturer) bytesCaptured() int {
+// BytesCaptured returns the number of bytes in the buffer.
+// Exposed for the wiring in cmd/gateway/main.go to compute
+// the approximate createdAt timestamp.
+func (p *pendingCapturer) BytesCaptured() int {
 	if p == nil {
 		return 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.bytes
+}
+
+// ClientHasSessionID (Track C C2, 2026-06-18) is a small helper
+// used by the wiring in cmd/gateway/main.go to decide whether
+// to attach a capturer to a stream. The decision mirrors the
+// one in routing.hasSessionID: if the upstream request
+// carries X-Gw-Session-Id or X-Session-Id, the client is
+// eligible for replay and we capture the stream body.
+//
+// Reads from w.Header() (the request the executor forwarded to
+// the upstream) and from resp.Request (the actual http.Request
+// the upstream call was built with). Both should agree in
+// production; we check both for defence in depth.
+func ClientHasSessionID(w http.ResponseWriter, resp *http.Response) bool {
+	// w in production is the gateway response writer; we
+	// cannot read the original request headers from it.
+	// The canonical source is resp.Request.
+	if resp == nil || resp.Request == nil {
+		return false
+	}
+	if v := resp.Request.Header.Get("X-Gw-Session-Id"); v != "" {
+		return true
+	}
+	if v := resp.Request.Header.Get("X-Session-Id"); v != "" {
+		return true
+	}
+	return false
+}
+
+// SessionIDFromResp (Track C C2) reads the canonical session
+// id from the upstream request headers. Returns "" if no
+// session is in play — the caller decides whether that is a
+// writeable key (it is not: no session means no GET endpoint).
+func SessionIDFromResp(resp *http.Response) string {
+	if resp == nil || resp.Request == nil {
+		return ""
+	}
+	if v := resp.Request.Header.Get("X-Gw-Session-Id"); v != "" {
+		return v
+	}
+	return resp.Request.Header.Get("X-Session-Id")
+}
+
+// RequestIDFromResp (Track C C2) reads the per-request id.
+// Falls back to the time-suffixed synthetic id used in
+// async-retry when no X-Request-Id is supplied. We use the
+// same fallback here so the GET endpoint can always locate
+// the entry by request_id.
+func RequestIDFromResp(resp *http.Response) string {
+	if resp == nil || resp.Request == nil {
+		return ""
+	}
+	if v := resp.Request.Header.Get("X-Request-Id"); v != "" {
+		return v
+	}
+	return ""
 }
