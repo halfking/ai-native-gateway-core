@@ -45,11 +45,15 @@ function openSession(s: MemoraSession) {
   if (s.no_topic || !s.task_id || s.task_id === '[空]') {
     router.push({
       path: '/session-context/_no-topic',
-      query: {
-        label: s.no_topic_label || '',
-        prefix: s.api_key_prefix || '',
-        hours: String(filters.hours.value),
-      },
+      query: buildSessionQueryParams({
+        hours: filters.hours.value,
+        no_topic_window: filters.noTopicWindow.value,
+        section: 'no-topic',
+        prefix: s.api_key_prefix && s.api_key_prefix !== '[空]' ? s.api_key_prefix : undefined,
+        hour_start: s.hour_start || undefined,
+        rc: s.request_count,
+        label: s.no_topic_label || undefined,
+      }),
     })
     return
   }

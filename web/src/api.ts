@@ -2717,6 +2717,7 @@ export interface MemoraSession {
   title?: string | null
   no_topic: boolean
   no_topic_label: string | null
+  hour_start?: string | null
   api_key_prefix: string | null
   api_key_owner_user: string | null
   application_code: string | null
@@ -2840,6 +2841,9 @@ export interface SessionMessagesResponse {
   message_count?: number
   request_count?: number
   hours?: number
+  hour_start?: string
+  api_key_prefix?: string
+  title?: string
   scoped_session_id?: string | null
   total_prompt_tokens: number
   total_completion_tokens: number
@@ -2932,6 +2936,50 @@ export function summarizeSessionTitle(
     `/api/system/session-context/${encodeURIComponent(taskId)}/summarize-title${s ? '?' + s : ''}`,
     {},
   )
+}
+
+// ─────────────────────────────────────────────────────────────────
+// No-topic session API (aggregated sessions without gw_task_id)
+// ─────────────────────────────────────────────────────────────────
+
+export interface NoTopicSessionParams {
+  prefix: string
+  hours?: number
+  hour_start?: string
+  limit?: number
+}
+
+export function getNoTopicSessionMessages(params: NoTopicSessionParams): Promise<SessionMessagesResponse> {
+  const qs = new URLSearchParams()
+  qs.set('prefix', params.prefix)
+  if (params.hours != null) qs.set('hours', String(params.hours))
+  if (params.hour_start) qs.set('hour_start', params.hour_start)
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  return req<SessionMessagesResponse>('GET', `/api/system/no-topic-session/messages?${qs.toString()}`)
+}
+
+export function summarizeNoTopicSessionTitle(params: NoTopicSessionParams): Promise<SessionTitleResponse> {
+  const qs = new URLSearchParams()
+  qs.set('prefix', params.prefix)
+  if (params.hours != null) qs.set('hours', String(params.hours))
+  if (params.hour_start) qs.set('hour_start', params.hour_start)
+  return req<SessionTitleResponse>('POST', `/api/system/no-topic-session/summarize-title?${qs.toString()}`, {})
+}
+
+export function extractNoTopicSessionToMemora(params: NoTopicSessionParams): Promise<SessionExtractToMemoraResponse> {
+  const qs = new URLSearchParams()
+  qs.set('prefix', params.prefix)
+  if (params.hours != null) qs.set('hours', String(params.hours))
+  if (params.hour_start) qs.set('hour_start', params.hour_start)
+  return req<SessionExtractToMemoraResponse>('POST', `/api/system/no-topic-session/extract-to-memora?${qs.toString()}`, {})
+}
+
+export function getNoTopicSessionExtractionStatus(params: NoTopicSessionParams): Promise<SessionExtractionStatusResponse> {
+  const qs = new URLSearchParams()
+  qs.set('prefix', params.prefix)
+  if (params.hours != null) qs.set('hours', String(params.hours))
+  if (params.hour_start) qs.set('hour_start', params.hour_start)
+  return req<SessionExtractionStatusResponse>('GET', `/api/system/no-topic-session/extraction-status?${qs.toString()}`)
 }
 
 // ─────────────────────────────────────────────────────────────────

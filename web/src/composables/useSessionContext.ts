@@ -12,6 +12,9 @@ export type SessionScope = SessionScopeParams & {
   /** 列表行 request_count，用于详情页核对 */
   rc?: number
   section?: 'topic' | 'no-topic'
+  prefix?: string
+  hour_start?: string
+  label?: string
 }
 
 export function buildSessionQueryParams(
@@ -24,6 +27,9 @@ export function buildSessionQueryParams(
   if (scope.session_id) q.session_id = scope.session_id
   if (scope.rc != null) q.rc = String(scope.rc)
   if (scope.section) q.section = scope.section
+  if (scope.prefix) q.prefix = scope.prefix
+  if (scope.hour_start) q.hour_start = scope.hour_start
+  if (scope.label) q.label = scope.label
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
       if (v != null && v !== '') q[k] = v
@@ -40,12 +46,30 @@ export function parseSessionScopeFromRoute(
   const noTopicWindow = parseInt(String(route.query.no_topic_window ?? ''), 10)
   const rc = parseInt(String(route.query.rc ?? ''), 10)
   const sessionId = String(route.query.session_id ?? '').trim()
+  const prefix = String(route.query.prefix ?? '').trim()
+  const hourStart = String(route.query.hour_start ?? '').trim()
+  const label = String(route.query.label ?? '').trim()
   return {
     hours: Number.isFinite(hours) && hours > 0 ? hours : fallbackHours,
     no_topic_window: Number.isFinite(noTopicWindow) && noTopicWindow > 0 ? noTopicWindow : undefined,
     session_id: sessionId && sessionId !== '[空]' ? sessionId : undefined,
     rc: Number.isFinite(rc) && rc >= 0 ? rc : undefined,
     section: route.query.section === 'no-topic' ? 'no-topic' : 'topic',
+    prefix: prefix || undefined,
+    hour_start: hourStart || undefined,
+    label: label || undefined,
+  }
+}
+
+export function noTopicParamsFromScope(scope: SessionScope): {
+  prefix: string
+  hours?: number
+  hour_start?: string
+} {
+  return {
+    prefix: scope.prefix || '',
+    hours: scope.hours,
+    hour_start: scope.hour_start,
   }
 }
 

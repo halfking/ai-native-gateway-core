@@ -261,6 +261,9 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 			entry["task_id"] = nil
 			entry["session_id"] = nil
 			entry["no_topic_label"] = nilStr(s.NoTopicLabel)
+			if s.HourStart != nil {
+				entry["hour_start"] = s.HourStart.UTC().Format(time.RFC3339)
+			}
 			entry["memora_status"] = "skipped"
 		} else {
 			entry["task_id"] = nilStr(s.TaskID)

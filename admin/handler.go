@@ -285,6 +285,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/memora-context/", h.admin(h.handleMemoraContext))
 	mux.HandleFunc("/api/system/session-messages/", h.admin(h.handleSessionMessages))
 	mux.HandleFunc("/api/system/session-context/", h.admin(h.handleSessionContextRoutes))
+	mux.HandleFunc("/api/system/no-topic-session/", h.admin(h.handleNoTopicSessionRoutes))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
