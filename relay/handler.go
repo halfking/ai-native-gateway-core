@@ -656,16 +656,32 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		errCode := "provider_error"
 		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok && execErrTyped.Exhausted {
+			// Step 6 (2026-06-18): preserve backward-compat error.code
+			// = "model_not_found" but surface the REAL underlying
+			// kind in error.kind + X-Gateway-Last-Kind header. Many
+			// in-the-wild failures labeled model_not_found are
+			// actually rate_limit / concurrent / unreachable, which
+			// breaks downstream alerting that keys on the surface
+			// code. The kind field is the SSoT for the real cause;
+			// the legacy code is preserved for clients that pattern-
+			// match on it.
 			errCode = "model_not_found"
+			realKind := mapExecuteErrorToKind(execErrTyped)
 			logCtx.SetOutboundModel(explicitOutbound)
 			logCtx.failAndMark("model_not_found",
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				providerID, credentialID)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 			markLogged()
-			writeErrorJSONWithDebug(w, http.StatusServiceUnavailable, requestID,
+			// Step 6: surface real kind in response header so log
+			// scrapers and debug dashboards can see it without
+			// parsing JSON.
+			if realKind != "" {
+				w.Header().Set("X-Gateway-Last-Kind", realKind)
+			}
+			writeErrorJSONWithKind(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-				"server_error", "model_not_found", map[string]any{
+				"server_error", "model_not_found", realKind, map[string]any{
 					"stage":      "execution",
 					"kind":       string(execErrTyped.LastKind),
 					"attempts":   execErrTyped.Attempts,
@@ -1855,6 +1871,58 @@ func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, 
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
 	})
+}
+
+// writeErrorJSONWithKind (Step 6, 2026-06-18) is like
+// writeErrorJSONWithDebug but additionally surfaces a "kind" field in
+// the error object. The kind is the SSoT for the underlying failure
+// cause (rate_limit, concurrent, model_not_found, ...). It is always
+// emitted even when kind == code, so clients that learn the new shape
+// never have to null-check.
+//
+// Backward compat: the legacy "code" field is unchanged ("model_not_found"
+// is still surfaced there even when the real kind is "rate_limit"). New
+// clients should read "kind"; old clients keep working.
+func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, errType, code, kind string, debug map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	errObj := map[string]any{
+		"message":    msg,
+		"type":       errType,
+		"code":       code,
+		"request_id": requestID,
+		"kind":       kind,
+	}
+	if debug != nil {
+		errObj["gateway_debug"] = debug
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": errObj,
+	})
+}
+
+// mapExecuteErrorToKind (Step 6, 2026-06-18) maps an exhausted
+// ExecuteError to the client-visible "kind" field. The logic prefers
+// the executor's recorded LastKind when set, and falls back to a small
+// lookup table for the cases where LastKind is empty (e.g. no
+// candidates returned at all from the router).
+//
+// Returns "" when no kind can be determined (caller should omit the
+// header and the field).
+func mapExecuteErrorToKind(err *routing.ExecuteError) string {
+	if err == nil {
+		return ""
+	}
+	if err.LastKind != "" {
+		return string(err.LastKind)
+	}
+	if err.Tried == 0 {
+		return "no_candidates"
+	}
+	return "unknown"
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut
