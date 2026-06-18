@@ -46,9 +46,25 @@ func TestIsValidSummary(t *testing.T) {
 	if isValidSummary("无法总结，信息不足。", []string{"x"}) {
 		t.Fatal("template rejection summary should be invalid")
 	}
+	if isValidSummary("<think>这是一段足够长的无效总结内容，包含思考标记不应通过校验。", []string{"要点"}) {
+		t.Fatal("thinking tag summary should be invalid")
+	}
+	if isValidSummary("该会话围绕部署故障定位展开，先确认日志与网络，再逐步缩小到鉴权问题并完成修复验证。最终服务恢复，建议补充回归检查。", []string{"<think>"}) {
+		t.Fatal("thinking tag key point should invalidate summary")
+	}
 	ok := "该会话围绕部署故障定位展开，先确认日志与网络，再逐步缩小到鉴权问题并完成修复验证。最终服务恢复，建议补充回归检查。"
 	if !isValidSummary(ok, []string{"先定位", "后修复"}) {
 		t.Fatal("expected valid summary to pass")
+	}
+}
+
+func TestPickSummaryModel_UsesStableChatModel(t *testing.T) {
+	m := "o3-mini"
+	logs := []sessionLogForSummary{
+		{ClientModel: &m},
+	}
+	if got := pickSummaryModel(logs); got != "gpt-4o-mini" {
+		t.Fatalf("pickSummaryModel = %q, want gpt-4o-mini", got)
 	}
 }
 
