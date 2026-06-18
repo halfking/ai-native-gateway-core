@@ -18,26 +18,33 @@ func TestPendingCapturer_AppendUnderCap(t *testing.T) {
 	}
 }
 
-// TestPendingCapturer_AppendTruncatesAtCap: a chunk that would
-// overflow is truncated. Subsequent appends are silent no-ops
-// (the bytes counter is at the cap).
-func TestPendingCapturer_AppendTruncatesAtCap(t *testing.T) {
+// TestPendingCapturer_AppendDropsOverflow: a chunk that would
+// overflow is dropped entirely (not truncated). Audit fix 3.3:
+// truncating mid-JSON would produce an invalid SSE line on
+// replay; dropping is safer. Subsequent appends are silent
+// no-ops (the bytes counter is at the cap).
+func TestPendingCapturer_AppendDropsOverflow(t *testing.T) {
 	p := NewPendingCapturer(10)
 	p.append("0123456789") // exactly the cap
 	if p.BytesCaptured() != 10 {
 		t.Fatalf("after first fill: got %d, want 10", p.BytesCaptured())
 	}
-	// Overflow chunk: truncate to remaining = 0 (the single 'X'
-	// is dropped). bytes stays at 10.
+	// Overflow chunk: dropped entirely. bytes stays at 10.
 	p.append("X")
 	if p.BytesCaptured() != 10 {
 		t.Errorf("overflow: got %d, want 10", p.BytesCaptured())
 	}
-	// Partial overflow: 5 bytes fit, rest dropped.
+	// Partial overflow: 15 bytes > 10 cap → entire chunk dropped.
 	p2 := NewPendingCapturer(10)
 	p2.append("0123456789ABCDE")
-	if p2.BytesCaptured() != 10 {
-		t.Errorf("partial overflow: got %d, want 10", p2.BytesCaptured())
+	if p2.BytesCaptured() != 0 {
+		t.Errorf("partial overflow: got %d, want 0 (entire chunk dropped)", p2.BytesCaptured())
+	}
+	// Chunk that exactly fits is kept.
+	p3 := NewPendingCapturer(10)
+	p3.append("0123456789")
+	if p3.BytesCaptured() != 10 {
+		t.Errorf("exact fit: got %d, want 10", p3.BytesCaptured())
 	}
 }
 
@@ -165,16 +172,24 @@ func TestPendingCapturer_DefaultCapIs1MiB(t *testing.T) {
 
 // TestPendingCapturer_SnapshotIndependentCopy: the snapshot
 // must be a copy so the caller cannot be affected by a later
-// (theoretical) mutation. We force the cap to overflow BEFORE
-// finalize to test that the buffer has the truncated size in
-// the snapshot, not the full pre-truncation size.
+// (theoretical) mutation. Audit fix 3.3: chunks that don't fit
+// are dropped entirely (not truncated), so a 10-byte chunk
+// into a 5-byte cap produces 0 bytes.
 func TestPendingCapturer_SnapshotIndependentCopy(t *testing.T) {
 	p := NewPendingCapturer(5)
-	p.append("0123456789") // truncated to 5
+	p.append("0123456789") // dropped entirely (10 > 5)
 	p.finalize(StreamOutcome{})
 	body, _, _ := p.Snapshot()
-	if len(body) != 5 {
-		t.Errorf("snapshot len: got %d, want 5", len(body))
+	if len(body) != 0 {
+		t.Errorf("snapshot len: got %d, want 0 (chunk dropped)", len(body))
+	}
+	// Also test with a chunk that fits.
+	p2 := NewPendingCapturer(5)
+	p2.append("abc") // fits
+	p2.finalize(StreamOutcome{})
+	body2, _, _ := p2.Snapshot()
+	if string(body2) != "abc" {
+		t.Errorf("snapshot body: got %q, want %q", body2, "abc")
 	}
 }
 
