@@ -890,6 +890,19 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		ResponsePreview:  responsePreviewPtr,
 		RequestBody:      requestBodyText,
 		ResponseBody:     responseBodyText,
+		// Round 47 compression v7 T-NEW-3: write the compression event
+		// captured by the executor's 4xx recovery (see
+		// routing.context_summarize.handleContextLengthRecovery) into
+		// request_logs.compression_*. Operators can then SQL-trace the
+		// parent-child chain via parent_request_id.
+		//
+		// We only set these when the executor actually rewrote the body;
+		// nil pointers → NULL in PG → the existing partial index on
+		// parent_request_id stays cheap.
+		CompressionReason:   result.CompressionReason,
+		CompressionStrategy: result.CompressionStrategy,
+		CompressionMeta:     result.CompressionMeta,
+		ParentRequestID:     result.ParentRequestID,
 	}
 
 	if capture != nil {
