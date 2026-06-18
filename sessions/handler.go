@@ -13,6 +13,45 @@ import (
 type Handler struct {
 	manager     *Manager
 	keyVerifier *auth.KeyVerifier
+	// pendingStore is the durable cache for client reconnect (Track
+	// C). The interface is defined here (not imported from the
+	// pending package) to avoid an import cycle: pending/ would
+	// otherwise need sessions.Session for tenant-isolation checks.
+	//
+	// Methods:
+	//   Get(ctx, sessionID, requestID) → (*PendingEntry, bool, error)
+	//   GetLatest(ctx, sessionID) → (*PendingEntry, requestID, bool, error)
+	//
+	// May be nil — the GET endpoint then returns 503 Service Unavailable
+	// with a clear error so callers know the cache is not configured.
+	pendingStore PendingStore
+}
+
+// PendingEntry is the minimal subset of the cached pending entry
+// that the sessions handler needs. Defined here (not imported from
+// the pending package) to avoid an import cycle. main.go constructs
+// an adapter that converts the pending package's view to this
+// struct before handing it to SetPendingStore.
+type PendingEntry struct {
+	SessionID    string
+	TenantID     string
+	RequestID    string
+	Status       string
+	Body         string
+	ContentType  string
+	ProviderID   int
+	CredentialID int
+	IsStream     bool
+	CompletedAt  int64
+	ErrorMessage string
+}
+
+// PendingStore is the consumer-side interface. The concrete
+// adapter lives in main.go (which can import both sessions and
+// pending) and converts pending.EntryView → PendingEntry.
+type PendingStore interface {
+	Get(ctx context.Context, sessionID, requestID string) (entry *PendingEntry, found bool, err error)
+	GetLatest(ctx context.Context, sessionID string) (entry *PendingEntry, requestID string, found bool, err error)
 }
 
 func NewHandler(manager *Manager) *Handler {
@@ -21,6 +60,14 @@ func NewHandler(manager *Manager) *Handler {
 
 func (h *Handler) SetAuth(kv *auth.KeyVerifier) {
 	h.keyVerifier = kv
+}
+
+// SetPendingStore (Track C, 2026-06-18) installs the durable cache
+// for client reconnect. nil disables the GET endpoint (returns 503).
+// The concrete store is in the pending package; main.go constructs
+// the store and wires it here.
+func (h *Handler) SetPendingStore(s PendingStore) {
+	h.pendingStore = s
 }
 
 func extractBearerToken(r *http.Request) string {
@@ -82,17 +129,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasPrefix(path, "/v1/sessions/") {
-		sessionID := strings.TrimPrefix(path, "/v1/sessions/")
-		if sessionID == "" {
+		rest := strings.TrimPrefix(path, "/v1/sessions/")
+		if rest == "" {
 			writeErrorJSON(w, http.StatusBadRequest, "", "missing session id", "session_error", "MISSING_SESSION_ID")
+			return
+		}
+
+		// Track C (2026-06-18): sub-route /v1/sessions/{id}/pending-
+		// response. Must be checked BEFORE the plain {id} GET to
+		// avoid the catch-all route treating the sub-path as a
+		// session id.
+		if strings.HasSuffix(rest, "/pending-response") {
+			sessionID := strings.TrimSuffix(rest, "/pending-response")
+			sessionID = strings.TrimSuffix(sessionID, "/")
+			if sessionID == "" {
+				writeErrorJSON(w, http.StatusBadRequest, "", "missing session id", "session_error", "MISSING_SESSION_ID")
+				return
+			}
+			if r.Method != http.MethodGet {
+				writeErrorJSON(w, http.StatusMethodNotAllowed, "", "method not allowed", "session_error", "METHOD_NOT_ALLOWED")
+				return
+			}
+			h.getPendingResponse(w, r, sessionID)
 			return
 		}
 
 		switch r.Method {
 		case http.MethodGet:
-			h.GetSessionByID(w, r, sessionID)
+			h.GetSessionByID(w, r, rest)
 		case http.MethodDelete:
-			h.DeleteSessionByID(w, r, sessionID)
+			h.DeleteSessionByID(w, r, rest)
 		default:
 			writeErrorJSON(w, http.StatusMethodNotAllowed, "", "method not allowed", "session_error", "METHOD_NOT_ALLOWED")
 		}
@@ -269,4 +335,139 @@ func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, 
 			"request_id": requestID,
 		},
 	})
+}
+
+// getPendingResponse (Track C, 2026-06-18) is the client reconnect
+// endpoint. Returns a previously-buffered vendor response (or its
+// in_progress / failed status) so a client that disconnected can
+// pick up where it left off without re-running the whole request.
+//
+//   GET /v1/sessions/{sessionID}/pending-response
+//       ?request_id=xxx    (optional; defaults to most recent)
+//
+// Response shape:
+//
+//   200 — entry is completed; body is the cached vendor response
+//         (replayed as SSE if the original request was streaming,
+//         otherwise as a plain JSON document matching ContentType).
+//         Header X-Gw-Pending-Replay: true tells the client that
+//         this body is a re-send (not a fresh request).
+//
+//   202 — entry is in_progress; client should retry with
+//         Retry-After: 5. Body is a small JSON status object.
+//
+//   404 — no cached entry for the session (or the session never
+//         sent a request that produced a pending response).
+//
+//   403 — session exists but is not owned by the calling API key
+//         (caller should not see another tenant's cached bodies).
+//
+//   503 — pending store not configured (Redis not reachable at
+//         startup; graceful degradation — the rest of the gateway
+//         still works, this endpoint is the only thing that fails).
+//
+// Tenant isolation: even on 404 we do NOT reveal whether the
+// session id is "valid but not yours" vs "doesn't exist". Both
+// return 404 with the same body. The 403 path is reserved for the
+// case where the session DOES exist locally and the api_key_id
+// does not match — that means an authenticated tenant is asking
+// for another tenant's data, which is a real authz failure.
+//
+// SSE replay: when the original request was a streaming call, the
+// cached body is a series of "data: {...}\n\n" lines. We re-emit
+// them as-is (the line boundaries are already correct from the
+// original capture). Clients that key off "data: [DONE]\n\n" as
+// the stream terminator work unchanged.
+func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if h.pendingStore == nil {
+		writeErrorJSON(w, http.StatusServiceUnavailable, "",
+			"pending response cache not configured", "server_error", "PENDING_STORE_UNAVAILABLE")
+		return
+	}
+
+	// Tenant isolation: load the session row first and check
+	// ownership. The pending entry itself does not carry api_key_id
+	// (only sessionID + tenantID), so we use the session row as the
+	// ownership anchor.
+	apiKeyID := GetAPIKeyIDFromContext(r.Context())
+	if h.manager != nil {
+		if session, err := h.manager.Get(r.Context(), sessionID); err == nil && session != nil {
+			if session.GetAPIKeyID() != apiKeyID {
+				writeErrorJSON(w, http.StatusForbidden, "", "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+				return
+			}
+		}
+	}
+	// If session lookup itself failed (ErrSessionNotFound /
+	// ErrSessionExpired), we fall through and let the pending lookup
+	// decide. This is intentional: a pending entry may exist for a
+	// session that was later deleted. We do not want to 404 in that
+	// case just because the session row is gone — the cached body
+	// is still useful to the client.
+
+	requestID := r.URL.Query().Get("request_id")
+
+	var entry *PendingEntry
+	var found bool
+	var err error
+	if requestID != "" {
+		entry, found, err = h.pendingStore.Get(r.Context(), sessionID, requestID)
+	} else {
+		entry, requestID, found, err = h.pendingStore.GetLatest(r.Context(), sessionID)
+	}
+	if err != nil {
+		writeErrorJSON(w, http.StatusServiceUnavailable, "",
+			"pending store error: "+err.Error(), "server_error", "PENDING_STORE_ERROR")
+		return
+	}
+	if !found || entry == nil {
+		writeErrorJSON(w, http.StatusNotFound, "",
+			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
+		return
+	}
+
+	switch entry.Status {
+	case "in_progress":
+		w.Header().Set("Retry-After", "5")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "in_progress",
+			"session_id":  entry.SessionID,
+			"request_id":  entry.RequestID,
+			"retry_after": 5,
+		})
+
+	case "failed":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":        "failed",
+			"session_id":    entry.SessionID,
+			"request_id":    entry.RequestID,
+			"error_message": entry.ErrorMessage,
+			"completed_at":  entry.CompletedAt,
+		})
+
+	case "completed":
+		// Replay. The cached body is the full vendor response —
+		// either a JSON object (non-streaming) or an SSE text
+		// (streaming). ContentType drives the wire format.
+		w.Header().Set("X-Gw-Pending-Replay", "true")
+		w.Header().Set("X-Gw-Pending-Session", entry.SessionID)
+		w.Header().Set("X-Gw-Pending-Request", entry.RequestID)
+		contentType := entry.ContentType
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(entry.Body))
+
+	default:
+		// Unknown status — treat as 5xx so the client retries later
+		// rather than believing a malformed entry is the final answer.
+		writeErrorJSON(w, http.StatusServiceUnavailable, "",
+			"pending entry has unknown status: "+entry.Status, "server_error", "PENDING_BAD_STATUS")
+	}
 }

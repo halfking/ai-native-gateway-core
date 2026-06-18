@@ -43,6 +43,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/middleware"
+	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -155,9 +156,10 @@ func main() {
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
-	// ── Redis (sessions + credential fp slots) ─────────────────────────
+	// ── Redis (sessions + credential fp slots + pending response cache) ─
 	var sessionMgr *sessions.Manager
 	var fpSlotRedis *redis.Client
+	var pendingStore *pending.Store
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -172,6 +174,13 @@ func main() {
 				Password: cfg.RedisPassword,
 				DB:       cfg.RedisDB,
 			})
+			// Track C (2026-06-18): pending response cache for client
+			// reconnect and vendor async retry. Uses the same Redis
+			// connection as fpSlotRedis (both are independent *redis.Client
+			// sharing the same backing server). nil is a valid state
+			// (Store becomes a no-op); explicit construction here so
+			// the GET endpoint is available whenever Redis is up.
+			pendingStore = pending.NewStore(fpSlotRedis, ttl)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -653,6 +662,13 @@ slog.Info("compressor initialized",
 		if keyVerifier.Enabled() {
 			sessionHandler.SetAuth(keyVerifier)
 		}
+		// Track C (2026-06-18): wire the pending response cache.
+		// The adapter lives in main.go (the only place that can
+		// import both sessions and pending without a cycle). nil
+		// pendingStore leaves the endpoint returning 503 gracefully.
+		if pendingStore != nil {
+			sessionHandler.SetPendingStore(newPendingStoreAdapter(pendingStore))
+		}
 		mux.Handle("/v1/sessions", sessionHandler)
 		mux.Handle("/v1/sessions/", sessionHandler)
 		mux.Handle("/v1/gw/sessions", sessionHandler)
@@ -802,6 +818,54 @@ slog.Info("compressor initialized",
 	}
 
 	slog.Info("gateway stopped")
+}
+
+// pendingStoreAdapter bridges the pending package's *Store to the
+// sessions package's narrow PendingStore interface. The two-way
+// import (sessions ← pending) would be a cycle; the adapter is the
+// only place that can import both, so it lives here in main.go.
+//
+// All methods are thin shims; the heavy lifting stays in
+// pending.Store where the Redis access is.
+type pendingStoreAdapter struct{ s *pending.Store }
+
+func newPendingStoreAdapter(s *pending.Store) sessions.PendingStore {
+	return &pendingStoreAdapter{s: s}
+}
+
+func (a *pendingStoreAdapter) Get(ctx context.Context, sessionID, requestID string) (*sessions.PendingEntry, bool, error) {
+	r, ok, err := a.s.Get(ctx, sessionID, requestID)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return a.toEntry(r), true, nil
+}
+
+func (a *pendingStoreAdapter) GetLatest(ctx context.Context, sessionID string) (*sessions.PendingEntry, string, bool, error) {
+	r, requestID, ok, err := a.s.GetLatest(ctx, sessionID)
+	if err != nil || !ok {
+		return nil, requestID, false, err
+	}
+	return a.toEntry(r), requestID, true, nil
+}
+
+func (a *pendingStoreAdapter) toEntry(r *pending.Response) *sessions.PendingEntry {
+	if r == nil {
+		return nil
+	}
+	return &sessions.PendingEntry{
+		SessionID:    r.SessionID,
+		TenantID:     r.TenantID,
+		RequestID:    r.RequestID,
+		Status:       string(r.Status),
+		Body:         r.Body,
+		ContentType:  r.ContentType,
+		ProviderID:   r.ProviderID,
+		CredentialID: r.CredentialID,
+		IsStream:     r.IsStream,
+		CompletedAt:   r.CompletedAt,
+		ErrorMessage: r.ErrorMessage,
+	}
 }
 
 
