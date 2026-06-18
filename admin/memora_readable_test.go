@@ -64,7 +64,7 @@ func TestSearchMergedFactsDualNamespace(t *testing.T) {
 			},
 		},
 	}
-	blocks, err := searchMergedFacts(context.Background(), client, 42, "default", "ses_abc")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 42, "default", "ses_abc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestSearchMergedFactsDedupe(t *testing.T) {
 			"k:7:gw-session:ses-x": {{ID: "2", Text: dup}},
 		},
 	}
-	blocks, err := searchMergedFacts(context.Background(), client, 7, "task-a", "ses-x")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 7, "task-a", "ses-x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSearchMergedFactsDedupe(t *testing.T) {
 
 func TestSearchMergedFactsEmpty(t *testing.T) {
 	client := &fakeMemoraSearch{byUser: map[string][]memora.Memory{}}
-	blocks, err := searchMergedFacts(context.Background(), client, 1, "task", "")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 1, "task", "")
 	if err != nil {
 		t.Fatal(err)
 	}

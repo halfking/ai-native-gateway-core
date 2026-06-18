@@ -333,11 +333,13 @@ func (h *Handler) handleMemoraSessions(w http.ResponseWriter, r *http.Request) {
 			case float64:
 				apiKeyID = int(v)
 			}
+			tenantID, _ := s["tenant_id"].(string)
 			previewInputs = append(previewInputs, sessionPreviewInput{
 				Index:     i,
 				TaskID:    taskID,
 				SessionID: sessID,
 				APIKeyID:  apiKeyID,
+				TenantID:  tenantID,
 			})
 		}
 		if len(previewInputs) > 0 {
@@ -515,9 +517,10 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apiKeyID, err := h.sessionAPIKeyID(ctx, taskID, sc, r)
+	tenantID := h.sessionTenantID(ctx, taskID, sc, r)
 	userID := ""
 	if err == nil && apiKeyID > 0 {
-		userID = memora.UserID(apiKeyID, taskID)
+		userID = memora.UserID(tenantID, apiKeyID, taskID)
 	}
 
 	var facts []map[string]any
@@ -526,7 +529,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	if h.memoraClient != nil && !h.memoraClient.Disabled() && apiKeyID > 0 {
 		searchClient, _ := h.memoraClient.(memoraSearchClient)
 		searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
-		blocks, searchErr := searchMergedFacts(searchCtx, searchClient, apiKeyID, taskID, sc.SessionID)
+		blocks, searchErr := searchMergedFacts(searchCtx, searchClient, tenantID, apiKeyID, taskID, sc.SessionID)
 		searchCancel()
 		if searchErr == nil {
 			readableBlocks = blocks

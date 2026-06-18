@@ -41,11 +41,21 @@ func TestTaskID_EmptyWhenNoSignal(t *testing.T) {
 }
 
 func TestUserID_Namespacing(t *testing.T) {
-	if got := UserID(42, "fix-1234"); got != "k:42:fix-1234" {
-		t.Fatalf("got %q want k:42:fix-1234", got)
+	// Legacy single-tenant layout (empty tenantID): keeps "k:<key_id>:<task>" form.
+	if got := UserID("", 42, "fix-1234"); got != "k:42:fix-1234" {
+		t.Fatalf("legacy: got %q want k:42:fix-1234", got)
 	}
-	if got := UserID(42, ""); got != "" {
+	// Round 47 v7 T13: tenant-namespaced layout.
+	if got := UserID("tenant-x", 42, "fix-1234"); got != "t:tenant-x:k:42:fix-1234" {
+		t.Fatalf("tenant: got %q want t:tenant-x:k:42:fix-1234", got)
+	}
+	// Empty taskID wins (short-circuit before tenant logic).
+	if got := UserID("tenant-x", 42, ""); got != "" {
 		t.Fatalf("empty task should yield empty user_id, got %q", got)
+	}
+	// "default" tenant falls back to legacy layout for backward compatibility.
+	if got := UserID("default", 42, "fix-1234"); got != "k:42:fix-1234" {
+		t.Fatalf("default tenant: got %q want k:42:fix-1234", got)
 	}
 }
 

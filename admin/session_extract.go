@@ -95,7 +95,11 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, "task not found: "+taskID)
 		return
 	}
-	userID := memora.UserID(apiKeyID, taskID)
+	// Round 47 compression v7 T13: tenant-namespaced user_id.
+	// Extract tenant from the session's API key (keyInfo.TenantID via auth).
+	// Fall back to "" (legacy single-tenant layout) if absent.
+	tenantID := h.sessionTenantID(ctx, taskID, sc, r)
+	userID := memora.UserID(tenantID, apiKeyID, taskID)
 	if userID == "" {
 		writeError(w, http.StatusBadRequest, "cannot derive memora user_id")
 		return
@@ -252,6 +256,28 @@ func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc session
 		return 0, err
 	}
 	return int(*apiKeyID), nil
+}
+
+// sessionTenantID fetches the tenant_id associated with the request_logs
+// rows for a task. Returns "" if unavailable (caller should pass that to
+// memora.UserID which then falls back to the legacy single-tenant layout).
+//
+// Round 47 compression v7 T13: required so the Memora user_id we use to
+// search Memora for compression-side-facts is tenant-namespaced. Without
+// this we'd risk cross-tenant fact leakage per docs/multi-tenant-standards.md
+// §3.2 Pattern A.
+func (h *Handler) sessionTenantID(ctx context.Context, taskID string, sc sessionScope, r *http.Request) string {
+	where, args := sessionLogsWhere(taskID, sc, r)
+	var tenantID *string
+	err := h.db.QueryRow(ctx, `
+		SELECT tenant_id FROM request_logs
+		`+where+`
+		ORDER BY ts DESC LIMIT 1
+	`, args...).Scan(&tenantID)
+	if err != nil || tenantID == nil {
+		return ""
+	}
+	return *tenantID
 }
 
 func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, r *http.Request, limit int) ([]memora.PreviewTurn, error) {

@@ -265,6 +265,13 @@ type ExecParams struct {
 	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.EffectiveConcurrent().
 	// If 0, the per-key concurrent check is skipped.
 	KeyConcurrentLimit int
+	// TenantID is the tenant owning this request (from keyInfo.TenantID).
+	// Round 47 (2026-06-18) compression v7 T13: used by enqueueMemoraWrite /
+	// tryMemoraCompression to namespace Memora user_ids by tenant (per docs/
+	// multi-tenant-standards.md §3.2 Pattern A). Empty means single-tenant
+	// mode (legacy "default" tenant); the Memora user_id falls back to the
+	// pre-v7 "k:<api_key_id>:<task_id>" format so existing tests stay green.
+	TenantID string
 }
 
 type ExecuteResult struct {

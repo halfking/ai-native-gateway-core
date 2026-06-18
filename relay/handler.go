@@ -636,6 +636,8 @@ func (h *ChatHandler) serveWithExecutor(
 		StickyKey:      stickyKey,
 		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
 		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
+		// Round 47 compression v7 T13: tenant-namespaced Memora user_id.
+		TenantID:         func() string { if keyInfo != nil { return keyInfo.TenantID }; return "" }(),
 	})
 
 	if execErr != nil {

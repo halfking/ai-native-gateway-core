@@ -47,14 +47,31 @@ func TaskID(r *http.Request, body []byte, apiKeyID int) string {
 	return ""
 }
 
-// UserID encodes (api_key_id, task_id) into a Memora user_id. We use a
-// "k:" prefix to namespace these away from real human users in the same
-// Memora instance.
-func UserID(apiKeyID int, taskID string) string {
+// UserID encodes (tenant_id, api_key_id, task_id) into a Memora user_id.
+//
+// Layout:
+//   - With tenant:    "t:<tenant_id>:k:<api_key_id>:<task_id>"
+//   - Without tenant: "k:<api_key_id>:<task_id>"             (legacy / single-tenant)
+//
+// Round 47 (2026-06-18) compression v7 T13: per docs/multi-tenant-standards.md
+// §3.2 Pattern A, every Memora user_id must be tenant-namespaced so cross-
+// tenant Memora search/ingest cannot leak facts. The "t:" prefix is what
+// Memora already uses for tenant-scoped keys (see kxmemory/mcp-server/tools/
+// memory.js ingest_session source enum).
+//
+// Empty taskID returns "" so the caller can short-circuit the entire
+// Memora path. Empty tenantID falls back to the pre-v7 layout so single-
+// tenant / unconfigured environments keep working without a migration.
+func UserID(tenantID string, apiKeyID int, taskID string) string {
 	if taskID == "" {
 		return ""
 	}
-	return "k:" + itoa(apiKeyID) + ":" + taskID
+	if tenantID == "" || tenantID == "default" {
+		// Legacy single-tenant layout. Keep existing test fixtures + pre-v7
+		// dashboards working until all callers pass tenant explicitly.
+		return "k:" + itoa(apiKeyID) + ":" + taskID
+	}
+	return "t:" + sanitize(tenantID, 64) + ":k:" + itoa(apiKeyID) + ":" + taskID
 }
 
 // sanitize strips characters that would break Memora user_id parsing
