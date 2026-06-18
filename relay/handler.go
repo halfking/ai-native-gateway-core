@@ -16,15 +16,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/audit"
-	"go.opentelemetry.io/otel/trace"
-	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
@@ -34,6 +33,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const maxBodySize = 32 << 20
@@ -90,6 +90,11 @@ type chatResponseBody struct {
 // Chat handler — integrates circuit breaker + concurrency limiter
 //-----------------------------------------------------------------------------
 
+type providerResolver interface {
+	Enabled() bool
+	GetCandidates(ctx context.Context, model, profile string) ([]provider.Candidate, *provider.Policy, error)
+}
+
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
 	circuit         *circuit.Manager
@@ -101,7 +106,7 @@ type ChatHandler struct {
 	client          *upstreampkg.Client
 	normalizer      *Normalizer
 	executor        *routing.Executor
-	provider        *provider.Client
+	provider        providerResolver
 	sticky          *routing.StickyCache
 	keyVerifier     *auth.KeyVerifier
 	rateLimiter     ratelimit.RPMLimiter
@@ -115,8 +120,8 @@ type ChatHandler struct {
 	// function so unit tests can assert on the safety-net coverage.
 	// See SetRequestLogHook.
 	requestLogHook func(*telemetry.RequestLogEntry)
-	maasSvc         *maas.Service
-	sessionGetter   interface {
+	maasSvc        *maas.Service
+	sessionGetter  interface {
 		Get(ctx context.Context, id string) (*sessions.Session, error)
 		Touch(ctx context.Context, id string) error
 		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
@@ -138,7 +143,7 @@ func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.M
 	return &ChatHandler{circuit: cm, limiter: l, matrix: matrix, pools: pools, resolver: resolver, auditor: auditor, client: upstreampkg.New(), normalizer: NewNormalizer()}
 }
 
-func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov *provider.Client, sticky *routing.StickyCache) {
+func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov providerResolver, sticky *routing.StickyCache) {
 	h.executor = exec
 	h.provider = prov
 	h.sticky = sticky
@@ -688,10 +693,25 @@ func (h *ChatHandler) serveWithExecutor(
 		ToolsRequested: requestHasTools(bodyBytes),
 		SessionKey:     sessionKey,
 		StickyKey:      stickyKey,
-		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
-		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
+		KeyID: func() int {
+			if keyInfo != nil {
+				return keyInfo.ID
+			}
+			return 0
+		}(),
+		KeyConcurrentLimit: func() int {
+			if keyInfo != nil {
+				return keyInfo.EffectiveConcurrent()
+			}
+			return 0
+		}(),
 		// Round 47 compression v7 T13: tenant-namespaced Memora user_id.
-		TenantID:         func() string { if keyInfo != nil { return keyInfo.TenantID }; return "" }(),
+		TenantID: func() string {
+			if keyInfo != nil {
+				return keyInfo.TenantID
+			}
+			return ""
+		}(),
 	})
 
 	if execErr != nil {
@@ -725,12 +745,12 @@ func (h *ChatHandler) serveWithExecutor(
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":         "in_progress",
-				"session_id":     asyncErr.SessionID,
-				"request_id":     asyncErr.RequestID,
-				"retry_after":    5,
-				"started_at":     asyncErr.StartedAt.Format(time.RFC3339),
-				"poll_url":       "/v1/sessions/" + asyncErr.SessionID + "/pending-response?request_id=" + asyncErr.RequestID,
+				"status":      "in_progress",
+				"session_id":  asyncErr.SessionID,
+				"request_id":  asyncErr.RequestID,
+				"retry_after": 5,
+				"started_at":  asyncErr.StartedAt.Format(time.RFC3339),
+				"poll_url":    "/v1/sessions/" + asyncErr.SessionID + "/pending-response?request_id=" + asyncErr.RequestID,
 			})
 			slog.Info("async_pending_dispatched",
 				"session_id", asyncErr.SessionID,
@@ -768,11 +788,11 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONWithKind(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				"server_error", "model_not_found", realKind, map[string]any{
-					"stage":      "execution",
-					"kind":       string(execErrTyped.LastKind),
-					"attempts":   execErrTyped.Attempts,
-					"tried":      execErrTyped.Tried,
-					"retryable":  errorsx.IsRetryable(execErrTyped.LastKind),
+					"stage":     "execution",
+					"kind":      string(execErrTyped.LastKind),
+					"attempts":  execErrTyped.Attempts,
+					"tried":     execErrTyped.Tried,
+					"retryable": errorsx.IsRetryable(execErrTyped.LastKind),
 				})
 			return
 		}
@@ -1088,7 +1108,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
 			CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
 			CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-			CacheWriteTokens:  floatPtrFromInt(reqLog.CacheWriteTokens),
+			CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
 			PriceIn:          result.Candidate.PriceInPer1M,
 			PriceOut:         result.Candidate.PriceOutPer1M,
 			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
@@ -1102,7 +1122,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 				PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
 				CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
 				CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-				CacheWriteTokens:  floatPtrFromInt(reqLog.CacheWriteTokens),
+				CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
 				PriceIn:          result.Candidate.PriceInPer1M,
 				PriceOut:         result.Candidate.PriceOutPer1M,
 				CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
@@ -1438,32 +1458,32 @@ func (h *ChatHandler) recordInitialRequestLog(
 	}
 	streamInterrupted := false
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:        requestID,
-		TenantID:           tenantID,
-		ApplicationID:      applicationID,
-		APIKeyID:           apiKeyID,
-		APIKeyPrefix:       strPtr(keyPrefix),
-		APIKeyOwnerUser:    strPtr(keyOwner),
-		ApplicationCode:    strPtr(appCode),
-		EndUserID:          strPtr(endUser),
-		ClientModel:        strPtr(clientModel),
-		OutboundModel:      strPtr(outboundModel),
-		ProviderID:         providerID,
-		CredentialID:       credentialID,
-		CanonicalID:        canonicalID,
-		ClientProfile:      strPtr(clientProfile),
-		IdentityHash:       strPtr(identityHash),
-		RequestMode:        strPtr(requestMode),
-		GwSessionID:        strPtr(gwSessionID),
-		GwTaskID:           strPtr(gwTaskID),
-		Success:            false,
-		RequestStatus:      strPtr(telemetry.RequestStatusInProgress),
-		RequestBody:        requestBodyText,
-		RequestPreview:     requestPreviewPtr,
-		TransformSummary:   transformSummaryPtr,
-		TransformRuleID:    transformRuleID,
-		EgressProtocol:     strPtr(egressProtocol),
-		StreamInterrupted:  &streamInterrupted,
+		RequestID:         requestID,
+		TenantID:          tenantID,
+		ApplicationID:     applicationID,
+		APIKeyID:          apiKeyID,
+		APIKeyPrefix:      strPtr(keyPrefix),
+		APIKeyOwnerUser:   strPtr(keyOwner),
+		ApplicationCode:   strPtr(appCode),
+		EndUserID:         strPtr(endUser),
+		ClientModel:       strPtr(clientModel),
+		OutboundModel:     strPtr(outboundModel),
+		ProviderID:        providerID,
+		CredentialID:      credentialID,
+		CanonicalID:       canonicalID,
+		ClientProfile:     strPtr(clientProfile),
+		IdentityHash:      strPtr(identityHash),
+		RequestMode:       strPtr(requestMode),
+		GwSessionID:       strPtr(gwSessionID),
+		GwTaskID:          strPtr(gwTaskID),
+		Success:           false,
+		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
+		RequestBody:       requestBodyText,
+		RequestPreview:    requestPreviewPtr,
+		TransformSummary:  transformSummaryPtr,
+		TransformRuleID:   transformRuleID,
+		EgressProtocol:    strPtr(egressProtocol),
+		StreamInterrupted: &streamInterrupted,
 	}
 	if isStream {
 		zero := 0
@@ -1528,17 +1548,17 @@ func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyIn
 		canonical = *modelResolution.CanonicalName
 	}
 	dl := &telemetry.DecisionLogEntry{
-		RequestID:        requestID,
-		TenantID:         tenantID,
-		APIKeyID:         apiKeyID,
-		Model:            canonicalOrClient(canonical, clientModel),
-		CandidatesTried:  candidatesTried,
-		LatencyMs:        latencyMs,
-		Success:          false,
-		ErrorClass:       strPtr(errCode),
+		RequestID:         requestID,
+		TenantID:          tenantID,
+		APIKeyID:          apiKeyID,
+		Model:             canonicalOrClient(canonical, clientModel),
+		CandidatesTried:   candidatesTried,
+		LatencyMs:         latencyMs,
+		Success:           false,
+		ErrorClass:        strPtr(errCode),
 		FailureDetailCode: strPtr(errCode),
-		ClientModel:      strPtr(clientModel),
-		IdentityHash:     strPtr(clientID.IdentityHash),
+		ClientModel:       strPtr(clientModel),
+		IdentityHash:      strPtr(clientID.IdentityHash),
 	}
 	if failTrace != nil {
 		traceJSON, _ := json.Marshal(failTrace)
@@ -2058,7 +2078,6 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 		*modelOut = probe.Model
 	}
 }
-
 
 // emitTuningSignal computes the implicit feedback signal for an auto-route
 // request and enqueues it for async batched write to tuning_signals.

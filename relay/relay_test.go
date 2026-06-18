@@ -143,6 +143,7 @@ func TestMultiTurnChatNonStreaming(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -210,6 +211,7 @@ func TestMultiTurnChatStreaming(t *testing.T) {
 	defer lim.Stop()
 
 	handler := NewChatHandler(cm, lim, nil, nil, nil, nil)
+	attachTestExecutor(handler, cm, lim, fakeUpstream.URL)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
