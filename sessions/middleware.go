@@ -111,4 +111,14 @@ func getTenantIDFromContext(ctx context.Context) string {
 	return "default"
 }
 
+// GetTenantIDFromContext is the exported version of
+// getTenantIDFromContext. Added for Track C C4 (2026-06-18):
+// the async retry goroutine in routing/executor.go needs to
+// read the tenant id from the request context to populate
+// the pending entry's TenantID field for multi-tenant
+// isolation.
+func GetTenantIDFromContext(ctx context.Context) string {
+	return getTenantIDFromContext(ctx)
+}
+
 type tenantIDContextKey struct{}

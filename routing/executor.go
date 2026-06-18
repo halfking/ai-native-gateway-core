@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
@@ -226,18 +228,13 @@ type Executor struct {
 	AsyncLongTimeout        time.Duration
 	AsyncMaxFallbackCreds   int  // cap on credential fallbacks in async goroutine
 
-	// suppressAsync is the recursion guard. The async goroutine
-	// (runAsyncRetry) calls Execute again; we set this on the
-	// inner params so the inner call takes the synchronous
-	// exhaustion path even if the retry walk is itself slow.
-	// This field is on the Executor because the inner Execute
-	// invocation shares the same Executor instance.
-	//
-	// We use a counter rather than a bool to be future-proof: a
-	// future change that wants "async for first demotion, sync
-	// for further" can read the count and decide. Currently
-	// the gate returns false whenever count > 0.
-	asyncDepth int
+	// asyncDepth is the recursion guard (Track C C4). The async
+	// goroutine (runAsyncRetry) calls Execute again; we bump this
+	// so shouldAsyncFallback returns false on the inner call.
+	// Uses atomic.Int32 because the Executor is a singleton
+	// shared across all request goroutines — a plain int would
+	// race under concurrent requests.
+	asyncDepth atomic.Int32
 }
 
 func NewExecutor(
@@ -1103,7 +1100,7 @@ func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tri
 	// Recursion guard: the async goroutine calls Execute again.
 	// The inner call must take the synchronous exhaustion path
 	// regardless of the time elapsed.
-	if e.asyncDepth > 0 {
+	if e.asyncDepth.Load() > 0 {
 		return false
 	}
 	if e.PendingStore == nil {
@@ -1214,12 +1211,22 @@ func (e *Executor) startAsyncRetry(
 		longTimeout = 300 * time.Second
 	}
 
-	// Capture the params we need for the goroutine. params.R is
-	// the *http.Request whose context is bound to the original
-	// client connection; we deliberately discard it inside the
-	// goroutine and use context.Background() instead.
+	// Capture the params we need for the goroutine. We build a
+	// synthetic *http.Request with context.Background() so the
+	// async walk is NOT tied to the client connection. The
+	// headers (X-Gw-Session-Id, X-Request-Id, etc.) are copied
+	// from the original request so downstream routing logic
+	// (Router.PlanCandidates, FpSlots, etc.) can still read them.
 	bgParams := *params
-	bgParams.R = nil
+	if params.R != nil {
+		syntheticReq := httptest.NewRequest("POST", params.R.URL.Path, nil)
+		syntheticReq.Header = params.R.Header.Clone()
+		bgParams.R = syntheticReq.WithContext(context.Background())
+	} else {
+		// Defensive: should not happen in production (handler
+		// always sets R), but tests may omit it.
+		bgParams.R = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	}
 	bgTrace := trace
 	bgAttempts := append([]AttemptRecord(nil), attempts...)
 	bgLastKind := lastKind
@@ -1332,9 +1339,9 @@ func (e *Executor) runAsyncRetry(
 	// original count on return so subsequent synchronous requests
 	// (e.g. a brand-new HTTP request on the same gateway instance
 	// reusing this Executor) are unaffected.
-	prevDepth := e.asyncDepth
-	e.asyncDepth++
-	defer func() { e.asyncDepth = prevDepth }()
+	prevDepth := e.asyncDepth.Load()
+	e.asyncDepth.Store(prevDepth + 1)
+	defer func() { e.asyncDepth.Store(prevDepth) }()
 
 	result, execErr := e.Execute(&asyncParams) //nolint:gocritic // intentionally recursive: async walk uses same executor
 	if execErr == nil {
@@ -1370,23 +1377,13 @@ func (e *Executor) runAsyncRetry(
 }
 
 // tenantFromCtx pulls the tenant id from request context, falling
-// back to the literal "default" if unset. The fallback matches
-// the existing recordModelNotFound convention.
+// back to the literal "default" if unset. Uses the exported
+// sessions.GetTenantIDFromContext (Track C C4 audit fix #5).
 func tenantFromCtx(r *http.Request) string {
 	if r == nil {
 		return "default"
 	}
-	if v := sessions.GetAPIKeyIDFromContext(r.Context()); v != 0 {
-		// The sessions package exposes only GetAPIKeyID publicly;
-		// tenant id is tracked separately and the producer-side
-		// recordModelNotFound hardcodes "default". We mirror that
-		// here so the async write is consistent with the sync
-		// one. The real fix is to expose GetTenantIDFromContext
-		// publicly in a follow-up; until then, "default" is the
-		// contract.
-		_ = v
-	}
-	return "default"
+	return sessions.GetTenantIDFromContext(r.Context())
 }
 
 // contentTypeFor picks the canonical content type for a replay.

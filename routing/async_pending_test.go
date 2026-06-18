@@ -197,7 +197,7 @@ func TestShouldAsyncFallback_RejectsRecursion(t *testing.T) {
 	e := newAsyncTestExecutor()
 	e.AsyncShortTimeout = 5 * time.Second
 	e.AsyncLongTimeout = 300 * time.Second
-	e.asyncDepth = 1 // simulate "we are already inside an async walk"
+	e.asyncDepth.Store(1) // simulate "we are already inside an async walk"
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set("X-Gw-Session-Id", "gw_x")
 	ok := e.shouldAsyncFallback(&ExecParams{R: r}, time.Now().Add(-20*time.Second), 3)
