@@ -170,6 +170,20 @@ type Executor struct {
 	UpstreamTimeout      time.Duration
 	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
 
+	// MnfStreak tracks consecutive model_not_found occurrences per
+	// (stickyKey, credentialID). When the count reaches
+	// MnfStickyBreakThreshold, the sticky binding is deleted so the
+	// next request re-picks. This is the client hot-path complement
+	// to the background 3-strike consensus in bg/model_probe.go: the
+	// background probe is authoritative for credential health, but
+	// the streak breaker protects the user from being pinned to a
+	// broken credential for the full 30-minute sticky TTL when the
+	// upstream has clearly gone away. Nil disables the feature
+	// (production default: enabled; tests may omit).
+	MnfStreak               *MnfStreak
+	MnfStickyBreakThreshold int  // default 3
+	MnfStreakEnabled        bool // feature flag (env-gated by main.go)
+
 	// Memora is the optional context-compression oracle. When non-nil
 	// and enabled, the executor (a) enqueues per-request writes to
 	// Memora for later retrieval, and (b) on context-length overflow,
@@ -468,6 +482,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
 			e.recordStickySuccess(params, cand.CredentialID)
+			// Step 6 (2026-06-18): a successful response on this
+			// credential clears its model_not_found streak. The next
+			// request from this sticky session will not be tripped by
+			// a stale counter from a prior intermittent failure.
+			e.resetMnfStreak(params, cand.CredentialID)
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -501,6 +520,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			//      catch a real "this model is gone" pattern within the
 			//      next 30s-2m-5m-15m backoff window.
 			e.recordModelNotFound(params.R.Context(), mnf.credentialID, mnf.rawModel, mnf.body)
+			// Step 6 (2026-06-18): MnfStreak — client hot-path break
+			// for persistent (not intermittent) model_not_found. The
+			// background probe consensus (bg/model_probe.go) owns
+			// authoritative credential health; the streak owns the
+			// user experience when the upstream has clearly gone
+			// away.
+			e.recordMnfStreak(params, cand.CredentialID)
 			lastErr = execErr
 			lastKind = errorsx.KindModelNotFound
 			attempts = append(attempts, AttemptRecord{
@@ -722,6 +748,56 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			"raw_model", rawModel,
 			"error", err)
 	}
+}
+
+// recordMnfStreak (Step 6, 2026-06-18) increments the per-credential
+// model_not_found counter for the current sticky session. When the
+// counter reaches MnfStickyBreakThreshold, the sticky binding is
+// deleted so the next request re-picks a credential instead of being
+// pinned to this broken one for the full 30-min sticky TTL.
+//
+// All guards are nil/disabled-aware:
+//   - MnfStreakEnabled is false → no-op (feature flag)
+//   - MnfStreak is nil → no-op (tests / older wiring)
+//   - params.StickyKey == "" → no-op (stateless request, no sticky)
+//   - threshold <= 0 → defaults to 3
+func (e *Executor) recordMnfStreak(params *ExecParams, credentialID int) {
+	if !e.MnfStreakEnabled || e.MnfStreak == nil {
+		return
+	}
+	if params == nil || params.StickyKey == "" {
+		return
+	}
+	threshold := e.MnfStickyBreakThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	key := BuildMnfStreakKey(params.StickyKey, credentialID)
+	count := e.MnfStreak.Increment(key)
+	if count >= threshold {
+		if e.Router != nil && e.Router.Sticky != nil {
+			e.Router.Sticky.Delete(params.StickyKey)
+		}
+		e.MnfStreak.Reset(key)
+		slog.Warn("mnf_streak_sticky_broken",
+			"sticky_key", params.StickyKey,
+			"credential_id", credentialID,
+			"streak", count,
+			"threshold", threshold,
+		)
+	}
+}
+
+// resetMnfStreak clears the per-credential model_not_found counter when
+// a request succeeds on that credential. Counterpart to
+// recordMnfStreak; the two are paired so a single success undoes
+// accumulated intermittent failures.
+func (e *Executor) resetMnfStreak(params *ExecParams, credentialID int) {
+	if e.MnfStreak == nil || params == nil || params.StickyKey == "" {
+		return
+	}
+	key := BuildMnfStreakKey(params.StickyKey, credentialID)
+	e.MnfStreak.Reset(key)
 }
 
 
