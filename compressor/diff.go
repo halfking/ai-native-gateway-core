@@ -181,7 +181,7 @@ func BuildOutboundMessages(
 	}
 
 	// Splice new messages into the client body (preserves model, stream, tools, etc.)
-	newBody, ok := spliceMessagesRaw(clientBody, newMsgsRaw)
+	newBody, ok := spliceBodyMessages(clientBody, newMsgsRaw)
 	if !ok {
 		// Splice failed — fall back to client body.
 		hashes := computeHashes(clientMsgs)
@@ -328,22 +328,9 @@ func estimateBodyTokens(body []byte) int {
 	return int(float64(len(body)) / 3.5)
 }
 
-// spliceMessagesRaw replaces the "messages":[...] slice in origBody with
-// newMessages. Reuses the existing function from rebuilder_openai.go which
-// is package-private (same package).
-// Returns (result, true) or (nil, false) on failure.
-func spliceMessagesRaw(origBody []byte, newMessages []byte) ([]byte, bool) {
-	// Reuse the existing spliceMessagesRaw from memora/rebuilder.go is not
-	// available here (different package). Implement a minimal version:
-	// parse the body as a generic map, swap the messages field, re-marshal.
-	var generic map[string]json.RawMessage
-	if err := json.Unmarshal(origBody, &generic); err != nil {
-		return nil, false
-	}
-	generic["messages"] = newMessages
-	out, err := json.Marshal(generic)
-	if err != nil {
-		return nil, false
-	}
-	return out, true
+// spliceBodyMessages is the diff.go internal splice helper. It delegates to
+// the package-level spliceMessagesRaw (defined in rebuilder_openai.go) which
+// already handles the generic map swap correctly.
+func spliceBodyMessages(origBody []byte, newMessages []byte) ([]byte, bool) {
+	return spliceMessagesRaw(origBody, newMessages)
 }

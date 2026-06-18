@@ -370,7 +370,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.RequestBody, responseBody)
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.RequestBody, responseBody, nil)
 	*attemptLogged = true
 }
 

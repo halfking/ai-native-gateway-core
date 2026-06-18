@@ -391,7 +391,7 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.RequestBody, responseBody)
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.RequestBody, responseBody, nil)
 	*attemptLogged = true
 }
 
