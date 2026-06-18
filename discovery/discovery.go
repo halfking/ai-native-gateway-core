@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -638,6 +639,20 @@ func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, 
 	}
 }
 
+// expireStaleModels marks any model_offers row that wasn't returned by the
+// upstream /v1/models call (or the manifest) as unavailable. The previous
+// implementation only wrote to model_offers, which caused data drift:
+// v_routable_credential_models reads cmb.available / pm.available (NOT
+// model_offers.available), so the UI could show a model as unavailable
+// while the routing layer still served it.
+//
+// Step 7 (2026-06-18) adds an opt-in (ENABLE_CMB_EXPIRE=1) companion
+// write to credential_model_bindings so the two flags stay in sync. The
+// feature is OFF by default — we want to observe production behaviour for
+// ~24h before promoting it. When ON, the same set of expired models is
+// also marked unavailable on the cmb side, with the existing
+// unavailable_reason NOT LIKE 'manual%' guard preserved so admin-pinned
+// bindings survive expiry.
 func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	if len(seen) == 0 {
 		return
@@ -650,6 +665,8 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 		}
 		credModels[o.CredentialID][o.RawName] = true
 	}
+
+	cmbExpireEnabled := os.Getenv("ENABLE_CMB_EXPIRE") == "1"
 
 	expired := 0
 	for credID, modelSet := range credModels {
@@ -684,6 +701,35 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			slog.Info("expired stale models",
 				"credential_id", credID,
 				"count", tag.RowsAffected(),
+			)
+		}
+
+		// Companion write to credential_model_bindings (opt-in via env).
+		// Skipped silently when the flag is off; no error path needed.
+		if !cmbExpireEnabled {
+			continue
+		}
+		cmbTag, err := s.db.Exec(ctx, fmt.Sprintf(`
+			UPDATE credential_model_bindings cmb
+			SET available = FALSE,
+			    unavailable_reason = 'auto_discovery_expired',
+			    unavailable_at = now()
+			FROM provider_models pm
+			WHERE pm.id = cmb.provider_model_id
+			  AND cmb.credential_id = $1
+			  AND pm.raw_model_name NOT IN (%s)
+			  AND cmb.available = TRUE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%%'
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		`, placeholders), args...)
+		if err != nil {
+			slog.Debug("failed to expire stale cmb rows", "credential_id", credID, "error", err)
+			continue
+		}
+		if cmbTag.RowsAffected() > 0 {
+			slog.Info("expired stale credential_model_bindings",
+				"credential_id", credID,
+				"count", cmbTag.RowsAffected(),
 			)
 		}
 	}

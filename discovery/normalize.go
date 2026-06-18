@@ -1,132 +1,92 @@
 package discovery
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
-// NormalizeModelName standardizes a model name by removing dates, vendor prefixes,
-// and other non-essential parts. The goal is to produce clean, consistent names
-// like "glm-5.1", "glm-4.7-flash", "gpt-4o", "claude-sonnet-4".
+// NormalizeModelName is a thin wrapper around modelname.NormalizeRouteKey.
+// The discovery package used to maintain a separate normalization with its
+// own regex set; that implementation has been retired in favour of the
+// modelname package's single source of truth (P1 of
+// 2026-06-18-model-match-and-404-plan.md). Behaviour is identical for the
+// case-insensitive vendor-prefix-stripping + date-stripping + dash-collapse
+// pipeline; see modelname.NormalizeRouteKey for details.
 func NormalizeModelName(raw string) string {
-	if raw == "" {
-		return raw
-	}
-
-	// Remove vendor prefixes (e.g., "zai/", "openai/", "anthropic/")
-	if idx := strings.LastIndex(raw, "/"); idx >= 0 {
-		raw = raw[idx+1:]
-	}
-
-	// Remove date suffixes (e.g., "-20251201", "-20241022", "-20250219")
-	datePattern := regexp.MustCompile(`[-_]\d{8}[-_]?`)
-	raw = datePattern.ReplaceAllString(raw, "")
-
-	// Remove version-like date patterns (e.g., "-2025-12-01")
-	datePattern2 := regexp.MustCompile(`[-_]\d{4}-\d{2}-\d{2}[-_]?`)
-	raw = datePattern2.ReplaceAllString(raw, "")
-
-	// Remove preview/beta/rc suffixes that clutter names
-	// But keep them if they're part of the model identity (like "gpt-4o-mini")
-	suffixPattern := regexp.MustCompile(`[-_](preview|beta|rc|snapshot|latest|stable)([-_]\d+)?$`)
-	raw = suffixPattern.ReplaceAllString(raw, "")
-
-	// Clean up multiple dashes/underscores
-	cleanPattern := regexp.MustCompile(`[-_]{2,}`)
-	raw = cleanPattern.ReplaceAllString(raw, "-")
-
-	// Trim leading/trailing dashes
-	raw = strings.Trim(raw, "-_")
-
-	// Normalize to lowercase
-	raw = strings.ToLower(raw)
-
-	return raw
+	return modelname.NormalizeRouteKey(raw)
 }
 
-// InferFamily determines the model family from a normalized model name.
+// InferFamily returns the leading "family" segment of a normalized model
+// name. The previous implementation had a hard-coded familyPatterns map
+// (anthropic-claude / openai-gpt / zhipu-glm / minimax / moonshot / etc.)
+// which had to be updated every time a new vendor was onboarded. The new
+// generic form just takes the text before the first "-" — for the
+// well-known families this is the same answer, and for new vendors it
+// still produces a sensible bucket without any code change.
+//
+// Examples:
+//
+//	"mimo-v2.5-pro"     → "mimo"
+//	"glm-5.1"           → "glm"
+//	"claude-opus-4-6"   → "claude"
+//	"minimax-m3"        → "minimax"
+//	"qwen-max"          → "qwen"
+//
+// If the name has no "-", the whole name is returned.
 func InferFamily(name string) string {
-	name = strings.ToLower(name)
-
-	familyPatterns := map[string][]string{
-		"anthropic-claude": {"claude"},
-		"openai-gpt":       {"gpt-4", "gpt-3", "o1", "o3", "o4"},
-		"openai-dall-e":    {"dall-e"},
-		"google-gemini":    {"gemini"},
-		"deepseek":         {"deepseek"},
-		"qwen":             {"qwen"},
-		"zhipu-glm":        {"glm"},
-		"doubao":           {"doubao", "seed"},
-		"meta-llama":       {"llama"},
-		"minimax":          {"minimax"},
-		"mistral":          {"mistral", "mixtral"},
-		"yi":               {"yi-"},
-		"moonshot":         {"moonshot", "kimi"},
-		"baichuan":         {"baichuan"},
-		"internlm":         {"internlm", "intern"},
-		"mimo":             {"mimo"},
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return "unknown"
 	}
-
-	for family, patterns := range familyPatterns {
-		for _, p := range patterns {
-			if strings.Contains(name, p) {
-				return family
-			}
-		}
+	if idx := strings.Index(name, "-"); idx > 0 {
+		return name[:idx]
 	}
-
-	// Default: use first segment
-	parts := strings.Split(name, "-")
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return "unknown"
+	return name
 }
 
-// GenerateAliases produces alternative names for a model to improve matching.
+// GenerateAliases produces the set of alternative names a (canonical_id,
+// raw_model_name) pair should be reachable by. New aliases are written to
+// model_aliases at sync time, and the SQL resolver in
+// provider/client.go:loadCandidatesDB joins on them when the client's
+// requested model name doesn't exactly match the offer's raw_model_name.
+//
+// The previous implementation had a GLM-specific block (4 extra aliases
+// for cross-form names like "glm-4.7" / "glm-4-7" / "glm47"). That
+// special case is gone — every model family now gets the same 5 aliases
+// below. If a future family needs additional cross-form coverage, add
+// the variants explicitly to model_aliases after the sync (e.g. via a
+// dedicated "alias: model:foo -> model:bar" admin endpoint) rather than
+// re-introducing family-specific code here.
 func GenerateAliases(rawName, canonicalName string) []string {
 	seen := make(map[string]bool)
 	var aliases []string
 
-	addAlias := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
+	add := func(s string) {
+		s = strings.TrimSpace(strings.ToLower(s))
+		if s == "" || seen[s] {
 			return
 		}
-		name = strings.ToLower(name)
-		if !seen[name] {
-			seen[name] = true
-			aliases = append(aliases, name)
-		}
+		seen[s] = true
+		aliases = append(aliases, s)
 	}
 
-	// Add the raw name
-	addAlias(rawName)
+	// (1) The raw name exactly as the upstream returned it.
+	add(rawName)
 
-	// Add canonical name
-	addAlias(canonicalName)
+	// (2) The canonical name (whatever NormalizeModelName produced).
+	add(canonicalName)
 
-	// Add without vendor prefix
+	// (3) Raw name with vendor prefix stripped (scnet/minimax-m2.5 → minimax-m2.5).
 	if idx := strings.LastIndex(rawName, "/"); idx >= 0 {
-		addAlias(rawName[idx+1:])
+		add(rawName[idx+1:])
 	}
 
-	// Add with underscores replaced by dashes
-	addAlias(strings.ReplaceAll(rawName, "_", "-"))
+	// (4) Dashes replaced with underscores (mimo-v2.5-pro → mimo_v2.5_pro).
+	add(strings.ReplaceAll(rawName, "-", "_"))
 
-	// Add with dashes replaced by underscores
-	addAlias(strings.ReplaceAll(rawName, "-", "_"))
-
-	// For GLM models, add variants
-	if strings.Contains(strings.ToLower(rawName), "glm") {
-		// glm-4.7 -> glm-4-7, glm47
-		variant := strings.ReplaceAll(canonicalName, ".", "-")
-		addAlias(variant)
-		variant2 := strings.ReplaceAll(canonicalName, ".", "")
-		addAlias(variant2)
-		variant3 := strings.ReplaceAll(canonicalName, "-", ".")
-		addAlias(variant3)
-	}
+	// (5) Underscores replaced with dashes (mimo_v2.5_pro → mimo-v2.5-pro).
+	add(strings.ReplaceAll(rawName, "_", "-"))
 
 	return aliases
 }

@@ -483,7 +483,24 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
-			e.disableModelOffer(params.R.Context(), mnf.credentialID, mnf.rawModel, errorsx.KindModelNotFound, mnf.body)
+			// Step 5 (2026-06-18): removed the e.disableModelOffer(...) call.
+			//
+			// Why: KindModelNotFound is in the IsClientBug set (errorsx.IsClientBug),
+			// so disableModelOffer was guaranteed to early-return after logging a
+			// warn. It was dead code in the only path that called it, AND it
+			// masked the actual intent ("this credential's offer is gone — keep
+			// moving, do NOT punish the credential") behind a misleading log.
+			//
+			// What we do instead:
+			//   1. record a row in model_probe_runs so the
+			//      /api/routing/recent-model-failures badge can surface it
+			//      to the operator.
+			//   2. continue to the next candidate — the credential stays
+			//      available, the circuit is not opened, the cooling state
+			//      is not written. The classifier + targeted probe will
+			//      catch a real "this model is gone" pattern within the
+			//      next 30s-2m-5m-15m backoff window.
+			e.recordModelNotFound(params.R.Context(), mnf.credentialID, mnf.rawModel, mnf.body)
 			lastErr = execErr
 			lastKind = errorsx.KindModelNotFound
 			attempts = append(attempts, AttemptRecord{
@@ -666,6 +683,45 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		params.AuditBuilder.DecisionTrace(trace)
 	}
 	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace, Attempts: attempts, LastKind: lastKind}
+}
+
+
+// recordModelNotFound logs a single upstream model_not_found 404 to the
+// model_probe_runs table so that the /api/routing/recent-model-failures
+// admin endpoint and the probe history badge can surface it. The probe
+// background worker will pick the binding up and run targeted probes
+// (consensus + backoff) to decide whether to mark it broken_confirmed.
+//
+// We deliberately do NOT touch model_offers.available or
+// credentials.availability_state here — KindModelNotFound is in the
+// IsClientBug set (errorsx.IsClientBug), and a transient 404 from one
+// upstream should not cool the credential or strip the offer. The 3-strike
+// consensus logic in bg/model_probe.go is the only thing that may eventually
+// mark a binding unavailable, and it only does so after 3 *consecutive*
+// targeted probes agree the model is gone.
+func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, rawModel, body string) {
+	if e.DB == nil || !e.DB.Enabled() {
+		return
+	}
+	preview := body
+	if len(preview) > 500 {
+		preview = preview[:500]
+	}
+	httpStatus := 404
+	_, err := e.DB.Pool().Exec(ctx, `
+		INSERT INTO model_probe_runs
+		    (tenant_id, credential_id, raw_model_name, status,
+		     http_status, error_code, error_message, latency_ms,
+		     state_change, state_applied, triggered_by)
+		VALUES ($1, $2, $3, 'http_4xx', $4, 'model_not_found', NULLIF($5, ''), 0,
+		        'unchanged', FALSE, 'routing_404')
+	`, "default", credentialID, rawModel, httpStatus, preview)
+	if err != nil {
+		slog.Warn("record_model_not_found: insert failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error", err)
+	}
 }
 
 

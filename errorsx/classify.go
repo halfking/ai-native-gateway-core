@@ -80,12 +80,33 @@ var contextLengthCJKRe = regexp.MustCompile(
 		`超出(模型)?(最大)?(上下文|长度|限制)`,
 )
 
+// modelNotFoundRe is intentionally narrow (P5 of 2026-06-18-model-match-and-404-plan.md).
+//
+// We previously used 50-char window regexes (e.g. `model.{0,40}(not found)`) which
+// produced false positives on body strings like:
+//
+//	"Your previous model training run was not found, retry with a new id"
+//	"Model is not available in your region"
+//	"Model glm-5.1 has been deprecated, please use glm-5.2"
+//
+// Such cases are NOT model_not_found (they're region/quota/deprecation errors
+// that deserve a different status code and a different code path) and the
+// gateway used to silently swallow them, surfacing a generic 404 to the
+// caller. The new pattern uses \b word boundaries and an explicit identifier
+// token between the noun and the "not found" phrase, so the match requires
+// the body to literally be talking about a specific model/endpoint name.
+//
+// Removed phrases and why:
+//   - "model.{0,40}not available"     — over-matches region/tier restrictions.
+//   - "model.{0,40}deprecated|retired|sunset" — deprecation has its own
+//     semantics (a working model being scheduled for removal) and should
+//     NOT short-circuit routing to a 404. Future work: a dedicated
+//     KindDeprecated kind for telemetry.
 var modelNotFoundRe = regexp.MustCompile(
 	`(?i)(` +
-		`model.{0,40}(does not exist|not found|is unknown|unknown model|not available)|` +
-		`(no such|unknown) model|` +
-		`endpoint.{0,40}(does not exist|not found)|` +
-		`model.{0,40}(deprecated|retired|sunset))`,
+		`\b(model|endpoint)[\s:]+['"]?[a-z0-9._\-/:]{1,80}['"]?\s+(does not exist|is not found|not found|is unknown|unknown)\b|` +
+		`\b(no such|unknown)\s+model\b` +
+		`)`,
 )
 var modelNotFoundCJKRe = regexp.MustCompile(
 	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到`,
@@ -256,15 +277,23 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 }
 
 // ClassifyResponseBody inspects an error body fragment (e.g. SSE error
-// chunk) for concurrent-overload signals. Returns KindConcurrent when
-// the body indicates the upstream is overloaded, otherwise "" (caller
-// should fall through to other classification).
-func ClassifyResponseBody(body []byte) ErrorKind {
+// chunk) for upstream-error signals. Returns the matched ErrorKind or
+// "" if the body doesn't match any of the known patterns (caller should
+// fall through to other classification).
+//
+// P5 of 2026-06-18-model-match-and-404-plan.md: model_not_found is only
+// returned when the HTTP status is one of 400, 404, or 422. A 5xx body
+// that happens to mention "model not found" (e.g. a misconfigured proxy
+// returning a 502 with a downstream 404 embedded) is treated as
+// KindUpstreamDown instead, because the failure is the gateway's
+// connectivity, not the model's existence.
+func ClassifyResponseBody(status int, body []byte) ErrorKind {
 	if len(body) > 0 {
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return KindConcurrent
 		}
-		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
+		if (status == 400 || status == 404 || status == 422) &&
+			(modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body)) {
 			return KindModelNotFound
 		}
 		if unsupportedFeatureRe.Match(body) {

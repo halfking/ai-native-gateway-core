@@ -188,7 +188,10 @@ func TestClassifyError_EOFWithoutDoneIsStreamTimeout(t *testing.T) {
 }
 
 func TestClassifyResponseBody_GoDefault404_IsTransient(t *testing.T) {
-	if got := ClassifyResponseBody([]byte("404 page not found")); got != "" {
+	// Even with a 404 status, a generic web-server 404 body ("404 page not
+	// found") must NOT be classified as KindModelNotFound — the body
+	// doesn't reference a model or endpoint identifier (P5 tightening).
+	if got := ClassifyResponseBody(404, []byte("404 page not found")); got != "" {
 		t.Fatalf("expected empty (no match) for Go default 404 body, got %q; generic web-server 404 must NOT be classified as KindModelNotFound", got)
 	}
 }
@@ -204,10 +207,70 @@ func TestClassifyResponseBody_ConcurrentOverload(t *testing.T) {
 		{`eof_without_done`, KindStreamTimeout},
 	}
 	for _, tc := range tests {
-		kind := ClassifyResponseBody([]byte(tc.body))
+		kind := ClassifyResponseBody(429, []byte(tc.body))
 		if kind != tc.kind {
 			t.Errorf("for %q expected %q, got %q", tc.body, tc.kind, kind)
 		}
+	}
+}
+
+// TestClassifyResponseBody_ModelNotFound_P5Tightened covers the regex / status
+// tightening from 2026-06-18-model-match-and-404-plan.md §P5.
+//
+// Negative cases: bodies that USED to mis-classify as KindModelNotFound
+// (region errors, deprecation notices, training-job errors) must now stay
+// unmatched. Positive cases: legitimate "model X is not found" bodies on
+// 400/404/422 must still be detected.
+func TestClassifyResponseBody_ModelNotFound_P5Tightened(t *testing.T) {
+	positive := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "anthropic_model_not_found", status: 404, body: `{"type":"error","error":{"type":"not_found_error","message":"model: claude-opus-4-6 not found"}}`},
+		{name: "openai_model_not_found", status: 404, body: `{"error":{"message":"The model 'gpt-5-fake' does not exist","type":"invalid_request_error"}}`},
+		{name: "model_unknown", status: 404, body: `model glm-5.1 is unknown`},
+		{name: "no_such_model", status: 400, body: `{"error":"no such model: foo"}`},
+		{name: "endpoint_does_not_exist", status: 422, body: `endpoint /v1/foo does not exist`},
+		{name: "cjk_no_match", status: 404, body: `模型不存在`},
+		{name: "cjk_no_match_with_name", status: 404, body: `模型 glm-5.1 不存在`},
+	}
+	for _, tc := range positive {
+		t.Run("pos/"+tc.name, func(t *testing.T) {
+			got := ClassifyResponseBody(tc.status, []byte(tc.body))
+			if got != KindModelNotFound {
+				t.Errorf("ClassifyResponseBody(%d, %q) = %q, want %q",
+					tc.status, tc.body, got, KindModelNotFound)
+			}
+		})
+	}
+
+	negative := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		// region / tier restriction — looks like "model is not available" but isn't model_not_found
+		{name: "region_unavailable", status: 403, body: `{"error":"Model glm-5.1 is not available in your region"}`},
+		// deprecation — a working model, not missing
+		{name: "deprecated", status: 200, body: `{"error":"Model glm-4 has been deprecated, please use glm-5"}`},
+		// training job error — "model" and "not found" appear far apart in unrelated context
+		{name: "training_job_error", status: 500, body: `Your previous model training run was not found, please retry with a new model id`},
+		// 5xx upstream with a body that mentions a model — should NOT be model_not_found (P5)
+		{name: "502_with_model_in_body", status: 502, body: `model glm-5.1 not found`},
+		// generic 4xx with no model reference
+		{name: "404_no_model", status: 404, body: `404 page not found`},
+		// 200 OK with deprecation advisory — should be a different kind, not model_not_found
+		{name: "200_with_deprecation", status: 200, body: `model glm-4 has been retired`},
+	}
+	for _, tc := range negative {
+		t.Run("neg/"+tc.name, func(t *testing.T) {
+			got := ClassifyResponseBody(tc.status, []byte(tc.body))
+			if got == KindModelNotFound {
+				t.Errorf("ClassifyResponseBody(%d, %q) = KindModelNotFound, want NOT model_not_found (P5 misclassification guard)",
+					tc.status, tc.body)
+			}
+		})
 	}
 }
 
