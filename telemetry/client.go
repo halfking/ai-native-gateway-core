@@ -138,6 +138,18 @@ type RequestLogEntry struct {
 	ModelChosen    *string  `json:"model_chosen,omitempty"`
 	StrategyUsed   *string  `json:"strategy_used,omitempty"`
 	CreditsCharged *int64   `json:"credits_charged,omitempty"`
+
+	// Round 47 (2026-06-18) compression v7 T2: parent-child chain tracking.
+	// Mirrors the 4 columns added by db/migrations/013_compression_columns.sql
+	// (parent_request_id, compression_reason, compression_strategy,
+	// compression_meta). Populated by compressor/ when mode=1 (auto_threshold)
+	// or mode=2 (on_4xx) fires. Single-level chain: a child row has at most
+	// 1 parent (its own request_id pre-compression); no grandparent.
+	// See docs/llm-gateway-go/2026-06-18-compression-v7-final.md §3.1.
+	ParentRequestID     *string         `json:"parent_request_id,omitempty"`
+	CompressionReason   *string         `json:"compression_reason,omitempty"`
+	CompressionStrategy *string         `json:"compression_strategy,omitempty"`
+	CompressionMeta     json.RawMessage `json:"compression_meta,omitempty"`
 }
 
 func NewClient() *Client {
@@ -408,7 +420,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			gw_session_id, gw_task_id,
 			api_key_prefix, api_key_owner_user, application_code,
 			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
-			work_type, credits_charged
+			work_type, credits_charged,
+			-- Round 47 compression v7 T2: parent-child chain (4 columns).
+			parent_request_id, compression_reason, compression_strategy, compression_meta
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -428,7 +442,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$42, $43,
 			$44, $45, $46,
 			$47, $48, $49, CAST($50 AS jsonb), $51,
-			$52, $53
+			$52, $53,
+			$54, $55, $56, CAST($57 AS jsonb)
 		)
 	`,
 		entry.RequestID,
@@ -484,6 +499,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.AutoConfidence,
 		entry.WorkType,
 		entry.CreditsCharged,
+		// Round 47 compression v7 T2: parent-child chain payload.
+		entry.ParentRequestID,
+		entry.CompressionReason,
+		entry.CompressionStrategy,
+		entry.CompressionMeta,
 	)
 	if err != nil {
 		return err
@@ -637,7 +657,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       auto_decision = COALESCE(CAST($47 AS jsonb), rl.auto_decision),
 		       auto_confidence = COALESCE($48, rl.auto_confidence),
 		       work_type = COALESCE($49, rl.work_type),
-		       credits_charged = COALESCE($50, rl.credits_charged)
+		       credits_charged = COALESCE($50, rl.credits_charged),
+		       -- Round 47 compression v7 T2: parent-child chain payload.
+		       parent_request_id = COALESCE($51, rl.parent_request_id),
+		       compression_reason = COALESCE($52, rl.compression_reason),
+		       compression_strategy = COALESCE($53, rl.compression_strategy),
+		       compression_meta = COALESCE(CAST($54 AS jsonb), rl.compression_meta)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -692,6 +717,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.AutoConfidence,
 		entry.WorkType,
 		entry.CreditsCharged,
+		// Round 47 compression v7 T2: parent-child chain payload.
+		entry.ParentRequestID,
+		entry.CompressionReason,
+		entry.CompressionStrategy,
+		entry.CompressionMeta,
 	)
 	if err != nil {
 		return err
