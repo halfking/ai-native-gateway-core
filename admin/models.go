@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/catalog"
 )
 
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -150,11 +152,36 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT mc.id, mc.canonical_name, COALESCE(mc.display_name,''),
-		       COALESCE(mc.modality,'text'), mc.context_window, mc.parameters_b,
-		       COALESCE(mc.status,'active'), COALESCE(mc.tags::text,'[]'),
-		       COALESCE(mc.input_price_cny,0), COALESCE(mc.output_price_cny,0)
+		SELECT mc.id,
+		       mc.canonical_name,
+		       COALESCE(NULLIF(TRIM(mc.display_name), ''), mc.canonical_name),
+		       mc.family,
+		       COALESCE(NULLIF(TRIM(mc.modality), ''), 'text'),
+		       mc.context_window,
+		       mc.parameters_b,
+		       mc.notes,
+		       COALESCE(mc.status, 'active'),
+		       mc.disabled_reason,
+		       mc.source,
+		       COALESCE(mc.tags::text, '[]'),
+		       COALESCE(mc.tags_locked, FALSE),
+		       mc.tags_updated_at,
+		       mc.updated_at,
+		       COALESCE(NULLIF(TRIM(mf.vendor), ''), ''),
+		       COALESCE(alias_counts.cnt, 0),
+		       COALESCE(offer_counts.cnt, 0)
 		FROM models_canonical mc
+		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS cnt
+			FROM model_aliases ma
+			WHERE ma.canonical_id = mc.id AND COALESCE(ma.status, 'active') = 'active'
+		) alias_counts ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::int AS cnt
+			FROM model_offers mo
+			WHERE mo.canonical_id = mc.id AND mo.available = TRUE
+		) offer_counts ON TRUE
 		WHERE %s
 		ORDER BY mc.family NULLS LAST, mc.status, mc.canonical_name
 	`, strings.Join(where, " AND ")), args...)
@@ -166,31 +193,48 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type model struct {
-		ID            int             `json:"id"`
-		CanonicalName string          `json:"canonical_name"`
-		DisplayName   string          `json:"display_name"`
-		Modality      string          `json:"modality"`
-		ContextWindow *int            `json:"context_window"`
-		ParametersB   *float64        `json:"parameters_b"`
-		Status        string          `json:"status"`
-		Tags          json.RawMessage `json:"tags"`
-		InputPriceCNY float64         `json:"input_price_cny"`
-		OutputPriceCNY float64       `json:"output_price_cny"`
+		ID             int        `json:"id"`
+		CanonicalName  string     `json:"canonical_name"`
+		DisplayName    string     `json:"display_name"`
+		Family         *string    `json:"family"`
+		Vendor         string     `json:"vendor"`
+		Modality       string     `json:"modality"`
+		ContextWindow  *int       `json:"context_window"`
+		ParametersB    *float64   `json:"parameters_b"`
+		Notes          *string    `json:"notes"`
+		Status         string     `json:"status"`
+		DisabledReason *string    `json:"disabled_reason"`
+		Source         *string    `json:"source"`
+		Tags           []string   `json:"tags"`
+		TagsLocked     bool       `json:"tags_locked"`
+		TagsUpdatedAt  *time.Time `json:"tags_updated_at"`
+		UpdatedAt      *time.Time `json:"updated_at"`
+		AliasCount     int        `json:"alias_count"`
+		OfferCount     int        `json:"offer_count"`
 	}
 	models := make([]model, 0)
 	for rows.Next() {
 		var m model
 		var tagsStr string
-		if err := rows.Scan(&m.ID, &m.CanonicalName, &m.DisplayName, &m.Modality,
-			&m.ContextWindow, &m.ParametersB, &m.Status, &tagsStr,
-			&m.InputPriceCNY, &m.OutputPriceCNY); err != nil {
+		var family *string
+		var dbVendor string
+		if err := rows.Scan(
+			&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
+			&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
+			&tagsStr, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
+			&dbVendor, &m.AliasCount, &m.OfferCount,
+		); err != nil {
 			slog.Error("listModels scan failed", "error", err)
 			continue
 		}
-		if !json.Valid([]byte(tagsStr)) {
-			tagsStr = "[]"
+		m.Family = family
+		m.Tags = parseModelTags(tagsStr)
+		familyID := ""
+		if family != nil {
+			familyID = *family
 		}
-		m.Tags = json.RawMessage(tagsStr)
+		m.Vendor = catalog.ResolveVendor(m.CanonicalName, familyID, dbVendor)
+		m.Modality = catalog.EffectiveModality(m.CanonicalName, m.Modality)
 		models = append(models, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -436,6 +480,18 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
+func parseModelTags(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "null" {
+		return []string{}
+	}
+	var tags []string
+	if err := json.Unmarshal([]byte(raw), &tags); err == nil {
+		return tags
+	}
+	return []string{}
+}
+
 var knownFamilyMetadata = map[string]struct {
 	DisplayName string
 	Vendor      string
@@ -457,16 +513,13 @@ func familyDisplayAndVendor(familyID string) (string, string) {
 		return "", ""
 	}
 	if m, ok := knownFamilyMetadata[familyID]; ok {
-		return m.DisplayName, m.Vendor
+		return m.DisplayName, catalog.ResolveVendor("", familyID, m.Vendor)
 	}
-	display := familyID
-	parts := strings.SplitN(familyID, "-", 2)
-	if len(parts) == 2 {
-		display = parts[0] + " " + titleWord(parts[1])
-	} else {
-		display = titleWord(familyID)
+	display, vendor := catalog.FamilyDisplayAndVendor(familyID)
+	if display == "" {
+		display = familyID
 	}
-	return display, ""
+	return display, vendor
 }
 
 func titleWord(s string) string {
@@ -515,6 +568,9 @@ func (h *Handler) listModelFamilies(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&f.ID, &f.DisplayName, &f.Vendor, &f.Status, &f.Source, &f.Notes, &f.ModelCount); err != nil {
 			slog.Warn("listModelFamilies scan failed", "error", err)
 			continue
+		}
+		if strings.TrimSpace(f.Vendor) == "" {
+			_, f.Vendor = familyDisplayAndVendor(f.ID)
 		}
 		items[f.ID] = &f
 	}

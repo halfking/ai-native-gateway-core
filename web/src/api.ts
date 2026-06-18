@@ -1766,6 +1766,7 @@ export interface ModelCanonical {
   canonical_name: string
   display_name: string | null
   family: string | null
+  vendor?: string | null
   modality: string
   context_window: number | null
   parameters_b: number | string | null

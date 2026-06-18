@@ -12,8 +12,10 @@ import {
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import CatalogPanel from '../components/CatalogPanel.vue'
 import { useFilterChips } from '../composables/useFilterChips'
+import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
 import { isReadOnlyMode, isPlatformOpsView } from '../store'
+import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../utils/modelCatalog'
 
 type PageTab = 'canonical' | 'catalog'
 
@@ -63,7 +65,9 @@ const providers = ref<Provider[]>([])
 const namespaces = ref<TagNamespaceGroup[]>([])
 const loading = ref(false)
 const error = ref('')
-const search = ref('')
+const pickedModel = ref('')
+const textSearch = ref('')
+const searchStub = ref('')
 const activeTags = ref<string[]>([])
 const statusFilter = ref('')
 const editingId = ref<number | null>(null)
@@ -92,20 +96,34 @@ const statuses: ModelStatus[] = ['active', 'disabled', 'deprecated', 'hidden']
 const modalities = ['text', 'vision', 'audio', 'multimodal', 'embedding']
 const singleSelectNamespaces = new Set(['family', 'generation', 'modality', 'series', 'variant', 'version'])
 
-function matchesVendor(model: ModelCanonical, vendor: string): boolean {
-  if (!vendor) return true
-  const family = families.value.find((item) => item.id === model.family)
-  return family?.vendor === vendor
+const modelStatusOptions = [
+  { value: 'active', label: 'active' },
+  { value: 'disabled', label: 'disabled' },
+  { value: 'deprecated', label: 'deprecated' },
+  { value: 'hidden', label: 'hidden' },
+]
+
+function modelVendorName(model: ModelCanonical): string {
+  return resolveVendor(
+    model.canonical_name,
+    model.family,
+    model.vendor ?? families.value.find((f) => f.id === model.family)?.vendor,
+  )
 }
 
-function matchesSearch(model: ModelCanonical, query: string): boolean {
-  const q = query.toLowerCase().trim()
-  if (!q) return true
-  return (
-    model.canonical_name.toLowerCase().includes(q) ||
-    (model.display_name ?? '').toLowerCase().includes(q) ||
-    (model.family ?? '').toLowerCase().includes(q) ||
-    model.tags.some((tag) => tag.toLowerCase().includes(q))
+function matchesVendor(model: ModelCanonical, vendor: string): boolean {
+  if (!vendor) return true
+  return modelVendorName(model) === vendor
+}
+
+function matchesSearch(model: ModelCanonical, _query: string): boolean {
+  return matchesModelCatalogSearch(
+    model.canonical_name,
+    model.display_name ?? '',
+    modelVendorName(model),
+    pickedModel.value,
+    textSearch.value,
+    [model.family ?? '', ...normalizeTags(model.tags)],
   )
 }
 
@@ -119,9 +137,9 @@ const {
   items: models,
   namespaceGroups: namespaces,
   activeTags,
-  search,
+  search: searchStub,
   vendor: selectedVendor,
-  getTags: (model) => model.tags,
+  getTags: (model) => normalizeTags(model.tags),
   matchesSearch,
   matchesVendor,
   singleSelectNamespaces,
@@ -130,17 +148,14 @@ const {
 // 计算厂商列表
 const vendors = computed(() => {
   const vendorSet = new Set<string>()
-  const base = filterModels(models.value, { search: search.value, tags: activeTags.value })
-  base.forEach((model) => {
-    const family = families.value.find((item) => item.id === model.family)
-    if (family?.vendor) vendorSet.add(family.vendor)
-  })
+  const base = filterModels(models.value, { tags: activeTags.value })
+  base.forEach((model) => vendorSet.add(modelVendorName(model)))
   if (selectedVendor.value) vendorSet.add(selectedVendor.value)
-  return Array.from(vendorSet).sort()
+  return Array.from(vendorSet).sort((a, b) => a.localeCompare(b, 'zh-CN'))
 })
 
 const familyOptions = computed(() => {
-  const base = filterModels(models.value, { vendor: selectedVendor.value, search: search.value })
+  const base = filterModels(models.value, { vendor: selectedVendor.value })
   const counts = new Map<string, number>()
   base.forEach((model) => {
     if (!model.family) return
@@ -222,8 +237,14 @@ function clearFilters() {
   selectedVendor.value = ''
   selectedCanonical.value = ''
   selectedModelDetail.value = null
-  search.value = ''
+  pickedModel.value = ''
+  textSearch.value = ''
   if (shouldReload) loadModels()
+}
+
+function onStatusFilterChange(status: string) {
+  statusFilter.value = status
+  loadModels()
 }
 
 function removeTag(tag: string) {
@@ -242,7 +263,8 @@ function clearVendorFilter() {
 }
 
 function clearSearchFilter() {
-  search.value = ''
+  pickedModel.value = ''
+  textSearch.value = ''
 }
 
 const activeFilterChips = useFilterChips(() => [
@@ -258,9 +280,9 @@ const activeFilterChips = useFilterChips(() => [
     onRemove: clearVendorFilter,
     className: 'badge-gray',
   } : null,
-  search.value.trim() ? {
-    key: `search:${search.value.trim()}`,
-    label: `搜索: ${search.value.trim()}`,
+  pickedModel.value.trim() || textSearch.value.trim() ? {
+    key: `search:${pickedModel.value}:${textSearch.value}`,
+    label: `模型: ${pickedModel.value || textSearch.value.trim()}`,
     onRemove: clearSearchFilter,
     className: 'badge-gray',
   } : null,
@@ -639,23 +661,26 @@ onMounted(async () => {
           >
             {{ showNamespaceFilters ? '收起高级筛选' : '展开高级筛选' }}
           </button>
-          <button v-if="activeTags.length || statusFilter || selectedVendor || search.trim()" class="btn btn-ghost btn-sm" @click="clearFilters">清空</button>
+          <button v-if="activeTags.length || statusFilter || selectedVendor || pickedModel.trim() || textSearch.trim()" class="btn btn-ghost btn-sm" @click="clearFilters">清空</button>
         </div>
       </div>
       <div class="card-body">
-        <div class="filter-row">
-          <select v-model="statusFilter" class="input" style="max-width:180px" @change="loadModels">
-            <option value="">全部状态</option>
-            <option v-for="s in statuses" :key="s" :value="s">{{ s }}</option>
-          </select>
-
-          <select v-model="selectedVendor" class="input" style="max-width:200px">
-            <option value="">全部厂商</option>
-            <option v-for="v in vendors" :key="v" :value="v">{{ v }}</option>
-          </select>
-
-          <input v-model="search" class="input" placeholder="搜索名称 / family / 标签" style="max-width:280px" />
-        </div>
+        <ModelCatalogFilterBar
+          v-model:picked-model="pickedModel"
+          v-model:filter-vendor="selectedVendor"
+          v-model:extra-filter="statusFilter"
+          v-model:text-search="textSearch"
+          :vendor-options="vendors"
+          :count="filtered.length"
+          picker-title="模型管理 · 标准模型筛选"
+          picker-placeholder="选择标准模型…"
+          status-label="全部状态"
+          :status-options="modelStatusOptions"
+          show-text-search
+          text-search-placeholder="family / 标签…"
+          :show-clear="false"
+          @status-change="onStatusFilterChange"
+        />
 
         <div v-if="familyOptions.length" class="family-quick-row">
           <span class="muted small">Family 快捷筛选</span>
@@ -729,7 +754,7 @@ onMounted(async () => {
                 <code>{{ m.canonical_name }}</code>
               </td>
               <td>{{ m.display_name || '-' }}</td>
-              <td>{{ families.find(f => f.id === m.family)?.vendor || '-' }}</td>
+              <td>{{ modelVendorName(m) }}</td>
               <td>{{ m.family || '-' }}</td>
               <td><span class="badge" :class="statusBadgeClass(m.status)">{{ m.status }}</span></td>
               <td>{{ m.modality }}</td>

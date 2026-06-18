@@ -104,38 +104,184 @@ var defaultHTTPDoer upstreamHTTPDoer = func(req *http.Request) (*http.Response, 
 // that would itself OOM on a 900K-token conversation.
 const defaultCompactionMinWindow = 800_000
 
-// compactionSystemPrompt is the Anthropic SESSION_MEMORY_PROMPT template
-// we ship to the summarization LLM. The summary it produces is then
-// spliced back into the request body by rebuilder_openai.go /
-// rebuilder_anthropic.go (T6 / T7).
+// compactionSystemPrompt is the enhanced SESSION_MEMORY_PROMPT used by
+// the v3 session-level compressor. Based on Anthropic's official template
+// (https://platform.claude.com/cookbook/misc-session-memory-compaction)
+// with key enhancements for lossless compression:
 //
-// Mirrors Anthropic's official template at
-// https://platform.claude.com/cookbook/misc-session-memory-compaction
-const compactionSystemPrompt = `You compress long agent conversation history for downstream LLM calls.
+//  1. LOSSLESS_FIRST: all exact values (IDs, paths, keys, numbers, errors)
+//     are preserved verbatim — no paraphrasing of factual data.
+//  2. KEY_QUOTES: technical statements the user made are quoted directly.
+//  3. DENSE_STRUCTURE: 7 sections ordered by decision-relevance so the
+//     downstream LLM can pick up exactly where the conversation left off.
+//  4. NEVER_DROP: tool results, error messages, corrections, and negative
+//     feedback are always kept — these signal past failures the LLM must
+//     not repeat.
+//
+// v3 adds the "## Tool Results & Data" section to capture tool call
+// outputs (file contents, API responses, query results) that would
+// otherwise be lost by mechanical trim but are critical for correctness.
+const compactionSystemPrompt = `你是一个专业的对话历史压缩专家，负责将长对话历史压缩为结构化摘要供下游LLM继续工作。
+
+## 核心原则：内容不丢失
+
+**绝对不能丢失的内容（逐字保留）：**
+- 用户说过的所有错误报告和纠错（"不对"、"这里有bug"、"你搞错了"等）
+- 精确标识符：文件路径、URL、ID、API Key前缀、端口号、IP地址、变量名、函数名
+- 具体数值：版本号、行号、数量、金额、时间戳、配置参数
+- 工具调用结果的关键数据（SQL查询结果、API响应中的重要字段、文件内容摘要）
+- 用户的负面反馈和修正指令（必须完整保留，LLM不能重复已被纠正的错误）
+
+**必须以直接引用方式保留：**
+- 用户的第一条消息（完整原文）
+- 用户提出的需求变更和补充说明
+- 所有报错信息的完整内容
+
+<summary-format>
+## 用户意图（User Intent）
+[用户第一条消息原文] + [后续需求演化和补充说明]
+
+## 已完成工作（Completed Work）
+[已确认完成的具体任务，包含精确的文件路径、函数名、变更内容]
+
+## 工具结果与数据（Tool Results & Data）
+[工具调用返回的关键数据：SQL结果、API响应字段、文件内容摘要、命令输出]
+[格式：<tool: 工具名> → <关键数据>]
+
+## 错误与纠正（Errors & Corrections）
+[所有报错信息（逐字）+ 用户对LLM的纠正（逐字）+ 已解决方案]
+
+## 进行中工作（Active Work）
+[当前正在处理的任务，精确到最后操作的文件/函数/步骤]
+
+## 待办任务（Pending Tasks）
+[明确的待办项，按优先级排列]
+
+## 关键引用（Key References）
+[所有重要的路径、URL、配置值、代码片段、变量名的精确列表]
+</summary-format>
+
+<rules>
+1. 每个section不为空则必须填写，宁可冗长也不能遗漏关键事实
+2. 数字、路径、标识符必须精确复制，不能改写
+3. 工具结果不能只写"调用了工具"，要写出结果的关键内容
+4. 用户纠正必须用引号标注原文："用户说：xxx"
+5. 禁止输出preamble或markdown代码块包裹
+6. 禁止对具体技术值进行模糊化（如不能把"端口8080"写成"某端口"）
+</rules>
+
+仅输出压缩后的结构化摘要，不输出任何说明文字。`
+
+// compactionSystemPromptEN is the English variant. Used when task_type
+// or upstream model prefers English (e.g. code_debug on non-CN models).
+const compactionSystemPromptEN = `You are a professional conversation compressor. Produce a lossless structured summary of the conversation history for downstream LLM continuation.
+
+## Core Rule: LOSSLESS
+
+**Verbatim preserve (NEVER paraphrase):**
+- All user corrections and negative feedback ("wrong", "that's a bug", "you misunderstood")
+- Exact identifiers: file paths, URLs, IDs, API key prefixes, ports, IPs, variable/function names
+- Exact numbers: version numbers, line numbers, counts, amounts, timestamps, config params
+- Tool call output data (SQL results, API response fields, file content summaries)
+- Error messages in full
+
+**Quote directly:**
+- First user message (complete original text)
+- Requirement changes and additions
+- All error messages verbatim
 
 <summary-format>
 ## User Intent
-The user's original request and any refinements. Use direct quotes for key requirements.
-If the user's goal evolved during the conversation, capture that progression.
+[First user message verbatim] + [subsequent requirement evolution]
 
 ## Completed Work
+[Confirmed-done tasks with exact file paths, function names, changes]
+
+## Tool Results & Data
+[Key data from tool calls: SQL results, API response fields, file content, command output]
+[Format: <tool: name> → <key data>]
+
 ## Errors & Corrections
+[All error messages (verbatim) + user corrections to LLM (verbatim) + resolutions]
+
 ## Active Work
+[Current in-progress task, precise to last-touched file/function/step]
+
 ## Pending Tasks
+[Explicit pending items, priority-ordered]
+
 ## Key References
+[All important paths, URLs, config values, code snippets, variable names — exact list]
 </summary-format>
 
-<preserve-rules>
-Always preserve when present:
-- Exact identifiers (IDs, paths, URLs, keys, names)
-- Error messages verbatim
-- User corrections and negative feedback
-- Specific values, formulas, or configurations
-- The precise state of any in-progress work
-- The first user message verbatim MUST be quoted under "User Intent"
-</preserve-rules>
+<rules>
+1. Never leave a non-empty section blank; prefer verbose over omitting key facts
+2. Numbers, paths, identifiers must be copied exactly — no rewording
+3. Tool results: write the actual key output, not just "tool was called"
+4. User corrections must use quotes: "User said: xxx"
+5. No preamble or markdown fence wrappers
+6. Never vague-ify technical values (e.g., never write "some port" instead of "port 8080")
+</rules>
 
-Write a dense factual summary only - no preamble, no markdown fences.`
+Output only the structured summary, no explanatory text.`
+
+// compactionPromptForTaskType returns the best compaction prompt for the
+// given task type and language. Falls back to the default CN prompt for
+// unknown task types so callers don't need to guard on nil.
+//
+// v3 T22: wrap the base prompts with task-specific preservation hints.
+// The base prompt (compactionSystemPrompt) is always included verbatim;
+// the suffix adds task-specific "also preserve" clauses so the LLM knows
+// which domain facts matter most for this task class.
+//
+// Decision: CN prompt is default because our primary users and upstream
+// models (minimax-text-01) work better with Chinese instructions.
+// English suffix is appended for code_* tasks since code identifiers and
+// error messages are usually in English anyway.
+func compactionPromptForTaskType(taskType string) string {
+	switch taskType {
+	case "code_debug", "code_review", "code_refactor":
+		return compactionSystemPromptEN + `
+
+## Additional preservation rules for CODE tasks:
+- Stack traces: preserve complete, including all frame lines
+- Compiler/linter errors: exact message + file:line
+- Diff/patch fragments: keep as-is, never summarise hunks
+- Test names and assertion messages: verbatim
+- Variable/function renames: record both old and new names`
+
+	case "doc_translate":
+		return compactionSystemPrompt + `
+
+## 文档翻译任务附加保留规则：
+- 源语言/目标语言对：逐字保留
+- 专业术语对照表：完整保留所有条目
+- 已翻译片段：保留原文+译文对照
+- 格式要求（段落、标题层级、表格）：精确描述`
+
+	case "data_analysis", "sql":
+		return compactionSystemPromptEN + `
+
+## Additional preservation rules for DATA tasks:
+- SQL queries: preserve complete query text, not just intent
+- Schema definitions: table names, column names, data types
+- Query results: key rows/counts/aggregates verbatim
+- Data quality issues found: exact description + affected rows/columns`
+
+	case "deployment", "devops", "infra":
+		return compactionSystemPrompt + `
+
+## 部署/运维任务附加保留规则：
+- 所有服务器IP、端口、域名：精确保留
+- 命令输出的关键行（error/warning/success状态）：逐字保留
+- 环境变量名（不含值）：完整列出
+- 部署步骤执行状态（已完成/失败/待执行）：精确记录
+- Rollback相关信息：完整保留`
+
+	default:
+		return compactionSystemPrompt
+	}
+}
 
 // compactionModelsFromEnv returns ordered compaction model IDs. Lower
 // index = preferred (cost/affinity). Caller walks the slice in order
