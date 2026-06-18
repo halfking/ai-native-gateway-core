@@ -11,6 +11,7 @@ import {
 import type { MaasLedgerEntry, MaasUsageSummary } from '../../api'
 import { useMaasTenantContext } from '../../composables/useMaasTenantContext'
 import PageBackLink from '../../components/PageBackLink.vue'
+import FeeCostCell from '../../components/FeeCostCell.vue'
 
 const { tenantLabel, tenantCode, isAdminTenantView, pageTitle: ctxPageTitle, maasBackLink } = useMaasTenantContext()
 const pageTitle = computed(() =>
@@ -52,8 +53,8 @@ const maxTrendRequests = computed(() => {
 
 const pricingLink = computed(() =>
   isAdminTenantView.value
-    ? { path: '/maas/pricing', query: { tenant: tenantCode.value } }
-    : { path: '/maas/pricing' },
+    ? { path: '/tenant/pricing', query: { tenant: tenantCode.value } }
+    : { path: '/tenant/pricing' },
 )
 
 function fmtCredits(n: number) {
@@ -139,7 +140,14 @@ onMounted(load)
     <div v-if="summary" class="stat-cards">
       <div class="stat-card card">
         <div class="stat-label">积分消耗</div>
-        <div class="stat-value">{{ fmtNum(summary.total_credits) }} <span class="unit">积分</span></div>
+        <div class="stat-value stat-value--fee">
+          <FeeCostCell
+            inline
+            :credits="summary.total_credits"
+            :cost-usd="summary.total_cost_usd"
+            :show-cost="isAdminTenantView"
+          />
+        </div>
         <div class="stat-hint">近 {{ days }} 天 · {{ fmtNum(summary.total_requests) }} 次请求</div>
       </div>
       <div class="stat-card card">
@@ -206,7 +214,15 @@ onMounted(load)
               :style="{ width: (row.credits / maxModelCredits * 100) + '%' }"
             />
           </span>
-          <span class="bar-meta">{{ fmtNum(row.credits) }} 积分 · {{ fmtNum(row.requests) }} 次</span>
+          <span class="bar-meta">
+            <FeeCostCell
+              inline
+              :credits="row.credits"
+              :cost-usd="row.cost_usd"
+              :show-cost="isAdminTenantView"
+            />
+            · {{ fmtNum(row.requests) }} 次
+          </span>
         </div>
       </div>
     </div>
@@ -292,6 +308,14 @@ onMounted(load)
   font-size: 26px;
   font-weight: 700;
   color: var(--text);
+}
+.stat-value--fee :deep(.fee-main) {
+  font-size: inherit;
+  font-weight: inherit;
+}
+.stat-value--fee :deep(.fee-cost-sub) {
+  font-size: 11px;
+  font-weight: 400;
 }
 .stat-value .unit {
   font-size: 13px;

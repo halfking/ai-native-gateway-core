@@ -8,7 +8,7 @@ export type MaasBackLink = {
   label: string
 }
 
-/** Admin viewing a specific tenant's MaaS data via ?tenant=code on /maas/* routes. */
+/** Admin viewing a specific tenant's portal data via ?tenant=code on /tenant/* routes. */
 export function useMaasTenantContext() {
   const route = useRoute()
 
@@ -75,13 +75,13 @@ export function useMaasTenantContext() {
       case 'models':
         return { to: { path: '/' }, label: '返回仪表盘' }
       case 'pricing':
-        return { to: { path: '/maas/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
+        return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'usage':
-        return { to: { path: '/maas/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
+        return { to: { path: '/tenant/account', ...(q ? { query: q } : {}) }, label: '返回账户' }
       case 'account':
         return { to: { path: '/' }, label: '返回仪表盘' }
       case 'order':
-        return { to: { path: '/maas/pricing', ...(q ? { query: q } : {}) }, label: '返回套餐' }
+        return { to: { path: '/tenant/pricing', ...(q ? { query: q } : {}) }, label: '返回套餐' }
       default:
         return { to: { path: '/' }, label: '返回' }
     }

@@ -7,13 +7,14 @@
 # build context.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 kx-base:go-vue AS builder
+FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue AS builder
 
-# Defensive: kx-base:go-vue (Alpine 3.23) already provides git/ca-certificates,
-# nodejs + npm. Reinstall only if missing so the build works on any base variant.
-RUN apk add --no-cache git ca-certificates nodejs npm 2>/dev/null \
- || apk add --no-cache git ca-certificates 2>/dev/null \
- || (apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates nodejs npm && rm -rf /var/lib/apt/lists/*)
+# Defensive: kx-base:go-vue already provides git/ca-certificates, nodejs + npm.
+# Verify availability; fail fast if any are missing.
+RUN for cmd in git node npm; do command -v "$cmd" >/dev/null 2>&1 || (echo "ERROR: $cmd not found in base image" && exit 1); done
+
+# kx-base:go-vue runs as non-root 'appuser' — switch back to root for build
+USER root
 
 WORKDIR /src
 COPY go.mod go.sum ./

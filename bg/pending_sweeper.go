@@ -144,6 +144,18 @@ func (s *PendingSweeper) sweep(ctx context.Context) {
 			// Get. Probably the async goroutine finished. Skip.
 			continue
 		}
+		// Audit fix 6.1: double-check status right before Save
+		// to prevent overwriting a completed/failed entry that
+		// the async goroutine wrote between our Get and Save.
+		// The race window is small (~5ms) but real; without this
+		// check, a legitimate successful response could be
+		// silently overwritten as "failed: stale_timeout".
+		recheckCtx, recheckCancel := context.WithTimeout(ctx, 3*time.Second)
+		rechecked, refound, _ := s.store.Get(recheckCtx, e.SessionID, e.RequestID)
+		recheckCancel()
+		if refound && rechecked != nil && rechecked.Status != pending.StatusInProgress {
+			continue
+		}
 		entry.Status = pending.StatusFailed
 		entry.ErrorMessage = "stale_timeout"
 		entry.CompletedAt = time.Now().Unix()

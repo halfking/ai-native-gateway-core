@@ -20,12 +20,13 @@ type tenantInfo struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 
 	// Aggregate stats (populated for list/detail)
-	UserCount       int   `json:"user_count,omitempty"`
-	APIKeyCount     int   `json:"api_key_count,omitempty"`
-	Requests7d      int64 `json:"requests_7d,omitempty"`
-	Tokens7d        int64 `json:"tokens_7d,omitempty"`
+	UserCount       int     `json:"user_count,omitempty"`
+	APIKeyCount     int     `json:"api_key_count,omitempty"`
+	Requests7d      int64   `json:"requests_7d,omitempty"`
+	Tokens7d        int64   `json:"tokens_7d,omitempty"`
+	Credits7d       int64   `json:"credits_7d,omitempty"`
 	Cost7d          float64 `json:"cost_7d_usd,omitempty"`
-	TotalRequests   int64 `json:"total_requests,omitempty"`
+	TotalRequests   int64   `json:"total_requests,omitempty"`
 }
 
 type createTenantRequest struct {
@@ -53,6 +54,7 @@ type tenantModelBreakdown struct {
 	Model    string  `json:"model"`
 	Requests int64   `json:"requests"`
 	Tokens   int64   `json:"tokens"`
+	Credits  int64   `json:"credits"`
 	Cost     float64 `json:"cost_usd"`
 }
 
@@ -60,6 +62,7 @@ type tenantAppBreakdown struct {
 	AppCode  string  `json:"application_code"`
 	Requests int64   `json:"requests"`
 	Tokens   int64   `json:"tokens"`
+	Credits  int64   `json:"credits"`
 	Cost     float64 `json:"cost_usd"`
 }
 
@@ -225,7 +228,50 @@ func (h *Handler) listTenantsAdmin(w http.ResponseWriter, r *http.Request) {
 	if tenants == nil {
 		tenants = []tenantInfo{}
 	}
+	h.attachTenantUsage7d(ctx, tenants)
 	writeJSON(w, http.StatusOK, tenants)
+}
+
+// attachTenantUsage7d fills 7-day credits (tenant billing) + cost_usd (upstream) from request_logs.
+func (h *Handler) attachTenantUsage7d(ctx context.Context, tenants []tenantInfo) {
+	if len(tenants) == 0 {
+		return
+	}
+	codes := make([]string, len(tenants))
+	idx := make(map[string]int, len(tenants))
+	for i, t := range tenants {
+		codes[i] = t.Code
+		idx[t.Code] = i
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT tenant_id,
+		       COUNT(*)::bigint,
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
+		FROM request_logs
+		WHERE tenant_id = ANY($1)
+		  AND ts >= now() - INTERVAL '7 days'
+		GROUP BY tenant_id
+	`, codes)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var code string
+		var reqs, tokens, credits int64
+		var cost float64
+		if err := rows.Scan(&code, &reqs, &tokens, &credits, &cost); err != nil {
+			continue
+		}
+		if i, ok := idx[code]; ok {
+			tenants[i].Requests7d = reqs
+			tenants[i].Tokens7d = tokens
+			tenants[i].Credits7d = credits
+			tenants[i].Cost7d = cost
+		}
+	}
 }
 
 // ── createTenant: POST /api/admin/tenants ─────────────────────────
@@ -360,13 +406,15 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request, code string)
 	_ = h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE tenant_id = $1`, code).Scan(&t.UserCount)
 	_ = h.db.QueryRow(ctx, `SELECT COUNT(*) FROM api_keys WHERE tenant_id = $1`, code).Scan(&t.APIKeyCount)
 
-	// 7-day usage
-	row := h.db.QueryRow(ctx, `
-		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
-		FROM usage_ledger
+	// 7-day usage (billing credits + upstream cost from request_logs)
+	_ = h.db.QueryRow(ctx, `
+		SELECT COUNT(*)::bigint,
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
+		FROM request_logs
 		WHERE tenant_id = $1 AND ts >= now() - INTERVAL '7 days'
-	`, code)
-	_ = row.Scan(&t.Requests7d, &t.Tokens7d, &t.Cost7d)
+	`, code).Scan(&t.Requests7d, &t.Tokens7d, &t.Credits7d, &t.Cost7d)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(COALESCE(total_requests, 0)), 0) FROM api_keys WHERE tenant_id = $1
 	`, code).Scan(&t.TotalRequests)
@@ -590,22 +638,23 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 
 	type tenantStats struct {
-		Days            int                `json:"days"`
-		TotalRequests   int64              `json:"total_requests"`
-		TotalTokens     int64              `json:"total_tokens"`
-		TotalCost       float64            `json:"total_cost_usd"`
-		UniqueKeys      int                `json:"unique_keys"`
-		UniqueModels    int                `json:"unique_models"`
-		UniqueApps      int                `json:"unique_apps"`
-		ByModel         []tenantModelBreakdown  `json:"by_model"`
-		ByApplication   []tenantAppBreakdown    `json:"by_application"`
+		Days            int                    `json:"days"`
+		TotalRequests   int64                  `json:"total_requests"`
+		TotalTokens     int64                  `json:"total_tokens"`
+		TotalCredits    int64                  `json:"total_credits"`
+		TotalCost       float64                `json:"total_cost_usd"`
+		UniqueKeys      int                    `json:"unique_keys"`
+		UniqueModels    int                    `json:"unique_models"`
+		UniqueApps      int                    `json:"unique_apps"`
+		ByModel         []tenantModelBreakdown `json:"by_model"`
+		ByApplication   []tenantAppBreakdown   `json:"by_application"`
 	}
 
 
 	var s tenantStats
 	s.Days = days
 
-	// Overall totals
+	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0),
 		       COUNT(DISTINCT api_key_id), COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)),
@@ -614,22 +663,30 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalRequests, &s.TotalTokens, &s.TotalCost,
 		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps)
-
-	// By model
-	modelRows, err := h.db.Query(ctx, `
-		SELECT COALESCE(raw_model_name, '<unknown>') AS model,
-		       COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0)
-		FROM usage_ledger
+	_ = h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint
+		FROM request_logs
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
-		GROUP BY raw_model_name
-		ORDER BY SUM(cost_usd) DESC
+	`, code, days).Scan(&s.TotalCredits)
+
+	// By model (credits + cost from request_logs)
+	modelRows, err := h.db.Query(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(outbound_model), ''), NULLIF(TRIM(client_model), ''), '<unknown>') AS model,
+		       COUNT(*)::bigint,
+		       COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
+		FROM request_logs
+		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
+		GROUP BY 1
+		ORDER BY SUM(COALESCE(credits_charged, 0)) DESC, SUM(COALESCE(cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
 	if err == nil {
 		defer modelRows.Close()
 		for modelRows.Next() {
 			var m tenantModelBreakdown
-			_ = modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Cost)
+			_ = modelRows.Scan(&m.Model, &m.Requests, &m.Tokens, &m.Credits, &m.Cost)
 			s.ByModel = append(s.ByModel, m)
 		}
 	}
@@ -637,22 +694,25 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 		s.ByModel = []tenantModelBreakdown{}
 	}
 
-	// By application
+	// By application (credits + cost from request_logs)
 	appRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(app.code, '<none>') AS app_code,
-		       COUNT(*), COALESCE(SUM(ul.total_tokens), 0), COALESCE(SUM(ul.cost_usd), 0.0)
-		FROM usage_ledger ul
-		LEFT JOIN applications app ON app.id = ul.application_id
-		WHERE ul.tenant_id = $1 AND ul.ts >= now() - ($2 * INTERVAL '1 day')
+		       COUNT(*)::bigint,
+		       COALESCE(SUM(COALESCE(rl.prompt_tokens, 0) + COALESCE(rl.completion_tokens, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(rl.credits_charged, 0)), 0)::bigint,
+		       COALESCE(SUM(COALESCE(rl.cost_usd, 0)), 0)::float8
+		FROM request_logs rl
+		LEFT JOIN applications app ON app.id = rl.application_id
+		WHERE rl.tenant_id = $1 AND rl.ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY app.code
-		ORDER BY SUM(ul.cost_usd) DESC
+		ORDER BY SUM(COALESCE(rl.credits_charged, 0)) DESC, SUM(COALESCE(rl.cost_usd, 0)) DESC
 		LIMIT 20
 	`, code, days)
 	if err == nil {
 		defer appRows.Close()
 		for appRows.Next() {
 			var a tenantAppBreakdown
-			_ = appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Cost)
+			_ = appRows.Scan(&a.AppCode, &a.Requests, &a.Tokens, &a.Credits, &a.Cost)
 			s.ByApplication = append(s.ByApplication, a)
 		}
 	}

@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { getTenantsAdmin, TENANT_STATUSES, TENANT_STATUS_LABELS, TENANT_STATUS_COLORS } from '../api'
 import type { Tenant } from '../api'
 import TenantCreateDialog from './TenantCreateDialog.vue'
+import FeeCostCell from '../components/FeeCostCell.vue'
+import { isPlatformOpsView } from '../store'
 
 const router = useRouter()
 const tenants = ref<Tenant[]>([])
@@ -42,10 +44,7 @@ function fmtNum(n?: number) {
   return n.toLocaleString()
 }
 
-function fmtCost(n?: number) {
-  if (n == null) return '-'
-  return '$' + n.toFixed(2)
-}
+const showCost = isPlatformOpsView()
 
 function goDetail(t: Tenant) {
   router.push(`/tenants/${t.code}`)
@@ -101,7 +100,13 @@ onMounted(load)
           <td><span class="badge" :class="statusColor(t.status)">{{ statusLabel(t.status) }}</span></td>
           <td>{{ fmtNum(t.user_count) }}</td>
           <td>{{ fmtNum(t.api_key_count) }}</td>
-          <td>{{ fmtCost(t.cost_7d_usd) }}</td>
+          <td>
+            <FeeCostCell
+              :credits="t.credits_7d"
+              :cost-usd="t.cost_7d_usd"
+              :show-cost="showCost"
+            />
+          </td>
           <td>{{ fmtNum(t.total_requests) }}</td>
           <td>{{ t.contact_email || '-' }}</td>
           <td class="mono">{{ fmtTime(t.created_at) }}</td>

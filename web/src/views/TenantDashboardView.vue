@@ -168,7 +168,7 @@ onMounted(load)
     <div v-if="wallet" class="subscription-card card">
       <div class="subscription-head">
         <div class="subscription-title">当前订阅</div>
-        <RouterLink to="/maas/pricing" class="link-sm">套餐与充值 →</RouterLink>
+        <RouterLink to="/tenant/pricing" class="link-sm">套餐与充值 →</RouterLink>
       </div>
       <div v-if="activeSubscription" class="subscription-grid">
         <div class="sub-item">
@@ -190,7 +190,7 @@ onMounted(load)
       </div>
       <div v-else class="subscription-empty">
         暂无有效订阅。
-        <RouterLink to="/maas/pricing">前往套餐与充值</RouterLink>
+        <RouterLink to="/tenant/pricing">前往套餐与充值</RouterLink>
         开通月包后可优先消耗订阅额度。
       </div>
     </div>
@@ -211,7 +211,7 @@ onMounted(load)
         <div class="value">{{ fmtNum(wallet.total_available) }}</div>
         <div class="sub">
           订阅 {{ fmtNum(wallet.quota_remaining) }} · 信用 {{ fmtNum(wallet.granted_balance) }} · 充值 {{ fmtNum(wallet.purchased_balance) }}
-          <RouterLink to="/maas/account" class="link-sm">我的账户</RouterLink>
+          <RouterLink to="/tenant/account" class="link-sm">我的账户</RouterLink>
         </div>
       </div>
     </div>
@@ -351,7 +351,7 @@ onMounted(load)
       <div v-else class="empty">该筛选条件下暂无请求记录</div>
       <div class="detail-footer">
         <RouterLink :to="'/request-logs'" class="link-sm">查看全部请求日志 →</RouterLink>
-        <RouterLink :to="'/maas/usage'" class="link-sm">我的消耗 →</RouterLink>
+        <RouterLink :to="'/tenant/usage'" class="link-sm">我的消耗 →</RouterLink>
       </div>
     </div>
 
@@ -360,7 +360,7 @@ onMounted(load)
       class="empty onboarding"
     >
       暂无调用数据。前往
-      <RouterLink to="/maas/models">模型清单</RouterLink>
+      <RouterLink to="/tenant/models">标准模型</RouterLink>
       查看可用模型，或到
       <RouterLink to="/keys">API 密钥</RouterLink>
       签发密钥后发起调用。

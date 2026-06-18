@@ -194,6 +194,17 @@ func (e *Executor) executeOpenAI(
 				req.Header.Set("Accept", "text/event-stream")
 			}
 			req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+			// Track C C2 audit fix 3.1: propagate session headers
+			// to the upstream request so the StreamChat closure in
+			// main.go can detect session-bearing requests and
+			// attach a pendingCapturer. Without this, the capturer
+			// is never created and stream caching is dead code.
+			if sid := params.R.Header.Get("X-Gw-Session-Id"); sid != "" {
+				req.Header.Set("X-Gw-Session-Id", sid)
+			}
+			if sid := params.R.Header.Get("X-Session-Id"); sid != "" {
+				req.Header.Set("X-Session-Id", sid)
+			}
 			if fpLease != nil && fpLease.Egress != nil {
 				credentialfpslot.ApplyEgressHeaders(req.Header, fpLease.Egress)
 			} else {

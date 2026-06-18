@@ -65,12 +65,14 @@ type sessionSummaryResponse struct {
 }
 
 type sessionLogForSummary struct {
-	Ts             time.Time
-	RequestPreview *string
+	Ts              time.Time
+	RequestPreview  *string
 	ResponsePreview *string
-	RequestStatus  string
-	ErrorKind      *string
-	ClientModel    *string
+	RequestBody     *string
+	ResponseBody    *string
+	RequestStatus   string
+	ErrorKind       *string
+	ClientModel     *string
 }
 
 func (h *Handler) handleSessionSummary(w http.ResponseWriter, r *http.Request) {
@@ -189,6 +191,7 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
+		       rl.request_body::text, rl.response_body::text,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs rl
@@ -208,6 +211,8 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 			&item.Ts,
 			&item.RequestPreview,
 			&item.ResponsePreview,
+			&item.RequestBody,
+			&item.ResponseBody,
 			&item.RequestStatus,
 			&item.ErrorKind,
 			&item.ClientModel,
@@ -254,21 +259,9 @@ func (h *Handler) pickFirstAvailableAPIKey(ctx context.Context, r *http.Request)
 func buildSummaryCorpus(logs []sessionLogForSummary) string {
 	var b strings.Builder
 	for _, row := range logs {
-		if row.RequestPreview != nil {
-			txt := sanitizeSummaryText(*row.RequestPreview)
-			if txt != "" {
-				fmt.Fprintf(&b, "[%s][user] %s\n", row.Ts.UTC().Format(time.RFC3339), txt)
-			}
-		}
-		if row.ResponsePreview != nil {
-			txt := sanitizeSummaryText(*row.ResponsePreview)
-			if txt != "" {
-				fmt.Fprintf(&b, "[%s][assistant] %s\n", row.Ts.UTC().Format(time.RFC3339), txt)
-			}
-		}
-		if row.RequestStatus == "failure" && row.ErrorKind != nil && strings.TrimSpace(*row.ErrorKind) != "" {
-			fmt.Fprintf(&b, "[%s][status] failure:%s\n", row.Ts.UTC().Format(time.RFC3339), strings.TrimSpace(*row.ErrorKind))
-		}
+		d := extractTurnDisplay(row.RequestBody, row.ResponseBody, row.RequestPreview, row.ResponsePreview)
+		ts := row.Ts.UTC().Format(time.RFC3339)
+		b.WriteString(buildTurnCorpusLine(ts, d, row.RequestStatus, row.ErrorKind))
 	}
 	corpus := strings.TrimSpace(b.String())
 	if len(corpus) > sessionSummaryMaxCorpusLen {

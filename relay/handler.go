@@ -1115,20 +1115,26 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
-		pt, ct := 0, 0
+		pt, ct, crt, cwt := 0, 0, 0, 0
 		if reqLog.PromptTokens != nil {
 			pt = *reqLog.PromptTokens
 		}
 		if reqLog.CompletionTokens != nil {
 			ct = *reqLog.CompletionTokens
 		}
-		if pt > 0 || ct > 0 {
+		if reqLog.CacheReadTokens != nil {
+			crt = *reqLog.CacheReadTokens
+		}
+		if reqLog.CacheWriteTokens != nil {
+			cwt = *reqLog.CacheWriteTokens
+		}
+		if pt > 0 || ct > 0 || crt > 0 || cwt > 0 {
 			canonical := evt.CanonicalName
 			if canonical == "" {
 				canonical = evt.ClientModel
 			}
 			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct)
+			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct, crt, cwt)
 			chargeCancel()
 			if err == nil && charged > 0 {
 				reqLog.CreditsCharged = &charged

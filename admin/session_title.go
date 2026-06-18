@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	sessionTitleMaxRunes     = 18
+	sessionTitleMaxRunes     = 80
 	sessionTitleMinCorpusLen = 40
 	sessionTitleMaxCorpusLen = sessionSummaryMaxCorpusLen
 )
@@ -113,6 +113,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
+		       rl.request_body::text, rl.response_body::text,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs rl
@@ -130,7 +131,9 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		var row sessionLogForSummary
 		var errKind *string
 		var clientModel *string
-		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview, &row.RequestStatus, &errKind, &clientModel); err != nil {
+		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview,
+			&row.RequestBody, &row.ResponseBody,
+			&row.RequestStatus, &errKind, &clientModel); err != nil {
 			continue
 		}
 		row.ErrorKind = errKind

@@ -2,44 +2,33 @@ package maas
 
 import "testing"
 
-func TestCalcCredits_baseRate(t *testing.T) {
-	got := CalcCredits(500_000, 500_000, 0, 0, 10000)
-	if got != 10000 {
-		t.Fatalf("expected 10000, got %d", got)
+func TestCalcCredits_fourDimensions(t *testing.T) {
+	rates := ModelRateValues{In: 10000, Out: 20000, CacheIn: 5000, CacheOut: 15000}
+	got := CalcCredits(1_000_000, 500_000, 200_000, 100_000, rates)
+	// 1M*10k + 0.5M*20k + 0.2M*5k + 0.1M*15k = 10k+10k+1k+1.5k = 22500
+	if got != 22500 {
+		t.Fatalf("got %d want 22500", got)
 	}
 }
 
-func TestCalcCredits_asymmetricRates(t *testing.T) {
-	got := CalcCredits(1_000_000, 0, 8000, 12000, 10000)
-	if got != 8000 {
-		t.Fatalf("expected 8000, got %d", got)
+func TestGlobalEffective_discount(t *testing.T) {
+	st := Settings{
+		BaseCreditsPer1M: 10000,
+		BaseCreditsPer1MOut: 12000,
+		GlobalDiscount: 0.8,
+	}
+	g := globalEffective(st)
+	if g.In != 8000 || g.Out != 9600 {
+		t.Fatalf("discount apply failed: %+v", g)
 	}
 }
 
-func TestCalcCredits_zeroTokens(t *testing.T) {
-	if got := CalcCredits(0, 0, 10000, 10000, 10000); got != 0 {
-		t.Fatalf("expected 0, got %d", got)
-	}
-}
-
-func TestCalcCredits_ceil(t *testing.T) {
-	// 1 token at 10000/1M => ceil(0.01) = 1
-	got := CalcCredits(1, 0, 10000, 10000, 10000)
-	if got != 1 {
-		t.Fatalf("expected 1, got %d", got)
-	}
-}
-
-func TestCalcCredits_completionOnly(t *testing.T) {
-	got := CalcCredits(0, 2_000_000, 10000, 10000, 10000)
-	if got != 20000 {
-		t.Fatalf("expected 20000, got %d", got)
-	}
-}
-
-func TestCalcCredits_negativeBaseUsesDefault(t *testing.T) {
-	got := CalcCredits(1_000_000, 0, 0, 0, 0)
-	if got != 10000 {
-		t.Fatalf("expected default 10000, got %d", got)
+func TestEffectiveModelRates_partialManual(t *testing.T) {
+	global := BaseRateSet{In: 100, Out: 200, CacheIn: 50, CacheOut: 80}
+	custom := int64(999)
+	stored := storedModelRates{ManualIn: true, In: &custom}
+	eff := effectiveModelRates(stored, global)
+	if eff.In != 999 || eff.Out != 200 {
+		t.Fatalf("partial manual failed: %+v", eff)
 	}
 }
