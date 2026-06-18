@@ -45,6 +45,17 @@ type RequestLogContext struct {
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
 
+	// v3 (2026-06-19) session-level outbound body fields.
+	// Populated by SessionCompressor.Prepare when it rewrites bodyBytes.
+	// All nil when the session compressor was not active.
+	OutboundBody      []byte
+	OutboundMsgCount  *int
+	OutboundTokenEst  *int
+	OutboundMsgHashes []byte // JSON [{index, sha256}]
+	OutboundStrategy  string // compression_strategy value (e.g. "delta_append")
+	OutboundSummaryMarker string
+	OutboundWindowTriggered string
+
 	ErrCode string
 	ErrMsg  string
 
@@ -339,4 +350,69 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 // failAndMark emits a failure row immediately (explicit exit paths).
 func (c *RequestLogContext) failAndMark(errCode, errMsg string, providerID, credentialID *int) {
 	c.EmitFailure(errCode, errMsg, providerID, credentialID)
+}
+
+// applySessionCompressorFields copies v3 session compressor outbound fields
+// from RequestLogContext into a RequestLogEntry. Call this after building
+// the entry so the outbound_body / outbound_msg_count / outbound_token_est /
+// outbound_msg_hashes columns are populated.
+//
+// Also merges window_triggered and summary_marker into compression_meta JSONB
+// (adds keys without overwriting existing v7 fields) and sets
+// compression_strategy to the session compressor strategy when v7 left it
+// empty.
+func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil {
+		return
+	}
+	if c.OutboundStrategy == "" {
+		return // session compressor did not fire
+	}
+
+	// outbound body columns
+	if len(c.OutboundBody) > 0 {
+		entry.OutboundBody = json.RawMessage(c.OutboundBody)
+	}
+	entry.OutboundMsgCount = c.OutboundMsgCount
+	entry.OutboundTokenEst = c.OutboundTokenEst
+	if len(c.OutboundMsgHashes) > 0 {
+		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
+	}
+
+	// compression_strategy: prefer v7 value if set, else use v3 strategy
+	if entry.CompressionStrategy == nil || *entry.CompressionStrategy == "" {
+		entry.CompressionStrategy = strPtr(c.OutboundStrategy)
+	}
+
+	// Merge window_triggered + summary_marker into compression_meta JSONB.
+	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" {
+		merged := mergeCompressionMetaV3(entry.CompressionMeta,
+			c.OutboundWindowTriggered, c.OutboundSummaryMarker)
+		if len(merged) > 0 {
+			entry.CompressionMeta = merged
+		}
+	}
+}
+
+// mergeCompressionMetaV3 adds window_triggered and summary_marker to the
+// existing compression_meta JSONB without clobbering v7 fields.
+func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMarker string) json.RawMessage {
+	m := make(map[string]any)
+	if len(existing) > 0 {
+		_ = json.Unmarshal(existing, &m)
+	}
+	if windowTriggered != "" {
+		m["window_triggered"] = windowTriggered
+	}
+	if summaryMarker != "" {
+		m["summary_marker"] = summaryMarker
+	}
+	if len(m) == 0 {
+		return existing
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return existing
+	}
+	return b
 }
