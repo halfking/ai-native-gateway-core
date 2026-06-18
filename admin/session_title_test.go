@@ -35,6 +35,19 @@ func TestIsValidSessionTitle(t *testing.T) {
 	if !isValidSessionTitle("部署鉴权修复") {
 		t.Fatal("expected valid title")
 	}
+	if isValidSessionTitle("<think>") {
+		t.Fatal("XML/thinking tag title should be invalid")
+	}
+	if isValidSessionTitle("redacted_thinking") {
+		t.Fatal("thinking marker title should be invalid")
+	}
+}
+
+func TestNormalizeSessionTitle_StripsThinkingTags(t *testing.T) {
+	got := normalizeSessionTitle("<think>部署故障排查</think>")
+	if got != "部署故障排查" {
+		t.Fatalf("normalizeSessionTitle = %q, want 部署故障排查", got)
+	}
 }
 
 func TestRequestLogStatusExprRequiresRLAlias(t *testing.T) {
