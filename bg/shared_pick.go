@@ -77,7 +77,7 @@ func PickProbeModelForCredential(ctx context.Context, db *pgxpool.Pool, credID i
 	if domestic {
 		var candidates []string
 		rows, qerr := db.Query(ctx, `
-			SELECT pm.raw_model_name
+			SELECT COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name) AS probe_model
 			FROM credential_model_bindings cmb
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE cmb.credential_id = $1

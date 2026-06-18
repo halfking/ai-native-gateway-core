@@ -29,6 +29,16 @@ const diagLoading = ref(false)
 const diagResult = ref<DiagnoseProviderResponse | null>(null)
 const diagError = ref('')
 
+// modelsFocusOffer is set when the user clicks the inline "go to Models tab"
+// link from a `endpoint_id_required` probe entry.  ModelsTab watches this
+// and opens the matching drawer once offers are loaded.
+const modelsFocusOffer = ref<{ credential_id: number; raw_model_name: string } | null>(null)
+
+function onOpenModelsTab(payload: { credential_id: number; raw_model_name: string }) {
+  modelsFocusOffer.value = payload
+  tab.value = 'models'
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -148,10 +158,14 @@ watch(providerId, () => {
       </div>
 
       <CredsTab v-if="tab==='creds'" :provider="provider" :creds="creds" @refresh="load" />
-      <ModelsTab v-if="tab==='models'" :provider-id="providerId" />
+      <ModelsTab
+        v-if="tab==='models'"
+        :provider-id="providerId"
+        :focus-offer="modelsFocusOffer"
+      />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />
       <DiagTab v-if="tab==='diag'" :provider-id="providerId" />
-      <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" />
+      <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" @open-models-tab="onOpenModelsTab" />
       <SettingsTab v-if="tab==='settings'" :provider="provider" @refresh="load" />
     </template>
   </div>
