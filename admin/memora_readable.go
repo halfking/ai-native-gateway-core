@@ -107,14 +107,14 @@ func searchMemoraFacts(ctx context.Context, client memoraSearchClient, userID st
 }
 
 // searchMergedFacts loads Memora facts from task namespace and optional gw-session namespace.
-func searchMergedFacts(ctx context.Context, client memoraSearchClient, apiKeyID int, taskID, sessionID string) ([]readableBlock, error) {
+func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID string, apiKeyID int, taskID, sessionID string) ([]readableBlock, error) {
 	if client == nil || client.Disabled() || apiKeyID <= 0 || taskID == "" {
 		return nil, nil
 	}
 
 	var merged []memora.Memory
 
-	taskUserID := memora.UserID(apiKeyID, taskID)
+	taskUserID := memora.UserID(tenantID, apiKeyID, taskID)
 	taskMem, err := searchMemoraFacts(ctx, client, taskUserID, memoraSearchTopK)
 	if err != nil {
 		return nil, err
@@ -126,7 +126,7 @@ func searchMergedFacts(ctx context.Context, client memoraSearchClient, apiKeyID 
 
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" && sessionID != "[空]" {
-		gwUserID := memora.UserID(apiKeyID, "gw-session:"+sessionID)
+		gwUserID := memora.UserID(tenantID, apiKeyID, "gw-session:"+sessionID)
 		gwMem, gwErr := searchMemoraFacts(ctx, client, gwUserID, memoraSearchTopK)
 		if gwErr != nil {
 			if len(merged) == 0 {
@@ -204,6 +204,9 @@ type sessionPreviewInput struct {
 	TaskID    string
 	SessionID string
 	APIKeyID  int
+	// TenantID namespaces the Memora user_id per Round 47 v7 T13 so
+	// cross-tenant fact retrieval stays inside one tenant.
+	TenantID string
 }
 
 type sessionPreviewResult struct {
@@ -243,7 +246,7 @@ func batchMemoraPreviews(ctx context.Context, client memoraSearchClient, inputs 
 			searchCtx, cancel := context.WithTimeout(ctx, memoraPreviewTimeout)
 			defer cancel()
 
-			blocks, err := searchMergedFacts(searchCtx, client, in.APIKeyID, in.TaskID, in.SessionID)
+			blocks, err := searchMergedFacts(searchCtx, client, in.TenantID, in.APIKeyID, in.TaskID, in.SessionID)
 			if err != nil {
 				results[in.Index] = sessionPreviewResult{Index: in.Index, Status: "error"}
 				return
