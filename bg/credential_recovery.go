@@ -3,6 +3,8 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,4 +151,41 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 			"count", tag.RowsAffected(),
 		)
 	}
+
+	tag, err = r.db.Exec(timeoutCtx, mnfCoolingRecoverySQL(), mnfCoolingRecoveryMinutes())
+	if err != nil {
+		slog.Warn("mnf_cooling binding recovery failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("mnf_cooling bindings recovered", "count", tag.RowsAffected())
+	}
+}
+
+func mnfCoolingRecoveryMinutes() int {
+	if v := os.Getenv("LLM_GATEWAY_MNF_COOL_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 2
+}
+
+func mnfCoolingRecoverySQL() string {
+	return `
+		UPDATE credential_model_bindings cmb
+		SET available = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at = NULL
+		FROM credentials c, providers p
+		WHERE cmb.credential_id = c.id
+		  AND c.provider_id = p.id
+		  AND cmb.available = FALSE
+		  AND cmb.unavailable_reason = 'mnf_cooling'
+		  AND cmb.unavailable_at IS NOT NULL
+		  AND cmb.unavailable_at <= NOW() - make_interval(mins => $1)
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`
 }
