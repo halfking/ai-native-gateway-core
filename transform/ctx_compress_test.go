@@ -313,3 +313,107 @@ func TestCompressMessagesIfNeeded_PreservesRecentToolRound(t *testing.T) {
 		t.Fatalf("most-recent tool round (call_RECENT) was dropped; should be preserved")
 	}
 }
+
+// Round 47 compression v7 T3: public token/byte estimators for the
+// mode=1 auto_threshold path (compressor/ package).
+
+func TestEstimateTokens_CoarseChars(t *testing.T) {
+	// 3.5 chars/token rule. 350 chars → 100 tokens (truncation toward zero).
+	body := []byte(strings.Repeat("a", 350))
+	got := EstimateTokens(body)
+	if got != 100 {
+		t.Fatalf("EstimateTokens(350 chars): want 100, got %d", got)
+	}
+}
+
+func TestEstimateTokens_EmptyBody(t *testing.T) {
+	if got := EstimateTokens(nil); got != 0 {
+		t.Fatalf("EstimateTokens(nil): want 0, got %d", got)
+	}
+	if got := EstimateTokens([]byte{}); got != 0 {
+		t.Fatalf("EstimateTokens(empty): want 0, got %d", got)
+	}
+}
+
+func TestThresholdBytes_DynamicByContextWindow(t *testing.T) {
+	// v7 §2: threshold = contextWindow × fraction × charsPerToken.
+	// fraction=0.8 is LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION default.
+	cases := []struct {
+		window   int
+		frac     float64
+		wantByte int
+	}{
+		// 64K models (small/cheap) → 179.2K byte trigger
+		{64000, 0.8, 179200},
+		// 128K models (default Cursor/RooCode profile) → 358.4K
+		{128000, 0.8, 358400},
+		// 200K models (mid-range) → 560K
+		{200000, 0.8, 560000},
+		// 256K models (Claude family top tier) → 716.8K
+		{256000, 0.8, 716800},
+		// fraction=0.85 matches in-place soft-limit trim default
+		{128000, 0.85, 380800},
+		// Zero window → 0 (caller falls through to 4xx path)
+		{0, 0.8, 0},
+		// Negative window → 0
+		{-1, 0.8, 0},
+	}
+	for _, tc := range cases {
+		got := ThresholdBytes(tc.window, tc.frac)
+		if got != tc.wantByte {
+			t.Errorf("ThresholdBytes(window=%d, frac=%.2f): want %d, got %d",
+				tc.window, tc.frac, tc.wantByte, got)
+		}
+	}
+}
+
+func TestThresholdBytes_ZeroFractionFallsBackToDefault(t *testing.T) {
+	// fraction ≤ 0 → use defaultSoftLimitFraction (0.85).
+	got := ThresholdBytes(100000, 0)
+	want := ThresholdBytes(100000, defaultSoftLimitFraction)
+	if got != want {
+		t.Fatalf("ThresholdBytes(window=100000, frac=0) should fall back to default: want %d, got %d",
+			want, got)
+	}
+}
+
+func TestNeedsCompression_GateLogic(t *testing.T) {
+	// 128K window × 0.8 → 358400 byte threshold.
+	thr := ThresholdBytes(128000, 0.8)
+	if thr != 358400 {
+		t.Fatalf("setup: want threshold=358400, got %d", thr)
+	}
+	cases := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{"empty", []byte{}, false},
+		{"under_threshold", make([]byte, 100000), false},
+		{"exactly_threshold", make([]byte, 358400), false}, // strictly greater
+		{"one_over", make([]byte, 358401), true},
+		{"well_over", make([]byte, 500000), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NeedsCompression(tc.body, 128000, 0.8)
+			if got != tc.want {
+				t.Errorf("NeedsCompression(len=%d, window=128000, frac=0.8): want %v, got %v",
+					len(tc.body), tc.want, got)
+			}
+		})
+	}
+}
+
+func TestNeedsCompression_UnknownWindowReturnsFalse(t *testing.T) {
+	// Unknown context window (ContextWindow=0) must NOT trigger compression.
+	// The downstream compressor falls through to the 4xx recovery path
+	// instead — see v7 §3.4 and executor_chat.go comment on pre-request trim.
+	body := make([]byte, 1000000) // huge body
+	if NeedsCompression(body, 0, 0.8) {
+		t.Fatal("NeedsCompression with window=0 must return false")
+	}
+	if NeedsCompression(body, -1, 0.8) {
+		t.Fatal("NeedsCompression with negative window must return false")
+	}
+}

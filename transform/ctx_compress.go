@@ -431,6 +431,69 @@ func estimatePromptTokens(bodyBytes []byte) int {
 	return int(float64(len(bodyBytes)) / charsPerToken)
 }
 
+// EstimateTokens is the public version of estimatePromptTokens. Used by
+// compressor/ (compression v7 Round 47) for the mode=1 auto_threshold
+// pre-request check. Same heuristic (chars/3.5) — calibrated conservative
+// so the threshold is over- rather than under-counted, which is the safe
+// direction for a "should we compress?" gate.
+//
+// Exposed so callers outside this package can compute the token estimate
+// without re-implementing the chars/3.5 rule. Pass the raw body bytes;
+// the function takes care of JSON framing cost (it just counts chars, no
+// parsing). For per-message precision, use estimateMessageTokens (still
+// package-private).
+//
+// See docs/llm-gateway-go/2026-06-18-compression-v7-final.md §2 (mode=1
+// dynamic threshold = cand.ContextWindow × fraction × charsPerToken).
+func EstimateTokens(bodyBytes []byte) int {
+	return estimatePromptTokens(bodyBytes)
+}
+
+// ThresholdBytes converts a model context window into the body-byte size
+// that triggers compression. Returns 0 when window is non-positive
+// (caller is expected to skip compression for unknown / unset windows).
+//
+//	threshold = context_window × fraction × charsPerToken
+//
+// This is the inverse of the pre-request check: caller compares
+// len(bodyBytes) against threshold to decide whether to compress.
+//
+// Default fraction (0.85) matches defaultSoftLimitFraction for in-place
+// trim; compression callers should pass 0.8 (LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION)
+// to leave an extra 5% buffer for upstream response generation plus model
+// internal overhead — see v7 §2.
+//
+// Examples:
+//   ThresholdBytes(128000, 0.8) → 358400  (cand.ContextWindow=128000)
+//   ThresholdBytes( 64000, 0.8) → 179200
+//   ThresholdBytes(256000, 0.8) → 716800
+//   ThresholdBytes(     0, _)   → 0      (skip)
+func ThresholdBytes(contextWindow int, fraction float64) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	if fraction <= 0 {
+		fraction = defaultSoftLimitFraction
+	}
+	return int(float64(contextWindow) * fraction * charsPerToken)
+}
+
+// NeedsCompression is the convenience pre-request gate. Returns true when
+// len(bodyBytes) exceeds the threshold for the given context window.
+// Returns false when contextWindow is non-positive (model window unknown
+// — caller's signal to fall through to the existing 4xx recovery path
+// instead of guessing).
+//
+// Used by compressor/ (v7 Round 47) as the mode=1 (auto_threshold) trigger.
+// See docs/llm-gateway-go/2026-06-18-compression-v7-final.md §3.4 / §5.
+func NeedsCompression(bodyBytes []byte, contextWindow int, fraction float64) bool {
+	threshold := ThresholdBytes(contextWindow, fraction)
+	if threshold <= 0 {
+		return false
+	}
+	return len(bodyBytes) > threshold
+}
+
 // estimateMessageTokens is a per-message estimate. Strips JSON framing
 // ("role", "content" keys) before measuring.
 func estimateMessageTokens(raw json.RawMessage) int {
