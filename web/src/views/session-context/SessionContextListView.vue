@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, watch } from 'vue'
+import { computed, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { MemoraSession } from '../../api'
 import {
@@ -65,9 +65,7 @@ function openSession(s: MemoraSession) {
   })
 }
 
-onMounted(() => {
-  if (sessions.value.length === 0 && !loading.value) applyFilters()
-})
+function openSession(s: MemoraSession) {
 </script>
 
 <template>
@@ -158,7 +156,10 @@ onMounted(() => {
               <td class="ellipsis" :title="displayTitle(s)">{{ displayTitle(s) }}</td>
               <td
                 class="ellipsis preview-col"
-                :class="{ 'preview-empty': !hasMemoraPreview(s) }"
+                :class="{
+                  'preview-empty': !hasMemoraPreview(s) && s.memora_status !== 'error',
+                  'preview-error': s.memora_status === 'error',
+                }"
                 :title="displayMemoraPreview(s)"
               >{{ displayMemoraPreview(s) }}</td>
               <td class="num">
@@ -207,6 +208,7 @@ onMounted(() => {
 .ellipsis { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-col { max-width: 280px; font-size: 11px; line-height: 1.4; }
 .preview-empty { color: var(--muted); font-style: italic; }
+.preview-error { color: var(--danger); font-style: normal; }
 .count-chip {
   display: inline-block;
   background: rgba(99, 102, 241, 0.15);

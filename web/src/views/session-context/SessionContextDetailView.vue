@@ -241,12 +241,18 @@ watch(
           <button class="btn btn-ghost btn-sm" @click="loadContext">重试</button>
         </div>
         <div v-else-if="!hasReadableContent" class="state-box empty-memora">
-          <p class="empty-title">Memora中没有</p>
-          <p v-if="(contextData?.facts_written ?? 0) > 0" class="text-muted">
-            已写入 {{ contextData?.facts_written }} 条（检索可能仍在索引，或超过可见上限）
-          </p>
-          <p v-if="contextData?.facts_search_error" class="extract-err">{{ contextData.facts_search_error }}</p>
-          <p v-else class="text-muted">点击上方「提炼入 Memora」将对话中的有用信息写入记忆。</p>
+          <template v-if="contextData?.facts_search_error">
+            <p class="empty-title extract-err">Memora 检索失败</p>
+            <p class="extract-err">{{ contextData.facts_search_error }}</p>
+            <p class="text-muted">请检查 184 上 memos-product（:18000）是否运行，或联系运维重启 MemOS。</p>
+          </template>
+          <template v-else>
+            <p class="empty-title">Memora中没有</p>
+            <p v-if="(contextData?.facts_written ?? 0) > 0" class="text-muted">
+              已写入 {{ contextData?.facts_written }} 条（检索可能仍在索引，或超过可见上限）
+            </p>
+            <p class="text-muted">点击上方「提炼入 Memora」将对话中的有用信息写入记忆。</p>
+          </template>
         </div>
         <div v-else class="blocks-list">
           <div v-for="(block, i) in readableBlocks" :key="block.id || i" class="block-item">
