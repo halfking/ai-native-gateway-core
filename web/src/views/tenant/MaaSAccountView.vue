@@ -24,13 +24,13 @@ const error = ref('')
 
 const pricingLink = computed(() =>
   isAdminTenantView.value
-    ? { path: '/maas/pricing', query: { tenant: tenantCode.value } }
-    : { path: '/maas/pricing' },
+    ? { path: '/tenant/pricing', query: { tenant: tenantCode.value } }
+    : { path: '/tenant/pricing' },
 )
 const usageLink = computed(() =>
   isAdminTenantView.value
-    ? { path: '/maas/usage', query: { tenant: tenantCode.value } }
-    : { path: '/maas/usage' },
+    ? { path: '/tenant/usage', query: { tenant: tenantCode.value } }
+    : { path: '/tenant/usage' },
 )
 
 function fmtCredits(n: number) {
@@ -99,7 +99,7 @@ onMounted(load)
       <h2>{{ pageTitle }}</h2>
       <div class="page-header-actions">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <RouterLink v-if="!isAdminTenantView" to="/maas/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
+        <RouterLink v-if="!isAdminTenantView" to="/tenant/pricing" class="btn btn-primary btn-sm">购买积分</RouterLink>
         <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
           {{ loading ? '加载中…' : '刷新' }}
         </button>
@@ -162,7 +162,7 @@ onMounted(load)
             <td><span class="badge" :class="orderStatusClass(o.status)">{{ orderStatusLabel(o.status) }}</span></td>
             <td class="mono">{{ fmtTime(o.created_at) }}</td>
             <td>
-              <RouterLink v-if="o.status === 'pending'" :to="`/maas/orders/${o.id}`" class="link-sm">去支付</RouterLink>
+              <RouterLink v-if="o.status === 'pending'" :to="`/tenant/orders/${o.id}`" class="link-sm">去支付</RouterLink>
             </td>
           </tr>
         </tbody>

@@ -441,7 +441,14 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 	// against the request's tenant ID. A mismatch means a
 	// tenant-A user is trying to read tenant-B's cached body —
 	// return 404 (not 403, to avoid leaking existence).
-	if entry.TenantID != "" && entry.TenantID != tenantID && tenantID != "default" {
+	//
+	// Audit fix 5.1: removed the "default" tenant exception.
+	// The "default" tenant is a real tenant in multi-tenant
+	// deployments; allowing it to bypass the check was a
+	// cross-tenant data leakage vector. If the pending entry
+	// has a non-empty TenantID that differs from the request's
+	// tenant, we reject regardless of which tenant is "default".
+	if entry.TenantID != "" && entry.TenantID != tenantID {
 		writeErrorJSON(w, http.StatusNotFound, "",
 			"no pending response for this session", "session_error", "PENDING_NOT_FOUND")
 		return
@@ -471,6 +478,13 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 		})
 
 	case "completed":
+		// Audit fix 5.2: if Body is empty, return 404 rather
+		// than an empty SSE stream that would hang the client.
+		if entry.Body == "" {
+			writeErrorJSON(w, http.StatusNotFound, "",
+				"pending response completed but body is empty", "session_error", "PENDING_EMPTY_BODY")
+			return
+		}
 		// Replay. The cached body is the full vendor response —
 		// either a JSON object (non-streaming) or an SSE text
 		// (streaming). ContentType drives the wire format.

@@ -10,6 +10,8 @@ import {
 } from '../api'
 import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
+import FeeCostCell from '../components/FeeCostCell.vue'
+import { isPlatformOpsView } from '../store'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +36,7 @@ const grantNote = ref('')
 const adjustSaving = ref(false)
 const grantSaving = ref(false)
 const confirmSaving = ref<number | null>(null)
+const showCost = isPlatformOpsView()
 
 async function loadTenant() {
   loading.value = true
@@ -211,14 +214,14 @@ function fmtTime(s: string) {
   return new Date(s).toLocaleString('zh-CN')
 }
 
-function fmtCost(n?: number) {
-  if (n == null) return '-'
-  return '$' + n.toFixed(2)
-}
-
 function fmtNum(n?: number) {
   if (n == null) return '-'
   return n.toLocaleString()
+}
+
+function fmtCost(n?: number) {
+  if (n == null) return '-'
+  return '$' + n.toFixed(2)
 }
 
 function maasLink(path: string) {
@@ -286,7 +289,14 @@ watch(() => route.params.tenantId, loadTenant)
           </div>
           <div class="stat-card">
             <div class="stat-label">7天费用</div>
-            <div class="stat-value">{{ fmtCost(tenant.cost_7d_usd) }}</div>
+            <div class="stat-value stat-value--fee">
+              <FeeCostCell
+                inline
+                :credits="tenant.credits_7d"
+                :cost-usd="tenant.cost_7d_usd"
+                :show-cost="showCost"
+              />
+            </div>
           </div>
           <div class="stat-card">
             <div class="stat-label">总请求数</div>
@@ -298,19 +308,19 @@ watch(() => route.params.tenantId, loadTenant)
           <h3>MaaS 服务</h3>
           <p class="maas-shortcuts-desc">以该租户为上下文查看模型定价、账户与消耗（不在平台侧栏展示租户菜单）。</p>
           <div class="maas-shortcut-grid">
-            <RouterLink :to="maasLink('/maas/models')" class="maas-shortcut-card">
+            <RouterLink :to="maasLink('/tenant/models')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">🤖</span>
-              <span class="maas-shortcut-label">模型清单</span>
+              <span class="maas-shortcut-label">标准模型</span>
             </RouterLink>
-            <RouterLink :to="maasLink('/maas/pricing')" class="maas-shortcut-card">
+            <RouterLink :to="maasLink('/tenant/pricing')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">💳</span>
               <span class="maas-shortcut-label">套餐与充值</span>
             </RouterLink>
-            <RouterLink :to="maasLink('/maas/usage')" class="maas-shortcut-card">
+            <RouterLink :to="maasLink('/tenant/usage')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">📉</span>
               <span class="maas-shortcut-label">消耗统计</span>
             </RouterLink>
-            <RouterLink :to="maasLink('/maas/account')" class="maas-shortcut-card">
+            <RouterLink :to="maasLink('/tenant/account')" class="maas-shortcut-card">
               <span class="maas-shortcut-icon">💰</span>
               <span class="maas-shortcut-label">账户中心</span>
             </RouterLink>
@@ -368,7 +378,10 @@ watch(() => route.params.tenantId, loadTenant)
               <td><span class="badge badge-blue">{{ k.application_code || '-' }}</span></td>
               <td><span class="badge" :class="k.enabled ? 'badge-green' : 'badge-red'">{{ k.enabled ? '启用' : '禁用' }}</span></td>
               <td>{{ fmtNum(k.total_requests) }}</td>
-              <td>{{ fmtCost(k.total_cost_usd) }}</td>
+              <td>
+                <span v-if="showCost">{{ fmtCost(k.total_cost_usd) }}</span>
+                <span v-else>—</span>
+              </td>
               <td class="mono">{{ fmtTime(k.created_at) }}</td>
             </tr>
             <tr v-if="keys.length === 0">
@@ -401,7 +414,14 @@ watch(() => route.params.tenantId, loadTenant)
           </div>
           <div class="stat-card">
             <div class="stat-label">总费用</div>
-            <div class="stat-value">{{ fmtCost(stats.total_cost_usd) }}</div>
+            <div class="stat-value stat-value--fee">
+              <FeeCostCell
+                inline
+                :credits="stats.total_credits"
+                :cost-usd="stats.total_cost_usd"
+                :show-cost="showCost"
+              />
+            </div>
           </div>
           <div class="stat-card">
             <div class="stat-label">独立密钥</div>
@@ -426,7 +446,13 @@ watch(() => route.params.tenantId, loadTenant)
                 <td><code>{{ m.model }}</code></td>
                 <td>{{ fmtNum(m.requests) }}</td>
                 <td>{{ fmtNum(m.tokens) }}</td>
-                <td>{{ fmtCost(m.cost_usd) }}</td>
+                <td>
+                  <FeeCostCell
+                    :credits="m.credits"
+                    :cost-usd="m.cost_usd"
+                    :show-cost="showCost"
+                  />
+                </td>
               </tr>
             </tbody>
           </table>
@@ -439,7 +465,13 @@ watch(() => route.params.tenantId, loadTenant)
                 <td><span class="badge badge-blue">{{ a.application_code }}</span></td>
                 <td>{{ fmtNum(a.requests) }}</td>
                 <td>{{ fmtNum(a.tokens) }}</td>
-                <td>{{ fmtCost(a.cost_usd) }}</td>
+                <td>
+                  <FeeCostCell
+                    :credits="a.credits"
+                    :cost-usd="a.cost_usd"
+                    :show-cost="showCost"
+                  />
+                </td>
               </tr>
             </tbody>
           </table>
@@ -664,6 +696,14 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .stat-value { font-size: 22px; font-weight: 600; color: var(--text); }
+.stat-value--fee :deep(.fee-main) {
+  font-size: inherit;
+  font-weight: inherit;
+}
+.stat-value--fee :deep(.fee-cost-sub) {
+  font-size: 12px;
+  font-weight: 400;
+}
 
 .badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; padding: 2px 8px; border-radius: 8px; font-size: 11px; }

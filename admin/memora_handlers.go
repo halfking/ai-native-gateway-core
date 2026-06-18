@@ -626,6 +626,8 @@ type requestMessageRow struct {
 	OutboundModel    *string
 	PromptPreview    *string
 	ResponsePreview  *string
+	RequestBody      *string
+	ResponseBody     *string
 	PromptTokens     *int
 	CompletionTokens *int
 	LatencyMs        *int
@@ -688,6 +690,8 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			outbound_model,
 			request_preview,
 			response_preview,
+			request_body::text,
+			response_body::text,
 			prompt_tokens,
 			completion_tokens,
 			latency_ms,
@@ -715,6 +719,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 		if err := rows.Scan(
 			&m.Ts, &m.RequestID, &m.ClientModel, &m.OutboundModel,
 			&m.PromptPreview, &m.ResponsePreview,
+			&m.RequestBody, &m.ResponseBody,
 			&m.PromptTokens, &m.CompletionTokens, &m.LatencyMs,
 			&m.CostUSD, &m.RequestStatus, &m.ErrorKind,
 			&m.WorkType, &m.RequestMode, &m.GwSessionID,
@@ -728,16 +733,6 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			sessionID = &s
 		}
 
-		direction := "user"
-		if m.WorkType != nil && (*m.WorkType == "agent" || *m.WorkType == "memora") {
-			direction = "assistant"
-		} else if m.RequestMode != nil {
-			mode := strings.ToLower(*m.RequestMode)
-			if mode == "completion" || mode == "embedding" {
-				direction = "assistant"
-			}
-		}
-
 		if m.PromptTokens != nil {
 			totalPromptTokens += *m.PromptTokens
 		}
@@ -748,37 +743,7 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			totalCost += *m.CostUSD
 		}
 
-		msg := map[string]any{
-			"ts":                m.Ts.UTC().Format(time.RFC3339),
-			"request_id":        m.RequestID,
-			"seq":               seq,
-			"direction":         direction,
-			"client_model":      nilStr(m.ClientModel),
-			"outbound_model":    nilStr(m.OutboundModel),
-			"prompt_preview":    nilStr(m.PromptPreview),
-			"response_preview":  nilStr(m.ResponsePreview),
-			"prompt_tokens":     0,
-			"completion_tokens": 0,
-			"latency_ms":        0,
-			"cost_usd":          0.0,
-			"status":            nilStr(m.RequestStatus),
-		}
-		if m.PromptTokens != nil {
-			msg["prompt_tokens"] = *m.PromptTokens
-		}
-		if m.CompletionTokens != nil {
-			msg["completion_tokens"] = *m.CompletionTokens
-		}
-		if m.LatencyMs != nil {
-			msg["latency_ms"] = *m.LatencyMs
-		}
-		if m.CostUSD != nil {
-			msg["cost_usd"] = *m.CostUSD
-		}
-		if m.ErrorKind != nil && *m.ErrorKind != "" {
-			msg["error_kind"] = *m.ErrorKind
-		}
-		messages = append(messages, msg)
+		messages = append(messages, buildSessionMessageMap(m, seq))
 		seq++
 	}
 	if err := rows.Err(); err != nil {

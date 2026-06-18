@@ -56,13 +56,18 @@ func (s *Service) Enabled() bool {
 
 // Settings holds global MaaS conversion knobs.
 type Settings struct {
-	CentsPerCredit    float64 `json:"cents_per_credit"`
-	BaseCreditsPer1M  int64   `json:"base_credits_per_1m"`
-	CurrencyDisplay   string  `json:"currency_display"`
-	AlipayAccount     string  `json:"alipay_account"`
-	WechatMchID       string  `json:"wechat_mch_id"`
-	StubAlipayQRURL   string  `json:"stub_alipay_qr_url"`
-	StubWechatQRURL   string  `json:"stub_wechat_qr_url"`
+	CentsPerCredit           float64 `json:"cents_per_credit"`
+	BaseCreditsPer1M         int64   `json:"base_credits_per_1m"`
+	BaseCreditsPer1MIn       int64   `json:"base_credits_per_1m_in"`
+	BaseCreditsPer1MOut      int64   `json:"base_credits_per_1m_out"`
+	BaseCreditsPer1MCacheIn  int64   `json:"base_credits_per_1m_cache_in"`
+	BaseCreditsPer1MCacheOut int64   `json:"base_credits_per_1m_cache_out"`
+	GlobalDiscount           float64 `json:"global_discount"`
+	CurrencyDisplay          string  `json:"currency_display"`
+	AlipayAccount            string  `json:"alipay_account"`
+	WechatMchID              string  `json:"wechat_mch_id"`
+	StubAlipayQRURL          string  `json:"stub_alipay_qr_url"`
+	StubWechatQRURL          string  `json:"stub_wechat_qr_url"`
 }
 
 // CreditPool identifies which balance pool was affected.
@@ -90,11 +95,11 @@ func (s *Service) PreCheckCredits(ctx context.Context, tenantID string) error {
 }
 
 // ChargeRequest deducts credits after a successful upstream call.
-func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canonicalName string, promptTokens, completionTokens int) (int64, error) {
+func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canonicalName string, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int) (int64, error) {
 	if !s.Enabled() || tenantID == "" || tenantID == "default" {
 		return 0, nil
 	}
-	if promptTokens <= 0 && completionTokens <= 0 {
+	if promptTokens <= 0 && completionTokens <= 0 && cacheReadTokens <= 0 && cacheWriteTokens <= 0 {
 		return 0, nil
 	}
 
@@ -102,11 +107,11 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 	if err != nil {
 		return 0, err
 	}
-	rateIn, rateOut, err := s.modelRates(ctx, canonicalName, settings.BaseCreditsPer1M)
+	rates, err := s.modelRateValues(ctx, canonicalName, settings)
 	if err != nil {
 		return 0, err
 	}
-	amount := CalcCredits(promptTokens, completionTokens, rateIn, rateOut, settings.BaseCreditsPer1M)
+	amount := CalcCredits(promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, rates)
 	if amount <= 0 {
 		return 0, nil
 	}
@@ -223,51 +228,82 @@ func (s *Service) ensureWallet(ctx context.Context, tx pgx.Tx, tenantID string) 
 	return err
 }
 
-func (s *Service) modelRates(ctx context.Context, canonicalName string, base int64) (in, out int64, err error) {
+func (s *Service) modelRateValues(ctx context.Context, canonicalName string, settings Settings) (ModelRateValues, error) {
+	global := globalEffective(settings)
 	if canonicalName == "" {
-		return 0, 0, nil
+		return ModelRateValues{In: global.In, Out: global.Out, CacheIn: global.CacheIn, CacheOut: global.CacheOut}, nil
 	}
-	err = s.pool.QueryRow(ctx, `
-		SELECT COALESCE(mcr.credits_per_1m_in, 0), COALESCE(mcr.credits_per_1m_out, 0)
+	var stored storedModelRates
+	err := s.pool.QueryRow(ctx, `
+		SELECT mcr.credits_per_1m_in, mcr.credits_per_1m_out,
+		       mcr.credits_per_1m_cache_in, mcr.credits_per_1m_cache_out,
+		       COALESCE(mcr.manual_in, FALSE), COALESCE(mcr.manual_out, FALSE),
+		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE)
 		FROM models_canonical mc
 		LEFT JOIN model_credit_rates mcr ON mcr.canonical_id = mc.id
 		WHERE mc.canonical_name = $1 AND COALESCE(mc.status, 'active') = 'active'
 		LIMIT 1
-	`, canonicalName).Scan(&in, &out)
+	`, canonicalName).Scan(
+		&stored.In, &stored.Out, &stored.CacheIn, &stored.CacheOut,
+		&stored.ManualIn, &stored.ManualOut, &stored.ManualCacheIn, &stored.ManualCacheOut,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, 0, nil
+		return ModelRateValues{In: global.In, Out: global.Out, CacheIn: global.CacheIn, CacheOut: global.CacheOut}, nil
 	}
-	return in, out, err
+	if err != nil {
+		return ModelRateValues{}, err
+	}
+	return effectiveModelRates(stored, global), nil
 }
 
 // GetSettings returns the singleton maas_settings row.
 func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	var st Settings
 	err := s.pool.QueryRow(ctx, `
-		SELECT cents_per_credit::float8, base_credits_per_1m, currency_display,
+		SELECT cents_per_credit::float8,
+		       base_credits_per_1m,
+		       COALESCE(base_credits_per_1m_out, base_credits_per_1m),
+		       COALESCE(base_credits_per_1m_cache_in, base_credits_per_1m),
+		       COALESCE(base_credits_per_1m_cache_out, base_credits_per_1m),
+		       COALESCE(global_discount::float8, 1.0),
+		       currency_display,
 		       COALESCE(alipay_account, ''), COALESCE(wechat_mch_id, ''),
 		       COALESCE(stub_alipay_qr_url, ''), COALESCE(stub_wechat_qr_url, '')
 		FROM maas_settings WHERE id = 1
-	`).Scan(&st.CentsPerCredit, &st.BaseCreditsPer1M, &st.CurrencyDisplay,
-		&st.AlipayAccount, &st.WechatMchID, &st.StubAlipayQRURL, &st.StubWechatQRURL)
+	`).Scan(
+		&st.CentsPerCredit, &st.BaseCreditsPer1M,
+		&st.BaseCreditsPer1MOut, &st.BaseCreditsPer1MCacheIn, &st.BaseCreditsPer1MCacheOut,
+		&st.GlobalDiscount, &st.CurrencyDisplay,
+		&st.AlipayAccount, &st.WechatMchID, &st.StubAlipayQRURL, &st.StubWechatQRURL,
+	)
+	st.BaseCreditsPer1MIn = st.BaseCreditsPer1M
 	return st, err
 }
 
 // UpdateSettings writes global conversion settings (super_admin).
 func (s *Service) UpdateSettings(ctx context.Context, st Settings) error {
+	inBase := st.BaseCreditsPer1MIn
+	if inBase <= 0 {
+		inBase = st.BaseCreditsPer1M
+	}
 	_, err := s.pool.Exec(ctx, `
 		UPDATE maas_settings SET
 			cents_per_credit = $1,
 			base_credits_per_1m = $2,
-			currency_display = $3,
-			alipay_account = $4,
-			wechat_mch_id = $5,
-			stub_alipay_qr_url = $6,
-			stub_wechat_qr_url = $7,
+			base_credits_per_1m_out = $3,
+			base_credits_per_1m_cache_in = $4,
+			base_credits_per_1m_cache_out = $5,
+			global_discount = $6,
+			currency_display = $7,
+			alipay_account = $8,
+			wechat_mch_id = $9,
+			stub_alipay_qr_url = $10,
+			stub_wechat_qr_url = $11,
 			updated_at = now()
 		WHERE id = 1
-	`, st.CentsPerCredit, st.BaseCreditsPer1M, st.CurrencyDisplay,
-		st.AlipayAccount, st.WechatMchID, st.StubAlipayQRURL, st.StubWechatQRURL)
+	`, st.CentsPerCredit, inBase, st.BaseCreditsPer1MOut,
+		st.BaseCreditsPer1MCacheIn, st.BaseCreditsPer1MCacheOut, normalizeDiscount(st.GlobalDiscount),
+		st.CurrencyDisplay, st.AlipayAccount, st.WechatMchID, st.StubAlipayQRURL, st.StubWechatQRURL)
 	return err
 }
 
@@ -432,12 +468,20 @@ func (s *Service) ensureWalletDirect(ctx context.Context, tenantID string) error
 	return err
 }
 
-// ModelRateRow is a public model listing entry with credit pricing.
+// ModelRateRow is a public model listing entry with credit pricing and catalog metadata.
 type ModelRateRow struct {
-	CanonicalName   string `json:"canonical_name"`
-	DisplayName     string `json:"display_name"`
-	CreditsPer1MIn  int64  `json:"credits_per_1m_in"`
-	CreditsPer1MOut int64  `json:"credits_per_1m_out"`
+	CanonicalName     string  `json:"canonical_name"`
+	DisplayName       string  `json:"display_name"`
+	Vendor            string  `json:"vendor"`
+	Family            *string `json:"family,omitempty"`
+	FamilyDisplayName *string `json:"family_display_name,omitempty"`
+	ContextWindow     *int    `json:"context_window,omitempty"`
+	Modality          string  `json:"modality"`
+	BillingMode       string  `json:"billing_mode"`
+	CreditsPer1MIn       int64   `json:"credits_per_1m_in"`
+	CreditsPer1MOut      int64   `json:"credits_per_1m_out"`
+	CreditsPer1MCacheIn  int64   `json:"credits_per_1m_cache_in"`
+	CreditsPer1MCacheOut int64   `json:"credits_per_1m_cache_out"`
 }
 
 func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) {
@@ -445,27 +489,47 @@ func (s *Service) ListPublicModels(ctx context.Context) ([]ModelRateRow, error) 
 	if err != nil {
 		return nil, err
 	}
-	base := settings.BaseCreditsPer1M
 	rows, err := s.pool.Query(ctx, `
 		SELECT mc.canonical_name,
 		       COALESCE(NULLIF(TRIM(mc.display_name), ''), mc.canonical_name),
-		       COALESCE(NULLIF(mcr.credits_per_1m_in, 0), $1),
-		       COALESCE(NULLIF(mcr.credits_per_1m_out, 0), $1)
+		       COALESCE(NULLIF(TRIM(mf.vendor), ''), NULLIF(TRIM(mc.family), ''), '其他') AS vendor,
+		       mc.family,
+		       NULLIF(TRIM(mf.display_name), '') AS family_display_name,
+		       mc.context_window,
+		       COALESCE(NULLIF(TRIM(mc.modality), ''), 'text') AS modality,
+		       mcr.credits_per_1m_in, mcr.credits_per_1m_out,
+		       mcr.credits_per_1m_cache_in, mcr.credits_per_1m_cache_out,
+		       COALESCE(mcr.manual_in, FALSE), COALESCE(mcr.manual_out, FALSE),
+		       COALESCE(mcr.manual_cache_in, FALSE), COALESCE(mcr.manual_cache_out, FALSE)
 		FROM models_canonical mc
+		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN model_credit_rates mcr ON mcr.canonical_id = mc.id
 		WHERE COALESCE(mc.status, 'active') = 'active'
-		ORDER BY mc.canonical_name
-	`, base)
+		ORDER BY vendor, mc.canonical_name
+	`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	global := globalEffective(settings)
 	var out []ModelRateRow
 	for rows.Next() {
 		var r ModelRateRow
-		if err := rows.Scan(&r.CanonicalName, &r.DisplayName, &r.CreditsPer1MIn, &r.CreditsPer1MOut); err != nil {
+		var stored storedModelRates
+		if err := rows.Scan(
+			&r.CanonicalName, &r.DisplayName, &r.Vendor, &r.Family, &r.FamilyDisplayName,
+			&r.ContextWindow, &r.Modality,
+			&stored.In, &stored.Out, &stored.CacheIn, &stored.CacheOut,
+			&stored.ManualIn, &stored.ManualOut, &stored.ManualCacheIn, &stored.ManualCacheOut,
+		); err != nil {
 			return nil, err
 		}
+		eff := effectiveModelRates(stored, global)
+		r.CreditsPer1MIn = eff.In
+		r.CreditsPer1MOut = eff.Out
+		r.CreditsPer1MCacheIn = eff.CacheIn
+		r.CreditsPer1MCacheOut = eff.CacheOut
+		r.BillingMode = "token"
 		out = append(out, r)
 	}
 	return jsonSlice(out), rows.Err()
