@@ -663,3 +663,18 @@ func truncateForLog(b []byte, n int) string {
 	}
 	return string(b[:n])
 }
+
+// buildUserSummaryInstruction composes the user-role prompt for the
+// summariser LLM. Language matches the system prompt (which is determined
+// by taskType). When taskType is code_* / data_*, English; otherwise Chinese.
+//
+// Language consistency matters: a Chinese system prompt "你是一个专业的对话历史压缩专家"
+// paired with an English user message "Summarize the following..." degrades
+// summary quality — the LLM has to switch language mid-call. This function
+// keeps both halves of the prompt in the same language.
+func buildUserSummaryInstruction(taskType, conversation string) string {
+	if strings.HasPrefix(taskType, "code_") || strings.HasPrefix(taskType, "data_") {
+		return "Summarize the following conversation history:\n\n" + conversation
+	}
+	return "请压缩以下对话历史为结构化摘要：\n\n" + conversation
+}
