@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -224,6 +225,120 @@ func (s *Store) Delete(ctx context.Context, sessionID, requestID string) error {
 	pipe.ZRem(ctx, indexKey(sessionID), requestID)
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+// StaleEntry is the lightweight projection returned by
+// ListStaleInProgress — just the fields the sweeper needs to
+// decide what to do, not the full Response. The full entry is
+// reloaded by the sweeper if it wants to mark it failed.
+type StaleEntry struct {
+	SessionID string
+	RequestID string
+	CreatedAt int64
+	TenantID  string
+}
+
+// ListStaleInProgress returns entries that are still
+// status=in_progress but whose created_at is older than
+// staleBefore (typically now - staleTimeout). The sweeper uses
+// this to clean up entries abandoned by a crashed async
+// goroutine or a misbehaving client.
+//
+// Implementation notes:
+//   - Uses SCAN (not KEYS) so it does not block the Redis
+//     event loop on large key spaces. COUNT is a hint, not a
+//     guarantee; we loop until cursor==0.
+//   - For each candidate hash, we HGETALL and parse only the
+//     status + created_at + tenant_id fields. Bodies are not
+//     pulled — the sweeper is not interested in the cached
+//     response, only in deciding whether to mark it failed.
+//   - The candidate is dropped if the hash is missing (race
+//     with Delete) or if parsing fails (schema drift).
+//
+// The store-level cap (cap) is a no-op for reads; SCAN returns
+// whatever the backing Redis has, and we filter in Go. The
+// caller (the sweeper) is expected to call this with a small
+// batch size to avoid OOM on mis-configured installs.
+func (s *Store) ListStaleInProgress(ctx context.Context, staleBefore time.Time, batchSize int64) ([]StaleEntry, error) {
+	if s == nil || s.rdb == nil {
+		return nil, ErrUnavailable
+	}
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+	staleBeforeUnix := staleBefore.Unix()
+	pattern := keyPrefix + ":*"
+	var (
+		cursor   uint64
+		results  []StaleEntry
+		seen     = make(map[string]struct{})
+	)
+	for {
+		keys, nextCursor, err := s.rdb.Scan(ctx, cursor, pattern, batchSize).Result()
+		if err != nil {
+			return nil, fmt.Errorf("pending: scan: %w", err)
+		}
+		for _, k := range keys {
+			// We only want hash keys (not the ZSET index keys).
+			// The index key has the form
+			// pending_response:index:{sid} which doesn't match
+			// the keyPrefix+":*:*" pattern; the entry key has
+			// the form pending_response:{sid}:{rid} which
+			// does. So this loop only sees entry keys.
+			sid, rid, ok := splitEntryKey(k)
+			if !ok {
+				continue
+			}
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+			fields, err := s.rdb.HGetAll(ctx, k).Result()
+			if err != nil || len(fields) == 0 {
+				continue
+			}
+			r := parseResponse(sid, fields)
+			if r == nil || r.Status != StatusInProgress {
+				continue
+			}
+			if r.CreatedAt == 0 || r.CreatedAt > staleBeforeUnix {
+				continue
+			}
+			results = append(results, StaleEntry{
+				SessionID: sid,
+				RequestID: rid,
+				CreatedAt: r.CreatedAt,
+				TenantID:  r.TenantID,
+			})
+		}
+		if nextCursor == 0 {
+			break
+		}
+		cursor = nextCursor
+	}
+	return results, nil
+}
+
+// splitEntryKey is the inverse of entryKey; it parses
+// "pending_response:{sid}:{rid}" and returns the two halves.
+// Returns ok=false for the index key (which is
+// "pending_response:index:{sid}" — different shape).
+func splitEntryKey(k string) (sessionID, requestID string, ok bool) {
+	const entryPrefix = "pending_response:"
+	if !strings.HasPrefix(k, entryPrefix) {
+		return "", "", false
+	}
+	rest := strings.TrimPrefix(k, entryPrefix)
+	// Skip the index key (pending_response:index:{sid}).
+	if strings.HasPrefix(rest, "index:") {
+		return "", "", false
+	}
+	// Expect exactly one ':' separator between sid and rid.
+	idx := strings.IndexByte(rest, ':')
+	if idx <= 0 || idx == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:idx], rest[idx+1:], true
 }
 
 // write persists the response (hash + index) atomically. Internal.
