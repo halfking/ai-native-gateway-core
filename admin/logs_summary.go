@@ -303,14 +303,10 @@ func sanitizeSummaryText(raw string) string {
 }
 
 func pickSummaryModel(logs []sessionLogForSummary) string {
-	for i := len(logs) - 1; i >= 0; i-- {
-		if logs[i].ClientModel != nil {
-			m := strings.TrimSpace(*logs[i].ClientModel)
-			if m != "" {
-				return m
-			}
-		}
-	}
+	// Use a stable chat model for summaries. Mirroring the session's last
+	// client_model may pick a reasoning model that echoes <think>
+	// or similar markers instead of plain Chinese summary JSON.
+	_ = logs
 	return "gpt-4o-mini"
 }
 
@@ -416,12 +412,31 @@ func isValidSummary(summary string, keyPoints []string) bool {
 	if len(s) < 40 {
 		return false
 	}
+	if strings.ContainsAny(s, "<>") {
+		return false
+	}
 	lower := strings.ToLower(s)
+	if strings.Contains(lower, "redacted") || strings.Contains(lower, "thinking") {
+		return false
+	}
 	if strings.Contains(lower, "无法总结") || strings.Contains(lower, "无足够信息") {
 		return false
 	}
 	if len(keyPoints) == 0 && len(s) < 80 {
 		return false
+	}
+	for _, kp := range keyPoints {
+		kp = strings.TrimSpace(kp)
+		if kp == "" {
+			continue
+		}
+		if strings.ContainsAny(kp, "<>") {
+			return false
+		}
+		kpl := strings.ToLower(kp)
+		if strings.Contains(kpl, "redacted") || strings.Contains(kpl, "thinking") {
+			return false
+		}
 	}
 	return true
 }
