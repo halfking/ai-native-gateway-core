@@ -281,6 +281,24 @@ type ExecuteResult struct {
 	RequestBody []byte
 	ResponseBody []byte
 	Trace     *Trace
+	// Round 47 compression v7 T-NEW-2: optional compression event captured
+	// by handleContextLengthRecovery. Populated when a 4xx recovery rewrote
+	// the body (mechanical trim / memora L1 / LLM summary). nil otherwise.
+	//
+	// relay/handler.go emitTelemetry reads these fields and writes them
+	// into request_logs.compression_reason / compression_strategy /
+	// compression_meta so operators can SQL-trace the parent-child chain
+	// per v7 §6.
+	CompressionReason   *string
+	CompressionStrategy *string
+	CompressionMeta     []byte // JSON-encoded v7 §3.2 schema
+	// ParentRequestID is the pre-compression request_id. Populated when
+	// the retry leg (after 4xx recovery) is treated as a child of the
+	// original attempt by the executor. Currently we emit a single
+	// request_id per logical call (the retry reuses the same id), so this
+	// stays nil — kept here so the v7 §6 "single-level chain" invariant
+	// can be enforced in a future change without refactoring the struct.
+	ParentRequestID *string
 }
 
 type AttemptRecord struct {
