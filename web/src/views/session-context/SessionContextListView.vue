@@ -64,8 +64,6 @@ function openSession(s: MemoraSession) {
     }),
   })
 }
-
-function openSession(s: MemoraSession) {
 </script>
 
 <template>
