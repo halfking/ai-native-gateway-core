@@ -18,10 +18,10 @@ RUN cp /tmp/llm-gateway-go-new /usr/local/bin/llm-gateway-go && \
     rm -rf /opt/llm-gateway-go/web/dist && \
     mkdir -p /opt/llm-gateway-go/web/dist && \
     cp -r /tmp/web-dist-new/* /opt/llm-gateway-go/web/dist/ && \
-    chown -R llmgw:llmgw /opt/llm-gateway-go/web/dist && \
+    chown -R 1001:1001 /opt/llm-gateway-go/web/dist && \
     cp /tmp/version-files/VERSION /opt/llm-gateway-go/VERSION && \
     cp /tmp/version-files/.deploy_seq /opt/llm-gateway-go/.deploy_seq && \
-    chown llmgw:llmgw /opt/llm-gateway-go/VERSION /opt/llm-gateway-go/.deploy_seq && \
+    chown 1001:1001 /opt/llm-gateway-go/VERSION /opt/llm-gateway-go/.deploy_seq && \
     rm -rf /tmp/llm-gateway-go-new /tmp/web-dist-new /tmp/version-files
 
 # Restore non-root user
