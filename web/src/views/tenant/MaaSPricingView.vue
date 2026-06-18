@@ -68,7 +68,7 @@ async function buyPlan(plan: MaasPlan) {
       payment_channel: payChannel.value,
     })
     router.push({
-      path: `/maas/orders/${order.id}`,
+      path: `/tenant/orders/${order.id}`,
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {
@@ -88,7 +88,7 @@ async function buyTopup(pkg: MaasTopupPackage) {
       payment_channel: payChannel.value,
     })
     router.push({
-      path: `/maas/orders/${order.id}`,
+      path: `/tenant/orders/${order.id}`,
       query: tenantQuerySuffix(),
     })
   } catch (e: unknown) {

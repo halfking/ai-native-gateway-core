@@ -1,7 +1,7 @@
 <template>
   <div class="pricing-management">
     <div class="pm-header">
-      <h2>定价管理</h2>
+      <h2>成本价格</h2>
       <div class="pm-actions">
         <button class="btn btn-sm" @click="fetchData" :disabled="loading">
           {{ loading ? '加载中…' : '刷新' }}
@@ -13,7 +13,7 @@
     </div>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前为只读模式。定价仅供查看，不能修改或导入。
+      📖 您是租户管理员，当前为只读模式。上游成本价格仅供查看，不能修改或导入。
     </div>
 
     <div class="pm-summary" v-if="summary">
@@ -68,7 +68,7 @@
         <ModelPicker
           v-model="filters.search"
           placeholder="选择模型筛选…"
-          title="定价管理 · 模型筛选"
+          title="成本价格 · 模型筛选"
           @update:model-value="onFilterChange"
         />
       </div>

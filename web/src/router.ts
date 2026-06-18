@@ -20,6 +20,7 @@ import RequestLogsView        from './views/RequestLogsView.vue'
 import ModelsView             from './views/ModelsView.vue'
 import ProviderDetailView     from './views/ProviderDetailView.vue'
 import PricingManagementView  from './views/PricingManagementView.vue'
+import StandardModelPricingView from './views/StandardModelPricingView.vue'
 import FreePoolView           from './views/FreePoolView.vue'
 import TenantsView            from './views/TenantsView.vue'
 import TenantDetailView       from './views/TenantDetailView.vue'
@@ -31,11 +32,11 @@ import SessionContextLayout      from './layouts/SessionContextLayout.vue'
 import SessionContextListView    from './views/session-context/SessionContextListView.vue'
 import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
 import ForbiddenView          from './views/ForbiddenView.vue'
-import MaaSModelsView         from './views/maas/MaaSModelsView.vue'
-import MaaSPricingView        from './views/maas/MaaSPricingView.vue'
-import MaaSUsageView          from './views/maas/MaaSUsageView.vue'
-import MaaSAccountView        from './views/maas/MaaSAccountView.vue'
-import MaaSOrderView          from './views/maas/MaaSOrderView.vue'
+import MaaSAccountView        from './views/tenant/MaaSAccountView.vue'
+import MaaSPricingView        from './views/tenant/MaaSPricingView.vue'
+import MaaSUsageView          from './views/tenant/MaaSUsageView.vue'
+import MaaSOrderView          from './views/tenant/MaaSOrderView.vue'
+import TenantModelsView       from './views/tenant/TenantModelsView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -83,15 +84,23 @@ export const router = createRouter({
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
-    { path: '/models',             component: ModelsView, meta: { requiresSuper: true } },
+    { path: '/models',             component: ModelsView, meta: { requiresPlatformOps: true } },
     { path: '/pricing',            component: PricingManagementView, meta: { requiresPlatformOps: true } },
+    { path: '/model-pricing',      component: StandardModelPricingView, meta: { requiresPlatformOps: true } },
 
-    // MaaS customer-facing (any authenticated user)
-    { path: '/maas/models',        component: MaaSModelsView },
-    { path: '/maas/account',       component: MaaSAccountView },
-    { path: '/maas/pricing',       component: MaaSPricingView },
-    { path: '/maas/orders/:id',    component: MaaSOrderView },
-    { path: '/maas/usage',         component: MaaSUsageView },
+    // Tenant portal (non-default tenant self-service; admin uses ?tenant=code)
+    { path: '/tenant/models',      component: TenantModelsView },
+    { path: '/tenant/account',     component: MaaSAccountView },
+    { path: '/tenant/pricing',     component: MaaSPricingView },
+    { path: '/tenant/orders/:id',  component: MaaSOrderView },
+    { path: '/tenant/usage',       component: MaaSUsageView },
+
+    // Legacy MaaS paths → tenant portal
+    { path: '/maas/models',        redirect: (to) => ({ path: '/tenant/models', query: to.query }) },
+    { path: '/maas/account',       redirect: (to) => ({ path: '/tenant/account', query: to.query }) },
+    { path: '/maas/pricing',       redirect: (to) => ({ path: '/tenant/pricing', query: to.query }) },
+    { path: '/maas/orders/:id',    redirect: (to) => ({ path: `/tenant/orders/${to.params.id}`, query: to.query }) },
+    { path: '/maas/usage',         redirect: (to) => ({ path: '/tenant/usage', query: to.query }) },
 
     // Tenant-isolated (any authenticated user, scoped to own tenant for tenant_admin)
     { path: '/keys',               component: KeysView },
@@ -128,9 +137,9 @@ router.beforeEach((to) => {
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {
     return { path: '/' }
   }
-  // 5. Default-tenant ops must not browse tenant MaaS pages without ?tenant= context
+  // 5. Default-tenant ops must not browse tenant portal without ?tenant= context
   if (
-    to.path.startsWith('/maas/') &&
+    to.path.startsWith('/tenant/') &&
     isPlatformOpsView() &&
     typeof to.query.tenant !== 'string'
   ) {

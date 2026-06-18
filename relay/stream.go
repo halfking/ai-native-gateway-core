@@ -502,6 +502,10 @@ func NewPendingCapturer(maxBytes int) *pendingCapturer {
 
 // append copies line into the internal buffer up to the cap.
 // Once the cap is reached, subsequent chunks are dropped.
+// Audit fix 3.3: if a chunk doesn't fully fit, we drop the
+// entire chunk rather than truncating mid-JSON. A truncated
+// SSE line produces a parse error on replay; dropping it
+// leaves the preceding chunks intact (which is better).
 func (p *pendingCapturer) append(line string) {
 	if p == nil {
 		return
@@ -513,7 +517,9 @@ func (p *pendingCapturer) append(line string) {
 	}
 	remaining := p.maxBytes - p.bytes
 	if len(line) > remaining {
-		line = line[:remaining]
+		// Drop the entire chunk — truncating mid-JSON would
+		// produce an invalid SSE line on replay.
+		return
 	}
 	p.buffer = append(p.buffer, line...)
 	p.bytes = len(p.buffer)

@@ -2530,6 +2530,7 @@ export interface Tenant {
   api_key_count?: number
   requests_7d?: number
   tokens_7d?: number
+  credits_7d?: number
   cost_7d_usd?: number
   total_requests?: number
 }
@@ -2607,12 +2608,13 @@ export interface TenantStats {
   days: number
   total_requests: number
   total_tokens: number
+  total_credits: number
   total_cost_usd: number
   unique_keys: number
   unique_models: number
   unique_apps: number
-  by_model: Array<{ model: string; requests: number; tokens: number; cost_usd: number }>
-  by_application: Array<{ application_code: string; requests: number; tokens: number; cost_usd: number }>
+  by_model: Array<{ model: string; requests: number; tokens: number; credits: number; cost_usd: number }>
+  by_application: Array<{ application_code: string; requests: number; tokens: number; credits: number; cost_usd: number }>
 }
 
 export function getTenantStats(code: string, days?: number) {
@@ -2826,6 +2828,9 @@ export interface RequestMessage {
   outbound_model: string | null
   prompt_preview: string | null
   response_preview: string | null
+  user_turn?: string | null
+  assistant_text?: string | null
+  tool_summary?: string | null
   prompt_tokens: number
   completion_tokens: number
   latency_ms: number
@@ -3038,14 +3043,73 @@ export function getAutoRouteCorrelations(params: {
 export interface MaasPublicSettings {
   cents_per_credit: number
   base_credits_per_1m: number
+  base_credits_per_1m_in?: number
+  base_credits_per_1m_out?: number
+  base_credits_per_1m_cache_in?: number
+  base_credits_per_1m_cache_out?: number
+  global_discount?: number
   currency_display: string
+}
+
+export interface MaasAdminSettings extends MaasPublicSettings {
+  alipay_account?: string
+  wechat_mch_id?: string
+  stub_alipay_qr_url?: string
+  stub_wechat_qr_url?: string
+}
+
+export interface AdminMaasModelRate {
+  canonical_id: number
+  canonical_name: string
+  display_name: string
+  vendor: string
+  family: string | null
+  status: string
+  credits_per_1m_in: number
+  credits_per_1m_out: number
+  credits_per_1m_cache_in: number
+  credits_per_1m_cache_out: number
+  manual_in: boolean
+  manual_out: boolean
+  manual_cache_in: boolean
+  manual_cache_out: boolean
+  custom_credits_per_1m_in: number | null
+  custom_credits_per_1m_out: number | null
+  custom_credits_per_1m_cache_in: number | null
+  custom_credits_per_1m_cache_out: number | null
+  is_custom: boolean
+  updated_at: string | null
+}
+
+export interface MaasModelRateUpsert {
+  credits_per_1m_in: number
+  credits_per_1m_out: number
+  credits_per_1m_cache_in: number
+  credits_per_1m_cache_out: number
+  manual_in: boolean
+  manual_out: boolean
+  manual_cache_in: boolean
+  manual_cache_out: boolean
+}
+
+export interface AdminMaasModelRatesResponse {
+  settings: MaasAdminSettings
+  items: AdminMaasModelRate[]
 }
 
 export interface MaasModel {
   canonical_name: string
   display_name: string
+  vendor: string
+  family?: string | null
+  family_display_name?: string | null
+  context_window?: number | null
+  modality: string
+  billing_mode: string
   credits_per_1m_in: number
   credits_per_1m_out: number
+  credits_per_1m_cache_in?: number
+  credits_per_1m_cache_out?: number
 }
 
 export interface MaasPlan {
@@ -3132,6 +3196,39 @@ export function getMaasSettings() {
   return req<MaasPublicSettings>('GET', '/api/maas/settings')
 }
 
+export function getAdminMaasSettings() {
+  return req<MaasAdminSettings>('GET', '/api/admin/maas/settings')
+}
+
+export function updateAdminMaasSettings(body: {
+  cents_per_credit: number
+  base_credits_per_1m?: number
+  base_credits_per_1m_in?: number
+  base_credits_per_1m_out?: number
+  base_credits_per_1m_cache_in?: number
+  base_credits_per_1m_cache_out?: number
+  global_discount?: number
+  currency_display: string
+}) {
+  return req<{ status: string }>('PUT', '/api/admin/maas/settings', body)
+}
+
+export function getAdminMaasModelRates() {
+  return req<AdminMaasModelRatesResponse>('GET', '/api/admin/maas/model-rates')
+}
+
+export function upsertAdminMaasModelRate(canonicalId: number, body: MaasModelRateUpsert) {
+  return req<{ status: string }>('PUT', `/api/admin/maas/model-rates/${canonicalId}`, body)
+}
+
+export function resetAdminMaasModelRateFields(canonicalId: number, fields: string[]) {
+  return req<{ status: string }>('PATCH', `/api/admin/maas/model-rates/${canonicalId}`, { fields })
+}
+
+export function deleteAdminMaasModelRate(canonicalId: number) {
+  return req<{ status: string }>('DELETE', `/api/admin/maas/model-rates/${canonicalId}`)
+}
+
 export function getMaasModels() {
   return req<{ items: MaasModel[] }>('GET', '/api/maas/models')
 }
@@ -3177,12 +3274,14 @@ export interface MaasUsageModelRow {
   model: string
   requests: number
   credits: number
+  cost_usd?: number
 }
 
 export interface MaasUsageTrendRow {
   date: string
   requests: number
   credits: number
+  cost_usd?: number
 }
 
 export interface MaasUsageSummary {
@@ -3190,6 +3289,7 @@ export interface MaasUsageSummary {
   tenant_id: string
   total_requests: number
   total_credits: number
+  total_cost_usd?: number
   by_model: MaasUsageModelRow[]
   trend: MaasUsageTrendRow[]
 }

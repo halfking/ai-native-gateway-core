@@ -2,15 +2,19 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/maas"
 )
 
 func (h *Handler) registerMaasRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/maas/settings", h.superAdmin(h.handleMaasSettings))
+	mux.HandleFunc("/api/admin/maas/model-rates", h.superAdmin(h.handleMaasModelRates))
+	mux.HandleFunc("/api/admin/maas/model-rates/", h.superAdmin(h.handleMaasModelRateByID))
 	mux.HandleFunc("/api/admin/maas/plans", h.superAdmin(h.handleMaasPlans))
 	mux.HandleFunc("/api/admin/maas/topup-packages", h.superAdmin(h.handleMaasTopupPackages))
 	mux.HandleFunc("/api/admin/maas/tenants/", h.superAdmin(h.handleMaasTenantAdmin))
@@ -56,11 +60,90 @@ func (h *Handler) handleMaasSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		if body.BaseCreditsPer1M <= 0 {
-			writeError(w, http.StatusBadRequest, "base_credits_per_1m must be positive")
+		if body.BaseCreditsPer1MIn <= 0 && body.BaseCreditsPer1M <= 0 {
+			writeError(w, http.StatusBadRequest, "base_credits_per_1m_in must be positive")
+			return
+		}
+		if body.GlobalDiscount < 0 || body.GlobalDiscount > 1 {
+			writeError(w, http.StatusBadRequest, "global_discount must be between 0 and 1")
 			return
 		}
 		if err := svc.UpdateSettings(r.Context(), body); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) handleMaasModelRates(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		resp, err := svc.ListAdminModelRates(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) handleMaasModelRateByID(w http.ResponseWriter, r *http.Request) {
+	svc := h.maasSvc()
+	if svc == nil || !svc.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	idStr := strings.TrimPrefix(r.URL.Path, "/api/admin/maas/model-rates/")
+	id, err := strconv.Atoi(strings.Trim(idStr, "/"))
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid canonical_id")
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var body maas.ModelRateUpsert
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if err := svc.UpsertModelRate(r.Context(), id, body); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case http.MethodPatch:
+		var body struct {
+			Fields []string `json:"fields"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if err := svc.ResetModelRateFields(r.Context(), id, body.Fields); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "no custom rate for model")
+				return
+			}
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case http.MethodDelete:
+		if err := svc.DeleteModelRate(r.Context(), id); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "no custom rate for model")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -164,7 +247,7 @@ func (h *Handler) handleMaasTenantAdmin(w http.ResponseWriter, r *http.Request) 
 				limit = n
 			}
 		}
-		summary, err := svc.QueryUsageSummary(r.Context(), tenantCode, days, limit)
+		summary, err := svc.QueryUsageSummaryWithCost(r.Context(), tenantCode, days, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

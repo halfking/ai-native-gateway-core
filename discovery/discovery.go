@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -653,6 +654,14 @@ func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, 
 // also marked unavailable on the cmb side, with the existing
 // unavailable_reason NOT LIKE 'manual%' guard preserved so admin-pinned
 // bindings survive expiry.
+//
+// BUG-2 fix (2026-06-18): Added a grace period guard — bindings that had
+// at least one successful request in the last 24h are NOT expired, even
+// if the model is absent from the upstream /v1/models list. This prevents
+// intermittent discovery failures (e.g. upstream /v1/models temporarily
+// omitting a model, or list pagination) from disabling the only working
+// credential for a model. The grace period is configurable via
+// DISCOVERY_GRACE_HOURS (default 24).
 func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	if len(seen) == 0 {
 		return
@@ -667,6 +676,15 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 	}
 
 	cmbExpireEnabled := os.Getenv("ENABLE_CMB_EXPIRE") == "1"
+
+	// BUG-2 fix: grace period in hours. Bindings with at least one
+	// successful request within this window are immune to expiry.
+	graceHours := 24
+	if v := os.Getenv("DISCOVERY_GRACE_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			graceHours = n
+		}
+	}
 
 	expired := 0
 	for credID, modelSet := range credModels {
@@ -691,7 +709,14 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND raw_model_name NOT IN (%s)
 			  AND available = TRUE
 			  AND COALESCE(admin_protected, FALSE) = FALSE
-		`, placeholders), args...)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM request_logs rl
+			    WHERE rl.credential_id = $1
+			      AND rl.outbound_model = model_offers.raw_model_name
+			      AND rl.success = TRUE
+			      AND rl.ts > now() - interval '%d hours'
+			  )
+		`, placeholders, graceHours), args...)
 		if err != nil {
 			slog.Debug("failed to expire stale models", "credential_id", credID, "error", err)
 			continue

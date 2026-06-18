@@ -15,6 +15,7 @@ import {
   type ReadableBlock,
   type SessionExtractionStatusResponse,
   type SessionMessagesResponse,
+  type RequestMessage,
 } from '../../api'
 import {
   buildSessionQueryParams,
@@ -28,17 +29,30 @@ import {
   tagClass,
   type useSessionFilters,
 } from '../../composables/useSessionContext'
+import RequestLogDrawer from '../../components/RequestLogDrawer.vue'
 
 const route = useRoute()
 const router = useRouter()
 const filters = inject<ReturnType<typeof useSessionFilters>>('sessionContextFilters')!
 
-const taskId = computed(() => decodeURIComponent(String(route.params.taskId || '')))
-const isNoTopic = computed(() => taskId.value === '_no-topic')
+function parseVirtualNoTopicHourStart(taskId: string): string | undefined {
+  if (!taskId.startsWith('notopic:')) return undefined
+  const parts = taskId.split(':')
+  if (parts.length < 3) return undefined
+  return parts.slice(2).join(':') || undefined
+}
 
-const sessionScope = computed(() =>
-  parseSessionScopeFromRoute(route, filters.hours.value),
-)
+const taskId = computed(() => decodeURIComponent(String(route.params.taskId || '')))
+const isNoTopic = computed(() => taskId.value === '_no-topic' || taskId.value.startsWith('notopic:'))
+
+const sessionScope = computed(() => {
+  const scope = parseSessionScopeFromRoute(route, filters.hours.value)
+  if (isNoTopic.value && !scope.hour_start) {
+    const fromTask = parseVirtualNoTopicHourStart(taskId.value)
+    if (fromTask) scope.hour_start = fromTask
+  }
+  return scope
+})
 const noTopicParams = computed(() => noTopicParamsFromScope(sessionScope.value))
 const listExpectedCount = computed(() => sessionScope.value.rc)
 
@@ -59,6 +73,8 @@ const titleResult = ref('')
 const titleError = ref('')
 const localTitle = ref('')
 
+const activeRequestId = ref<string | null>(null)
+
 const readableBlocks = computed<ReadableBlock[]>(() => {
   if (contextData.value?.readable_blocks?.length) {
     return contextData.value.readable_blocks
@@ -75,6 +91,22 @@ const readableBlocks = computed<ReadableBlock[]>(() => {
 
 const hasReadableContent = computed(() => readableBlocks.value.length > 0)
 const hasMessages = computed(() => (messagesData.value?.messages.length ?? 0) > 0)
+
+function messageUserLine(msg: RequestMessage) {
+  return (msg.user_turn || msg.prompt_preview || '—').trim()
+}
+
+function messageAssistantLine(msg: RequestMessage) {
+  return (msg.assistant_text || msg.response_preview || '').trim()
+}
+
+function openRequestDrawer(requestId: string) {
+  activeRequestId.value = requestId
+}
+
+function closeRequestDrawer() {
+  activeRequestId.value = null
+}
 
 const requestLogsHref = computed(() => {
   const qs = new URLSearchParams()
@@ -104,7 +136,7 @@ function sourceLabel(source: string) {
 }
 
 async function loadContext() {
-  if (isNoTopic.value || !taskId.value) return
+  if (isNoTopic.value || !taskId.value || taskId.value.startsWith('notopic:')) return
   contextLoading.value = true
   contextError.value = ''
   try {
@@ -333,9 +365,18 @@ watch(
               <span>{{ msg.direction === 'user' ? '👤' : '🤖' }}</span>
             </div>
             <div class="timeline-main">
-              <div class="prompt">{{ msg.prompt_preview || '—' }}</div>
-              <div v-if="msg.response_preview" class="response">{{ msg.response_preview }}</div>
+              <div class="turn-user">{{ messageUserLine(msg) }}</div>
+              <div v-if="messageAssistantLine(msg) || msg.tool_summary" class="turn-assistant">
+                <div v-if="messageAssistantLine(msg)">{{ messageAssistantLine(msg) }}</div>
+                <div v-if="msg.tool_summary" class="tool-summary text-muted">{{ msg.tool_summary }}</div>
+              </div>
               <div class="meta-line text-muted">
+                <button
+                  type="button"
+                  class="req-link-btn"
+                  title="查看原始请求详情"
+                  @click.stop="openRequestDrawer(msg.request_id)"
+                >原始请求</button>
                 <span class="badge badge-gray">{{ msg.client_model || '—' }}</span>
                 <span>{{ msg.prompt_tokens }} tok</span>
                 <span>{{ msg.latency_ms }}ms</span>
@@ -390,13 +431,22 @@ watch(
         </div>
       </div>
     </div>
+
+    <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
   </div>
 </template>
 
 <style scoped>
 .tab-content { display: flex; flex-direction: column; gap: 8px; }
 .compact-card { padding: 8px 10px; }
-.detail-title { margin: 0 0 8px; font-size: 14px; }
+.detail-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
 .meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -461,17 +511,28 @@ watch(
 }
 .seq { font-weight: 600; color: var(--accent-h); }
 .timeline-main { flex: 1; min-width: 0; }
-.prompt { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
-.response {
+.turn-user { font-size: 12px; line-height: 1.5; margin-bottom: 6px; font-weight: 500; white-space: pre-wrap; word-break: break-word; }
+.turn-assistant {
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin-bottom: 4px;
-  padding-left: 8px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
   border-left: 2px solid var(--border);
 }
+.tool-summary { margin-top: 4px; font-size: 10px; white-space: pre-wrap; word-break: break-word; }
+.req-link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent-h);
+  font-size: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.req-link-btn:hover { text-decoration: underline; }
 .meta-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 10px; }
 .status-pill { padding: 0 5px; border-radius: 8px; font-size: 10px; }
 .status-pill.ok { background: rgba(46, 160, 67, 0.15); color: var(--success); }

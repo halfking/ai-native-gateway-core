@@ -327,6 +327,24 @@ func main() {
 			"threshold", exec.MnfStickyBreakThreshold,
 			"capacity", mnfStreakCap,
 		)
+		// BUG-4 fix: mnf_cooling temporarily disables a binding when
+		// it accumulates too many model_not_found errors in 10 min.
+		exec.MnfCoolThreshold = 5
+		exec.MnfCoolMinutes = 2
+		if v := os.Getenv("LLM_GATEWAY_MNF_COOL_THRESHOLD"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				exec.MnfCoolThreshold = n
+			}
+		}
+		if v := os.Getenv("LLM_GATEWAY_MNF_COOL_MINUTES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				exec.MnfCoolMinutes = n
+			}
+		}
+		slog.Info("mnf_cooling_enabled",
+			"threshold", exec.MnfCoolThreshold,
+			"cool_minutes", exec.MnfCoolMinutes,
+		)
 		// Track C C4 (2026-06-18): wire the pending response cache
 		// into the executor so it can demote a slow synchronous
 		// walk to async mode. Defaults: 15s short (synchronous

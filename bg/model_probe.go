@@ -130,6 +130,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 
 	rows, err := r.db.Query(timeoutCtx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
+		       COALESCE(pm.outbound_model_name, pm.raw_model_name),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
@@ -172,7 +173,8 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		var q queued
 		var ciphertext []byte
 		if err := rows.Scan(
-			&q.t.CredentialID, &q.t.RawModel, &q.t.BaseURL, &q.t.Protocol,
+			&q.t.CredentialID, &q.t.RawModel, &q.t.OutboundModel,
+			&q.t.BaseURL, &q.t.Protocol,
 			&ciphertext, &q.t.ManualDisabled,
 			&q.state, &q.succCnt, &q.failCnt,
 		); err != nil {
@@ -390,8 +392,18 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	}
 	endpoint := upstreamurl.ChatCompletionsURL(t.BaseURL)
 
+	// BUG-3 fix: use OutboundModel (COALESCE(outbound_model_name, raw_model_name))
+	// for the upstream request body. Some providers (e.g. Volcano Ark) require
+	// an endpoint ID (e.g. "ep-20241227") as the model field, not the raw model
+	// name (e.g. "minimax-m3"). Using raw_model_name here caused every probe to
+	// return 404, permanently marking the binding as broken.
+	modelField := t.OutboundModel
+	if modelField == "" {
+		modelField = t.RawModel
+	}
+
 	body, _ := json.Marshal(map[string]any{
-		"model":       t.RawModel,
+		"model":       modelField,
 		"messages":    []map[string]string{{"role": "user", "content": "ping"}},
 		"max_tokens":  1,
 		"temperature": 0,
@@ -441,6 +453,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, rawModel string) error {
 	row := r.db.QueryRow(ctx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
+		       COALESCE(pm.outbound_model_name, pm.raw_model_name),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
@@ -459,7 +472,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	var ciphertext []byte
 	var prevState string
 	var prevSucc, prevFail int
-	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.BaseURL, &t.Protocol,
+	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.BaseURL, &t.Protocol,
 		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
 		if err == pgx.ErrNoRows {
 			return fmt.Errorf("binding not found")
@@ -489,6 +502,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 type probeTarget struct {
 	CredentialID   int
 	RawModel       string
+	OutboundModel  string // COALESCE(pm.outbound_model_name, pm.raw_model_name)
 	BaseURL        string
 	Protocol       string
 	APIKey         string
@@ -544,7 +558,7 @@ func (r *ModelProbeRunner) ListStates(ctx context.Context, providerID int, state
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ProbeStateRow
+	out := make([]ProbeStateRow, 0)
 	for rows.Next() {
 		var s ProbeStateRow
 		if err := rows.Scan(&s.CredentialID, &s.RawModel, &s.State,

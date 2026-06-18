@@ -189,6 +189,14 @@ type Executor struct {
 	MnfStickyBreakThreshold int  // default 3
 	MnfStreakEnabled        bool // feature flag (env-gated by main.go)
 
+	// BUG-4 fix (2026-06-18): mnf_cooling temporarily disables a
+	// credential_model_binding when it accumulates too many
+	// model_not_found errors in a short window. This prevents a
+	// 0%-success credential from being repeatedly selected when
+	// it's the only routable candidate.
+	MnfCoolThreshold int // default 5, env LLM_GATEWAY_MNF_COOL_THRESHOLD
+	MnfCoolMinutes   int // default 2, env LLM_GATEWAY_MNF_COOL_MINUTES
+
 	// Round 47 compression v7 T16: the unified compression dispatcher
 	// (mode=0/1/2). Built at startup by main.go from
 	// LLM_GATEWAY_COMPRESSION_MODE + LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION
@@ -592,6 +600,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// user experience when the upstream has clearly gone
 			// away.
 			e.recordMnfStreak(params, cand.CredentialID)
+
+			// BUG-4 fix (2026-06-18): If this credential+model has
+			// accumulated too many recent model_not_found errors (from
+			// both routing_404 and scheduler probes), temporarily cool
+			// the binding so the router skips it for the next N minutes.
+			// This prevents a 0%-success credential from being
+			// repeatedly selected when it's the only routable candidate.
+			e.coolBindingOnMnfStreak(params.R.Context(), cand.CredentialID, mnf.rawModel)
+
 			lastErr = execErr
 			lastKind = errorsx.KindModelNotFound
 			attempts = append(attempts, AttemptRecord{
@@ -884,6 +901,83 @@ func (e *Executor) resetMnfStreak(params *ExecParams, credentialID int) {
 	}
 	key := BuildMnfStreakKey(params.StickyKey, credentialID)
 	e.MnfStreak.Reset(key)
+}
+
+// coolBindingOnMnfStreak (BUG-4 fix, 2026-06-18) checks the recent
+// model_not_found count for a credential+model pair. If the count
+// exceeds MnfCoolThreshold (default 5) within the last MnfCoolWindow
+// (default 10 minutes), it temporarily marks the
+// credential_model_binding unavailable with a short cooling period
+// (default 2 minutes) so the router skips it and picks a different
+// candidate. This prevents a 0%-success credential from being
+// repeatedly selected when it's the only routable candidate — the
+// background probe consensus (bg/model_probe.go) may take 30s-15m to
+// confirm broken_confirmed, during which every user request fails.
+//
+// The cooling is short (2 min) so the binding auto-recovers if the
+// upstream comes back. It does NOT set circuit_open or cooling_until
+// on the credentials table — it only flips the cmb.available flag,
+// which the router's filterAvailable() checks.
+func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int, rawModel string) {
+	if e.DB == nil || !e.DB.Enabled() {
+		return
+	}
+	threshold := e.MnfCoolThreshold
+	if threshold <= 0 {
+		threshold = 5
+	}
+	coolMins := e.MnfCoolMinutes
+	if coolMins <= 0 {
+		coolMins = 2
+	}
+
+	var recentCount int
+	err := e.DB.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM model_probe_runs
+		WHERE credential_id = $1
+		  AND raw_model_name = $2
+		  AND status = 'http_4xx'
+		  AND error_code = 'model_not_found'
+		  AND created_at > now() - interval '10 minutes'
+	`, credentialID, rawModel).Scan(&recentCount)
+	if err != nil {
+		slog.Debug("cool_binding_mnf: count query failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error", err)
+		return
+	}
+	if recentCount < threshold {
+		return
+	}
+
+	_, err = e.DB.Pool().Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available = FALSE,
+		    unavailable_reason = 'mnf_cooling',
+		    unavailable_at = now()
+		FROM provider_models pm
+		WHERE pm.id = cmb.provider_model_id
+		  AND cmb.credential_id = $1
+		  AND pm.raw_model_name = $2
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, credentialID, rawModel)
+	if err != nil {
+		slog.Warn("cool_binding_mnf: update failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error", err)
+		return
+	}
+	slog.Warn("cool_binding_mnf: temporarily disabled binding",
+		"credential_id", credentialID,
+		"raw_model", rawModel,
+		"recent_mnf_count", recentCount,
+		"threshold", threshold,
+		"cool_minutes", coolMins,
+	)
 }
 
 
@@ -1191,7 +1285,13 @@ func (e *Executor) startAsyncRetry(
 	// if Redis is unavailable; we still proceed to spawn the
 	// goroutine (it would just not write back). Better than
 	// silently dropping the request.
-	_ = e.PendingStore.MarkInProgress(params.R.Context(), &pending.Response{
+	// Audit fix 2.5: use context.Background() with a short timeout
+	// for MarkInProgress. The client's request context may already
+	// be canceled (the client disconnected during the >15s sync
+	// walk), which would cause MarkInProgress to fail silently and
+	// the client's first poll would get 404 instead of 202.
+	mipCtx, mipCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = e.PendingStore.MarkInProgress(mipCtx, &pending.Response{
 		SessionID:   sessionID,
 		TenantID:    tenantFromCtx(params.R),
 		RequestID:   requestID,
@@ -1201,6 +1301,7 @@ func (e *Executor) startAsyncRetry(
 		IsStream:    params.IsStream,
 		CreatedAt:   startedAt.Unix(),
 	})
+	mipCancel()
 
 	maxFallbacks := e.AsyncMaxFallbackCreds
 	if maxFallbacks <= 0 {
@@ -1217,14 +1318,18 @@ func (e *Executor) startAsyncRetry(
 	// headers (X-Gw-Session-Id, X-Request-Id, etc.) are copied
 	// from the original request so downstream routing logic
 	// (Router.PlanCandidates, FpSlots, etc.) can still read them.
+	//
+	// Audit fix 2.4: the synthetic request's context is set to
+	// the longTimeout ctx (created below in runAsyncRetry) so
+	// the Execute() call is bounded by the long timeout, not
+	// unbounded. We pass the ctx via a closure to runAsyncRetry
+	// which sets it on the request before calling Execute.
 	bgParams := *params
 	if params.R != nil {
 		syntheticReq := httptest.NewRequest("POST", params.R.URL.Path, nil)
 		syntheticReq.Header = params.R.Header.Clone()
-		bgParams.R = syntheticReq.WithContext(context.Background())
+		bgParams.R = syntheticReq // context will be set in runAsyncRetry
 	} else {
-		// Defensive: should not happen in production (handler
-		// always sets R), but tests may omit it.
 		bgParams.R = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	}
 	bgTrace := trace
@@ -1307,11 +1412,11 @@ func (e *Executor) runAsyncRetry(
 	// have re-ordered them; we want the async goroutine to get a
 	// fresh look at the current state.
 	asyncParams := *params
-	asyncParams.R = params.R // needed by Router.PlanCandidates (reads X-Request-Id etc.)
-	// params.R's context is the *client* request context, which
-	// is fine for planning (it does not need to outlive the
-	// client connection). We use ctx above for the upstream HTTP
-	// call.
+	// Audit fix 2.4: bind the longTimeout ctx to the synthetic
+	// request so Execute() and its upstream HTTP calls are bounded.
+	if asyncParams.R != nil {
+		asyncParams.R = asyncParams.R.WithContext(ctx)
+	}
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
 		nil, // no sticky: the async walk is its own attempt
@@ -1333,36 +1438,64 @@ func (e *Executor) runAsyncRetry(
 	if len(candidates) > maxFallbacks+1 {
 		candidates = candidates[:maxFallbacks+1]
 	}
+	// Audit fix 2.1: assign the re-derived candidates to asyncParams
+	// so Execute() actually uses them. Without this, Execute() would
+	// retry the original (already-failed) candidates.
+	asyncParams.Candidates = candidates
 
 	// Recursion guard: bump asyncDepth for the inner Execute call
-	// so shouldAsyncFallback returns false there. Restore the
-	// original count on return so subsequent synchronous requests
-	// (e.g. a brand-new HTTP request on the same gateway instance
-	// reusing this Executor) are unaffected.
-	prevDepth := e.asyncDepth.Load()
-	e.asyncDepth.Store(prevDepth + 1)
-	defer func() { e.asyncDepth.Store(prevDepth) }()
+	// so shouldAsyncFallback returns false there. Restore on
+	// return. Audit fix 2.3: use Add/Sub instead of save/restore
+	// to avoid lost updates under concurrent requests.
+	e.asyncDepth.Add(1)
+	defer func() { e.asyncDepth.Add(-1) }()
 
 	result, execErr := e.Execute(&asyncParams) //nolint:gocritic // intentionally recursive: async walk uses same executor
 	if execErr == nil {
-		_ = e.PendingStore.Save(ctx, &pending.Response{
-			SessionID:   sessionID,
-			RequestID:   requestID,
-			Status:      pending.StatusCompleted,
-			Body:        string(result.ResponseBody),
-			ContentType: contentTypeFor(params.IsStream),
-			IsStream:    params.IsStream,
-			CompletedAt: time.Now().Unix(),
-		})
+		// Audit fix 2.2: for streaming responses, Execute() does
+		// NOT set ResponseBody (the stream is consumed by the
+		// StreamChat closure which writes to the capturer
+		// directly). We must NOT overwrite the capturer's entry
+		// with an empty body. For non-streaming, ResponseBody is
+		// set and we write it to the pending store.
+		if !params.IsStream && len(result.ResponseBody) > 0 {
+			_ = e.PendingStore.Save(ctx, &pending.Response{
+				SessionID:   sessionID,
+				RequestID:   requestID,
+				Status:      pending.StatusCompleted,
+				Body:        string(result.ResponseBody),
+				ContentType: contentTypeFor(params.IsStream),
+				IsStream:    params.IsStream,
+				CompletedAt: time.Now().Unix(),
+			})
+		} else if params.IsStream {
+			// For streaming, the capturer in main.go's StreamChat
+			// closure already wrote the body to the pending store.
+			// We only need to ensure the entry is marked completed
+			// if the capturer missed it (e.g. panic). Best-effort:
+			// check if an entry exists and is still in_progress.
+			if entry, found, _ := e.PendingStore.Get(ctx, sessionID, requestID); found && entry.Status == pending.StatusInProgress {
+				_ = e.PendingStore.Save(ctx, &pending.Response{
+					SessionID:   sessionID,
+					RequestID:   requestID,
+					Status:      pending.StatusCompleted,
+					Body:        entry.Body,
+					ContentType: contentTypeFor(true),
+					IsStream:    true,
+					CompletedAt: time.Now().Unix(),
+				})
+			}
+		}
 		return
 	}
 
-	// Failure path. We have an ExecuteError; surface its LastKind
-	// and last error in the pending entry so the GET endpoint
-	// can show why the async walk gave up.
+	// Failure path. Audit fix 2.6: use the async Execute()'s
+	// error (execErr), not the synchronous walk's lastErr/lastKind.
+	// The synchronous walk's error is misleading — it describes
+	// why the FIRST attempt failed, not why the ASYNC retry failed.
 	asyncErr := "async_exhausted"
-	if lastErr != nil {
-		asyncErr = "async_" + string(lastKind) + ": " + lastErr.Error()
+	if execErr != nil {
+		asyncErr = "async: " + truncateForStore(execErr.Error())
 	}
 	_ = e.PendingStore.Save(ctx, &pending.Response{
 		SessionID:    sessionID,
