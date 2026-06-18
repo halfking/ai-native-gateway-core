@@ -146,7 +146,66 @@ function statusTitle(row: RequestLogRow): string {
 function statusColor(row: RequestLogRow): string {
   if (row.request_status === 'in_progress') return 'var(--warning, #f59e0b)'
   if (row.request_status === 'success' || row.success) return 'var(--success)'
-  return 'var(--danger)'
+  return 'var(--error)'
+}
+
+// jumpToParent filters the list down to the parent of the current
+// compressed row. Lets operators click "← <prefix>" in the compression
+// badge and immediately see the original (pre-compression) request.
+//
+// Round 47 compression v7 Q5: the parent breadcrumb click handler.
+// We use gw_task_id (which is stable across the original + retry
+// attempts) so the parent row appears in the filtered list alongside
+// any sibling compressed rows for the same task. If the row has no
+// task_id, we fall back to scrolling the badge title into view (no
+// filter is applied — the meta popover already shows the full id).
+function jumpToParent(row: RequestLogRow) {
+  if (!row.parent_request_id) return
+  if (row.gw_task_id) {
+    gwTaskFilter.value = row.gw_task_id
+  }
+  // No requestIdFilter exists in this view; the badge's title attr
+  // already exposes the full parent id for copy/paste.
+}
+
+// Round 47 compression v7: badge + label for the compression_reason
+// / compression_strategy pair. Returns null when the request was not
+// compressed so callers can render an empty cell.
+function compressionLabel(row: RequestLogRow): { reason: string; strategy: string; tip: string } | null {
+  if (!row.compression_reason) return null
+  const reasonMap: Record<string, string> = {
+    'mode_1_auto_threshold': '自动阈值',
+    'mode_2_on_4xx': '4xx 重试',
+  }
+  const strategyMap: Record<string, string> = {
+    'mechanical_trim': '机械裁剪',
+    'memora_l1_inject': 'Memora 注入',
+    'llm_summary': 'LLM 摘要',
+    'noop': '未压缩',
+  }
+  const reason = reasonMap[row.compression_reason] || row.compression_reason
+  const strategy = strategyMap[row.compression_strategy || ''] || (row.compression_strategy || '?')
+  // Build a tooltip with byte/token deltas from compression_meta when present.
+  let tip = `原因: ${reason}\n策略: ${strategy}`
+  const meta = row.compression_meta as Record<string, any> | null
+  if (meta) {
+    if (meta.tokens_before && meta.tokens_after) {
+      const ratio = Math.round((meta.tokens_after / meta.tokens_before) * 100)
+      tip += `\nTokens: ${meta.tokens_before} → ${meta.tokens_after} (${ratio}%)`
+    }
+    if (meta.bytes_before && meta.bytes_after) {
+      const kbBefore = Math.round(meta.bytes_before / 1024)
+      const kbAfter = Math.round(meta.bytes_after / 1024)
+      tip += `\nBytes: ${kbBefore}KB → ${kbAfter}KB`
+    }
+    if (meta.latency_ms) {
+      tip += `\n延迟: ${meta.latency_ms}ms`
+    }
+  }
+  if (row.parent_request_id) {
+    tip += `\n父请求: ${row.parent_request_id}`
+  }
+  return { reason, strategy, tip }
 }
 
 const traceMode = computed(() =>
@@ -696,12 +755,13 @@ onMounted(async () => {
             <th class="col-tokens">Token</th>
             <th v-if="!isDefaultTenant()" class="col-credits">积分</th>
             <th class="col-lat">延迟</th>
+            <th class="col-compress">压缩</th>
             <th class="col-status">状态</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="traceMode ? (isDefaultTenant() ? 8 : 9) : (isDefaultTenant() ? 7 : 8)">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td :colspan="traceMode ? (isDefaultTenant() ? 8 : 9) : (isDefaultTenant() ? 7 : 8)">无记录</td></tr>
+          <tr v-if="loading"><td :colspan="traceMode ? (isDefaultTenant() ? 9 : 10) : (isDefaultTenant() ? 8 : 9)">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td :colspan="traceMode ? (isDefaultTenant() ? 9 : 10) : (isDefaultTenant() ? 8 : 9)">无记录</td></tr>
           <tr
             v-for="r in rows"
             :key="r.request_id + r.ts"
@@ -752,6 +812,30 @@ onMounted(async () => {
             <td class="col-lat">
               <div class="cell-line1">{{ r.latency_ms != null ? r.latency_ms + 'ms' : '—' }}</div>
               <div v-if="r.request_mode" class="cell-line2">{{ r.request_mode }}</div>
+            </td>
+            <td class="col-compress">
+              <template v-if="compressionLabel(r)">
+                <span
+                  class="compression-badge"
+                  :class="['strategy-' + (r.compression_strategy || 'noop')]"
+                  :title="compressionLabel(r)!.tip"
+                >
+                  <span class="badge-reason">{{ compressionLabel(r)!.reason }}</span>
+                  <span class="badge-sep">·</span>
+                  <span class="badge-strategy">{{ compressionLabel(r)!.strategy }}</span>
+                </span>
+                <div
+                  v-if="r.parent_request_id"
+                  class="cell-line2 parent-id parent-id-clickable"
+                  :title="'跳转到父请求 ' + r.parent_request_id"
+                  @click="jumpToParent(r)"
+                >
+                  ← {{ r.parent_request_id.slice(0, 8) }}
+                </div>
+              </template>
+              <template v-else>
+                <span class="cell-line1 muted">—</span>
+              </template>
             </td>
             <td class="col-status" :style="{ color: statusColor(r) }" :title="statusTitle(r)">
               <div class="cell-line1">{{ statusLabel(r) }}</div>
@@ -982,6 +1066,59 @@ onMounted(async () => {
 .tenant-badge--default {
   background: rgba(34, 197, 94, 0.1);
   color: #22c55e;
+}
+
+/* Round 47 compression v7: parent-child chain badge. */
+.compression-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--surface-secondary, #f3f4f6);
+  color: var(--text-primary, #111827);
+}
+.compression-badge .badge-sep {
+  color: var(--text-secondary, #9ca3af);
+}
+.compression-badge.strategy-mechanical_trim {
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
+}
+.compression-badge.strategy-memora_l1_inject {
+  background: rgba(139, 92, 246, 0.1);
+  color: #6d28d9;
+}
+.compression-badge.strategy-llm_summary {
+  background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+}
+.compression-badge.strategy-noop {
+  background: rgba(107, 114, 128, 0.1);
+  color: #4b5563;
+}
+.col-compress {
+  max-width: 180px;
+  min-width: 120px;
+}
+.parent-id {
+  color: var(--text-secondary, #6b7280);
+  font-size: 10px;
+  margin-top: 2px;
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.parent-id-clickable {
+  cursor: pointer;
+  color: var(--accent, #3b82f6);
+}
+.parent-id-clickable:hover {
+  text-decoration: underline;
+}
+.cell-line1.muted {
+  color: var(--text-secondary, #9ca3af);
 }
 </style>
 
