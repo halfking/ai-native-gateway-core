@@ -10,10 +10,13 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 )
+
+var _ = sync.Mutex{} // keep import live if pendingCapturer is later moved
 
 const (
 	streamBufSize       = 64 * 1024
@@ -36,6 +39,38 @@ func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientMod
 }
 
 func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool, stripFn func([]byte) []byte) (outcome StreamOutcome) {
+	return StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, nil)
+}
+
+// StreamChatWithPendingCapture (Track C C2, 2026-06-18) extends
+// StreamChatWithCaptureAndToolFallback with an optional
+// pendingCapturer. When supplied, every chunk the upstream
+// sends is recorded into the capturer's buffer in addition
+// to being forwarded to the client — regardless of whether
+// the client is still connected. When the stream ends, the
+// capturer's finalize is called with the terminal outcome
+// so a caller-driven Save() can persist the buffer.
+//
+// Why this works even when the client is gone:
+//   - C1 decoupled the upstream context from the client
+//     context when the request carries a session id, so the
+//     read loop keeps going past the client disconnect.
+//   - safeWriteSSE already recovers from "write to closed
+//     conn" panics, so existing w.WriteString calls are safe.
+//
+// The capturer is intentionally decoupled from the audit
+// StreamCapture — it serves a different purpose (replay) with
+// different size limits (1 MiB cap here, vs unbounded there).
+func StreamChatWithPendingCapture(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel string,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	toolsRequested bool,
+	stripFn func([]byte) []byte,
+	pc *pendingCapturer,
+) (outcome StreamOutcome) {
 	defer resp.Body.Close()
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
@@ -48,6 +83,17 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			if pc != nil {
+				pc.markInterrupted("stream_panic")
+			}
+		}
+		// Best-effort capture finalise. If the stream completed
+		// normally, the capturer holds the full body ready for
+		// replay via GET /v1/sessions/{id}/pending-response.
+		// If terminated abnormally, the capturer still holds
+		// whatever was captured so the admin API can inspect.
+		if pc != nil {
+			pc.finalize(outcome)
 		}
 	}()
 
@@ -121,6 +167,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 
 		if norm != nil {
 			firstLine = string(norm.NormalizeChunk([]byte(firstLine), true))
+		}
+		if pc != nil {
+			pc.append(firstLine)
 		}
 		safeWriteSSE(w, firstLine)
 		safeFlush(flusher)
@@ -236,6 +285,14 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 
 		if norm != nil {
 			line = string(norm.NormalizeChunk([]byte(line), true))
+		}
+
+		// Track C C2: capture the chunk into the pending buffer
+		// BEFORE attempting the client write. The capturer is
+		// bounded by maxBytes (1 MiB default) so a runaway
+		// upstream cannot OOM the gateway.
+		if pc != nil {
+			pc.append(line)
 		}
 
 		safeWriteSSE(w, line)
@@ -394,4 +451,136 @@ func BuildSSEChunk(data string) string {
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// pendingCapturer (Track C C2, 2026-06-18) records every chunk
+// the upstream sends so a client that disconnected mid-stream
+// can still recover the response via GET /v1/sessions/{id}/
+// pending-response. The capturer is intentionally minimal:
+// the streaming hot path stays in StreamChatWithPendingCapture;
+// this type only collects bytes and finalises them at the end.
+//
+// Concurrency: written from one goroutine (the stream loop)
+// and finalised from the deferred cleanup of that same
+// goroutine. The mutex is belt-and-braces — in practice it's
+// never contended.
+type pendingCapturer struct {
+	mu       sync.Mutex
+	buffer   []byte
+	bytes    int
+	maxBytes int
+
+	finalized  bool
+	finalState pendingFinalState
+}
+
+type pendingFinalState struct {
+	status      string
+	errMessage  string
+	completedAt int64
+}
+
+func newPendingCapturer(maxBytes int) *pendingCapturer {
+	if maxBytes <= 0 {
+		maxBytes = 1 << 20
+	}
+	return &pendingCapturer{maxBytes: maxBytes}
+}
+
+// append copies line into the internal buffer up to the cap.
+// Once the cap is reached, subsequent chunks are dropped.
+func (p *pendingCapturer) append(line string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.bytes >= p.maxBytes {
+		return
+	}
+	remaining := p.maxBytes - p.bytes
+	if len(line) > remaining {
+		line = line[:remaining]
+	}
+	p.buffer = append(p.buffer, line...)
+	p.bytes = len(p.buffer)
+}
+
+// markInterrupted is called from the panic-recovery path to
+// mark the buffer as failed (rather than completed).
+func (p *pendingCapturer) markInterrupted(reason string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finalized {
+		return
+	}
+	p.finalState = pendingFinalState{
+		status:      "failed",
+		errMessage:  "stream_" + reason,
+		completedAt: time.Now().Unix(),
+	}
+	p.finalized = true
+}
+
+// finalize records the terminal state. A client_cancel with
+// a full buffer counts as "completed" because we have the
+// body for replay; other interrupted reasons count as
+// "failed" so the replay surfaces the error to the client.
+func (p *pendingCapturer) finalize(outcome StreamOutcome) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finalized {
+		return
+	}
+	if outcome.Interrupted {
+		if outcome.Reason == "client_cancel" {
+			p.finalState = pendingFinalState{
+				status:      "completed",
+				completedAt: time.Now().Unix(),
+			}
+		} else {
+			p.finalState = pendingFinalState{
+				status:      "failed",
+				errMessage:  outcome.Reason,
+				completedAt: time.Now().Unix(),
+			}
+		}
+	} else {
+		p.finalState = pendingFinalState{
+			status:      "completed",
+			completedAt: time.Now().Unix(),
+		}
+	}
+	p.finalized = true
+}
+
+// snapshot returns a copy of the buffer and final state.
+func (p *pendingCapturer) snapshot() (body []byte, state pendingFinalState, ok bool) {
+	if p == nil {
+		return nil, pendingFinalState{}, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.finalized {
+		return nil, pendingFinalState{}, false
+	}
+	out := make([]byte, len(p.buffer))
+	copy(out, p.buffer)
+	return out, p.finalState, true
+}
+
+// bytesCaptured returns the number of bytes in the buffer.
+func (p *pendingCapturer) bytesCaptured() int {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.bytes
 }
