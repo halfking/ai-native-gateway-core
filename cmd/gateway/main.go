@@ -466,6 +466,7 @@ slog.Info("compressor initialized",
 	var credRecovery *bg.CredentialRecovery
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
+	var pendingSweeper *bg.PendingSweeper
 	var defaultProbePicker *bg.DefaultProbePicker
 	var modelProbe *bg.ModelProbeRunner
 	var stickyCleaner *bg.StickyCleaner
@@ -476,6 +477,27 @@ slog.Info("compressor initialized",
 	if dbConn != nil && dbConn.Enabled() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
+		// Track C C6 (2026-06-18): pending entry sweeper. Marks
+		// abandoned in_progress entries (e.g. a crashed async
+		// goroutine, a client that never polls) as failed so
+		// the GET endpoint can return a terminal response.
+		// Default 10m stale / 60s interval; override via env.
+		if pendingStore != nil {
+			pendingStaleTimeout := 10 * time.Minute
+			pendingSweepInterval := 60 * time.Second
+			if v := os.Getenv("LLM_GATEWAY_PENDING_STALE_TIMEOUT"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					pendingStaleTimeout = time.Duration(n) * time.Second
+				}
+			}
+			if v := os.Getenv("LLM_GATEWAY_PENDING_SWEEP_INTERVAL"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					pendingSweepInterval = time.Duration(n) * time.Second
+				}
+			}
+			pendingSweeper = bg.NewPendingSweeper(pendingStore, pendingStaleTimeout, pendingSweepInterval)
+			pendingSweeper.Start(context.Background())
+		}
 		if !bgDataPlaneOnly && fernetKey != nil {
 			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
 			if keyring != nil {
@@ -811,6 +833,9 @@ slog.Info("compressor initialized",
 	}
 	if credRecovery != nil {
 		credRecovery.Stop()
+	}
+	if pendingSweeper != nil {
+		pendingSweeper.Stop()
 	}
 	if credCycler != nil {
 		credCycler.Stop()
