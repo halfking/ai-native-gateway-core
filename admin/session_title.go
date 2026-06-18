@@ -1,11 +1,8 @@
 package admin
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,13 +71,20 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	model := sessionTitleModel(logs)
 
-	title, err := callSessionTitleLLM(ctx, r, apiKey, model, taskID, corpus)
+	turnHint := strings.Count(corpus, "\n[")
+	if turnHint < 1 {
+		turnHint = 1
+	}
+	userContent := fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus)
+
+	llmRes, err := h.callAdminLLMChat(ctx, r, apiKey, adminLLMTaskSessionTitle, taskID, userContent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "标题生成失败: "+err.Error())
 		return
 	}
+	title := llmRes.Content
+	model := llmRes.ResolvedModel
 	title = normalizeSessionTitle(title)
 	if !isValidSessionTitle(title) {
 		writeError(w, http.StatusBadGateway, "标题结果无效，请稍后重试")
@@ -134,81 +138,6 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 		logs = append(logs, row)
 	}
 	return logs, rows.Err()
-}
-
-func sessionTitleModel(logs []sessionLogForSummary) string {
-	// Use a stable chat model for titles. pickSummaryModel mirrors the session's
-	// last client_model, which may be a reasoning model that echoes
-	// <think> or similar markers instead of a plain Chinese title.
-	_ = logs
-	return "gpt-4o-mini"
-}
-
-func callSessionTitleLLM(ctx context.Context, r *http.Request, apiKey, model, taskID, corpus string) (string, error) {
-	turnHint := strings.Count(corpus, "\n[")
-	if turnHint < 1 {
-		turnHint = 1
-	}
-	payload := map[string]any{
-		"model": model,
-		"messages": []map[string]string{
-			{
-				"role": "system",
-				"content": "你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。" +
-					"只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。",
-			},
-			{
-				"role": "user",
-				"content": fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus),
-			},
-		},
-		"temperature": 0.2,
-		"max_tokens":  48,
-	}
-	body, _ := json.Marshal(payload)
-	endpoint := gatewayEndpointFromRequest(r) + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("X-Gw-Task-Id", taskID)
-	req.Header.Set("X-Device-Seed", "admin-session-title")
-
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(raw))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return "", fmt.Errorf("%s", msg)
-	}
-
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", err
-	}
-	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("empty completion")
-	}
-	content := strings.TrimSpace(out.Choices[0].Message.Content)
-	if content == "" {
-		return "", fmt.Errorf("empty completion content")
-	}
-	return content, nil
 }
 
 func normalizeSessionTitle(raw string) string {
