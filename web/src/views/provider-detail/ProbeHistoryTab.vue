@@ -10,6 +10,13 @@ import {
 
 const props = defineProps<{ providerId: number }>()
 
+// `open-models-tab` is fired when the user clicks the inline link to jump
+// from a `endpoint_id_required` probe error to the Models tab drawer.
+// The parent (ProviderDetailView) listens and switches tab + opens drawer.
+const emit = defineEmits<{
+  (e: 'open-models-tab', payload: { credential_id: number; raw_model_name: string }): void
+}>()
+
 const runs = ref<ProbeRun[]>([])
 const states = ref<ProbeState[]>([])
 const loading = ref(false)
@@ -216,8 +223,23 @@ watch(stateFilter, load)
               <td><span class="badge" :class="statusBadge(r.status)">{{ r.status }}</span></td>
               <td>{{ r.http_status ?? '—' }}</td>
               <td class="err-cell">
-                <code v-if="r.error_code" class="mono-sm">{{ r.error_code }}</code>
-                <div v-if="r.error_message" class="cell-muted err-msg">{{ r.error_message }}</div>
+                <template v-if="r.error_code === 'endpoint_id_required'">
+                  <span class="badge badge-amber">需配置 endpoint ID</span>
+                  <div class="cell-muted err-msg">
+                    此模型（如火山方舟 minimax-m3 / glm-5.1）必须用 deployment endpoint ID
+                    （如 <code>ep-XXXXXXXX</code>）调用，而非原始模型名。
+                    请前往
+                    <button
+                      type="button"
+                      class="link-btn"
+                      @click="emit('open-models-tab', { credential_id: r.credential_id, raw_model_name: r.raw_model_name })"
+                    >模型清单 → 编辑 outbound_model_name</button>
+                  </div>
+                </template>
+                <template v-else>
+                  <code v-if="r.error_code" class="mono-sm">{{ r.error_code }}</code>
+                  <div v-if="r.error_message" class="cell-muted err-msg">{{ r.error_message }}</div>
+                </template>
               </td>
               <td>{{ r.latency_ms }}ms</td>
               <td><span class="badge" :class="stateChangeBadge(r.state_change)">{{ r.state_change }}</span></td>

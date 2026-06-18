@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount, watch } from 'vue'
 import {
   getProviderModels,
   refreshProviderModels,
@@ -14,7 +14,16 @@ import {
   type ProviderRefreshRun,
 } from '../../api'
 
-const props = defineProps<{ providerId: number }>()
+const props = defineProps<{
+  providerId: number
+  /**
+   * When set, the drawer for the matching offer opens as soon as offers
+   * are loaded.  Used to deep-link from a `endpoint_id_required` probe
+   * error so the operator lands directly on the outbound_model_name editor.
+   * Cleared once consumed.
+   */
+  focusOffer?: { credential_id: number; raw_model_name: string } | null
+}>()
 
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
@@ -40,6 +49,13 @@ const selected = ref<ModelOffer | null>(null)
 interface EditDraft {
   standardized_name: string
   canonical_id: number | null
+  /**
+   * Upstream-side model identifier.  For Volcano Ark and similar providers
+   * this is the deployment endpoint ID (e.g. "ep-20241227XXXX") that the
+   * gateway must send in the request body instead of raw_model_name.
+   * Empty string == use raw_model_name.
+   */
+  outbound_model_name: string
   saving: boolean
   toggling: boolean
   loadingSuggest: boolean
@@ -54,6 +70,7 @@ async function load() {
   error.value = ''
   try {
     offers.value = await getProviderModels(props.providerId)
+    maybeOpenFocusedOffer()
     routableLoading.value = true
     try {
       routable.value = await getRoutableSummary(props.providerId)
@@ -187,6 +204,7 @@ function timeText(v?: string | null) {
 function resetDraft(o: ModelOffer) {
   draft.standardized_name = o.standardized_name ?? ''
   draft.canonical_id = o.canonical_id ?? null
+  draft.outbound_model_name = o.outbound_model_name ?? ''
   draft.saving = false
   draft.toggling = false
   draft.loadingSuggest = false
@@ -238,6 +256,7 @@ async function saveEdit() {
     const updated = await updateModelOffer(props.providerId, o.id, {
       standardized_name: (draft.standardized_name ?? '').trim() || null,
       canonical_id: draft.canonical_id ?? null,
+      outbound_model_name: (draft.outbound_model_name ?? '').trim() || null,
     })
     const idx = offers.value.findIndex(x => x.id === o.id)
     if (idx >= 0) {
@@ -245,6 +264,7 @@ async function saveEdit() {
         ...offers.value[idx],
         standardized_name: updated.standardized_name ?? '',
         canonical_id: updated.canonical_id,
+        outbound_model_name: updated.outbound_model_name ?? null,
       }
       selected.value = offers.value[idx]
     }
@@ -270,6 +290,26 @@ async function toggleAvailable() {
     draft.toggling = false
   }
 }
+
+function maybeOpenFocusedOffer() {
+  const target = props.focusOffer
+  if (!target) return
+  const match = offers.value.find(
+    o => o.credential_id === target.credential_id && o.raw_model_name === target.raw_model_name,
+  )
+  if (match) {
+    openDrawer(match)
+  }
+}
+
+// Watch for focusOffer changes so deep-links land on the right drawer
+// even when offers are already loaded (e.g. when the user navigates
+// probe → models → probe → models without a full page refresh).
+watch(() => props.focusOffer, () => {
+  if (offers.value.length > 0) {
+    maybeOpenFocusedOffer()
+  }
+})
 
 load()
 </script>
@@ -423,7 +463,9 @@ load()
           </div>
 
           <div class="drawer-section">
-            <div class="drawer-section-title">标准化名</div>
+            <div class="drawer-section-title">
+              标准化名
+            </div>
             <input
               v-model="draft.standardized_name"
               class="field-input"
@@ -459,6 +501,29 @@ load()
                 </select>
               </div>
               <div v-if="draft.suggestErr" class="suggest-err">{{ draft.suggestErr }}</div>
+            </div>
+          </div>
+
+          <div class="drawer-section">
+            <div class="drawer-section-title">
+              出口模型名（endpoint ID）
+              <span
+                class="hint"
+                title="某些供应商（如火山方舟）需要 endpoint ID（如 ep-20241227XXXX）作为模型字段，而非原始名称。未配置时探针会被跳过（错误码 endpoint_id_required）。"
+              >?</span>
+            </div>
+            <input
+              v-model="draft.outbound_model_name"
+              class="field-input"
+              :placeholder="selected?.raw_model_name || 'ep-XXXXXXXX'"
+            />
+            <div class="cell-sub" style="margin-top:6px">
+              <span v-if="draft.outbound_model_name">
+                将发送：<code>{{ draft.outbound_model_name }}</code>
+              </span>
+              <span v-else class="cell-muted">
+                未设置 — 将使用 <code>{{ selected?.raw_model_name }}</code>
+              </span>
             </div>
           </div>
 

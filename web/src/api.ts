@@ -537,7 +537,14 @@ export function getModelOfferSuggestions(providerId: number, offerId: number) {
 export function updateModelOffer(
   providerId: number,
   offerId: number,
-  body: { standardized_name?: string | null; canonical_id?: number | null }
+  body: {
+    standardized_name?: string | null
+    canonical_id?: number | null
+    // outbound_model_name is the upstream-side model identifier (e.g. a
+    // Volcano Ark endpoint ID like "ep-20241227XXXX").  Pass an empty
+    // string to clear it (revert to raw_model_name).
+    outbound_model_name?: string | null
+  }
 ) {
   return req<{
     id: number
@@ -546,6 +553,7 @@ export function updateModelOffer(
     canonical_id: number | null
     canonical_name: string | null
     display_name: string | null
+    outbound_model_name: string | null
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 
@@ -603,7 +611,7 @@ export interface ModelOffer {
   credential_id: number
   credential_label: string
   raw_model_name: string
-  standardized_name: string
+  standardized_name: string | null
   canonical_id: number | null
   display_name: string
   available: boolean
@@ -616,6 +624,12 @@ export interface ModelOffer {
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
+  /**
+   * Upstream-side model identifier — for providers like Volcano Ark this is
+   * the deployment endpoint ID (e.g. "ep-20241227XXXX") that must be sent
+   * in the request body instead of raw_model_name.  null when unset.
+   */
+  outbound_model_name?: string | null
 }
 
 export interface QueryModelsResponse {
