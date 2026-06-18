@@ -122,6 +122,13 @@ type ChatHandler struct {
 		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
 		BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 	}
+	// idempotentCache (Track C C5, 2026-06-18) deduplicates
+	// re-sent requests within a 5-minute window. When a client
+	// retries (network glitch, double-click), the handler
+	// returns 202 + X-Gw-Pending immediately rather than
+	// re-executing the full routing + vendor path. nil disables
+	// the dedup (every request is treated as new).
+	idempotentCache *IdempotentCache
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -135,6 +142,16 @@ func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov *provider.Client,
 	h.executor = exec
 	h.provider = prov
 	h.sticky = sticky
+}
+
+// SetIdempotentCache (Track C C5, 2026-06-18) wires the
+// duplicate-request detector. nil disables dedup; every
+// request is treated as new. Production wiring in
+// cmd/gateway/main.go calls this with a non-nil cache so
+// that double-clicks and network retries get an instant
+// 202 + X-Gw-Pending response.
+func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
+	h.idempotentCache = c
 }
 
 func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
@@ -608,6 +625,42 @@ func (h *ChatHandler) serveWithExecutor(
 	if sessionInfo != nil {
 		sessionKey = sessionInfo.SessionKey
 	}
+
+	// ── Idempotent dedup (Track C C5, 2026-06-18) ────────────────────────
+	// When a client retries the same (sessionID, requestID) within
+	// the 5-minute window — network glitch, double-click, mobile
+	// background-then-foreground — we short-circuit to a 202 +
+	// X-Gw-Pending response. The pending store (C3) already
+	// deduplicates at the durable layer; this is the in-memory
+	// fast path that avoids re-running routing + circuit +
+	// limiter checks.
+	//
+	// The cache is "first-writer wins" — a hit is recorded as
+	// a real attempt by the cache, so concurrent retries see
+	// a hit. This is the desired behaviour: only the first
+	// request does the work, all subsequent retries are
+	// informed of the same pending response.
+	if h.idempotentCache != nil && sessionID != "" && requestID != "" {
+		if h.idempotentCache.CheckAndMark(sessionID, requestID) {
+			w.Header().Set("X-Gw-Pending", sessionID)
+			w.Header().Set("X-Gw-Pending-Request", requestID)
+			w.Header().Set("X-Gw-Idempotent-Replay", "true")
+			w.Header().Set("Retry-After", "2")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":      "in_progress",
+				"session_id":  sessionID,
+				"request_id":  requestID,
+				"retry_after": 2,
+				"idempotent":  true,
+			})
+			logCtx.SetError("idempotent_replay", "duplicate request, returning in_progress")
+			markLogged()
+			return
+		}
+	}
+
 	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
 
 	upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
