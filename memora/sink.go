@@ -3,6 +3,7 @@ package memora
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,15 @@ type WriteOp struct {
 	UserID   string
 	Messages []Message
 	Info     map[string]any
+	// Source tags the originating caller so Memora can apply per-source
+	// policy (e.g. ingest_session source="gateway" gets TTL=30d while
+	// source="openclaw" gets TTL=7d per Memora MCP ingest_session schema).
+	//
+	// Round 47 compression v7 T14: the gateway enqueue path now passes
+	// "gateway" to align with the Memora MCP ingest_session source enum
+	// (see kxmemory/mcp-server/tools/memory.js source: enum). Leaving
+	// empty is allowed — older callers (admin/session_extract) still work.
+	Source string
 }
 
 // NewSink builds a sink. workers and queueSize are clamped to sane
@@ -205,7 +215,16 @@ func (s *Sink) worker() {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), s.client.addTimeout)
-		err := s.client.AddMessage(ctx, op.UserID, op.Messages, op.Info)
+		// Round 47 compression v7 T14: source + dynamic_context filter.
+		// If the caller tagged the op with a source (e.g. "gateway"), pass
+		// it through as a top-level "source" field so Memora's ingest_session
+		// policy can branch on it. Also strip any "[Gateway injected …]"
+		// message bodies (caller may have included them via
+		// compressor.RebuildBodyWithMemoraSnippets) so we never persist
+		// gateway-injected context as user/assistant facts.
+		info := s.filterOpInfo(op)
+		msgs := s.filterOpMessages(op.Messages)
+		err := s.client.AddMessage(ctx, op.UserID, msgs, info)
 		cancel()
 		s.processed.Add(1)
 		if err != nil {
@@ -234,3 +253,63 @@ func (s *Sink) recordError(err error) {
 		)
 	}
 }
+
+// Round 47 compression v7 T14: prefix filtering for gateway-injected context.
+//
+// Per v7 §3.7 ("Memora 写入时排除 dynamic_context"), the compressor may
+// inject "[Gateway injected Memora context …]" snippets into a request
+// body to satisfy a 4xx context_length recovery. Persisting those
+// snippets as Memora user/assistant facts would:
+//   1. Pollute the L1 fact store with gateway-generated content, not user
+//      content (distorts "what the user actually said" signals).
+//   2. Feed the same injected snippet back into a later compaction call
+//      (loop: gateway → Memora → L1 fact → snippet → Memora → …).
+//
+// filterOpMessages strips any message whose content starts with the
+// canonical gateway-injection prefix (compressor.CompactionSummaryPrefix
+// + memora.compactionSnippetPrefix). Centralised here so every caller
+// benefits without each having to remember to filter.
+const (
+	gatewayInjectedPrefixOpenAI  = "[Gateway compacted conversation summary"
+	gatewayInjectedPrefixMemora  = "[Gateway injected Memora context"
+)
+
+func (s *Sink) filterOpMessages(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := msgs[:0]
+	for _, m := range msgs {
+		if strings.HasPrefix(m.Content, gatewayInjectedPrefixOpenAI) ||
+			strings.HasPrefix(m.Content, gatewayInjectedPrefixMemora) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// filterOpInfo builds the info map passed to Memora AddMessage. Promotes
+// op.Source to a top-level "source" field (per Memora ingest_session
+// schema) and preserves any caller-provided keys via shallow copy.
+func (s *Sink) filterOpInfo(op WriteOp) map[string]any {
+	info := map[string]any{}
+	for k, v := range op.Info {
+		info[k] = v
+	}
+	if op.Source != "" {
+		info["source"] = op.Source
+	}
+	return info
+}
+
+// Round 47 compression v7 T14: prefix filtering for gateway-injected context.
+//
+// Per v7 §3.7 ("Memora 写入时排除 dynamic_context"), the compressor may
+// inject "[Gateway injected Memora context …]" snippets into a request
+// body to satisfy a 4xx context_length recovery. Persisting those
+// snippets as Memora user/assistant facts would:
+//   1. Pollute the L1 fact store with gateway-generated content, not user
+//      content (distorts "what the user actually said" signals).
+//   2. Feed the same injected snippet back into a later compaction call
+//      (loop: gateway → Memora → L1 fact → snippet → Memora → …).

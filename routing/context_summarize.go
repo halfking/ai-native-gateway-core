@@ -168,7 +168,8 @@ func (e *Executor) tryMemoraCompression(
 	if taskID == "" {
 		return nil, false
 	}
-	userID := memora.UserID(apiKeyID, taskID)
+	// Round 47 compression v7 T13: tenant-namespaced user_id.
+	userID := memora.UserID(params.TenantID, apiKeyID, taskID)
 	if userID == "" {
 		return nil, false
 	}
@@ -1053,7 +1054,8 @@ func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody [
 	if taskID == "" {
 		return
 	}
-	userID := memora.UserID(apiKeyID, taskID)
+	// Round 47 compression v7 T13: tenant-namespaced user_id.
+	userID := memora.UserID(params.TenantID, apiKeyID, taskID)
 	if userID == "" {
 		return
 	}
@@ -1064,9 +1066,13 @@ func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody [
 	e.MemoraSink.Enqueue(memora.WriteOp{
 		UserID:   userID,
 		Messages: msgs,
+		// Round 47 compression v7 T14: align with Memora MCP ingest_session
+		// source enum so Memora can apply per-source TTL / dedup policy.
+		Source: "gateway",
 		Info: map[string]any{
 			"task_id":      taskID,
 			"api_key_id":   apiKeyID,
+			"tenant_id":    params.TenantID,
 			"client_model": params.ClientModel,
 		},
 	})
