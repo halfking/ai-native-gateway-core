@@ -64,7 +64,7 @@ func TestSearchMergedFactsDualNamespace(t *testing.T) {
 			},
 		},
 	}
-	blocks, err := searchMergedFacts(context.Background(), client, "", 42, "default", "ses_abc")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 42, "default", "ses_abc", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestSearchMergedFactsDedupe(t *testing.T) {
 			"k:7:gw-session:ses-x": {{ID: "2", Text: dup}},
 		},
 	}
-	blocks, err := searchMergedFacts(context.Background(), client, "", 7, "task-a", "ses-x")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 7, "task-a", "ses-x", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSearchMergedFactsDedupe(t *testing.T) {
 
 func TestSearchMergedFactsEmpty(t *testing.T) {
 	client := &fakeMemoraSearch{byUser: map[string][]memora.Memory{}}
-	blocks, err := searchMergedFacts(context.Background(), client, "", 1, "task", "")
+	blocks, err := searchMergedFacts(context.Background(), client, "", 1, "task", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +129,28 @@ func TestBatchMemoraPreviewsEmptyStatus(t *testing.T) {
 		{Index: 0, TaskID: "t1", APIKeyID: 1},
 	})
 	if len(results) != 1 || results[0].Status != "empty" {
+		t.Fatalf("results=%+v", results)
+	}
+}
+
+// Regression: session row Index can be sparse (e.g. 19) while results len is preview count.
+func TestBatchMemoraPreviewsSparseSessionIndex(t *testing.T) {
+	client := &fakeMemoraSearch{
+		byUser: map[string][]memora.Memory{
+			"k:1:task-far": {{ID: "1", Text: "preview at row 19"}},
+		},
+	}
+	inputs := []sessionPreviewInput{
+		{Index: 19, TaskID: "task-far", APIKeyID: 1},
+	}
+	results := batchMemoraPreviews(context.Background(), client, inputs)
+	if len(results) != 1 {
+		t.Fatalf("len=%d want 1", len(results))
+	}
+	if results[0].Index != 19 {
+		t.Fatalf("Index=%d want 19", results[0].Index)
+	}
+	if results[0].Status != "ok" || results[0].Preview == "" {
 		t.Fatalf("results=%+v", results)
 	}
 }

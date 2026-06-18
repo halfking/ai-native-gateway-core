@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	memoraPreviewMaxLen   = 120
-	memoraSearchTopK      = 100
-	memoraPreviewSearchK  = 5
-	memoraBatchConcurrency = 8
-	memoraPreviewTimeout  = 3 * time.Second
+	memoraPreviewMaxLen      = 120
+	memoraSearchTopK         = 100
+	memoraPreviewSearchK     = 5
+	memoraBatchConcurrency   = 4
+	memoraPreviewMaxRows     = 8
+	memoraPreviewTimeout     = 800 * time.Millisecond
+	memoraBatchMaxDuration   = 2 * time.Second
 )
 
 // readableBlock is a Memora fact formatted for human/agent consumption.
@@ -33,6 +35,10 @@ type readableBlock struct {
 type memoraSearchClient interface {
 	Disabled() bool
 	SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+}
+
+type memoraPingClient interface {
+	Ping(ctx context.Context) error
 }
 
 // formatReadableBlock classifies Memora text and pretty-prints JSON payloads.
@@ -107,15 +113,18 @@ func searchMemoraFacts(ctx context.Context, client memoraSearchClient, userID st
 }
 
 // searchMergedFacts loads Memora facts from task namespace and optional gw-session namespace.
-func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID string, apiKeyID int, taskID, sessionID string) ([]readableBlock, error) {
+func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID string, apiKeyID int, taskID, sessionID string, topK int) ([]readableBlock, error) {
 	if client == nil || client.Disabled() || apiKeyID <= 0 || taskID == "" {
 		return nil, nil
+	}
+	if topK <= 0 {
+		topK = memoraSearchTopK
 	}
 
 	var merged []memora.Memory
 
 	taskUserID := memora.UserID(tenantID, apiKeyID, taskID)
-	taskMem, err := searchMemoraFacts(ctx, client, taskUserID, memoraSearchTopK)
+	taskMem, err := searchMemoraFacts(ctx, client, taskUserID, topK)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +136,7 @@ func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID 
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" && sessionID != "[空]" {
 		gwUserID := memora.UserID(tenantID, apiKeyID, "gw-session:"+sessionID)
-		gwMem, gwErr := searchMemoraFacts(ctx, client, gwUserID, memoraSearchTopK)
+		gwMem, gwErr := searchMemoraFacts(ctx, client, gwUserID, topK)
 		if gwErr != nil {
 			if len(merged) == 0 {
 				return nil, gwErr
@@ -215,12 +224,33 @@ type sessionPreviewResult struct {
 	Status  string // ok | empty | error | skipped
 }
 
-// batchMemoraPreviews fetches short previews for list rows with bounded concurrency.
-func batchMemoraPreviews(ctx context.Context, client memoraSearchClient, inputs []sessionPreviewInput) []sessionPreviewResult {
-	results := make([]sessionPreviewResult, len(inputs))
-	if len(inputs) == 0 {
-		return results
+func memoraReachable(ctx context.Context, client any) bool {
+	if client == nil {
+		return false
 	}
+	if c, ok := client.(memoraSearchClient); ok && c.Disabled() {
+		return false
+	}
+	pingClient, ok := client.(memoraPingClient)
+	if !ok {
+		return true
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	return pingClient.Ping(pingCtx) == nil
+}
+
+// batchMemoraPreviews fetches short previews for list rows with bounded concurrency.
+// results[i] corresponds to inputs[i]; session row Index is stored in each result.
+func batchMemoraPreviews(ctx context.Context, client memoraSearchClient, inputs []sessionPreviewInput) []sessionPreviewResult {
+	if len(inputs) == 0 {
+		return nil
+	}
+	if len(inputs) > memoraPreviewMaxRows {
+		inputs = inputs[:memoraPreviewMaxRows]
+	}
+
+	results := make([]sessionPreviewResult, len(inputs))
 	for i, in := range inputs {
 		results[i] = sessionPreviewResult{Index: in.Index, Status: "skipped"}
 	}
@@ -228,48 +258,58 @@ func batchMemoraPreviews(ctx context.Context, client memoraSearchClient, inputs 
 		return results
 	}
 
+	batchCtx, batchCancel := context.WithTimeout(ctx, memoraBatchMaxDuration)
+	defer batchCancel()
+
 	sem := make(chan struct{}, memoraBatchConcurrency)
 	var wg sync.WaitGroup
 
-	for _, in := range inputs {
-		in := in
+	for slot, in := range inputs {
+		slot, in := slot, in
 		if in.TaskID == "" || in.TaskID == "[空]" || in.APIKeyID <= 0 {
-			results[in.Index].Status = "skipped"
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			set := func(r sessionPreviewResult) {
+				results[slot] = r
+			}
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-batchCtx.Done():
+				set(sessionPreviewResult{Index: in.Index, Status: "skipped"})
+				return
+			}
 
-			searchCtx, cancel := context.WithTimeout(ctx, memoraPreviewTimeout)
+			searchCtx, cancel := context.WithTimeout(batchCtx, memoraPreviewTimeout)
 			defer cancel()
 
-			blocks, err := searchMergedFacts(searchCtx, client, in.TenantID, in.APIKeyID, in.TaskID, in.SessionID)
+			blocks, err := searchMergedFacts(searchCtx, client, in.TenantID, in.APIKeyID, in.TaskID, in.SessionID, memoraPreviewSearchK)
 			if err != nil {
-				results[in.Index] = sessionPreviewResult{Index: in.Index, Status: "error"}
+				set(sessionPreviewResult{Index: in.Index, Status: "error"})
 				return
 			}
 			preview := firstReadablePreview(blocks)
 			if preview == "" {
-				results[in.Index] = sessionPreviewResult{Index: in.Index, Status: "empty"}
+				set(sessionPreviewResult{Index: in.Index, Status: "empty"})
 				return
 			}
-			results[in.Index] = sessionPreviewResult{
+			set(sessionPreviewResult{
 				Index:   in.Index,
 				Preview: preview,
 				Status:  "ok",
-			}
+			})
 		}()
 	}
 	wg.Wait()
 	return results
 }
 
-func parseIncludeMemora(r *http.Request, limit int) bool {
+func parseIncludeMemora(r *http.Request, _ int) bool {
 	if r == nil {
-		return limit <= 20
+		return false
 	}
 	v := strings.TrimSpace(r.URL.Query().Get("include_memora"))
 	if v == "0" || strings.EqualFold(v, "false") {
@@ -278,5 +318,5 @@ func parseIncludeMemora(r *http.Request, limit int) bool {
 	if v == "1" || strings.EqualFold(v, "true") {
 		return true
 	}
-	return limit <= 20
+	return false
 }
