@@ -146,6 +146,12 @@ func (e *Executor) executeOpenAI(
 	if err != nil {
 		return nil, err
 	}
+	// Round 47 compression v7 T-NEW-4: capture the pre-request trim
+	// delta (transform.CompressMessagesIfNeeded inside finalize) so
+	// emitTelemetry writes compression_meta into request_logs even when
+	// no 4xx happened. Without this the pre-request trim runs silently
+	// and operators can't see how many bytes were saved.
+	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
 	outboundModel := params.OutboundModel
 	if outboundModel == "" {
 		outboundModel = cand.RawModel
@@ -533,7 +539,9 @@ func (e *Executor) executeOpenAI(
 				// request_logs.compression_*.
 				CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 				CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-				CompressionMeta:     contextLenRecovery.lastMeta,
+				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+				// Round 47 compression v7 T-NEW-4: pre-request trim
+				// metadata merged in via mergeCompressionMeta above.
 			}, nil
 		}()
 

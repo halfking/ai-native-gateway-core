@@ -1047,6 +1047,68 @@ func buildCompressionMeta(contextWindow *int, bytesBefore, bytesAfter int) []byt
 	return out
 }
 
+// buildPreRequestTrimMeta (Round 47 v7 T-NEW-4) records bytes_before/after
+// for the pre-request transform trim (transform.CompressMessagesIfNeeded
+// inside finalizeOpenAIUpstreamBody) so emitTelemetry writes
+// compression_meta into request_logs even when no 4xx happened.
+//
+// Returns nil when no trim actually occurred (bytesAfter >= bytesBefore)
+// — emitTelemetry already short-circuits when CompressionMeta is empty.
+func buildPreRequestTrimMeta(bytesBefore, bytesAfter int, contextWindow *int) []byte {
+	if bytesAfter >= bytesBefore {
+		return nil
+	}
+	tokensBefore := bytesBefore * 10 / 35
+	tokensAfter := bytesAfter * 10 / 35
+	meta := map[string]any{
+		"tokens_before": tokensBefore,
+		"tokens_after":  tokensAfter,
+		"bytes_before":  bytesBefore,
+		"bytes_after":   bytesAfter,
+		"reason_detail": "pre-request trim (cand.ContextWindow × 0.85 × 3.5 threshold)",
+		"trim_phase":    "pre_request",
+	}
+	if contextWindow != nil {
+		meta["context_window_used"] = *contextWindow
+	}
+	out, _ := json.Marshal(meta)
+	return out
+}
+
+// mergeCompressionMeta (Round 47 v7 T-NEW-4) combines 4xx recovery meta
+// with pre-request trim meta into one JSONB blob. nil inputs are
+// tolerated. Last-write-wins on duplicate keys; 4xx recovery meta
+// wins over pre-request trim meta for shared bytes_*/tokens_* keys
+// because the 4xx value reflects the final post-recovery body.
+func mergeCompressionMeta(recoveryMeta, preTrimMeta []byte) []byte {
+	if len(recoveryMeta) == 0 {
+		return preTrimMeta
+	}
+	if len(preTrimMeta) == 0 {
+		return recoveryMeta
+	}
+	merged := map[string]any{}
+	if err := json.Unmarshal(preTrimMeta, &merged); err != nil {
+		return recoveryMeta
+	}
+	var recoveryFields map[string]any
+	if err := json.Unmarshal(recoveryMeta, &recoveryFields); err != nil {
+		return preTrimMeta
+	}
+	for k, v := range recoveryFields {
+		merged[k] = v
+	}
+	if _, ok := merged["phases"]; !ok {
+		phases := []string{"pre_request_trim"}
+		if _, ok := recoveryFields["reason_detail"]; ok {
+			phases = append(phases, "4xx_recovery")
+		}
+		merged["phases"] = phases
+	}
+	out, _ := json.Marshal(merged)
+	return out
+}
+
 // cwLogVal returns a log-safe representation of the context window pointer.
 // Returns -1 when nil so logs clearly distinguish "unknown" from "0".
 func cwLogVal(cw *int) int {
