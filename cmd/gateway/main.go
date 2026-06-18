@@ -214,12 +214,49 @@ func main() {
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
 			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
-				// Strip minimax-private fields from each SSE chunk's
-				// payload envelope (nvext, base_resp, input_sensitive*,
-				// output_sensitive*). Closes the 'base_resp' leak that
-				// was visible in stream chunks from minimax-OpenAI /
-				// minimax-Anthropic upstreams in Phase 12.
-				return relay.StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, relay.StripMinimaxFieldsBody)
+				// Track C C2 (2026-06-18): wrap the streaming hot path
+				// so a client that disconnects mid-stream can still
+				// recover the response via
+				// GET /v1/sessions/{id}/pending-response.
+				//
+				// Flow:
+				//   1. Build a capturer (1 MiB cap, in-memory)
+				//   2. Run the stream with the capturer attached
+				//   3. After the stream returns, write the captured
+				//      body to pending.Store so the GET endpoint can
+				//      replay it on reconnect
+				//
+				// Why this is safe: C1 decoupled the upstream
+				// context from the client context when the request
+				// carries a session id, so the read loop keeps going
+				// past a client disconnect. The capturer records
+				// every chunk regardless of client state. The
+				// write-back happens after the stream function
+				// returns, so it does not block the streaming hot
+				// path.
+				var pc *relay.PendingCapturer
+				if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
+					pc = relay.NewPendingCapturer(0)
+				}
+				outcome := relay.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, relay.StripMinimaxFieldsBody, pc)
+				if pc != nil {
+					if body, state, ok := pc.Snapshot(); ok {
+						saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
+						_ = pendingStore.Save(saveCtx, &pending.Response{
+							SessionID:    relay.SessionIDFromResp(resp),
+							RequestID:    relay.RequestIDFromResp(resp),
+							Status:       pending.Status(state.Status),
+							Body:         string(body),
+							ContentType:  "text/event-stream",
+							IsStream:     true,
+							CreatedAt:    time.Now().Add(-time.Duration(pc.BytesCaptured()) * time.Microsecond).Unix(),
+							CompletedAt:  state.CompletedAt,
+							ErrorMessage: state.ErrMessage,
+						})
+						saveCancel()
+					}
+				}
+				return outcome
 			},
 			auditSink,
 		)
