@@ -317,7 +317,7 @@ func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile string) (
 	if err != nil {
 		return nil, err
 	}
-	cands, err := c.loadCandidatesDB(ctx, res.ClientModel, res.RawModels)
+	cands, err := c.loadCandidatesDB(ctx, res.ClientModel)
 	if err != nil {
 		return nil, err
 	}
@@ -432,10 +432,29 @@ func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile s
 	return out, rows.Err()
 }
 
-func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawModels []string) ([]Candidate, error) {
+// loadCandidatesDB returns all routable offers for the given client model.
+//
+// Matching is done in SQL (P3 of 2026-06-18-model-match-and-404-plan.md):
+//
+//	lower(mo.raw_model_name) = $1              -- case-insensitive exact
+//	OR EXISTS alias match (ma.canonical_id = mo.canonical_id)
+//
+// This removes the previous Go-side modelname.MatchModelOffer fuzzy filter
+// which had family-specific heuristics (dot↔dash rewrites, feature overlap)
+// and could over-match across distinct models (e.g. routing a request for
+// "minimax-m3" to a credential offering "minimax-m2.7" when the SQL-level
+// alias map was stale).
+//
+// The alias table is populated by discovery/alias_sync.go and by the
+// discovery upsert path (modelcatalog.UpsertCredentialModel). New aliases
+// for cross-form names (e.g. "claude-opus-4-6" ↔ "claude-opus-4.6") must be
+// inserted there, not by adding more family-specific normalization rules
+// here.
+func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Candidate, error) {
 	if c.dbPool == nil {
 		return nil, nil
 	}
+	clientModelLower := strings.ToLower(clientModel)
 	rows, err := c.dbPool.Query(ctx, `
 		SELECT
 			c.id::int AS credential_id,
@@ -479,13 +498,9 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		       ON v.credential_id = mo.credential_id
 		      AND v.raw_model_name = mo.raw_model_name
 		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
-		LEFT JOIN LATERAL (
-			SELECT canonical_id
-			FROM model_aliases
-			WHERE lower(raw_name) = lower(mo.raw_model_name)
-			  AND status = 'active'
-			LIMIT 1
-		) ma ON TRUE
+		LEFT JOIN model_aliases ma
+		       ON lower(ma.raw_name) = lower(mo.raw_model_name)
+		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
@@ -493,6 +508,20 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
+		  AND (
+		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
+		      lower(mo.raw_model_name) = $1
+		      -- (2) alias match: client_model points to a canonical that this offer belongs to
+		      OR EXISTS (
+		          SELECT 1 FROM model_aliases ma2
+		          WHERE lower(ma2.raw_name) = $1
+		            AND COALESCE(ma2.status, 'active') = 'active'
+		            AND (
+		                (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
+		                OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
+		            )
+		      )
+		  )
 		ORDER BY
 			CASE COALESCE(mo.billing_mode, 'token')
 				WHEN 'free' THEN 1
@@ -506,17 +535,13 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			COALESCE(mo.routing_tier, 2),
 			COALESCE(mo.weight, 100) DESC,
 			COALESCE(mo.success_rate, 0.9) DESC
-	`)
+	`, clientModelLower)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var rawOffers []struct {
-		Candidate
-		OfferRawModel string
-	}
-
+	var out []Candidate
 	for rows.Next() {
 		var cand Candidate
 		var offerRawModel string
@@ -557,20 +582,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string, rawMo
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
-		rawOffers = append(rawOffers, struct {
-			Candidate
-			OfferRawModel string
-		}{cand, offerRawModel})
+		out = append(out, cand)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-
-	var out []Candidate
-	for _, offer := range rawOffers {
-		if modelname.MatchModelOffer(clientModel, offer.OfferRawModel) {
-			out = append(out, offer.Candidate)
-		}
 	}
 	return out, nil
 }

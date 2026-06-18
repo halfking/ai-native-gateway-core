@@ -289,17 +289,14 @@ func (e *Executor) executeOpenAI(
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-			if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
-				if upstreamLatency > 10*time.Second {
-					slog.Warn("model_not_found reclassified as transient (slow upstream response)",
-						"credential_id", cand.CredentialID,
-						"model", cand.RawModel,
-						"status", resp.StatusCode,
-						"upstream_latency_ms", upstreamLatency.Milliseconds(),
-						"body_preview", string(body[:min(n, 120)]),
-					)
-					return nil, &retryableError{err: fmt.Errorf("upstream %d model_not_found after %dms (slow, reclassified transient)", resp.StatusCode, upstreamLatency.Milliseconds())}
-				}
+			if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+				// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
+				// reclassify as transient" branch. A slow 404 is still a 404;
+				// re-routing it as a retryable transient just makes the same
+				// credential re-dialed, wasting RTT and hiding the real cause
+				// from the caller. The classifier now requires a matching 4xx
+				// status (P5) and a tightened regex, so this branch is the
+				// canonical model_not_found path.
 				slog.Info("model_not_found skip offer",
 					"credential_id", cand.CredentialID,
 					"model", cand.RawModel,
