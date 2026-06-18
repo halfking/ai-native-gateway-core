@@ -32,6 +32,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
@@ -274,7 +275,18 @@ func main() {
 			"threshold", exec.MnfStickyBreakThreshold,
 			"capacity", mnfStreakCap,
 		)
-		// Memora: optional context-compression oracle. When the
+// Round 47 compression v7 T16: build the unified compression dispatcher.
+// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
+// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
+// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
+// misconfigured install degrades gracefully to ModeOff.
+exec.Compressor = compressor.NewCompressor()
+slog.Info("compressor initialized",
+	"mode", exec.Compressor.Mode().String(),
+	"window_fraction", exec.Compressor.Estimator().Fraction(),
+)
+
+// Memora: optional context-compression oracle. When the
 		// LLM_GATEWAY_MEMORA_BASE_URL env is set, the executor can ask
 		// Memora for L1 session facts on context overflow and rebuild
 		// the body around them. Disabled by default (no env var).

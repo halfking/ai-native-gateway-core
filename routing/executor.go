@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -183,6 +184,13 @@ type Executor struct {
 	MnfStreak               *MnfStreak
 	MnfStickyBreakThreshold int  // default 3
 	MnfStreakEnabled        bool // feature flag (env-gated by main.go)
+
+	// Round 47 compression v7 T16: the unified compression dispatcher
+	// (mode=0/1/2). Built at startup by main.go from
+	// LLM_GATEWAY_COMPRESSION_MODE + LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION
+	// env. Nil is allowed (treated as ModeOff) for tests and unconfigured
+	// single-tenant installs.
+	Compressor *compressor.Compressor
 
 	// Memora is the optional context-compression oracle. When non-nil
 	// and enabled, the executor (a) enqueues per-request writes to
