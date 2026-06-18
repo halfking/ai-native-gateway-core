@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -134,6 +135,13 @@ type ChatHandler struct {
 	// re-executing the full routing + vendor path. nil disables
 	// the dedup (every request is treated as new).
 	idempotentCache *IdempotentCache
+
+	// sessionCompressor (v3, 2026-06-19) is the session-level
+	// intelligent compressor. When non-nil, each request runs a
+	// message-level LCS delta-append + optional proactive sliding-window
+	// LLM summary before forwarding to the upstream. nil disables v3
+	// (every request forwards the client body as-is, matching v7 behaviour).
+	sessionCompressor *compressor.SessionCompressor
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -157,6 +165,13 @@ func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov providerResolver,
 // 202 + X-Gw-Pending response.
 func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 	h.idempotentCache = c
+}
+
+// SetSessionCompressor wires the v3 session-level intelligent compressor.
+// When set, each request performs message-level delta-append + optional
+// proactive sliding-window LLM summary before forwarding to the upstream.
+func (h *ChatHandler) SetSessionCompressor(sc *compressor.SessionCompressor) {
+	h.sessionCompressor = sc
 }
 
 func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
@@ -513,8 +528,55 @@ func (h *ChatHandler) serveWithExecutor(
 		} else {
 			logCtx.IsAutoRequest = true
 		}
-		clientModel = reqBody.Model
-		logCtx.SetClientModel(clientModel)
+	clientModel = reqBody.Model
+	logCtx.SetClientModel(clientModel)
+	}
+
+	// ── v3 Session-level intelligent compression ────────────────────────
+	// After auto-route (bodyBytes may have been rewritten above), run the
+	// session compressor to delta-append new turns to the compressed
+	// session history and optionally trigger a proactive sliding-window
+	// summary. This keeps forwarded context minimal while preserving all
+	// content via lossless LLM summarisation.
+	var scResult *compressor.PrepareResult
+	if h.sessionCompressor != nil {
+		gwSessionIDForSC, _ := gwSessionTaskFromRequest(r, sessionInfo)
+		tenantForSC := "default"
+		if keyInfo != nil {
+			tenantForSC = keyInfo.TenantID
+		}
+		// Detect client protocol from path (anthropic-messages path contains /messages).
+		protocolForSC := "openai"
+		if isAnthropicMessagesPath(r.URL.Path) {
+			protocolForSC = "anthropic-messages"
+		}
+		scResult = h.sessionCompressor.Prepare(
+			r.Context(),
+			bodyBytes,
+			tenantForSC,
+			gwSessionIDForSC,
+			protocolForSC,
+			0, // contextWindow resolved later by executor; 0 = skip TOKEN trigger
+			false,
+		)
+		if scResult != nil && len(scResult.OutboundBody) > 0 {
+			bodyBytes = scResult.OutboundBody
+		}
+		if scResult != nil && scResult.Degraded {
+			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
+		}
+		// Stash outbound fields in logCtx for telemetry.
+		if scResult != nil && scResult.CompressionStrategy != "" {
+			mc := scResult.MsgCount
+			te := scResult.TokenEst
+			logCtx.OutboundBody = scResult.OutboundBody
+			logCtx.OutboundMsgCount = &mc
+			logCtx.OutboundTokenEst = &te
+			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
+			logCtx.OutboundStrategy = scResult.CompressionStrategy
+			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
+			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+		}
 	}
 
 	isStream := reqBody.Stream
@@ -815,11 +877,11 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
-	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody)
+	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody, logCtx)
 	markLogged()
 }
 
-func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transform.TransformResult, requestBody []byte, responseBody []byte) {
+func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transform.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -1008,6 +1070,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		CompressionMeta:     result.CompressionMeta,
 		ParentRequestID:     result.ParentRequestID,
 	}
+	// v3: if v7 compression_strategy is empty but a session compressor strategy
+	// exists, prefer the session compressor value so the row is queryable.
+	// (v7 and v3 strategies are mutually exclusive in a single request.)
 
 	if capture != nil {
 		m := capture.SummaryAsMap()
@@ -1181,6 +1246,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	h.telemetryClient.EmitDecisionLog(dl)
 
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
+	// v3: merge session compressor outbound fields into the log entry.
+	applySessionCompressorFields(reqLog, logCtx)
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
@@ -1263,6 +1330,13 @@ func requestModeFromPath(path string) string {
 	default:
 		return "chat"
 	}
+}
+
+// isAnthropicMessagesPath returns true when the request targets the
+// Anthropic Messages API (/v1/messages), so the session compressor
+// knows which wire format to use when rebuilding the body.
+func isAnthropicMessagesPath(path string) bool {
+	return strings.Contains(path, "/messages")
 }
 
 // capturePartialBodyOnReadError keeps bytes already received when io.ReadAll
