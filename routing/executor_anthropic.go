@@ -546,17 +546,9 @@ func (e *Executor) executeAnthropicOnce(
 		_, _ = io.Copy(io.Discard, resp.Body)
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-		if bodyKind := errorsx.ClassifyResponseBody(body[:n]); bodyKind == errorsx.KindModelNotFound {
-			if upstreamLatency > 10*time.Second {
-				slog.Warn("model_not_found reclassified as transient (slow upstream response)",
-					"credential_id", cand.CredentialID,
-					"model", cand.RawModel,
-					"status", resp.StatusCode,
-					"upstream_latency_ms", upstreamLatency.Milliseconds(),
-					"body_preview", string(body[:min(n, 120)]),
-				)
-				return nil, &retryableError{err: fmt.Errorf("upstream %d model_not_found after %dms (slow, reclassified transient)", resp.StatusCode, upstreamLatency.Milliseconds())}
-			}
+		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+			// Step 4 (2026-06-18): removed the 10-second slow-upstream
+			// reclassification. See executor_chat.go for the rationale.
 			slog.Info("model_not_found skip offer",
 				"credential_id", cand.CredentialID,
 				"model", cand.RawModel,
