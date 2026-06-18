@@ -246,7 +246,13 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return KindConcurrent
 		}
-		if modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body) {
+		// P5 (2026-06-18): model_not_found only on 400/404/422, matching
+		// ClassifyResponseBody's status gate. A 5xx body that mentions
+		// "model not found" (e.g. a misconfigured proxy returning 502 with
+		// a downstream 404 embedded) must be KindUpstreamDown, not
+		// KindModelNotFound — the failure is connectivity, not model existence.
+		if (status == 400 || status == 404 || status == 422) &&
+			(modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body)) {
 			return KindModelNotFound
 		}
 		if unsupportedFeatureRe.Match(body) {

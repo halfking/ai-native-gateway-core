@@ -274,6 +274,33 @@ func TestClassifyResponseBody_ModelNotFound_P5Tightened(t *testing.T) {
 	}
 }
 
+// TestClassifyErrorWithBody_ModelNotFound_P5StatusGate verifies the P5 status
+// gate in ClassifyErrorWithBody matches ClassifyResponseBody: model_not_found
+// is only returned for 400/404/422. A 5xx body that mentions "model not found"
+// must be KindUpstreamDown (connectivity failure, not model existence).
+func TestClassifyErrorWithBody_ModelNotFound_P5StatusGate(t *testing.T) {
+	// 502 with "model not found" body → NOT KindModelNotFound
+	kind := ClassifyErrorWithBody(502, []byte(`model glm-5.1 not found`))
+	if kind == KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(502, 'model glm-5.1 not found') = KindModelNotFound, want KindUpstreamDown (P5 status gate)")
+	}
+	if kind != KindUpstreamDown {
+		t.Errorf("ClassifyErrorWithBody(502, 'model glm-5.1 not found') = %q, want KindUpstreamDown", kind)
+	}
+
+	// 404 with "model not found" body → KindModelNotFound (within gate)
+	kind = ClassifyErrorWithBody(404, []byte(`model glm-5.1 not found`))
+	if kind != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(404, 'model glm-5.1 not found') = %q, want KindModelNotFound", kind)
+	}
+
+	// 400 with "no such model" body → KindModelNotFound (within gate)
+	kind = ClassifyErrorWithBody(400, []byte(`{"error":"no such model: foo"}`))
+	if kind != KindModelNotFound {
+		t.Errorf("ClassifyErrorWithBody(400, ...) = %q, want KindModelNotFound", kind)
+	}
+}
+
 func TestIsConcurrentOverload(t *testing.T) {
 	if IsConcurrentOverload("eof_without_done") {
 		t.Fatal("eof_without_done should NOT be treated as concurrent overload")
