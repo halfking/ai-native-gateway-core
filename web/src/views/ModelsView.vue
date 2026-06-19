@@ -5,12 +5,14 @@ import {
   listModels, listTags, patchModelTags, resetModelTags,
   listModelFamilies, createModel, getModel, updateModel,
   createModelAlias, createModelAliasesBulk, updateModelAlias, discoverModels, getModelDiscoveryStatus,
-  getProviders,
+  getProviders, getFeatured, patchFeatured, getFeaturedModelsDynamic,
   type ModelCanonical, type ModelDetail, type ModelFamily, type TagNamespaceGroup,
   type DiscoverModelsResult, type ModelDiscoveryRun, type Provider,
+  type FeaturedModel,
 } from '../api'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 import CatalogPanel from '../components/CatalogPanel.vue'
+import ModelPicker from '../components/ModelPicker.vue'
 import { useFilterChips } from '../composables/useFilterChips'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
@@ -85,6 +87,15 @@ const discoverRun = ref<ModelDiscoveryRun | null>(null)
 const discoverMessage = ref('')
 const showDiscoveryCard = ref(false)
 const showCreateModal = ref(false)
+const showFeaturedDrawer = ref(false)
+const featuredArray = ref<string[]>([])
+const featuredLoading = ref(false)
+const featuredSaving = ref(false)
+const featuredError = ref('')
+const featuredMessage = ref('')
+const featuredRecommendPreview = ref<FeaturedModel[]>([])
+const featuredRecommendLoading = ref(false)
+const featuredRecommendMessage = ref('')
 const createForm = ref({ canonical_name: '', display_name: '', family: '', modality: 'text', context_window: '', parameters_b: '', aliases: '', notes: '' })
 const showNamespaceFilters = ref(false)
 
@@ -537,6 +548,77 @@ async function loadDiscoveryStatus() {
   } catch (e) { /* ignore */ }
 }
 
+async function openFeaturedDrawer() {
+  showFeaturedDrawer.value = true
+  featuredError.value = ''
+  featuredMessage.value = ''
+  featuredRecommendPreview.value = []
+  featuredRecommendMessage.value = ''
+  try {
+    featuredLoading.value = true
+    const r = await getFeatured()
+    featuredArray.value = (r.featured_models || []).slice()
+  } catch (e: unknown) {
+    featuredError.value = e instanceof Error ? e.message : '加载特色模型失败'
+    featuredArray.value = []
+  } finally {
+    featuredLoading.value = false
+  }
+}
+
+function closeFeaturedDrawer() {
+  showFeaturedDrawer.value = false
+  featuredError.value = ''
+  featuredMessage.value = ''
+  featuredRecommendPreview.value = []
+  featuredRecommendMessage.value = ''
+}
+
+async function saveFeatured() {
+  featuredSaving.value = true
+  featuredError.value = ''
+  featuredMessage.value = ''
+  try {
+    const list = featuredArray.value.map((s) => s.trim()).filter(Boolean)
+    const r = await patchFeatured(list)
+    featuredArray.value = (r.featured_models || []).slice()
+    featuredMessage.value = `特色模型已更新（${list.length}）`
+  } catch (e: unknown) {
+    featuredError.value = e instanceof Error ? e.message : '保存失败'
+  } finally {
+    featuredSaving.value = false
+  }
+}
+
+async function previewRecommendedFeatured() {
+  featuredRecommendLoading.value = true
+  featuredRecommendMessage.value = ''
+  try {
+    const r = await getFeaturedModelsDynamic()
+    const list: FeaturedModel[] = (r.models ?? []).filter((m) => m.name)
+    featuredRecommendPreview.value = list
+    if (list.length === 0) {
+      featuredRecommendMessage.value = '无可推荐模型：最近 7 天无成功请求，或 featured_models 与 popular 均空'
+    } else {
+      const tagged = list.map((m) => `${m.name}${m.count > 0 ? ` (${m.count})` : ''}`)
+      featuredRecommendMessage.value = `已加载 ${list.length} 个推荐：${tagged.slice(0, 5).join('、')}${list.length > 5 ? '…' : ''}`
+    }
+  } catch (e: unknown) {
+    featuredRecommendMessage.value = e instanceof Error ? e.message : '加载推荐失败'
+    featuredRecommendPreview.value = []
+  } finally {
+    featuredRecommendLoading.value = false
+  }
+}
+
+function adoptRecommendedFeatured() {
+  if (featuredRecommendPreview.value.length === 0) return
+  const recommended = featuredRecommendPreview.value.map((m) => m.name)
+  const merged = Array.from(new Set([...featuredArray.value, ...recommended]))
+  featuredArray.value = merged
+  featuredRecommendMessage.value = `已将 ${recommended.length} 个推荐合并到下方（总 ${merged.length}），点击「保存特色模型」生效`
+}
+
 function tagBadgeClass(tag: string): string {
   if (tag.startsWith('cap:')) return 'badge-blue'
   if (tag.startsWith('family:')) return 'badge-green'
@@ -581,6 +663,9 @@ onMounted(async () => {
       <h2>模型与目录</h2>
       <div v-if="activeTab === 'canonical'" style="display:flex;gap:8px;align-items:center">
         <span class="badge badge-gray">{{ filtered.length }} 个模型</span>
+        <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="openFeaturedDrawer">
+          ★ 特色模型
+        </button>
         <button v-if="!readOnly" class="btn btn-primary btn-sm" @click="showCreateModal = true">
           新增模型
         </button>
@@ -767,6 +852,56 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- 特色模型抽屉 -->
+    <div v-if="showFeaturedDrawer" class="drawer-backdrop" @click="closeFeaturedDrawer">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
+          <h3>★ 特色模型 (Featured)</h3>
+          <button class="btn btn-ghost btn-sm" @click="closeFeaturedDrawer">关闭</button>
+        </div>
+        <div class="drawer-body">
+          <p class="muted small" style="margin-top:0">
+            路由 v2 在「仅特色」筛选、ClientConfig 默认模型集等场景使用此列表。已存 <code>routing_policy.featured_models</code>，仅 <code>default</code> 租户生效。
+          </p>
+
+          <div v-if="featuredError" class="alert alert-error">{{ featuredError }}</div>
+          <div v-if="featuredMessage" class="alert alert-success">{{ featuredMessage }}</div>
+
+          <div v-if="featuredLoading" class="muted">加载中…</div>
+          <template v-else>
+            <div class="featured-recommend-bar">
+              <button class="btn btn-sm btn-ghost" :disabled="featuredRecommendLoading" @click="previewRecommendedFeatured">
+                {{ featuredRecommendLoading ? '加载中…' : '⚡ 自动推荐（7d 热门 + 当前策略）' }}
+              </button>
+              <button
+                v-if="featuredRecommendPreview.length"
+                class="btn btn-sm btn-primary"
+                @click="adoptRecommendedFeatured"
+              >采用推荐到选择器</button>
+              <span v-if="featuredRecommendMessage" class="featured-recommend-msg">{{ featuredRecommendMessage }}</span>
+            </div>
+
+            <div class="form-group">
+              <label>特色模型列表（多选）</label>
+              <ModelPicker
+                v-model="featuredArray"
+                mode="multi"
+                placeholder="选择特色模型…"
+                title="特色模型（多选）"
+              />
+            </div>
+
+            <div class="drawer-actions">
+              <button class="btn btn-primary" @click="saveFeatured" :disabled="featuredSaving">
+                {{ featuredSaving ? '保存中…' : '保存特色模型' }}
+              </button>
+              <button class="btn btn-ghost" @click="closeFeaturedDrawer">关闭</button>
+            </div>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -1117,6 +1252,10 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: var(--text);
+}
+.family-chip code {
+  color: var(--text-muted, var(--muted));
 }
 
 .family-chip.active {
@@ -1176,6 +1315,12 @@ onMounted(async () => {
 .mutedRow { opacity: .62; }
 .discovery-card { margin-bottom: 12px; }
 .summary-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+
+.drawer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
 
 .drawer-backdrop {
   position: fixed;
