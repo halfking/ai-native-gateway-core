@@ -46,7 +46,8 @@ const routable = ref<{
 const routableLoading = ref(false)
 
 const probeAllLoading = ref(false)
-const probeAllMsg = ref('')
+const probeAllResults = ref<ProbeAllResult[]>([])
+const probeAllSummary = ref<{ ok: number; model_unavailable: number; provider_error: number; skipped: number } | null>(null)
 
 const selected = ref<ModelOffer | null>(null)
 
@@ -195,15 +196,38 @@ const refreshSummary = computed(() => {
 async function triggerAllProbes() {
   if (probeAllLoading.value) return
   probeAllLoading.value = true
-  probeAllMsg.value = ''
+  probeAllResults.value = []
+  probeAllSummary.value = null
   try {
     const result = await triggerProviderProbeAll(props.providerId)
-    probeAllMsg.value = `已加入探测队列，共 ${result.bindings_queued} 个绑定`
+    probeAllResults.value = result.results
+    probeAllSummary.value = {
+      ok: result.ok,
+      model_unavailable: result.model_unavailable,
+      provider_error: result.provider_error,
+      skipped: result.skipped,
+    }
   } catch (e: unknown) {
-    probeAllMsg.value = e instanceof Error ? e.message : '触发失败'
+    probeAllSummary.value = null
+    alert(e instanceof Error ? e.message : '探测失败')
   } finally {
     probeAllLoading.value = false
   }
+}
+
+function probeResultBadge(category: string) {
+  if (category === 'ok') return 'badge-green'
+  if (category === 'model_unavailable') return 'badge-red'
+  if (category === 'provider_error') return 'badge-amber'
+  return 'badge-gray'
+}
+
+function probeResultLabel(category: string) {
+  if (category === 'ok') return '成功'
+  if (category === 'model_unavailable') return '模型不可用'
+  if (category === 'provider_error') return '供应商问题'
+  if (category === 'skipped') return '已跳过'
+  return category
 }
 
 onBeforeUnmount(stopPolling)
@@ -383,8 +407,44 @@ load()
           @click="triggerAllProbes"
         >{{ probeAllLoading ? '探测中…' : '全面探测' }}</button>
       </div>
-      <div v-if="probeAllMsg" class="probe-all-msg" :class="probeAllMsg.includes('失败') ? 'probe-all-msg--error' : 'probe-all-msg--success'">
-        {{ probeAllMsg }}
+      <div v-if="probeAllLoading" class="probe-all-loading">
+        <span class="refresh-spinner" aria-hidden="true"></span>
+        正在探测模型…
+      </div>
+      <div v-else-if="probeAllSummary" class="probe-all-summary">
+        <div class="probe-summary-stats">
+          <span class="stat stat-ok">✅ 成功 {{ probeAllSummary.ok }}</span>
+          <span class="stat stat-error">❌ 模型不可用 {{ probeAllSummary.model_unavailable }}</span>
+          <span class="stat stat-warn">⚠️ 供应商问题 {{ probeAllSummary.provider_error }}</span>
+          <span class="stat stat-skip">⏭️ 跳过 {{ probeAllSummary.skipped }}</span>
+        </div>
+        <details class="probe-results-details">
+          <summary>查看详细结果 ({{ probeAllResults.length }})</summary>
+          <table class="data-table probe-results-table">
+            <thead>
+              <tr>
+                <th>凭据</th>
+                <th>模型</th>
+                <th>状态</th>
+                <th>分类</th>
+                <th>HTTP</th>
+                <th>错误</th>
+                <th>延迟</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in probeAllResults" :key="`${r.credential_id}-${r.raw_model_name}`">
+                <td>#{{ r.credential_id }}</td>
+                <td><code>{{ r.raw_model_name }}</code></td>
+                <td><span class="badge" :class="probeResultBadge(r.category)">{{ r.status }}</span></td>
+                <td><span class="badge" :class="probeResultBadge(r.category)">{{ probeResultLabel(r.category) }}</span></td>
+                <td>{{ r.http_status ?? '—' }}</td>
+                <td class="err-cell">{{ r.error_message || '—' }}</td>
+                <td>{{ r.latency_ms }}ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
       </div>
     </div>
 
@@ -752,18 +812,52 @@ load()
 .btn-row--end {
   justify-content: flex-end;
 }
-.probe-all-msg {
-  font-size: 12px;
+.probe-all-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 8px;
-  padding: 4px 10px;
-  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent, #6366f1);
 }
-.probe-all-msg--success {
-  color: #16a34a;
-  background: rgba(34, 197, 94, 0.1);
+.probe-all-summary {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
-.probe-all-msg--error {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.1);
+.probe-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 13px;
+}
+.stat-ok { color: #22c55e; }
+.stat-error { color: #ef4444; }
+.stat-warn { color: #f59e0b; }
+.stat-skip { color: var(--muted); }
+.probe-results-details {
+  margin-top: 10px;
+}
+.probe-results-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.probe-results-details[open] > summary {
+  margin-bottom: 8px;
+}
+.probe-results-table {
+  width: 100%;
+  font-size: 11px;
+  margin-top: 8px;
+}
+.err-cell {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

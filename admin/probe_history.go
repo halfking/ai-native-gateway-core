@@ -190,10 +190,12 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, map[string]any{"triggered": true})
 }
 
-// handleProviderProbeHistoryTriggerAll fires immediate re-probe for ALL
-// (credential, model) bindings under a provider.  It resets next_retry_at
-// to NOW and flips broken_confirmed → recovering so the background worker
-// will pick them up on the next cycle.  Returns immediately without waiting.
+// handleProviderProbeHistoryTriggerAll fires synchronous probes for ALL
+// (credential, model) bindings under a provider and returns real-time
+// per-binding results. It does NOT modify model_probe_state — only returns
+// live probe results so operators can see actual availability without
+// changing any state. Provider-side errors (network/auth/5xx/rate_limit)
+// are reported separately from genuine model unavailability.
 func (h *Handler) handleProviderProbeHistoryTriggerAll(w http.ResponseWriter, r *http.Request, providerID int) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -203,17 +205,37 @@ func (h *Handler) handleProviderProbeHistoryTriggerAll(w http.ResponseWriter, r 
 		writeError(w, http.StatusServiceUnavailable, "model probe runner not configured")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	queued, err := h.modelProbe.TriggerAllManual(ctx, providerID)
+	results, err := h.modelProbe.TriggerAllSync(ctx, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "trigger failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "probe failed: "+err.Error())
 		return
 	}
+
+	var ok, modelUnavailable, providerError, skipped int
+	for _, r := range results {
+		switch r.Category {
+		case "ok":
+			ok++
+		case "model_unavailable":
+			modelUnavailable++
+		case "provider_error":
+			providerError++
+		case "skipped":
+			skipped++
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"triggered":       true,
-		"bindings_queued": queued,
+		"triggered":         true,
+		"total":             len(results),
+		"ok":                ok,
+		"model_unavailable": modelUnavailable,
+		"provider_error":    providerError,
+		"skipped":           skipped,
+		"results":           results,
 	})
 }
 
