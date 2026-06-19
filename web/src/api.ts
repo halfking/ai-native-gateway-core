@@ -239,7 +239,7 @@ export function getProviders(params?: { search?: string; health_status?: string;
   return req<Provider[]>('GET', `/api/providers${qs ? '?' + qs : ''}`)
 }
 
-export function createProvider(data: { catalog_code: string; display_name?: string; base_url?: string; notes?: string; protocol?: string }) {
+export function createProvider(data: { catalog_code: string; code?: string; display_name?: string; base_url?: string; notes?: string; protocol?: string }) {
   return req<{ id: number; message: string }>('POST', '/api/providers', data)
 }
 
@@ -919,7 +919,26 @@ export function triggerProviderProbe(providerId: number, credentialId: number, r
 }
 
 export function triggerProviderProbeAll(providerId: number) {
-  return req<{ triggered: boolean; bindings_queued: number }>('POST', `/api/providers/${providerId}/probe-history/trigger-all`)
+  return req<{
+    triggered: boolean
+    total: number
+    ok: number
+    model_unavailable: number
+    provider_error: number
+    skipped: number
+    results: ProbeAllResult[]
+  }>('POST', `/api/providers/${providerId}/probe-history/trigger-all`)
+}
+
+export interface ProbeAllResult {
+  credential_id: number
+  raw_model_name: string
+  status: string
+  category: 'ok' | 'model_unavailable' | 'provider_error' | 'skipped'
+  http_status: number | null
+  error_code: string
+  error_message: string
+  latency_ms: number
 }
 
 export function getRecentModelFailures(opts?: { limit?: number }) {
@@ -930,11 +949,31 @@ export function getRecentModelFailures(opts?: { limit?: number }) {
     window: string
     models: {
       raw_model_name: string
+      canonical_name?: string
       creds_affected: number
       total_failures: number
       last_failed_at: string
       sample_error_code: string
+      sources: {
+        active_probe: number
+        passive_probe: number
+        request_logs: number
+      }
+      error_categories: {
+        model_not_found?: number
+        quota_exhausted?: number
+        rate_limit?: number
+        auth_failed?: number
+        upstream_error?: number
+      }
+      in_reviewing: boolean
     }[]
+    totals: {
+      total_failures: number
+      models_affected: number
+      creds_affected: number
+      models_in_reviewing: number
+    }
   }>('GET', `/api/routing/recent-model-failures${qs ? `?${qs}` : ''}`)
 }
 

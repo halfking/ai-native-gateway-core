@@ -30,18 +30,13 @@
 package bg
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -82,6 +77,8 @@ func (r *ModelProbeRunner) SetKeyring(kr *secret.Keyring) { r.keyring = kr }
 func (r *ModelProbeRunner) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
 	go r.run(ctx)
+	// Layer 4: featured model deep ping every 30 minutes (v5, 2026-06-20)
+	go r.featuredCycleLoop(ctx)
 	slog.Info("model probe runner v2 (consensus+backoff) started",
 		"interval", ProbeInterval,
 		"required_consensus", RequiredConsensus,
@@ -238,6 +235,96 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		"recovered", recovered,
 		"broken_confirmed", confirmedBroken,
 		"required_consensus", RequiredConsensus,
+	)
+}
+
+// featuredCycleLoop runs Layer 4 deep probe for featured models every 30min.
+func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	time.Sleep(2 * time.Minute) // stagger: wait 2min then start
+	r.featuredCycle(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.featuredCycle(ctx)
+		}
+	}
+}
+
+// featuredCycle does a chat ping for each binding whose raw_model_name
+// appears in routing_policy.featured_models (the Layer 4 "hot model" list).
+// It does NOT update model_probe_state — the result is recorded as a
+// model_probe_runs row for visibility and the probe outcome goes through
+// the same consensus state machine on the next L1+L2 cycle.
+func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
+	timeout, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	rows, err := r.db.Query(timeout, `
+		SELECT cmb.credential_id, pm.raw_model_name,
+		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
+		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		CROSS JOIN routing_policy pol
+		WHERE pol.tenant_id = 'default'
+		  AND (
+		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
+		    OR pm.raw_model_name = ANY(pol.featured_models)
+		  )
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, FALSE) = TRUE
+	`)
+	if err != nil {
+		slog.Warn("featured cycle: query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	var tested int
+	for rows.Next() {
+		var t probeTarget
+		var ciphertext []byte
+		if err := rows.Scan(
+			&t.CredentialID, &t.RawModel, &t.OutboundModel,
+			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled,
+		); err != nil {
+			continue
+		}
+		if t.ManualDisabled {
+			continue
+		}
+		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
+		if decErr != nil {
+			continue
+		}
+		t.APIKey = apiKey
+		desc := providercap.Resolve(t.Protocol, "")
+		mode := ProbeModeChatPing
+		if desc.Protocol == "anthropic-messages" {
+			mode = ProbeModeMessages
+		}
+		result := probeWithRetry(timeout, desc, t, mode)
+		// Record the probe result as a model_probe_runs row for visibility.
+		var httpStatus *int
+		if result.httpStatus > 0 {
+			httpStatus = &result.httpStatus
+		}
+		r.recordRun(timeout, t, result.status, httpStatus, result.errCode, result.errMsg,
+			result.latencyMs, "unchanged", false, "scheduler")
+		tested++
+		time.Sleep(2 * time.Second) // rate limit: 2s between probes
+	}
+	slog.Info("featured cycle (Layer 4) complete",
+		"tested", tested,
 	)
 }
 
@@ -474,82 +561,15 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 		return "skipped", probeCategorySkipped, 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
 	desc := providercap.Resolve(t.Protocol, "")
-	endpoint := providercap.ProbeEndpointURL(t.BaseURL, desc)
-
-	// Some providers (e.g. Volcano Ark) require a deployment endpoint ID
-	// (e.g. "ep-20241227XXXX") as the model field rather than the raw model
-	// name (e.g. "minimax-m3", "glm-5.1").  When outbound_model_name is set,
-	// it carries that endpoint ID and we use it.  When it is empty, we fall
-	// back to raw_model_name and let the upstream tell us whether the name is
-	// acceptable.  If the upstream returns a 404 that explicitly says the
-	// model/endpoint was not found (e.g. Volcano Ark's
-	// "InvalidEndpointOrModel.NotFound"), we treat the probe as skipped with
-	// error code "endpoint_id_required" so the binding is NOT driven to
-	// broken_confirmed.  The operator must set outbound_model_name to the
-	// correct endpoint ID for the probe to start passing.
-	modelField := t.OutboundModel
-	if modelField == "" {
-		modelField = t.RawModel
+	mode := ProbeModeModelsList
+	if desc.Protocol == "anthropic-messages" {
+		// Anthropic prefers its own /v1/messages endpoint for chat probes;
+		// Layer 1+2 already covered by /v1/models which we now also support.
+		// Keep chat path as a fallback for the consensus state machine.
+		mode = ProbeModeMessages
 	}
-
-	body, _ := json.Marshal(map[string]any{
-		"model":       modelField,
-		"messages":    []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens":  1,
-		"temperature": 0,
-	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "network", probeCategoryProviderError, 0, "request_build", err.Error(), int(time.Since(start).Milliseconds())
-	}
-	req.Header.Set("Content-Type", "application/json")
-	providercap.ApplyAuthHeaders(req, desc, t.APIKey)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "network", probeCategoryProviderError, 0, "request_error", err.Error(), int(time.Since(start).Milliseconds())
-	}
-	defer resp.Body.Close()
-	latencyMs = int(time.Since(start).Milliseconds())
-	httpStatus = resp.StatusCode
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	respBodyStr := string(respBody)
-
-	switch {
-	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return "ok", probeCategoryOK, httpStatus, "", "", latencyMs
-	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		// Auth errors are provider-side issues (bad key, revoked permission) —
-		// not a model availability problem. Don't count as failure.
-		return "auth", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
-	case resp.StatusCode == 404:
-		// If the provider says the model/endpoint doesn't exist AND we used
-		// the raw model name (outbound_model_name was not configured), this
-		// means the binding needs an endpoint ID to be testable.  Treat as
-		// skipped rather than a real failure so the binding is NOT driven to
-		// 'broken_confirmed'.
-		if t.OutboundModel == "" && probeutil.IsEndpointIDRequiredError(respBodyStr) {
-			return "skipped", probeCategorySkipped, httpStatus, probeutil.EndpointIDRequiredErrCode,
-				"model requires an endpoint ID (outbound_model_name); set it to enable probing: " + truncate(respBodyStr, 300),
-				latencyMs
-		}
-		// 404 with outbound_model set: model truly doesn't exist.
-		return "http_4xx", probeCategoryModelUnavailable, httpStatus, "model_not_found", truncate(respBodyStr, 500), latencyMs
-	case resp.StatusCode == 429:
-		// Rate limiting is a provider-side issue, not a model availability problem.
-		return "http_4xx", probeCategoryProviderError, httpStatus, "rate_limited", truncate(respBodyStr, 500), latencyMs
-	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		// Other 4xx (400, 422, etc.) indicate a genuine model problem.
-		return "http_4xx", probeCategoryModelUnavailable, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
-	case resp.StatusCode >= 500:
-		// Server-side errors are provider problems, not model availability.
-		return "http_5xx", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
-	default:
-		return "unknown", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
-	}
+	result := probeWithRetry(ctx, desc, t, mode)
+	return result.status, result.category, result.httpStatus, result.errCode, result.errMsg, result.latencyMs
 }
 
 // isEndpointIDRequiredError has moved to internal/probeutil.IsEndpointIDRequiredError.

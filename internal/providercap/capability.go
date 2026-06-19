@@ -38,8 +38,11 @@ func Resolve(protocol, catalogCode string) Descriptor {
 
 	switch protocol {
 	case "anthropic-messages":
-		d.SupportsModelsEndpoint = false
-		d.ModelListSource = "manifest"
+		// v5 (2026-06-20): Anthropic /v1/models is available since 2024 and
+		// returns 200 + model list free of charge. Enable model-list probing
+		// alongside chat probing so Layer 1 can validate without burning tokens.
+		d.SupportsModelsEndpoint = true
+		d.ModelListSource = "api"
 		d.ChatProbeEndpoint = upstreamurl.EpMessages
 		d.AuthStyle = "anthropic"
 	}
