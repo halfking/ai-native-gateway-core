@@ -884,11 +884,13 @@ onMounted(async () => {
       <div class="pagination-info">
         <span>共 {{ total }} 条</span>
         <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+        <span class="pagination-divider">·</span>
+        <span class="page-size-label">每页</span>
         <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50 / 页</option>
-          <option :value="100">100 / 页</option>
-          <option :value="200">200 / 页</option>
-          <option :value="500">500 / 页</option>
+          <option :value="50">50</option>
+          <option :value="100">100</option>
+          <option :value="200">200</option>
+          <option :value="500">500</option>
         </select>
       </div>
       <div class="pagination-controls">
@@ -1004,11 +1006,13 @@ onMounted(async () => {
       <div class="pagination-info">
         <span>共 {{ total }} 条</span>
         <span>· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+        <span class="pagination-divider">·</span>
+        <span class="page-size-label">每页</span>
         <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
-          <option :value="50">50 / 页</option>
-          <option :value="100">100 / 页</option>
-          <option :value="200">200 / 页</option>
-          <option :value="500">500 / 页</option>
+          <option :value="50">50</option>
+          <option :value="100">100</option>
+          <option :value="200">200</option>
+          <option :value="500">500</option>
         </select>
       </div>
       <div class="pagination-controls">
@@ -1379,15 +1383,17 @@ onMounted(async () => {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .pagination-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   color: var(--muted);
   font-size: 12px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  flex-shrink: 0;
   min-width: 0;
 }
 .pagination-controls {
@@ -1397,12 +1403,33 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 .page-size-select {
+  width: auto;
+  min-width: 0;
+  max-width: 96px;
   padding: 2px 6px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-size: 12px;
+}
+.page-size-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.pagination-divider {
+  color: var(--muted);
+  opacity: 0.6;
+}
+@media (max-width: 720px) {
+  .pagination-bar {
+    flex-wrap: wrap;
+  }
+  .pagination-info,
+  .pagination-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
 }
 </style>
 
