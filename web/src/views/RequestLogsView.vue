@@ -880,7 +880,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="!loading" class="pagination-bar">
+    <div v-if="!loading && total > 0" class="pagination-bar">
       <div class="pagination-info">
         <span>共 {{ total }} 条</span>
         <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
@@ -1371,14 +1371,15 @@ onMounted(async () => {
 }
 .pagination-bar {
   display: flex;
-  gap: 12px;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-top: 12px;
   padding: 8px 12px;
-  background: var(--surface-secondary, #f3f4f6);
-  border-radius: 8px;
-  flex-wrap: nowrap;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
 }
 .pagination-info {
   display: flex;
@@ -1386,12 +1387,14 @@ onMounted(async () => {
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 .pagination-controls {
   display: flex;
   gap: 8px;
   flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 .page-size-select {
   padding: 2px 6px;
