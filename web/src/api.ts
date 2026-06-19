@@ -1599,8 +1599,24 @@ export interface RequestLogRow {
   // compression_* describe the strategy + payload.
   parent_request_id: string | null
   compression_reason: 'mode_1_auto_threshold' | 'mode_2_on_4xx' | null
-  compression_strategy: 'mechanical_trim' | 'memora_l1_inject' | 'llm_summary' | 'noop' | null
+  compression_strategy:
+    | 'mechanical_trim'
+    | 'memora_l1_inject'
+    | 'llm_summary'
+    | 'noop'
+    // v3 (2026-06-19) session-level strategies.
+    | 'delta_append'
+    | 'sliding_window_token'
+    | 'sliding_window_count'
+    | 'sliding_window_idle'
+    | null
   compression_meta: any | null
+  // v3 (2026-06-19) session-level outbound body. NULL when v3 did not
+  // rewrite the body (outbound == client request_body).
+  outbound_body: any | null
+  outbound_msg_count: number | null
+  outbound_token_est: number | null
+  outbound_msg_hashes: any | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {
