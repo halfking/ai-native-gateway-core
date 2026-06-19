@@ -189,12 +189,15 @@ func StreamChatWithPendingCapture(
 		// capture's QualityFlags slice.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, _ := ProcessStreamLine(firstLine, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			newLine, newFlags, newSeen := ProcessStreamLine(firstLine, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
 			if newLine != "" {
 				firstLine = newLine
 			}
 			if len(newFlags) > 0 {
 				capture.QualityFlags = newFlags
+			}
+			if newSeen != nil {
+				capture.QualitySeenToolCallIDs = newSeen
 			}
 		}
 		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
@@ -312,12 +315,15 @@ func StreamChatWithPendingCapture(
 		// the scanner sees the raw upstream delta.tool_calls shape.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, _ := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
 			if newLine != "" {
 				line = newLine
 			}
 			if len(newFlags) > 0 {
 				capture.QualityFlags = newFlags
+			}
+			if newSeen != nil {
+				capture.QualitySeenToolCallIDs = newSeen
 			}
 		}
 

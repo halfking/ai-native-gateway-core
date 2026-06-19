@@ -118,6 +118,7 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 	changed := false
 	emptyCount := 0
 	dupCount := 0
+	toolIndex := 0
 	for _, rawChoice := range choices {
 		choice, ok := rawChoice.(map[string]any)
 		if !ok {
@@ -145,15 +146,15 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 			if name == "" {
 				emptyCount++
 				if mode == QualityModeFix {
-					// Index in the per-chunk array is best we can do for a
-					// streaming rewrite — we don't have the call_id until
-					// the model decides on it. Use a position-based suffix
-					// so the consumer can at least tell which chunk the
-					// unknown tool came from.
-					fn["name"] = fmt.Sprintf("__unknown_tool_stream_%d__", len(accFlags))
+					// Use the ordinal of tool_calls seen in this line, not
+					// len(accFlags). accFlags is a set-like deduped slice,
+					// so using it would give the same name to every empty
+					// tool_call in one chunk after the first flag is added.
+					fn["name"] = fmt.Sprintf("__unknown_tool_stream_%d__", toolIndex)
 					changed = true
 				}
 			}
+			toolIndex++
 			if id != "" {
 				// First-line callers (and a few tests) pass a nil map;
 				// lazy-init here so the dedup path is allocation-free
@@ -233,13 +234,14 @@ func analyzeChatBody(body []byte) chatQualityReport {
 			totalTCs++
 			if tc.Function.Name == "" {
 				emptyTCs++
-			} else if seen, ok := seenIDs[tc.ID]; ok && tc.ID != "" {
-				rep.DuplicateIDCount++
-				seenIDs[tc.ID] = seen + 1
-				continue
 			}
 			if tc.ID != "" {
-				seenIDs[tc.ID] = 1
+				if seen, ok := seenIDs[tc.ID]; ok {
+					rep.DuplicateIDCount++
+					seenIDs[tc.ID] = seen + 1
+				} else {
+					seenIDs[tc.ID] = 1
+				}
 			}
 		}
 	}
@@ -369,10 +371,15 @@ func applyFixes(body []byte, rep chatQualityReport) ([]byte, map[string]any, boo
 // reportToResult converts the internal report into the exported
 // QualityFixResult for detect_only mode (no score, no body change).
 func reportToResult(rep chatQualityReport, bodyChanged bool) QualityFixResult {
+	var score *float64
+	if len(rep.Flags) > 0 {
+		v := computeScore(rep)
+		score = &v
+	}
 	return QualityFixResult{
 		Flags:       rep.Flags,
 		FixActions:  map[string]any{},
-		Score:       nil,
+		Score:       score,
 		BodyChanged: bodyChanged,
 	}
 }
