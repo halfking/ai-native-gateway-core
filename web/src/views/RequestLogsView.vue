@@ -44,7 +44,7 @@ const total = ref(0)
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
-const detailTab = ref<'request' | 'response'>('request')
+const detailTab = ref<'request' | 'outbound' | 'response'>('request')
 
 // Tenant info for display
 const tenantLabel = computed(() => {
@@ -168,23 +168,43 @@ function jumpToParent(row: RequestLogRow) {
   // already exposes the full parent id for copy/paste.
 }
 
-// Round 47 compression v7: badge + label for the compression_reason
-// / compression_strategy pair. Returns null when the request was not
-// compressed so callers can render an empty cell.
+// Round 47 compression v7 + v3 session-level (2026-06-19): badge + label
+// for the compression_reason / compression_strategy pair. Returns null
+// when the request was not compressed at all (neither v7 nor v3 fired).
 function compressionLabel(row: RequestLogRow): { reason: string; strategy: string; tip: string } | null {
-  if (!row.compression_reason) return null
+  // v3 strategies have no compression_reason (they're proactive, not 4xx-triggered).
+  // v7 strategies always have compression_reason. Either way, a non-null
+  // compression_strategy means something fired.
+  if (!row.compression_reason && !row.compression_strategy) return null
   const reasonMap: Record<string, string> = {
     'mode_1_auto_threshold': '自动阈值',
     'mode_2_on_4xx': '4xx 重试',
+    'sliding_window_token': '滑动窗口·token',
+    'sliding_window_count': '滑动窗口·消息数',
+    'sliding_window_idle': '滑动窗口·空闲',
+    'sliding_window_mechanical_trim': '滑动窗口·机械',
   }
   const strategyMap: Record<string, string> = {
     'mechanical_trim': '机械裁剪',
     'memora_l1_inject': 'Memora 注入',
     'llm_summary': 'LLM 摘要',
     'noop': '未压缩',
+    // v3 (2026-06-19) session-level strategies
+    'delta_append': '增量拼接',
+    'sliding_window_token': '滑动·token',
+    'sliding_window_count': '滑动·消息数',
+    'sliding_window_idle': '滑动·空闲',
   }
-  const reason = reasonMap[row.compression_reason] || row.compression_reason
-  const strategy = strategyMap[row.compression_strategy || ''] || (row.compression_strategy || '?')
+  // For v3 sliding-window triggered entries, the "reason" label is the
+  // window trigger (stored in compression_strategy) and the v7 reason
+  // column is empty. Display the trigger as the reason in that case.
+  let reason = reasonMap[row.compression_reason || ''] || row.compression_reason || ''
+  let strategy = strategyMap[row.compression_strategy || ''] || (row.compression_strategy || '?')
+  // Special case: v3 delta_append has compression_reason empty + strategy = 'delta_append'.
+  // Treat as '增量拼接' strategy with reason '同会话增量'.
+  if (row.compression_strategy === 'delta_append' && !row.compression_reason) {
+    reason = '同会话增量'
+  }
   // Build a tooltip with byte/token deltas from compression_meta when present.
   let tip = `原因: ${reason}\n策略: ${strategy}`
   const meta = row.compression_meta as Record<string, any> | null
@@ -200,6 +220,20 @@ function compressionLabel(row: RequestLogRow): { reason: string; strategy: strin
     }
     if (meta.latency_ms) {
       tip += `\n延迟: ${meta.latency_ms}ms`
+    }
+    // v3 fields: window_triggered + summary_marker
+    if (meta.window_triggered) {
+      tip += `\n触发: ${meta.window_triggered}`
+    }
+    if (meta.summary_marker) {
+      tip += `\n摘要标记: ${String(meta.summary_marker).slice(0, 24)}…`
+    }
+  }
+  // v3 outbound counts (always when outbound body was set, regardless of meta)
+  if (typeof row.outbound_msg_count === 'number') {
+    tip += `\n转发消息数: ${row.outbound_msg_count}`
+    if (typeof row.outbound_token_est === 'number') {
+      tip += ` (≈${row.outbound_token_est} tokens)`
     }
   }
   if (row.parent_request_id) {
@@ -560,6 +594,61 @@ function extractMessagesFromBody(body: any): any[] {
   return [body]
 }
 
+// v3 (2026-06-19) session-level outbound body helpers.
+// Returns true when the row has an outbound_body that differs from the
+// client request_body (i.e. v3 ran for this request).
+function hasOutboundBody(row: any): boolean {
+  if (!row?.outbound_body) return false
+  // Count messages via outbound_msg_count column (cheaper than parsing body).
+  if (typeof row.outbound_msg_count === 'number') return row.outbound_msg_count > 0
+  const msgs = extractMessagesFromBody(row.outbound_body)
+  return msgs.length > 0
+}
+
+// Cheap equality check: outbound body stringified bytes match request body bytes.
+function outboundEqualsRequest(row: any): boolean {
+  if (!row?.outbound_body) return false
+  const reqStr = JSON.stringify(row.request_body ?? '')
+  const outStr = JSON.stringify(row.outbound_body ?? '')
+  return reqStr === outStr
+}
+
+// Returns outbound_msg_count - request message count (rough delta indicator).
+function outboundMsgDelta(row: any): string {
+  const out = typeof row?.outbound_msg_count === 'number' ? row.outbound_msg_count : null
+  if (out == null) return ''
+  const reqMsgs = extractMessagesFromBody(row?.request_body)
+  const reqCount = reqMsgs.length
+  const diff = out - reqCount
+  if (diff === 0) return '0'
+  return diff > 0 ? `+${diff}` : `${diff}`
+}
+
+// Returns the smm_v1 summary marker (if present in compression_meta).
+function outboundSummaryMarker(row: any): string {
+  const meta = row?.compression_meta
+  if (!meta || typeof meta !== 'object') return ''
+  return typeof meta.summary_marker === 'string' ? meta.summary_marker : ''
+}
+
+// True if the given message looks like a gateway-injected compaction summary
+// (content starts with the smm_v1 marker prefix).
+function isSummaryMarkerMessage(msg: any): boolean {
+  const content = msg?.content
+  if (typeof content === 'string') return content.startsWith('[smm_v1:')
+  if (Array.isArray(content)) {
+    for (const p of content) {
+      if (typeof p?.text === 'string' && p.text.startsWith('[smm_v1:')) return true
+    }
+  }
+  return false
+}
+
+function truncate(s: string, n: number): string {
+  if (!s) return ''
+  return s.length > n ? s.slice(0, n) + '…' : s
+}
+
 function roleColor(role: string): string {
   switch (role) {
     case 'user': return 'var(--info, #3b82f6)'
@@ -892,12 +981,30 @@ onMounted(async () => {
               <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
               <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
               <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ creditsDisplay(detail.credits_charged) }}</span>
+              <!-- v3 (2026-06-19) session-level outbound metadata.
+                   Displayed when v3 ran for this request (compression_strategy
+                   in {delta_append, sliding_window_*, mechanical_trim}). -->
+              <template v-if="hasOutboundBody(detail)">
+                <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? '—' }}</span>
+                <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? '—' }}</span>
+                <span v-if="outboundSummaryMarker(detail)">
+                  <strong>摘要标记:</strong>
+                  <span class="summary-marker-badge" :title="outboundSummaryMarker(detail)">{{ truncate(outboundSummaryMarker(detail), 24) }}</span>
+                </span>
+              </template>
             </div>
           </div>
 
           <div class="drawer-section">
             <div style="display:flex;gap:8px;margin-bottom:12px">
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'request' }" @click="detailTab = 'request'">请求消息</button>
+              <!-- v3 outbound tab: only shown when the row has an outbound body. -->
+              <button v-if="hasOutboundBody(detail)" class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'outbound' }" @click="detailTab = 'outbound'">
+                转发消息
+                <span class="outbound-diff-badge" :class="{ unchanged: outboundEqualsRequest(detail) }">
+                  {{ outboundEqualsRequest(detail) ? '= 请求' : `Δ${outboundMsgDelta(detail)}` }}
+                </span>
+              </button>
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
             </div>
           </div>
@@ -917,6 +1024,32 @@ onMounted(async () => {
                 </div>
               </template>
               <div v-else style="color:var(--muted)">(无请求数据)</div>
+            </template>
+
+            <template v-else-if="detailTab === 'outbound'">
+              <!-- v3 outbound body: shows what was actually forwarded to the
+                   upstream LLM after delta-append / sliding-window summary. -->
+              <div v-if="detail.outbound_body" style="margin-bottom:8px;padding:6px 10px;background:var(--surface-primary, #16213e);border-radius:4px;color:var(--text-secondary);font-size:11px">
+                <strong>v3 转发体</strong> · 消息数 {{ detail.outbound_msg_count }} · 估算 {{ detail.outbound_token_est }} tokens
+                <span v-if="outboundSummaryMarker(detail)" style="margin-left:8px">
+                  <span class="summary-marker-badge">{{ truncate(outboundSummaryMarker(detail), 24) }}</span>
+                  <span style="color:var(--muted);font-size:10px">(含 LLM 摘要边界)</span>
+                </span>
+              </div>
+              <template v-if="hasOutboundBody(detail)">
+                <div v-for="(msg, i) in extractMessagesFromBody(detail.outbound_body)" :key="i" style="margin-bottom:12px">
+                  <div style="margin-bottom:4px">
+                    <span :style="{ color: roleColor(msg.role || ''), fontWeight: 600 }">[{{ msg.role || 'unknown' }}]</span>
+                    <span v-if="isSummaryMarkerMessage(msg)" style="margin-left:6px;font-size:10px;color:#1d4ed8">(smm_v1 摘要边界)</span>
+                  </div>
+                  <pre style="margin:0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ formatJson(msg.content ?? msg) }}</pre>
+                  <div v-if="msg.tool_calls" style="margin-top:6px">
+                    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
+                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary, #16213e);border-radius:4px">{{ formatJson(tc) }}</pre>
+                  </div>
+                </div>
+              </template>
+              <div v-else style="color:var(--muted)">(该请求未触发 v3 会话压缩：转发体 == 客户端请求体)</div>
             </template>
 
             <template v-else>
@@ -1100,9 +1233,50 @@ onMounted(async () => {
   background: rgba(107, 114, 128, 0.1);
   color: #4b5563;
 }
+/* v3 (2026-06-19) session-level compression strategies.
+   Different color palette from v7 to make them visually distinguishable
+   in the logs table. */
+.compression-badge.strategy-delta_append {
+  background: rgba(20, 184, 166, 0.12);
+  color: #0f766e;
+  border: 1px solid rgba(20, 184, 166, 0.3);
+}
+.compression-badge.strategy-sliding_window_token,
+.compression-badge.strategy-sliding_window_count,
+.compression-badge.strategy-sliding_window_idle {
+  background: rgba(168, 85, 247, 0.12);
+  color: #7e22ce;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
 .col-compress {
   max-width: 180px;
   min-width: 120px;
+}
+/* v3 Outbound tab — highlight when outbound differs from request. */
+.outbound-diff-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  margin-left: 6px;
+  background: rgba(20, 184, 166, 0.1);
+  color: #0f766e;
+}
+.outbound-diff-badge.unchanged {
+  background: rgba(107, 114, 128, 0.08);
+  color: #6b7280;
+}
+.summary-marker-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  margin-left: 6px;
+  background: rgba(59, 130, 246, 0.1);
+  color: #1d4ed8;
+  font-family: var(--mono-font, ui-monospace, monospace);
 }
 .parent-id {
   color: var(--text-secondary, #6b7280);
