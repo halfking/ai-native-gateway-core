@@ -35,6 +35,17 @@ type ChatExecutor struct {
 	// (nvext, audio_content, name, etc.) from the chat response body
 	// before it is returned to the client. Wired from main.go.
 	StripMinimaxFields func([]byte) []byte
+	// QualityProcessNonStream runs the per-provider tool_call quality
+	// check (017_quality_fix_mode.sql). Wired from main.go; routing
+	// cannot import relay (relay imports routing), so the processor
+	// is injected as a hook. Returns (possibly rewritten body,
+	// quality signals). When nil, the executor treats the provider
+	// as quality_fix_mode='off' (passthrough, no detect, no rewrite).
+	QualityProcessNonStream func(body []byte, mode string) (outBody []byte, flags []string, fixActions []byte, score *float64)
+	// QualityProcessStreamLine is the streaming equivalent; one SSE
+	// "data: ..." line at a time. Accumulates flags and seen tool_call
+	// ids across the stream. nil ⇒ off-mode.
+	QualityProcessStreamLine func(line, mode string, accFlags []string, seenIDs map[string]int) (outLine string, outFlags []string, outSeen map[string]int)
 }
 
 var _ ProtocolHandler = (*ChatExecutor)(nil)
@@ -207,6 +218,18 @@ func (e *Executor) executeOpenAI(
 			// request carries the correct context from the start. Previously
 			// the request was created with params.R.Context() and then replaced
 			// via req.WithContext(upCtx) — that's equivalent but wasteful.
+			//
+			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): stamp
+			// the chosen provider's quality_fix_mode onto the upstream
+			// context so the relay-side stream reader can apply the
+			// per-line quality check without needing a direct Candidate
+			// reference. The SetQualityFixModeOnContext helper lives in
+			// the relay package; we bridge via the QualitySetMode hook
+			// (wired in cmd/gateway/main.go) so routing can stay free
+			// of the relay import.
+			if e.QualitySetMode != nil {
+				upCtx = e.QualitySetMode(upCtx, cand.QualityFixMode)
+			}
 			req, err := http.NewRequestWithContext(
 				upCtx,
 				http.MethodPost,
@@ -448,6 +471,16 @@ func (e *Executor) executeOpenAI(
 				} else if e.StreamChat != nil {
 					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture, params.ToolsRequested)
 				}
+				// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
+				// relay/stream.go writes detected flags into the capture
+				// during the stream read loop. Pluck them out here so
+				// emitTelemetry can persist them on the request_log row.
+				var streamQualityFlags []string
+				var streamQualityScore *float64
+				if params.Capture != nil {
+					streamQualityFlags = params.Capture.QualityFlags
+					streamQualityScore = params.Capture.QualityScore
+				}
 				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
@@ -520,6 +553,10 @@ func (e *Executor) executeOpenAI(
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
+						// 2026-06-19 quality fix mode: capture any flags the
+						// stream reader observed before the interrupt fired.
+						QualityFlags: streamQualityFlags,
+						QualityScore: streamQualityScore,
 					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 				}
 				return &ExecuteResult{
@@ -533,6 +570,12 @@ func (e *Executor) executeOpenAI(
 					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
 					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
 					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					// 2026-06-19 quality fix mode: relay/stream.go populated
+					// capture.QualityFlags as each chunk was processed.
+					// relay/handler.go emitTelemetry writes these into
+					// request_logs.quality_flags / quality_score.
+					QualityFlags: streamQualityFlags,
+					QualityScore: streamQualityScore,
 				}, nil
 			}
 			defer resp.Body.Close()
@@ -543,6 +586,29 @@ func (e *Executor) executeOpenAI(
 			if len(respBody) > maxBodySize {
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]
+			}
+			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			// Run before any other body transform so the scanner sees
+			// the raw upstream tool_calls shape. detect_only/fix modes
+			// may rewrite empty names to __unknown_tool_<i>__; the
+			// subsequent XMLCoerce / Normalize / StripMinimax passes
+			// then operate on the (possibly) cleaner body.
+			//
+			// We only invoke the hook when QualityFixMode is non-empty
+			// so off-mode providers skip the call entirely. The hook
+			// itself also short-circuits on 'off' (defence in depth) but
+			// the routing-side guard keeps the no-op free of the JSON
+			// unmarshal pass in applyFixes.
+			qualityBody := respBody
+			var qualityFlags []string
+			var qualityActions []byte
+			var qualityScore *float64
+			if e.QualityProcessNonStream != nil && cand.QualityFixMode != "" {
+				qualityBody, qualityFlags, qualityActions, qualityScore =
+					e.QualityProcessNonStream(respBody, cand.QualityFixMode)
+				if qualityBody != nil {
+					respBody = qualityBody
+				}
 			}
 			if params.ClientModel != "" {
 				respBody = replaceModelInResponseBody(respBody, params.ClientModel)
@@ -580,6 +646,11 @@ func (e *Executor) executeOpenAI(
 				CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
 				// Round 47 compression v7 T-NEW-4: pre-request trim
 				// metadata merged in via mergeCompressionMeta above.
+				// 2026-06-19 quality fix mode: relay/handler.go emitTelemetry
+				// copies these into request_logs.quality_* columns.
+				QualityFlags:      qualityFlags,
+				QualityFixActions: qualityActions,
+				QualityScore:      qualityScore,
 			}, nil
 		}()
 

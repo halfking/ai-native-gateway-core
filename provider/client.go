@@ -55,6 +55,11 @@ type Candidate struct {
 	// "unknown" — in which case the trim path is a no-op.
 	ContextWindow *int `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
+	// QualityFixMode mirrors providers.quality_fix_mode (017_quality_fix_mode.sql).
+	// Empty string is treated as "off" by every consumer; relay/stream.go
+	// and routing/executor_chat.go both short-circuit when the value is
+	// blank. Allowed values: "" (off), "off", "detect_only", "fix".
+	QualityFixMode string `json:"quality_fix_mode,omitempty"`
 }
 
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
@@ -519,7 +524,14 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'token') AS billing_mode,
 			mo.raw_model_name,
-			mc.context_window
+			mc.context_window,
+			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			-- Read from providers so the routing executor can pass the
+			-- per-provider mode through to the relay stream reader and
+			-- the non-stream body post-processor. Empty string means
+			-- the column was just added and the row hasn't been backfilled
+			-- (will be 'off' on next reconnect after the migration).
+			COALESCE(NULLIF(p.quality_fix_mode, ''), 'off') AS quality_fix_mode
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -607,6 +619,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			&cand.BillingMode,
 			&offerRawModel,
 			&cand.ContextWindow,
+			&cand.QualityFixMode,
 		); err != nil {
 			return nil, err
 		}

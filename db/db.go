@@ -47,6 +47,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -142,17 +146,61 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		-- v3 T23: session outbound lookup (used by SessionCache L3 fallback).
 		CREATE INDEX IF NOT EXISTS idx_request_logs_session_outbound
 		    ON public.request_logs (gw_session_id, ts DESC)
-		    WHERE gw_session_id IS NOT NULL
+		  WHERE gw_session_id IS NOT NULL
 		      AND outbound_body IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_outbound_msg_count
 		    ON public.request_logs (tenant_id, ts DESC)
-		    WHERE outbound_msg_count IS NOT NULL
+		  WHERE outbound_msg_count IS NOT NULL
 		      AND outbound_msg_count > 0;
+		-- 2026-06-19: quality fix mode (db/migrations/017_quality_fix_mode.sql).
+		-- Per-request tool_call quality signal columns. quality_flags is GIN-
+		-- indexed for cheap "which provider emits empty_tool_name most" lookups.
+		ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}',
+		    ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb,
+		    ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_quality_flags
+		    ON request_logs USING GIN (quality_flags)
+		    WHERE cardinality(quality_flags) > 0;
+		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_quality
+		    ON request_logs (provider_id, quality_score, ts DESC)
+		    WHERE quality_score IS NOT NULL;
 	`)
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score)")
+	return nil
+}
+
+// ensureQualityFixModeSchema mirrors db/migrations/017_quality_fix_mode.sql
+// for the providers table. Idempotent.  quality_fix_mode defaults to 'off'
+// so existing providers keep their current passthrough behavior.
+func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS quality_fix_mode TEXT NOT NULL DEFAULT 'off'
+		        CHECK (quality_fix_mode IN ('off', 'detect_only', 'fix'));
+
+		CREATE TABLE IF NOT EXISTS provider_quality_rollup (
+		    provider_id       INT  NOT NULL,
+		    bucket_start      TIMESTAMPTZ NOT NULL,
+		    total_requests    INT  NOT NULL DEFAULT 0,
+		    bad_requests      INT  NOT NULL DEFAULT 0,
+		    fixed_requests    INT  NOT NULL DEFAULT 0,
+		    avg_quality_score NUMERIC(3,2),
+		    top_flag          TEXT,
+		    PRIMARY KEY (provider_id, bucket_start)
+		);
+		CREATE INDEX IF NOT EXISTS idx_provider_quality_rollup_bucket
+		    ON provider_quality_rollup (bucket_start DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("quality_fix_mode + provider_quality_rollup schema ensured")
 	return nil
 }
 

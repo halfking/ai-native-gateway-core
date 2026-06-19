@@ -353,7 +353,11 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		       MAX(c.health_checked_at) AS health_checked_at,
 		       -- 900-series: routable count from VIEW (manual > auto priority)
 		       COALESCE(rs.routable_count, 0)::int AS routable_binding_count,
-		       COALESCE(rs.total_count, 0)::int AS total_binding_count
+		       COALESCE(rs.total_count, 0)::int AS total_binding_count,
+		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		       -- Surface in the list response so the admin UI can render
+		       -- the per-provider switch without a second round-trip.
+		       COALESCE(p.quality_fix_mode, 'off') AS quality_fix_mode
 		FROM providers p
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		LEFT JOIN credentials c ON c.provider_id = p.id
@@ -408,6 +412,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		HealthStatus           string     `json:"health_status"`
 		RoutableBindingCount   int        `json:"routable_binding_count"`
 		TotalBindingCount      int        `json:"total_binding_count"`
+		QualityFixMode         string     `json:"quality_fix_mode"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
@@ -422,6 +427,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			&p.ActiveCredCount, &p.HealthyCredCount, &p.WarningCredCount, &p.UnreachableCredCount,
 			&p.HealthCheckedAt,
 			&p.RoutableBindingCount, &p.TotalBindingCount,
+			&p.QualityFixMode,
 		); err != nil {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
@@ -628,15 +634,22 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName   *string  `json:"display_name"`
-		BaseURL       *string  `json:"base_url"`
-		Protocol      *string  `json:"protocol"`
-		Kind          *string  `json:"kind"`
-		Category      *string  `json:"category"`
-		DiscountRate  *float64 `json:"discount_rate"`
-		EgressProfile *string  `json:"egress_profile"`
-		Notes         *string  `json:"notes"`
-		Enabled       *bool    `json:"enabled"`
+		DisplayName    *string  `json:"display_name"`
+		BaseURL        *string  `json:"base_url"`
+		Protocol       *string  `json:"protocol"`
+		Kind           *string  `json:"kind"`
+		Category       *string  `json:"category"`
+		DiscountRate   *float64 `json:"discount_rate"`
+		EgressProfile  *string  `json:"egress_profile"`
+		Notes          *string  `json:"notes"`
+		Enabled        *bool    `json:"enabled"`
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		// Three-state: "off" (passthrough), "detect_only" (annotate only),
+		// "fix" (detect + actively rewrite the response body). The
+		// column has a CHECK constraint that rejects other values; we
+		// surface the DB error verbatim so the operator sees a clear
+		// "violates check constraint" instead of a silent 500.
+		QualityFixMode *string  `json:"quality_fix_mode"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -671,6 +684,12 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	}
 	if req.Enabled != nil {
 		h.db.Exec(ctx, `UPDATE providers SET enabled = $1, updated_at = now() WHERE id = $2`, *req.Enabled, id)
+	}
+	if req.QualityFixMode != nil {
+		if _, err := h.db.Exec(ctx, `UPDATE providers SET quality_fix_mode = $1, updated_at = now() WHERE id = $2`, *req.QualityFixMode, id); err != nil {
+			writeError(w, http.StatusBadRequest, "quality_fix_mode update failed: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
