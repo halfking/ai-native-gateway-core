@@ -1235,6 +1235,10 @@ func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, pr
 		"message": "ok",
 		"deleted": int(deleted),
 	})
+	// 2026-06-19 audit: clear-all wipes the model rows this endpoint
+	// aggregates — invalidate the cache so the next page render
+	// re-reads the DB instead of returning a stale list.
+	InvalidateAvailableModelsCache()
 }
 
 func classifyAvailability(available bool, reason *string) string {
@@ -2583,11 +2587,41 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		h.db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
 		if req.StandardizedName == nil {
 			h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
+			// 2026-06-19 audit: mirror the write to the underlying
+			// provider_models table.  model_offers is a VIEW with an
+			// INSTEAD OF UPDATE trigger that re-derives standardized_name
+			// from raw_model_name on conflict, which was clobbering the
+			// admin's manual edit ("一会就被刷新").  Writing both sides
+			// keeps the view and the base table in lockstep.
+			h.db.Exec(ctx, `
+				UPDATE provider_models
+				SET standardized_name = $1
+				WHERE id = (
+					SELECT pm.id FROM provider_models pm
+					JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
+					JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
+					WHERE mo.id = $2
+					LIMIT 1
+				)
+			`, canonName, offerID)
 		}
 	}
 
 	if req.StandardizedName != nil {
 		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
+		// 2026-06-19 audit: mirror to provider_models so the view's
+		// INSTEAD OF UPDATE trigger cannot re-clobber the value.
+		h.db.Exec(ctx, `
+			UPDATE provider_models
+			SET standardized_name = $1
+			WHERE id = (
+				SELECT pm.id FROM provider_models pm
+				JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
+				JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
+				WHERE mo.id = $2
+				LIMIT 1
+			)
+		`, *req.StandardizedName, offerID)
 	}
 
 	// outbound_model_name is independent of canonical_id / standardized_name;
@@ -2628,6 +2662,14 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
 		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName)
+
+	// 2026-06-19 audit: any PATCH that touches standardized_name /
+	// canonical_id / outbound_model_name can change the data
+	// /api/routing/available-models aggregates.  Invalidate the
+	// process-wide cache so the next page render re-reads the DB.
+	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil {
+		InvalidateAvailableModelsCache()
+	}
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -3266,6 +3308,12 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 				totalUpserted, len(creds), totalFailed)
 		}
 		h.recordProviderRefresh(providerID, run)
+
+		// 2026-06-19 audit: provider refresh re-writes the rows
+		// /api/routing/available-models aggregates.  Invalidate the
+		// process-wide cache so the next admin page render sees the
+		// new model list.
+		InvalidateAvailableModelsCache()
 
 		slog.Info("provider refresh finished",
 			"run_id", runID,
