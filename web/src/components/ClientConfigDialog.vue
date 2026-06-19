@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getKeys, listModels, getFeatured, applyForKey, type ApiKey, type ModelCanonical } from '../api'
 import {
   TOOLS, OS_INFO,
@@ -12,6 +13,7 @@ import {
 
 const props = defineProps<{ tool: ToolId; open: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
+const router = useRouter()
 
 const toolInfo = computed(() => TOOLS.find(t => t.id === props.tool)!)
 
@@ -266,6 +268,11 @@ function downloadFileContent() {
 function close() {
   emit('close')
 }
+
+function goManageFeatured() {
+  close()
+  router.push('/routing-policy')
+}
 </script>
 
 <template>
@@ -339,10 +346,18 @@ function close() {
           <!-- Featured preview -->
           <div v-if="selectedScope === 'featured'" class="model-preview">
             <div v-if="featuredLoading" class="models-loading">加载中…</div>
-            <div v-else-if="featuredModels.length === 0" class="models-loading">
-              路由中尚未配置热门模型，请前往「路由配置」页设置 featured_models
+            <div v-else-if="featuredModels.length === 0" class="empty-mini-state">
+              <div class="empty-mini-title">路由中尚未配置热门模型</div>
+              <button class="btn btn-primary btn-sm" @click="goManageFeatured">
+                前往「路由策略」配置 →
+              </button>
             </div>
-            <span v-else class="model-tag" v-for="m in featuredModels" :key="m">{{ m }}</span>
+            <template v-else>
+              <span class="model-tag" v-for="m in featuredModels" :key="m">{{ m }}</span>
+              <button class="btn btn-ghost btn-sm manage-link" @click="goManageFeatured">
+                管理 →
+              </button>
+            </template>
           </div>
 
           <!-- All models from API -->
@@ -604,6 +619,27 @@ function close() {
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
+  align-items: center;
+}
+
+.empty-mini-state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 4px 0;
+}
+
+.empty-mini-title {
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+}
+
+.manage-link {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 2px 8px;
 }
 
 .model-tag {
