@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { resolveRouting } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
+import ClientConfigGenerator from '../components/ClientConfigGenerator.vue'
 import { useGatewayApiKey } from '../composables/useGatewayApiKey'
 
 const { apiKey: gatewayApiKey } = useGatewayApiKey()
@@ -309,6 +310,8 @@ function toggleGuide(id: ClientGuideId) {
     </p>
 
     <h3 class="section-heading">常用客户端配置</h3>
+    <ClientConfigGenerator />
+
     <div class="guide-list">
       <div v-for="g in clientGuides" :key="g.id" class="card guide-card">
         <button type="button" class="guide-header" @click="toggleGuide(g.id)">

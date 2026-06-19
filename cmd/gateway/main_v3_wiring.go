@@ -175,6 +175,13 @@ func (m memoraClientAdapter) Search(ctx context.Context, userID, query string, t
 	return m.c.Search(ctx, userID, query, topK)
 }
 
+func (m memoraClientAdapter) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+	if m.c == nil {
+		return nil, fmt.Errorf("memora client nil")
+	}
+	return m.c.SmartSearch(ctx, userID, query, topK)
+}
+
 // providerClientAdapter bridges routing.providerResolver to compressor.ProviderClient.
 // The adapter discards the *provider.Policy return value because the compressor
 // only needs the candidate list.

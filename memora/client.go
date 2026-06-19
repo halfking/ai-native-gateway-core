@@ -198,6 +198,30 @@ func (c *Client) Search(ctx context.Context, userID, query string, topK int) ([]
 	return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
 }
 
+// SmartSearch is the M1 (2026-06-19) high-recall retrieval entry point.
+//
+// DESIGN / SAFETY NOTE:
+//
+//	The Memora Dashboard /api/smart_search endpoint runs a 5-step RRF+MMR
+//	pipeline that queries Qdrant DIRECTLY and currently does NOT filter by
+//	user_id (verified in services/kxmemory/dashboard/backend/lib/
+//	smart_retrieval.py:qdrantSearch — no FieldCondition/MatchValue on
+//	user_id). Calling it for per-tenant v3 injection would leak memories
+//	across tenants — a hard multi-tenant red-line violation.
+//
+//	Until the Dashboard pipeline accepts a user_id filter, SmartSearch
+//	delegates to the user-scoped single-vector Search (MemOS /product/search,
+//	which IS user_id-isolated). This keeps the interface future-ready while
+//	guaranteeing tenant isolation. When Memora adds user_id filtering to
+//	smart_search, swap the body of this method to hit /api/smart_search.
+//
+// See docs/llm-gateway-go/2026-06-19-v3-audit-test-deploy-optimize.md §6 (M1).
+func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int) ([]Memory, error) {
+	// SAFE PATH: user-scoped single-vector search. Do NOT call
+	// /api/smart_search until it supports user_id filtering.
+	return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+}
+
 // SearchAdmin is like Search but uses a longer timeout for admin UI reads.
 func (c *Client) SearchAdmin(ctx context.Context, userID, query string, topK int) ([]Memory, error) {
 	timeout := 8 * time.Second
