@@ -343,6 +343,11 @@ func (e *Executor) executeAnthropic(
 	if err != nil {
 		return nil, err
 	}
+	// Round 47 T-NEW-4 (audit fix A4): capture pre-request trim delta for
+	// Anthropic path, mirroring executor_chat.go. prepareAnthropicRequestBody
+	// calls CompressAnthropicMessagesIfNeeded internally, so any trim is
+	// already reflected in len(bodyBytes) vs len(sourceBody).
+	preTrimMeta := buildPreRequestTrimMeta(len(sourceBody), len(bodyBytes), cand.ContextWindow)
 
 	outboundModel := resolveOutboundModel(params, cand)
 
@@ -413,17 +418,19 @@ func (e *Executor) executeAnthropic(
 			// conversation so L1 session memory accumulates facts for
 			// later retrieval on context-overflow.
 			e.enqueueMemoraWrite(params, sourceBody, result.ResponseBody)
-			// Round 47 compression v7 T-NEW-2: surface the compression
-			// event captured during any 4xx retry that preceded this
-			// successful leg. relay/handler.go emitTelemetry writes
-			// these into request_logs.compression_*.
+			// Round 47 compression v7 T-NEW-2 + T-NEW-4 (audit fix A4):
+			// surface the compression event captured during any 4xx retry
+			// that preceded this successful leg, merged with pre-request
+			// trim metadata. relay/handler.go emitTelemetry writes these
+			// into request_logs.compression_*.
 			if result.CompressionReason == nil && contextLenRecovery.lastReason != "" && contextLenRecovery.lastReason != "noop" {
 				reason := contextLenRecovery.lastReason
 				strategy := contextLenRecovery.lastStrategy
 				result.CompressionReason = &reason
 				result.CompressionStrategy = &strategy
-				result.CompressionMeta = contextLenRecovery.lastMeta
 			}
+			// Always merge preTrimMeta (may be nil if no trim happened).
+			result.CompressionMeta = mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta)
 			return result, nil
 		}
 		if cle, ok := tryErr.(*contextLengthHTTPError); ok {

@@ -220,3 +220,52 @@ func TestPrepareAnthropicRequestBody_CompressesOpenAIClient(t *testing.T) {
 		t.Fatalf("expected trimmed anthropic messages; before=%d after=%d", len(before.Messages), len(anthropic.Messages))
 	}
 }
+
+// TestBuildPreRequestTrimMeta_AnthropicPath verifies that the A4 audit fix
+// correctly captures pre-request trim metadata for the Anthropic executor path.
+// buildPreRequestTrimMeta (shared with OpenAI path) is called after
+// prepareAnthropicRequestBody so any Anthropic-specific body trim is included.
+func TestBuildPreRequestTrimMeta_AnthropicPath(t *testing.T) {
+	// Simulate: sourceBody=1000 bytes, bodyBytes=800 bytes after anthropic trim
+	// (trim happened), with a context window of 131072.
+	cw := 131072
+	meta := buildPreRequestTrimMeta(1000, 800, &cw)
+	if meta == nil {
+		t.Fatal("expected non-nil meta when bytes shrank in anthropic path")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(meta, &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["trim_phase"] != "pre_request" {
+		t.Errorf("trim_phase = %v, want pre_request", m["trim_phase"])
+	}
+	if m["bytes_before"].(float64) != 1000 {
+		t.Errorf("bytes_before = %v, want 1000", m["bytes_before"])
+	}
+	if m["bytes_after"].(float64) != 800 {
+		t.Errorf("bytes_after = %v, want 800", m["bytes_after"])
+	}
+
+	// mergeCompressionMeta should pass through preTrimMeta when no recovery meta.
+	merged := mergeCompressionMeta(nil, meta)
+	if string(merged) != string(meta) {
+		t.Errorf("mergeCompressionMeta(nil, preTrim) should return preTrim unchanged")
+	}
+
+	// When recovery meta also present, recovery wins on shared fields.
+	recoveryMeta := []byte(`{"bytes_before":800,"bytes_after":600,"reason_detail":"4xx_recovery"}`)
+	both := mergeCompressionMeta(recoveryMeta, meta)
+	var both_m map[string]any
+	if err := json.Unmarshal(both, &both_m); err != nil {
+		t.Fatalf("merged invalid JSON: %v", err)
+	}
+	// 4xx recovery bytes_before (800) overrides preTrim bytes_before (1000).
+	if both_m["bytes_before"].(float64) != 800 {
+		t.Errorf("merged bytes_before = %v, want 800 (recovery wins)", both_m["bytes_before"])
+	}
+	// trim_phase from preTrim survives.
+	if both_m["trim_phase"] != "pre_request" {
+		t.Errorf("trim_phase = %v, want pre_request (from preTrim)", both_m["trim_phase"])
+	}
+}
