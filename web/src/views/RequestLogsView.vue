@@ -880,6 +880,23 @@ onMounted(async () => {
       </div>
     </div>
 
+    <div v-if="!loading" class="pagination-bar">
+      <div class="pagination-info">
+        <span>共 {{ total }} 条</span>
+        <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
+          <option :value="50">50 / 页</option>
+          <option :value="100">100 / 页</option>
+          <option :value="200">200 / 页</option>
+          <option :value="500">500 / 页</option>
+        </select>
+      </div>
+      <div class="pagination-controls">
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
+      </div>
+    </div>
+
     <div class="card" style="overflow-x:auto">
       <table class="data-table request-log-table" style="width:100%;font-size:12px">
         <thead>
@@ -983,18 +1000,18 @@ onMounted(async () => {
       </table>
     </div>
 
-    <div v-if="!loading" style="display:flex;gap:12px;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px">
+    <div v-if="!loading && total > 0" class="pagination-bar">
+      <div class="pagination-info">
         <span>共 {{ total }} 条</span>
-        <span v-if="total > 0">· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
-        <select v-model.number="pageSize" @change="resetPageAndLoad" style="padding:2px 6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+        <span>· 第 {{ page }} / {{ Math.max(1, Math.ceil(total / pageSize)) }} 页</span>
+        <select v-model.number="pageSize" @change="resetPageAndLoad" class="page-size-select">
           <option :value="50">50 / 页</option>
           <option :value="100">100 / 页</option>
           <option :value="200">200 / 页</option>
           <option :value="500">500 / 页</option>
         </select>
       </div>
-      <div style="display:flex;gap:8px">
+      <div class="pagination-controls">
         <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
         <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / pageSize)" @click="changePage(1)">下一页</button>
       </div>
@@ -1351,6 +1368,38 @@ onMounted(async () => {
 }
 .cell-line1.muted {
   color: var(--text-secondary, #9ca3af);
+}
+.pagination-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--surface-secondary, #f3f4f6);
+  border-radius: 8px;
+  flex-wrap: nowrap;
+}
+.pagination-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  flex-wrap: nowrap;
+}
+.pagination-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.page-size-select {
+  padding: 2px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
 }
 </style>
 

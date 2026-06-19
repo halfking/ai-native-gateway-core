@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { getKeys, type ApiKey } from '../api'
+import { getKeys, listModels, type ApiKey, type ModelCanonical } from '../api'
 import {
   TOOLS, OS_INFO, FEATURED_MODELS,
   type ToolId, type OS, type ModelScope,
@@ -15,7 +15,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 
 const toolInfo = computed(() => TOOLS.find(t => t.id === props.tool)!)
 
-// Step 1: Key selection
+// ── Step 1: Key selection (all tenant keys for admin) ──────────────────────
 const keys = ref<ApiKey[]>([])
 const selectedKeyId = ref<number | null>(null)
 const keysLoading = ref(false)
@@ -34,14 +34,54 @@ async function loadKeys() {
   }
 }
 
-// Step 2: OS selection
+// ── Step 2: OS selection ─────────────────────────────────────────────────────
 const selectedOS = ref<OS>('macos')
 
-// Step 3: Model scope
+// ── Step 3: Model scope + custom selection ──────────────────────────────────
 const selectedScope = ref<ModelScope>('featured')
 const selectedModels = ref<string[]>([...FEATURED_MODELS])
+const allModels = ref<ModelCanonical[]>([])
+const allModelsLoading = ref(false)
+const allModelsLoaded = ref(false)
 
-// Generated content
+async function loadAllModels() {
+  if (allModelsLoaded.value) return
+  allModelsLoading.value = true
+  try {
+    const resp = await listModels({ status: 'active' })
+    allModels.value = resp.items.filter(m => m.status === 'active')
+    allModelsLoaded.value = true
+  } catch {
+    allModels.value = []
+  } finally {
+    allModelsLoading.value = false
+  }
+}
+
+watch(selectedScope, async (scope) => {
+  if (scope === 'all') {
+    await loadAllModels()
+  }
+})
+
+function toggleModel(modelId: string) {
+  const idx = selectedModels.value.indexOf(modelId)
+  if (idx >= 0) {
+    selectedModels.value.splice(idx, 1)
+  } else {
+    selectedModels.value.push(modelId)
+  }
+}
+
+function selectAllModels() {
+  selectedModels.value = allModels.value.map(m => m.canonical_name)
+}
+
+function deselectAllModels() {
+  selectedModels.value = []
+}
+
+// ── Generated content ───────────────────────────────────────────────────────
 const generatedFile = ref('')
 const generatedScript = ref('')
 const generatedManual = ref('')
@@ -56,19 +96,16 @@ watch(() => props.open, (val) => {
     generatedFile.value = ''
     generatedScript.value = ''
     activeTab.value = 'file'
+    selectedScope.value = 'featured'
+    selectedModels.value = [...FEATURED_MODELS]
+    selectedOS.value = 'macos'
   }
 })
 
 const selectedKey = computed(() => keys.value.find(k => k.id === selectedKeyId.value))
 
-const fileExt = computed(() => {
-  if (props.tool === 'cherry_studio') return '.json'
-  return '.json'
-})
-
-const scriptExt = computed(() => {
-  return selectedOS.value === 'windows' ? '.ps1' : '.sh'
-})
+const fileExt = computed(() => props.tool === 'cherry_studio' ? '.json' : '.json')
+const scriptExt = computed(() => selectedOS.value === 'windows' ? '.ps1' : '.sh')
 
 async function generate() {
   if (!selectedKey.value) return
@@ -131,9 +168,9 @@ function close() {
 </script>
 
 <template>
-  <div v-if="open" class="dialog-backdrop" @click.self="close">
-    <div class="dialog-panel">
-      <div class="dialog-header">
+  <div v-if="open" class="drawer-backdrop" @click.self="close">
+    <div class="drawer-panel">
+      <div class="drawer-header">
         <div class="dialog-title">
           <span>{{ toolInfo.icon }}</span>
           <span>{{ toolInfo.name }} 配置生成器</span>
@@ -141,25 +178,27 @@ function close() {
         <button class="btn btn-ghost btn-sm" @click="close">关闭 ✕</button>
       </div>
 
-      <div class="dialog-body">
+      <div class="drawer-body-scroll" style="max-height: none; padding: 0; border: none; border-radius: 0; background: transparent;">
+
         <!-- Step 1: API Key -->
         <div class="step-section">
-          <div class="step-label">① 选择 API Key</div>
+          <div class="step-label">① 选择 API Key（当前租户下所有密钥）</div>
           <select v-model="selectedKeyId" class="select-field">
             <option v-if="keysLoading" value="">加载中…</option>
             <option v-if="!keysLoading && keys.length === 0" value="">无可用 Key</option>
             <option v-for="k in keys" :key="k.id" :value="k.id">
-              {{ k.key_prefix }}**** ({{ k.application_code }}) — {{ k.status }}
+              {{ k.key_prefix }}**** ({{ k.application_code }}, {{ k.status }})
             </option>
           </select>
           <div v-if="selectedKey" class="key-info">
-            选中的 Key：<code>{{ selectedKey.key_prefix }}****</code>
+            已选：<code>{{ selectedKey.key_prefix }}****</code>
+            <span class="badge" :class="selectedKey.status === 'active' ? 'badge-green' : 'badge-yellow'">{{ selectedKey.status }}</span>
           </div>
         </div>
 
         <!-- Step 2: OS -->
         <div class="step-section">
-          <div class="step-label">② 选择操作系统</div>
+          <div class="step-label">② 操作系统</div>
           <div class="os-tabs">
             <button
               v-for="(info, os) in OS_INFO"
@@ -169,33 +208,56 @@ function close() {
             >{{ info.label }}</button>
           </div>
           <div class="path-hint">
-            配置路径：<code>{{ OS_INFO[selectedOS].paths[tool] }}</code>
+            配置文件路径：<code>{{ OS_INFO[selectedOS].paths[tool] }}</code>
           </div>
         </div>
 
-        <!-- Step 3: Model Scope -->
+        <!-- Step 3: Model scope -->
         <div class="step-section">
           <div class="step-label">③ 选择模型范围</div>
           <div class="scope-radios">
             <label class="radio-label">
               <input type="radio" value="featured" v-model="selectedScope" />
-              <span>精选（8 个核心模型）</span>
+              <span>精选模型（8 个核心模型）</span>
             </label>
             <label class="radio-label">
               <input type="radio" value="all" v-model="selectedScope" />
-              <span>全部可用模型（需联网获取）</span>
-            </label>
-            <label class="radio-label">
-              <input type="radio" value="custom" v-model="selectedScope" />
-              <span>自定义（暂不支持）</span>
+              <span>全部可用模型（从网关拉取）</span>
             </label>
           </div>
+
+          <!-- Featured preview -->
           <div v-if="selectedScope === 'featured'" class="model-preview">
-            模型清单：{{ FEATURED_MODELS.join(', ') }}
+            <span class="model-tag" v-for="m in FEATURED_MODELS" :key="m">{{ m }}</span>
+          </div>
+
+          <!-- All models from API -->
+          <div v-if="selectedScope === 'all'" class="all-models-panel">
+            <div class="all-models-toolbar">
+              <button class="btn btn-ghost btn-sm" @click="selectAllModels">全选</button>
+              <button class="btn btn-ghost btn-sm" @click="deselectAllModels">清空</button>
+              <span class="model-count-label">{{ selectedModels.length }} / {{ allModels.length }} 已选</span>
+            </div>
+            <div v-if="allModelsLoading" class="models-loading">加载中…</div>
+            <div v-else class="models-checklist">
+              <label
+                v-for="m in allModels"
+                :key="m.canonical_name"
+                class="model-check-item"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedModels.includes(m.canonical_name)"
+                  @change="toggleModel(m.canonical_name)"
+                />
+                <span class="model-check-name">{{ m.canonical_name }}</span>
+                <span class="model-check-vendor">{{ m.vendor || m.family || '' }}</span>
+              </label>
+            </div>
           </div>
         </div>
 
-        <!-- Generate Button -->
+        <!-- Generate -->
         <div class="step-section generate-section">
           <button
             class="btn btn-primary"
@@ -208,14 +270,17 @@ function close() {
 
         <!-- Results -->
         <div v-if="hasGenerated" class="results-section">
-          <!-- Tabs -->
           <div class="result-tabs">
             <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">配置文件</button>
-            <button v-if="tool !== 'cherry_studio' && tool !== 'cursor'" :class="['tab-btn', activeTab === 'script' ? 'active' : '']" @click="activeTab = 'script'">配置脚本</button>
+            <button
+              v-if="tool !== 'cherry_studio' && tool !== 'cursor'"
+              :class="['tab-btn', activeTab === 'script' ? 'active' : '']"
+              @click="activeTab = 'script'"
+            >配置脚本</button>
             <button :class="['tab-btn', activeTab === 'manual' ? 'active' : '']" @click="activeTab = 'manual'">手动步骤</button>
           </div>
 
-          <!-- File Panel -->
+          <!-- File Tab -->
           <div v-if="activeTab === 'file'" class="tab-content">
             <pre class="code-preview">{{ generatedFile }}</pre>
             <div class="result-actions">
@@ -224,58 +289,27 @@ function close() {
             </div>
           </div>
 
-          <!-- Script Panel -->
+          <!-- Script Tab -->
           <div v-if="activeTab === 'script'" class="tab-content">
             <pre class="code-preview script-code">{{ generatedScript }}</pre>
             <div class="result-actions">
               <button class="btn btn-primary btn-sm" @click="downloadScript">下载脚本</button>
-              <span class="action-hint">脚本会自动备份旧配置文件</span>
+              <span class="action-hint">脚本自动备份旧配置文件</span>
             </div>
           </div>
 
-          <!-- Manual Panel -->
+          <!-- Manual Tab -->
           <div v-if="activeTab === 'manual'" class="tab-content">
             <pre class="code-preview manual-text">{{ generatedManual }}</pre>
           </div>
         </div>
+
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-}
-
-.dialog-panel {
-  background: var(--bg-secondary, #1a1d23);
-  border: 1px solid var(--border, #2d3139);
-  border-radius: 14px;
-  width: 100%;
-  max-width: 680px;
-  max-height: 90vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
-}
-
-.dialog-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border, #2d3139);
-}
-
 .dialog-title {
   display: flex;
   align-items: center;
@@ -284,9 +318,10 @@ function close() {
   font-size: 15px;
 }
 
-.dialog-body {
-  padding: 20px;
+.drawer-body-scroll {
+  flex: 1;
   overflow-y: auto;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -320,8 +355,27 @@ function close() {
 }
 
 .key-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--muted, #94a3b8);
+}
+
+.badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.badge-green {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.badge-yellow {
+  background: rgba(234, 179, 8, 0.15);
+  color: #facc15;
 }
 
 .os-tabs {
@@ -367,11 +421,83 @@ function close() {
 }
 
 .model-preview {
-  font-size: 12px;
-  color: var(--muted, #94a3b8);
-  padding: 8px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
+}
+
+.model-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border-radius: 4px;
+}
+
+.all-models-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border, #2d3139);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.all-models-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border, #2d3139);
+}
+
+.model-count-label {
+  font-size: 12px;
+  color: var(--muted, #94a3b8);
+  margin-left: auto;
+}
+
+.models-loading {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted, #94a3b8);
+}
+
+.models-checklist {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.model-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+
+.model-check-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.model-check-name {
+  color: var(--text, #e2e8f0);
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.model-check-vendor {
+  color: var(--muted, #94a3b8);
+  font-size: 11px;
+  margin-left: auto;
 }
 
 .generate-section {
@@ -424,7 +550,7 @@ function close() {
   font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
   white-space: pre;
   margin: 0;
