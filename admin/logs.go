@@ -47,11 +47,17 @@ type requestLogRow struct {
 	AffinityHit        *bool          `json:"affinity_hit"`
 	RequestChecksum    *string        `json:"request_checksum"`
 	ResponseChecksum   *string        `json:"response_checksum"`
-	TransformRuleID    *string        `json:"transform_rule_id"`
-	EgressProtocol     *string        `json:"egress_protocol"`
-	FailureStage       *string        `json:"failure_stage"`
-	FailureDetailCode  *string        `json:"failure_detail_code"`
-	RequestPreview     *string        `json:"request_preview"`
+	TransformRuleID    *string `json:"transform_rule_id"`
+	EgressProtocol     *string `json:"egress_protocol"`
+	FailureStage       *string `json:"failure_stage"`
+	FailureDetailCode  *string `json:"failure_detail_code"`
+	// 2026-06-19 T-NEW-7: the SOLE home for the upstream finish_reason
+	// (stop, tool_calls, length, end_turn, function_call, max_tokens, …).
+	// Distinct from FailureDetailCode which is now reserved for actual
+	// failure / interruption codes.  Populated for BOTH success and
+	// failure rows.  See db/migrations/018_upstream_finish_reason.sql.
+	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
+	RequestPreview     *string `json:"request_preview"`
 	TransformSummary   *string        `json:"transform_summary"`
 	ResponsePreview    *string        `json:"response_preview"`
 	StreamFirstChunkMs *int           `json:"stream_first_chunk_ms"`
@@ -110,6 +116,9 @@ const requestLogsSelectCols = `
 	rl.identity_hash, rl.virtual_client_id, rl.virtual_ip, rl.virtual_mac,
 	rl.affinity_hit, rl.request_checksum, rl.response_checksum,
 	rl.transform_rule_id, rl.egress_protocol, rl.failure_stage, rl.failure_detail_code,
+	-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+	-- New column is the SOLE home for the upstream finish_reason.
+	rl.upstream_finish_reason,
 	rl.request_preview, rl.transform_summary, rl.response_preview,
 	rl.stream_first_chunk_ms, rl.stream_chunk_count,
 	rl.stream_done_received, rl.stream_interrupted, rl.stream_done_sent,
@@ -217,6 +226,7 @@ func scanRequestLogRow(rows interface {
 		&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
 		&l.AffinityHit, &l.RequestChecksum, &l.ResponseChecksum,
 		&l.TransformRuleID, &l.EgressProtocol, &l.FailureStage, &l.FailureDetailCode,
+		&l.UpstreamFinishReason,
 		&l.RequestPreview, &l.TransformSummary, &l.ResponsePreview,
 		&l.StreamFirstChunkMs, &l.StreamChunkCount,
 		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
@@ -483,6 +493,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.EgressProtocol,
 		&detail.FailureStage,
 		&detail.FailureDetailCode,
+		&detail.UpstreamFinishReason,
 		&detail.RequestPreview,
 		&detail.TransformSummary,
 		&detail.ResponsePreview,

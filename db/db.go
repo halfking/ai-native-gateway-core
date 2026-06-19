@@ -164,6 +164,16 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_quality
 		    ON request_logs (provider_id, quality_score, ts DESC)
 		    WHERE quality_score IS NOT NULL;
+		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+		-- See db/migrations/018_upstream_finish_reason.sql. The new column is
+		-- the SOLE home for the upstream finish_reason (stop, tool_calls,
+		-- length, end_turn, …). failure_detail_code now keeps only the
+		-- actual failure code (interruption, 5xx, etc.).
+		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS upstream_finish_reason TEXT;
+		CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_finish_reason
+		    ON request_logs (upstream_finish_reason, ts DESC)
+		    WHERE upstream_finish_reason IS NOT NULL
+		      AND upstream_finish_reason <> '';
 	`)
 	if err != nil {
 		return err

@@ -114,6 +114,11 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   executor_unavailable: '执行器不可用',
 }
 
+// 2026-06-19 T-NEW-7: labels for actual gateway failure codes (the only
+// values that should ever appear in failure_detail_code now that
+// upstream_finish_reason has been split out). eof_without_done and
+// client_cancel are kept as "successful with caveat" in the status
+// column; only the "真" gateway errors get a Chinese label here.
 const FAILURE_DETAIL_LABELS: Record<string, string> = {
   gw_rpm_exceeded: '网关RPM限流',
   gw_concurrent_exceeded: '网关并发限流',
@@ -122,11 +127,48 @@ const FAILURE_DETAIL_LABELS: Record<string, string> = {
   gw_budget_exhausted: '预算耗尽',
   gw_no_candidate: '无可用路由',
   gw_session_forbidden: '会话无权',
+  eof_without_done: '上游EOF无[DONE]',
+  stream_timeout: '流超时',
+  client_cancel: '客户端取消',
+  client_disconnected: '客户端断连',
+  no_deltas: '无内容块',
+  invalid_first_chunk: '首块无效',
+  invalid_json: 'JSON无效',
+  upstream_5xx: '上游5xx',
+  upstream_4xx: '上游4xx',
+  unexpected_status: '状态异常',
+  connection_reset: '连接重置',
+  write_failed: '写入失败',
+  hangup: '远端挂断',
+  body_too_large: 'Body过大',
+  eof_mid_tool_call: '工具调用中断',
+  first_byte_timeout: '首字节超时',
+}
+
+// 2026-06-19 T-NEW-7: labels for the SOLE home of the upstream
+// finish_reason (stop, tool_calls, length, end_turn, …). These are NOT
+// failures; the UI surfaces them as informational metadata in the
+// request detail panel, not as a "失败详情" pill.
+const UPSTREAM_FINISH_REASON_LABELS: Record<string, string> = {
+  stop: '正常完成',
+  tool_calls: '工具调用',
+  function_call: '函数调用',
+  length: '达到长度上限',
+  end_turn: '轮次结束',
+  max_tokens: '达到 max_tokens',
+}
+
+function upstreamFinishReasonLabel(v: string | null | undefined): string {
+  if (!v) return ''
+  return UPSTREAM_FINISH_REASON_LABELS[v] ?? v
 }
 
 function statusLabel(row: RequestLogRow): string {
   if (row.request_status === 'in_progress') return '请求中'
   if (row.request_status === 'success' || row.success) return '成功'
+  // 2026-06-19 T-NEW-7: failure_detail_code now contains ONLY real failure
+  // codes. upstream_finish_reason is informational and should never be
+  // read as a failure label.
   const detail = row.failure_detail_code || ''
   if (FAILURE_DETAIL_LABELS[detail]) return FAILURE_DETAIL_LABELS[detail]
   const kind = row.error_kind || ''
@@ -140,6 +182,12 @@ function statusTitle(row: RequestLogRow): string {
   if (row.failure_stage) parts.push(`stage=${row.failure_stage}`)
   if (row.error_kind) parts.push(`error_kind=${row.error_kind}`)
   if (row.failure_detail_code) parts.push(`detail=${row.failure_detail_code}`)
+  // 2026-06-19 T-NEW-7: surface the upstream finish_reason separately so
+  // operators can still see it on a successful row (and confirm it really
+  // is a normal `stop` / `tool_calls` finish, not a disguised failure).
+  if (row.upstream_finish_reason) {
+    parts.push(`finish=${row.upstream_finish_reason}`)
+  }
   return parts.join(' · ') || ''
 }
 
@@ -977,7 +1025,17 @@ onMounted(async () => {
               <span><strong>供应商:</strong> {{ detail.provider_name ?? '—' }}</span>
               <span><strong>状态:</strong> <span :style="{ color: detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? '成功' : statusLabel(detail) }}</span></span>
               <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
-              <span v-if="detail.failure_detail_code"><strong>失败详情:</strong> {{ detail.failure_detail_code }}</span>
+              <span v-if="detail.failure_detail_code">
+                <strong>失败详情:</strong>
+                {{ FAILURE_DETAIL_LABELS[detail.failure_detail_code] ?? detail.failure_detail_code }}
+              </span>
+              <!-- 2026-06-19 T-NEW-7: surface the upstream finish_reason
+                   separately from failure_detail_code so a successful
+                   `tool_calls` response stops looking like a failure. -->
+              <span v-if="detail.upstream_finish_reason" :title="`上游 finish_reason（不等于失败）`">
+                <strong>结束原因:</strong>
+                {{ upstreamFinishReasonLabel(detail.upstream_finish_reason) }}
+              </span>
               <span><strong>延迟:</strong> {{ detail.latency_ms ?? '—' }}ms</span>
               <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
               <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ creditsDisplay(detail.credits_charged) }}</span>
