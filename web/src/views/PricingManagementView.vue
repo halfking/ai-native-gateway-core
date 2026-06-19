@@ -158,16 +158,23 @@
 
     <!-- Table View -->
     <div v-if="viewMode === 'table'" class="pm-table-container">
-      <div class="pm-pagination">
-        <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
-        <span>第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
-        <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
-        <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
-          <option :value="25">25</option>
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-        </select>
+      <div class="pagination-bar">
+        <div class="pagination-info">
+          <span>共 {{ tableTotal }} 条</span>
+          <span v-if="tableTotal > 0">· 第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
+          <span class="pagination-divider">·</span>
+          <span class="page-size-label">每页</span>
+          <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
+            <option :value="25">25</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+            <option :value="200">200</option>
+          </select>
+        </div>
+        <div class="pagination-controls">
+          <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
+          <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
+        </div>
       </div>
       <table class="pm-table">
         <thead>
@@ -212,16 +219,23 @@
           </tr>
         </tbody>
       </table>
-      <div class="pm-pagination">
-        <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
-        <span>第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
-        <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
-        <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
-          <option :value="25">25</option>
-          <option :value="50">50</option>
-          <option :value="100">100</option>
-          <option :value="200">200</option>
-        </select>
+      <div class="pagination-bar">
+        <div class="pagination-info">
+          <span>共 {{ tableTotal }} 条</span>
+          <span v-if="tableTotal > 0">· 第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
+          <span class="pagination-divider">·</span>
+          <span class="page-size-label">每页</span>
+          <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
+            <option :value="25">25</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+            <option :value="200">200</option>
+          </select>
+        </div>
+        <div class="pagination-controls">
+          <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
+          <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
+        </div>
       </div>
       <div class="pm-bulk-actions" v-if="selectedRows.size > 0">
         <span>已选 {{ selectedRows.size }} 项</span>
@@ -986,8 +1000,46 @@ onMounted(fetchData)
 .tier-badge.tier-2 { background: #89b4fa; color: #1e1e2e; }
 .tier-badge.tier-3 { background: #f9e2af; color: #1e1e2e; }
 .pm-pagination { display: flex; gap: 8px; align-items: center; padding: 12px; justify-content: center; }
-.page-size-select { padding: 4px 8px; background: #2a2a3e; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; }
+.page-size-select { padding: 4px 8px; background: #2a2a3e; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; max-width: 96px; }
 .pm-bulk-actions { display: flex; gap: 8px; align-items: center; padding: 12px; background: #2a2a3e; }
+
+/* Pagination (match RequestLogsView style) */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #1e1e2e;
+  border-top: 1px solid #333;
+  border-bottom: 1px solid #333;
+  flex-wrap: nowrap;
+}
+.pagination-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #888;
+  font-size: 12px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.pagination-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+.pagination-divider {
+  color: #888;
+  opacity: 0.6;
+}
+.page-size-label {
+  color: #888;
+  font-size: 12px;
+}
 
 /* Buttons */
 .btn { padding: 6px 14px; border: 1px solid #444; border-radius: 4px; background: #2a2a3e; color: #e0e0e0; cursor: pointer; font-size: 13px; }
