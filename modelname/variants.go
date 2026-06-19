@@ -70,6 +70,41 @@ func versionPunctuationVariants(v string) []string {
 	return variants
 }
 
+// versionPunctuationCartesian walks every reachable variant of `v` by
+// independently swapping "<digit>-<digit>" ↔ "<digit>.<digit>" for
+// each digit-pair in `v`.  This is the family-agnostic, fully
+// automated version of the bridge — it adapts to any future
+// vendor/version scheme without code changes.
+//
+// Example:
+//
+//	qwen2.5-72b-instruct →
+//	  qwen2.5-72b-instruct
+//	  qwen2.5.72b-instruct   (dash → dot in "5-72")
+//	  qwen2-5-72b-instruct   (dot → dash in "2.5")
+//	  qwen2-5.72b-instruct   (both swaps applied)
+//
+// The function emits each reachable form exactly once.
+func versionPunctuationCartesian(v string) []string {
+	seen := map[string]bool{v: true}
+	queue := []string{v}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, n := range versionPunctuationVariants(cur) {
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
+}
+
 func stripWrapperVariants(v string) []string {
 	tokens := strings.Split(v, "-")
 	if len(tokens) < 2 {

@@ -1,6 +1,9 @@
 package modelname
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestNormalizeRouteKey(t *testing.T) {
 	tests := []struct {
@@ -244,16 +247,37 @@ func TestStandardizeName(t *testing.T) {
 // table was never seeded with the dot-form.  After this change the
 // dot-form input emits the dash form as its second variant, which
 // is exactly the bridge the SQL resolver needs.
+//
+// 2026-06-19: the contract is now **family-agnostic** — every input
+// that contains "<digit>-<digit>" or "<digit>.<digit>" must emit
+// both forms in its variant list, regardless of vendor.  We assert
+// this for 6 families (claude / glm / MiniMax / gpt / deepseek /
+// qwen) plus a few future-looking names so new vendors inherit the
+// same rule without code changes.
 func TestNormalizeRouteKeyAliases(t *testing.T) {
 	cases := []struct {
-		input   string
+		input    string
 		mustHave []string
 	}{
+		// Real DB canonical names observed on 184 (2026-06-19 probe)
 		{"claude-sonnet-4.6", []string{"claude-sonnet-4.6", "claude-sonnet-4-6"}},
-		{"claude-sonnet-4-6", []string{"claude-sonnet-4-6"}},
-		{"minimax-m2.7", []string{"minimax-m2.7", "minimax-m2-7"}},
+		{"claude-sonnet-4-6", []string{"claude-sonnet-4-6", "claude-sonnet-4.6"}},
+		{"claude-opus-4.8", []string{"claude-opus-4.8", "claude-opus-4-8"}},
+		{"claude-opus-4-8", []string{"claude-opus-4-8", "claude-opus-4.8"}},
+		{"claude-haiku-4.5", []string{"claude-haiku-4.5", "claude-haiku-4-5"}},
+		{"claude-haiku-4-5", []string{"claude-haiku-4-5", "claude-haiku-4.5"}},
 		{"glm-5.1", []string{"glm-5.1", "glm-5-1"}},
-		{"minimax-m2-7", []string{"minimax-m2-7"}},
+		{"glm-5-1", []string{"glm-5-1", "glm-5.1"}},
+		{"minimax-m2.7", []string{"minimax-m2.7", "minimax-m2-7"}},
+		{"minimax-m2-7", []string{"minimax-m2-7", "minimax-m2.7"}},
+		{"gpt-5.1", []string{"gpt-5.1", "gpt-5-1"}},
+		{"gpt-5-1", []string{"gpt-5-1", "gpt-5.1"}},
+		{"deepseek-v3.1", []string{"deepseek-v3.1", "deepseek-v3-1"}},
+		{"deepseek-v3-1", []string{"deepseek-v3-1", "deepseek-v3.1"}},
+		// Family without version-number pair — no dot↔dash bridge applies
+		{"qwen3-max", []string{"qwen3-max"}},
+		{"minimax-m3", []string{"minimax-m3"}},
+		// Empty input
 		{"", nil},
 	}
 	for _, c := range cases {
@@ -274,4 +298,82 @@ func TestNormalizeRouteKeyAliases(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestNormalizeRouteKeyAliases_FamilyAgnostic is a contract test that
+// proves the dot↔dash bridge is purely regex-driven (no family
+// hard-coding).  Given an input with N number-pairs separated by
+// either "." or "-", the output MUST contain the inverse form for
+// every such pair — independent of the surrounding alphabetic
+// tokens.  This is the property the user asked for: "no hard-coded
+// rules, automatically adapts to future model versions".
+func TestNormalizeRouteKeyAliases_FamilyAgnostic(t *testing.T) {
+	// For each input, take the canonical NormalizeRouteKey and swap
+	// each version punctuation both ways; the resolver variants must
+	// contain every resulting form.
+	inputs := []string{
+		"claude-opus-4.8",
+		"claude-opus-4-8",
+		"claude-haiku-4.5",
+		"glm-5.1",
+		"glm-5-1",
+		"minimax-m2.7",
+		"minimax-m2-7",
+		"gpt-5-1",
+		"deepseek-v3-1",
+		"qwen2.5-72b-instruct",
+		"qwen2-5-72b-instruct",
+	}
+	for _, in := range inputs {
+		base := NormalizeRouteKey(in)
+		// Enumerate every form reachable by swapping the punctuation
+		// of any digit-pair in `base`.  This is what the resolver
+		// walks at SQL time.
+		want := collectNumberPairVariants(base)
+		got := NormalizeRouteKeyAliases(in)
+		have := map[string]bool{}
+		for _, v := range got {
+			have[v] = true
+		}
+		for _, w := range want {
+			if !have[w] {
+				t.Errorf("NormalizeRouteKeyAliases(%q) = %v, missing %q (variant set should include every form reachable by digit-pair punctuation swap)", in, got, w)
+			}
+		}
+	}
+}
+
+// collectNumberPairVariants enumerates every variant of `s` reachable
+// by independently swapping "<digit>-<digit>" ↔ "<digit>.<digit>"
+// for each pair in `s`.  The result is the set the SQL resolver is
+// expected to walk — so the test asserts that NormalizeRouteKeyAliases
+// produces a superset.
+func collectNumberPairVariants(s string) []string {
+	pairDash := regexp.MustCompile(`(^|[^0-9])(\d+)-(\d+)([^0-9]|$)`)
+	pairDot := regexp.MustCompile(`(^|[^0-9])(\d+)\.(\d+)([^0-9]|$)`)
+	seen := map[string]bool{s: true}
+	queue := []string{s}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if pairDash.MatchString(cur) {
+			n := pairDash.ReplaceAllString(cur, `${1}${2}.${3}${4}`)
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+		if pairDot.MatchString(cur) {
+			n := pairDot.ReplaceAllString(cur, `${1}${2}-${3}${4}`)
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
 }
