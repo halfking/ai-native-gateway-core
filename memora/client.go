@@ -268,8 +268,10 @@ func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int
 		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Dashboard's /api/smart_search uses X-API-Key (NOT Authorization:
+	// Bearer). Sending Bearer here returns 401 "Missing session or API Key".
 	if c.smartSearchAPIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.smartSearchAPIKey)
+		req.Header.Set("X-API-Key", c.smartSearchAPIKey)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
