@@ -50,14 +50,17 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /
 
+COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
+COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
+
+# Stamp version files after COPY so the running process can read
+# ./.deploy_seq, /.deploy_seq, /opt/llm-gateway-go/VERSION and
+# /opt/llm-gateway-go/.deploy_seq from a single image, regardless
+# of which path the runtime / post-deploy script picks.
 RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
     echo "${BUILD_SEQ}" > /opt/llm-gateway-go/.deploy_seq && \
     printf '%s\n' "${BUILD_SEQ}" > /.deploy_seq && \
-    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION && \
-    mkdir -p /opt/llm-gateway-go
-
-COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
-COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
+    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
 
 USER llmgw
 
