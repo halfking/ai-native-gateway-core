@@ -264,6 +264,11 @@ func (h *Handler) handleProviderProbeStates(w http.ResponseWriter, r *http.Reque
 // handleRoutingRecentModelFailures is the global "model discovery"
 // recent-failures endpoint — powers the failed-count badge that sits at
 // the right end of the model-discovery column.
+//
+// v5 (2026-06-20): UNION ALL three data sources:
+//   - model_probe_runs (active L1+L2+L4 probes)
+//   - passive_probe_state (Layer 5 passive observation)
+//   - request_logs (real traffic failures)
 func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -275,21 +280,97 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 			limit = n
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT raw_model_name,
-		       COUNT(DISTINCT credential_id) AS creds_affected,
-		       COUNT(*) AS total_failures,
-		       MAX(created_at) AS last_failed_at,
-		       MIN(error_code) AS sample_error_code
-		FROM model_probe_runs
-		WHERE status <> 'ok'
-		  AND status <> 'skipped'
-		  AND created_at > NOW() - INTERVAL '6 hours'
-		GROUP BY raw_model_name
-		ORDER BY total_failures DESC, last_failed_at DESC
+		WITH active_failures AS (
+			SELECT raw_model_name,
+			       COUNT(DISTINCT credential_id) AS creds_affected,
+			       COUNT(*) AS total_failures,
+			       MAX(created_at) AS last_failed_at,
+			       MIN(error_code) AS sample_error_code
+			FROM model_probe_runs
+			WHERE status NOT IN ('ok', 'skipped')
+			  AND created_at > NOW() - INTERVAL '6 hours'
+			GROUP BY raw_model_name
+		),
+		passive_failures AS (
+			SELECT raw_model_name,
+			       COUNT(DISTINCT credential_id) AS creds_affected,
+			       SUM(consecutive_count) AS total_failures,
+			       MAX(last_seen_at) AS last_failed_at,
+			       MIN(error_kind) AS sample_error_code
+			FROM passive_probe_state
+			WHERE error_kind IN (
+			    'model_not_found', 'quota_periodic', 'quota_balance',
+			    'quota_permanent', 'rate_limit', 'auth', 'auth_revoked', 'upstream_down'
+			)
+			  AND (in_reviewing = TRUE OR final_marked_at > NOW() - INTERVAL '6 hours')
+			  AND last_seen_at > NOW() - INTERVAL '6 hours'
+			GROUP BY raw_model_name
+		),
+		request_log_failures AS (
+			SELECT outbound_model AS raw_model_name,
+			       COUNT(DISTINCT credential_id) AS creds_affected,
+			       COUNT(*) AS total_failures,
+			       MAX(ts) AS last_failed_at,
+			       MIN(failure_detail_code) AS sample_error_code
+			FROM request_logs
+			WHERE success = FALSE
+			  AND error_kind IN (
+			    'model_not_found', 'quota', 'quota_periodic', 'quota_balance',
+			    'quota_permanent', 'rate_limit', 'auth', 'auth_revoked', 'upstream_down'
+			  )
+			  AND ts > NOW() - INTERVAL '6 hours'
+			  AND credential_id IS NOT NULL
+			  AND outbound_model IS NOT NULL
+			GROUP BY outbound_model
+		),
+		all_failures AS (
+			SELECT 'active_probe' AS source, raw_model_name, creds_affected,
+			       total_failures, last_failed_at, sample_error_code
+			FROM active_failures
+			UNION ALL
+			SELECT 'passive_probe' AS source, raw_model_name, creds_affected,
+			       total_failures, last_failed_at, sample_error_code
+			FROM passive_failures
+			UNION ALL
+			SELECT 'request_logs' AS source, raw_model_name, creds_affected,
+			       total_failures, last_failed_at, sample_error_code
+			FROM request_log_failures
+		),
+		aggregated AS (
+			SELECT
+			    raw_model_name,
+			    SUM(creds_affected) AS creds_affected,
+			    SUM(total_failures) AS total_failures,
+			    MAX(last_failed_at) AS last_failed_at,
+			    MIN(sample_error_code) AS sample_error_code,
+			    COALESCE(SUM(CASE WHEN source = 'active_probe' THEN total_failures ELSE 0 END), 0) AS active_probe_count,
+			    COALESCE(SUM(CASE WHEN source = 'passive_probe' THEN total_failures ELSE 0 END), 0) AS passive_probe_count,
+			    COALESCE(SUM(CASE WHEN source = 'request_logs' THEN total_failures ELSE 0 END), 0) AS request_logs_count
+			FROM all_failures
+			GROUP BY raw_model_name
+		)
+		SELECT
+		    agg.raw_model_name,
+		    agg.creds_affected,
+		    agg.total_failures,
+		    agg.last_failed_at,
+		    agg.sample_error_code,
+		    agg.active_probe_count,
+		    agg.passive_probe_count,
+		    agg.request_logs_count,
+		    COALESCE(EXISTS(
+		        SELECT 1 FROM passive_probe_state pps
+		        WHERE pps.raw_model_name = agg.raw_model_name
+		          AND pps.in_reviewing = TRUE
+		    ), FALSE) AS in_reviewing,
+		    mc.canonical_name
+		FROM aggregated agg
+		LEFT JOIN model_canonical mc ON mc.raw_model_name = agg.raw_model_name
+		ORDER BY agg.total_failures DESC, agg.last_failed_at DESC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -298,23 +379,53 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 	}
 	defer rows.Close()
 
-	type entry struct {
-		RawModel       string    `json:"raw_model_name"`
-		CredsAffected  int       `json:"creds_affected"`
-		TotalFailures  int       `json:"total_failures"`
-		LastFailedAt   time.Time `json:"last_failed_at"`
-		SampleErrCode  string    `json:"sample_error_code"`
+	type sourceBreakdown struct {
+		ActiveProbe  int `json:"active_probe"`
+		PassiveProbe int `json:"passive_probe"`
+		RequestLogs  int `json:"request_logs"`
 	}
-	out := make([]entry, 0)
+	type entry struct {
+		RawModel       string          `json:"raw_model_name"`
+		CanonicalName  *string         `json:"canonical_name"`
+		CredsAffected  int             `json:"creds_affected"`
+		TotalFailures  int             `json:"total_failures"`
+		LastFailedAt   time.Time       `json:"last_failed_at"`
+		SampleErrCode  string          `json:"sample_error_code"`
+		Sources        sourceBreakdown `json:"sources"`
+		InReviewing    bool            `json:"in_reviewing"`
+	}
+	out := make([]entry, 0, limit)
+	var totalFails, totalCreds, totalModels, totalReviewing int
 	for rows.Next() {
 		var e entry
-		if err := rows.Scan(&e.RawModel, &e.CredsAffected, &e.TotalFailures, &e.LastFailedAt, &e.SampleErrCode); err != nil {
+		var canon *string
+		if err := rows.Scan(
+			&e.RawModel, &e.CredsAffected, &e.TotalFailures, &e.LastFailedAt,
+			&e.SampleErrCode,
+			&e.Sources.ActiveProbe, &e.Sources.PassiveProbe, &e.Sources.RequestLogs,
+			&e.InReviewing, &canon,
+		); err != nil {
 			continue
 		}
+		if canon != nil {
+			e.CanonicalName = canon
+		}
 		out = append(out, e)
+		totalFails += e.TotalFailures
+		totalCreds += e.CredsAffected
+		totalModels++
+		if e.InReviewing {
+			totalReviewing++
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"window": "6h",
 		"models": out,
+		"totals": map[string]int{
+			"total_failures":     totalFails,
+			"models_affected":    totalModels,
+			"creds_affected":     totalCreds,
+			"models_in_reviewing": totalReviewing,
+		},
 	})
 }

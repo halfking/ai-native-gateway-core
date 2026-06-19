@@ -589,8 +589,9 @@ slog.Info("compressor initialized",
 	var credProbeV2 *bg.CredentialProbeV2
 	var pendingSweeper *bg.PendingSweeper
 	var defaultProbePicker *bg.DefaultProbePicker
-	var modelProbe *bg.ModelProbeRunner
-	var stickyCleaner *bg.StickyCleaner
+		var modelProbe *bg.ModelProbeRunner
+		var passiveProbe *bg.PassiveProbeListener
+		var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var taxonomySync *bg.TaxonomySync
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
@@ -646,11 +647,16 @@ slog.Info("compressor initialized",
 			// soon as the upstream issue clears, but never overwrites
 			// manual_disable.
 			modelProbe = bg.NewModelProbeRunner(dbConn.Pool(), fernetKey)
-			if keyring != nil {
-				modelProbe.SetKeyring(keyring)
+				if keyring != nil {
+					modelProbe.SetKeyring(keyring)
+				}
+				modelProbe.Start(context.Background())
+
+				// v5 (2026-06-20): Layer 5 passive probe observer.
+				// Scans request_logs every 30s for failures and updates passive_probe_state.
+				passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool())
+				passiveProbe.Start(context.Background())
 			}
-			modelProbe.Start(context.Background())
-		}
 
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
@@ -967,10 +973,13 @@ slog.Info("compressor initialized",
 	if credCycler != nil {
 		credCycler.Stop()
 	}
-	if modelProbe != nil {
-		modelProbe.Stop()
-	}
-	if taxonomySync != nil {
+		if modelProbe != nil {
+			modelProbe.Stop()
+		}
+		if passiveProbe != nil {
+			passiveProbe.Stop()
+		}
+		if taxonomySync != nil {
 		taxonomySync.Stop()
 	}
 	if stickyCleaner != nil {
