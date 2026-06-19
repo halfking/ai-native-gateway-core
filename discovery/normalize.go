@@ -17,30 +17,125 @@ func NormalizeModelName(raw string) string {
 	return modelname.NormalizeRouteKey(raw)
 }
 
-// InferFamily returns the leading "family" segment of a normalized model
-// name. The previous implementation had a hard-coded familyPatterns map
-// (anthropic-claude / openai-gpt / zhipu-glm / minimax / moonshot / etc.)
-// which had to be updated every time a new vendor was onboarded. The new
-// generic form just takes the text before the first "-" — for the
-// well-known families this is the same answer, and for new vendors it
-// still produces a sensible bucket without any code change.
+// vendorCanonicalFamilies maps the leading-token of a normalized model
+// name to the canonical family id that should be used in
+// models_canonical.family / model_families.id. The collapse eliminates
+// historical family-id splits that arose because (a) the legacy Python
+// llm-gateway + admin UI used vendor-prefixed ids like
+// "anthropic-claude" / "openai-gpt" / "meta-llama" / "google-gemini" /
+// "zhipu-glm", while (b) the Go rewrite's InferFamily (introduced
+// during the 2026-06-18 P1 normalize refactor) returned the bare
+// token ("claude" / "gpt" / "llama" / "gemini" / "glm").  The two
+// naming schemes co-existed in the DB, so a family-chip filter in
+// /models page returned 1 model for "Anthropic" instead of the 21
+// claude models that should match (2026-06-20 user report).
+//
+// We do NOT collapse token differences that have *intra-vendor*
+// meaning: qwen / qwen2 / qwen3 / qwen3.5 / qwen3.6 stay separate
+// (different model generations), gemma stays separate from gemini
+// (Google's gemma line is a distinct family), and unknown tokens fall
+// through to the bare token so a brand-new vendor still works without
+// a code change.
+//
+// 2026-06-20: re-introduced after the 2026-06-18 refactor removed the
+// previous hard-coded map. The previous version was an if/else
+// cascade; this is a single map for the same effect.
+var vendorCanonicalFamilies = map[string]string{
+	// Anthropic — all "claude-*" collapse to "anthropic-claude"
+	"claude": "anthropic-claude",
+	// OpenAI — gpt-*, o1/o3/o4 collapse to "openai-gpt"
+	"gpt":  "openai-gpt",
+	"o1":   "openai-gpt",
+	"o3":   "openai-gpt",
+	"o4":   "openai-gpt",
+	// Meta — llama/llama2/llama3 collapse to "meta-llama"
+	"llama":  "meta-llama",
+	"llama2": "meta-llama",
+	"llama3": "meta-llama",
+	// Google — bare "gemini" → "google-gemini" (gemma is its own family)
+	"gemini": "google-gemini",
+	// Mistral AI — ministral / mistral / mixtral all collapse to "mistral"
+	"mistral":   "mistral",
+	"ministral": "mistral",
+	"mixtral":   "mistral",
+	// Zhipu AI — bare "glm" → "zhipu-glm"
+	"glm": "zhipu-glm",
+	// Moonshot AI — kimi is the moonshot family, "moonshot" stays
+	"kimi":     "moonshot",
+	"moonshot": "moonshot",
+	// StepFun — bare "step" → "stepfun"
+	"step":    "stepfun",
+	"stepfun": "stepfun",
+}
+
+// CanonicalizeFamilyID takes a raw family id (as it might be stored in
+// the DB from either the legacy Python admin UI or the Go
+// InferFamily) and returns the vendor-prefixed canonical form. If the
+// input is not a known split, the input is returned unchanged.
+//
+// Examples:
+//
+//	"claude"           → "anthropic-claude"
+//	"anthropic-claude" → "anthropic-claude"  (idempotent)
+//	"minimax"          → "minimax"           (no split, passthrough)
+func CanonicalizeFamilyID(family string) string {
+	if f, ok := vendorCanonicalFamilies[family]; ok {
+		return f
+	}
+	return family
+}
+
+// InferFamily returns the canonical family id for a normalized model
+// name. The previous generic form (just the leading token) was
+// correct for families with a 1:1 leading-token mapping (mimo, glm,
+// minimax, qwen) but produced the wrong id for vendors whose
+// canonical name prefix differs from their family id (claude-*
+// should map to "anthropic-claude" not "claude", gpt-* to
+// "openai-gpt" not "gpt", etc.).  This now consults
+// vendorCanonicalFamilies first and falls back to the bare token.
 //
 // Examples:
 //
 //	"mimo-v2.5-pro"     → "mimo"
-//	"glm-5.1"           → "glm"
-//	"claude-opus-4-6"   → "claude"
+//	"glm-5.1"           → "zhipu-glm"
+//	"claude-opus-4-6"   → "anthropic-claude"
+//	"gpt-5.4"           → "openai-gpt"
+//	"o3-mini"           → "openai-gpt"
 //	"minimax-m3"        → "minimax"
 //	"qwen-max"          → "qwen"
 //
-// If the name has no "-", the whole name is returned.
+// If the name has no "-" the whole name is returned.  An empty /
+// whitespace input returns "unknown".
+// canonicalFamilyIDs is the inverse of vendorCanonicalFamilies: the
+// set of vendor-prefixed canonical ids (values of the map).  Used to
+// recognise an already-canonical name passed to InferFamily (e.g.
+// "anthropic-claude" / "openai-gpt" / "meta-llama"), which the admin
+// UI may have stored verbatim.  Built once at package init.
+var canonicalFamilyIDs = func() map[string]bool {
+	set := make(map[string]bool, len(vendorCanonicalFamilies))
+	for _, v := range vendorCanonicalFamilies {
+		set[v] = true
+	}
+	return set
+}()
+
 func InferFamily(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
 		return "unknown"
 	}
+	// Already canonical? (e.g. "anthropic-claude" passed in — the
+	// legacy admin UI / Python path may have already stored it in
+	// the vendor-prefixed form).
+	if canonicalFamilyIDs[name] {
+		return name
+	}
 	if idx := strings.Index(name, "-"); idx > 0 {
-		return name[:idx]
+		first := name[:idx]
+		if canonical, ok := vendorCanonicalFamilies[first]; ok {
+			return canonical
+		}
+		return first
 	}
 	return name
 }
