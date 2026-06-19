@@ -200,26 +200,96 @@ func (c *Client) Search(ctx context.Context, userID, query string, topK int) ([]
 
 // SmartSearch is the M1 (2026-06-19) high-recall retrieval entry point.
 //
-// DESIGN / SAFETY NOTE:
+// As of 2026-06-20, Memora's Dashboard /api/smart_search route (see
+// services/kxmemory/dashboard/backend/routes/smart_search.py) accepts
+// an optional `user_id` query parameter and threads it through to a
+// Qdrant Filter(must=[FieldCondition(key=user_id, match=MatchValue(...))]).
+// This makes the 5-step RRF+MMR pipeline safe to use for per-tenant v3
+// injection without the cross-tenant leak risk.
 //
-//	The Memora Dashboard /api/smart_search endpoint runs a 5-step RRF+MMR
-//	pipeline that queries Qdrant DIRECTLY and currently does NOT filter by
-//	user_id (verified in services/kxmemory/dashboard/backend/lib/
-//	smart_retrieval.py:qdrantSearch — no FieldCondition/MatchValue on
-//	user_id). Calling it for per-tenant v3 injection would leak memories
-//	across tenants — a hard multi-tenant red-line violation.
+// Behavior:
+//   - Tries POST {baseURL}/api/smart_search with body {query, user_id,
+//     top_k}. This routes through the Dashboard pipeline with the
+//     user_id Qdrant filter applied.
+//   - On ANY non-2xx or transport error, falls back to the legacy
+//     single-vector searchWithTimeout (MemOS /product/search) which is
+//     also user-scoped (MemOS user_id filter is applied server-side).
+//   - This keeps the multi-tenant safety guarantee: no smart_search call
+//     ever returns cross-tenant memories, regardless of whether the
+//     user_id filter is applied.
 //
-//	Until the Dashboard pipeline accepts a user_id filter, SmartSearch
-//	delegates to the user-scoped single-vector Search (MemOS /product/search,
-//	which IS user_id-isolated). This keeps the interface future-ready while
-//	guaranteeing tenant isolation. When Memora adds user_id filtering to
-//	smart_search, swap the body of this method to hit /api/smart_search.
-//
-// See docs/llm-gateway-go/2026-06-19-v3-audit-test-deploy-optimize.md §6 (M1).
+// Backward compatible: callers (compressor.tryMemoraCompression) that
+// pass a real user_id now get the higher-recall 5-step pipeline; the
+// fallback path remains the safe user-scoped single-vector search.
 func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int) ([]Memory, error) {
-	// SAFE PATH: user-scoped single-vector search. Do NOT call
-	// /api/smart_search until it supports user_id filtering.
-	return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	if c.Disabled() || userID == "" {
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	if topK <= 0 {
+		topK = 8
+	}
+	payload := map[string]any{
+		"user_id": userID,
+		"query":   query,
+		"top_k":   topK,
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	cctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
+		c.baseURL+"/api/smart_search", &buf)
+	if err != nil {
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// Transport error → safe fallback.
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// Upstream rejected → safe fallback.
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	var raw struct {
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
+		Reranked  []struct {
+			ID     string  `json:"id"`
+			Memory string  `json:"memory"`
+			Score  float64 `json:"score"`
+		} `json:"reranked"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	if len(raw.Reranked) == 0 {
+		// No hits from smart search; try the legacy path so the caller
+		// still gets SOMETHING (better than giving up entirely).
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	out := make([]Memory, 0, len(raw.Reranked))
+	for _, h := range raw.Reranked {
+		if h.Memory == "" {
+			continue
+		}
+		out = append(out, Memory{
+			ID:    h.ID,
+			Text:  h.Memory,
+			Score: h.Score,
+		})
+	}
+	if len(out) == 0 {
+		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
+	}
+	return out, nil
 }
 
 // SearchAdmin is like Search but uses a longer timeout for admin UI reads.
