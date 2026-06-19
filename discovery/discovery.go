@@ -590,6 +590,23 @@ func extractModelIDs(data []byte) ([]string, error) {
 	return nil, fmt.Errorf("unrecognized models response format")
 }
 
+// splitFamilyIDs is the set of "raw" family tokens that the legacy
+// Python admin UI / old Go scans stored in models_canonical.family
+// but which should now be canonicalized to the vendor-prefixed form
+// (see vendorCanonicalFamilies in normalize.go).  Used by
+// upsertModel to decide whether to overwrite an existing
+// models_canonical.family value: if the existing value is a known
+// split, we update to the canonical; otherwise we leave the
+// admin-edited value alone.  Order MUST match the keys of
+// vendorCanonicalFamilies.
+var splitFamilyIDs = func() []string {
+	keys := make([]string, 0, len(vendorCanonicalFamilies))
+	for k := range vendorCanonicalFamilies {
+		keys = append(keys, k)
+	}
+	return keys
+}()
+
 func (s *Service) upsertModel(ctx context.Context, cred credential, rawName string) error {
 	// Normalize the model name
 	canonicalName := NormalizeModelName(rawName)
@@ -600,26 +617,57 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	// visible in the /models family-chip filter with an empty tag set
 	// (2026-06-20 incident: 459 active models had family=... but
 	// tags='{}', making the family chip in ModelsView's quick-filter
-	// row return 0 rows). The ON CONFLICT branch preserves any
-	// existing tag set the admin might have edited by hand, and only
-	// appends `family:<id>` if it's not already there.
+	// row return 0 rows). The ON CONFLICT branch:
+	//   1. preserves any existing tag set the admin might have
+	//      edited by hand, and only appends `family:<id>` if not
+	//      already there;
+	//   2. normalizes a stale "split" family id (e.g. existing row
+	//      has family='claude' from a pre-P1 scan, but the canonical
+	//      id is 'anthropic-claude') — when the existing family is
+	//      one of the known split tokens we update to the canonical
+	//      form and swap the corresponding family:<id> tag; an
+	//      admin-edited family that *differs* from what we'd
+	//      compute (i.e. NOT a known split token) is left alone so
+	//      we don't trample manual classifications.
 	var canonicalID int
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status)
 		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active')
 		ON CONFLICT (canonical_name) DO UPDATE SET
-			family = EXCLUDED.family,
+			family = CASE
+				WHEN models_canonical.family = $2
+				THEN models_canonical.family
+				WHEN models_canonical.family = ANY($3::text[])
+				THEN $2
+				ELSE models_canonical.family
+			END,
 			tags = CASE
-				WHEN 'family:' || EXCLUDED.family = ANY(models_canonical.tags)
-				THEN models_canonical.tags
-				ELSE (
+				WHEN models_canonical.family = $2
+				THEN (
+					-- family unchanged: just ensure the family:<id> tag
 					SELECT array_agg(DISTINCT t)
-					FROM unnest(models_canonical.tags || ARRAY['family:' || EXCLUDED.family]) AS t
+					FROM unnest(models_canonical.tags || ARRAY['family:' || $2]) AS t
 				)
+				WHEN models_canonical.family = ANY($3::text[])
+				THEN (
+					-- family normalized from split → canonical: drop the
+					-- stale family:<old> tag and add the new family:<new>
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(
+						array_remove(
+							array_remove(
+								models_canonical.tags,
+								'family:' || models_canonical.family
+							),
+							'family:' || $2
+						) || ARRAY['family:' || $2]
+					) AS t
+				)
+				ELSE models_canonical.tags
 			END,
 			status = 'active'
 		RETURNING id
-	`, canonicalName, family).Scan(&canonicalID)
+	`, canonicalName, family, splitFamilyIDs).Scan(&canonicalID)
 	if err != nil {
 		return err
 	}
