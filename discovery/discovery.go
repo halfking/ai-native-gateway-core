@@ -595,13 +595,28 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	canonicalName := NormalizeModelName(rawName)
 	family := InferFamily(canonicalName)
 
-	// Upsert into models_canonical
+	// Upsert into models_canonical. The INSERT path writes a seed tags
+	// array with `family:<id>` so a freshly discovered model is never
+	// visible in the /models family-chip filter with an empty tag set
+	// (2026-06-20 incident: 459 active models had family=... but
+	// tags='{}', making the family chip in ModelsView's quick-filter
+	// row return 0 rows). The ON CONFLICT branch preserves any
+	// existing tag set the admin might have edited by hand, and only
+	// appends `family:<id>` if it's not already there.
 	var canonicalID int
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO models_canonical (canonical_name, family, source, status)
-		VALUES ($1, $2, 'discovery', 'active')
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active')
 		ON CONFLICT (canonical_name) DO UPDATE SET
 			family = EXCLUDED.family,
+			tags = CASE
+				WHEN 'family:' || EXCLUDED.family = ANY(models_canonical.tags)
+				THEN models_canonical.tags
+				ELSE (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(models_canonical.tags || ARRAY['family:' || EXCLUDED.family]) AS t
+				)
+			END,
 			status = 'active'
 		RETURNING id
 	`, canonicalName, family).Scan(&canonicalID)

@@ -151,6 +151,7 @@ const {
   search: searchStub,
   vendor: selectedVendor,
   getTags: (model) => normalizeTags(model.tags),
+  getFamily: (model) => model.family ?? null,
   matchesSearch,
   matchesVendor,
   singleSelectNamespaces,
