@@ -158,6 +158,17 @@
 
     <!-- Table View -->
     <div v-if="viewMode === 'table'" class="pm-table-container">
+      <div class="pm-pagination">
+        <button class="btn btn-sm" :disabled="tablePage <= 1" @click="tablePage--; fetchTable()">上一页</button>
+        <span>第 {{ tablePage }} / {{ Math.ceil(tableTotal / tablePageSize) }} 页</span>
+        <button class="btn btn-sm" :disabled="tablePage >= Math.ceil(tableTotal / tablePageSize)" @click="tablePage++; fetchTable()">下一页</button>
+        <select v-model.number="tablePageSize" @change="tablePage = 1; fetchTable()" class="page-size-select">
+          <option :value="25">25</option>
+          <option :value="50">50</option>
+          <option :value="100">100</option>
+          <option :value="200">200</option>
+        </select>
+      </div>
       <table class="pm-table">
         <thead>
           <tr>

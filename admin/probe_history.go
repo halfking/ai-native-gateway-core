@@ -190,6 +190,33 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, map[string]any{"triggered": true})
 }
 
+// handleProviderProbeHistoryTriggerAll fires immediate re-probe for ALL
+// (credential, model) bindings under a provider.  It resets next_retry_at
+// to NOW and flips broken_confirmed → recovering so the background worker
+// will pick them up on the next cycle.  Returns immediately without waiting.
+func (h *Handler) handleProviderProbeHistoryTriggerAll(w http.ResponseWriter, r *http.Request, providerID int) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.modelProbe == nil {
+		writeError(w, http.StatusServiceUnavailable, "model probe runner not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	queued, err := h.modelProbe.TriggerAllManual(ctx, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "trigger failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"triggered":       true,
+		"bindings_queued": queued,
+	})
+}
+
 // handleProviderProbeStates returns the current consensus state for
 // every (credential, model) under a provider.  Used by the providers-
 // page "自动测试" tab to show "2/3 successful — next attempt in 4m".

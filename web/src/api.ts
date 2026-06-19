@@ -918,6 +918,10 @@ export function triggerProviderProbe(providerId: number, credentialId: number, r
   })
 }
 
+export function triggerProviderProbeAll(providerId: number) {
+  return req<{ triggered: boolean; bindings_queued: number }>('POST', `/api/providers/${providerId}/probe-history/trigger-all`)
+}
+
 export function getRecentModelFailures(opts?: { limit?: number }) {
   const params = new URLSearchParams()
   if (opts?.limit) params.set('limit', String(opts.limit))

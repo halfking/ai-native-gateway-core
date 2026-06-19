@@ -23,22 +23,31 @@ import (
 // credentials with manual_disabled=true or lifecycle_status<>'active'
 // (the UPDATE WHERE guards enforce this last-resort).
 //
+// P2 (2026-06-19): after writing auth_failed or unreachable, the credential
+// is pushed onto fastReprobeQueue so a follow-up probe fires after
+// fastReprobeDelay (default 5 min) instead of waiting for the next hourly
+// cycle. This shrinks the detection window for transient failures.
+//
 // Spec: docs/superpowers/specs/2026-06-12-credential-availability-audit-design.md §5
 type CredentialProbeV2 struct {
-	db       *pgxpool.Pool
-	encKey   []byte
-	keyring  *secret.Keyring
-	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
+	db               *pgxpool.Pool
+	encKey           []byte
+	keyring          *secret.Keyring
+	interval         time.Duration
+	fastReprobeDelay time.Duration
+	fastReprobeQueue chan int // credential IDs
+	cancel           context.CancelFunc
+	done             chan struct{}
 }
 
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 	return &CredentialProbeV2{
-		db:       db,
-		encKey:   encKey,
-		interval: 1 * time.Hour,
-		done:     make(chan struct{}),
+		db:               db,
+		encKey:           encKey,
+		interval:         1 * time.Hour,
+		fastReprobeDelay: 5 * time.Minute,
+		fastReprobeQueue: make(chan int, 64),
+		done:             make(chan struct{}),
 	}
 }
 
@@ -82,6 +91,18 @@ func (c *CredentialProbeV2) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.cycleAll(ctx)
+		case credID := <-c.fastReprobeQueue:
+			// P2: event-triggered fast reprobe after auth_failed/unreachable.
+			go func(id int) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(c.fastReprobeDelay):
+				}
+				slog.Info("credential probe v2: fast reprobe triggered",
+					"credential_id", id, "delay", c.fastReprobeDelay)
+				c.probeOne(ctx, id)
+			}(credID)
 		}
 	}
 }
@@ -107,6 +128,7 @@ type v2Snapshot struct {
 	APIKey                 string
 	DefaultProbeModel      string
 	ProviderProtocol       string
+	CatalogCode            string // P3: balance probe vendor routing
 }
 
 // cycleAll iterates active credentials, sends /v1/models + mini chat "hi",
@@ -122,7 +144,8 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		       COALESCE(p.base_url, ''),
 		       c.secret_ciphertext,
 		       COALESCE(c.default_probe_model, ''),
-		       COALESCE(p.protocol, 'openai-completions')
+		       COALESCE(p.protocol, 'openai-completions'),
+		       COALESCE(p.catalog_code, '')
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.status = 'active'
@@ -153,7 +176,7 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		var ciphertext []byte
 		if err := rows.Scan(&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 			&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
-			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol); err != nil {
+			&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode); err != nil {
 			continue
 		}
 
@@ -206,6 +229,30 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 		}
 		pr.HealthProbeModel = s.DefaultProbeModel
 		c.writeHealth(timeoutCtx, s.ID, pr)
+
+		// P3: balance probe for supported vendors (only when healthy).
+		if pr.AvailabilityState == "ready" {
+			if balUSD, ok := c.probeBalance(timeoutCtx, s); ok {
+				if _, err := c.db.Exec(timeoutCtx,
+					`UPDATE credentials SET balance_usd = $1 WHERE id = $2`,
+					balUSD, s.ID,
+				); err != nil {
+					slog.Warn("credential probe v2: balance_usd write failed",
+						"credential_id", s.ID, "error", err)
+				} else {
+					slog.Debug("credential probe v2: balance_usd updated",
+						"credential_id", s.ID, "balance_usd", balUSD)
+				}
+			}
+		}
+
+		// P2: fast reprobe after auth_failed or unreachable.
+		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+			select {
+			case c.fastReprobeQueue <- s.ID:
+			default:
+			}
+		}
 	}
 
 	slog.Info("credential probe v2: cycle complete",
@@ -465,6 +512,131 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		slog.Warn("credential probe v2: writeHealth failed",
 			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
 	}
+}
+
+// probeOne re-probes a single credential. Used by fast-reprobe (P2).
+func (c *CredentialProbeV2) probeOne(ctx context.Context, credID int) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var s v2Snapshot
+	var ciphertext []byte
+	err := c.db.QueryRow(timeoutCtx, `
+		SELECT c.id, c.status, c.lifecycle_status, COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(c.quota_state, 'ok'),
+		       COALESCE(p.enabled, FALSE), COALESCE(p.manual_disabled, FALSE),
+		       COALESCE(p.base_url, ''),
+		       c.secret_ciphertext,
+		       COALESCE(c.default_probe_model, ''),
+		       COALESCE(p.protocol, 'openai-completions'),
+		       COALESCE(p.catalog_code, '')
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1
+		  AND c.lifecycle_status = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(c.default_probe_model, '') <> ''
+	`, credID).Scan(
+		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
+		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
+		&s.BaseURL, &ciphertext, &s.DefaultProbeModel, &s.ProviderProtocol, &s.CatalogCode,
+	)
+	if err != nil {
+		slog.Debug("credential probe v2: fast reprobe skipped",
+			"credential_id", credID, "error", err)
+		return
+	}
+	apiKey, decErr := decryptCiphertext(ciphertext, c.keyring, c.encKey)
+	if decErr != nil {
+		slog.Warn("credential probe v2: fast reprobe decrypt failed",
+			"credential_id", credID, "error", decErr)
+		return
+	}
+	s.APIKey = apiKey
+	probeStart := time.Now()
+	ok, errMsg := c.probeCredential(timeoutCtx, s)
+	var pr probeResult
+	if ok {
+		pr = probeResult{
+			HealthStatus:      "healthy",
+			HealthLatencyMs:   int(time.Since(probeStart).Milliseconds()),
+			HealthSource:      "fast_reprobe",
+			AvailabilityState: "ready",
+		}
+		slog.Info("credential probe v2: fast reprobe recovered", "credential_id", credID)
+	} else {
+		pr = classifyProbeFailure(errMsg)
+		pr.HealthLatencyMs = int(time.Since(probeStart).Milliseconds())
+		pr.HealthSource = "fast_reprobe"
+		slog.Info("credential probe v2: fast reprobe still failing",
+			"credential_id", credID, "availability_state", pr.AvailabilityState)
+	}
+	pr.HealthProbeModel = s.DefaultProbeModel
+	c.writeHealth(timeoutCtx, credID, pr)
+}
+
+// probeBalance fetches the account balance for supported vendors (P3).
+// Returns (balanceUSD, true) on success, (0, false) otherwise.
+func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (float64, bool) {
+	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
+	balURL := providercap.BalanceURL(s.BaseURL, desc)
+	if balURL == "" {
+		return 0, false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, balURL, nil)
+	if err != nil {
+		return 0, false
+	}
+	providercap.ApplyAuthHeaders(req, desc, s.APIKey)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Debug("credential probe v2: balance probe failed",
+			"credential_id", s.ID, "url", balURL, "error", err)
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return 0, false
+	}
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, false
+	}
+	parts := strings.Split(desc.BalanceJSONPath, ".")
+	cur := parsed
+	for _, p := range parts {
+		switch v := cur.(type) {
+		case map[string]any:
+			cur = v[p]
+		case []any:
+			idx := 0
+			fmt.Sscanf(p, "%d", &idx)
+			if idx >= len(v) {
+				return 0, false
+			}
+			cur = v[idx]
+		default:
+			return 0, false
+		}
+		if cur == nil {
+			return 0, false
+		}
+	}
+	switch v := cur.(type) {
+	case float64:
+		return v, true
+	case string:
+		var f float64
+		if _, err2 := fmt.Sscanf(v, "%f", &f); err2 == nil {
+			return f, true
+		}
+	}
+	return 0, false
 }
 
 // decryptCiphertext attempts to decrypt with keyring first, then fallback to

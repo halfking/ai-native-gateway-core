@@ -9,6 +9,7 @@ import {
   getModelOfferSuggestions,
   updateModelOffer,
   getRoutableSummary,
+  triggerProviderProbeAll,
   type ModelOffer,
   type ModelOfferSuggestion,
   type ProviderRefreshRun,
@@ -43,6 +44,9 @@ const routable = ref<{
   routable_ratio: number
 } | null>(null)
 const routableLoading = ref(false)
+
+const probeAllLoading = ref(false)
+const probeAllMsg = ref('')
 
 const selected = ref<ModelOffer | null>(null)
 
@@ -187,6 +191,20 @@ const refreshSummary = computed(() => {
   }
   return parts.join(' · ')
 })
+
+async function triggerAllProbes() {
+  if (probeAllLoading.value) return
+  probeAllLoading.value = true
+  probeAllMsg.value = ''
+  try {
+    const result = await triggerProviderProbeAll(props.providerId)
+    probeAllMsg.value = `已加入探测队列，共 ${result.bindings_queued} 个绑定`
+  } catch (e: unknown) {
+    probeAllMsg.value = e instanceof Error ? e.message : '触发失败'
+  } finally {
+    probeAllLoading.value = false
+  }
+}
 
 onBeforeUnmount(stopPolling)
 
@@ -358,6 +376,15 @@ load()
           title="仅从本地缓存重新加载，不调用供应商接口"
           @click="load"
         >{{ loading ? '加载中…' : '刷新' }}</button>
+        <button
+          class="btn btn-sm"
+          :disabled="probeAllLoading || offers.length === 0"
+          title="对列表中所有模型发起探测，验证可用性"
+          @click="triggerAllProbes"
+        >{{ probeAllLoading ? '探测中…' : '全面探测' }}</button>
+      </div>
+      <div v-if="probeAllMsg" class="probe-all-msg" :class="probeAllMsg.includes('失败') ? 'probe-all-msg--error' : 'probe-all-msg--success'">
+        {{ probeAllMsg }}
       </div>
     </div>
 
@@ -724,5 +751,19 @@ load()
 }
 .btn-row--end {
   justify-content: flex-end;
+}
+.probe-all-msg {
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.probe-all-msg--success {
+  color: #16a34a;
+  background: rgba(34, 197, 94, 0.1);
+}
+.probe-all-msg--error {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
 }
 </style>

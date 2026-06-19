@@ -532,52 +532,9 @@ func (h *ChatHandler) serveWithExecutor(
 	logCtx.SetClientModel(clientModel)
 	}
 
-	// ── v3 Session-level intelligent compression ────────────────────────
-	// After auto-route (bodyBytes may have been rewritten above), run the
-	// session compressor to delta-append new turns to the compressed
-	// session history and optionally trigger a proactive sliding-window
-	// summary. This keeps forwarded context minimal while preserving all
-	// content via lossless LLM summarisation.
-	var scResult *compressor.PrepareResult
-	if h.sessionCompressor != nil {
-		gwSessionIDForSC, _ := gwSessionTaskFromRequest(r, sessionInfo)
-		tenantForSC := "default"
-		if keyInfo != nil {
-			tenantForSC = keyInfo.TenantID
-		}
-		// Detect client protocol from path (anthropic-messages path contains /messages).
-		protocolForSC := "openai"
-		if isAnthropicMessagesPath(r.URL.Path) {
-			protocolForSC = "anthropic-messages"
-		}
-		scResult = h.sessionCompressor.Prepare(
-			r.Context(),
-			bodyBytes,
-			tenantForSC,
-			gwSessionIDForSC,
-			protocolForSC,
-			0, // contextWindow resolved later by executor; 0 = skip TOKEN trigger
-			false,
-		)
-		if scResult != nil && len(scResult.OutboundBody) > 0 {
-			bodyBytes = scResult.OutboundBody
-		}
-		if scResult != nil && scResult.Degraded {
-			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
-		}
-		// Stash outbound fields in logCtx for telemetry.
-		if scResult != nil && scResult.CompressionStrategy != "" {
-			mc := scResult.MsgCount
-			te := scResult.TokenEst
-			logCtx.OutboundBody = scResult.OutboundBody
-			logCtx.OutboundMsgCount = &mc
-			logCtx.OutboundTokenEst = &te
-			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
-			logCtx.OutboundStrategy = scResult.CompressionStrategy
-			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
-			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
-		}
-	}
+	// NOTE: v3 session-level compression runs AFTER candidate resolution
+	// (below, once we know the target model's context window). See the
+	// "v3 Session-level intelligent compression" block after GetCandidates.
 
 	isStream := reqBody.Stream
 	endUser := resolveEndUser(reqBody.User, r)
