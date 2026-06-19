@@ -20,6 +20,16 @@ interface UseDynamicNamespaceFiltersOptions<T> {
   matchesSearch: (item: T, query: string) => boolean
   matchesVendor: (item: T, vendor: string) => boolean
   singleSelectNamespaces?: Set<string>
+  /**
+   * Return the model's family id (e.g. 'anthropic-claude'). Used as a fallback
+   * when matching `family:<id>` tags: if the tag isn't in `getTags(item)` but
+   * `getFamily(item) === <id>`, the item still matches. Also injected as a
+   * virtual tag into the `family` namespace tag-counts so the advanced
+   * namespace filter shows the correct count even when
+   * `models_canonical.tags` doesn't contain `family:<id>` (2026-06-20
+   * incident: id=103 claude-sonnet-4 had family='anthropic' but tags='{}').
+   */
+  getFamily?: (item: T) => string | null | undefined
 }
 
 function tagNamespace(tag: string): string {
@@ -28,9 +38,21 @@ function tagNamespace(tag: string): string {
 }
 
 export function useDynamicNamespaceFilters<T>(options: UseDynamicNamespaceFiltersOptions<T>) {
+  function virtualFamilyTag(item: T): string | null {
+    if (!options.getFamily) return null
+    const family = options.getFamily(item)
+    if (!family) return null
+    return `family:${family}`
+  }
+
   function matchesTags(item: T, tags: string[]): boolean {
     const itemTags = options.getTags(item)
-    return tags.every((tag) => itemTags.includes(tag))
+    const virtFamily = virtualFamilyTag(item)
+    return tags.every((tag) => {
+      if (itemTags.includes(tag)) return true
+      if (tag.startsWith('family:') && virtFamily === tag) return true
+      return false
+    })
   }
 
   function filterItems(source: T[], filters: { vendor?: string; search?: string; tags?: string[] } = {}) {
@@ -49,6 +71,18 @@ export function useDynamicNamespaceFilters<T>(options: UseDynamicNamespaceFilter
         if (tagNamespace(tag) !== namespace || seen.has(tag)) continue
         seen.add(tag)
         counts.set(tag, (counts.get(tag) ?? 0) + 1)
+      }
+      // For the family namespace, also count virtual `family:<id>` tags
+      // derived from item.family so the advanced filter shows the right
+      // count for models whose tags column is empty (or missing the
+      // family entry). The virtual tag is *not* added to itemTags itself,
+      // so it only affects the count display, not the per-item match.
+      if (namespace === 'family') {
+        const virt = virtualFamilyTag(item)
+        if (virt && !seen.has(virt)) {
+          seen.add(virt)
+          counts.set(virt, (counts.get(virt) ?? 0) + 1)
+        }
       }
     }
     return counts
