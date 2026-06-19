@@ -48,20 +48,16 @@ FROM --platform=linux/amd64 docker.m.daocloud.io/library/alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 1001 llmgw
 
-WORKDIR /opt/llm-gateway-go
+WORKDIR /
+
+RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
+    echo "${BUILD_SEQ}" > /opt/llm-gateway-go/.deploy_seq && \
+    printf '%s\n' "${BUILD_SEQ}" > /.deploy_seq && \
+    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION && \
+    mkdir -p /opt/llm-gateway-go
 
 COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
-COPY --from=builder /src/web/dist ./web/dist
-
-# Write VERSION file so /api/system/version returns real build metadata.
-# Format: version-gitSHA-buildDate (parsed by admin/misc.go:parseVersionString)
-ARG GIT_SHA=""
-ARG BUILD_DATE=""
-ARG BUILD_SEQ="0"
-RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > VERSION && \
-    echo "${BUILD_SEQ}" > .deploy_seq && \
-    printf '%s\n' "${BUILD_SEQ}" > /.deploy_seq && \
-    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
+COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
 
 USER llmgw
 
