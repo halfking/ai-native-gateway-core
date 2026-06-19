@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/routing"
 )
@@ -105,8 +106,25 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
-	// Normalize model name to match stored model_offers (remove date suffixes like -20250514)
-	normalizedModel := discovery.NormalizeModelName(model)
+	// 2026-06-19 audit: walk the cross-form variant matrix so a
+	// request like "claude-sonnet-4.6" matches a DB canonical
+	// "claude-sonnet-4-6" (and the inverse).  The variant matrix is
+	// produced by modelname.NormalizeRouteKeyAliases, which keeps
+	// exact-match forms first and adds dot↔dash bridges behind.
+	variants := modelname.NormalizeRouteKeyAliases(model)
+	if len(variants) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"client_model":    model,
+			"canonical_name":  model,
+			"canonical_id":    nil,
+			"resolution_path": "direct",
+			"raw_models":      []string{model},
+			"plan_order":      []any{},
+			"candidates":      []any{},
+		})
+		return
+	}
+	normalizedModel := variants[0]
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -158,7 +176,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BillingRound         int      `json:"billing_round"`
 	}
 
-	rawModels := []string{normalizedModel}
+	rawModels := append([]string{normalizedModel}, variants[1:]...)
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			p.id AS provider_id,
@@ -326,12 +344,23 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		h.persistResolveProbe(ctx, normalizedModel, probes)
 	}
 
+	resolutionPath := "direct"
+	if len(candidates) > 0 {
+		// 2026-06-19 audit: if the SQL matched a variant that is
+		// different from the normalized form, surface ':variant' so
+		// admins know a cross-form hit landed.
+		if strings.EqualFold(rawModels[0], normalizedModel) {
+			resolutionPath = "canonical"
+		} else {
+			resolutionPath = "canonical:variant"
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_model":    model,
-		"canonical_name":  model,
+		"canonical_name":  rawModels[0],
 		"canonical_id":    nil,
-		"resolution_path": "direct",
-		"raw_models":      []string{model},
+		"resolution_path": resolutionPath,
+		"raw_models":      rawModels,
 		"plan_order":      []any{},
 		"candidates":      candidates,
 	})
