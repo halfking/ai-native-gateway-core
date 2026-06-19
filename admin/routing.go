@@ -600,7 +600,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	hideCredentialDetails := IsTenantAdmin(r)
 
 	var featuredModels []string
-	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, '[]'::jsonb) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
+	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
 
 	rows, err := h.db.Query(ctx, `
 		SELECT
