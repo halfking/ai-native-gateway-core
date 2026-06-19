@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,6 +25,52 @@ type routingHandler struct {
 	db     *pgxpool.Pool
 	secret string
 }
+
+// availableModelsCache caches /api/routing/available-models responses
+// for a short window (default 30s).  The endpoint aggregates 4 separate
+// DB queries (model_offers + LATERAL aliases, routing_policy,
+// model_aliases, plus the popular-usage 7d scan) which together
+// dominate admin page load latency.  Since the underlying data is
+// updated only on provider refresh / admin edits, a 30s window is
+// safe and gives an order-of-magnitude speedup under repeated
+// page-load / tab-switch traffic.
+type availableModelsCache struct {
+	mu        sync.Mutex
+	value     map[string]any
+	expiresAt time.Time
+	ttl       time.Duration
+	// hits/misses are exposed via /api/system/background-tasks for ops.
+	hits   uint64
+	misses uint64
+}
+
+func (c *availableModelsCache) get(now time.Time) (map[string]any, bool) {
+	if c == nil || c.value == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if now.Before(c.expiresAt) {
+		c.hits++
+		return c.value, true
+	}
+	c.misses++
+	return nil, false
+}
+
+func (c *availableModelsCache) set(now time.Time, value map[string]any) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.value = value
+	c.expiresAt = now.Add(c.ttl)
+}
+
+const availableModelsCacheTTL = 30 * time.Second
+
+var globalAvailableModelsCache = &availableModelsCache{ttl: availableModelsCacheTTL}
 
 func (h *Handler) logAudit(r *http.Request, action string, details map[string]any) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -872,6 +919,9 @@ func (h *Handler) handleRoutingFeatured(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusInternalServerError, "update failed")
 			return
 		}
+		// Bust the available-models cache so the new featured list
+		// shows up in the next /api/routing/available-models read.
+		InvalidateAvailableModelsCache()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -991,6 +1041,20 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	// 2026-06-19 audit: this endpoint runs 4 round-trips per call
+	// (model_offers + LATERAL aliases, routing_policy, model_aliases
+	// ARRAY_AGG, plus the popular-usage 7d scan).  Cache for 30s to
+	// absorb the spike when /providers/33, /providers/34 etc. all
+	// hit it during a single admin page render.  Busting on featured
+	// policy edit / provider refresh is handled in those paths
+	// (call invalidateAvailableModelsCache below).
+	if r.Method == http.MethodGet {
+		if cached, ok := globalAvailableModelsCache.get(time.Now()); ok {
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
+	}
 
 	rows, err := h.db.Query(ctx, `
 		SELECT mo.raw_model_name,
@@ -1165,12 +1229,39 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 
 	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"families":  familiesOut,
 		"popular":   popular,
 		"unmapped":  unmapped,
 		"total_raw": totalRaw,
-	})
+	}
+	if r.Method == http.MethodGet {
+		globalAvailableModelsCache.set(time.Now(), resp)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// invalidateAvailableModelsCache is called by paths that mutate the
+// data this endpoint aggregates: featured-model policy edit, provider
+// refresh, and the model_offer standardized_name PATCH in admin/providers.go.
+// Keep this exported so the post-deploy hot-paths above can simply call
+// admin.InvalidateAvailableModelsCache() without importing the cache.
+func InvalidateAvailableModelsCache() {
+	globalAvailableModelsCache.mu.Lock()
+	globalAvailableModelsCache.value = nil
+	globalAvailableModelsCache.expiresAt = time.Time{}
+	globalAvailableModelsCache.mu.Unlock()
+}
+
+// 2026-06-19 audit: cache unit-test hooks — these let regression tests
+// (admin/routing_cache_test.go) exercise the hit/miss/invalidate
+// lifecycle without spinning up a real DB.
+func setAvailableModelsCacheForTest(value map[string]any) {
+	globalAvailableModelsCache.set(time.Now(), value)
+}
+
+func getAvailableModelsCacheForTest() (map[string]any, bool) {
+	return globalAvailableModelsCache.get(time.Now())
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
