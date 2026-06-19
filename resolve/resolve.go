@@ -106,6 +106,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		return nil, nil
 	}
 	normalized := modelname.NormalizeRouteKey(clientModel)
+	rawLookup := strings.TrimSpace(strings.ToLower(clientModel))
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 
 	var canonicalID *int
@@ -163,6 +164,44 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			RawModels:      lowerUnique(all),
 			ResolutionPath: "alias",
 		}, nil
+	}
+	if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	if rawLookup != "" && rawLookup != normalized {
+		err = r.dbPool.QueryRow(ctx, `
+			SELECT mc.id, mc.canonical_name
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND COALESCE(ma.status, 'active') = 'active'
+			  AND COALESCE(mc.status, 'active') = 'active'
+			  AND (
+			      ma.client_profiles IS NULL
+			      OR cardinality(ma.client_profiles) = 0
+			      OR $2 = ANY(ma.client_profiles)
+			      OR $2 = ''
+			  )
+			LIMIT 1
+		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			raw, err := r.aliasRawNames(ctx, *canonicalID, profile)
+			if err != nil {
+				return nil, err
+			}
+			all := append([]string{normalized, rawLookup}, raw...)
+			return &Resolution{
+				ClientModel:    clientModel,
+				CanonicalID:    canonicalID,
+				CanonicalName:  canonicalName,
+				RawModels:      lowerUnique(all),
+				ResolutionPath: "raw_fallback",
+			}, nil
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
 	}
 
 	return passthrough(clientModel), nil

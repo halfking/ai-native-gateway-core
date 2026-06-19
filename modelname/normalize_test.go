@@ -192,6 +192,32 @@ func TestMatchModelOffer(t *testing.T) {
 	}
 }
 
+func TestGenerateAliasVariants(t *testing.T) {
+	variants := GenerateAliasVariants("anthropic/claude-opus-4-8-20251215", "claude-opus-4.8")
+	seen := map[string]bool{}
+	for _, v := range variants {
+		seen[v] = true
+	}
+	for _, want := range []string{
+		"claude-opus-4-8",
+		"claude-opus-4.8",
+		"anthropic/claude-opus-4-8-20251215",
+	} {
+		if !seen[want] {
+			t.Fatalf("missing alias %q in %v", want, variants)
+		}
+	}
+
+	variants = GenerateAliasVariants("thinking/claude-opus-4.8", "claude-opus-4.8")
+	seen = map[string]bool{}
+	for _, v := range variants {
+		seen[v] = true
+	}
+	if !seen["claude-opus-4.8"] {
+		t.Fatalf("wrapper variant did not normalize to base model: %v", variants)
+	}
+}
+
 func TestStandardizeName(t *testing.T) {
 	// StandardizeName is now an alias for NormalizeRouteKey.
 	// The two should always agree.

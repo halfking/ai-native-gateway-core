@@ -59,7 +59,9 @@ ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > VERSION && \
-    echo "${BUILD_SEQ}" > .deploy_seq
+    echo "${BUILD_SEQ}" > .deploy_seq && \
+    printf '%s\n' "${BUILD_SEQ}" > /.deploy_seq && \
+    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
 
 USER llmgw
 

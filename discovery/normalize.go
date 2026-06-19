@@ -59,34 +59,5 @@ func InferFamily(name string) string {
 // dedicated "alias: model:foo -> model:bar" admin endpoint) rather than
 // re-introducing family-specific code here.
 func GenerateAliases(rawName, canonicalName string) []string {
-	seen := make(map[string]bool)
-	var aliases []string
-
-	add := func(s string) {
-		s = strings.TrimSpace(strings.ToLower(s))
-		if s == "" || seen[s] {
-			return
-		}
-		seen[s] = true
-		aliases = append(aliases, s)
-	}
-
-	// (1) The raw name exactly as the upstream returned it.
-	add(rawName)
-
-	// (2) The canonical name (whatever NormalizeModelName produced).
-	add(canonicalName)
-
-	// (3) Raw name with vendor prefix stripped (scnet/minimax-m2.5 → minimax-m2.5).
-	if idx := strings.LastIndex(rawName, "/"); idx >= 0 {
-		add(rawName[idx+1:])
-	}
-
-	// (4) Dashes replaced with underscores (mimo-v2.5-pro → mimo_v2.5_pro).
-	add(strings.ReplaceAll(rawName, "-", "_"))
-
-	// (5) Underscores replaced with dashes (mimo_v2.5_pro → mimo-v2.5-pro).
-	add(strings.ReplaceAll(rawName, "_", "-"))
-
-	return aliases
+	return modelname.GenerateAliasVariants(rawName, canonicalName)
 }

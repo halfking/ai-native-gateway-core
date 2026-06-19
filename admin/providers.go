@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -142,6 +143,10 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool, error) {
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
+	}
+	desc := providercap.Resolve(protocol, "")
+	if !desc.SupportsModelsEndpoint {
+		return true, nil
 	}
 	result, err := doProbeRequest(ctx, modelsURLCandidatesForBase(baseURL), apiKey)
 	if err != nil {
@@ -3397,12 +3402,13 @@ func resolveModelsEndpointURL(baseURL string, template *string) (url string, exp
 // even when discovery_strategy is "manifest"; manifest is fallback only.
 // forceAPI=false (scheduled discovery): manifest_only and empty template skip API.
 func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentialRowLite, apiKey string, forceAPI bool) (models []string, source string, err error) {
-	if cred.protocol == "anthropic-messages" {
+	desc := providercap.Resolve(cred.protocol, cred.catalogCode)
+	if !desc.SupportsModelsEndpoint {
 		// Anthropic-compatible upstreams (e.g. minimax /anthropic) have no /models
 		// listing; use catalog manifest when operator forces a refresh or probe.
 		models, mErr := extractManifestModels(cred.modelsManifestJSON)
 		if mErr != nil || len(models) == 0 {
-			return nil, "none", fmt.Errorf("anthropic-messages protocol has no /models endpoint and manifest is empty")
+			return nil, "none", fmt.Errorf("provider has no /models endpoint and manifest is empty")
 		}
 		return models, "manifest_only", nil
 	}
@@ -3421,7 +3427,7 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 	if explicitTemplate && modelsURL != "" {
 		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
 	} else {
-		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl), cred, apiKey)
+		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl, desc), cred, apiKey)
 	}
 	if fetchErr == nil && len(models) > 0 {
 		// Merge in catalog-manifest models that the live /models list omits.
@@ -3556,7 +3562,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 		}
 		if u, explicit := resolveModelsEndpointURL(baseURL, tplPtr); explicit && u != "" {
 			res.ResolvedURL = u
-		} else if u := modelsURLCandidatesForCred(baseURL, tplPtr); len(u) > 0 {
+		} else if u := modelsURLCandidatesForCred(baseURL, tplPtr, providercap.Resolve(protocol, catalogCode)); len(u) > 0 {
 			res.ResolvedURL = strings.Join(u, " | ")
 		}
 
@@ -3709,52 +3715,15 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 }
 
 func modelsURLCandidatesForBase(baseURL string) []string {
-	return modelsURLCandidatesForCred(baseURL, nil)
+	return modelsURLCandidatesForCred(baseURL, nil, providercap.Resolve("", ""))
 }
 
-func modelsURLCandidatesForCred(baseURL string, template *string) []string {
-	if template != nil {
-		tpl := strings.TrimSpace(*template)
-		if tpl == "" {
-			return nil
-		}
-		if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
-			return []string{tpl}
-		}
-		base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-		return []string{base + tpl}
-	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0, 4)
-	add := func(u string) {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			return
-		}
-		if _, ok := seen[u]; ok {
-			return
-		}
-		seen[u] = struct{}{}
-		out = append(out, u)
-	}
-	add(upstreamurl.ModelsURL(baseURL))
-	for _, u := range upstreamurl.ModelsURLCandidates(baseURL) {
-		add(u)
-	}
-	return out
+func modelsURLCandidatesForCred(baseURL string, template *string, desc providercap.Descriptor) []string {
+	return providercap.ModelsURLCandidates(baseURL, template, desc)
 }
 
 func setModelsAuthHeaders(req *http.Request, protocol, apiKey string) {
-	key := strings.TrimSpace(apiKey)
-	if key == "" {
-		return
-	}
-	if protocol == "anthropic-messages" {
-		req.Header.Set("x-api-key", key)
-		req.Header.Set("anthropic-version", "2023-06-01")
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	providercap.ApplyAuthHeaders(req, providercap.Resolve(protocol, ""), apiKey)
 }
 
 func (h *Handler) applyCatalogHeaderProfile(ctx context.Context, req *http.Request, catalogCode string) {

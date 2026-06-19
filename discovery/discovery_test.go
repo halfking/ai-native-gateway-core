@@ -174,7 +174,7 @@ func TestGenerateAliases_MiMo(t *testing.T) {
 	for _, a := range aliases {
 		found[a] = true
 	}
-	for _, need := range []string{"mimo-v2.5-pro", "mimo_v2.5_pro"} {
+	for _, need := range []string{"mimo-v2.5-pro", "mimo_v2.5_pro", "mimo-v2-5-pro"} {
 		if !found[need] {
 			t.Errorf("missing alias %q in %v", need, aliases)
 		}

@@ -348,6 +348,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	if profile == "" {
 		profile = ""
 	}
+	rawLookup := strings.TrimSpace(strings.ToLower(model))
 
 	var canonicalID *int
 	var canonicalName string
@@ -392,6 +393,34 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	}
 	if err != nil && err != pgx.ErrNoRows {
 		return nil, err
+	}
+
+	if rawLookup != "" && rawLookup != model {
+		err = c.dbPool.QueryRow(ctx, `
+			SELECT mc.id, mc.canonical_name
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND COALESCE(ma.status, 'active') = 'active'
+			  AND COALESCE(mc.status, 'active') = 'active'
+			  AND (
+			      ma.client_profiles IS NULL
+			      OR cardinality(ma.client_profiles) = 0
+			      OR $2 = ANY(ma.client_profiles)
+			      OR $2 = ''
+			  )
+			LIMIT 1
+		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			raw, err := c.aliasRawNamesDB(ctx, *canonicalID, profile)
+			if err != nil {
+				return nil, err
+			}
+			return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "raw_fallback", RawModels: lowerUnique(append(raw, model, rawLookup))}, nil
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
 	}
 	stdName := modelname.NormalizeRouteKey(model)
 	if stdName != "" {
