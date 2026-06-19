@@ -1617,6 +1617,16 @@ export interface RequestLogRow {
   outbound_msg_count: number | null
   outbound_token_est: number | null
   outbound_msg_hashes: any | null
+
+  // 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+  // `upstream_finish_reason` is the SOLE home for the upstream finish_reason
+  // (stop, tool_calls, length, end_turn, function_call, max_tokens, …). It is
+  // populated for BOTH success and failure rows and should NOT be displayed
+  // as a "失败详情" / failure label. `failure_detail_code` and
+  // `failure_stage` are now reserved for actual failure / interruption codes.
+  upstream_finish_reason: string | null
+  failure_detail_code: string | null
+  failure_stage: string | null
 }
 
 export interface RequestLogDetail extends RequestLogRow {

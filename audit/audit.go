@@ -61,6 +61,44 @@ type Event struct {
 // memory bounded under high concurrency (100 concurrent captures ≈ 12 MiB).
 const maxTextContentBytes = 128 * 1024
 
+// isInterruptionCode reports whether a `finalFinish` value looks like a
+// stream-interruption / failure code (rather than a normal upstream
+// finish_reason). Used by StreamCapture.SummaryAsMap to decide whether
+// to also publish the value as failure_detail_code.
+//
+// 2026-06-19 T-NEW-7: prior to the split, this code was implicitly
+// encoded by the position of the write — finish reasons ("stop",
+// "tool_calls", "length", "end_turn", "function_call", "max_tokens")
+// happened to look different from interruption codes
+// ("eof_without_done", "stream_timeout", "client_cancel", …) at
+// display time, but they were both written to the same column, so
+// the admin UI could not tell a successful "tool_calls" finish from
+// an actual "tool_calls" failure. The whitelist below is the
+// authoritative list of "this is a real failure / interruption".
+func isInterruptionCode(s string) bool {
+	switch s {
+	// Stream-level interruption codes (relay/handler.go::classifyStreamInterruption
+	// + relay/stream.go).
+	case "eof_without_done",
+		"stream_timeout",
+		"client_cancel",
+		"client_disconnected",
+		"no_deltas",
+		"invalid_first_chunk",
+		"invalid_json",
+		"upstream_5xx",
+		"upstream_4xx",
+		"unexpected_status",
+		"connection_reset",
+		"write_failed",
+		"hangup",
+		"body_too_large",
+		"eof_mid_tool_call":
+		return true
+	}
+	return false
+}
+
 type StreamCapture struct {
 	mu               sync.Mutex
 	startTime        time.Time
@@ -421,7 +459,22 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 		m["stream_text_content"] = string(sc.textContent)
 	}
 	if sc.finalFinish != "" {
-		m["failure_detail_code"] = sc.finalFinish
+		// 2026-06-19 T-NEW-7: stop overloading failure_detail_code with the
+		// upstream finish_reason. The capture used to publish the
+		// finish_reason under "failure_detail_code" for BOTH success and
+		// failure rows, which made the admin UI show "失败详情: tool_calls"
+		// for a perfectly normal 200 OK tool-call response. We now:
+		//   - always emit upstream_finish_reason (the SOLE home for the
+		//     upstream finish_reason, populated for success AND failure).
+		//   - emit failure_detail_code only when the value is a known
+		//     interruption/failure code (i.e. when MarkInterruptedWithReason
+		//     or classifyStreamInterruption put it there). For the common
+		//     "successful stream ended with stop/tool_calls/length" case,
+		//     failure_detail_code is intentionally left absent.
+		m["upstream_finish_reason"] = sc.finalFinish
+		if isInterruptionCode(sc.finalFinish) {
+			m["failure_detail_code"] = sc.finalFinish
+		}
 	}
 	if sc.promptTokens != nil {
 		m["prompt_tokens"] = *sc.promptTokens
