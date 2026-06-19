@@ -163,7 +163,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(mc.status, 'active'),
 		       mc.disabled_reason,
 		       mc.source,
-		       COALESCE(mc.tags::text, '[]'),
+		       mc.tags,
 		       COALESCE(mc.tags_locked, FALSE),
 		       mc.tags_updated_at,
 		       mc.updated_at,
@@ -215,20 +215,21 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	models := make([]model, 0)
 	for rows.Next() {
 		var m model
-		var tagsStr string
 		var family *string
 		var dbVendor string
 		if err := rows.Scan(
 			&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
 			&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
-			&tagsStr, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
+			&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
 			&dbVendor, &m.AliasCount, &m.OfferCount,
 		); err != nil {
 			slog.Error("listModels scan failed", "error", err)
 			continue
 		}
 		m.Family = family
-		m.Tags = parseModelTags(tagsStr)
+		if m.Tags == nil {
+			m.Tags = []string{}
+		}
 		familyID := ""
 		if family != nil {
 			familyID = *family
