@@ -42,7 +42,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
-	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -407,7 +407,8 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	if t.BaseURL == "" {
 		return "skipped", 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
-	endpoint := upstreamurl.ChatCompletionsURL(t.BaseURL)
+	desc := providercap.Resolve(t.Protocol, "")
+	endpoint := providercap.ProbeEndpointURL(t.BaseURL, desc)
 
 	// Some providers (e.g. Volcano Ark) require a deployment endpoint ID
 	// (e.g. "ep-20241227XXXX") as the model field rather than the raw model
@@ -437,9 +438,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 		return "network", 0, "request_build", err.Error(), int(time.Since(start).Milliseconds())
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if t.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+t.APIKey)
-	}
+	providercap.ApplyAuthHeaders(req, desc, t.APIKey)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)

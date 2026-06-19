@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -234,10 +235,11 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	}
 
 	httpClient := &http.Client{Timeout: 15 * time.Second}
+	desc := providercap.Resolve(s.ProviderProtocol, "")
 
 	// Step 1: GET /v1/models (skip for anthropic-messages — no /models endpoint)
-	if s.ProviderProtocol != "anthropic-messages" {
-		modelsURLs := upstreamurl.ModelsURLCandidates(s.BaseURL)
+	if desc.SupportsModelsEndpoint {
+		modelsURLs := providercap.ModelsURLCandidates(s.BaseURL, nil, desc)
 		if len(modelsURLs) == 0 {
 			return true, "" // manifest-only, skip
 		}
@@ -247,9 +249,7 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 			if err != nil {
 				continue
 			}
-			if s.APIKey != "" {
-				req.Header.Set("Authorization", "Bearer "+s.APIKey)
-			}
+			providercap.ApplyAuthHeaders(req, desc, s.APIKey)
 			resp, err := httpClient.Do(req)
 			if err != nil {
 				continue
@@ -272,12 +272,12 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	// Step 2: mini chat completion with "hi" — protocol-aware.
 	// For anthropic-messages providers (e.g. minimax /anthropic) the openai
 	// chat URL 404s, so we hit /v1/messages instead with x-api-key.
-	if s.ProviderProtocol == "anthropic-messages" {
-		msgURL := upstreamurl.MessagesURL(s.BaseURL)
+	if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
+		msgURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 		ok, errMsg := c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
 		return ok, errMsg
 	}
-	chatURL := upstreamurl.ChatCompletionsURL(s.BaseURL)
+	chatURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
 	ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
 	if !ok && strings.Contains(errMsg, "max_tokens") {
 		// Some legacy gateways reject max_tokens < 2; retry with 2
@@ -487,4 +487,3 @@ func decryptCiphertext(ciphertext []byte, kr *secret.Keyring, encKey []byte) (st
 	}
 	return "", fmt.Errorf("no decryption key available (keyring=%v, fernet=%d bytes)", kr != nil, len(encKey))
 }
-
