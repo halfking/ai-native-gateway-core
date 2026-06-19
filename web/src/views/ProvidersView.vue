@@ -80,6 +80,7 @@ function providerChannelLabel(category: string | undefined): { label: string; cl
 const showAdd      = ref(false)
 const isCustom     = ref(false)
 const addCode      = ref('')
+const addCodeCustom = ref('')
 const addName      = ref('')
 const addBaseUrl   = ref('')
 const addProtocol  = ref('openai-completions')
@@ -102,6 +103,7 @@ function onCatalogChange() {
 function openAdd() {
   isCustom.value    = false
   addCode.value     = catalog.value[0]?.code ?? ''
+  addCodeCustom.value = ''
   addName.value     = ''
   addBaseUrl.value  = catalog.value[0]?.base_url_template ?? ''
   addProtocol.value = 'openai-completions'
@@ -113,12 +115,14 @@ function openAdd() {
 async function submitAdd() {
   addErr.value = ''
   if (isCustom.value) {
+    if (!addCodeCustom.value.trim()) { addErr.value = '请输入自定义供应商代码'; return }
     if (!addName.value.trim()) { addErr.value = '请输入自定义供应商名称'; return }
     if (!addBaseUrl.value.trim()) { addErr.value = '请输入 Base URL'; return }
     addSaving.value = true
     try {
       const r = await createProvider({
         catalog_code: '__custom__',
+        code: addCodeCustom.value.trim(),
         display_name: addName.value.trim(),
         base_url: addBaseUrl.value.trim(),
         protocol: addProtocol.value,
@@ -720,6 +724,10 @@ onUnmounted(() => {
 
         <!-- Custom mode -->
         <template v-else>
+          <div class="form-group">
+            <label>供应商代码 <span style="color:var(--danger)">*</span></label>
+            <input v-model="addCodeCustom" placeholder="例: my-custom-ollama (唯一标识符)" />
+          </div>
           <div class="form-group">
             <label>供应商名称 <span style="color:var(--danger)">*</span></label>
             <input v-model="addName" placeholder="例: 私有 Ollama 集群" />
