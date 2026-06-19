@@ -355,53 +355,97 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 	}
 	rawLookup := strings.TrimSpace(strings.ToLower(model))
 
+	// 2026-06-19 audit: walk the cross-form variant matrix so a
+	// request like "claude-sonnet-4.6" matches a DB canonical
+	// "claude-sonnet-4-6" (and the inverse).  The first matching
+	// variant wins; we record it in ResolutionPath so admins can
+	// see why a resolve landed where it did.
+	variants := modelname.NormalizeRouteKeyAliases(model)
+	if len(variants) == 0 {
+		return &resolveResponse{ClientModel: model, ResolutionPath: "direct", RawModels: []string{strings.ToLower(strings.TrimSpace(model))}}, nil
+	}
+
 	var canonicalID *int
 	var canonicalName string
-	err := c.dbPool.QueryRow(ctx, `
-		SELECT id, canonical_name
-		FROM models_canonical
-		WHERE lower(canonical_name) = lower($1)
-		  AND COALESCE(status, 'active') = 'active'
-	`, model).Scan(&canonicalID, &canonicalName)
-	if err == nil && canonicalID != nil {
+	var hitVariant string
+	var hitPath string
+
+	// (1) canonical_name match across the variant matrix.
+	for _, v := range variants {
+		err := c.dbPool.QueryRow(ctx, `
+			SELECT id, canonical_name
+			FROM models_canonical
+			WHERE lower(canonical_name) = lower($1)
+			  AND COALESCE(status, 'active') = 'active'
+		`, v).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			hitVariant = v
+			hitPath = "canonical"
+			break
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
+	}
+	if canonicalID != nil {
 		raw, err := c.aliasRawNamesDB(ctx, *canonicalID, profile)
 		if err != nil {
 			return nil, err
 		}
-		return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "canonical", RawModels: lowerUnique(append(raw, model))}, nil
-	}
-	if err != nil && err != pgx.ErrNoRows {
-		return nil, err
+		return &resolveResponse{
+			ClientModel:    model,
+			CanonicalName:  canonicalName,
+			CanonicalID:    canonicalID,
+			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
+			RawModels:      lowerUnique(append(raw, model)),
+		}, nil
 	}
 
-	err = c.dbPool.QueryRow(ctx, `
-		SELECT mc.id, mc.canonical_name
-		FROM model_aliases ma
-		JOIN models_canonical mc ON mc.id = ma.canonical_id
-		WHERE lower(ma.raw_name) = lower($1)
-		  AND COALESCE(ma.status, 'active') = 'active'
-		  AND COALESCE(mc.status, 'active') = 'active'
-		  AND (
-		      ma.client_profiles IS NULL
-		      OR cardinality(ma.client_profiles) = 0
-		      OR $2 = ANY(ma.client_profiles)
-		      OR $2 = ''
-		  )
-		LIMIT 1
-	`, model, profile).Scan(&canonicalID, &canonicalName)
-	if err == nil && canonicalID != nil {
+	// (2) alias match across the variant matrix.
+	for _, v := range variants {
+		err := c.dbPool.QueryRow(ctx, `
+			SELECT mc.id, mc.canonical_name
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND COALESCE(ma.status, 'active') = 'active'
+			  AND COALESCE(mc.status, 'active') = 'active'
+			  AND (
+			      ma.client_profiles IS NULL
+			      OR cardinality(ma.client_profiles) = 0
+			      OR $2 = ANY(ma.client_profiles)
+			      OR $2 = ''
+			  )
+			LIMIT 1
+		`, v, profile).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			hitVariant = v
+			hitPath = "alias"
+			break
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
+	}
+	if canonicalID != nil {
 		raw, err := c.aliasRawNamesDB(ctx, *canonicalID, profile)
 		if err != nil {
 			return nil, err
 		}
-		return &resolveResponse{ClientModel: model, CanonicalName: canonicalName, CanonicalID: canonicalID, ResolutionPath: "alias", RawModels: lowerUnique(append(raw, model))}, nil
-	}
-	if err != nil && err != pgx.ErrNoRows {
-		return nil, err
+		return &resolveResponse{
+			ClientModel:    model,
+			CanonicalName:  canonicalName,
+			CanonicalID:    canonicalID,
+			ResolutionPath: variantResolutionPath(hitPath, hitVariant, modelname.NormalizeRouteKey(model)),
+			RawModels:      lowerUnique(append(raw, model)),
+		}, nil
 	}
 
-	if rawLookup != "" && rawLookup != model {
-		err = c.dbPool.QueryRow(ctx, `
+	// (3) full original client_model as a final fallback (covers
+	// case-sensitivity edge cases where the operator stored the
+	// alias in mixed case).
+	if rawLookup != "" && rawLookup != strings.ToLower(modelname.NormalizeRouteKey(model)) {
+		err := c.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
@@ -436,6 +480,25 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 		`, stdName)
 	}
 	return &resolveResponse{ClientModel: model, CanonicalID: nil, CanonicalName: "", ResolutionPath: "direct", RawModels: []string{stdName}}, nil
+}
+
+// variantResolutionPath appends ":variant" to the base path when the
+// resolving variant differs from the model's normalized form, so the
+// routing layer can tell that a cross-form hit happened.
+//
+//	"claude-sonnet-4.6" → match in canonical_name as "claude-sonnet-4-6"
+//	→ ResolutionPath = "canonical:variant"
+//
+//	"claude-sonnet-4-6" → match in canonical_name as itself
+//	→ ResolutionPath = "canonical"
+func variantResolutionPath(base, hitVariant, normalized string) string {
+	if base == "" {
+		return "direct"
+	}
+	if hitVariant == "" || strings.EqualFold(hitVariant, normalized) {
+		return base
+	}
+	return base + ":variant"
 }
 
 func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile string) ([]string, error) {
