@@ -160,6 +160,16 @@ type RequestLogEntry struct {
 	OutboundMsgCount  *int            `json:"outbound_msg_count,omitempty"`
 	OutboundTokenEst  *int            `json:"outbound_token_est,omitempty"`
 	OutboundMsgHashes json.RawMessage `json:"outbound_msg_hashes,omitempty"`
+
+	// 2026-06-19: tool_call quality signals (017_quality_fix_mode.sql).
+	// QualityFlags is the array of detected issues (empty_tool_name,
+	// duplicate_tool_call_id, …). QualityFixActions is the JSON
+	// {flag: {detected, renamed, dropped}} tally of what was actually
+	// done in the response body. QualityScore is 0..1, nil when the
+	// quality processor was off for this provider.
+	QualityFlags     []string        `json:"quality_flags,omitempty"`
+	QualityFixActions json.RawMessage `json:"quality_fix_actions,omitempty"`
+	QualityScore     *float64        `json:"quality_score,omitempty"`
 }
 
 func NewClient() *Client {
@@ -434,7 +444,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- Round 47 compression v7 T2: parent-child chain (4 columns).
 			parent_request_id, compression_reason, compression_strategy, compression_meta,
 			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
-			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes
+			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
+			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+			quality_flags, quality_fix_actions, quality_score
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -456,7 +468,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$47, $48, $49, CAST($50 AS jsonb), $51,
 			$52, $53,
 			$54, $55, $56, CAST($57 AS jsonb),
-			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb)
+			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
+			CAST($62 AS text[]), CAST($63 AS jsonb), $64
 		)
 	`,
 		entry.RequestID,
@@ -522,6 +535,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
 		entry.OutboundMsgHashes,
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		// quality_flags is bound as text[]; we cast nil to NULL so the
+		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		qualityFlagsArg(entry.QualityFlags),
+		qualityActionsArg(entry.QualityFixActions),
+		entry.QualityScore,
 	)
 	if err != nil {
 		return err
@@ -685,7 +704,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       outbound_body      = COALESCE(CAST($55 AS jsonb), rl.outbound_body),
 		       outbound_msg_count = COALESCE($56, rl.outbound_msg_count),
 		       outbound_token_est = COALESCE($57, rl.outbound_token_est),
-		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), rl.outbound_msg_hashes)
+		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), rl.outbound_msg_hashes),
+		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		       quality_flags        = COALESCE(CAST($59 AS text[]), rl.quality_flags),
+		       quality_fix_actions  = COALESCE(CAST($60 AS jsonb), rl.quality_fix_actions),
+		       quality_score        = COALESCE($61, rl.quality_score)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -750,6 +773,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.OutboundMsgCount,
 		entry.OutboundTokenEst,
 		entry.OutboundMsgHashes,
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		// quality_flags is bound as text[]; we cast nil to NULL so the
+		// column DEFAULT '{}' kicks in. quality_fix_actions is JSONB.
+		qualityFlagsArg(entry.QualityFlags),
+		qualityActionsArg(entry.QualityFixActions),
+		entry.QualityScore,
 	)
 	if err != nil {
 		return err
@@ -810,6 +839,31 @@ func nonEmptyPtr(p *string, fallback string) string {
 		return fallback
 	}
 	return *p
+}
+
+// qualityFlagsArg converts a nil/empty []string into a value suitable
+// for binding to a text[] column. pgx's array codec requires either a
+// non-nil []string or an explicit nil interface to get NULL — passing
+// a zero-length slice inserts an empty array literal, which is fine
+// but inconsistent with the column DEFAULT. We pass nil so the
+// DEFAULT '{}' takes over and the row stays uniform with off-mode
+// legacy rows.
+func qualityFlagsArg(flags []string) any {
+	if len(flags) == 0 {
+		return nil
+	}
+	return flags
+}
+
+// qualityActionsArg turns the JSONB payload into a value safe to bind
+// with pgx. nil json.RawMessage → NULL (DEFAULT '{}' wins). Empty
+// bytes (uninitialised marshal) are also NULL. Otherwise we cast the
+// bytes as text on the SQL side (see INSERT/UPDATE CAST($63 AS jsonb)).
+func qualityActionsArg(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	return []byte(raw)
 }
 
 func coalesceRawModels(models []string) []string {

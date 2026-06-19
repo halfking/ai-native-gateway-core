@@ -270,6 +270,20 @@ func main() {
 			auditSink,
 		)
 		routingExec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): wire
+		// the per-provider tool_call quality processor as a hook on the
+		// Executor. routing cannot import relay (relay imports routing)
+		// so the hook is a closure. The executor reads
+		// cand.QualityFixMode (loaded from providers.quality_fix_mode)
+		// and short-circuits when the value is empty/'off'.
+		//
+		// The streaming variant of the processor runs inside
+		// relay/stream.go directly via SetQualityFixModeOnContext +
+		// qualityFixModeFromContext, so it does not need a hook on
+		// the executor — the context value travels through the
+		// upstream http.Request and is read on every SSE line.
+		routingExec.QualityProcessNonStream = relay.WrapQualityProcessNonStream()
+		routingExec.QualitySetMode = relay.WrapSetQualityFixModeOnContext()
 		routingExec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
 		routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI

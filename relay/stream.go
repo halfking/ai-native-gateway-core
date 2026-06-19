@@ -21,6 +21,37 @@ const (
 	sseKeepaliveComment = ": keep-alive\n\n"
 )
 
+// qualityFixModeCtxKey is the context value key used to thread the
+// per-provider quality_fix_mode (017_quality_fix_mode.sql) from the
+// routing executor into the relay-side stream reader. The executor
+// sets it via SetQualityFixModeOnContext before the upstream call;
+// the stream reader pulls it out via qualityFixModeFromContext on
+// every line.
+type qualityFixModeCtxKey struct{}
+
+// SetQualityFixModeOnContext stamps the provider's quality_fix_mode
+// onto the given context. Empty string ⇒ "no mode set" (off by
+// default). The routing executor calls this before issuing the
+// upstream request so the relay stream reader can look it up without
+// needing direct access to the provider.Candidate struct.
+func SetQualityFixModeOnContext(ctx context.Context, mode string) context.Context {
+	return context.WithValue(ctx, qualityFixModeCtxKey{}, mode)
+}
+
+// qualityFixModeFromContext returns the mode stashed by
+// SetQualityFixModeOnContext, or empty string if none was set. The
+// stream reader calls this once per chunk; the cost is one map lookup
+// which is fine on the hot path.
+func qualityFixModeFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(qualityFixModeCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 type StreamOutcome struct {
 	Interrupted bool
 	Reason      string
@@ -150,6 +181,22 @@ func StreamChatWithPendingCapture(
 	}
 
 	if firstLine != "" {
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
+		// before XML coercion so the scanner sees the raw upstream
+		// delta.tool_calls shape and can rewrite empty names to
+		// __unknown_tool_stream_<i>__. detect_only mode leaves the
+		// line byte-identical but still tags the issue in the
+		// capture's QualityFlags slice.
+		qualityMode := qualityFixModeFromContext(ctx)
+		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
+			newLine, newFlags, _ := ProcessStreamLine(firstLine, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			if newLine != "" {
+				firstLine = newLine
+			}
+			if len(newFlags) > 0 {
+				capture.QualityFlags = newFlags
+			}
+		}
 		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(firstLine)
@@ -258,6 +305,21 @@ func StreamChatWithPendingCapture(
 		}
 
 		line := readResult.line
+
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). See
+		// the first-line equivalent above for the rationale. We run
+		// the quality check before XML coercion and normalisation so
+		// the scanner sees the raw upstream delta.tool_calls shape.
+		qualityMode := qualityFixModeFromContext(ctx)
+		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
+			newLine, newFlags, _ := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			if newLine != "" {
+				line = newLine
+			}
+			if len(newFlags) > 0 {
+				capture.QualityFlags = newFlags
+			}
+		}
 
 		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
 

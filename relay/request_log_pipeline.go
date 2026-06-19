@@ -59,6 +59,17 @@ type RequestLogContext struct {
 	ErrCode string
 	ErrMsg  string
 
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+	// QualityFlags accumulates detected issues across the response
+	// post-processing pass. QualityFixActions is the JSON-encoded
+	// per-flag action summary written by relay/tool_call_quality.go.
+	// QualityScore is the 0..1 score from computeScore; nil when the
+	// provider is in 'off' mode. Streaming path appends to QualityFlags
+	// incrementally as each delta chunk is processed.
+	QualityFlags     []string
+	QualityFixActions []byte
+	QualityScore     *float64
+
 	meta   requestAttemptMeta
 	logged bool
 }
@@ -69,6 +80,57 @@ func (c *RequestLogContext) SetError(code, msg string) {
 	}
 	c.ErrCode = code
 	c.ErrMsg = msg
+}
+
+// AddQualityFlag appends a single detected issue tag, deduplicating
+// against the running slice. Safe to call from both non-stream
+// (once) and streaming (per chunk) paths — dedup is required because
+// the same flag will fire on every chunk that contains an empty
+// name, and we don't want 50 rows of `empty_tool_name` in the array.
+func (c *RequestLogContext) AddQualityFlag(flag string) {
+	if c == nil || flag == "" {
+		return
+	}
+	for _, s := range c.QualityFlags {
+		if s == flag {
+			return
+		}
+	}
+	c.QualityFlags = append(c.QualityFlags, flag)
+}
+
+// SetQualityScore is called once per request after the quality pass
+// has run. nil clears the score (off-mode / unevaluated).
+func (c *RequestLogContext) SetQualityScore(score *float64) {
+	if c == nil {
+		return
+	}
+	c.QualityScore = score
+}
+
+// RecordFix merges a single {flag: {detected, renamed, dropped}} entry
+// into the running QualityFixActions JSONB blob. JSONB merge is shallow:
+// later keys with the same name overwrite earlier ones. Callers should
+// only call this when the body was actually rewritten (mode == 'fix').
+func (c *RequestLogContext) RecordFix(actions map[string]any) {
+	if c == nil || len(actions) == 0 {
+		return
+	}
+	var existing map[string]any
+	if len(c.QualityFixActions) > 0 {
+		_ = json.Unmarshal(c.QualityFixActions, &existing)
+	}
+	if existing == nil {
+		existing = map[string]any{}
+	}
+	for k, v := range actions {
+		existing[k] = v
+	}
+	out, err := json.Marshal(existing)
+	if err != nil {
+		return
+	}
+	c.QualityFixActions = out
 }
 
 // NewRequestLogContext starts a per-request log cache. Call EnsureCaptured early.

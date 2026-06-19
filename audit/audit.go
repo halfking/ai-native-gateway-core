@@ -89,6 +89,26 @@ type StreamCapture struct {
 	// Detected in the side-channel audit; surfaces in
 	// SummaryAsMap as a soft-mismatch flag for the admin UI.
 	ModelMismatch bool
+	// QualityFlags accumulates tool_call quality issues detected during
+	// the stream (empty names, duplicate ids). Populated by the
+	// stream-side quality processor in relay/stream.go; merged into
+	// request_logs.quality_flags by relay/handler.go emitTelemetry.
+	// Empty when quality_fix_mode='off' for the chosen provider.
+	QualityFlags []string
+	// QualityFixActions is the JSON-encoded per-flag action summary
+	// for the stream path. Mostly empty — the streaming variant
+	// reports detected vs renamed counts per chunk but does not
+	// produce the deep fix-actions JSONB that the non-stream path
+	// does. Keep the field so the schema stays symmetric.
+	QualityFixActions []byte
+	// QualityScore mirrors the non-stream QualityScore from
+	// ProcessNonStreamBody. nil when no issues were found OR when
+	// the provider is in 'off' mode.
+	QualityScore *float64
+	// QualitySeenToolCallIDs is the per-stream id dedup map used by
+	// ProcessStreamLine. Not part of the audit summary; only the
+	// stream processor reads/writes it.
+	QualitySeenToolCallIDs map[string]int
 	// InputTokens / OutputTokens mirror promptTokens /
 	// completionTokens under Anthropic naming (input_tokens /
 	// output_tokens in the SSE event payloads). The Q4 passthrough
@@ -427,6 +447,20 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.ModelMismatch {
 		m["model_mismatch"] = true
+	}
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): surface
+	// the stream-collected quality signals so emitTelemetry can persist
+	// them on the request_log row. quality_flags and quality_score
+	// are scalar; quality_fix_actions is JSONB-as-string (decoded
+	// back into the structured column on the consumer side).
+	if len(sc.QualityFlags) > 0 {
+		m["quality_flags"] = sc.QualityFlags
+	}
+	if len(sc.QualityFixActions) > 0 {
+		m["quality_fix_actions"] = string(sc.QualityFixActions)
+	}
+	if sc.QualityScore != nil {
+		m["quality_score"] = *sc.QualityScore
 	}
 	return m
 }
