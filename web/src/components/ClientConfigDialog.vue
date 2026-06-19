@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { getKeys, listModels, type ApiKey, type ModelCanonical } from '../api'
+import { getKeys, listModels, getFeatured, applyForKey, type ApiKey, type ModelCanonical } from '../api'
 import {
-  TOOLS, OS_INFO, FEATURED_MODELS,
+  TOOLS, OS_INFO,
   type ToolId, type OS, type ModelScope,
   renderZCodeConfig, renderOpenCodeConfig,
   renderCherryStudioConfig, renderRooCodeSettings,
@@ -19,6 +19,10 @@ const toolInfo = computed(() => TOOLS.find(t => t.id === props.tool)!)
 const keys = ref<ApiKey[]>([])
 const selectedKeyId = ref<number | null>(null)
 const keysLoading = ref(false)
+const applyDialogOpen = ref(false)
+const applying = ref(false)
+const applyError = ref('')
+const applyForm = ref({ application_code: 'default-app', description: '' })
 
 async function loadKeys() {
   keysLoading.value = true
@@ -34,16 +38,58 @@ async function loadKeys() {
   }
 }
 
+async function submitApply() {
+  applying.value = true
+  applyError.value = ''
+  try {
+    const resp = await applyForKey({
+      application_code: applyForm.value.application_code,
+      description: applyForm.value.description,
+    })
+    applyDialogOpen.value = false
+    await loadKeys()
+    if (resp?.id && keys.value.length > 0) {
+      const found = keys.value.find(k => k.id === resp.id)
+      if (found) selectedKeyId.value = found.id
+    }
+    applyForm.value = { application_code: 'default-app', description: '' }
+  } catch (e: any) {
+    applyError.value = e?.message || '申请失败'
+  } finally {
+    applying.value = false
+  }
+}
+
 // ── Step 2: OS selection ─────────────────────────────────────────────────────
 const selectedOS = ref<OS>('macos')
 
 // ── Step 3: Model scope + custom selection ──────────────────────────────────
 const selectedScope = ref<ModelScope>('featured')
-const selectedModels = ref<string[]>([...FEATURED_MODELS])
+const selectedModels = ref<string[]>([])
 const allModels = ref<ModelCanonical[]>([])
 const allModelsLoading = ref(false)
 const allModelsLoaded = ref(false)
+const featuredModels = ref<string[]>([])
+const featuredLoading = ref(false)
+const featuredLoaded = ref(false)
 const modelSearch = ref('')
+
+async function loadFeaturedModels() {
+  if (featuredLoaded.value) return
+  featuredLoading.value = true
+  try {
+    const resp = await getFeatured()
+    featuredModels.value = resp.featured_models || []
+    featuredLoaded.value = true
+    if (selectedModels.value.length === 0 && featuredModels.value.length > 0) {
+      selectedModels.value = [...featuredModels.value]
+    }
+  } catch {
+    featuredModels.value = []
+  } finally {
+    featuredLoading.value = false
+  }
+}
 
 async function loadAllModels() {
   if (allModelsLoaded.value) return
@@ -102,6 +148,28 @@ const groupedModels = computed(() => {
   return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b))
 })
 
+function groupSelection(family: string): 'all' | 'none' | 'some' {
+  const list = groupedModels.value.find(([f]) => f === family)?.[1] || []
+  if (list.length === 0) return 'none'
+  const selectedCount = list.filter(m => selectedModels.value.includes(m.canonical_name)).length
+  if (selectedCount === 0) return 'none'
+  if (selectedCount === list.length) return 'all'
+  return 'some'
+}
+
+function toggleGroup(family: string) {
+  const list = groupedModels.value.find(([f]) => f === family)?.[1] || []
+  const state = groupSelection(family)
+  const ids = list.map(m => m.canonical_name)
+  if (state === 'all') {
+    selectedModels.value = selectedModels.value.filter(id => !ids.includes(id))
+  } else {
+    const set = new Set(selectedModels.value)
+    for (const id of ids) set.add(id)
+    selectedModels.value = Array.from(set)
+  }
+}
+
 // ── Generated content ───────────────────────────────────────────────────────
 const generatedFile = ref('')
 const generatedScript = ref('')
@@ -113,13 +181,25 @@ const generating = ref(false)
 watch(() => props.open, (val) => {
   if (val) {
     loadKeys()
+    loadFeaturedModels()
     hasGenerated.value = false
     generatedFile.value = ''
     generatedScript.value = ''
     activeTab.value = 'file'
     selectedScope.value = 'featured'
-    selectedModels.value = [...FEATURED_MODELS]
+    selectedModels.value = []
     selectedOS.value = 'macos'
+  }
+})
+
+watch(selectedScope, async (scope) => {
+  if (scope === 'all') {
+    await loadAllModels()
+  } else if (scope === 'featured') {
+    await loadFeaturedModels()
+    if (featuredModels.value.length > 0) {
+      selectedModels.value = [...featuredModels.value]
+    }
   }
 })
 
@@ -136,7 +216,7 @@ async function generate() {
   const key = selectedKey.value
   const baseURL = 'https://llmgo.kxpms.cn/v1'
   let models = selectedModels.value
-  if (selectedScope.value === 'featured') models = [...FEATURED_MODELS]
+  if (selectedScope.value === 'featured') models = [...featuredModels.value]
 
   let fileContent: any
   if (props.tool === 'zcode') {
@@ -204,13 +284,22 @@ function close() {
         <!-- Step 1: API Key -->
         <div class="step-section">
           <div class="step-label">① 选择 API Key（当前租户下所有密钥）</div>
-          <select v-model="selectedKeyId" class="select-field">
-            <option v-if="keysLoading" value="">加载中…</option>
-            <option v-if="!keysLoading && keys.length === 0" value="">无可用 Key</option>
+          <select v-if="!keysLoading && keys.length > 0" v-model="selectedKeyId" class="select-field">
             <option v-for="k in keys" :key="k.id" :value="k.id">
               {{ k.key_prefix }}**** ({{ k.application_code }}, {{ k.status }})
             </option>
           </select>
+          <div v-else-if="keysLoading" class="state-row">加载中…</div>
+          <div v-else class="empty-state">
+            <div class="empty-state-icon">🔑</div>
+            <div class="empty-state-title">暂无 API Key</div>
+            <div class="empty-state-desc">
+              当前租户下还没有可用的 API Key。管理员可点击下方按钮申请一个新 Key。
+            </div>
+            <button class="btn btn-primary" @click="applyDialogOpen = true">
+              申请新密钥
+            </button>
+          </div>
           <div v-if="selectedKey" class="key-info">
             已选：<code>{{ selectedKey.key_prefix }}****</code>
             <span class="badge" :class="selectedKey.status === 'active' ? 'badge-green' : 'badge-yellow'">{{ selectedKey.status }}</span>
@@ -239,7 +328,7 @@ function close() {
           <div class="scope-radios">
             <label class="radio-label">
               <input type="radio" value="featured" v-model="selectedScope" />
-              <span>精选模型（8 个核心模型）</span>
+              <span>热门模型（路由 featured 配置）</span>
             </label>
             <label class="radio-label">
               <input type="radio" value="all" v-model="selectedScope" />
@@ -249,7 +338,11 @@ function close() {
 
           <!-- Featured preview -->
           <div v-if="selectedScope === 'featured'" class="model-preview">
-            <span class="model-tag" v-for="m in FEATURED_MODELS" :key="m">{{ m }}</span>
+            <div v-if="featuredLoading" class="models-loading">加载中…</div>
+            <div v-else-if="featuredModels.length === 0" class="models-loading">
+              路由中尚未配置热门模型，请前往「路由配置」页设置 featured_models
+            </div>
+            <span v-else class="model-tag" v-for="m in featuredModels" :key="m">{{ m }}</span>
           </div>
 
           <!-- All models from API -->
@@ -272,10 +365,17 @@ function close() {
             <div v-else-if="filteredModels.length === 0" class="models-loading">没有匹配的模型</div>
             <div v-else class="models-grouped">
               <div v-for="[family, list] in groupedModels" :key="family" class="model-family-group">
-                <div class="model-family-header">
+                <label class="model-family-header">
+                  <input
+                    type="checkbox"
+                    class="group-master-checkbox"
+                    :checked="groupSelection(family) === 'all'"
+                    :indeterminate.prop="groupSelection(family) === 'some'"
+                    @change="toggleGroup(family)"
+                  />
                   <span class="model-family-name">{{ family }}</span>
-                  <span class="model-family-count">{{ list.length }}</span>
-                </div>
+                  <span class="model-family-count">{{ list.filter(m => selectedModels.includes(m.canonical_name)).length }} / {{ list.length }}</span>
+                </label>
                 <div class="models-checklist">
                   <label
                     v-for="m in list"
@@ -353,6 +453,33 @@ function close() {
           </div>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply Key Dialog (separate from main drawer) -->
+  <div v-if="applyDialogOpen" class="modal-backdrop" @click.self="applyDialogOpen = false">
+    <div class="modal-panel card" @click.stop>
+      <div class="modal-header">
+        <h4 style="margin:0">申请新 API Key</h4>
+        <button class="btn btn-ghost btn-sm" @click="applyDialogOpen = false">关闭 ✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>应用标识 (application_code)</label>
+          <input v-model="applyForm.application_code" class="form-input" placeholder="例如: default-app" />
+        </div>
+        <div class="form-group">
+          <label>备注 (description)</label>
+          <textarea v-model="applyForm.description" class="form-input" rows="3" placeholder="可选：申请原因 / 用途"></textarea>
+        </div>
+        <div v-if="applyError" class="alert alert-danger">{{ applyError }}</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" @click="applyDialogOpen = false">取消</button>
+        <button class="btn btn-primary" :disabled="applying" @click="submitApply">
+          {{ applying ? '提交中…' : '提交申请' }}
+        </button>
       </div>
     </div>
   </div>
@@ -736,5 +863,172 @@ function close() {
 .action-hint {
   font-size: 12px;
   color: var(--muted, #8b949e);
+}
+
+/* ── Empty state (no keys) ─────────────────────────────────────────── */
+.state-row {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  background: rgba(99, 102, 241, 0.05);
+  border: 1px dashed rgba(99, 102, 241, 0.3);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.empty-state-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text, #e6edf3);
+}
+
+.empty-state-desc {
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+  line-height: 1.5;
+  max-width: 320px;
+}
+
+/* ── Group master checkbox ─────────────────────────────────────────── */
+.model-family-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-top: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border, #30363d);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.model-family-header:hover {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.group-master-checkbox {
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent, #6366f1);
+}
+
+.group-master-checkbox:indeterminate {
+  accent-color: var(--accent, #6366f1);
+}
+
+/* ── Modal (apply key) ──────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.modal-panel {
+  width: 100%;
+  max-width: 480px;
+  background: var(--card, #1c2128);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.modal-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border, #30363d);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+  font-weight: 500;
+}
+
+.form-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: rgba(99, 102, 241, 0.05);
+}
+
+textarea.form-input {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.alert {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.alert-danger {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f97583;
+  border: 1px solid rgba(248, 81, 73, 0.3);
 }
 </style>
