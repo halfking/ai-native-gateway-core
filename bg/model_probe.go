@@ -373,6 +373,56 @@ func (r *ModelProbeRunner) applyResult(
 			"raw_model", t.RawModel,
 			"error", err)
 	}
+
+	// P4 (2026-06-19): propagate probe consensus to credential_model_bindings
+	// so Path B (resolve.go) and Path C (admin/routing.go) also see the
+	// availability change — not just Path A which reads v_routable_credential_models.
+	//
+	// broken_confirmed  → available=FALSE, unavailable_reason='model_probe_broken'
+	// healthy_confirmed → restore available=TRUE if reason was 'model_probe_broken'
+	// Guard: never overwrite manual/admin-set unavailable_reason.
+	switch newState {
+	case "broken_confirmed":
+		_, err := r.db.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available          = FALSE,
+			    unavailable_reason = 'model_probe_broken',
+			    unavailable_at     = NOW()
+			FROM provider_models pm
+			WHERE cmb.provider_model_id = pm.id
+			  AND cmb.credential_id     = $1
+			  AND pm.raw_model_name     = $2
+			  AND cmb.available         = TRUE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		`, t.CredentialID, t.RawModel)
+		if err != nil {
+			slog.Warn("model probe: broken_confirmed binding update failed",
+				"credential_id", t.CredentialID, "raw_model", t.RawModel, "error", err)
+		} else {
+			slog.Info("model probe: marked binding unavailable (broken_confirmed)",
+				"credential_id", t.CredentialID, "raw_model", t.RawModel)
+		}
+	case "healthy_confirmed":
+		_, err := r.db.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available          = TRUE,
+			    unavailable_reason = NULL,
+			    unavailable_at     = NULL
+			FROM provider_models pm
+			WHERE cmb.provider_model_id = pm.id
+			  AND cmb.credential_id     = $1
+			  AND pm.raw_model_name     = $2
+			  AND cmb.available         = FALSE
+			  AND cmb.unavailable_reason = 'model_probe_broken'
+		`, t.CredentialID, t.RawModel)
+		if err != nil {
+			slog.Warn("model probe: healthy_confirmed binding restore failed",
+				"credential_id", t.CredentialID, "raw_model", t.RawModel, "error", err)
+		} else {
+			slog.Info("model probe: restored binding available (healthy_confirmed)",
+				"credential_id", t.CredentialID, "raw_model", t.RawModel)
+		}
+	}
 }
 
 // recordRun inserts a row in model_probe_runs for traceability.
@@ -531,6 +581,30 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
 	return nil
+}
+
+// TriggerAllManual resets next_retry_at for all probe states belonging to
+// credentials under this provider, and flips broken_confirmed → recovering.
+// The background cycle() will then pick them up on its next iteration.
+// Returns the count of bindings queued for probing.
+func (r *ModelProbeRunner) TriggerAllManual(ctx context.Context, providerID int) (int, error) {
+	result, err := r.db.Exec(ctx, `
+		UPDATE model_probe_state
+		SET next_retry_at = NOW(),
+		    state = CASE
+		        WHEN state = 'broken_confirmed' THEN 'recovering'
+		        ELSE state
+		    END,
+		    consecutive_successes = 0,
+		    consecutive_failures = 0
+		WHERE credential_id IN (
+		    SELECT id FROM credentials WHERE provider_id = $1
+		)
+	`, providerID)
+	if err != nil {
+		return 0, err
+	}
+	return int(result.RowsAffected()), nil
 }
 
 // probeTarget is the (credential, model, base_url, protocol, api_key)
