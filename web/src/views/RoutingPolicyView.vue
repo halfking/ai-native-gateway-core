@@ -268,4 +268,22 @@ onMounted(load)
   color: var(--muted);
   font-size: 11px;
 }
+
+.featured-recommend-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  background: var(--bg-subtle, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 6px;
+}
+.featured-recommend-msg {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 200px;
+}
 </style>
