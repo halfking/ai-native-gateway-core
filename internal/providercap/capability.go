@@ -8,13 +8,19 @@ import (
 )
 
 type Descriptor struct {
-	Protocol              string
-	CatalogCode           string
+	Protocol               string
+	CatalogCode            string
 	SupportsModelsEndpoint bool
-	ModelListSource       string
-	ChatProbeEndpoint     upstreamurl.Endpoint
-	AuthStyle             string
-	SupportsBalanceProbe  bool
+	ModelListSource        string
+	ChatProbeEndpoint      upstreamurl.Endpoint
+	AuthStyle              string
+	SupportsBalanceProbe   bool
+	// BalanceEndpoint is the path appended to base_url to fetch account balance.
+	// Empty string means this vendor is not supported.
+	BalanceEndpoint string
+	// BalanceJSONPath is a dot-separated key path to the USD balance value in
+	// the response JSON.  e.g. "total_available" or "balance_infos.0.total_balance"
+	BalanceJSONPath string
 }
 
 func Resolve(protocol, catalogCode string) Descriptor {
@@ -38,10 +44,21 @@ func Resolve(protocol, catalogCode string) Descriptor {
 		d.AuthStyle = "anthropic"
 	}
 
+	// P3 (2026-06-19): per-vendor balance probe configuration.
 	switch catalogCode {
+	case "openai":
+		d.SupportsBalanceProbe = true
+		d.BalanceEndpoint = "/dashboard/billing/credit_grants"
+		d.BalanceJSONPath = "total_available"
+	case "deepseek":
+		d.SupportsBalanceProbe = true
+		d.BalanceEndpoint = "/user/balance"
+		d.BalanceJSONPath = "balance_infos.0.total_balance"
+	case "siliconflow":
+		d.SupportsBalanceProbe = true
+		d.BalanceEndpoint = "/user/info"
+		d.BalanceJSONPath = "data.balance"
 	case "openrouter":
-		// OpenRouter exposes account credit APIs, but current gateway does not
-		// manage provider-specific billing credentials for safe probing yet.
 		d.SupportsBalanceProbe = false
 	}
 
@@ -99,4 +116,14 @@ func ModelsURLCandidates(baseURL string, template *string, desc Descriptor) []st
 
 func ProbeEndpointURL(baseURL string, desc Descriptor) string {
 	return upstreamurl.Build(baseURL, desc.ChatProbeEndpoint)
+}
+
+// BalanceURL builds the full URL for fetching account balance.
+// Returns "" if SupportsBalanceProbe is false or BalanceEndpoint is empty.
+func BalanceURL(baseURL string, desc Descriptor) string {
+	if !desc.SupportsBalanceProbe || desc.BalanceEndpoint == "" {
+		return ""
+	}
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return base + desc.BalanceEndpoint
 }

@@ -151,6 +151,17 @@ onUnmounted(() => {
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 
+    <!-- Top Pagination -->
+    <div v-if="total > 0" class="card" style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;font-size:13px">
+      <div style="color:var(--muted)">
+        共 <strong>{{ total }}</strong> 条，当前 {{ offset + 1 }} - {{ Math.min(offset + limit, total) }}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" :disabled="offset === 0" @click="offset = Math.max(0, offset - limit); load()">← 上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="offset + limit >= total" @click="offset = offset + limit; load()">下一页 →</button>
+      </div>
+    </div>
+
     <div class="card" style="overflow:auto">
       <table class="data-table" style="min-width:1500px">
         <thead>

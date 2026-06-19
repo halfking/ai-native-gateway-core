@@ -122,6 +122,13 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
+
+    <div v-if="total > 50" class="pager">
+      <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">上一页</button>
+      <span class="cf-meta">{{ page }} / {{ Math.ceil(total / 50) }}</span>
+      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">下一页</button>
+    </div>
+
     <div class="card" style="overflow-x:auto">
       <table v-if="logs.length" class="data-table logs-table">
         <thead>
