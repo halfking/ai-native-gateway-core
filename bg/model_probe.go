@@ -185,7 +185,7 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		if decErr != nil {
 			// Decrypt failure counts as a hard auth failure; record
 			// the run + apply the consensus rule.
-			_, _, ns, nf, nst := r.computeConsensus("auth", q.state, "decrypt_error", q.succCnt, q.failCnt)
+			_, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, q.state, "decrypt_error", q.succCnt, q.failCnt)
 			r.recordRun(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "scheduler")
 			r.applyResult(timeoutCtx, q.t, "auth", nil, "decrypt_error", decErr.Error(), 0,
 				"unchanged", false, "scheduler", ns, nf, nst)
@@ -213,10 +213,10 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 			continue
 		}
 
-		status, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
+		status, category, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, q.t)
 
 		stateChange, applied, newSucc, newFail, newState := r.computeConsensus(
-			status, q.state, errCode, q.succCnt, q.failCnt,
+			status, category, q.state, errCode, q.succCnt, q.failCnt,
 		)
 
 		r.recordRun(timeoutCtx, q.t, status, &httpStatus, errCode, errMsg, latency,
@@ -244,19 +244,22 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 // computeConsensus returns the new (state_change, applied, succ, fail, newState)
 // tuple for one probe result, applying the consensus rule.
 //
+// Branch is on probeCategory, not raw status, so that http_4xx/http_5xx
+// outcomes are routed correctly: model_unavailable counts as a failure
+// while provider_error does not.
+//
 // Consensus rules (per RequiredConsensus = 3):
-//   - success: succ++; fail = 0
+//   - ok: succ++; fail = 0
 //     if succ >= 3 → newState = 'healthy_confirmed', state_change = 'recovered'
 //     else          newState = 'recovering',         state_change = 'unchanged'
-//   - failure: fail++; succ = 0
-//     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke' (informational only — binding is already unroutable)
+//   - model_unavailable: fail++; succ = 0
+//     if fail >= 3 → newState = 'broken_confirmed',  state_change = 'broke'
 //     else          newState = 'recovering',        state_change = 'unchanged'
-//   - skipped (manual_disabled, suspended, endpoint_unresolved): no state change.
-//   - skipped + errCode "endpoint_id_required": clear failure counters and reset
-//     to 'recovering' so broken_confirmed bindings re-enter the probe queue once
-//     the operator sets outbound_model_name.
+//   - provider_error (auth/network/5xx/rate_limit): succ = 0, fail unchanged
+//     so provider issues never cause a model to be marked broken_confirmed.
+//   - skipped: no state change, but endpoint_id_required resets counters.
 func (r *ModelProbeRunner) computeConsensus(
-	status, prevState, errCode string, prevSucc, prevFail int,
+	status string, category probeCategory, prevState, errCode string, prevSucc, prevFail int,
 ) (stateChange string, applied bool, newSucc, newFail int, newState string) {
 	newSucc = prevSucc
 	newFail = prevFail
@@ -264,8 +267,8 @@ func (r *ModelProbeRunner) computeConsensus(
 	stateChange = "unchanged"
 	applied = true
 
-	switch status {
-	case "ok":
+	switch category {
+	case probeCategoryOK:
 		newSucc = prevSucc + 1
 		newFail = 0
 		// If already healthy_confirmed, a watchdog success keeps us
@@ -281,14 +284,19 @@ func (r *ModelProbeRunner) computeConsensus(
 			newState = "healthy_confirmed"
 			stateChange = "recovered"
 		}
-	case "skipped":
+	case probeCategoryModelUnavailable:
+		// Genuine model problems (404 model_not_found, 400, 422, etc.) count as failures.
+		newFail = prevFail + 1
+		newSucc = 0
+		newState = "recovering"
+		if newFail >= RequiredConsensus {
+			newState = "broken_confirmed"
+			stateChange = "broke"
+		}
+	case probeCategorySkipped:
 		if errCode == "endpoint_id_required" {
-			// The probe was skipped because the model requires an endpoint ID
-			// (outbound_model_name) that has not been configured yet.  Prior
-			// probes may have incorrectly driven this binding to
-			// 'broken_confirmed' by using raw_model_name → 404.  Clear the
-			// failure counters and reset to 'recovering' so the binding
-			// re-enters the probe queue once outbound_model_name is set.
+			// Reset counters so broken_confirmed bindings re-enter the queue
+			// once outbound_model_name is set.
 			newSucc = 0
 			newFail = 0
 			newState = "recovering"
@@ -299,14 +307,11 @@ func (r *ModelProbeRunner) computeConsensus(
 			stateChange = "unchanged"
 		}
 	default:
-		// any failure (http_4xx, http_5xx, network, auth, unknown)
-		newFail = prevFail + 1
+		// probeCategoryProviderError: do NOT advance fail counter. Provider-side
+		// issues (auth, network, http_5xx, rate_limit) do not prove the model
+		// is unavailable.
 		newSucc = 0
 		newState = "recovering"
-		if newFail >= RequiredConsensus {
-			newState = "broken_confirmed"
-			stateChange = "broke"
-		}
 	}
 	return
 }
@@ -448,14 +453,25 @@ func (r *ModelProbeRunner) recordRun(
 	}
 }
 
+// probeCategory classifies why a probe failed, which determines whether
+// it counts toward the consensus failure counter.
+type probeCategory string
+
+const (
+	probeCategoryOK              probeCategory = "ok"               // upstream responded successfully
+	probeCategoryModelUnavailable probeCategory = "model_unavailable" // model genuinely not available (counts as failure)
+	probeCategoryProviderError    probeCategory = "provider_error"   // provider-side issue (does NOT count as failure)
+	probeCategorySkipped         probeCategory = "skipped"         // skipped (endpoint_id_required, etc.)
+)
+
 // probeModel fires a one-shot minimal chat completion at the upstream.
 func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
-	status string, httpStatus int, errCode, errMsg string, latencyMs int,
+	status string, category probeCategory, httpStatus int, errCode, errMsg string, latencyMs int,
 ) {
 	start := time.Now()
 
 	if t.BaseURL == "" {
-		return "skipped", 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
+		return "skipped", probeCategorySkipped, 0, "endpoint_unresolved", "empty base_url", int(time.Since(start).Milliseconds())
 	}
 	desc := providercap.Resolve(t.Protocol, "")
 	endpoint := providercap.ProbeEndpointURL(t.BaseURL, desc)
@@ -485,7 +501,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "network", 0, "request_build", err.Error(), int(time.Since(start).Milliseconds())
+		return "network", probeCategoryProviderError, 0, "request_build", err.Error(), int(time.Since(start).Milliseconds())
 	}
 	req.Header.Set("Content-Type", "application/json")
 	providercap.ApplyAuthHeaders(req, desc, t.APIKey)
@@ -493,7 +509,7 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "network", 0, "request_error", err.Error(), int(time.Since(start).Milliseconds())
+		return "network", probeCategoryProviderError, 0, "request_error", err.Error(), int(time.Since(start).Milliseconds())
 	}
 	defer resp.Body.Close()
 	latencyMs = int(time.Since(start).Milliseconds())
@@ -504,29 +520,35 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return "ok", httpStatus, "", "", latencyMs
+		return "ok", probeCategoryOK, httpStatus, "", "", latencyMs
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		return "auth", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
+		// Auth errors are provider-side issues (bad key, revoked permission) —
+		// not a model availability problem. Don't count as failure.
+		return "auth", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode == 404:
 		// If the provider says the model/endpoint doesn't exist AND we used
 		// the raw model name (outbound_model_name was not configured), this
 		// means the binding needs an endpoint ID to be testable.  Treat as
-		// skipped rather than a real failure so the probe state stays in
-		// 'recovering' and does not reach 'broken_confirmed'.
+		// skipped rather than a real failure so the binding is NOT driven to
+		// 'broken_confirmed'.
 		if t.OutboundModel == "" && probeutil.IsEndpointIDRequiredError(respBodyStr) {
-			return "skipped", httpStatus, probeutil.EndpointIDRequiredErrCode,
+			return "skipped", probeCategorySkipped, httpStatus, probeutil.EndpointIDRequiredErrCode,
 				"model requires an endpoint ID (outbound_model_name); set it to enable probing: " + truncate(respBodyStr, 300),
 				latencyMs
 		}
-		return "http_4xx", httpStatus, "model_not_found", truncate(respBodyStr, 500), latencyMs
+		// 404 with outbound_model set: model truly doesn't exist.
+		return "http_4xx", probeCategoryModelUnavailable, httpStatus, "model_not_found", truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode == 429:
-		return "http_4xx", httpStatus, "rate_limited", truncate(respBodyStr, 500), latencyMs
+		// Rate limiting is a provider-side issue, not a model availability problem.
+		return "http_4xx", probeCategoryProviderError, httpStatus, "rate_limited", truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		return "http_4xx", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
+		// Other 4xx (400, 422, etc.) indicate a genuine model problem.
+		return "http_4xx", probeCategoryModelUnavailable, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	case resp.StatusCode >= 500:
-		return "http_5xx", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
+		// Server-side errors are provider problems, not model availability.
+		return "http_5xx", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	default:
-		return "unknown", httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
+		return "unknown", probeCategoryProviderError, httpStatus, http.StatusText(resp.StatusCode), truncate(respBodyStr, 500), latencyMs
 	}
 }
 
@@ -567,44 +589,125 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	}
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
-		_, _, ns, nf, nst := r.computeConsensus("auth", prevState, "decrypt_error", prevSucc, prevFail)
-		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
-		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
-			"unchanged", false, "manual", ns, nf, nst)
-		return decErr
-	}
+_, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, prevState, "decrypt_error", prevSucc, prevFail)
+	r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
+	r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
+		"unchanged", false, "manual", ns, nf, nst)
+	return decErr
+}
 	t.APIKey = apiKey
 
-	status, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
-	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, prevState, errCode, prevSucc, prevFail)
+	status, category, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
+	stateChange, applied, newSucc, newFail, newState := r.computeConsensus(status, category, prevState, errCode, prevSucc, prevFail)
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
 	return nil
 }
 
-// TriggerAllManual resets next_retry_at for all probe states belonging to
-// credentials under this provider, and flips broken_confirmed → recovering.
-// The background cycle() will then pick them up on its next iteration.
-// Returns the count of bindings queued for probing.
-func (r *ModelProbeRunner) TriggerAllManual(ctx context.Context, providerID int) (int, error) {
-	result, err := r.db.Exec(ctx, `
-		UPDATE model_probe_state
-		SET next_retry_at = NOW(),
-		    state = CASE
-		        WHEN state = 'broken_confirmed' THEN 'recovering'
-		        ELSE state
-		    END,
-		    consecutive_successes = 0,
-		    consecutive_failures = 0
-		WHERE credential_id IN (
-		    SELECT id FROM credentials WHERE provider_id = $1
-		)
+// ProbeAllResult is the per-binding result returned by TriggerAllSync.
+type ProbeAllResult struct {
+	CredentialID  int    `json:"credential_id"`
+	RawModel      string `json:"raw_model_name"`
+	Status        string `json:"status"`   // ok, network, auth, http_4xx, http_5xx, skipped
+	Category      string `json:"category"` // ok, model_unavailable, provider_error, skipped
+	HTTPStatus    *int   `json:"http_status"`
+	ErrorCode     string `json:"error_code"`
+	ErrorMessage  string `json:"error_message"`
+	LatencyMs     int    `json:"latency_ms"`
+}
+
+// TriggerAllSync fires synchronous probes for ALL (credential, model) bindings
+// under a provider and returns real-time results immediately.
+// Unlike the background cycle(), this does NOT modify model_probe_state —
+// it only returns the live probe results so the operator can see what's
+// actually happening without changing any state.
+//
+// Provider-side errors (network, auth, http_5xx, rate_limit) are reported
+// separately from genuine model unavailability (404 model_not_found, 400, etc.)
+// so operators can distinguish upstream problems from actual model issues.
+func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) ([]ProbeAllResult, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	rows, err := r.db.Query(timeoutCtx, `
+		SELECT cmb.credential_id, pm.raw_model_name,
+		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
+		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.provider_id = $1
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 	`, providerID)
 	if err != nil {
-		return 0, err
+		return nil, fmt.Errorf("query bindings: %w", err)
 	}
-	return int(result.RowsAffected()), nil
+	defer rows.Close()
+
+	var results []ProbeAllResult
+	for rows.Next() {
+		var t probeTarget
+		var ciphertext []byte
+		if err := rows.Scan(
+			&t.CredentialID, &t.RawModel, &t.OutboundModel,
+			&t.BaseURL, &t.Protocol,
+			&ciphertext, &t.ManualDisabled,
+		); err != nil {
+			continue
+		}
+
+		if t.ManualDisabled {
+			results = append(results, ProbeAllResult{
+				CredentialID: t.CredentialID,
+				RawModel:     t.RawModel,
+				Status:       "skipped",
+				Category:     "skipped",
+				ErrorCode:    "manual_disabled",
+				ErrorMessage: "credential manually disabled; probe skipped",
+			})
+			continue
+		}
+
+		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
+		if decErr != nil {
+			results = append(results, ProbeAllResult{
+				CredentialID:  t.CredentialID,
+				RawModel:      t.RawModel,
+				Status:        "auth",
+				Category:      "provider_error",
+				ErrorCode:     "decrypt_error",
+				ErrorMessage:  decErr.Error(),
+			})
+			continue
+		}
+		t.APIKey = apiKey
+
+		status, category, httpStatus, errCode, errMsg, latency := r.probeModel(timeoutCtx, t)
+
+		var httpStatusPtr *int
+		if httpStatus > 0 {
+			httpStatusPtr = &httpStatus
+		}
+
+		results = append(results, ProbeAllResult{
+			CredentialID: t.CredentialID,
+			RawModel:     t.RawModel,
+			Status:       status,
+			Category:     string(category),
+			HTTPStatus:   httpStatusPtr,
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			LatencyMs:    latency,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return results, fmt.Errorf("iterate bindings: %w", err)
+	}
+
+	return results, nil
 }
 
 // probeTarget is the (credential, model, base_url, protocol, api_key)
