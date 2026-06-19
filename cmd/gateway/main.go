@@ -410,8 +410,10 @@ slog.Info("compressor initialized",
 		// the body around them. Disabled by default (no env var).
 		if memoraBase := os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"); memoraBase != "" {
 			memoraClient = memora.NewClient(memora.ClientConfig{
-				BaseURL: memoraBase,
-				APIKey:  os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
+				BaseURL:            memoraBase,
+				APIKey:             os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
+				SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
+				SmartSearchAPIKey:  os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_API_KEY"),
 			})
 			routingExec.Memora = memoraClient
 			// Async sink: fire-and-forget write buffer for L1 session
@@ -420,7 +422,11 @@ slog.Info("compressor initialized",
 			memoraSink = memora.NewSink(memoraClient, 2, 2048)
 			memoraSink.Start()
 			routingExec.MemoraSink = memoraSink
-			slog.Info("memora context-compression oracle enabled", "base_url", memoraBase)
+			smartSearchBase := os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL")
+			slog.Info("memora context-compression oracle enabled",
+				"base_url", memoraBase,
+				"smart_search_url", smartSearchBase,
+			)
 		} else {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
