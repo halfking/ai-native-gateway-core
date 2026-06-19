@@ -166,9 +166,37 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	// a timestamped request_id that no real request would use).
 	_, _ = pool.Exec(ctx, `DELETE FROM request_logs WHERE request_id = $1`, entry.RequestID)
 
-	// Helpful error message if a future regression breaks the
-	// placeholder/argument count: pgx reports it as
-	// "mismatched param and argument count" or "SQLSTATE 08P01
-	// protocol_violation". This substring catches both.
+	// Verify the new column write + also a sanity check that
+	// quality_flags and quality_fix_actions are written as
+	// non-NULL empty arrays (the DEFAULT-override footgun: an
+	// explicit nil bind in INSERT would trip the not-null check,
+	// so the helpers must coerce nil → []string{} / "{}" — see
+	// qualityFlagsArg/qualityActionsArg).
+	var (
+		gotFlags    []string
+		gotActions  []byte
+		gotSuccess  bool
+	)
+	err = pool.QueryRow(ctx, `
+		SELECT quality_flags, quality_fix_actions::text, success
+		FROM request_logs
+		WHERE request_id = $1
+	`, entry.RequestID).Scan(&gotFlags, &gotActions, &gotSuccess)
+	if err != nil {
+		t.Fatalf("verify quality columns: %v", err)
+	}
+	if gotFlags == nil {
+		t.Error("quality_flags should be a non-nil empty array, not nil")
+	}
+	if len(gotFlags) != 0 {
+		t.Errorf("quality_flags should be empty, got %v", gotFlags)
+	}
+	if string(gotActions) != "{}" {
+		t.Errorf("quality_fix_actions should be {}, got %q", string(gotActions))
+	}
+	if !gotSuccess {
+		t.Error("success should be true")
+	}
+
 	_ = strings.Contains // keep import for future use
 }

@@ -867,26 +867,31 @@ func nonEmptyPtr(p *string, fallback string) string {
 }
 
 // qualityFlagsArg converts a nil/empty []string into a value suitable
-// for binding to a text[] column. pgx's array codec requires either a
-// non-nil []string or an explicit nil interface to get NULL — passing
-// a zero-length slice inserts an empty array literal, which is fine
-// but inconsistent with the column DEFAULT. We pass nil so the
-// DEFAULT '{}' takes over and the row stays uniform with off-mode
-// legacy rows.
+// for binding to a text[] column.  The column is NOT NULL with a
+// DEFAULT '{}'::text[] — but specifying a column explicitly in the
+// INSERT (which the gateway must, since it has 60+ other columns)
+// OVERRIDES the default and applies whatever the bind value is.
+// Passing nil would then trip `null value in column "quality_flags"
+// violates not-null constraint` at runtime, so we coerce empty
+// slices into a non-nil `[]string{}` so the bind produces a real
+// empty array.  When the slice has elements we return it as-is.
 func qualityFlagsArg(flags []string) any {
-	if len(flags) == 0 {
-		return nil
+	if flags == nil {
+		return []string{}
 	}
 	return flags
 }
 
 // qualityActionsArg turns the JSONB payload into a value safe to bind
-// with pgx. nil json.RawMessage → NULL (DEFAULT '{}' wins). Empty
-// bytes (uninitialised marshal) are also NULL. Otherwise we cast the
-// bytes as text on the SQL side (see INSERT/UPDATE CAST($63 AS jsonb)).
+// with pgx.  The column is NOT NULL with a DEFAULT '{}'::jsonb —
+// the same DEFAULT-override caveat as qualityFlagsArg applies: an
+// explicit nil bind in the INSERT would trip the not-null check.
+// We therefore always return a non-nil byte slice; empty/missing
+// inputs become a literal "{}" which the SQL CAST($63 AS jsonb)
+// turns into a JSONB empty object, identical to the column DEFAULT.
 func qualityActionsArg(raw json.RawMessage) any {
 	if len(raw) == 0 {
-		return nil
+		return []byte("{}")
 	}
 	return []byte(raw)
 }
