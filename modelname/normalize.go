@@ -166,13 +166,30 @@ func NormalizeRouteKeyAliases(model string) []string {
 	// Always emit the canonical normalized form first so exact matches
 	// still win on the very first SQL hit (no wasted round trips).
 	add(base)
-	// Dot ↔ dash bridge. We run both substitutions against both forms
-	// so the resolver can bridge "claude-sonnet-4.6" ↔ "claude-sonnet-4-6"
-	// in either direction without needing a pre-populated alias.
-	add(strings.ReplaceAll(base, ".", "-"))   // dot → dash (canonical DB form)
-	add(strings.ReplaceAll(base, "-", "."))   // dash → dot (some clients use dots)
-	add(strings.ReplaceAll(strings.ReplaceAll(base, ".", "-"), "-", "."))
-	add(strings.ReplaceAll(strings.ReplaceAll(base, "-", "."), ".", "-"))
+	// 2026-06-19 audit: previous implementation called
+	//   strings.ReplaceAll(base, "-", ".")
+	// which destroyed family boundaries (e.g. "glm-5-1" → "glm.5.1"
+	// instead of "glm-5.1").  We now reuse versionPunctuationCartesian
+	// from variants.go: it only swaps the punctuation between two
+	// adjacent version digits via the versionDashPair / versionDotPair
+	// regexes, then recursively re-applies the same rule so multi-pair
+	// names like "qwen2.5-72b-instruct" reach the full cross-form
+	// closure.  Family separators like "-" / "_" between "glm" and
+	// "5" stay intact.
+	for _, v := range versionPunctuationCartesian(base) {
+		add(v)
+	}
+	for _, v := range versionPunctuationCartesian(strings.ReplaceAll(base, "_", "-")) {
+		add(v)
+	}
+	// wrapper-token stripping (e.g. "claude-sonnet-4-5-thinking" → "claude-sonnet-4-5")
+	// mirrors what GenerateAliasVariants does for the more general case.
+	for _, v := range stripWrapperVariants(base) {
+		add(v)
+		for _, p := range versionPunctuationCartesian(v) {
+			add(p)
+		}
+	}
 	if strings.TrimSpace(model) != base {
 		// Preserve the original case for callers that store mixed-case
 		// canonical names (e.g. "MiniMax-M2.7").  Lowercase the
