@@ -554,6 +554,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		qualityFlagsArg(entry.QualityFlags),
 		qualityActionsArg(entry.QualityFixActions),
 		entry.QualityScore,
+		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+		// (db/migrations/018_upstream_finish_reason.sql). The new column is
+		// the SOLE home for the upstream finish_reason.
+		entry.UpstreamFinishReason,
 	)
 	if err != nil {
 		return err
