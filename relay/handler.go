@@ -1133,7 +1133,34 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {
 			reqLog.ResponsePreview = strPtr(v)
 		}
-	} else {
+		// 2026-06-19 quality fix mode: pull stream-collected quality
+		// signals out of the capture summary. The stream reader
+		// already pushed the running flag list into the capture;
+		// the audit summary serialises it under "quality_flags".
+		if v, ok := m["quality_flags"].([]string); ok && len(v) > 0 {
+			reqLog.QualityFlags = v
+		}
+		if v, ok := m["quality_fix_actions"].(string); ok && v != "" {
+			reqLog.QualityFixActions = []byte(v)
+		}
+		if v, ok := m["quality_score"].(float64); ok {
+			reqLog.QualityScore = &v
+		}
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
+		// the post-processed quality signals into the request_log row.
+		// The non-stream path stores the result directly on
+		// ExecuteResult; the stream path already pushed them into the
+		// capture above (m["quality_flags"] etc.). For non-stream we
+		// simply read the fields that the executor set.
+		if len(result.QualityFlags) > 0 {
+			reqLog.QualityFlags = result.QualityFlags
+		}
+		if len(result.QualityFixActions) > 0 {
+			reqLog.QualityFixActions = result.QualityFixActions
+		}
+		if result.QualityScore != nil {
+			reqLog.QualityScore = result.QualityScore
+		}
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
 		if pt > 0 || ct > 0 {
 			reqLog.PromptTokens = &pt

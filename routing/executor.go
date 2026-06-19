@@ -102,6 +102,23 @@ type StripMinimaxFieldsFunc func(body []byte) []byte
 // Implementations are expected to be no-ops when toolsRequested is false.
 type XMLCoerceNonStreamFunc func(body []byte, toolsRequested bool) []byte
 
+// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+// QualityProcessNonStreamFunc is the per-provider tool_call quality
+// post-processor. It returns the (possibly rewritten) body plus the
+// four quality signals that the routing executor must propagate
+// back into the ExecuteResult for emitTelemetry to persist on the
+// request_log row.
+//
+// Implementations are expected to be no-ops when mode is "off" or
+// empty (returning the original body and zero signals).
+type QualityProcessNonStreamFunc func(body []byte, mode string) (outBody []byte, flags []string, fixActions []byte, score *float64)
+
+// QualitySetModeFunc stamps the per-provider quality_fix_mode onto
+// the upstream request context. relay/stream.go pulls it back out
+// with qualityFixModeFromContext on every SSE line so the streaming
+// path can run the same checks as the non-stream path.
+type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
+
 type Executor struct {
 	Router        *Router
 	Circuit       *circuit.Manager
@@ -115,6 +132,17 @@ type Executor struct {
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
 	// package does not need to import relay.
 	XMLCoerceNonStream XMLCoerceNonStreamFunc
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+	// QualityProcessNonStream is the per-provider tool_call quality
+	// post-processor for non-stream responses. Wired from main.go
+	// (relay.WrapQualityProcessNonStream) so the routing package
+	// does not need to import relay.
+	QualityProcessNonStream QualityProcessNonStreamFunc
+	// QualitySetMode stamps the per-provider mode onto the upstream
+	// request context. relay/stream.go reads it via
+	// qualityFixModeFromContext. Wired from main.go
+	// (relay.SetQualityFixModeOnContext wrapped as a func).
+	QualitySetMode QualitySetModeFunc
 	// AnthropicPassthroughStream is the Q4 Anthropic SSE forwarder with
 	// side-channel audit capture. Wired from main.go (relay.StreamAnthropicPassthrough).
 	AnthropicPassthroughStream AnthropicPassthroughFunc
@@ -347,6 +375,16 @@ type ExecuteResult struct {
 	// stays nil — kept here so the v7 §6 "single-level chain" invariant
 	// can be enforced in a future change without refactoring the struct.
 	ParentRequestID *string
+
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+	// QualityFlags is the per-request list of detected tool_call issues
+	// (empty_tool_name, duplicate_tool_call_id, …). QualityFixActions
+	// is the JSON-encoded per-flag {detected, renamed, dropped} tally.
+	// QualityScore is 0..1 from computeScore. All three are populated
+	// only when the chosen provider's quality_fix_mode is non-'off'.
+	QualityFlags      []string
+	QualityFixActions []byte // JSONB: {"empty_tool_name":{"detected":2,"renamed":1},...}
+	QualityScore      *float64
 }
 
 type AttemptRecord struct {
