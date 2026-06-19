@@ -105,20 +105,38 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 	if r.dbPool == nil {
 		return nil, nil
 	}
-	normalized := modelname.NormalizeRouteKey(clientModel)
+	variants := modelname.NormalizeRouteKeyAliases(clientModel)
+	if len(variants) == 0 {
+		return passthrough(clientModel), nil
+	}
+	normalized := variants[0]
 	rawLookup := strings.TrimSpace(strings.ToLower(clientModel))
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 
 	var canonicalID *int
 	var canonicalName *string
+	var hitPath string
 
-	err := r.dbPool.QueryRow(ctx, `
-		SELECT id, canonical_name
-		FROM models_canonical
-		WHERE lower(canonical_name) = lower($1)
-		  AND COALESCE(status, 'active') = 'active'
-	`, normalized).Scan(&canonicalID, &canonicalName)
-	if err == nil && canonicalID != nil {
+	// 2026-06-19 audit: walk the cross-form variant matrix so a
+	// request like "claude-sonnet-4.6" matches a DB canonical
+	// "claude-sonnet-4-6" (and the inverse).  The first matching
+	// variant wins; the original normalized form stays preferred.
+	for _, v := range variants {
+		err := r.dbPool.QueryRow(ctx, `
+			SELECT id, canonical_name
+			FROM models_canonical
+			WHERE lower(canonical_name) = lower($1)
+			  AND COALESCE(status, 'active') = 'active'
+		`, v).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			hitPath = "canonical"
+			break
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
+	}
+	if canonicalID != nil {
 		raw, err := r.aliasRawNames(ctx, *canonicalID, profile)
 		if err != nil {
 			return nil, err
@@ -129,29 +147,36 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			CanonicalID:    canonicalID,
 			CanonicalName:  canonicalName,
 			RawModels:      lowerUnique(all),
-			ResolutionPath: "canonical",
+			ResolutionPath: hitPath,
 		}, nil
 	}
-	if err != nil && err != pgx.ErrNoRows {
-		return nil, err
+
+	for _, v := range variants {
+		err := r.dbPool.QueryRow(ctx, `
+			SELECT mc.id, mc.canonical_name
+			FROM model_aliases ma
+			JOIN models_canonical mc ON mc.id = ma.canonical_id
+			WHERE lower(ma.raw_name) = lower($1)
+			  AND COALESCE(ma.status, 'active') = 'active'
+			  AND COALESCE(mc.status, 'active') = 'active'
+			  AND (
+			      ma.client_profiles IS NULL
+			      OR cardinality(ma.client_profiles) = 0
+			      OR $2 = ANY(ma.client_profiles)
+			      OR $2 = ''
+			  )
+			LIMIT 1
+		`, v, profile).Scan(&canonicalID, &canonicalName)
+		if err == nil && canonicalID != nil {
+			hitPath = "alias"
+			break
+		}
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
 	}
 
-	err = r.dbPool.QueryRow(ctx, `
-		SELECT mc.id, mc.canonical_name
-		FROM model_aliases ma
-		JOIN models_canonical mc ON mc.id = ma.canonical_id
-		WHERE lower(ma.raw_name) = lower($1)
-		  AND COALESCE(ma.status, 'active') = 'active'
-		  AND COALESCE(mc.status, 'active') = 'active'
-		  AND (
-		      ma.client_profiles IS NULL
-		      OR cardinality(ma.client_profiles) = 0
-		      OR $2 = ANY(ma.client_profiles)
-		      OR $2 = ''
-		  )
-		LIMIT 1
-	`, normalized, profile).Scan(&canonicalID, &canonicalName)
-	if err == nil && canonicalID != nil {
+	if canonicalID != nil {
 		raw, err := r.aliasRawNames(ctx, *canonicalID, profile)
 		if err != nil {
 			return nil, err
@@ -162,15 +187,12 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			CanonicalID:    canonicalID,
 			CanonicalName:  canonicalName,
 			RawModels:      lowerUnique(all),
-			ResolutionPath: "alias",
+			ResolutionPath: hitPath,
 		}, nil
-	}
-	if err != nil && err != pgx.ErrNoRows {
-		return nil, err
 	}
 
 	if rawLookup != "" && rawLookup != normalized {
-		err = r.dbPool.QueryRow(ctx, `
+		err := r.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
 			FROM model_aliases ma
 			JOIN models_canonical mc ON mc.id = ma.canonical_id
