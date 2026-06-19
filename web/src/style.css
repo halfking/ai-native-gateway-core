@@ -166,6 +166,9 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   flex-direction: column;
   padding: 20px;
   animation: drawer-slide-in .2s ease-out;
+  background: var(--card, #1c2128);
+  border-left: 1px solid var(--border, #30363d);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
 }
 .drawer-panel-wide {
   width: min(900px, 95vw);

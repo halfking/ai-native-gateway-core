@@ -43,6 +43,7 @@ const selectedModels = ref<string[]>([...FEATURED_MODELS])
 const allModels = ref<ModelCanonical[]>([])
 const allModelsLoading = ref(false)
 const allModelsLoaded = ref(false)
+const modelSearch = ref('')
 
 async function loadAllModels() {
   if (allModelsLoaded.value) return
@@ -74,12 +75,32 @@ function toggleModel(modelId: string) {
 }
 
 function selectAllModels() {
-  selectedModels.value = allModels.value.map(m => m.canonical_name)
+  selectedModels.value = filteredModels.value.map(m => m.canonical_name)
 }
 
 function deselectAllModels() {
   selectedModels.value = []
 }
+
+const filteredModels = computed(() => {
+  const q = modelSearch.value.trim().toLowerCase()
+  if (!q) return allModels.value
+  return allModels.value.filter(m =>
+    m.canonical_name.toLowerCase().includes(q) ||
+    (m.vendor && m.vendor.toLowerCase().includes(q)) ||
+    (m.display_name && m.display_name.toLowerCase().includes(q))
+  )
+})
+
+const groupedModels = computed(() => {
+  const groups = new Map<string, ModelCanonical[]>()
+  for (const m of filteredModels.value) {
+    const key = m.family || m.vendor || '其它'
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(m)
+  }
+  return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b))
+})
 
 // ── Generated content ───────────────────────────────────────────────────────
 const generatedFile = ref('')
@@ -169,7 +190,7 @@ function close() {
 
 <template>
   <div v-if="open" class="drawer-backdrop" @click.self="close">
-    <div class="drawer-panel">
+    <div class="drawer-panel drawer-panel-wide" @click.stop>
       <div class="drawer-header">
         <div class="dialog-title">
           <span>{{ toolInfo.icon }}</span>
@@ -178,7 +199,7 @@ function close() {
         <button class="btn btn-ghost btn-sm" @click="close">关闭 ✕</button>
       </div>
 
-      <div class="drawer-body-scroll" style="max-height: none; padding: 0; border: none; border-radius: 0; background: transparent;">
+      <div class="drawer-body-scroll">
 
         <!-- Step 1: API Key -->
         <div class="step-section">
@@ -234,37 +255,66 @@ function close() {
           <!-- All models from API -->
           <div v-if="selectedScope === 'all'" class="all-models-panel">
             <div class="all-models-toolbar">
-              <button class="btn btn-ghost btn-sm" @click="selectAllModels">全选</button>
+              <button class="btn btn-ghost btn-sm" @click="selectAllModels">全选当前</button>
               <button class="btn btn-ghost btn-sm" @click="deselectAllModels">清空</button>
-              <span class="model-count-label">{{ selectedModels.length }} / {{ allModels.length }} 已选</span>
+              <span class="model-count-label">
+                <strong>{{ selectedModels.length }}</strong> / {{ allModels.length }} 已选
+                <span v-if="modelSearch" class="filter-hint">（{{ filteredModels.length }} 匹配搜索）</span>
+              </span>
             </div>
+            <input
+              v-model="modelSearch"
+              type="text"
+              class="model-search-input"
+              placeholder="🔍 搜索模型名称 / 厂商 / family…"
+            />
             <div v-if="allModelsLoading" class="models-loading">加载中…</div>
-            <div v-else class="models-checklist">
-              <label
-                v-for="m in allModels"
-                :key="m.canonical_name"
-                class="model-check-item"
-              >
-                <input
-                  type="checkbox"
-                  :checked="selectedModels.includes(m.canonical_name)"
-                  @change="toggleModel(m.canonical_name)"
-                />
-                <span class="model-check-name">{{ m.canonical_name }}</span>
-                <span class="model-check-vendor">{{ m.vendor || m.family || '' }}</span>
-              </label>
+            <div v-else-if="filteredModels.length === 0" class="models-loading">没有匹配的模型</div>
+            <div v-else class="models-grouped">
+              <div v-for="[family, list] in groupedModels" :key="family" class="model-family-group">
+                <div class="model-family-header">
+                  <span class="model-family-name">{{ family }}</span>
+                  <span class="model-family-count">{{ list.length }}</span>
+                </div>
+                <div class="models-checklist">
+                  <label
+                    v-for="m in list"
+                    :key="m.canonical_name"
+                    class="model-check-item"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="selectedModels.includes(m.canonical_name)"
+                      @change="toggleModel(m.canonical_name)"
+                    />
+                    <span class="model-check-name" :title="m.canonical_name">{{ m.canonical_name }}</span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- Generate -->
-        <div class="step-section generate-section">
+        <!-- Sticky footer with primary action -->
+        <div class="drawer-footer">
+          <div class="footer-info" v-if="hasGenerated">
+            <span class="footer-hint">已生成 {{ selectedModels.length }} 个模型配置</span>
+          </div>
           <button
-            class="btn btn-primary"
+            v-if="!hasGenerated"
+            class="btn btn-primary footer-generate"
             :disabled="!selectedKeyId || generating"
             @click="generate"
           >
             {{ generating ? '生成中…' : '生成配置' }}
+          </button>
+          <button
+            v-else
+            class="btn btn-ghost footer-regenerate"
+            @click="generate"
+            :disabled="generating"
+          >
+            重新生成
           </button>
         </div>
 
@@ -274,8 +324,7 @@ function close() {
             <button :class="['tab-btn', activeTab === 'file' ? 'active' : '']" @click="activeTab = 'file'">配置文件</button>
             <button
               v-if="tool !== 'cherry_studio' && tool !== 'cursor'"
-              :class="['tab-btn', activeTab === 'script' ? 'active' : '']"
-              @click="activeTab = 'script'"
+              :class="['tab-btn', activeTab === 'script' ? 'active' : '']" @click="activeTab = 'script'"
             >配置脚本</button>
             <button :class="['tab-btn', activeTab === 'manual' ? 'active' : '']" @click="activeTab = 'manual'">手动步骤</button>
           </div>
@@ -325,6 +374,7 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  min-height: 0;
 }
 
 .step-section {
@@ -342,10 +392,10 @@ function close() {
 .select-field {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border, #2d3139);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, #30363d);
   border-radius: 8px;
-  color: var(--text, #e2e8f0);
+  color: var(--text, #e6edf3);
   font-size: 13px;
   outline: none;
 }
@@ -359,7 +409,7 @@ function close() {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
 }
 
 .badge {
@@ -369,13 +419,13 @@ function close() {
 }
 
 .badge-green {
-  background: rgba(34, 197, 94, 0.15);
+  background: rgba(63, 185, 80, 0.15);
   color: #4ade80;
 }
 
 .badge-yellow {
-  background: rgba(234, 179, 8, 0.15);
-  color: #facc15;
+  background: rgba(210, 153, 34, 0.15);
+  color: #fbbf24;
 }
 
 .os-tabs {
@@ -386,9 +436,9 @@ function close() {
 .os-tab {
   padding: 5px 14px;
   border-radius: 6px;
-  border: 1px solid var(--border, #2d3139);
+  border: 1px solid var(--border, #30363d);
   background: none;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s;
@@ -402,7 +452,7 @@ function close() {
 
 .path-hint {
   font-size: 12px;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
 }
 
 .scope-radios {
@@ -416,7 +466,7 @@ function close() {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: var(--text, #e2e8f0);
+  color: var(--text, #e6edf3);
   cursor: pointer;
 }
 
@@ -440,10 +490,11 @@ function close() {
 .all-models-panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border: 1px solid var(--border, #2d3139);
+  gap: 0;
+  border: 1px solid var(--border, #30363d);
   border-radius: 8px;
   overflow: hidden;
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .all-models-toolbar {
@@ -451,53 +502,164 @@ function close() {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.03);
-  border-bottom: 1px solid var(--border, #2d3139);
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--border, #30363d);
 }
 
 .model-count-label {
   font-size: 12px;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
   margin-left: auto;
+}
+
+.model-count-label strong {
+  color: var(--accent-h, #818cf8);
+  font-size: 13px;
+}
+
+.filter-hint {
+  color: var(--muted, #8b949e);
+  font-size: 11px;
+}
+
+.model-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text, #e6edf3);
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.model-search-input:focus {
+  background: rgba(99, 102, 241, 0.08);
+  border-bottom-color: var(--accent, #6366f1);
+}
+
+.model-search-input::placeholder {
+  color: var(--muted, #8b949e);
 }
 
 .models-loading {
   padding: 20px;
   text-align: center;
   font-size: 13px;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
+}
+
+.models-grouped {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.model-family-group {
+  margin-bottom: 4px;
+}
+
+.model-family-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border, #30363d);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.model-family-header:first-child {
+  border-top: none;
+}
+
+.model-family-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.model-family-count {
+  font-size: 11px;
+  color: var(--muted, #8b949e);
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 6px;
+  border-radius: 8px;
 }
 
 .models-checklist {
-  max-height: 280px;
-  overflow-y: auto;
-  padding: 4px 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 2px;
+  padding: 4px 8px 8px;
 }
 
 .model-check-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: 6px;
+  padding: 5px 8px;
   cursor: pointer;
   font-size: 12px;
+  border-radius: 4px;
   transition: background 0.1s;
 }
 
 .model-check-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.model-check-item input[type="checkbox"] {
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
 }
 
 .model-check-name {
-  color: var(--text, #e2e8f0);
-  font-family: monospace;
-  font-size: 12px;
+  color: var(--text, #e6edf3);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.model-check-vendor {
-  color: var(--muted, #94a3b8);
-  font-size: 11px;
-  margin-left: auto;
+.drawer-footer {
+  position: sticky;
+  bottom: -16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 0;
+  background: var(--card, #1c2128);
+  border-top: 1px solid var(--border, #30363d);
+  margin: 8px -20px -16px -20px;
+  padding-left: 20px;
+  padding-right: 20px;
+  z-index: 5;
+}
+
+.footer-info {
+  margin-right: auto;
+}
+
+.footer-hint {
+  font-size: 12px;
+  color: var(--muted, #8b949e);
+}
+
+.footer-generate,
+.footer-regenerate {
+  min-width: 140px;
+  font-weight: 600;
 }
 
 .generate-section {
@@ -505,7 +667,7 @@ function close() {
 }
 
 .results-section {
-  border-top: 1px solid var(--border, #2d3139);
+  border-top: 1px solid var(--border, #30363d);
   padding-top: 16px;
   display: flex;
   flex-direction: column;
@@ -515,7 +677,7 @@ function close() {
 .result-tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid var(--border, #2d3139);
+  border-bottom: 1px solid var(--border, #30363d);
   padding-bottom: 0;
 }
 
@@ -523,7 +685,7 @@ function close() {
   padding: 6px 14px;
   border: none;
   background: none;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
   font-size: 13px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -543,8 +705,9 @@ function close() {
 }
 
 .code-preview {
-  background: #1a1d23;
-  color: #e2e8f0;
+  background: #0d1117;
+  color: #e6edf3;
+  border: 1px solid var(--border, #30363d);
   border-radius: 8px;
   padding: 14px;
   font-size: 12px;
@@ -557,13 +720,10 @@ function close() {
 }
 
 .script-code {
-  background: #0d1117;
   color: #79c0ff;
 }
 
 .manual-text {
-  background: #0d1117;
-  color: #e2e8f0;
   white-space: pre-wrap;
 }
 
@@ -575,6 +735,6 @@ function close() {
 
 .action-hint {
   font-size: 12px;
-  color: var(--muted, #94a3b8);
+  color: var(--muted, #8b949e);
 }
 </style>
