@@ -192,7 +192,7 @@ watch(() => props.open, (val) => {
     selectedModels.value = []
     selectedOS.value = 'macos'
   }
-})
+}, { immediate: true })
 
 watch(selectedScope, async (scope) => {
   if (scope === 'all') {
@@ -290,7 +290,12 @@ function goManageFeatured() {
 
         <!-- Step 1: API Key -->
         <div class="step-section">
-          <div class="step-label">① 选择 API Key（当前租户下所有密钥）</div>
+          <div class="step-label">
+            <span>① 选择 API Key（当前租户下所有密钥）</span>
+            <button class="btn btn-ghost btn-sm refresh-btn" :disabled="keysLoading" @click="loadKeys">
+              {{ keysLoading ? '刷新中…' : '↻ 刷新' }}
+            </button>
+          </div>
           <select v-if="!keysLoading && keys.length > 0" v-model="selectedKeyId" class="select-field">
             <option v-for="k in keys" :key="k.id" :value="k.id">
               {{ k.key_prefix }}**** ({{ k.application_code }}, {{ k.status }})
@@ -528,7 +533,18 @@ function goManageFeatured() {
 .step-label {
   font-weight: 600;
   font-size: 13px;
-  color: var(--text, #e2e8f0);
+  color: var(--text, #e6edf3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.refresh-btn {
+  font-weight: 400;
+  font-size: 11px;
+  padding: 2px 8px;
+  color: var(--muted, #8b949e);
 }
 
 .select-field {
