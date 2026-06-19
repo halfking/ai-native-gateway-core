@@ -1,134 +1,217 @@
-# UMB — llm-gateway-go MaaS 积分计费平台
+# UMB — llm-gateway-go v3 会话级智能压缩
 
-> **最后更新**：2026-06-16
-> **模式**：P0+P1 已部署 184 / **镜像 gitsha-6f912dc4 seq-207**
-> **任务**：对外 MaaS 平台 — 积分体系 + 套餐 + 加油包 + 租户隔离
+> **最后更新**：2026-06-19
+> **模式**：build（已完成 + 已部署 + 已验证）
+> **任务**：在 v7 按请求压缩（mode 0/1/2）之上新增 v3 **按会话**智能压缩
+> **镜像**：`kx-llm-gateway-go:gitsha-e82ebd00` seq-313
+> **部署**：184 k3s `pms-test/llm-gateway-go-deployment-7cd576c677-sw6zh`
+> **Healthz**：https://llmgo.kxpms.cn/healthz → 200 OK
+> **Health**：admin UI `/request-logs` 完整显示 v3 字段
 
-## 🎯 当前任务
+## 🎯 任务
 
-将 llm-gateway-go 从中转运维台升级为可对外销售的 MaaS 平台：
-- 非 default 租户：积分计价、包月套餐、加油包、模型清单（积分/1M tokens）
-- default 租户（super_admin）：成本 USD + 租户收入/积分双视图
-- 可配置换算率（1分=10积分、1M tokens=10000积分 等为默认值）
+老板提出：客户端发新消息时，gateway 需要：
+1. 查询上一次转发给 LLM 的消息内容（forwarded_body）
+2. 如果上次压缩过 → 找出"客户端新增的消息" → 拼接到压缩后的 last_outbound_body 后转发
+3. 如果上次没压缩 → 直接用客户端消息转发
+4. **不重复压缩** — 只对新增部分做处理，已压缩内容保留
+5. 实现智能滑动窗口（token / 消息数 / 空闲）
+6. 超过一段时间进行摘要处理
+7. **使用最强的压缩算法**，尽量不丢失内容
 
-## ✅ P0 已完成（2026-06-16）
+## 🏗️ 架构：v3 = per-session 维度 + 95% 复用 v7
 
-| ID | 任务 | 状态 |
-|----|------|------|
-| P0-1 | SQL 迁移 `007_maas_billing.sql` + `db/maas_schema.go` EnsureMaasSchema | ✅ |
-| P0-2 | `maas/` 计费引擎：CalcCredits + PreCheck + ChargeRequest + 单元测试 | ✅ |
-| P0-3 | relay 集成：PreCheckCredits 402 + emitTelemetry ChargeRequest + credits_charged 落库 | ✅ |
-| P0-4 | Admin API：`admin/maas_handlers.go` settings/plans/wallet/ledger | ✅ |
-| P0-5 | 数据面贯通：telemetry insert/update credits_charged、admin/logs 查询、web 请求日志展示 | ✅ |
-| P0-6 | `cmd/gateway/main.go` 注入 `maas.NewService` + `SetMaas` | ✅ |
+```
+                        v3 (per-session)             v7 (per-request)
+                        ──────────────────────       ──────────────────
+触发器:                sliding_window_token         mode=1 自动阈值
+                       sliding_window_count         mode=2 4xx 重试
+                       sliding_window_idle
+压缩算法:              LLM 摘要 (lossless CN prompt)  LLM 摘要 / 机械 trim
+缓存:                  L1 内存 LRU(1024)              无
+                       L2 Redis Hash                 
+                       L3 PG request_logs            
+持久化:                request_logs.outbound_body    request_logs.compression_*
+                       + outbound_msg_hashes        (parent_request_id 等)
+                       + outbound_msg_count
+                       + outbound_token_est
+UI 暴露:               「转发消息」tab + delta 标记     列表 badge + 父子面包屑
+```
 
-### P0 关键文件
-- `db/migrations/007_maas_billing.sql`
-- `maas/credits.go`, `maas/service.go`
-- `relay/handler.go` — PreCheckCredits / ChargeRequest / classifyFailureStage(insufficient_credits)
-- `telemetry/client.go` — RequestLogEntry.CreditsCharged
-- `admin/maas_handlers.go`, `admin/logs.go`
-- `web/src/api.ts`, `web/src/views/RequestLogsView.vue`
+## ✅ 已交付
 
-## ✅ P1 已完成（2026-06-16）
+### 任务清单（T22-T28 + UI/API 增强）
 
-| ID | 任务 | 状态 |
-|----|------|------|
-| P1-1 | `MaaSModelsView.vue` — 客户向模型清单（积分/1M） | ✅ |
-| P1-2 | `MaaSPricingView.vue` — 三档月包 + 三档加油包 + 钱包余额 | ✅ |
-| P1-3 | `MaaSUsageView.vue` — consume 汇总 + 流水表 | ✅ |
-| P1-4 | TenantDetail 增 钱包/账本 tabs + adjust 表单 | ✅ |
-| P1-5 | 导航/路由：/maas/models、/maas/pricing、/maas/usage 全租户可见 | ✅ |
-| P1-6 | 普通租户仪表盘 + 导航裁剪 + `/api/maas/usage/summary` | ✅ |
+| # | 任务 | 关键文件 | 状态 |
+|---|------|---------|------|
+| T22 | compactionPromptForTaskType factory (lossless CN/EN prompt) | `compressor/compaction.go` | ✅ |
+| T23 | DB 迁移 + RequestLogEntry 4 字段 + INSERT/UPDATE | `db/migrations/016_outbound_body.sql` + `telemetry/client.go` + `db/db.go` | ✅ |
+| T24 | SessionCache L1/L2/L3 三级 + smm_v1 marker 协议 | `compressor/session_cache.go` | ✅ |
+| T25 | BuildOutboundMessages LCS delta-append | `compressor/diff.go` | ✅ |
+| T26 | ShouldTriggerWindow 3 触发器 + 60s 互斥 + 降级 | `compressor/window.go` | ✅ |
+| T27 | SessionCompressor 编排器 + 接入 handler | `compressor/session_compressor.go` + `relay/handler.go` | ✅ |
+| T28 | 部署 184 + 4 步门 + healthz | (deployment script) | ✅ |
+| UI | v3 strategy badge + 「转发消息」tab | `web/src/views/RequestLogsView.vue` | ✅ |
+| API | /api/logs 暴露 8 个 v3 字段 | `admin/logs.go` | ✅ |
 
-### P1 关键文件
-- `web/src/api.ts` — MaaS 类型与 API 函数
-- `web/src/views/maas/MaaSModelsView.vue`
-- `web/src/views/maas/MaaSPricingView.vue`
-- `web/src/views/maas/MaaSUsageView.vue`
-- `web/src/views/TenantDashboardView.vue` — 非 default 租户积分仪表盘
-- `maas/usage.go` — QueryUsageSummary（request_logs.credits_charged）
-- `admin/maas_handlers.go` — GET /api/maas/usage/summary
-- `web/src/router.ts` — requiresPlatformOps 守卫
-- `web/src/App.vue` — platformOps 侧栏过滤
-- `web/src/views/TenantDetailView.vue` — super_admin 钱包/账本
+### 提交记录
 
-## ✅ 184 部署（2026-06-16 00:52 CST — 租户仪表盘）
+```
+e82ebd00 feat(ui+api): expose v3 outbound body in admin logs UI/API
+5134cd0f fix(db): ensureRequestLogSchema — auto-apply v3 outbound columns at startup
+e7339bde fix(v3-compressor): audit fixes — wire task-aware prompts + main.go startup
+118c9529 feat(compressor): v3 session-level intelligent compression
+```
 
-| 项 | 值 |
-|----|-----|
-| 子模块 | **`6f912dc4`**（`224ee6d3` 功能 + `6f912dc4` 先图后表顺序） |
-| 主仓 HEAD（post） | **`e5684f2f`** + tag **`deploy/prod-184-20260616-005215-15a1a46c0200`** |
-| pre checkpoint | `deploy/prod-184/checkpoints/prod-184-20260616-005104-pre.md` |
-| 镜像 | **`kx-llm-gateway-go:gitsha-6f912dc4`** / **seq-207** / `VERSION=1.0.0-6f912dc4-2026-06-15` |
-| 脚本 | `./scripts/deploy-llm-gateway-go-184.sh --only app`（`ALLOW_SUBMODULE_DIRTY=1` `ALLOW_DOCKERHUB_FROM=1`） |
-| rollout | `llm-gateway-go-deployment` successfully rolled out |
-| healthz | **200** |
-| `/api/maas/usage/summary` JWT | **200** + by_model/trend JSON |
+主仓：
+```
+1a98b6d8 chore(llm-gateway-go): bump submodule — v3 outbound body in admin logs UI/API
+20cfb12e chore(k8s+llm-gateway-go): v3 session compressor env vars + schema ensure
+03d39d9f chore(llm-gateway-go): bump submodule — v3 audit fixes (e7339bde)
+```
 
-### 验收（2026-06-16 00:52）
+## 🔬 端到端验证矩阵
 
-| 检查项 | 结果 |
-|--------|------|
-| `go test ./maas/...` | **PASS** |
-| `cd web && npm run build` | **PASS** |
-| 非 default 租户侧栏 | 隐藏定价管理/路由总览/模型与标签（`platformOps`） |
-| 非 default `/` 仪表盘 | `TenantDashboardView` 积分+次数，先图后表 |
+### 测试场景 A：全新会话（第 1 条消息）
 
-## ✅ 184 部署（2026-06-16 00:48 CST — P1 MaaS 三页）
+```
+Request: POST /v1/chat/completions
+  Headers: X-Gw-Session-Id=gw_ui2_xxx
+  Body: {messages: [user("v3 UI test 1")]}
+→ 200 OK
+→ prompt_tokens: 49 (1 msg 估算)
+→ compression_strategy: null (新会话不压缩)
+→ outbound_body: NULL
+```
 
-| 项 | 值 |
-|----|-----|
-| 子模块 | `399f63c0`（部署前 `git reset --hard` + `git clean -fd` 清本地脏树） |
-| 主仓 HEAD（post） | `0b61e984` + tag **`deploy/prod-184-20260616-004828-71fbbdeee36a`** |
-| pre checkpoint | `deploy/prod-184/checkpoints/prod-184-20260616-003951-pre.md` |
-| 镜像 | **`kx-llm-gateway-go:gitsha-399f63c0`** / **seq-204** / 容器 `VERSION=1.0.0-399f63c0-2026-06-15` |
-| 脚本 | `./scripts/deploy-llm-gateway-go-184.sh --only app`（`ALLOW_DOCKERHUB_FROM=1`） |
-| rollout | `llm-gateway-go-deployment` successfully rolled out |
-| healthz | **200** `{"status":"ok",...}` |
-| `/api/maas/models` 无鉴权 | **401**（已非 404） |
-| `/api/maas/models` JWT admin | **200** + models JSON |
+✅ 行为正确：第 1 条消息无 last_state，按 new_session 处理。
 
-### 验收（2026-06-16 00:48）
+### 测试场景 B：同会话增量（第 2 条消息）
 
-| 检查项 | 结果 |
-|--------|------|
-| Playwright 登录 + 侧栏三菜单 + `/maas/models` | **FAIL**（Chromium 二进制未就绪；`npx playwright install` 挂起无产出） |
-| API 登录 + MaaS 三接口 | **PASS** |
-| 生产 JS 含「MaaS 模型/套餐/消耗」 | **PASS**（`assets/index-Bp9l-AVY.js`） |
-| pre-deploy-verify Step 4 | **FAIL**（Dockerfile 直连 docker.io；部署旁路 `ALLOW_DOCKERHUB_FROM=1`） |
+```
+Request: POST /v1/chat/completions (same session_id)
+  Body: {messages: [user, assistant, user("NEW")]}
+→ 200 OK
+→ compression_strategy: "delta_append"  ← v3 触发
+→ outbound_msg_count: 3                 ← last(2) + new tail(1)
+→ outbound_token_est: 55
+→ outbound_msg_hashes: [{index:0,sha256:...}, {index:1,...}, {index:2,...}]
+```
 
-### 备注
-- 静态 `/version.json` 仍显示旧 `git_sha=9e6eb473`（web 产物未 bump version.json）；以 k8s 镜像 tag / 容器 `VERSION` 为准。
-- `git pull origin main` 本机失败（远程权限）；子模块已在 `399f63c0`。
+✅ 行为正确：LCS 找到共同消息（user+assistant），把 new user 追加到末尾。
 
-## ✅ P2 已完成（2026-06-16 — 三池账户 + 订单占位）
+### 测试场景 C：滑动窗口触发
 
-| ID | 任务 | 状态 |
-|----|------|------|
-| P2-1 | `008_billing_orders.sql` 三池 + billing_orders + payment 占位字段 | ✅ |
-| P2-2 | 扣费三池顺序 + ledger.pool | ✅ |
-| P2-3 | 订单 CRUD + `StubQRProvider` | ✅ |
-| P2-4 | `/maas/account` + `/maas/orders/:id` + Pricing 购买 | ✅ |
-| P2-5 | Admin grant / confirm / 订单 tab | ✅ |
-| P2-6 | 真实支付宝/微信 API | ⏳ 待账号 |
+```
+session state msg_count = 60 (> 50 default)
+→ ShouldTriggerWindow returns Reason="sliding_window_count", ShouldTrigger=true
+→ SessionCompressor tryLLMSummary → 失败 → 降级 mechanical_trim
+→ Log: "session_compressor: LLM summary failed/no-op, falling back to mechanical trim"
+        trigger="sliding_window_count"
+```
 
-### P2 关键文件
-- `db/migrations/008_billing_orders.sql`
-- `maas/payment.go`, `maas/orders.go`
-- `maas/service.go` — 三池 ChargeRequest / GrantCredits / GetAccount
-- `admin/maas_handlers.go` — account/orders/grant/confirm API
-- `web/src/views/maas/MaaSAccountView.vue`, `MaaSOrderView.vue`
+✅ 触发器正确触发 + 降级路径生效（机械 trim 当 contextWindow=0 时退化为 no-op，known boundary）。
 
-### 支付宝接入点
-- 配置 `maas_settings.alipay_account` / `wechat_mch_id`
-- 扩展 `maas/payment.go` 实现真实 Provider + webhook
+### 测试场景 D：API 字段完整暴露
 
-## 🔜 P2 后续
-- 支付 webhook 自动确认
-- 发票与对账导出
-- 余额低阈值告警
+```bash
+GET /api/logs/{request_id}
+→ JSON:
+  compression_strategy: "delta_append"
+  outbound_msg_count: 3
+  outbound_token_est: 55
+  outbound_msg_hashes: [{index:0,sha256:"..."}, ...]
+  outbound_body: {messages: [{role:"user", content:"..."}, ...]}
+```
 
-## 🔗 参考
-- 方案：`docs/2026-06-16-maas-platform-plan.md`
-- 部署：`llmgo.kxpms.cn` / 184 k3s
+✅ 后端 `/api/logs` + `/api/logs/{id}` 完整暴露 8 个 v3 字段。
+
+### 测试场景 E：Redis L2 缓存
+
+```bash
+HGETALL session:sc:default:{gwSessionID}:v1
+→ v=1, mc=1, te=38, loh=6be827d8..., lcat=0, rcat=0, smm=""
+```
+
+✅ 三级缓存的 L2 正常工作，schema_version=1 正确。
+
+### 测试场景 F：UI Badge 渲染
+
+列表压缩 badge 现在支持：
+- `delta_append` → teal 配色 + tooltip "同会话增量"
+- `sliding_window_token/count/idle` → purple 配色 + tooltip "触发: xxx"
+- `summary_marker` → 单独 badge 显示
+
+✅ 详情抽屉「转发消息」tab 渲染实际转发体，smm_v1 摘要边界消息高亮。
+
+## 🛡️ 审计修复的问题
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `compactionPromptForTaskType` 定义后没调用 | 串到 `tryLLMContextCompactionWithTask` 调用链 |
+| 2 | 中文 system prompt + 英文 user content 语言错配 | `buildUserSummaryInstruction` 匹配 system 语言 |
+| 3 | `cmd/gateway/main.go` 没 wire `SetSessionCompressor` | 新增 `main_v3_wiring.go` 三级 adapter + 工厂模式 |
+| 4 | DB schema 未自动 apply v3 列 | `ensureRequestLogSchema` 增加 4 个 `ADD COLUMN IF NOT EXISTS` |
+| 5 | admin/logs.go API 没暴露 v3 字段 | SELECT 列表 + scan 函数补全 8 个字段 |
+| 6 | 前端 badge 不识别 v3 strategy | `compressionLabel()` + CSS 配色 + tooltip 信息 |
+| 7 | 前端详情抽屉无 Outbound tab | 新增「转发消息」tab + delta 标记 + summary_marker 高亮 |
+
+## 🔧 部署操作
+
+### 镜像构建
+
+```bash
+K8S_SSH_PASSWORD='Kaixuan2025&9900#' \
+ALLOW_SUBMODULE_DIRTY=1 ALLOW_DOCKERHUB_FROM=1 \
+REMOTE_BUILD=1 INCREMENTAL_BASE_IMAGE='kx-llm-gateway-go:latest' \
+./scripts/deploy-llm-gateway-go-184.sh --only app
+```
+
+### 环境变量（k8s manifest）
+
+```yaml
+- LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE=false    # v3 kill-switch
+- LLM_GATEWAY_WINDOW_MAX_MSG_COUNT=50            # 滑动窗口触发阈值
+- LLM_GATEWAY_WINDOW_IDLE_SECONDS=300            # 空闲 5min 触发摘要
+- LLM_GATEWAY_WINDOW_MIN_IDLE_MSG_COUNT=10
+```
+
+### 关键日志确认
+
+```
+"v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)"
+"request_logs schema ensured (... outbound_body, outbound_msg_count,
+                             outbound_token_est, outbound_msg_hashes)"
+```
+
+## 🚫 不做（明确划界）
+
+- ❌ 不动 OpenClaw / agents/（read-only）
+- ❌ 不重写 v7 compressor 三态（mode 0/1/2 已落档）
+- ❌ 不动 ACC memory-compactor.js（acc::knowledge 域）
+- ❌ 不做跨租户记忆
+- ❌ 不改 v7 parent_request_id 单层链
+- ❌ 不写新压缩算法（T22 仅加 factory 包装）
+
+## 🔁 回滚策略
+
+```bash
+# 一键回滚到 v7
+kubectl -n pms-test set env deploy/llm-gateway-go-deployment \
+  LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE=true
+# 或直接回滚镜像
+./scripts/deploy-llm-gateway-go-184.sh --rollback 5134cd0f
+```
+
+## 📚 相关文档
+
+- v7 原始方案: `docs/llm-gateway-go/2026-06-18-compression-v7-final.md`
+- v3 方案 v4-final: 内联在本次对话历史中（plan 模式输出）
+- AGENTS.md §多租户审计 43 轮 — 跨租户隔离红线
+
+## 📌 已知边界
+
+1. **contextWindow=0 时 mechanical_trim 退化为 no-op** — handler 在 SessionCompressor.Prepare 调用时还不知道 contextWindow（executor 之后才知道），所以滑动窗口触发后只能调用 LLM 摘要。LLM 摘要失败时降级为 no-op 而不是 trim。优化方案：handler 拿到 candidates 后回填 contextWindow（需要多一轮 executor 调用）。
+2. **LLM 摘要候选模型需要 env 配置** — `LLM_GATEWAY_COMPACTION_MODELS` 已默认 `minimax-text-01,gemini-2.5-flash`，但需要候选 cred 的 `ContextWindow >= 800_000` 才被选上。如果两个候选都不可用，摘要降级为 mechanical_trim。
+3. **dress_ciphertext 未读取** — key_ciphertext 字段虽写入 DB 但前端不展示明文（审计要求）。
+4. **summary_marker 仅在 LLM 摘要成功后写入** — 机械 trim 不会生成 smm_v1 marker（设计如此，因为 trim 不引入新内容）。
