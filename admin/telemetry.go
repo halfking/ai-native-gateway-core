@@ -75,6 +75,9 @@ type requestLogInput struct {
 	StreamInterrupted  *bool    `json:"stream_interrupted,omitempty"`
 	ResponseChecksum   *string  `json:"response_checksum,omitempty"`
 	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
+	// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+	// New column is the SOLE home for the upstream finish_reason.
+	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
 	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
 	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
 	RequestPreview     *string  `json:"request_preview,omitempty"`
@@ -254,7 +257,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			request_preview, transform_summary, response_preview,
 			request_body, response_body,
 			stream_first_chunk_ms, stream_chunk_count, stream_done_received,
-			stream_interrupted
+			stream_interrupted,
+			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+			-- New column is the SOLE home for the upstream finish_reason.
+			upstream_finish_reason
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -268,7 +274,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			$28, $29, $30,
 			CAST($31 AS jsonb), CAST($32 AS jsonb),
 			$33, $34, $35,
-			$36
+			$36,
+			$37
 		)
 	`,
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
@@ -284,6 +291,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.RequestBody, e.ResponseBody,
 		e.StreamFirstChunkMs, e.StreamChunkCount, e.StreamDoneReceived,
 		e.StreamInterrupted,
+		// 2026-06-19 T-NEW-7: see migration 018 + relay/handler.go.
+		e.UpstreamFinishReason,
 	)
 	if err != nil {
 		slog.Warn("telemetry ingest request_logs failed", "error", err)

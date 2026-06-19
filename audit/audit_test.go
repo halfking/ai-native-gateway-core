@@ -134,8 +134,14 @@ func TestStreamCapture_ObservePayload(t *testing.T) {
 	if m["stream_interrupted"].(bool) != false {
 		t.Error("expected interrupted=false")
 	}
-	if m["failure_detail_code"].(string) != "stop" {
-		t.Errorf("expected finish_reason=stop, got %v", m["failure_detail_code"])
+	// 2026-06-19 T-NEW-7: the upstream finish_reason now lives in
+	// `upstream_finish_reason`.  `failure_detail_code` is reserved for
+	// actual failures and is intentionally absent for a normal `stop`.
+	if m["upstream_finish_reason"].(string) != "stop" {
+		t.Errorf("expected upstream_finish_reason=stop, got %v", m["upstream_finish_reason"])
+	}
+	if _, present := m["failure_detail_code"]; present {
+		t.Errorf("failure_detail_code should NOT be set for a normal stop finish, got %v", m["failure_detail_code"])
 	}
 	if _, ok := m["stream_first_chunk_ms"]; !ok {
 		t.Error("expected first_chunk_ms to be set")
@@ -176,6 +182,12 @@ func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	m := sc.SummaryAsMap()
 	if m["stream_interrupted"].(bool) != true {
 		t.Error("expected interrupted=true")
+	}
+	// 2026-06-19 T-NEW-7: an interruption code is BOTH the
+	// upstream_finish_reason and the failure_detail_code (because
+	// "stream_timeout" is on the isInterruptionCode whitelist).
+	if m["upstream_finish_reason"].(string) != "stream_timeout" {
+		t.Errorf("expected upstream_finish_reason=stream_timeout, got %v", m["upstream_finish_reason"])
 	}
 	if m["failure_detail_code"].(string) != "stream_timeout" {
 		t.Errorf("expected reason=stream_timeout, got %v", m["failure_detail_code"])

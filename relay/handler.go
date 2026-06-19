@@ -1120,14 +1120,31 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 				}
 			}
 		}
-		// Persist the finish reason for successful streams too. The capture
-		// summary reuses "failure_detail_code" for the upstream finish_reason
-		// regardless of success/failure ("stop", "length", "tool_calls",
-		// "end_turn" for success; "eof_without_done", "stream_timeout" for
-		// interruption). Without this, the column is empty for normal 200s.
-		if reqLog.FailureDetailCode == nil {
-			if dc, ok := m["failure_detail_code"].(string); ok && dc != "" {
-				reqLog.FailureDetailCode = strPtr(dc)
+		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
+		// audit/audit.go::SummaryAsMap now publishes the upstream finish_reason
+		// under the new "upstream_finish_reason" key (for BOTH success and
+		// failure rows). It only republishes the value as
+		// "failure_detail_code" when the value is a known interruption code
+		// (e.g. eof_without_done, stream_timeout). The block below mirrors
+		// that discipline into the request_log row:
+		//
+		//   1. Read upstream_finish_reason → UpstreamFinishReason column.
+		//   2. Fall back to m["failure_detail_code"] for UpstreamFinishReason
+		//      ONLY if it wasn't set above (legacy pre-018 captures).
+		//   3. Do NOT touch FailureDetailCode here — that is already set by
+		//      the stream_interrupted branch above for real failures. For
+		//      successful streams we leave it NULL.
+		if v, ok := m["upstream_finish_reason"].(string); ok && v != "" {
+			reqLog.UpstreamFinishReason = strPtr(v)
+		}
+		if reqLog.UpstreamFinishReason == nil {
+			if v, ok := m["failure_detail_code"].(string); ok && v != "" {
+				// Legacy pre-018 capture path — promotion of the old
+				// "failure_detail_code == finish_reason" usage to the new
+				// column. Keep the value in BOTH columns for now so the
+				// admin UI does not regress before the next deploy
+				// rewires the relay-side capture.
+				reqLog.UpstreamFinishReason = strPtr(v)
 			}
 		}
 		if v, ok := m["response_preview"].(string); ok && v != "" && reqLog.ResponsePreview == nil {

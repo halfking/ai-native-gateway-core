@@ -170,6 +170,14 @@ type RequestLogEntry struct {
 	QualityFlags     []string        `json:"quality_flags,omitempty"`
 	QualityFixActions json.RawMessage `json:"quality_fix_actions,omitempty"`
 	QualityScore     *float64        `json:"quality_score,omitempty"`
+
+	// 2026-06-19 T-NEW-7: the upstream finish_reason (stop, tool_calls,
+	// length, end_turn, function_call, max_tokens, …). Stored in
+	// request_logs.upstream_finish_reason — the SOLE home for the
+	// finish_reason.  Distinct from FailureDetailCode which is now
+	// reserved for actual failure / interruption codes.  Populated for
+	// BOTH success and failure rows.
+	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
 }
 
 func NewClient() *Client {
@@ -446,7 +454,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
 			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			quality_flags, quality_fix_actions, quality_score
+			quality_flags, quality_fix_actions, quality_score,
+			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+			-- (db/migrations/018_upstream_finish_reason.sql). The new column is
+			-- the SOLE home for the upstream finish_reason.
+			upstream_finish_reason
 		) VALUES (
 			$1, now(), $2, $3, $4,
 			$5, $6, $7,
@@ -469,7 +481,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$52, $53,
 			$54, $55, $56, CAST($57 AS jsonb),
 			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
-			CAST($62 AS text[]), CAST($63 AS jsonb), $64
+			CAST($62 AS text[]), CAST($63 AS jsonb), $64,
+			$65
 		)
 	`,
 		entry.RequestID,
@@ -708,7 +721,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		       quality_flags        = COALESCE(CAST($59 AS text[]), rl.quality_flags),
 		       quality_fix_actions  = COALESCE(CAST($60 AS jsonb), rl.quality_fix_actions),
-		       quality_score        = COALESCE($61, rl.quality_score)
+		       quality_score        = COALESCE($61, rl.quality_score),
+		       -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+		       -- (db/migrations/018_upstream_finish_reason.sql). The new column is
+		       -- the SOLE home for the upstream finish_reason.
+		       upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason)
 		  FROM latest
 		 WHERE rl.id = latest.id
 		   AND rl.ts = latest.ts
@@ -779,6 +796,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		qualityFlagsArg(entry.QualityFlags),
 		qualityActionsArg(entry.QualityFixActions),
 		entry.QualityScore,
+		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+		// (db/migrations/018_upstream_finish_reason.sql). The new column is
+		// the SOLE home for the upstream finish_reason.
+		entry.UpstreamFinishReason,
 	)
 	if err != nil {
 		return err
