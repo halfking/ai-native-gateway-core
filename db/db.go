@@ -155,9 +155,9 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		-- 2026-06-19: quality fix mode (db/migrations/017_quality_fix_mode.sql).
 		-- Per-request tool_call quality signal columns. quality_flags is GIN-
 		-- indexed for cheap "which provider emits empty_tool_name most" lookups.
-		ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}',
-		    ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb,
-		    ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
+		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_flags        TEXT[]    NOT NULL DEFAULT '{}';
+		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_fix_actions JSONB    NOT NULL DEFAULT '{}'::jsonb;
+		ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS quality_score      NUMERIC(3,2);
 		CREATE INDEX IF NOT EXISTS idx_request_logs_quality_flags
 		    ON request_logs USING GIN (quality_flags)
 		    WHERE cardinality(quality_flags) > 0;
