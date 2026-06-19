@@ -384,3 +384,105 @@ func TestAppendOrUnique(t *testing.T) {
 		t.Fatalf("appendOrUnique must append new values; got %v", got)
 	}
 }
+
+// TestProcessStreamLine_MultipleEmptyNamesInOneChunk_PerOrdinalIndex
+// covers an audit-found regression: the previous implementation used
+// len(accFlags) as the ordinal for __unknown_tool_stream_<n>__
+// which collided the second and later empty tool_calls within the
+// same chunk. The fix uses the per-chunk tool_index counter so every
+// empty-named tool_call in one chunk gets a unique name.
+func TestProcessStreamLine_MultipleEmptyNamesInOneChunk_PerOrdinalIndex(t *testing.T) {
+	line := `data: {"choices":[{"delta":{"tool_calls":[
+		{"index":0,"function":{"name":"","arguments":"{}"}},
+		{"index":1,"function":{"name":"","arguments":"{}"}},
+		{"index":2,"function":{"name":"get_weather","arguments":"{}"}},
+		{"index":3,"function":{"name":"","arguments":"{}"}}
+	]}}]}` + "\n"
+	out, _, _ := ProcessStreamLine(line, QualityModeFix, nil, nil)
+	if !strings.Contains(out, `__unknown_tool_stream_0__`) {
+		t.Fatalf("first empty tool must rename to __unknown_tool_stream_0__, got %s", out)
+	}
+	if !strings.Contains(out, `__unknown_tool_stream_1__`) {
+		t.Fatalf("second empty tool must rename to __unknown_tool_stream_1__, got %s", out)
+	}
+	if !strings.Contains(out, `__unknown_tool_stream_3__`) {
+		t.Fatalf("fourth empty tool must rename to __unknown_tool_stream_3__, got %s", out)
+	}
+	if strings.Contains(out, `__unknown_tool_stream_2__`) {
+		t.Fatalf("index 2 is a real name (get_weather), must not collide with the unknown_tool rename")
+	}
+}
+
+// TestProcessStreamLine_SeenIDsMapIsReturned covers the audit fix
+// for relay/stream.go: callers pass capture.QualitySeenToolCallIDs
+// in and the function must return the (possibly lazy-initialised)
+// map so the caller can write it back. Without the round-trip the
+// dedup map is reset to nil on every chunk and the second duplicate
+// id slips through.
+func TestProcessStreamLine_SeenIDsMapIsReturned(t *testing.T) {
+	seen := map[string]int{}
+	_, _, returned := ProcessStreamLine(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"abc","function":{"name":"a","arguments":"{}"}}]}}]}`+"\n", QualityModeFix, nil, seen)
+	if returned == nil {
+		t.Fatal("ProcessStreamLine must return the (possibly lazy-init) seen map; got nil")
+	}
+	if returned["abc"] != 1 {
+		t.Fatalf("expected seen[\"abc\"]=1 after first call, got %d", returned["abc"])
+	}
+}
+
+// TestProcessNonStreamBody_DetectOnlyAlsoExposesScore covers the
+// audit fix: detect_only mode MUST populate the quality score
+// (not leave it nil) so dashboards can compare scores across
+// detect_only and fix modes. Before the fix, detect_only had
+// Score=nil which made the rollup "fix mode is more dangerous"
+// indistinguishable from "fix mode never happened".
+func TestProcessNonStreamBody_DetectOnlyAlsoExposesScore(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"tool_calls":[{"id":"a","function":{"name":""}}]}}]}`)
+	_, res := ProcessNonStreamBody(body, QualityModeDetectOnly)
+	if res.Score == nil {
+		t.Fatalf("detect_only with empty_tool_name must expose Score; got nil")
+	}
+	if *res.Score != 0.0 {
+		t.Fatalf("all-empty detect_only score must be 0.0 (same as fix); got %v", *res.Score)
+	}
+	if len(res.Flags) == 0 || res.Flags[0] != QualityFlagEmptyToolName {
+		t.Fatalf("detect_only must still flag empty_tool_name; got %v", res.Flags)
+	}
+}
+
+// TestProcessNonStreamBody_EmptyNameAndDuplicateIDCountedTogether
+// covers the audit fix: a tool_call with empty name AND duplicate
+// id was previously missed (the else-if branch returned early).
+// The fix counts both signals independently so a payload like
+// [empty+abc, empty+abc] is flagged empty_tool_name=2 AND
+// duplicate_tool_call_id=1, not just empty_tool_name=2.
+func TestProcessNonStreamBody_EmptyNameAndDuplicateIDCountedTogether(t *testing.T) {
+	body := []byte(`{
+		"choices":[{
+			"message":{
+				"tool_calls":[
+					{"id":"abc","type":"function","function":{"name":"","arguments":"{}"}},
+					{"id":"abc","type":"function","function":{"name":"","arguments":"{}"}}
+				]
+			},
+			"finish_reason":"tool_calls"
+		}]
+	}`)
+	_, res := ProcessNonStreamBody(body, QualityModeFix)
+	hasEmpty := false
+	hasDup := false
+	for _, f := range res.Flags {
+		if f == QualityFlagEmptyToolName {
+			hasEmpty = true
+		}
+		if f == QualityFlagDuplicateToolID {
+			hasDup = true
+		}
+	}
+	if !hasEmpty {
+		t.Fatalf("expected empty_tool_name flag, got %v", res.Flags)
+	}
+	if !hasDup {
+		t.Fatalf("expected duplicate_tool_call_id flag (id=abc repeats even when name empty); got %v", res.Flags)
+	}
+}

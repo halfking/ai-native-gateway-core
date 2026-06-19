@@ -366,7 +366,7 @@ func TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader([]byte(`{"content":[{"type":"text","text":"hi"}]}`))),
 	}
-	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix"); err != nil {
+	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	out := rec.Body.String()
@@ -399,11 +399,84 @@ func TestAnthropicExecutor_Q3QualityOffModePassesThrough(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
 	}
-	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "off"); err != nil {
+	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "off", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	if rec.Body.String() != string(convertedBody) {
 		t.Fatalf("off mode must be byte-identical; got diff")
+	}
+}
+
+// TestAnthropicExecutor_Q3QualitySignalsReturnedViaOutParam covers
+// the audit fix: the Q3 non-stream path must surface the
+// post-processor signals back to the executor so emitTelemetry
+// can persist them on the request_log row. Before the fix, the
+// signals were discarded (only the body was rewritten) so a
+// Q3 non-stream gpt-5.4 response was silently fixed but the row
+// carried no quality_flags and the rollup dashboard undercounted
+// the bad rate.
+func TestAnthropicExecutor_Q3QualitySignalsReturnedViaOutParam(t *testing.T) {
+	convertedBody := []byte(`{
+		"choices":[{
+			"message":{"tool_calls":[
+				{"id":"a","type":"function","function":{"name":"","arguments":"{}"}},
+				{"id":"b","type":"function","function":{"name":"get_weather","arguments":"{}"}}
+			]},
+			"finish_reason":"tool_calls"
+		}]
+	}`)
+	hook := func(body []byte, mode string) ([]byte, []string, []byte, *float64) {
+		var resp struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []map[string]any `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		_ = json.Unmarshal(body, &resp)
+		flags := []string{"empty_tool_name"}
+		score := 0.5
+		actions := []byte(`{"empty_tool_name":{"detected":1,"renamed":1}}`)
+		for ci, ch := range resp.Choices {
+			for i, tc := range ch.Message.ToolCalls {
+				fn, _ := tc["function"].(map[string]any)
+				if fn == nil {
+					continue
+				}
+				if name, _ := fn["name"].(string); name == "" {
+					fn["name"] = "__unknown_tool_" + strconvItoa(i) + "__"
+				}
+				_ = ci
+			}
+		}
+		out, _ := json.Marshal(resp)
+		return out, flags, actions, &score
+	}
+	ae := &AnthropicExecutor{
+		ClientProtocol: "openai-completions",
+		ChatResponseConverter: func(body []byte, clientModel string) ([]byte, error) {
+			return convertedBody, nil
+		},
+		QualityProcessNonStream: hook,
+	}
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+	}
+	var sig QualitySignals
+	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix", &sig); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	if len(sig.Flags) == 0 || sig.Flags[0] != "empty_tool_name" {
+		t.Fatalf("qualitySignals.Flags must carry empty_tool_name; got %v", sig.Flags)
+	}
+	if sig.Score == nil || *sig.Score != 0.5 {
+		t.Fatalf("qualitySignals.Score must carry 0.5; got %v", sig.Score)
+	}
+	if len(sig.FixActions) == 0 {
+		t.Fatalf("qualitySignals.FixActions must carry the per-flag action summary; got empty")
 	}
 }
 
@@ -430,7 +503,7 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(bytes.NewReader(anthropicBody)),
 	}
-	if err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix"); err != nil {
+	if err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix", nil); err != nil {
 		t.Fatalf("WriteNonStreamResponse: %v", err)
 	}
 	if hookCalled {

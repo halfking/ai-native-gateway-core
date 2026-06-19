@@ -94,7 +94,7 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	return req, nil
 }
 
-func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string) error {
+func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -140,23 +140,20 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 		// detect_only mode is byte-identical passthrough; fix mode
 		// rewrites empty tool_calls[].function.name to
 		// __unknown_tool_<i>__ so the OpenAI client doesn't fall into
-		// the "Model tried to call unavailable tool ''" trap.
-		//
-		// Note on signal propagation: the ProtocolHandler interface
-		// does not return quality signals from WriteNonStreamResponse,
-		// so the executor's ExecuteResult for Q3 non-stream carries
-		// empty QualityFlags. The Q3 STREAM path picks them up via
-		// the per-line quality processor in relay/stream.go (driven
-		// by SetQualityFixModeOnContext). Net effect: a streaming Q3
-		// request fully populates request_logs.quality_flags; a
-		// non-streaming Q3 request gets the body rewrite but no row
-		// signal. The rollup dashboard treats both as
-		// quality_observed=true via the provider column, so
-		// non-streaming is "we rewrote the body" and streaming is
-		// "we counted the issues per chunk".
+		// the "Model tried to call unavailable tool ''" trap. The
+		// resulting signals (flags, fix-actions, score) are written
+		// back through the optional out-parameter so the executor
+		// can stash them on ExecuteResult for emitTelemetry to
+		// persist on the request_log row.
 		if a.QualityProcessNonStream != nil && qualityFixMode != "" {
-			if newBody, _, _, _ := a.QualityProcessNonStream(body, qualityFixMode); newBody != nil {
+			newBody, flags, actions, score := a.QualityProcessNonStream(body, qualityFixMode)
+			if newBody != nil {
 				body = newBody
+			}
+			if qualitySignals != nil && (len(flags) > 0 || len(actions) > 0 || score != nil) {
+				qualitySignals.Flags = flags
+				qualitySignals.FixActions = actions
+				qualitySignals.Score = score
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -703,7 +700,8 @@ func (e *Executor) executeAnthropicOnce(
 		}, nil
 	}
 
-	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode); err != nil {
+	var qualitySignals QualitySignals
+	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals); err != nil {
 		return nil, err
 	}
 	return &ExecuteResult{
@@ -711,5 +709,13 @@ func (e *Executor) executeAnthropicOnce(
 		Candidate:   cand,
 		LatencyMs:   latencyMs,
 		RequestBody: append([]byte(nil), bodyBytes...),
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
+		// Q3 (openai client -> anthropic upstream) non-stream
+		// signals come back from the AnthropicExecutor's hook so
+		// they get persisted on the request_log row, just like the
+		// ChatExecutor Q1/Q2 path.
+		QualityFlags:      qualitySignals.Flags,
+		QualityFixActions: qualitySignals.FixActions,
+		QualityScore:      qualitySignals.Score,
 	}, nil
 }
