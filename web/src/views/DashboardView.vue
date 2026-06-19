@@ -11,12 +11,14 @@ import {
   getModelDiscoveryStatus,
   getHealth,
   getRecentModelFailures,
+  getCompressionStats,
   type UsageSummary,
   type ModelUsage,
   type DashboardOverview,
   type HotApiKeyEntry,
   type ModelDiscoveryStatusResponse,
   type HealthResponse,
+  type CompressionStats,
 } from '../api'
 import { store, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
@@ -28,6 +30,7 @@ const hotKeys = ref<HotApiKeyEntry[]>([])
 const discoveryStatus = ref<ModelDiscoveryStatusResponse | null>(null)
 const recentModelFailures = ref<{ raw_model_name: string; creds_affected: number; total_failures: number; last_failed_at: string; sample_error_code: string }[]>([])
 const health = ref<HealthResponse | null>(null)
+const compStats = ref<CompressionStats | null>(null)
 const loading = ref(false)
 const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
@@ -84,11 +87,16 @@ async function load() {
     models.value  = m
     overview.value = o
     hotKeys.value = h
+    void loadCompressionStats()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
   }
+}
+
+async function loadCompressionStats() {
+  try { compStats.value = await getCompressionStats(24) } catch { /* non-blocking */ }
 }
 
 function fmt(n: number | undefined, decimals = 0) {
@@ -303,9 +311,29 @@ function scheduleProbeFailuresPoll() {
         <div class="value">{{ fmt((overview.offline_models ?? 0) + (overview.offline_credentials ?? 0)) }}</div>
         <div class="sub">模型 {{ fmt(overview.offline_models) }} · 凭据 {{ fmt(overview.offline_credentials) }}</div>
       </div>
+      <!-- v3 压缩统计卡 (2026-06-20 P2) -->
+      <div class="stat-card" v-if="compStats">
+        <div class="label">
+          🤖 会话压缩
+          <span class="badge" style="font-size:9px;margin-left:4px">24h</span>
+        </div>
+        <div class="value">
+          {{ compStats.compressed_total }}
+          <span style="font-size:12px;color:var(--text-secondary,#6b7280)">/ {{ compStats.total_requests }}</span>
+        </div>
+        <div class="sub">
+          <span v-if="compStats.strategy_distribution['delta_append']">增量 {{ compStats.strategy_distribution['delta_append'] }} ·</span>
+          <span v-if="compStats.strategy_distribution['sliding_window_token'] || compStats.strategy_distribution['sliding_window_count']">
+            滑动 {{ (compStats.strategy_distribution['sliding_window_token']||0)+(compStats.strategy_distribution['sliding_window_count']||0) }} ·
+          </span>
+          <span v-if="compStats.strategy_distribution['delta_append'] || compStats.strategy_distribution['sliding_window_token']" style="color:var(--success,#22c55e)">
+            ≈{{ compStats.total_tokens_after ? fmt(compStats.total_tokens_after) : '—' }} 出站 token
+          </span>
+        </div>
+      </div>
     </div>
     <div class="stat-grid" v-else-if="loading">
-      <div class="stat-card" v-for="i in 8" :key="i">
+      <div class="stat-card" v-for="i in 9" :key="i">
         <div class="label" style="background:var(--border);height:12px;width:80px;border-radius:4px"></div>
         <div class="value" style="background:var(--border);height:32px;width:60px;border-radius:4px;margin-top:8px"></div>
       </div>
