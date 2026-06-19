@@ -1109,7 +1109,7 @@ onMounted(async () => {
 
 .family-chip {
   border: 1px solid var(--border);
-  background: rgba(255,255,255,.02);
+  background: rgba(139,148,158,.15);
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 12px;
