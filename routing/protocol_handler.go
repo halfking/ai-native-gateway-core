@@ -6,6 +6,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
+// QualitySignals is the per-request outcome of the
+// tool_call quality post-processor (017_quality_fix_mode.sql). The
+// WriteNonStreamResponse implementations write this out so the
+// executor can propagate the signals into ExecuteResult, which
+// in turn feeds relay/handler.go emitTelemetry →
+// request_logs.quality_flags / quality_fix_actions / quality_score.
+type QualitySignals struct {
+	Flags      []string
+	FixActions []byte
+	Score      *float64
+}
+
 // ProtocolHandler encapsulates all protocol-specific behavior for an
 // executor run. Each method corresponds to one decision point the
 // common executor MUST make (build req, parse resp, extract usage,
@@ -32,7 +44,14 @@ type ProtocolHandler interface {
 	// interface signature (rather than a separate Executor field)
 	// so that the Q3 Anthropic → OpenAI conversion path can apply
 	// the same OpenAI-shaped quality check that ChatExecutor runs.
-	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string) error
+	//
+	// The optional out parameter `qualitySignals` lets the
+	// implementation return the post-processor signals (flags,
+	// fix-actions, score) so the executor can stash them on
+	// ExecuteResult for emitTelemetry. Implementations that do not
+	// run a quality hook MUST leave *qualitySignals untouched; the
+	// caller treats nil as "no signals".
+	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error
 
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether
