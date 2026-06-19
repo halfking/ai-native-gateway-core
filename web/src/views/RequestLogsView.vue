@@ -41,6 +41,24 @@ const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
 
+const showCompressionGuide = ref(false)
+
+// Compute compression statistics for the info bar at the top.
+const compressionStats = computed(() => {
+  const present = rows.value.filter(r => r.compression_strategy || r.outbound_body)
+  const delta = present.filter(r => r.compression_strategy === 'delta_append')
+  const sliding = present.filter(r => r.compression_strategy && r.compression_strategy.startsWith('sliding_window'))
+  const v7 = present.filter(r => r.compression_reason)
+  const mechanical = present.filter(r => r.compression_strategy === 'mechanical_trim')
+  return {
+    totalCompressed: present.length,
+    deltaCount: delta.length,
+    slidingCount: sliding.length,
+    v7Count: v7.length,
+    mechanicalCount: mechanical.length,
+  }
+})
+
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
@@ -697,6 +715,72 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
+// v3 savings helpers (2026-06-20). Compute human-readable byte/token
+// savings between request_body and outbound_body.
+function bodyBytes(obj: any): number {
+  if (!obj) return 0
+  if (typeof obj === 'string') return new Blob([obj]).size
+  return new Blob([JSON.stringify(obj)]).size
+}
+
+function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string; msgReductionStr: string; hasSaving: boolean } {
+  const hasOutbound = !!row.outbound_body
+  if (!hasOutbound) return { savingStr: '', tokenSavingStr: '', msgReductionStr: '', hasSaving: false }
+  const reqBytes = bodyBytes(row.request_body)
+  const outBytes = bodyBytes(row.outbound_body)
+  const savingBytes = reqBytes - outBytes
+  const savingPct = reqBytes > 0 ? Math.round((savingBytes / reqBytes) * 100) : 0
+
+  // Token saving: estimate from request vs outbound
+  const reqTok = row.outbound_token_est ? Math.round(row.outbound_token_est * (reqBytes / (outBytes || 1))) : 0
+  const outTok = row.outbound_token_est || 0
+  const tokDiff = reqTok - outTok
+  const tokPct = reqTok > 0 ? Math.round((tokDiff / reqTok) * 100) : 0
+
+  // Message reduction: count messages from request vs outbound
+  const reqMsgs = extractMessagesFromBody(row.request_body).length
+  const outMsgs = row.outbound_msg_count ?? extractMessagesFromBody(row.outbound_body).length
+  const msgDiff = reqMsgs - outMsgs
+  const msgPct = reqMsgs > 0 ? Math.round((msgDiff / reqMsgs) * 100) : 0
+
+  const fmtBytes = (b: number) => b > 1024 ? `${(b / 1024).toFixed(1)}KB` : `${b}B`
+  const savingStr = reqBytes > outBytes ? `-${fmtBytes(savingBytes)} (${savingPct}%)` : '≈0'
+  const tokenSavingStr = tokDiff > 0 ? `-${tokDiff} (${tokPct}%)` : '≈0'
+  const msgReductionStr = msgDiff > 0 ? `-${msgDiff} (${msgPct}%)` : `${msgDiff >= 0 ? '0' : '+' + Math.abs(msgDiff)}`
+
+  return { savingStr, tokenSavingStr, msgReductionStr, hasSaving: true }
+}
+
+// Returns a human-readable explanation sentence for the compression strategy.
+function compressExplainText(row: any): string {
+  const strat = row.compression_strategy
+  if (!strat) return ''
+  const reason = row.compression_reason || ''
+  const meta = row.compression_meta as Record<string, any> | null
+  switch (strat) {
+    case 'delta_append':
+      return '该请求处于已有会话中，网关只转发了新增的消息（已压缩的历史保留在缓存中），无需重新发送完整历史。'
+    case 'sliding_window_token':
+    case 'sliding_window_count':
+    case 'sliding_window_idle':
+      return [
+        `会话消息过多，触发了${strat === 'sliding_window_token' ? 'Token 阈值' : strat === 'sliding_window_idle' ? '空闲超时' : '消息数阈值'}`,
+        meta?.summary_marker ? '，已由 LLM 生成无损摘要保留关键信息。' : '，已触发滑动窗口压缩。',
+      ].join('')
+    case 'mechanical_trim':
+      if (reason === 'mode_2_on_4xx') return '上游供应商返回 context_length 错误（上下文超限），网关对历史消息进行了机械裁剪以适配上游窗口限制。'
+      return 'LLM 摘要压缩失败后降级，采用机械裁剪方式保留 system + 首条 user + 最近 N 对消息。'
+    case 'memora_l1_inject':
+      return '上下文超出窗口，网关从 Memora 检索了该用户的 L1 事实作为"动态上下文"注入到请求中。'
+    case 'llm_summary':
+      return '上下文超出窗口，已由 LLM 生成结构化摘要（User Intent / Completed Work / …），压缩后替换了旧消息。'
+    case 'noop':
+      return '压缩被跳过（模式配置为 off，或 warmup 阶段事实不足）。'
+    default:
+      return strat ? `压缩策略: ${strat}` : ''
+  }
+}
+
 function roleColor(role: string): string {
   switch (role) {
     case 'user': return 'var(--info, #3b82f6)'
@@ -739,6 +823,57 @@ onMounted(async () => {
 
     <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
       非 default 租户只能查看最近 3 天的请求日志
+    </div>
+
+    <!-- v3 压缩说明卡片 (2026-06-20) -->
+    <div class="compression-guide-card" style="margin-bottom:12px;border:1px solid var(--border,#333);border-radius:8px;overflow:hidden;font-size:12px">
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary,#1a1a2e)"
+        @click="showCompressionGuide = !showCompressionGuide"
+      >
+        <span style="font-weight:600;display:flex;align-items:center;gap:6px">
+          <span>🤖 压缩与会话缓存说明</span>
+          <span v-if="compressionStats.totalCompressed > 0" class="badge" style="font-size:10px;padding:2px 6px">
+            本页 {{ compressionStats.totalCompressed }} 条已压缩
+            <template v-if="compressionStats.deltaCount"> · 增量拼接 {{ compressionStats.deltaCount }}</template>
+            <template v-if="compressionStats.slidingCount"> · 滑动窗口 {{ compressionStats.slidingCount }}</template>
+          </span>
+        </span>
+        <span style="color:var(--text-secondary,#6b7280);font-size:11px">{{ showCompressionGuide ? '收起 ▲' : '展开 ▼' }}</span>
+      </div>
+      <div v-if="showCompressionGuide" style="padding:8px 12px 12px;border-top:1px solid var(--border,#333);line-height:1.7">
+        <p style="margin:0 0 6px"><strong>会话缓存机制</strong>：网关按 <code>X-Gw-Session-Id</code> 维度缓存会话历史。
+        同一会话的多轮请求不再重复发送完整历史，只发送新增部分。缓存分三级：
+        L1 进程内存 / L2 Redis / L3 数据库兜底。</p>
+        <p style="margin:0 0 6px"><strong>压缩策略说明</strong>：</p>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <tr>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e);white-space:nowrap">策略</th>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e)">触发条件</th>
+            <th style="text-align:left;padding:3px 6px;border:1px solid var(--border,#444);background:var(--surface-primary,#16213e)">效果</th>
+          </tr>
+          <tr>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:var(--success,#22c55e)">增量拼接 (delta_append)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">同会话有新增消息</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">只转发新增的消息（已压缩历史保留在缓存中）</td>
+          </tr>
+          <tr>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:var(--warning,#f59e0b)">滑动窗口 (sliding_window)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">消息数 ≥ 50 / Token超阈值 / 空闲 ≥ 5 分钟</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">触发 LLM 无损摘要（保留关键事实、路径、ID、错误等）→ 摘要失败时降级为机械裁剪</td>
+          </tr>
+          <tr>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:#b45309">机械裁剪 (mechanical_trim)</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">上游 4xx context_length / 滑动窗口摘要失败</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">从最早消息开始逐对裁剪，保留 system + 首条 user + 最近 N 对</td>
+          </tr>
+          <tr>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444);white-space:nowrap;color:#6d28d9">Memora 注入</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">上下文超限时检索 Memora L1 事实</td>
+            <td style="padding:3px 6px;border:1px solid var(--border,#444)">将历史事实作为"动态上下文"注入请求</td>
+          </tr>
+        </table>
+      </div>
     </div>
 
     <div class="compact-filter-bar compact-filter-bar--stacked">
@@ -980,6 +1115,10 @@ onMounted(async () => {
                   <span class="badge-sep">·</span>
                   <span class="badge-strategy">{{ compressionLabel(r)!.strategy }}</span>
                 </span>
+                <div v-if="calcSavingDetail(r).hasSaving" class="cell-line2 saving-text">
+                  {{ calcSavingDetail(r).savingStr }}
+                  <span v-if="calcSavingDetail(r).tokenSavingStr" class="saving-token"> · {{ calcSavingDetail(r).tokenSavingStr }}</span>
+                </div>
                 <div
                   v-if="r.parent_request_id"
                   class="cell-line2 parent-id parent-id-clickable"
@@ -1064,12 +1203,25 @@ onMounted(async () => {
                    Displayed when v3 ran for this request (compression_strategy
                    in {delta_append, sliding_window_*, mechanical_trim}). -->
               <template v-if="hasOutboundBody(detail)">
-                <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? '—' }}</span>
-                <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? '—' }}</span>
-                <span v-if="outboundSummaryMarker(detail)">
-                  <strong>摘要标记:</strong>
-                  <span class="summary-marker-badge" :title="outboundSummaryMarker(detail)">{{ truncate(outboundSummaryMarker(detail), 24) }}</span>
-                </span>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;background:var(--surface-primary,#16213e);border-radius:6px;margin-top:4px;font-size:12px">
+                  <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? '—' }}</span>
+                  <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? '—' }}</span>
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--success,#22c55e);font-weight:600">
+                    节约: {{ calcSavingDetail(detail).savingStr }}
+                  </span>
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--warning,#f59e0b)">
+                    Token: {{ calcSavingDetail(detail).tokenSavingStr }}
+                  </span>
+                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--text-secondary,#6b7280)">
+                    消息: {{ calcSavingDetail(detail).msgReductionStr }}
+                  </span>
+                  <span v-if="outboundSummaryMarker(detail)">
+                    <span class="summary-marker-badge" :title="outboundSummaryMarker(detail)">含 LLM 摘要</span>
+                  </span>
+                </div>
+                <div v-if="detail.compression_strategy" style="margin-top:4px;font-size:11px;color:var(--text-secondary,#6b7280)">
+                  {{ compressExplainText(detail) }}
+                </div>
               </template>
             </div>
           </div>
@@ -1430,6 +1582,26 @@ onMounted(async () => {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+/* v3 compression savings text in the table compression column */
+.cell-line2.saving-text {
+  font-size: 10px;
+  color: var(--success, #22c55e);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cell-line2.saving-text .saving-token {
+  color: var(--warning, #f59e0b);
+}
+
+/* Compression guide card in-page styling */
+.compression-guide-card code {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface-primary, #16213e);
 }
 </style>
 
