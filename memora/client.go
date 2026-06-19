@@ -17,11 +17,13 @@ import (
 
 // Client is a thin HTTP client for the Memora / MemOS product API.
 type Client struct {
-	baseURL       string
-	apiKey        string
-	http          *http.Client
-	addTimeout    time.Duration
-	searchTimeout time.Duration
+	baseURL            string
+	apiKey             string
+	http               *http.Client
+	addTimeout         time.Duration
+	searchTimeout      time.Duration
+	smartSearchBaseURL string
+	smartSearchAPIKey  string
 }
 
 // ClientConfig configures a new Client. All fields are optional.
@@ -30,6 +32,17 @@ type ClientConfig struct {
 	APIKey        string
 	AddTimeout    time.Duration
 	SearchTimeout time.Duration
+	// SmartSearchBaseURL (2026-06-20) overrides BaseURL for the M1
+	// /api/smart_search endpoint. Empty = use BaseURL (legacy single-host
+	// mode). When set, Search() and Add() still use BaseURL but
+	// SmartSearch() hits this URL instead. This lets the gateway point
+	// legacy MemOS calls at the MemOS service and the new 5-step pipeline
+	// at the kxmemory Dashboard (which proxies to MemOS + Qdrant).
+	SmartSearchBaseURL string
+	// SmartSearchAPIKey (2026-06-20) is the API key for the Dashboard
+	// smart_search route. Empty = reuse APIKey (when SmartSearchBaseURL
+	// == BaseURL). Required when SmartSearchBaseURL is set and differs.
+	SmartSearchAPIKey string
 }
 
 // NewClient builds a Client from the given config.
@@ -43,12 +56,22 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.SearchTimeout == 0 {
 		cfg.SearchTimeout = 200 * time.Millisecond
 	}
+	smartBase := cfg.SmartSearchBaseURL
+	if smartBase == "" {
+		smartBase = cfg.BaseURL
+	}
+	smartKey := cfg.SmartSearchAPIKey
+	if smartKey == "" {
+		smartKey = cfg.APIKey
+	}
 	return &Client{
-		baseURL:       cfg.BaseURL,
-		apiKey:        cfg.APIKey,
-		addTimeout:    cfg.AddTimeout,
-		searchTimeout: cfg.SearchTimeout,
-		http:          &http.Client{Timeout: cfg.AddTimeout},
+		baseURL:            cfg.BaseURL,
+		apiKey:             cfg.APIKey,
+		addTimeout:         cfg.AddTimeout,
+		searchTimeout:      cfg.SearchTimeout,
+		http:               &http.Client{Timeout: cfg.AddTimeout},
+		smartSearchBaseURL: smartBase,
+		smartSearchAPIKey:  smartKey,
 	}
 }
 
@@ -240,13 +263,13 @@ func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int
 	cctx, cancel := context.WithTimeout(ctx, c.searchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost,
-		c.baseURL+"/api/smart_search", &buf)
+		c.smartSearchBaseURL+"/api/smart_search", &buf)
 	if err != nil {
 		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.smartSearchAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.smartSearchAPIKey)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
