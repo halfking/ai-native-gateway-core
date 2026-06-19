@@ -2510,6 +2510,19 @@ export function getHealth(full = false) {
   return req<HealthResponse>('GET', `/healthz${full ? '?full=true' : ''}`)
 }
 
+// ── Compression Stats (2026-06-20 P2) ──────────────────────────────────────
+
+export interface CompressionStats {
+  total_requests: number
+  compressed_total: number
+  strategy_distribution: Record<string, number>
+  total_tokens_after?: number
+}
+
+export function getCompressionStats(hours = 24) {
+  return req<CompressionStats>('GET', `/api/admin/compression/stats?hours=${hours}`)
+}
+
 // ── User Management (JWT) ──────────────────────────────────────────────────
 
 
