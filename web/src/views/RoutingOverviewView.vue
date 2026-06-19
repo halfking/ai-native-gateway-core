@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   getRoutingModelTree,
+  getFeaturedModelsDynamic,
+  patchFeatured,
   type RoutingModelTreeResponse,
   type RoutingTreeCredential,
+  type FeaturedModel,
 } from '../api'
-import { isReadOnlyMode } from '../store'
+import { isReadOnlyMode, isSuperAdmin } from '../store'
 
 interface FlatVariant {
   id: string
@@ -27,8 +31,13 @@ const featuredOnly = ref(false)
 const selectedSeries = ref('')
 const selectedVariantId = ref('')
 const readOnly = computed(() => isReadOnlyMode())
+const router = useRouter()
+const canManageFeatured = computed(() => isSuperAdmin())
+const recommendLoading = ref(false)
+const recommendMessage = ref('')
 
 const featuredSet = computed(() => new Set(tree.value.featured.map(s => s.toLowerCase())))
+const hasFeaturedConfigured = computed(() => tree.value.featured.length > 0)
 
 const flatVariants = computed((): FlatVariant[] => {
   const out: FlatVariant[] = []
@@ -196,6 +205,34 @@ function toggleFeatured() {
   load()
 }
 
+const showFeaturedEmptyState = computed(() =>
+  !loading.value && featuredOnly.value && variantPills.value.length === 0,
+)
+
+async function adoptRecommendedFeatured() {
+  if (!canManageFeatured.value) {
+    router.push({ path: '/routing-policy' })
+    return
+  }
+  recommendLoading.value = true
+  recommendMessage.value = ''
+  try {
+    const resp = await getFeaturedModelsDynamic()
+    const models: FeaturedModel[] = (resp?.models ?? []).filter(m => m.name)
+    if (models.length === 0) {
+      recommendMessage.value = '没有可推荐的模型（最近 7 天无请求或策略已空）'
+      return
+    }
+    await patchFeatured(models.map(m => m.name))
+    recommendMessage.value = `已采用 ${models.length} 个推荐模型作为特色`
+    await load()
+  } catch (e: unknown) {
+    recommendMessage.value = e instanceof Error ? e.message : '采用推荐失败'
+  } finally {
+    recommendLoading.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -265,6 +302,32 @@ onMounted(load)
               {{ v.variant }}
               <span class="pill-count" :class="v.routableCount > 0 ? 'ok' : 'bad'">{{ v.routableCount }}/{{ v.credentials.length }}</span>
             </button>
+          </div>
+        </div>
+        <div v-else-if="showFeaturedEmptyState" class="featured-empty-card">
+          <div class="featured-empty-head">
+            <span class="featured-empty-icon">★</span>
+            <strong>尚未配置特色模型</strong>
+          </div>
+          <p class="featured-empty-desc">
+            <span v-if="hasFeaturedConfigured">
+              已配置 {{ tree.featured.length }} 个特色模型，但当前没有任何变体可路由（可能全部处于熔断 / 限流 / 退役状态）。
+            </span>
+            <span v-else>
+              「仅特色」筛选依赖 <code>routing_policy.featured_models</code>，当前为空。
+            </span>
+          </p>
+          <p v-if="recommendMessage" class="featured-empty-msg">{{ recommendMessage }}</p>
+          <div class="featured-empty-actions">
+            <button
+              v-if="canManageFeatured"
+              class="btn btn-sm btn-primary"
+              :disabled="recommendLoading"
+              @click="adoptRecommendedFeatured"
+            >⚡ 一键采用最近 7 天 Top {{ recommendLoading ? '加载中…' : '推荐' }}</button>
+            <router-link to="/routing-policy" class="btn btn-sm btn-ghost">
+              ⚙ 前往路由策略手动配置
+            </router-link>
           </div>
         </div>
         <div v-else class="text-muted empty-inline">暂无匹配模型</div>
@@ -478,6 +541,54 @@ onMounted(load)
 
 .loading-hint { padding: 12px; text-align: center; color: var(--muted); font-size: 11px; }
 .empty-inline { padding: 8px 0; font-size: 11px; }
+
+.featured-empty-card {
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--card));
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  margin-top: 4px;
+}
+.featured-empty-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.featured-empty-icon {
+  color: var(--accent-h);
+  font-size: 14px;
+}
+.featured-empty-desc {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0 0 8px 0;
+  line-height: 1.5;
+}
+.featured-empty-desc code {
+  font-size: 10px;
+  padding: 1px 4px;
+  background: var(--bg-subtle);
+  border-radius: 3px;
+}
+.featured-empty-msg {
+  font-size: 11px;
+  color: var(--accent-h);
+  margin: 0 0 6px 0;
+}
+.featured-empty-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.featured-empty-actions .btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
 .hint-card { text-align: center; padding: 16px; }
 .hint-card p { margin: 0; }
 .text-muted { color: var(--muted); font-size: 10px; }

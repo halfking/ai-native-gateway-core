@@ -604,6 +604,9 @@ onUnmounted(() => stopPoll())
           <router-link to="/routing-overview" class="nav-link-wt chip-link">
             模型路由全景
           </router-link>
+          <router-link to="/routing-policy" class="nav-link-wt chip-link">
+            路由策略
+          </router-link>
         </div>
         <button class="btn btn-sm btn-ghost refresh-btn" @click="loadIndex(); loadAudit(); activeTab === 'analytics' && loadAnalytics(); activeTab === 'policy' && loadPolicy()" title="刷新">↻</button>
       </div>
