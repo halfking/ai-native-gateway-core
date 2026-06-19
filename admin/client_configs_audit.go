@@ -31,10 +31,10 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 	}
 
 	validActions := map[string]bool{
-		"generate":          true,
-		"download_script":   true,
-		"copy_config":       true,
-		"manual_view":      true,
+		"generate":        true,
+		"download_script": true,
+		"copy_config":    true,
+		"manual_view":     true,
 	}
 	validTools := map[string]bool{
 		"zcode":         true,
@@ -72,7 +72,7 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 		"ip":          r.RemoteAddr,
 		"user_agent":  r.UserAgent(),
 	}
-
-	h.writeAuditLog(r, "client_config_"+req.Action, "client_config", 0, details)
+	detailsJSON, _ := json.Marshal(details)
+	h.writeAuditLog(r, "client_config_"+req.Action, "client_config", 0, string(detailsJSON))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
