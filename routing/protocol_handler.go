@@ -24,7 +24,15 @@ type ProtocolHandler interface {
 	// WriteNonStreamResponse writes a complete upstream response to
 	// the client. It is called only when the request was non-stream
 	// and the upstream responded 2xx with a parseable body.
-	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel string) error
+	//
+	// qualityFixMode is the per-provider tool_call quality mode loaded
+	// from cand.QualityFixMode (017_quality_fix_mode.sql). Empty
+	// string means "off" — implementations MUST skip the quality
+	// post-processor in that case. The hook is part of the
+	// interface signature (rather than a separate Executor field)
+	// so that the Q3 Anthropic → OpenAI conversion path can apply
+	// the same OpenAI-shaped quality check that ChatExecutor runs.
+	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string) error
 
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether

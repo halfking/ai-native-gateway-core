@@ -58,6 +58,21 @@ type AnthropicExecutor struct {
 	// request. Empty defaults to "anthropic-messages" (Q4 passthrough).
 	// "openai-completions" selects the Q3 conversion paths above.
 	ClientProtocol string
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
+	// QualityProcessNonStream is the per-provider tool_call quality
+	// post-processor for the Q3 (openai client -> anthropic upstream)
+	// non-stream response. The Anthropic → OpenAI converter
+	// (ChatResponseConverter) produces an OpenAI-shaped body, so the
+	// same OpenAI processor as the chat executor works here. Wired
+	// from main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
+	//
+	// Q4 (anthropic passthrough) is left unprocessed for now: the
+	// Anthropic Messages schema uses `tool_use.name` directly (no
+	// nested `function.name`), and Anthropic SDK clients fail closed
+	// on empty `tool_use.name` rather than degrading to a
+	// user-friendly fallback. Adding a separate Anthropic-shape
+	// processor is tracked in the deployment notes.
+	QualityProcessNonStream QualityProcessNonStreamFunc
 }
 
 var _ ProtocolHandler = (*AnthropicExecutor)(nil)
@@ -79,7 +94,7 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	return req, nil
 }
 
-func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel string) error {
+func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string) error {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -117,6 +132,31 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 			} else {
 				slog.Warn("anthropic_to_chat convert failed; forwarding raw body",
 					"error", convErr, "request_id", clientModel)
+			}
+		}
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		// After Anthropic → OpenAI conversion the body is OpenAI-shaped,
+		// so the same quality processor used by ChatExecutor works here.
+		// detect_only mode is byte-identical passthrough; fix mode
+		// rewrites empty tool_calls[].function.name to
+		// __unknown_tool_<i>__ so the OpenAI client doesn't fall into
+		// the "Model tried to call unavailable tool ''" trap.
+		//
+		// Note on signal propagation: the ProtocolHandler interface
+		// does not return quality signals from WriteNonStreamResponse,
+		// so the executor's ExecuteResult for Q3 non-stream carries
+		// empty QualityFlags. The Q3 STREAM path picks them up via
+		// the per-line quality processor in relay/stream.go (driven
+		// by SetQualityFixModeOnContext). Net effect: a streaming Q3
+		// request fully populates request_logs.quality_flags; a
+		// non-streaming Q3 request gets the body rewrite but no row
+		// signal. The rollup dashboard treats both as
+		// quality_observed=true via the provider column, so
+		// non-streaming is "we rewrote the body" and streaming is
+		// "we counted the issues per chunk".
+		if a.QualityProcessNonStream != nil && qualityFixMode != "" {
+			if newBody, _, _, _ := a.QualityProcessNonStream(body, qualityFixMode); newBody != nil {
+				body = newBody
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -365,6 +405,11 @@ func (e *Executor) executeAnthropic(
 			StreamRetryThreshold: e.StreamRetryThreshold,
 		},
 		ClientProtocol: params.ClientProtocol,
+		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): the
+		// Q3 non-stream path runs the OpenAI-shaped quality processor
+		// after the Anthropic → OpenAI conversion. Wired from
+		// main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
+		QualityProcessNonStream: e.QualityProcessNonStream,
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
@@ -658,7 +703,7 @@ func (e *Executor) executeAnthropicOnce(
 		}, nil
 	}
 
-	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel); err != nil {
+	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode); err != nil {
 		return nil, err
 	}
 	return &ExecuteResult{

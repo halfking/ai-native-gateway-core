@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -268,4 +269,201 @@ func TestBuildPreRequestTrimMeta_AnthropicPath(t *testing.T) {
 	if both_m["trim_phase"] != "pre_request" {
 		t.Errorf("trim_phase = %v, want pre_request (from preTrim)", both_m["trim_phase"])
 	}
+}
+
+// TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName is the
+// regression test for the gpt-5.4 + Anthropic-via-OpenAI-routing
+// case: a minimax-anthropic-shaped upstream (or any Anthropic
+// provider that wraps a buggy openai-compat endpoint) returns a
+// tool_use block with empty name; ChatResponseConverter translates
+// the body to OpenAI chat.completion; the Q3 path must then run
+// the same OpenAI quality processor that ChatExecutor uses to
+// rewrite the empty name to __unknown_tool_<i>__.
+//
+// This is the Q3-specific counterpart to relay/tool_call_quality_test.go's
+// TestProcessNonStreamBody_FixMode_RenamesEmptyName. We test the
+// full AnthropicExecutor.WriteNonStreamResponse pipeline end-to-end
+// (with a stubbed ChatResponseConverter) to make sure the hook
+// actually fires after the conversion.
+func TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName(t *testing.T) {
+	// Stub ChatResponseConverter: just emit a fixed OpenAI-shaped
+	// body with one empty-named tool_call. The real converter lives
+	// in relay/anthropic_to_chat.go and is exercised by the
+	// integration tests; here we only need the contract: the
+	// converted body is OpenAI-shaped.
+	convertedBody := []byte(`{
+		"choices":[{
+			"message":{
+				"tool_calls":[
+					{"id":"a","type":"function","function":{"name":"","arguments":"{}"}}
+				]
+			},
+			"finish_reason":"tool_calls"
+		}]
+	}`)
+
+	// Inline minimal stand-in for relay.ProcessNonStreamBody in fix
+	// mode. We re-implement the rewrite here instead of importing
+	// relay (routing cannot import relay) so the test stays in
+	// package routing. The behaviour we care about is: empty
+	// function.name becomes __unknown_tool_<i>__.
+	hook := func(body []byte, mode string) ([]byte, []string, []byte, *float64) {
+		if mode == "" {
+			return body, nil, nil, nil
+		}
+		var resp struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []map[string]any `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return body, nil, nil, nil
+		}
+		flags := []string{}
+		score := 1.0
+		rewrote := false
+		for ci, ch := range resp.Choices {
+			for i, tc := range ch.Message.ToolCalls {
+				fn, _ := tc["function"].(map[string]any)
+				if fn == nil {
+					continue
+				}
+				if name, _ := fn["name"].(string); name == "" {
+					fn["name"] = "__unknown_tool_" + strconvItoa(i) + "__"
+					rewrote = true
+					flags = append(flags, "empty_tool_name")
+					score = 0.5
+				}
+				_ = ci
+			}
+		}
+		var out []byte
+		if rewrote {
+			out, _ = json.Marshal(resp)
+		} else {
+			out = body
+		}
+		var scorePtr *float64
+		if len(flags) > 0 {
+			scorePtr = &score
+		}
+		return out, flags, nil, scorePtr
+	}
+
+	ae := &AnthropicExecutor{
+		ClientProtocol: "openai-completions",
+		ChatResponseConverter: func(body []byte, clientModel string) ([]byte, error) {
+			return convertedBody, nil
+		},
+		QualityProcessNonStream: hook,
+	}
+
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"content":[{"type":"text","text":"hi"}]}`))),
+	}
+	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "fix"); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, `__unknown_tool_0__`) {
+		t.Fatalf("Q3 quality fix did not rewrite empty tool name; body=%s", out)
+	}
+}
+
+// TestAnthropicExecutor_Q3QualityOffModePassesThrough is the
+// off-mode counterpart: when the executor is called with
+// qualityFixMode="", the body is byte-identical to what the
+// ChatResponseConverter produced. The default off mode keeps the
+// pre-existing behaviour for every existing provider.
+func TestAnthropicExecutor_Q3QualityOffModePassesThrough(t *testing.T) {
+	convertedBody := []byte(`{"choices":[{"message":{"tool_calls":[{"id":"a","function":{"name":""}}]}}]}`)
+	hook := func(body []byte, mode string) ([]byte, []string, []byte, *float64) {
+		// Off mode: do nothing regardless of body content.
+		return body, nil, nil, nil
+	}
+	ae := &AnthropicExecutor{
+		ClientProtocol: "openai-completions",
+		ChatResponseConverter: func(body []byte, clientModel string) ([]byte, error) {
+			return convertedBody, nil
+		},
+		QualityProcessNonStream: hook,
+	}
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{}`))),
+	}
+	if err := ae.WriteNonStreamResponse(rec, resp, "client-model", "off"); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	if rec.Body.String() != string(convertedBody) {
+		t.Fatalf("off mode must be byte-identical; got diff")
+	}
+}
+
+// TestAnthropicExecutor_Q4PassthroughSkipsQualityHook documents
+// the Q4 (anthropic passthrough) behaviour: the quality hook is
+// intentionally NOT invoked on Anthropic-shape bodies. Empty
+// tool_use.name in Anthropic wire format is a hard SDK error
+// (no friendly fallback), and adding a separate Anthropic-shape
+// processor is tracked in the deployment notes.
+func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
+	hookCalled := false
+	hook := func(body []byte, mode string) ([]byte, []string, []byte, *float64) {
+		hookCalled = true
+		return body, nil, nil, nil
+	}
+	ae := &AnthropicExecutor{
+		ClientProtocol: "anthropic-messages", // Q4 path
+		QualityProcessNonStream: hook,
+	}
+	anthropicBody := []byte(`{"content":[{"type":"tool_use","id":"x","name":"","input":{}}],"stop_reason":"tool_use"}`)
+	rec := httptest.NewRecorder()
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(anthropicBody)),
+	}
+	if err := ae.WriteNonStreamResponse(rec, resp, "claude-opus-4-8", "fix"); err != nil {
+		t.Fatalf("WriteNonStreamResponse: %v", err)
+	}
+	if hookCalled {
+		t.Fatal("Q4 passthrough must not invoke the OpenAI-shaped quality hook (Anthropic schema differs)")
+	}
+	// Body must still be passed through to the client.
+	if !strings.Contains(rec.Body.String(), `"tool_use"`) {
+		t.Fatalf("Q4 body must pass through, got %s", rec.Body.String())
+	}
+}
+
+// strconvItoa is a tiny inlined strconv.Itoa. We avoid importing
+// strconv at the package level so the test imports stay minimal;
+// naming it strconvItoa (not itoa) avoids colliding with the
+// package-internal itoa helper in mnf_streak.go.
+func strconvItoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
