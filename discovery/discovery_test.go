@@ -161,6 +161,89 @@ func TestInferFamily_MiMo(t *testing.T) {
 	}
 }
 
+// TestInferFamily_VendorCollapsing covers the vendorCanonicalFamilies
+// map added 2026-06-20 to collapse the historical family-id split
+// (e.g. "claude-*" → "anthropic-claude" instead of bare "claude"). The
+// /models page family-chip filter used to return 0 models for
+// "Anthropic" because some claude models had family='claude' and
+// others had family='anthropic-claude', so neither chip saw all
+// 21 models.
+func TestInferFamily_VendorCollapsing(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		// Anthropic: claude-* → anthropic-claude
+		{"claude-opus-4-6", "anthropic-claude"},
+		{"claude-sonnet-4.5", "anthropic-claude"},
+		{"Claude-3-5-Sonnet", "anthropic-claude"},
+		// OpenAI: gpt/o1/o3/o4 → openai-gpt
+		{"gpt-4o", "openai-gpt"},
+		{"gpt-5.4", "openai-gpt"},
+		{"o3-mini", "openai-gpt"},
+		{"o1-preview", "openai-gpt"},
+		// Meta: llama/llama2/llama3 → meta-llama
+		{"llama-3.1-8b-instruct", "meta-llama"},
+		{"llama2-7b", "meta-llama"},
+		// Google: gemini → google-gemini (gemma stays gemma)
+		{"gemini-2.0-flash", "google-gemini"},
+		{"gemma-2-9b-it", "gemma"},
+		// Mistral: mistral/ministral/mixtral → mistral
+		{"mistral-large", "mistral"},
+		{"ministral-3b", "mistral"},
+		{"mixtral-8x7b", "mistral"},
+		// Zhipu: glm → zhipu-glm
+		{"glm-5.1", "zhipu-glm"},
+		// Moonshot: kimi → moonshot
+		{"kimi-k2-250905", "moonshot"},
+		// StepFun: step → stepfun
+		{"step-1-8k", "stepfun"},
+		// Unknown vendors fall through to the bare token
+		{"minimax-m3", "minimax"},
+		{"qwen-max", "qwen"},
+		// Idempotence — already-canonical inputs round-trip
+		{"anthropic-claude", "anthropic-claude"},
+		{"openai-gpt", "openai-gpt"},
+		// Unknown / empty
+		{"", "unknown"},
+		{"   ", "unknown"},
+		{"mimo", "mimo"}, // single token, no dash
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := discovery.InferFamily(tt.name)
+			if got != tt.want {
+				t.Errorf("InferFamily(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeFamilyID(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"claude", "anthropic-claude"},
+		{"anthropic-claude", "anthropic-claude"},
+		{"gpt", "openai-gpt"},
+		{"openai-gpt", "openai-gpt"},
+		{"llama", "meta-llama"},
+		{"meta-llama", "meta-llama"},
+		{"gemini", "google-gemini"},
+		{"gemma", "gemma"}, // not collapsed, passthrough
+		{"minimax", "minimax"},
+		{"unknown-vendor", "unknown-vendor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := discovery.CanonicalizeFamilyID(tt.in)
+			if got != tt.want {
+				t.Errorf("CanonicalizeFamilyID(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // ── GenerateAliases for MiMo ───────────────────────────────────────────────
 
 func TestGenerateAliases_MiMo(t *testing.T) {
