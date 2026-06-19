@@ -236,3 +236,42 @@ func TestStandardizeName(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeRouteKeyAliases covers the cross-form variant matrix
+// used by the SQL resolver to bridge dot-vs-dash canonical / alias
+// names.  The user-visible bug was that "claude-sonnet-4.6" failed
+// to match a DB canonical "claude-sonnet-4-6" because the alias
+// table was never seeded with the dot-form.  After this change the
+// dot-form input emits the dash form as its second variant, which
+// is exactly the bridge the SQL resolver needs.
+func TestNormalizeRouteKeyAliases(t *testing.T) {
+	cases := []struct {
+		input   string
+		mustHave []string
+	}{
+		{"claude-sonnet-4.6", []string{"claude-sonnet-4.6", "claude-sonnet-4-6"}},
+		{"claude-sonnet-4-6", []string{"claude-sonnet-4-6"}},
+		{"minimax-m2.7", []string{"minimax-m2.7", "minimax-m2-7"}},
+		{"glm-5.1", []string{"glm-5.1", "glm-5-1"}},
+		{"minimax-m2-7", []string{"minimax-m2-7"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := NormalizeRouteKeyAliases(c.input)
+		if c.mustHave == nil {
+			if len(got) != 0 {
+				t.Errorf("NormalizeRouteKeyAliases(%q) = %v, want empty", c.input, got)
+			}
+			continue
+		}
+		have := map[string]bool{}
+		for _, v := range got {
+			have[v] = true
+		}
+		for _, want := range c.mustHave {
+			if !have[want] {
+				t.Errorf("NormalizeRouteKeyAliases(%q) = %v, missing %q", c.input, got, want)
+			}
+		}
+	}
+}

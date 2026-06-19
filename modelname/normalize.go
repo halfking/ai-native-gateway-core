@@ -125,6 +125,63 @@ func StripProviderPrefix(rawName string) string {
 	return model
 }
 
+// NormalizeRouteKeyAliases returns the set of safe variant forms a
+// model name should be matched against, in priority order:
+//
+//	(1) the canonicalized form (e.g. "claude-sonnet-4.6")
+//	(2) dash form (replace each '.' with '-')      ("claude-sonnet-4-6")
+//	(3) dot form   (replace each '-' with '.')     ("claude.sonnet.4.6")
+//	(4) original-cased (preserving upper/lower from the input)
+//
+// The first form is preferred; the rest are escape hatches for cases
+// where the operator stored the canonical / alias in a different
+// punctuation style.  Variants are deduped case-insensitively.
+//
+// Use this when the SQL resolver needs to walk the cross-form
+// matching matrix (canonical + alias lookups, both against
+// models_canonical.canonical_name and model_aliases.raw_name).
+//
+// 2026-06-19 audit: previous comments said "dot↔dash cross-form is
+// intentionally NOT done in Go — use model_aliases instead".  In
+// practice, model_aliases is rarely populated with the dot-form
+// variants for vendor-supplied canonical names like
+// "claude-sonnet-4-6" / "claude-sonnet-4.6", so resolve queries
+// silently missed.  We now do the variant walk in Go at resolve time
+// AND let discovery populate the alias table (see discovery/discovery.go).
+func NormalizeRouteKeyAliases(model string) []string {
+	base := NormalizeRouteKey(model)
+	if base == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(v string) {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	// Always emit the canonical normalized form first so exact matches
+	// still win on the very first SQL hit (no wasted round trips).
+	add(base)
+	// Dot ↔ dash bridge. We run both substitutions against both forms
+	// so the resolver can bridge "claude-sonnet-4.6" ↔ "claude-sonnet-4-6"
+	// in either direction without needing a pre-populated alias.
+	add(strings.ReplaceAll(base, ".", "-"))   // dot → dash (canonical DB form)
+	add(strings.ReplaceAll(base, "-", "."))   // dash → dot (some clients use dots)
+	add(strings.ReplaceAll(strings.ReplaceAll(base, ".", "-"), "-", "."))
+	add(strings.ReplaceAll(strings.ReplaceAll(base, "-", "."), ".", "-"))
+	if strings.TrimSpace(model) != base {
+		// Preserve the original case for callers that store mixed-case
+		// canonical names (e.g. "MiniMax-M2.7").  Lowercase the
+		// comparison so it still matches case-insensitive lookups.
+		add(strings.TrimSpace(model))
+	}
+	return out
+}
+
 // StandardizeName is an alias for NormalizeRouteKey. The split between
 // these two functions existed to apply family-specific dot/dash rewrites
 // (GLM / MiniMax / Claude); that logic has been removed — see package doc.

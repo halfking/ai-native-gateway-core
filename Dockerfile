@@ -45,6 +45,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
 # ── Runtime stage ───────────────────────────────────────────────────────────
 FROM --platform=linux/amd64 docker.m.daocloud.io/library/alpine:3.20
 
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ARG BUILD_SEQ="0"
+
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 1001 llmgw
 
@@ -58,8 +62,8 @@ COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
 # /opt/llm-gateway-go/.deploy_seq from a single image, regardless
 # of which path the runtime / post-deploy script picks.
 RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
-    echo "${BUILD_SEQ}" > /opt/llm-gateway-go/.deploy_seq && \
-    printf '%s\n' "${BUILD_SEQ}" > /.deploy_seq && \
+    echo "${BUILD_SEQ:-0}" > /opt/llm-gateway-go/.deploy_seq && \
+    printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
     printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
 
 USER llmgw
