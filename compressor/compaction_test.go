@@ -4,7 +4,57 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/memora"
 )
+
+// fakeMemoraClient records which retrieval method was called so we can
+// assert v3 injection uses SmartSearch (M1, 2026-06-19) for the relevance
+// query while keeping the cheap single-vector Search for the warm-up probe.
+type fakeMemoraClient struct {
+	searchCalls      int
+	smartSearchCalls int
+	probeResult      []memora.Memory // returned by warm-up Search("*", 1)
+	smartResult      []memora.Memory // returned by SmartSearch(query, 8)
+}
+
+func (f *fakeMemoraClient) Disabled() bool { return false }
+
+func (f *fakeMemoraClient) Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+	f.searchCalls++
+	return f.probeResult, nil
+}
+
+func (f *fakeMemoraClient) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+	f.smartSearchCalls++
+	return f.smartResult, nil
+}
+
+// TestTryMemoraCompression_UsesSmartSearch verifies the M1 wiring: the
+// warm-up probe uses single-vector Search, and the actual relevance query
+// uses SmartSearch.
+func TestTryMemoraCompression_UsesSmartSearch(t *testing.T) {
+	fake := &fakeMemoraClient{
+		probeResult: []memora.Memory{{Text: "f1"}, {Text: "f2"}, {Text: "f3"}, {Text: "f4"}},
+		smartResult: []memora.Memory{{Text: "relevant fact A"}, {Text: "relevant fact B"}},
+	}
+	deps := &Dependencies{Memora: fake}
+	body := []byte(`{"messages":[{"role":"user","content":"how do I configure port 8080?"}]}`)
+
+	out, ok := tryMemoraCompression(context.Background(), deps, "default", 1, body, "task-1", "openai-completions")
+	if !ok {
+		t.Fatalf("expected compression to succeed, got ok=false")
+	}
+	if fake.smartSearchCalls != 1 {
+		t.Errorf("expected SmartSearch to be called once for the relevance query, got %d", fake.smartSearchCalls)
+	}
+	if fake.searchCalls != 1 {
+		t.Errorf("expected single-vector Search to be called once for the warm-up probe, got %d", fake.searchCalls)
+	}
+	if len(out) == 0 {
+		t.Error("expected a rewritten body")
+	}
+}
 
 // TestExtractConversationText_OpenAISmoke ensures the migration from
 // routing/context_summarize.go preserved the contract.

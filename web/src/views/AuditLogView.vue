@@ -191,6 +191,26 @@ onMounted(load)
       </div>
     </div>
 
+    <div v-if="!loading && total > 0" class="pagination-bar">
+      <div class="pagination-meta">
+        <span>共 {{ total }} 条</span>
+        <span>· 第 {{ page }} / {{ totalPages }} 页</span>
+        <label class="page-size-label">
+          <span class="text-muted">每页</span>
+          <select v-model.number="size" class="page-size-select" @change="resetPageAndLoad">
+            <option :value="25">25</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+            <option :value="200">200</option>
+          </select>
+        </label>
+      </div>
+      <div class="pagination-actions">
+        <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
+        <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="changePage(1)">下一页</button>
+      </div>
+    </div>
+
     <div class="card table-card">
       <div class="table-wrap">
         <table class="data-table audit-table">
