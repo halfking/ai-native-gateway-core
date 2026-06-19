@@ -56,6 +56,11 @@ import (
 type MemoraClient interface {
 	Disabled() bool
 	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	// SmartSearch is the M1 (2026-06-19) high-recall retrieval entry point.
+	// Today it safely delegates to user-scoped single-vector search; it is
+	// future-ready for the Dashboard RRF+MMR pipeline once that endpoint
+	// supports user_id filtering (see memora/client.go).
+	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
 }
 
 // ProviderClient is the subset of *provider.Client that pickCompactionCandidates
@@ -387,7 +392,11 @@ func tryMemoraCompression(ctx context.Context, deps *Dependencies, tenantID stri
 		return nil, false
 	}
 
-	snippets, err := deps.Memora.Search(ctx, userID, query, 8)
+	// Retrieve the most relevant L1 facts via the M1 (2026-06-19) high-recall
+	// entry point. SmartSearch is future-ready for the Dashboard RRF+MMR
+	// pipeline; today it safely delegates to user-scoped single-vector search
+	// (the smart endpoint lacks user_id filtering — see memora/client.go).
+	snippets, err := deps.Memora.SmartSearch(ctx, userID, query, 8)
 	if err != nil || len(snippets) == 0 {
 		return nil, false
 	}

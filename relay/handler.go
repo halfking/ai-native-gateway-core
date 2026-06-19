@@ -636,6 +636,56 @@ func (h *ChatHandler) serveWithExecutor(
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
 	}
+
+	// ── v3 Session-level intelligent compression ────────────────────────
+	// Runs AFTER candidate resolution so we know the target model's context
+	// window (B1 fix: previously passed 0, which disabled the TOKEN trigger
+	// and the mechanical-trim fallback). The session compressor delta-appends
+	// new turns to the compressed session history and, when the sliding
+	// window fires, produces a lossless LLM summary (or trims as fallback).
+	if h.sessionCompressor != nil && gwSessionID != "" {
+		tenantForSC := "default"
+		if keyInfo != nil {
+			tenantForSC = keyInfo.TenantID
+		}
+		protocolForSC := "openai"
+		if isAnthropicMessagesPath(r.URL.Path) {
+			protocolForSC = "anthropic-messages"
+		}
+		// Resolve the target model context window from the first candidate.
+		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		ctxWindow := 0
+		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
+			ctxWindow = *candidates[0].ContextWindow
+		}
+		scResult := h.sessionCompressor.Prepare(
+			r.Context(),
+			bodyBytes,
+			tenantForSC,
+			gwSessionID,
+			protocolForSC,
+			ctxWindow,
+			false, // not streaming yet at this point
+		)
+		if scResult != nil && len(scResult.OutboundBody) > 0 {
+			bodyBytes = scResult.OutboundBody
+		}
+		if scResult != nil && scResult.Degraded {
+			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")
+		}
+		if scResult != nil && scResult.CompressionStrategy != "" {
+			mc := scResult.MsgCount
+			te := scResult.TokenEst
+			logCtx.OutboundBody = scResult.OutboundBody
+			logCtx.OutboundMsgCount = &mc
+			logCtx.OutboundTokenEst = &te
+			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
+			logCtx.OutboundStrategy = scResult.CompressionStrategy
+			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
+			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+		}
+	}
+
 	h.recordInitialRequestLog(
 		requestID, clientModel, outboundForLog, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
