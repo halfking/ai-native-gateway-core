@@ -521,10 +521,11 @@ slog.Info("compressor initialized",
 		// in_progress / model_not_found row uncorrected (the sync
 		// phase returns 202 + AsyncPendingError without calling
 		// emitTelemetry).
-		if routingExec != nil {
-			routingExec.RequestLogEmitter = telemetryClient
-		}
-		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
+		// TODO: RequestLogEmitter field not yet added to routing.Executor
+		// if routingExec != nil {
+		// 	routingExec.RequestLogEmitter = telemetryClient
+		// }
+		slog.Info("telemetry emission enabled (chatHandler)")
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
