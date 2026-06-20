@@ -288,11 +288,25 @@ type Executor struct {
 	// Without this hook, async-retry success leaves request_logs in
 	// its post-sync state, and operators see "model_not_found" /
 	// "in_progress" for requests that actually completed via the
-	// async path. Wired from cmd/gateway/main.go after telemetryClient
-	// is created. Nil is safe (preserves the pre-fix behavior).
-	RequestLogEmitter RequestLogEmitter
+		// async path. Wired from cmd/gateway/main.go after telemetryClient
+		// is created. Nil is safe (preserves the pre-fix behavior).
+		RequestLogEmitter RequestLogEmitter
 
-	// asyncDepth is the recursion guard (Track C C4). The async
+		// SyncRetryTimeout (2026-06-21): when ALL candidates fail for a
+		// non-streaming request, the executor keeps retrying candidates
+		// synchronously for this duration before returning an error to
+		// the client. During this period the HTTP connection is held
+		// open, the client's context is respected (disconnect aborts the
+		// loop via ctx.Done()), and the async fallback path is NOT
+		// started. This prevents wasting tokens on retries that the
+		// client can no longer consume.
+		//
+		// Default 120s (set in cmd/gateway/main.go). <= 0 disables sync
+		// retry and preserves the old behavior (immediate async fallback
+		// or synchronous exhaustion).
+		SyncRetryTimeout time.Duration
+
+		// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
 	// so shouldAsyncFallback returns false on the inner call.
 	// Uses atomic.Int32 because the Executor is a singleton
@@ -855,6 +869,106 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	trace.FailureReason = "all_candidates_failed"
 	if params.AuditBuilder != nil {
 		params.AuditBuilder.DecisionTrace(trace)
+	}
+
+	// ── 同步重试：非流式请求，全候选失败后保持连接继续重试 ──────────
+	// 2026-06-21: 客户端在等待，不返回错误、不启动异步 goroutine，
+	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
+	if !params.IsStream && e.SyncRetryTimeout > 0 && tried > 0 {
+		retried := 0
+		e.asyncDepth.Add(1)
+		defer e.asyncDepth.Add(-1)
+
+		deadline := time.Now().Add(e.SyncRetryTimeout)
+
+	syncRetryLoop:
+		for time.Now().Before(deadline) {
+			retried++
+
+			// 检查客户端是否已断开
+			if err := params.R.Context().Err(); err != nil {
+				slog.Info("sync_retry_stopped",
+					"model", params.ClientModel,
+					"reason", "client_disconnect",
+					"elapsed_ms", time.Since(tTotal).Milliseconds(),
+					"tried", tried,
+					"retried", retried,
+				)
+				break syncRetryLoop
+			}
+
+			// 间隔等待（可被 ctx 中断），每轮 5s
+			select {
+			case <-params.R.Context().Done():
+				slog.Info("sync_retry_stopped",
+					"model", params.ClientModel,
+					"reason", "client_disconnect",
+					"elapsed_ms", time.Since(tTotal).Milliseconds(),
+				)
+				break syncRetryLoop
+			case <-time.After(5 * time.Second):
+			}
+
+			if err := params.R.Context().Err(); err != nil {
+				break syncRetryLoop
+			}
+
+			// 重新推导候选（去粘性），让路由层基于最新状态做选择
+			subCandidates := e.Router.PlanCandidates(
+				params.Candidates,
+				nil, // 无粘性偏好
+				params.Policy,
+				egressPref(params.Transform),
+			)
+			if len(subCandidates) == 0 {
+				continue // 路由器也没候选，下一轮再试
+			}
+
+			// 递归执行 Execute()
+			// asyncDepth>0 阻止内层触发 async 回退或嵌套 sync 重试
+			subParams := *params
+			subParams.Candidates = subCandidates
+			result, retryErr := e.Execute(&subParams)
+			if retryErr == nil {
+				slog.Info("sync_retry_succeeded",
+					"model", params.ClientModel,
+					"elapsed_ms", time.Since(tTotal).Milliseconds(),
+					"retried", retried,
+				)
+				return result, nil
+			}
+			// 更新 lastErr/LastKind（递归返回的是 ExecuteError 类型）
+			if execErrTyped, ok := retryErr.(*ExecuteError); ok {
+				lastErr = execErrTyped.LastErr
+				lastKind = execErrTyped.LastKind
+				attempts = append(attempts, execErrTyped.Attempts...)
+				tried += execErrTyped.Tried
+				if execErrTyped.Trace != nil {
+					trace.BlockedCandidates = append(trace.BlockedCandidates, execErrTyped.Trace.BlockedCandidates...)
+				}
+			}
+		}
+
+		if params.R.Context().Err() == nil {
+			slog.Warn("sync_retry_exhausted",
+				"model", params.ClientModel,
+				"elapsed_ms", time.Since(tTotal).Milliseconds(),
+				"tried", tried,
+				"retried", retried,
+				"last_kind", lastKind,
+			)
+		}
+		// 同步重试耗尽了所有时间 → 返回 ExecuteError
+		// 不走到 async 回退路径
+		trace.FailureReason = "sync_retry_exhausted"
+		return nil, &ExecuteError{
+			LastErr:   fmt.Errorf("sync retry exhausted after %v: %w", time.Since(tTotal), lastErr),
+			Tried:     tried,
+			Exhausted: true,
+			Trace:     trace,
+			Attempts:  attempts,
+			LastKind:  lastKind,
+		}
 	}
 
 	// Track C C4 (2026-06-18): async fallback. If the synchronous
