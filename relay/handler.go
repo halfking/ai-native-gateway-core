@@ -142,6 +142,11 @@ type ChatHandler struct {
 	// LLM summary before forwarding to the upstream. nil disables v3
 	// (every request forwards the client body as-is, matching v7 behaviour).
 	sessionCompressor *compressor.SessionCompressor
+
+	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
+	// (list_categories, load_tools) locally without forwarding to upstream.
+	// nil disables Phase 2 meta-tools.
+	metaToolInterceptor *MetaToolInterceptor
 }
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -172,6 +177,13 @@ func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 // proactive sliding-window LLM summary before forwarding to the upstream.
 func (h *ChatHandler) SetSessionCompressor(sc *compressor.SessionCompressor) {
 	h.sessionCompressor = sc
+}
+
+// SetMetaToolInterceptor wires the Phase 2 meta-tool interceptor.
+// When set, requests containing meta-tool calls (list_categories, load_tools)
+// are handled locally without forwarding to upstream LLM providers.
+func (h *ChatHandler) SetMetaToolInterceptor(i *MetaToolInterceptor) {
+	h.metaToolInterceptor = i
 }
 
 func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
@@ -683,6 +695,29 @@ func (h *ChatHandler) serveWithExecutor(
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
+
+	// ── Phase 2 Meta-tool interception ─────────────────────────────────
+	// Checks if the request contains meta-tool calls (list_categories,
+	// load_tools) and handles them locally without forwarding to upstream.
+	// This runs BEFORE session compression to avoid unnecessary processing.
+	if h.metaToolInterceptor != nil {
+		modified, intercepted, err := h.metaToolInterceptor.InterceptRequest(r.Context(), bodyBytes)
+		if err != nil {
+			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool interception failed: %v", err), nil, nil)
+			writeErrorJSON(w, http.StatusInternalServerError, requestID, "Meta-tool processing failed", "internal_error", "meta_tool_error")
+			return
+		}
+		if intercepted {
+			// Meta-tool was handled locally, return the result directly
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write(modified)
+			markLogged()
+			return
+		}
+		// Not a meta-tool call, continue with normal processing
+		bodyBytes = modified
 	}
 
 	// ── v3 Session-level intelligent compression ────────────────────────
@@ -2250,6 +2285,15 @@ func mapExecuteErrorToKind(err *routing.ExecuteError) string {
 // and extracts the client_model from the JSON.  It does NOT close the
 // body — the caller (serveWithExecutor) owns that responsibility via
 // its own defer.
+//
+// 2026-06-20 audit fix v2: When the body is captured but has no
+// "model" field (e.g. /v1/messages client omitted model, or body is
+// `{}`), set client_model to "<unknown>" so request_logs never shows
+// a blank client_model alongside a non-empty request_body. Without
+// this, the operator cannot tell whether the body was empty OR the
+// client simply forgot the model field — both look like an empty
+// client_model. Setting "<unknown>" makes it explicit that the body
+// was received but model extraction failed.
 func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	if bodyOut == nil || r == nil || r.Body == nil {
 		return
@@ -2263,7 +2307,11 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 		return
 	}
 	*bodyOut = buf
-	if modelOut == nil || *modelOut != "" {
+	if modelOut == nil {
+		return
+	}
+	// Only attempt model extraction if modelOut is still empty
+	if *modelOut != "" {
 		return
 	}
 	var probe struct {
@@ -2272,7 +2320,13 @@ func captureAttemptBody(r *http.Request, bodyOut *[]byte, modelOut *string) {
 	_ = json.Unmarshal(buf, &probe)
 	if probe.Model != "" {
 		*modelOut = probe.Model
+		return
 	}
+	// Body captured but no model field found — record as <unknown>
+	// so request_logs.client_model is never blank when body is set.
+	// This distinguishes "empty body" from "body present but no
+	// model field" — both look the same otherwise.
+	*modelOut = "<unknown>"
 }
 
 // emitTuningSignal computes the implicit feedback signal for an auto-route

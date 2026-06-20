@@ -42,6 +42,13 @@ func bufferRequestBody(r *http.Request, limit int) ([]byte, error) {
 
 // ensureRequestBodyBuffered peeks the JSON body once for logging and model
 // extraction. Safe to call multiple times.
+//
+// 2026-06-20 audit fix v2: When the body is buffered but has no "model"
+// field (e.g. /v1/messages client omitted model, or body is `{}`),
+// set client_model to "<unknown>" so request_logs never shows a blank
+// client_model alongside a non-empty request_body. This distinguishes
+// "empty body" from "body present but no model field" — both look
+// the same otherwise, blocking the operator's diagnostic flow.
 func ensureRequestBodyBuffered(r *http.Request, bodyOut *[]byte, modelOut *string) error {
 	if bodyOut != nil && len(*bodyOut) > 0 {
 		return nil
@@ -52,6 +59,12 @@ func ensureRequestBodyBuffered(r *http.Request, bodyOut *[]byte, modelOut *strin
 	}
 	if modelOut != nil && *modelOut == "" && len(buf) > 0 {
 		*modelOut = extractModelFromBody(buf)
+		// If body was captured but model extraction failed (no
+		// "model" field in JSON), mark as <unknown> so the row is
+		// unambiguous in the operator's filter queries.
+		if *modelOut == "" {
+			*modelOut = "<unknown>"
+		}
 	}
 	if len(buf) > maxBodySize {
 		return errBodyTooLarge

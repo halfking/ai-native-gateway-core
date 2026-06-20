@@ -201,8 +201,12 @@ func TestCaptureAttemptBody_NoModelField(t *testing.T) {
 	if len(body) == 0 {
 		t.Error("body should still be captured even without model field")
 	}
-	if model != "" {
-		t.Errorf("model should be empty when no model field, got %q", model)
+	// 2026-06-20 audit fix v2: when body has no model field, captureAttemptBody
+	// sets model to "<unknown>" so request_logs never shows a blank client_model
+	// alongside a non-empty body. Distinguishes "empty body" from "body present
+	// but no model field" — both looked identical before this fix.
+	if model != "<unknown>" {
+		t.Errorf("model should be %q when no model field, got %q", "<unknown>", model)
 	}
 }
 
