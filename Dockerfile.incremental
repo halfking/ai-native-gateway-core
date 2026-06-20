@@ -22,6 +22,13 @@ RUN cp /tmp/llm-gateway-go-new /usr/local/bin/llm-gateway-go && \
     cp /tmp/version-files/VERSION /opt/llm-gateway-go/VERSION && \
     cp /tmp/version-files/.deploy_seq /opt/llm-gateway-go/.deploy_seq && \
     chown 1001:1001 /opt/llm-gateway-go/VERSION /opt/llm-gateway-go/.deploy_seq && \
+    # Also stamp at root so scripts/deploy-llm-gateway-go-184.sh verify_version
+    # check (`cat /.deploy_seq`) sees the fresh build seq, not the base
+    # image's stale value. Without this the post-deploy fatal fires even
+    # when the runtime API /api/system/version returns the correct seq.
+    cp /tmp/version-files/.deploy_seq /.deploy_seq && \
+    cp /tmp/version-files/VERSION /.VERSION && \
+    chmod 644 /.deploy_seq /.VERSION && \
     rm -rf /tmp/llm-gateway-go-new /tmp/web-dist-new /tmp/version-files
 
 # Restore non-root user
