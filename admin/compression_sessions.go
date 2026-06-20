@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -85,7 +86,7 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 	argIdx := 4
 
 	if strategyFilter != "" {
-		whereClause += ` AND rl.compression_strategy = $` + itoa(argIdx)
+		whereClause += ` AND rl.compression_strategy = $` + strconv.Itoa(argIdx)
 		args = append(args, strategyFilter)
 		argIdx++
 	}
@@ -134,7 +135,7 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 			LIMIT 1
 		) latest ON true
 		ORDER BY s.last_ts DESC
-		LIMIT $` + itoa(argIdx) + ` OFFSET $` + itoa(argIdx+1)
+		LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
 	args = append(args, pageSize, offset)
 
 	rows, err := h.db.Query(ctx, mainSQL, args...)
@@ -185,18 +186,4 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 		Items: items,
 		Count: totalCount,
 	})
-}
-
-func itoa(n int) string {
-	if n <= 0 {
-		return "0"
-	}
-	var buf [12]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
