@@ -259,9 +259,9 @@ func main() {
 		router := routing.NewRouter(stickyCache, lim)
 		norm := relay.NewNormalizer()
 		routingExec = routing.NewExecutor(
-			router, cm, lim, pools, upClient,
-			norm.NormalizeChunk,
-			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
+		router, cm, lim, pools, upClient,
+		norm.NormalizeChunk,
+		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
 				// Track C C2 (2026-06-18): wrap the streaming hot path
 				// so a client that disconnects mid-stream can still
 				// recover the response via
@@ -361,6 +361,16 @@ routingExec.AnthropicToOpenAIStream = func(
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
+		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
+		routingExec.SyncRetryTimeout = 120 * time.Second
+		if v := os.Getenv("LLM_GATEWAY_SYNC_RETRY_TIMEOUT"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				routingExec.SyncRetryTimeout = time.Duration(n) * time.Second
+				slog.Warn("sync_retry_timeout_overridden",
+					"timeout", routingExec.SyncRetryTimeout)
+			}
+		}
+		slog.Info("sync_retry", "timeout", routingExec.SyncRetryTimeout)
 		// MnfStreak (Step 6, 2026-06-18): client hot-path breaker
 		// for persistent model_not_found. When the same sticky
 		// session accumulates M MnfStickyBreakThreshold
@@ -583,8 +593,9 @@ slog.Info("compressor initialized",
 
 	// ── Phase 3: Tool Registry ──────────────────────────────────────────
 	var toolRegistryAPI *admin.ToolRegistryAPI
+	var toolRegistry *registry.ToolRegistry
 	if dbConn != nil && dbConn.Enabled() {
-		toolRegistry := registry.NewToolRegistry(dbConn.Pool(), slog.Default())
+		toolRegistry = registry.NewToolRegistry(dbConn.Pool(), slog.Default())
 		adapter := registry.NewAdapter(toolRegistry)
 		chatHandler.SetToolRegistry(adapter)
 		toolRegistryAPI = admin.NewToolRegistryAPI(toolRegistry)
@@ -1018,6 +1029,22 @@ slog.Info("compressor initialized",
 		mux.HandleFunc("/api/admin/tools/list", toolRegistryAPI.HandleList)
 		mux.HandleFunc("/api/admin/tools/get", toolRegistryAPI.HandleGet)
 		slog.Info("Phase 3 tool registry admin API enabled (/api/admin/tools/*)")
+	}
+
+	// Phase 3.4: Tool Policy Admin API routes
+	if dbConn != nil && toolRegistry != nil {
+		policyAPI := admin.NewPolicyAPI(dbConn.Pool(), toolRegistry)
+		mux.HandleFunc("/api/admin/policies", policyAPI.HandleCreate)
+		mux.HandleFunc("/api/admin/policies/list", policyAPI.HandleList)
+		mux.HandleFunc("/api/admin/policies/delete", policyAPI.HandleDelete)
+		mux.HandleFunc("/api/admin/policies/check", policyAPI.HandleCheck)
+		slog.Info("Phase 3.4 tool policy admin API enabled (/api/admin/policies/*)")
+
+		// Phase 3.3: Usage Statistics API
+		statsAPI := admin.NewUsageStatsAPI(dbConn.Pool())
+		mux.HandleFunc("/api/admin/tools/stats", statsAPI.HandleStats)
+		mux.HandleFunc("/api/admin/tools/top", statsAPI.HandleTopTools)
+		slog.Info("Phase 3.3 tool usage stats API enabled (/api/admin/tools/stats, /top)")
 	}
 
 	// ── Middleware stack (declarative chain) ─────────────────────────────
