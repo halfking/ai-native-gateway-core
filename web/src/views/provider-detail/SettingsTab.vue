@@ -124,13 +124,6 @@ async function saveFormatConversion(enabled: boolean | null) {
   }
 }
 
-const saving = ref(false)
-const msg = ref('')
-const batchMsg = ref('')
-const batchLoading = ref(false)
-const checking = ref(false)
-const checkMsg = ref('')
-
 function syncFromProvider(p: ProviderDetail) {
   editName.value = p.display_name
   editBaseUrl.value = p.base_url
