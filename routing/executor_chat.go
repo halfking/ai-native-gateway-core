@@ -170,6 +170,11 @@ func (e *Executor) executeOpenAI(
 
 	contextLenRecovery := contextLengthRecoveryState{}
 
+	// Internal retry for model_not_found (2026-06-20):
+	// Track whether we've already retried once for model_not_found on this credential.
+	// This flag persists across attempts within the retry loop.
+	mnfRetried := false
+
 	// BUG-2 fix (2026-06-19): compute timeout once outside the retry loop.
 	// Previously the timeout was computed inside the anonymous closure, which
 	// caused it to be recomputed on every attempt — minor but cleaner here.
@@ -178,7 +183,15 @@ func (e *Executor) executeOpenAI(
 		timeout = e.StreamTimeout
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	// Ensure at least 1 retry is available for internal model_not_found retry.
+	// When maxRetries is 0 (from policy.RetryPerCredential), we still need
+	// one retry attempt to verify if model_not_found is transient.
+	effectiveMaxRetries := maxRetries
+	if effectiveMaxRetries < 1 {
+		effectiveMaxRetries = 1
+	}
+
+	for attempt := 0; attempt <= effectiveMaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
 			// BUG-5 design note (2026-06-19): for session requests the upstream
@@ -344,7 +357,7 @@ func (e *Executor) executeOpenAI(
 				if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				}
-				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
 					return nil, uErr
 				}
 				return nil, &retryableError{err: uErr}
@@ -358,6 +371,30 @@ func (e *Executor) executeOpenAI(
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
 			if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+				// Internal retry for model_not_found (2026-06-20):
+				// When upstream returns model_not_found, it may be transient instability
+				// rather than a permanent model removal. We retry once on the same
+				// credential after a brief delay to verify if the issue persists.
+				// This reduces false-positive errors forwarded to clients.
+				if !mnfRetried {
+					slog.Info("model_not_found retry",
+						"credential_id", cand.CredentialID,
+						"model", cand.RawModel,
+						"status", resp.StatusCode,
+						"upstream_latency_ms", upstreamLatency.Milliseconds(),
+						"body_preview", string(body[:min(n, 120)]),
+					)
+					// Brief delay before retry (150ms) to give upstream time to recover
+					time.Sleep(150 * time.Millisecond)
+					// Mark as retried and return a retryable error to trigger retry on same credential
+					mnfRetried = true
+					return nil, &retryableError{err: &modelNotFoundError{
+						credentialID: cand.CredentialID,
+						rawModel:     cand.RawModel,
+						body:         string(body[:n]),
+					}}
+				}
+
 				// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
 				// reclassify as transient" branch. A slow 404 is still a 404;
 				// re-routing it as a retryable transient just makes the same
@@ -365,7 +402,7 @@ func (e *Executor) executeOpenAI(
 				// from the caller. The classifier now requires a matching 4xx
 				// status (P5) and a tightened regex, so this branch is the
 				// canonical model_not_found path.
-				slog.Info("model_not_found skip offer",
+				slog.Info("model_not_found skip offer (after retry)",
 					"credential_id", cand.CredentialID,
 					"model", cand.RawModel,
 					"status", resp.StatusCode,
@@ -407,7 +444,7 @@ func (e *Executor) executeOpenAI(
 						"body_preview", string(body[:min(n, 120)]),
 					)
 				}
-				if !errorsx.IsRetryable(errKind) || attempt >= maxRetries {
+				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
 					// Context-length retry path: if the upstream rejected
 					// the request because the conversation exceeded the
 					// model's context window, attempt one client-side trim
@@ -675,7 +712,7 @@ func (e *Executor) executeOpenAI(
 			return nil, tryErr
 		}
 	}
-	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
+	return nil, fmt.Errorf("exhausted %d retries for credential %d", effectiveMaxRetries, cand.CredentialID)
 }
 
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
