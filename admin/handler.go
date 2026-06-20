@@ -78,8 +78,11 @@ type Handler struct {
 	modelPolicy interface {
 		Invalidate(tenantID string)
 	}
-	refreshMu    sync.Mutex             // guards lazy init of refreshState
-	refreshState *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
+	// providerSettingsResolver (2026-06-20) provides provider-level setting
+	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
+	providerSettingsResolver *settings.ProviderSettingsResolver
+	refreshMu                sync.Mutex             // guards lazy init of refreshState
+	refreshState             *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -92,6 +95,12 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 // the admin Handler and the modelpolicy.Checker.
 func (h *Handler) SetModelPolicy(mp interface{ Invalidate(string) }) {
 	h.modelPolicy = mp
+}
+
+// SetProviderSettingsResolver (2026-06-20) wires the provider-level settings
+// resolver so admin endpoints can clear cache after updates.
+func (h *Handler) SetProviderSettingsResolver(psr *settings.ProviderSettingsResolver) {
+	h.providerSettingsResolver = psr
 }
 
 // SetKeyring configures AES-256-GCM key rotation.  Call this at startup after

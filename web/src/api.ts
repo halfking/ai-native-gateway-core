@@ -3988,3 +3988,55 @@ export async function getPendingResponse(
     return { status: 'not_found' }
   }
 }
+
+// ============================================================================
+// Provider Settings API (2026-06-20)
+// ============================================================================
+
+export interface ProviderSetting {
+  key: string
+  value: any
+  enabled: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ProviderSettingsResponse {
+  provider_id: number
+  settings: ProviderSetting[]
+}
+
+/**
+ * Get all provider-level setting overrides.
+ * GET /api/providers/:id/settings
+ */
+export async function getProviderSettings(providerId: number): Promise<ProviderSettingsResponse> {
+  const resp = await api.get(`/api/providers/${providerId}/settings`)
+  return resp.data
+}
+
+/**
+ * Get a specific provider-level setting.
+ * GET /api/providers/:id/settings/:key
+ */
+export async function getProviderSetting(providerId: number, key: string): Promise<{ key: string; value: any; enabled: boolean }> {
+  const resp = await api.get(`/api/providers/${providerId}/settings/${key}`)
+  return resp.data
+}
+
+/**
+ * Set or update a provider-level setting.
+ * PUT /api/providers/:id/settings/:key
+ */
+export async function setProviderSetting(providerId: number, key: string, value: any, enabled: boolean = true): Promise<void> {
+  await api.put(`/api/providers/${providerId}/settings/${key}`, { value, enabled })
+}
+
+/**
+ * Delete a provider-level setting override (revert to platform default).
+ * DELETE /api/providers/:id/settings/:key
+ */
+export async function deleteProviderSetting(providerId: number, key: string): Promise<void> {
+  await api.delete(`/api/providers/${providerId}/settings/${key}`)
+}
