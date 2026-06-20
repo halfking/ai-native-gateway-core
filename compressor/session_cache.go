@@ -316,7 +316,7 @@ func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID str
 // ──────────────────────────────────────────────────────────────────────────────
 
 func encodeSessionStateFields(st *SessionState) []any {
-	return []any{
+	fields := []any{
 		"v", fmt.Sprintf("%d", st.SchemaVersion),
 		"loh", st.LastOutboundHash,
 		"lcat", fmt.Sprintf("%d", st.LastCompressedAt),
@@ -325,6 +325,14 @@ func encodeSessionStateFields(st *SessionState) []any {
 		"smm", st.SummaryMarker,
 		"rcat", fmt.Sprintf("%d", st.RecentlyCompressedAt),
 	}
+	// Phase 1 optimization: persist ToolsHash and SystemPrompt
+	if st.ToolsHash != "" {
+		fields = append(fields, "th", st.ToolsHash)
+	}
+	if st.SystemPrompt != "" {
+		fields = append(fields, "sys", st.SystemPrompt)
+	}
+	return fields
 }
 
 func decodeSessionStateFields(fields map[string]string, st *SessionState) error {
@@ -340,6 +348,9 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.TokenEstimate = int(parseInt(fields["te"]))
 	st.SummaryMarker = fields["smm"]
 	st.RecentlyCompressedAt = parseInt(fields["rcat"])
+	// Phase 1 optimization: restore ToolsHash and SystemPrompt
+	st.ToolsHash = fields["th"]
+	st.SystemPrompt = fields["sys"]
 	return nil
 }
 
