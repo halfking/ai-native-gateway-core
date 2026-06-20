@@ -48,6 +48,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/relay"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
@@ -553,6 +554,18 @@ slog.Info("compressor initialized",
 		slog.Info("Phase 2 meta-tools disabled (no DB)")
 	}
 
+	// ── Phase 3: Tool Registry ──────────────────────────────────────────
+	var toolRegistryAPI *admin.ToolRegistryAPI
+	if dbConn != nil && dbConn.Enabled() {
+		toolRegistry := registry.NewToolRegistry(dbConn.Pool(), slog.Default())
+		adapter := registry.NewAdapter(toolRegistry)
+		chatHandler.SetToolRegistry(adapter)
+		toolRegistryAPI = admin.NewToolRegistryAPI(toolRegistry)
+		slog.Info("Phase 3 tool registry wired (tool_ids expansion)")
+	} else {
+		slog.Info("Phase 3 tool registry disabled (no DB)")
+	}
+
 	if dbConn != nil && dbConn.Enabled() {
 		maasSvc := maas.NewService(dbConn.Pool())
 		chatHandler.SetMaas(maasSvc)
@@ -963,6 +976,14 @@ slog.Info("compressor initialized",
 		mux.HandleFunc("/api/meta-tools/categories", metaAPI.ListCategories)
 		mux.HandleFunc("/api/meta-tools/load", metaAPI.LoadTools)
 		slog.Info("Phase 2 meta-tools API enabled (/api/meta-tools/*)")
+	}
+
+	// Phase 3: Tool Registry Admin API routes
+	if toolRegistryAPI != nil {
+		mux.HandleFunc("/api/admin/tools/reload", toolRegistryAPI.HandleReload)
+		mux.HandleFunc("/api/admin/tools/list", toolRegistryAPI.HandleList)
+		mux.HandleFunc("/api/admin/tools/get", toolRegistryAPI.HandleGet)
+		slog.Info("Phase 3 tool registry admin API enabled (/api/admin/tools/*)")
 	}
 
 	// ── Middleware stack (declarative chain) ─────────────────────────────
