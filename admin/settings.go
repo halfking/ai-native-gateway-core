@@ -11,12 +11,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// registerSettingsRoutes installs the 4 platform endpoints under /api/admin/settings
-// and the 4 tenant endpoints under /api/admin/tenants/.
+// registerSettingsRoutes installs the 4 platform endpoints under
+// /api/admin/settings and the 4 tenant endpoints under
+// /api/admin/tenant-settings/{tid}/{key}[/history|/rollback].
+// IMPORTANT: tenant settings uses its OWN URL prefix to avoid
+// shadowing the existing /api/admin/tenants/ routes used by handleTenants.
 func (h *Handler) registerSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/settings", h.admin(h.settingsList))
 	mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))
-	mux.HandleFunc("/api/admin/tenants/", h.admin(h.tenantSettingsRouter))
+	mux.HandleFunc("/api/admin/tenant-settings/", h.admin(h.tenantSettingsRouter))
 }
 
 // settingsRouter dispatches /api/admin/settings/{key}[/history|/rollback].
@@ -42,19 +45,20 @@ func (h *Handler) settingsRouter(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// tenantSettingsRouter handles /api/admin/tenants/{tid}/settings/{key}.
+// tenantSettingsRouter handles
+//   /api/admin/tenant-settings/{tid}/{key}[/history|/rollback]
 func (h *Handler) tenantSettingsRouter(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/tenants/")
+	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/tenant-settings/")
 	parts := strings.Split(rest, "/")
-	if len(parts) < 3 || parts[1] != "settings" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		writeError(w, http.StatusNotFound, "unknown tenant settings endpoint")
 		return
 	}
 	tid := parts[0]
-	key := parts[2]
+	key := parts[1]
 	sub := ""
-	if len(parts) > 3 {
-		sub = parts[3]
+	if len(parts) > 2 {
+		sub = parts[2]
 	}
 	// Tenant settings require super_admin (Q3).
 	if !IsSuperAdminOrLegacy(r) {

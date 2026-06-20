@@ -3819,5 +3819,5 @@ export function getSettingHistory(key: string) {
 
 export function updateTenantSetting(tenantID: string, key: string, body: { value: any }) {
   return req<{ status: string; new_value: any }>(
-    'PUT', `/api/admin/tenants/${encodeURIComponent(tenantID)}/settings/${key}`, body)
+    'PUT', `/api/admin/tenant-settings/${encodeURIComponent(tenantID)}/${key}`, body)
 }
