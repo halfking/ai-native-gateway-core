@@ -314,21 +314,21 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveWithExecutor(w, r, logCtx)
 		return
 	}
-logCtx.SetError("executor_unavailable", "routing executor not available; database connection required")
-		logCtx.EnsureCaptured()
-		// 2026-06-20 audit fix v3: ensure client_model is never
-		// blank when body was captured but had no "model" field.
-		if logCtx.ClientModel == "" {
-			if len(logCtx.Body) > 0 {
-				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
-			}
-			if logCtx.ClientModel == "" {
-				logCtx.SetClientModel("<unknown>")
-			}
+	logCtx.SetError("executor_unavailable", "routing executor not available; database connection required")
+	logCtx.EnsureCaptured()
+	// 2026-06-20 audit fix v3: ensure client_model is never
+	// blank when body was captured but had no "model" field.
+	if logCtx.ClientModel == "" {
+		if len(logCtx.Body) > 0 {
+			logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
 		}
-		logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
-		logCtx.MarkLogged()
-		h.serveFallback(w, r)
+		if logCtx.ClientModel == "" {
+			logCtx.SetClientModel("<unknown>")
+		}
+	}
+	logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
+	logCtx.MarkLogged()
+	h.serveFallback(w, r)
 }
 
 // serveWithExecutor is the main chat-completions / completions pipeline.

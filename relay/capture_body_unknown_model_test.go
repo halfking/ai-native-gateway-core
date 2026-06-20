@@ -162,3 +162,53 @@ func TestMessagesHandler_BodyWithoutModel_RecordsUnknownModel(t *testing.T) {
 		t.Errorf("client_model: got %q, want %q", rows[0].clientModel, "<unknown>")
 	}
 }
+// TestCapturePartialBodyOnReadError_NoModelField verifies the 2026-06-20
+// audit fix v3: capturePartialBodyOnReadError (called from the body_read_error
+// path) must set client_model to "<unknown>" when the partial body has no
+// "model" field. Without this, the body_read_error row would have a
+// non-empty body but a blank client_model — same diagnostic gap that
+// v2 closed for captureAttemptBody / ensureRequestBodyBuffered.
+func TestCapturePartialBodyOnReadError_NoModelField(t *testing.T) {
+	cases := []struct {
+		name      string
+		partial   []byte
+		wantModel string
+	}{
+		{
+			name:      "messages body without model field (partial read)",
+			partial:   []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":10`),
+			wantModel: "<unknown>",
+		},
+		{
+			name:      "empty partial body",
+			partial:   nil,
+			wantModel: "", // unchanged
+		},
+		{
+			name:      "body with valid model",
+			partial:   []byte(`{"model":"claude-opus-4-8","messages":[]}`),
+			wantModel: "claude-opus-4-8",
+		},
+		{
+			name:      "truncated body at model field (extraction succeeds)",
+			partial:   []byte(`{"model":"minimax-m3"`),
+			wantModel: "minimax-m3",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			var model string
+			capturePartialBodyOnReadError(tc.partial, &body, &model)
+			if tc.partial == nil {
+				if len(body) != 0 {
+					t.Errorf("body should not be set for nil partial, got %d bytes", len(body))
+				}
+				return
+			}
+			if model != tc.wantModel {
+				t.Errorf("model: got %q, want %q", model, tc.wantModel)
+			}
+		})
+	}
+}
