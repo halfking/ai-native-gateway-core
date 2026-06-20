@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 type Handler struct {
@@ -40,6 +41,7 @@ type Handler struct {
 	// endpoint on /v1/sessions/{id}/pending-response is
 	// unaffected (it lives in the sessions package, not here).
 	pendingStore *pending.Store
+	settingsStore *settings.StoreDB // settings-management: DB-backed settings backend (Q1: B)
 	peakCollector interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
@@ -184,6 +186,13 @@ func (h *Handler) SetPendingStore(s *pending.Store) {
 	h.pendingStore = s
 }
 
+// SetSettingsStore (settings-management, 2026-06-20) injects the
+// DB-backed settings backend so /api/admin/settings/* endpoints
+// can read/write settings_kv / tenant_settings_kv.
+func (h *Handler) SetSettingsStore(s *settings.StoreDB) {
+	h.settingsStore = s
+}
+
 // SetFeedbackAnalyzer wires the daily feedback analyzer for tuning endpoints.
 func (h *Handler) SetFeedbackAnalyzer(a interface {
 	AnalyzeOnce(ctx context.Context) error
@@ -248,6 +257,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/stats", admin(h.handleDataLifecycleStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/cleanup/preview", admin(h.handleDataLifecycleCleanupPreview))
 	mux.HandleFunc("/api/admin/data-lifecycle/metrics", admin(h.handleDataLifecycleMetrics))
+
+	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
+	// Tenant endpoints require super_admin (enforced inside the handler).
+	h.registerSettingsRoutes(mux)
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
 	mux.HandleFunc("/api/routing/policy", h.superAdmin(h.handleRoutingPolicy))
 	mux.HandleFunc("/api/routing/featured", h.superAdmin(h.handleRoutingFeatured))
