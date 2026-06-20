@@ -776,21 +776,26 @@ func (h *ChatHandler) serveWithExecutor(
 				"request_id":  requestID,
 				"retry_after": 2,
 				"idempotent":  true,
-			})
-			logCtx.SetError("idempotent_replay", "duplicate request, returning in_progress")
-			markLogged()
-			return
-		}
-	}
-
-	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
-
-	upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
-	if convErr != nil {
-		logCtx.SetError("chat_to_anthropic_conversion_error", convErr.Error())
-		writeErrorJSON(w, http.StatusBadRequest, requestID, convErr.Error(), "invalid_request", "chat_to_anthropic_conversion_error")
+		})
+		logCtx.SetError("idempotent_replay", "duplicate request, returning in_progress")
+		// Body and model already captured (from earlier reqBody parse)
+		logCtx.EmitFailure("idempotent_replay", "duplicate request, returning in_progress", nil, nil)
+		markLogged()
 		return
 	}
+}
+
+stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
+
+upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
+if convErr != nil {
+	// Body already captured, just emit + mark
+	logCtx.SetError("chat_to_anthropic_conversion_error", convErr.Error())
+	logCtx.EmitFailure("chat_to_anthropic_conversion_error", convErr.Error(), nil, nil)
+	logCtx.MarkLogged()
+	writeErrorJSON(w, http.StatusBadRequest, requestID, convErr.Error(), "invalid_request", "chat_to_anthropic_conversion_error")
+	return
+}
 
 	result, execErr := h.executor.Execute(&routing.ExecParams{
 		W:              w,
