@@ -319,6 +319,11 @@ async function send(opts?: SendOptions) {
         content: result.content,
         ...(result.usage ? { usage: result.usage } : {}),
         ...(result.resolvedModel ? { resolvedModel: result.resolvedModel } : {}),
+        // Track C: persist the resumed flag so the bubble can render
+        // a "已从缓存恢复" badge after the user reloads the page.
+        // Falsy values are omitted so existing messages (without the
+        // field) do not pick up `undefined` in the JSON serialisation.
+        ...(result.resumed ? { resumed: true } : {}),
       }
     }
 
@@ -681,6 +686,13 @@ function onKeydown(e: KeyboardEvent) {
                 </template>
                 <template v-if="msg.role === 'assistant' && msg.usage">
                   · {{ formatTokenCount(msg.usage.totalTokens) }} tok
+                </template>
+                <!-- Track C: badge when this reply came from the gateway
+                     pending-response cache instead of a fresh upstream
+                     call. Helps the user understand why the model did
+                     not spend new tokens for this turn. -->
+                <template v-if="msg.role === 'assistant' && msg.resumed">
+                  <span class="resumed-badge" title="从网关缓存恢复（无新 LLM 调用）">↻ 已恢复</span>
                 </template>
               </span>
               <span class="bubble-actions">
@@ -1069,6 +1081,23 @@ function onKeydown(e: KeyboardEvent) {
 
 .chat-bubble:hover .bubble-actions {
   opacity: 1;
+}
+
+/* Track C client-side resume (2026-06-21): the ↻ 已恢复 badge
+   signals that the assistant reply came from the gateway pending-
+   response cache, not a fresh upstream call. Tinted subtly so it
+   doesn't compete with the resolved-model / token-count chips. */
+.resumed-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 8px;
+  background: rgba(64, 158, 255, 0.12);
+  color: var(--primary, #409eff);
+  border: 1px solid rgba(64, 158, 255, 0.3);
+  white-space: nowrap;
+  cursor: help;
 }
 
 .bubble-btn {
