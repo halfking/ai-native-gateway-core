@@ -707,27 +707,26 @@ func (h *ChatHandler) serveWithExecutor(
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
 	}
 
-	// ── Phase 2 Meta-tool interception ─────────────────────────────────
-	// Checks if the request contains meta-tool calls (list_categories,
-	// load_tools) and handles them locally without forwarding to upstream.
-	// This runs BEFORE session compression to avoid unnecessary processing.
+	// ── Phase 2 Meta-tool expansion ────────────────────────────────────
+	// When the request's `tools` array contains the meta-tools
+	// (list_categories, load_tools), expand them in-place with the full
+	// tool set loaded from tool_registry. The expanded request is then
+	// forwarded upstream so the LLM sees all concrete tools in a
+	// single round-trip (no list_categories → load_tools dance needed).
+	// Runs BEFORE session compression so we don't compress the small
+	// meta-tool body — only the expanded one.
 	if h.metaToolInterceptor != nil {
 		modified, intercepted, err := h.metaToolInterceptor.InterceptRequest(r.Context(), bodyBytes)
 		if err != nil {
-			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool interception failed: %v", err), nil, nil)
+			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil)
 			writeErrorJSON(w, http.StatusInternalServerError, requestID, "Meta-tool processing failed", "internal_error", "meta_tool_error")
 			return
 		}
 		if intercepted {
-			// Meta-tool was handled locally, return the result directly
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			w.Write(modified)
-			markLogged()
-			return
+			// Meta-tools replaced with full tool set; continue with the
+			// expanded body.
+			bodyBytes = modified
 		}
-		// Not a meta-tool call, continue with normal processing
-		bodyBytes = modified
 	}
 
 	// ── v3 Session-level intelligent compression ────────────────────────
