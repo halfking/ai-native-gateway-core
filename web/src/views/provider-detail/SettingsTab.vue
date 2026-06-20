@@ -50,18 +50,20 @@ async function loadProviderSettings() {
   settingsMsg.value = ''
   try {
     const resp = await getProviderSettings(props.provider.id)
-    providerSettings.value = resp.settings
+    providerSettings.value = resp.settings || []
     
     // Parse settings into editable refs
-    resp.settings.forEach(s => {
-      if (s.key === 'compression.mode' && s.enabled) {
-        compressionMode.value = s.value as string
-      } else if (s.key === 'cache.enabled' && s.enabled) {
-        cacheEnabled.value = s.value as boolean
-      } else if (s.key === 'format_conversion.enabled' && s.enabled) {
-        formatConversionEnabled.value = s.value as boolean
-      }
-    })
+    if (resp.settings && Array.isArray(resp.settings)) {
+      resp.settings.forEach(s => {
+        if (s.key === 'compression.mode' && s.enabled) {
+          compressionMode.value = s.value as string
+        } else if (s.key === 'cache.enabled' && s.enabled) {
+          cacheEnabled.value = s.value as boolean
+        } else if (s.key === 'format_conversion.enabled' && s.enabled) {
+          formatConversionEnabled.value = s.value as boolean
+        }
+      })
+    }
   } catch (e: unknown) {
     settingsMsg.value = '加载配置失败: ' + (e instanceof Error ? e.message : String(e))
   } finally {
