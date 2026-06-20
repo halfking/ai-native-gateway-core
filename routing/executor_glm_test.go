@@ -94,10 +94,19 @@ func TestResolveOutboundModel_ExplicitTransformWins(t *testing.T) {
 }
 
 func TestExecute_GLM51_TriesThirdCandidateAfterTwoModelNotFound(t *testing.T) {
+	// 2026-06-20: Internal retry for model_not_found means each credential
+	// is tried twice (original + retry) before moving to the next candidate.
+	// So with 3 credentials where first 2 fail with model_not_found:
+	// - Credential 101: call 1 (fail) → retry call 2 (fail) → move to next
+	// - Credential 102: call 3 (fail) → retry call 4 (fail) → move to next
+	// - Credential 103: call 5 (success)
+	// Total upstream calls: 5
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call := calls.Add(1)
-		if call <= 2 {
+		t.Logf("Test server: call %d", call)
+		// First 4 calls return model_not_found (2 per credential × 2 credentials)
+		if call <= 4 {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"message":"model glm-5.1 not found"}}`))
 			return
@@ -139,8 +148,9 @@ func TestExecute_GLM51_TriesThirdCandidateAfterTwoModelNotFound(t *testing.T) {
 	if result == nil {
 		t.Fatal("Execute returned nil result")
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("upstream calls = %d, want 3", got)
+	// With internal retry: 2 calls per credential × 2 failing credentials + 1 success = 5
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("upstream calls = %d, want 5", got)
 	}
 	if result.Candidate.CredentialID != 103 {
 		t.Fatalf("credential_id = %d, want 103", result.Candidate.CredentialID)
