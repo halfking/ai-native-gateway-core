@@ -96,7 +96,7 @@ async function load() {
 }
 
 async function loadCompressionStats() {
-  try { compStats.value = await getCompressionStats(24) } catch { /* non-blocking */ }
+  try { compStats.value = await getCompressionStats({ hours: 24 }) } catch { /* non-blocking */ }
 }
 
 function fmt(n: number | undefined, decimals = 0) {
@@ -327,7 +327,7 @@ function scheduleProbeFailuresPoll() {
             滑动 {{ (compStats.strategy_distribution['sliding_window_token']||0)+(compStats.strategy_distribution['sliding_window_count']||0) }} ·
           </span>
           <span v-if="compStats.strategy_distribution['delta_append'] || compStats.strategy_distribution['sliding_window_token']" style="color:var(--success,#22c55e)">
-            ≈{{ compStats.total_tokens_after ? fmt(compStats.total_tokens_after) : '—' }} 出站 token
+            ≈{{ compStats.total_outbound_tokens ? fmt(compStats.total_outbound_tokens) : '—' }} 出站 token
           </span>
         </div>
       </div>

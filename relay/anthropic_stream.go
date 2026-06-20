@@ -136,6 +136,38 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		return outcome
 	}
 
+	// 2026-06-20 audit fix: detect non-SSE JSON error bodies on
+	// the anthropic path. Same rationale as relay/stream.go:
+	// when the upstream returns `{"error":{...}}` for a stream
+	// request, surface it as a resumable interruption so the
+	// executor falls back to the next credential. The check
+	// runs BEFORE the message_start / content_block_start
+	// pre-declared tail below, so the client never sees a
+	// half-built anthropic stream framing followed by a JSON
+	// error.
+	if firstLine != "" {
+		if isErr, errKind, errMsg := isJSONErrorBody([]byte(firstLine)); isErr {
+			slog.Warn("anthropic stream: upstream returned JSON error instead of SSE",
+				"kind", errKind,
+				"message", errMsg,
+				"client_model", clientModel,
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("json_error_in_stream")
+			}
+			writeSSE(w, "error", map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": "upstream_error", "message": errMsg, "code": errKind},
+			})
+			flusher.Flush()
+			outcome.Interrupted = true
+			outcome.Reason = "json_error_in_stream"
+			outcome.Resumable = true
+			outcome.ChunkCount = 0
+			return outcome
+		}
+	}
+
 	processLine := func(line string) {
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.HasPrefix(line, "data: ") {

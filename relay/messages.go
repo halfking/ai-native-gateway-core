@@ -108,6 +108,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		attemptErrCode = "method_not_allowed"
 		attemptErrMsg = "method not allowed"
+		// 2026-06-20 audit fix: capture the body + model so the
+		// request_logs row records what the client actually sent
+		// (not just "method not allowed"). The deferred safety
+		// net at the top of ServeHTTP will read these closure
+		// variables and emit a fully-populated row when the
+		// inner function returns.
+		captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+		if attemptClientModel == "" {
+			attemptClientModel = "<unknown>"
+		}
 		writeAnthropicError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
 		return
 	}

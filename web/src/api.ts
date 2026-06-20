@@ -2512,15 +2512,68 @@ export function getHealth(full = false) {
 
 // ── Compression Stats (2026-06-20 P2) ──────────────────────────────────────
 
+export interface HourBucket {
+  hour: string
+  total: number
+  compressed: number
+  rate: number
+}
+
 export interface CompressionStats {
   total_requests: number
   compressed_total: number
+  compression_rate: number
   strategy_distribution: Record<string, number>
-  total_tokens_after?: number
+  total_outbound_tokens?: number
+  estimated_original_tokens?: number
+  estimated_tokens_saved?: number
+  hourly_series: HourBucket[]
 }
 
-export function getCompressionStats(hours = 24) {
-  return req<CompressionStats>('GET', `/api/admin/compression/stats?hours=${hours}`)
+export function getCompressionStats(params: { hours?: number; from?: string; to?: string } = {}) {
+  const qs = new URLSearchParams()
+  if (params.hours) qs.set('hours', String(params.hours))
+  if (params.from) qs.set('from', params.from)
+  if (params.to) qs.set('to', params.to)
+  const s = qs.toString()
+  return req<CompressionStats>('GET', `/api/admin/compression/stats${s ? '?' + s : ''}`)
+}
+
+export interface CompressionSessionItem {
+  gw_session_id: string
+  compression_strategy: string
+  request_count: number
+  first_ts: string
+  last_ts: string
+  outbound_msg_count: number | null
+  outbound_token_est: number | null
+  estimated_original_msgs: number | null
+  msg_reduction: number | null
+  sample_request_id: string
+}
+
+export interface CompressionSessionsResponse {
+  items: CompressionSessionItem[]
+  count: number
+}
+
+export function getCompressionSessions(params: {
+  hours?: number
+  from?: string
+  to?: string
+  strategy?: string
+  page?: number
+  page_size?: number
+} = {}) {
+  const qs = new URLSearchParams()
+  if (params.hours) qs.set('hours', String(params.hours))
+  if (params.from) qs.set('from', params.from)
+  if (params.to) qs.set('to', params.to)
+  if (params.strategy) qs.set('strategy', params.strategy)
+  if (params.page) qs.set('page', String(params.page))
+  if (params.page_size) qs.set('page_size', String(params.page_size))
+  const s = qs.toString()
+  return req<CompressionSessionsResponse>('GET', `/api/admin/compression/sessions${s ? '?' + s : ''}`)
 }
 
 // ── User Management (JWT) ──────────────────────────────────────────────────

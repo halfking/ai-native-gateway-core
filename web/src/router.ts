@@ -28,6 +28,7 @@ import RoutingDashboardView   from './views/RoutingDashboardView.vue'
 import WorkTypesView          from './views/WorkTypesView.vue'
 import UsersView              from './views/UsersView.vue'
 import AuditLogView          from './views/AuditLogView.vue'
+import CompressionView       from './views/CompressionView.vue'
 import SessionContextLayout      from './layouts/SessionContextLayout.vue'
 import SessionContextListView    from './views/session-context/SessionContextListView.vue'
 import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
@@ -113,6 +114,7 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuperAdmin: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
+    { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
