@@ -3821,3 +3821,170 @@ export function updateTenantSetting(tenantID: string, key: string, body: { value
   return req<{ status: string; new_value: any }>(
     'PUT', `/api/admin/tenant-settings/${encodeURIComponent(tenantID)}/${key}`, body)
 }
+
+// ── Tenant model policy (Round 48, 2026-06-21) ──────────────────────
+
+export interface TenantModelPolicy {
+  id: number
+  tenant_id: string
+  canonical_name: string
+  reason: string
+  created_by: string
+  deleted_at: string | null
+  deleted_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TenantModelPolicyListResp {
+  policies: TenantModelPolicy[]
+  count: number
+  tenant: string
+}
+
+export interface TenantModelPolicyCheckResp {
+  exists: boolean
+  canonical_name: string
+  family?: string
+  vendor?: string
+  modality?: string
+}
+
+export interface TenantModelPolicyAuditEntry {
+  id: number
+  ts: string
+  action: 'insert' | 'update' | 'delete' | 'undelete'
+  policy_id: number | null
+  tenant_id: string
+  canonical_name: string
+  reason: string
+  actor: string
+}
+
+export function listTenantModelPolicies(tenantCode: string, opts: { includeDeleted?: boolean } = {}) {
+  const qs = opts.includeDeleted ? '?include_deleted=true' : ''
+  return req<TenantModelPolicyListResp>(
+    'GET', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies${qs}`)
+}
+
+export function createTenantModelPolicy(
+  tenantCode: string,
+  body: { canonical_name: string; reason: string },
+) {
+  return req<{ id: number; status: string; policy: TenantModelPolicy; message: string }>(
+    'POST', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies`, body)
+}
+
+export function patchTenantModelPolicy(
+  tenantCode: string, id: number, body: { reason: string },
+) {
+  return req<TenantModelPolicy>(
+    'PATCH', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies/${id}`, body)
+}
+
+export function deleteTenantModelPolicy(tenantCode: string, id: number) {
+  return req<{ id: number; status: string; message: string }>(
+    'DELETE', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies/${id}`)
+}
+
+export function undeleteTenantModelPolicy(tenantCode: string, id: number) {
+  return req<{ id: number; status: string; message: string }>(
+    'POST', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies/${id}/undelete`)
+}
+
+export function checkTenantModelPolicy(
+  tenantCode: string, body: { canonical_name: string },
+) {
+  return req<TenantModelPolicyCheckResp>(
+    'POST', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies/check`, body)
+}
+
+export function listTenantModelPoliciesAudit(tenantCode: string, limit = 100) {
+  return req<{ audit: TenantModelPolicyAuditEntry[]; count: number }>(
+    'GET', `/api/admin/tenants/${encodeURIComponent(tenantCode)}/model-policies/audit?limit=${limit}`)
+}
+
+// ── Pending response cache (Track C client-side resume, 2026-06-21) ──
+//
+// When the client disconnects mid-stream (IDE crash, browser close, mobile
+// background-then-foreground), the gateway's pending-store capturer keeps
+// reading upstream and caches the full SSE response keyed by
+// (sessionID, requestID). On reconnect the client calls this function to
+// recover the cached body without re-sending the LLM request.
+//
+// See sessions/handler.go:381 (server endpoint) and relay/stream.go:74
+// (Track C C2 capturer) for the server side. The cached entry has TTL
+// 7 days (pending/pending.go DefaultTTL) and a 1 MiB body cap.
+
+export type PendingResponseStatus = 'completed' | 'in_progress' | 'failed' | 'not_found'
+
+export interface PendingResponse {
+  status: PendingResponseStatus
+  /** SSE text (when contentType is text/event-stream) or JSON body */
+  body?: string
+  contentType?: string
+  errorMessage?: string
+}
+
+/**
+ * GET /v1/sessions/{sessionID}/pending-response
+ *
+ * Returns the cached vendor response for the most recent request under
+ * this session (or a specific request_id if supplied). The 200 OK path
+ * carries the full SSE body in `body`; 202 means still in-flight;
+ * 404 / 503 mean nothing to resume.
+ *
+ * Failures (network, 5xx, malformed JSON) collapse to `not_found` so
+ * callers can simply `if (status === 'completed')` without worrying
+ * about exception handling. The cache is best-effort.
+ */
+export async function getPendingResponse(
+  sessionId: string,
+  apiKey: string,
+  requestId?: string,
+): Promise<PendingResponse> {
+  if (!sessionId) return { status: 'not_found' }
+  try {
+    const qs = requestId ? `?request_id=${encodeURIComponent(requestId)}` : ''
+    const resp = await fetch(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/pending-response${qs}`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+    )
+    if (resp.status === 404 || resp.status === 503) return { status: 'not_found' }
+    if (resp.status === 202) return { status: 'in_progress' }
+    if (!resp.ok) return { status: 'not_found' }
+
+    // 200 — body is the replayed vendor response. The X-Gw-Pending-Replay
+    // header is the canonical signal that this is a replay (vs some
+    // accidental 200 with empty body). Without it we treat as not_found
+    // to avoid swallowing unrelated 200s.
+    if (resp.headers.get('X-Gw-Pending-Replay') !== 'true') {
+      return { status: 'not_found' }
+    }
+    const ct = resp.headers.get('Content-Type') ?? ''
+    const body = await resp.text()
+    if (ct.includes('text/event-stream')) {
+      return { status: 'completed', body, contentType: ct }
+    }
+    // Non-SSE 200 — could be a JSON status envelope (e.g. failed entry).
+    try {
+      const obj = JSON.parse(body) as { status?: string; error_message?: string; body?: string }
+      if (obj.status === 'failed') {
+        return { status: 'failed', errorMessage: obj.error_message, contentType: ct }
+      }
+      if (obj.status === 'completed' && typeof obj.body === 'string') {
+        return { status: 'completed', body: obj.body, contentType: ct }
+      }
+    } catch {
+      /* fall through */
+    }
+    return { status: 'not_found' }
+  } catch {
+    // Network errors / CORS / aborted — treat as cache miss so the
+    // caller falls through to a normal request.
+    return { status: 'not_found' }
+  }
+}

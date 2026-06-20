@@ -1,4 +1,5 @@
-import { createGatewaySession } from '../api'
+import { createGatewaySession, getPendingResponse } from '../api'
+import { loadPersistedGwSessionId, persistLastGwSessionId } from './useChatSessions'
 
 export interface ChatCompletionMessage {
   role: 'user' | 'assistant' | 'system'
@@ -21,6 +22,13 @@ export interface ChatCompletionOptions {
   onDelta?: (text: string) => void
   /** Internal: one-shot retry after SESSION_FORBIDDEN */
   _sessionRetry?: boolean
+  /**
+   * Internal (Track C client-side resume, 2026-06-21): force the gateway
+   * pending-response cache lookup before any new upstream call. Set by
+   * the "恢复上次对话" UI button. Default off — auto-resume only fires
+   * when the local last user message is a fresh retry/follow-up.
+   */
+  forceResumeFromCache?: boolean
 }
 
 export interface ChatCompletionResult {
@@ -29,6 +37,12 @@ export interface ChatCompletionResult {
   usage: TokenUsage | null
   /** Canonical model actually used (from X-Gw-Auto-Decision or explicit selection) */
   resolvedModel: string | null
+  /**
+   * Track C client-side resume: true when this response was reconstructed
+   * from the gateway pending-response cache (no upstream call). Lets the
+   * UI show a "已从缓存恢复" badge.
+   */
+  resumed?: boolean
 }
 
 export class SessionForbiddenError extends Error {
@@ -192,8 +206,51 @@ function resolveModelName(
 /**
  * POST /v1/chat/completions with gateway session/task headers.
  * Uses streaming to avoid proxy/browser timeouts on model=auto (classifier + upstream).
+ *
+ * Track C client-side resume (2026-06-21): before issuing any new upstream
+ * call, check the gateway pending-response cache for a recoverable entry
+ * keyed by the most recently used gw_session_id for this task. If a
+ * completed entry exists, replay it as if it had just streamed in —
+ * returning the same ChatCompletionResult shape with `resumed: true`.
+ * The original streaming hot path is unaffected when no cache is hit.
  */
 export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatCompletionResult> {
+  // ── Cache resume: best-effort, never blocks normal flow ─────────────
+  // Triggered when:
+  //   - caller explicitly asked for it (forceResumeFromCache), OR
+  //   - the request looks like a reconnect (last message is a user turn,
+  //     meaning a previous assistant reply was interrupted / never arrived)
+  // The candidate session id is whatever is passed in, or whatever we
+  // persisted locally for this task id from a prior session.
+  const candidateSid = opts.gwSessionId ?? loadPersistedGwSessionId(opts.taskId)
+  if (candidateSid && shouldTryCacheResume(opts)) {
+    try {
+      const cached = await getPendingResponse(candidateSid, opts.apiKey)
+      if (cached.status === 'completed' && cached.body) {
+        const resumed = replayCachedSseToResult(cached.body, opts.onDelta)
+        if (resumed.content) {
+          // Persist the resumed session id so a subsequent reload can
+          // find it again. Do not overwrite when the cached id is the
+          // same as the one we just consumed.
+          persistLastGwSessionId(opts.taskId, candidateSid)
+          return {
+            content: resumed.content,
+            gwSessionId: candidateSid,
+            usage: resumed.usage,
+            resolvedModel: null,
+            resumed: true,
+          }
+        }
+      }
+      // failed / in_progress / not_found → fall through to a fresh
+      // upstream call. We deliberately do NOT block on in_progress;
+      // the user already triggered a new chatCompletion() and waiting
+      // could feel like a hang.
+    } catch {
+      // getPendingResponse already swallows errors → never reaches here
+    }
+  }
+
   let gwSessionId = await ensureGwSession(opts.apiKey, opts.taskId, opts.gwSessionId)
 
   const body = {
@@ -212,6 +269,14 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     headers: buildHeaders(opts.apiKey, opts.taskId, gwSessionId),
     body: JSON.stringify(body),
   })
+
+  // Persist the gw_session_id we just used so the next chatCompletion()
+  // (e.g. after a refresh / new tab) can look it up for cache resume.
+  // Done unconditionally on the success path; on HTTP errors the
+  // capturer will have still written a `failed` entry to Redis, so
+  // we want the id persisted regardless to enable the next retry to
+  // short-circuit via getPendingResponse().
+  persistLastGwSessionId(opts.taskId, gwSessionId)
 
   const resumeHdr = resp.headers.get('X-Gw-Session-Id-Resume')
   if (resumeHdr) {
@@ -306,4 +371,48 @@ export async function chatCompletion(opts: ChatCompletionOptions): Promise<ChatC
     usage: latestUsage,
     resolvedModel,
   }
+}
+
+// ── Cache resume helpers (Track C, 2026-06-21) ───────────────────────
+// These functions reconstruct a ChatCompletionResult-shaped object from
+// the cached SSE body returned by GET /v1/sessions/{sid}/pending-response.
+// They reuse parseSsePayload so the replayed deltas match what the live
+// stream would have produced.
+
+/**
+ * Decide whether to attempt a cache resume before issuing a new upstream
+ * call. Conservative: only fires when the last message is a user turn
+ * (i.e. the previous assistant reply was missing or interrupted). When
+ * `forceResumeFromCache` is set the caller has explicitly opted in (e.g.
+ * a "恢复上次对话" button) and we always try.
+ */
+export function shouldTryCacheResume(opts: ChatCompletionOptions): boolean {
+  if (opts.forceResumeFromCache) return true
+  const last = opts.messages[opts.messages.length - 1]
+  return last?.role === 'user'
+}
+
+/**
+ * Replay a cached SSE body. Calls onDelta for each parsed delta so the
+ * UI bubbles update in real time, just like a live stream. Returns the
+ * accumulated content and the last non-null usage found in the body.
+ *
+ * Tolerates malformed lines by skipping them (parseSsePayload swallows
+ * JSON errors and returns an empty delta). Skips `[DONE]` sentinels.
+ */
+export function replayCachedSseToResult(
+  sseBody: string,
+  onDelta?: (text: string) => void,
+): { content: string; usage: TokenUsage | null } {
+  let content = ''
+  let usage: TokenUsage | null = null
+  for (const rawLine of sseBody.split('\n')) {
+    const { delta, usage: lineUsage } = parseSsePayload(rawLine)
+    if (lineUsage) usage = lineUsage
+    if (delta) {
+      content += delta
+      onDelta?.(delta)
+    }
+  }
+  return { content, usage }
 }
