@@ -369,7 +369,13 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		    ), FALSE) AS in_reviewing,
 		    mc.canonical_name
 		FROM aggregated agg
-		LEFT JOIN model_canonical mc ON mc.raw_model_name = agg.raw_model_name
+		LEFT JOIN LATERAL (
+		    SELECT mc.canonical_name
+		    FROM model_aliases ma
+		    JOIN models_canonical mc ON mc.id = ma.canonical_id
+		    WHERE lower(ma.raw_name) = lower(agg.raw_model_name)
+		    LIMIT 1
+		) mc ON TRUE
 		ORDER BY agg.total_failures DESC, agg.last_failed_at DESC
 		LIMIT $1
 	`, limit)
