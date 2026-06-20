@@ -111,6 +111,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureSupplementalRLS(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -948,6 +952,57 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("tenant_model_policies schema ensured (table + RLS + active view + audit trigger)")
-	return nil
-}
+		slog.Info("tenant_model_policies schema ensured (table + RLS + active view + audit trigger)")
+		return nil
+	}
+
+// ensureSupplementalRLS — Round 48 (2026-06-21)
+	//
+	// Adds RLS policies to tables whose CREATE TABLE statements live in
+	// earlier migrations owned by other projects (022/023 settings,
+	// 025 tool_registry). Without this, pg-rls-lint flags L1 for the
+	// five pre-existing tenant-scoped tables and the cross-tenant
+	// defense-in-depth guarantee is missing in production.
+	//
+	// Idempotent (DROP POLICY IF EXISTS guard).  We do NOT modify the
+	// original migrations; this function applies the same CREATE
+	// POLICY statements that 026_supplemental_rls.sql contains so the
+	// linter and the live DB stay in sync even if the .sql file
+	// never gets re-applied.
+	func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
+		if d == nil || d.pool == nil {
+			return nil
+		}
+		_, err := d.pool.Exec(ctx, `
+			ALTER TABLE tenant_settings_kv ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv;
+			CREATE POLICY tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+			ALTER TABLE settings_audit ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_settings_audit ON public.settings_audit;
+			CREATE POLICY tenant_isolation_settings_audit ON public.settings_audit
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text
+			           OR (tenant_id) IS NULL);
+
+			ALTER TABLE tenant_tool_policies ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_tenant_tool_policies ON public.tenant_tool_policies;
+			CREATE POLICY tenant_isolation_tenant_tool_policies ON public.tenant_tool_policies
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+			ALTER TABLE tool_call_events ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_tool_call_events ON public.tool_call_events;
+			CREATE POLICY tenant_isolation_tool_call_events ON public.tool_call_events
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+			ALTER TABLE tool_usage_stats ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_tool_usage_stats ON public.tool_usage_stats;
+			CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+		`)
+		if err != nil {
+			return err
+		}
+		slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats)")
+		return nil
+	}
