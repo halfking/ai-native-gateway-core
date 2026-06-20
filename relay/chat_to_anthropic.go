@@ -18,13 +18,13 @@ import (
 //   - messages: system -> top-level system; user/assistant/text/image_url
 //   - tools: function type with name/description/parameters -> name/description/input_schema
 //   - tool_choice: string "auto"/"none" or function-name object
+//   - user -> metadata.user_id (Enhanced 2026-06-20)
 //
 // NOT supported (YAGNI):
 //   - logprobs, top_logprobs
 //   - n>1 (multiple completions)
 //   - response_format
 //   - seed
-//   - user
 func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	var src map[string]any
 	if err := json.Unmarshal(in, &src); err != nil {
@@ -52,6 +52,13 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	}
 	if stops, ok := src["stop"]; ok {
 		out["stop_sequences"] = stops
+	}
+	
+	// Enhanced (2026-06-20): Map OpenAI user field to Anthropic metadata.user_id
+	if user, ok := src["user"].(string); ok && user != "" {
+		out["metadata"] = map[string]any{
+			"user_id": user,
+		}
 	}
 
 	var systemContent string

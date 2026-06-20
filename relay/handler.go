@@ -717,6 +717,24 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
 			bodyBytes = scResult.OutboundBody
+			
+			// ── Tools restoration (Phase 1 optimization) ──────────────────
+			// If compressor cached tools (marked with "_tools_cached": true),
+			// restore them from the original request body before forwarding
+			// to upstream LLM provider.
+			var outbound map[string]json.RawMessage
+			if err := json.Unmarshal(bodyBytes, &outbound); err == nil {
+				if cached := outbound["_tools_cached"]; string(cached) == "true" {
+					// Tools were cached → restore from original reqBody
+					if len(reqBody.Tools) > 0 {
+						outbound["tools"] = reqBody.Tools
+						delete(outbound, "_tools_cached")
+						if restored, err := json.Marshal(outbound); err == nil {
+							bodyBytes = restored
+						}
+					}
+				}
+			}
 		}
 		if scResult != nil && scResult.Degraded {
 			w.Header().Set("X-Gw-Compression-Degraded", "sliding_window_collision")

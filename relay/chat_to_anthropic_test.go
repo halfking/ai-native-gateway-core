@@ -157,3 +157,72 @@ func TestChatToAnthropic_ToolCallIDToToolUseID(t *testing.T) {
 		t.Error("tool_use_id lost")
 	}
 }
+
+func TestChatToAnthropic_UserFieldToMetadata(t *testing.T) {
+	in := []byte(`{
+        "model":"claude-opus-4",
+        "max_tokens":100,
+        "user":"user-12345",
+        "messages":[{"role":"user","content":"hello"}]
+    }`)
+	out, err := ConvertChatRequestToAnthropic(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	
+	// Check that user field is converted to metadata.user_id
+	metadata, ok := v["metadata"].(map[string]any)
+	if !ok {
+		t.Fatal("metadata should exist when user field is present")
+	}
+	
+	if metadata["user_id"] != "user-12345" {
+		t.Errorf("metadata.user_id = %v, want 'user-12345'", metadata["user_id"])
+	}
+	
+	// Original user field should not be in output
+	if _, ok := v["user"]; ok {
+		t.Error("user field should not be in Anthropic request")
+	}
+}
+
+func TestChatToAnthropic_NoUserField(t *testing.T) {
+	in := []byte(`{
+        "model":"claude",
+        "max_tokens":50,
+        "messages":[{"role":"user","content":"hi"}]
+    }`)
+	out, err := ConvertChatRequestToAnthropic(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	
+	// Should not have metadata when no user field
+	if _, ok := v["metadata"]; ok {
+		t.Error("metadata should not exist when user field is absent")
+	}
+}
+
+func TestChatToAnthropic_EmptyUserField(t *testing.T) {
+	in := []byte(`{
+        "model":"claude",
+        "max_tokens":50,
+        "user":"",
+        "messages":[{"role":"user","content":"hi"}]
+    }`)
+	out, err := ConvertChatRequestToAnthropic(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	json.Unmarshal(out, &v)
+	
+	// Should not have metadata when user is empty string
+	if _, ok := v["metadata"]; ok {
+		t.Error("metadata should not exist when user field is empty")
+	}
+}
