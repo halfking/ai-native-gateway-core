@@ -1,16 +1,129 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import {
   updateProvider,
   batchRecoverCredentials,
   checkProvider,
+  getProviderSettings,
+  setProviderSetting,
+  deleteProviderSetting,
   type ProviderDetail,
+  type ProviderSetting,
 } from '../../api'
 
 const props = defineProps<{ provider: ProviderDetail }>()
 const emit = defineEmits(['refresh'])
 
+// Provider settings state
+const providerSettings = ref<ProviderSetting[]>([])
+const settingsLoading = ref(false)
+const settingsMsg = ref('')
+
+// Editable settings values
+const compressionMode = ref<string | null>(null)
+const cacheEnabled = ref<boolean | null>(null)
+const formatConversionEnabled = ref<boolean | null>(null)
+
+// Basic provider settings
 const editName = ref(props.provider.display_name)
+const editBaseUrl = ref(props.provider.base_url)
+const editProtocol = ref(props.provider.protocol)
+const editKind = ref(props.provider.kind)
+const editCategory = ref(props.provider.category)
+const editDiscountRate = ref(props.provider.discount_rate)
+const editEgressProfile = ref(props.provider.egress_profile || 'direct')
+const editNotes = ref(props.provider.notes || '')
+const saving = ref(false)
+const msg = ref('')
+const batchMsg = ref('')
+const batchLoading = ref(false)
+const checking = ref(false)
+const checkMsg = ref('')
+
+// Load provider settings on mount
+onMounted(async () => {
+  await loadProviderSettings()
+})
+
+async function loadProviderSettings() {
+  settingsLoading.value = true
+  settingsMsg.value = ''
+  try {
+    const resp = await getProviderSettings(props.provider.id)
+    providerSettings.value = resp.settings
+    
+    // Parse settings into editable refs
+    resp.settings.forEach(s => {
+      if (s.key === 'compression.mode' && s.enabled) {
+        compressionMode.value = s.value as string
+      } else if (s.key === 'cache.enabled' && s.enabled) {
+        cacheEnabled.value = s.value as boolean
+      } else if (s.key === 'format_conversion.enabled' && s.enabled) {
+        formatConversionEnabled.value = s.value as boolean
+      }
+    })
+  } catch (e: unknown) {
+    settingsMsg.value = '加载配置失败: ' + (e instanceof Error ? e.message : String(e))
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function saveCompressionMode(mode: string | null) {
+  settingsMsg.value = ''
+  try {
+    if (mode === null) {
+      // Delete override (revert to platform default)
+      await deleteProviderSetting(props.provider.id, 'compression.mode')
+      compressionMode.value = null
+      settingsMsg.value = '已恢复为全局默认'
+    } else {
+      await setProviderSetting(props.provider.id, 'compression.mode', mode)
+      compressionMode.value = mode
+      settingsMsg.value = '压缩模式已更新'
+    }
+    setTimeout(() => { settingsMsg.value = '' }, 3000)
+  } catch (e: unknown) {
+    settingsMsg.value = '保存失败: ' + (e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function saveCacheEnabled(enabled: boolean | null) {
+  settingsMsg.value = ''
+  try {
+    if (enabled === null) {
+      await deleteProviderSetting(props.provider.id, 'cache.enabled')
+      cacheEnabled.value = null
+      settingsMsg.value = '已恢复为全局默认'
+    } else {
+      await setProviderSetting(props.provider.id, 'cache.enabled', enabled)
+      cacheEnabled.value = enabled
+      settingsMsg.value = '缓存配置已更新'
+    }
+    setTimeout(() => { settingsMsg.value = '' }, 3000)
+  } catch (e: unknown) {
+    settingsMsg.value = '保存失败: ' + (e instanceof Error ? e.message : String(e))
+  }
+}
+
+async function saveFormatConversion(enabled: boolean | null) {
+  settingsMsg.value = ''
+  try {
+    if (enabled === null) {
+      await deleteProviderSetting(props.provider.id, 'format_conversion.enabled')
+      formatConversionEnabled.value = null
+      settingsMsg.value = '已恢复为全局默认'
+    } else {
+      await setProviderSetting(props.provider.id, 'format_conversion.enabled', enabled)
+      formatConversionEnabled.value = enabled
+      settingsMsg.value = '格式转换配置已更新'
+    }
+    setTimeout(() => { settingsMsg.value = '' }, 3000)
+  } catch (e: unknown) {
+    settingsMsg.value = '保存失败: ' + (e instanceof Error ? e.message : String(e))
+  }
+}
+
 const editBaseUrl = ref(props.provider.base_url)
 const editProtocol = ref(props.provider.protocol)
 const editKind = ref(props.provider.kind)
@@ -98,6 +211,71 @@ async function runHealthCheck() {
 
 <template>
   <div class="settings-tab provider-detail-grid">
+    <!-- Provider-level Settings Override Section -->
+    <section class="card settings-section">
+      <h3 class="section-title">🎛️ 透传模式配置 <span style="font-size:12px;color:var(--muted)">(Provider级别覆盖)</span></h3>
+      <div v-if="settingsMsg" class="alert" :class="settingsMsg.includes('失败') ? 'alert-danger' : 'alert-success'">
+        {{ settingsMsg }}
+      </div>
+      <div v-if="settingsLoading" class="empty">加载配置中...</div>
+      <div v-else class="settings-form">
+        <div class="form-group">
+          <label>压缩模式</label>
+          <select 
+            :value="compressionMode ?? ''" 
+            @change="saveCompressionMode(($event.target as HTMLSelectElement).value || null)"
+            class="input"
+          >
+            <option value="">跟随全局设置</option>
+            <option value="off">关闭 (完全透传，不压缩)</option>
+            <option value="auto_threshold">自动阈值压缩</option>
+            <option value="on_4xx">仅4xx时压缩 (推荐)</option>
+          </select>
+          <div class="form-hint">
+            关闭后，所有请求不进行上下文压缩，直接透传到上游。适用于上下文窗口足够大的provider（如NVIDIA）。
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>缓存</label>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <select
+              :value="cacheEnabled === null ? '' : (cacheEnabled ? 'true' : 'false')"
+              @change="saveCacheEnabled(($event.target as HTMLSelectElement).value === '' ? null : ($event.target as HTMLSelectElement).value === 'true')"
+              class="input"
+              style="max-width: 200px;"
+            >
+              <option value="">跟随全局设置</option>
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </div>
+          <div class="form-hint">
+            关闭后，不缓存会话和响应，每次都调用上游API。适用于需要完全透传的场景。
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>格式转换</label>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <select
+              :value="formatConversionEnabled === null ? '' : (formatConversionEnabled ? 'true' : 'false')"
+              @change="saveFormatConversion(($event.target as HTMLSelectElement).value === '' ? null : ($event.target as HTMLSelectElement).value === 'true')"
+              class="input"
+              style="max-width: 200px;"
+            >
+              <option value="">跟随全局设置</option>
+              <option value="true">开启 (推荐)</option>
+              <option value="false">关闭</option>
+            </select>
+          </div>
+          <div class="form-hint">
+            保持开启以支持 Anthropic ↔ OpenAI 协议转换。关闭后仅支持原生协议。
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="card settings-section settings-section--edit">
       <h3 class="section-title">编辑提供商</h3>
       <div class="settings-form">
