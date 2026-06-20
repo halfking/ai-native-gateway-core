@@ -483,9 +483,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
 			CAST($62 AS text[]), CAST($63 AS jsonb), $64,
 			$65
-		)
-		ON CONFLICT (request_id) DO UPDATE SET
-			ts = EXCLUDED.ts,
+			)
+			ON CONFLICT (request_id, ts) DO UPDATE SET
+				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
 			api_key_id = EXCLUDED.api_key_id,
@@ -1271,6 +1271,14 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	} else if src.ErrorKind != nil && *src.ErrorKind != "" {
 		v := RequestStatusFailure
 		dst.RequestStatus = &v
+	}
+	// 2026-06-20: when a later success update arrives, the SQL CASE
+	// (`WHEN EXCLUDED.success = TRUE THEN NULL`) will correctly clear
+	// error_kind in the DB. We mirror that here so the merged entry
+	// is internally consistent — important for log/debug paths that
+	// inspect the in-memory batched entry before it is persisted.
+	if dst.Success {
+		dst.ErrorKind = nil
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/circuit"
@@ -158,6 +159,27 @@ func main() {
 	modelsHandler := relay.NewModelsHandler()
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
+
+	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
+	// Single Checkerr singleton shared by relay.ChatHandler (hot
+	// path enforcement) and admin.Handler (write-path Invalidate).
+	// Pre-warm at startup so the first request doesn't pay the
+	// singleflight reload cost.
+	var modelPolicy *modelpolicy.Checker
+	if dbConn != nil && dbConn.Enabled() {
+		modelPolicy = modelpolicy.New(dbConn.Pool())
+		chatHandler.SetModelPolicy(modelPolicy)
+		warmupCtx, warmupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := modelPolicy.ReloadAll(warmupCtx); err != nil {
+			slog.Warn("model_policy: startup pre-warm failed (will lazy-load)",
+				"error", err)
+		} else {
+			slog.Info("model_policy: pre-warm complete")
+		}
+		warmupCancel()
+	} else {
+		slog.Info("model_policy: disabled (no DB)")
+	}
 
 	// ── Redis (sessions + credential fp slots + pending response cache) ─
 	var sessionMgr *sessions.Manager
@@ -521,11 +543,10 @@ slog.Info("compressor initialized",
 		// in_progress / model_not_found row uncorrected (the sync
 		// phase returns 202 + AsyncPendingError without calling
 		// emitTelemetry).
-		// TODO: RequestLogEmitter field not yet added to routing.Executor
-		// if routingExec != nil {
-		// 	routingExec.RequestLogEmitter = telemetryClient
-		// }
-		slog.Info("telemetry emission enabled (chatHandler)")
+		if routingExec != nil {
+			routingExec.RequestLogEmitter = telemetryClient
+		}
+		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
@@ -621,6 +642,13 @@ slog.Info("compressor initialized",
 		// settings-management: inject the DB-backed settings store so the
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
+
+		// model-policy: share the same Checker instance with the
+		// relay ChatHandler so admin writes can invalidate the
+		// per-tenant cache entry immediately (Round 48).
+		if modelPolicy != nil {
+			adminHandler.SetModelPolicy(modelPolicy)
+		}
 
 		// Ensure users table exists for multi-tenant admin auth
 		migCtx, migCancel := context.WithTimeout(context.Background(), 10*time.Second)
