@@ -86,6 +86,12 @@ func (l *PassiveProbeListener) run(ctx context.Context) {
 // v5 audit fix 2026-06-20: counters now use COUNT(*) instead of hardcoded 1,
 // GROUP BY no longer includes response_body (prevents fragmentation), and
 // the HAVING clause is removed (reviewPromotion handles threshold logic).
+//
+// v5 audit fix #2 (2026-06-20 post-deploy):
+//   - Anti-join window 15s → 45s: prevents double-counting same errors across
+//     30s poll cycles (15s < 30s caused re-scanning overlap)
+//   - window_total_count uses = instead of +=: reflects current window snapshot,
+//     not infinite accumulation (was causing rate_limit condition to always trigger)
 func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -107,7 +113,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    ON pps.credential_id = rl.credential_id
 		    AND pps.raw_model_name = COALESCE(rl.outbound_model, rl.client_model)
 		    AND pps.error_kind = COALESCE(rl.error_kind, 'unknown')
-		    AND pps.last_seen_at > NOW() - INTERVAL '15 seconds'
+		    AND pps.last_seen_at > NOW() - INTERVAL '45 seconds'
 		WHERE rl.success = FALSE
 		  AND rl.ts > NOW() - INTERVAL '5 minutes'
 		  AND rl.error_kind IN (
@@ -123,7 +129,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		DO UPDATE SET
 		    consecutive_count     = passive_probe_state.consecutive_count + EXCLUDED.consecutive_count,
 		    total_recent_count    = passive_probe_state.total_recent_count + EXCLUDED.total_recent_count,
-		    window_total_count    = passive_probe_state.window_total_count + EXCLUDED.window_total_count,
+		    window_total_count    = EXCLUDED.window_total_count,
 		    first_seen_at         = LEAST(passive_probe_state.first_seen_at, EXCLUDED.first_seen_at),
 		    last_seen_at          = NOW(),
 		    last_response_body_preview = EXCLUDED.last_response_body_preview
