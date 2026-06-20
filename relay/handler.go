@@ -314,11 +314,21 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveWithExecutor(w, r, logCtx)
 		return
 	}
-	logCtx.SetError("executor_unavailable", "routing executor not available; database connection required")
-	logCtx.EnsureCaptured()
-	logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
-	logCtx.MarkLogged()
-	h.serveFallback(w, r)
+logCtx.SetError("executor_unavailable", "routing executor not available; database connection required")
+		logCtx.EnsureCaptured()
+		// 2026-06-20 audit fix v3: ensure client_model is never
+		// blank when body was captured but had no "model" field.
+		if logCtx.ClientModel == "" {
+			if len(logCtx.Body) > 0 {
+				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
+			}
+			if logCtx.ClientModel == "" {
+				logCtx.SetClientModel("<unknown>")
+			}
+		}
+		logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
+		logCtx.MarkLogged()
+		h.serveFallback(w, r)
 }
 
 // serveWithExecutor is the main chat-completions / completions pipeline.
@@ -1509,6 +1519,12 @@ func isAnthropicMessagesPath(path string) bool {
 // capturePartialBodyOnReadError keeps bytes already received when io.ReadAll
 // fails mid-stream (timeout, client disconnect). model is usually near the
 // start of JSON bodies, so partial data is enough for request_logs preview.
+//
+// 2026-06-20 audit fix v3: when the partial body has no "model" field
+// (e.g. /v1/messages client sent messages first), set client_model to
+// "<unknown>" so request_logs never shows a blank client_model alongside
+// a non-empty body — same invariant as captureAttemptBody /
+// ensureRequestBodyBuffered.
 func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, attemptClientModel *string) {
 	if attemptRequestBody == nil || len(body) == 0 {
 		return
@@ -1516,6 +1532,9 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 	*attemptRequestBody = body
 	if attemptClientModel != nil && *attemptClientModel == "" {
 		*attemptClientModel = extractModelFromBody(body)
+		if *attemptClientModel == "" {
+			*attemptClientModel = "<unknown>"
+		}
 	}
 }
 
