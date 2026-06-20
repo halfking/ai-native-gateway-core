@@ -107,7 +107,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    COALESCE(rl.error_kind, 'unknown') AS error_kind,
 		    COUNT(*), COUNT(*), COUNT(*),
 		    MIN(rl.ts), NOW(),
-		    LEFT(COALESCE(rl.response_body::text, ''), 200)
+		    LEFT(COALESCE(MAX(rl.response_body::text), ''), 200)
 		FROM request_logs rl
 		LEFT JOIN passive_probe_state pps
 		    ON pps.credential_id = rl.credential_id
