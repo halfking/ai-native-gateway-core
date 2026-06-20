@@ -47,6 +47,12 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	if scope == ScopeTenant {
 		return nil, fmt.Errorf("use SetTenant for tenant scope")
 	}
+	spec := Global.Spec(key)
+	if spec == nil {
+		return nil, fmt.Errorf("unknown setting: %s", key)
+	}
+	valueType := string(spec.Type)
+	category := string(spec.Category)
 	newVal, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -55,17 +61,20 @@ func (s *StoreDB) Set(scope Scope, key string, value any) (jsonRawMessage, error
 	// Try UPDATE first; if no row matched, INSERT.
 	err = s.pool.QueryRow(context.Background(), `
 		UPDATE settings_kv
-		   SET value = $2::jsonb, updated_at = now(),
+		   SET value = $2::jsonb,
+		       value_type = $3,
+		       category = $4,
+		       updated_at = now(),
 		       prev_value = value, prev_updated_at = updated_at
 		 WHERE key = $1
 		RETURNING prev_value
-	`, key, newVal).Scan(&oldVal)
+	`, key, newVal, valueType, category).Scan(&oldVal)
 	if err == pgx.ErrNoRows {
 		// No existing row → INSERT.
 		_, err = s.pool.Exec(context.Background(), `
-			INSERT INTO settings_kv (key, value, scope, category, updated_at)
-			VALUES ($1, $2::jsonb, 'platform', 'general', now())
-		`, key, newVal)
+			INSERT INTO settings_kv (key, value, value_type, scope, category, updated_at)
+			VALUES ($1, $2::jsonb, $3, 'platform', $4, now())
+		`, key, newVal, valueType, category)
 		if err != nil {
 			return nil, fmt.Errorf("insert: %w", err)
 		}
@@ -95,24 +104,31 @@ func (s *StoreDB) GetTenant(tenantID, key string) (jsonRawMessage, error) {
 
 // SetTenant writes a tenant-scoped value.
 func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, error) {
+	spec := Global.Spec(key)
+	if spec == nil {
+		return nil, fmt.Errorf("unknown setting: %s", key)
+	}
+	valueType := string(spec.Type)
+	category := string(spec.Category)
 	newVal, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 	var oldVal []byte
 	err = s.pool.QueryRow(context.Background(), `
-		INSERT INTO tenant_settings_kv (tenant_id, key, value, scope, category, updated_at)
-		VALUES ($1, $2, $3::jsonb, 'tenant', 'general', now())
+		INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, scope, category, updated_at)
+		VALUES ($1, $2, $3::jsonb, $4, 'tenant', $5, now())
 		ON CONFLICT (tenant_id, key) DO UPDATE
-		  SET value = EXCLUDED.value, updated_at = now(),
+		  SET value = EXCLUDED.value,
+		      value_type = EXCLUDED.value_type,
+		      category = EXCLUDED.category,
+		      updated_at = now(),
 		      prev_value = tenant_settings_kv.value,
 		      prev_updated_at = tenant_settings_kv.updated_at
 		RETURNING prev_value
-	`, tenantID, key, newVal).Scan(&oldVal)
+	`, tenantID, key, newVal, valueType, category).Scan(&oldVal)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// INSERT-only path; ON CONFLICT did not fire because prev_value
-			// is NULL. This is a fresh insert → oldVal stays nil.
 			return nil, nil
 		}
 		return nil, fmt.Errorf("upsert tenant setting: %w", err)
