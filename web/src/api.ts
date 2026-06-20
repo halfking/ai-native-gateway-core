@@ -4012,8 +4012,7 @@ export interface ProviderSettingsResponse {
  * GET /api/providers/:id/settings
  */
 export async function getProviderSettings(providerId: number): Promise<ProviderSettingsResponse> {
-  const resp = await api.get(`/api/providers/${providerId}/settings`)
-  return resp.data
+  return req<ProviderSettingsResponse>('GET', `/api/providers/${providerId}/settings`)
 }
 
 /**
@@ -4021,8 +4020,7 @@ export async function getProviderSettings(providerId: number): Promise<ProviderS
  * GET /api/providers/:id/settings/:key
  */
 export async function getProviderSetting(providerId: number, key: string): Promise<{ key: string; value: any; enabled: boolean }> {
-  const resp = await api.get(`/api/providers/${providerId}/settings/${key}`)
-  return resp.data
+  return req<{ key: string; value: any; enabled: boolean }>('GET', `/api/providers/${providerId}/settings/${key}`)
 }
 
 /**
@@ -4030,7 +4028,7 @@ export async function getProviderSetting(providerId: number, key: string): Promi
  * PUT /api/providers/:id/settings/:key
  */
 export async function setProviderSetting(providerId: number, key: string, value: any, enabled: boolean = true): Promise<void> {
-  await api.put(`/api/providers/${providerId}/settings/${key}`, { value, enabled })
+  await req('PUT', `/api/providers/${providerId}/settings/${key}`, { value, enabled })
 }
 
 /**
@@ -4038,5 +4036,5 @@ export async function setProviderSetting(providerId: number, key: string, value:
  * DELETE /api/providers/:id/settings/:key
  */
 export async function deleteProviderSetting(providerId: number, key: string): Promise<void> {
-  await api.delete(`/api/providers/${providerId}/settings/${key}`)
+  await req('DELETE', `/api/providers/${providerId}/settings/${key}`)
 }
