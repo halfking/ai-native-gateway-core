@@ -42,6 +42,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/metatools"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -512,6 +513,16 @@ slog.Info("compressor initialized",
 		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
 	}
 
+	// ── Phase 2: Meta-tools handler ─────────────────────────────────────
+	if dbConn != nil && dbConn.Enabled() {
+		metaHandler := metatools.NewHandler(dbConn.Pool())
+		interceptor := relay.NewMetaToolInterceptor(metaHandler)
+		chatHandler.SetMetaToolInterceptor(interceptor)
+		slog.Info("Phase 2 meta-tools interceptor wired (list_categories, load_tools)")
+	} else {
+		slog.Info("Phase 2 meta-tools disabled (no DB)")
+	}
+
 	if dbConn != nil && dbConn.Enabled() {
 		maasSvc := maas.NewService(dbConn.Pool())
 		chatHandler.SetMaas(maasSvc)
@@ -904,6 +915,16 @@ slog.Info("compressor initialized",
 	if adminHandler != nil {
 		adminHandler.RegisterRoutes(mux)
 		slog.Info("admin API enabled")
+	}
+
+	// Phase 2: Meta-tools API routes
+	if dbConn != nil && dbConn.Enabled() {
+		metaHandler := metatools.NewHandler(dbConn.Pool())
+		metaAPI := admin.NewMetaToolsHandler(metaHandler)
+		mux.HandleFunc("/api/meta-tools/definitions", metaAPI.GetMetaToolDefinitions)
+		mux.HandleFunc("/api/meta-tools/categories", metaAPI.ListCategories)
+		mux.HandleFunc("/api/meta-tools/load", metaAPI.LoadTools)
+		slog.Info("Phase 2 meta-tools API enabled (/api/meta-tools/*)")
 	}
 
 	// ── Middleware stack (declarative chain) ─────────────────────────────

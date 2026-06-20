@@ -27,9 +27,9 @@ func (s *stubProtocolHandler) BuildRequest(cand provider.Candidate, body []byte,
 	return req, nil
 }
 
-func (s *stubProtocolHandler) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error {
+func (s *stubProtocolHandler) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
 	s.writeNonStreamCalled = true
-	return nil
+	return nil, nil
 }
 
 func (s *stubProtocolHandler) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {

@@ -64,11 +64,11 @@ func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStre
 	return req, nil
 }
 
-func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error {
+func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if c.XMLCoerceNonStream != nil {
 		body = c.XMLCoerceNonStream(body, false)
@@ -89,7 +89,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
-	return err
+	return body, err
 }
 
 func (c *ChatExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
