@@ -58,3 +58,18 @@ func (a *ToolRegistryAdapter) GetCategory(ctx context.Context, tenantID, categor
 func (a *ToolRegistryAdapter) ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string {
 	return a.tr.ExpandToolIDs(ctx, tenantID, toolIDs)
 }
+
+// IsAllowed 检查租户是否有权使用工具
+func (a *ToolRegistryAdapter) IsAllowed(tenantID, toolID string) (bool, string) {
+	return a.tr.IsAllowed(tenantID, toolID)
+}
+
+// IsDeprecated 检查工具是否已废弃
+func (a *ToolRegistryAdapter) IsDeprecated(toolID string) bool {
+	return a.tr.IsDeprecated(toolID)
+}
+
+// GetSupersededBy 获取替代工具ID
+func (a *ToolRegistryAdapter) GetSupersededBy(toolID string) string {
+	return a.tr.GetSupersededBy(toolID)
+}
