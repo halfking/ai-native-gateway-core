@@ -123,7 +123,10 @@ type queued struct {
 // whose next_retry_at has elapsed, runs a probe, updates the consensus
 // state and writes a model_probe_runs row.
 func (r *ModelProbeRunner) cycle(ctx context.Context) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	// v6 fix (2026-06-20): increased from 3min to 10min to accommodate
+	// multiple probe retries (4 attempts × 55s backoff = ~70s per probe).
+	// A batch of 10 models could take 10+ minutes with retries.
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	rows, err := r.db.Query(timeoutCtx, `
@@ -518,12 +521,19 @@ func (r *ModelProbeRunner) applyResult(
 }
 
 // recordRun inserts a row in model_probe_runs for traceability.
+// Creates its own 5s timeout context to avoid inheriting expired parent contexts.
 func (r *ModelProbeRunner) recordRun(
 	ctx context.Context, t probeTarget,
 	status string, httpStatus *int, errCode, errMsg string,
 	latencyMs int, stateChange string, applied bool, triggeredBy string,
 ) {
-	_, err := r.db.Exec(ctx, `
+	// Create a fresh 5s timeout for the DB write, independent of parent context.
+	// This prevents "context deadline exceeded" when recordRun is called late
+	// in a cycle that's approaching its 3-minute timeout.
+	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	_, err := r.db.Exec(writeCtx, `
 		INSERT INTO model_probe_runs
 		    (tenant_id, credential_id, raw_model_name, status,
 		     http_status, error_code, error_message, latency_ms,
