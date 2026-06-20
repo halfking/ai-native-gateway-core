@@ -273,6 +273,27 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		logCtx.SetError("method_not_allowed", "method not allowed")
+		// 2026-06-20 audit fix: capture the body + model so the
+		// request_logs row records what the client actually sent
+		// (not just "method not allowed"). Without this every
+		// 405 row shows empty body + model="<unknown>" and the
+		// operator can't tell which client / tool sent the
+		// wrong method or which model it was trying to reach.
+		// EmitFailure here (not relying on the safety net)
+		// because the safety-net path runs only when the inner
+		// pipeline never returned; an early 405 should produce
+		// a single, fully-populated row.
+		logCtx.EnsureCaptured()
+		if logCtx.ClientModel == "" {
+			if len(logCtx.Body) > 0 {
+				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
+			}
+			if logCtx.ClientModel == "" {
+				logCtx.SetClientModel("<unknown>")
+			}
+		}
+		logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, nil, nil)
+		logCtx.MarkLogged()
 		http.Error(w, `{"error":{"message":"Method not allowed","type":"invalid_request","code":"method_not_allowed"}}`, http.StatusMethodNotAllowed)
 		return
 	}
@@ -307,26 +328,46 @@ func (h *ChatHandler) serveWithExecutor(
 	logCtx.EnsureCaptured()
 
 	markLogged := func() { logCtx.MarkLogged() }
+	
+	// 2026-06-20 audit fix helper: capture body + model + emit failure
+	// for early-exit error paths. Without this every 405/401/400/503
+	// row shows empty body + model="<unknown>" and the operator cannot
+	// tell which client sent the bad request or which model it was
+	// trying to reach (the symptom that triggered the comprehensive audit).
+	captureAndEmitFailure := func(errCode, errMsg string, providerID, credentialID *int) {
+		logCtx.SetError(errCode, errMsg)
+		logCtx.EnsureCaptured()
+		if logCtx.ClientModel == "" {
+			if len(logCtx.Body) > 0 {
+				logCtx.SetClientModel(extractModelFromBody(logCtx.Body))
+			}
+			if logCtx.ClientModel == "" {
+				logCtx.SetClientModel("<unknown>")
+			}
+		}
+		logCtx.EmitFailure(errCode, errMsg, providerID, credentialID)
+		logCtx.MarkLogged()
+	}
 
 	// ── API key authentication ──────────────────────────────────────────
 	var keyInfo *auth.KeyInfo
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
-			logCtx.SetError("missing_key", "missing api key")
+			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
 			writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
 			return
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
 			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
-				logCtx.SetError("invalid_key", "invalid or expired api key")
+				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
 				return
 			}
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
-			logCtx.SetError("auth_unavailable", "authentication service temporarily unavailable")
+			captureAndEmitFailure("auth_unavailable", "authentication service temporarily unavailable", nil, nil)
 			writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
 				"Authentication service temporarily unavailable", "server_error", "auth_unavailable")
 			return
@@ -346,7 +387,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Status checks (throttled key → hard rate-limit) ────────────────
 	if keyInfo != nil && keyInfo.Status == "throttled" {
-		logCtx.SetError("key_throttled", "api key throttled due to anomalous usage")
+		captureAndEmitFailure("key_throttled", "api key throttled due to anomalous usage", nil, nil)
 		writeErrorJSON(w, http.StatusTooManyRequests, requestID,
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
@@ -357,7 +398,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter); !rlOutcome.Skipped {
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
-			logCtx.SetError("rate_limit_exceeded", "rate limit exceeded")
+			captureAndEmitFailure("rate_limit_exceeded", "rate limit exceeded", nil, nil)
 			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
 			return
 		}
@@ -367,7 +408,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
-				logCtx.SetError("budget_exhausted", "budget exhausted")
+				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil)
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
 			}
@@ -378,7 +419,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil && h.maasSvc != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
 			if _, ok := err.(*maas.InsufficientCreditsError); ok {
-				logCtx.SetError("insufficient_credits", "insufficient credits")
+				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil)
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Insufficient credits. Please subscribe or purchase a top-up package.", "insufficient_quota", "insufficient_credits")
 				return
 			}
@@ -440,20 +481,20 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.SetSession(si)
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				if si.APIKeyID == 0 {
-					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
-						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
-						logCtx.SetError("session_forbidden", "session not owned by this api key")
-						writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
-						return
-					}
-					si.APIKeyID = keyInfo.ID
-					si.TenantID = keyInfo.TenantID
-					sessionInfo = si
-				} else {
-					logCtx.SetError("session_forbidden", "session not owned by this api key")
+				if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
+					slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
+					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
 					writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 					return
 				}
+				si.APIKeyID = keyInfo.ID
+				si.TenantID = keyInfo.TenantID
+				sessionInfo = si
+			} else {
+				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+				return
+			}
 			}
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -485,10 +526,14 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.Body = bodyBytes
 	}
 	if len(bodyBytes) > maxBodySize {
+		// body_too_large already has body captured (it's in bodyBytes)
+		// but we need to emit + mark to prevent safety net double-emit
 		logCtx.SetError("body_too_large", "request body exceeds 32 MiB limit")
 		if logCtx.ClientModel == "" {
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes[:maxBodySize]))
 		}
+		logCtx.EmitFailure("body_too_large", "request body exceeds 32 MiB limit", nil, nil)
+		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
 			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
 		})
@@ -497,10 +542,13 @@ func (h *ChatHandler) serveWithExecutor(
 
 	var reqBody chatRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		// json_parse_error already has body captured (it's in bodyBytes)
 		logCtx.SetError("json_parse_error", "invalid JSON in request body")
 		if logCtx.ClientModel == "" {
 			logCtx.SetClientModel(extractModelFromBody(bodyBytes))
 		}
+		logCtx.EmitFailure("json_parse_error", "invalid JSON in request body", nil, nil)
+		logCtx.MarkLogged()
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": map[string]string{"message": "invalid JSON in request body", "type": "invalid_request", "code": "json_parse_error"},
 		})
