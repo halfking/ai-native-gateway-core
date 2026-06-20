@@ -173,6 +173,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					attemptClientModel = extractModelFromBody(peeked)
 				}
 			}
+			// 2026-06-20 audit fix v3: even when body is empty,
+			// ensure client_model is set to "<unknown>" so the
+			// request_logs row never has a blank client_model.
+			// Without this, an empty body + rate-limited request
+			// would produce a row with client_model=NULL — same
+			// diagnostic gap closed for captureAttemptBody /
+			// ensureRequestBodyBuffered in v2.
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
 			writeAnthropicError(w, 529, "rate_limit_error", "Rate limit exceeded. Please wait and retry.")
 			return
 		}
