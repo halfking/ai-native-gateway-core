@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getRequestLogs,
@@ -40,6 +40,36 @@ const memoraResult = ref<SessionSummaryToMemoraResponse['memora'] | null>(null)
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
+const autoRefresh = ref(false)
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  autoRefreshTimer = setInterval(() => {
+    if (!loading.value) {
+      load()
+    }
+  }, 30000)
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer !== null) {
+    clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
+
+watch(autoRefresh, (enabled) => {
+  if (enabled) {
+    startAutoRefresh()
+  } else {
+    stopAutoRefresh()
+  }
+})
+
+onBeforeUnmount(() => {
+  stopAutoRefresh()
+})
 
 const showCompressionGuide = ref(false)
 
@@ -817,6 +847,10 @@ onMounted(async () => {
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;user-select:none">
+          <input type="checkbox" v-model="autoRefresh" style="cursor:pointer" />
+          <span>自动刷新</span>
+        </label>
         <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
       </div>
     </div>
