@@ -11,6 +11,11 @@ export interface ChatMessage {
   usage?: TokenUsage
   /** Canonical model used for this assistant reply */
   resolvedModel?: string
+  /** Track C client-side resume (2026-06-21): true when this assistant
+   *  reply was reconstructed from the gateway pending-response cache
+   *  rather than a fresh upstream call. UI may render a "已从缓存恢复"
+   *  badge to make it obvious to the user. */
+  resumed?: boolean
 }
 
 export interface ChatSession {
@@ -36,6 +41,54 @@ export interface ChatSession {
 const TITLE_MAX_LEN = 24
 const STORAGE_VERSION = 2
 const STORAGE_VERSION_LEGACY = 1
+
+// Pending-cache resume key prefix (2026-06-21, Track C client-side resume).
+// Holds the most-recent gw_session_id used per (user, task) so that after
+// an IDE crash or browser refresh the chatCompletion() entry can call
+// GET /v1/sessions/{sid}/pending-response to recover the cached body
+// without re-running the LLM. Scoped per-user so a multi-account browser
+// doesn't leak cache references across identities.
+const PERSISTED_SID_KEY_PREFIX = 'llmgw_persisted_sid:'
+
+function persistedSidStorageKey(): string {
+  const uid = store.userInfo?.id
+  if (uid != null) return `${PERSISTED_SID_KEY_PREFIX}user:${uid}`
+  if (store.apiKey) return `${PERSISTED_SID_KEY_PREFIX}apikey:${store.apiKey.slice(0, 12)}`
+  return `${PERSISTED_SID_KEY_PREFIX}anon`
+}
+
+/**
+ * Persist the latest gw_session_id for the given task id so that on
+ * reload / reconnect we can attempt a cache resume. Pass null to clear.
+ *
+ * Best-effort: localStorage may be disabled (private mode, quota); failures
+ * are silently ignored because the cache resume is itself a best-effort
+ * optimisation — losing persistence just means we fall through to a
+ * normal request on next chatCompletion().
+ */
+export function persistLastGwSessionId(taskId: string, sid: string | null): void {
+  if (!taskId) return
+  try {
+    const key = `${persistedSidStorageKey()}:task:${taskId}`
+    if (sid) localStorage.setItem(key, sid)
+    else localStorage.removeItem(key)
+  } catch {
+    /* localStorage unavailable / quota exceeded */
+  }
+}
+
+/**
+ * Load the most recently persisted gw_session_id for this task id, if any.
+ * Returns null when nothing has been persisted (first-time user, or cleared).
+ */
+export function loadPersistedGwSessionId(taskId: string): string | null {
+  if (!taskId) return null
+  try {
+    return localStorage.getItem(`${persistedSidStorageKey()}:task:${taskId}`)
+  } catch {
+    return null
+  }
+}
 
 function storageKey(version: number = STORAGE_VERSION): string {
   const uid = store.userInfo?.id
