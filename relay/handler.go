@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -35,6 +36,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -157,12 +159,18 @@ type ChatHandler struct {
 	// When non-nil, requests with tool_ids expand to full tool definitions.
 	// nil disables Phase 3 tool registry (tool_ids are ignored).
 	toolRegistry ToolRegistryService
+
+	// modelPolicy (Round 48, 2026-06-21) is the tenant-scoped model
+	// denylist.  nil disables enforcement (every model allowed).
+	// Wire from main.go after constructing the Checker.
+	modelPolicy *modelpolicy.Checker
 }
 
 // ToolRegistryService is the interface for tool registry access.
 type ToolRegistryService interface {
 	Get(ctx context.Context, tenantID, toolID string) (*registry.ToolDef, error)
 	GetCategory(ctx context.Context, tenantID, category string) ([]*registry.ToolDef, error)
+	ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string
 }
 
 
@@ -177,6 +185,13 @@ func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov providerResolver,
 	h.executor = exec
 	h.provider = prov
 	h.sticky = sticky
+}
+
+// SetModelPolicy wires the tenant-scoped model denylist checker
+// (Round 48).  nil disables enforcement.  Production wires a
+// non-nil Checker from cmd/gateway/main.go.
+func (h *ChatHandler) SetModelPolicy(mp *modelpolicy.Checker) {
+	h.modelPolicy = mp
 }
 
 // SetIdempotentCache (Track C C5, 2026-06-18) wires the
@@ -210,50 +225,33 @@ func (h *ChatHandler) SetToolRegistry(tr ToolRegistryService) {
 }
 
 // expandToolIDs (Phase 3, 2026-06-21) expands tool_ids to full tool definitions.
-// Supports wildcards (filesystem.*) and exact matches (network.http_get).
+// Supports wildcards (filesystem.*, *) and exact matches (network.http_get).
 // Returns expanded tools as JSON array, or nil if no tool_ids provided.
 func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolIDs []string) ([]byte, error) {
 	if len(toolIDs) == 0 || h.toolRegistry == nil {
 		return nil, nil
 	}
 
+	// Use ExpandToolIDs for unified wildcard handling (supports *, category.*, exact)
+	expandedIDs := h.toolRegistry.ExpandToolIDs(ctx, tenantID, toolIDs)
+	if len(expandedIDs) == 0 {
+		return nil, nil
+	}
+
+	// Fetch full tool definitions for expanded IDs
 	var tools []json.RawMessage
-	seen := make(map[string]bool) // deduplication
+	for _, toolID := range expandedIDs {
+		tool, err := h.toolRegistry.Get(ctx, tenantID, toolID)
+		if err != nil {
+			slog.Warn("failed to get expanded tool",
+				"tenant", tenantID,
+				"tool_id", toolID,
+				"error", err)
+			continue
+		}
 
-	for _, pattern := range toolIDs {
-		if strings.HasSuffix(pattern, ".*") {
-			// Wildcard: load entire category
-			category := strings.TrimSuffix(pattern, ".*")
-			categoryTools, err := h.toolRegistry.GetCategory(ctx, tenantID, category)
-			if err != nil {
-				slog.Warn("failed to get category",
-					"tenant", tenantID,
-					"category", category,
-					"error", err)
-				continue // partial failure tolerance
-			}
-
-			for _, tool := range categoryTools {
-				if !seen[tool.ToolID] {
-					tools = append(tools, json.RawMessage(tool.Definition))
-					seen[tool.ToolID] = true
-				}
-			}
-		} else {
-			// Exact match
-			tool, err := h.toolRegistry.Get(ctx, tenantID, pattern)
-			if err != nil {
-				slog.Warn("failed to get tool",
-					"tenant", tenantID,
-					"tool_id", pattern,
-					"error", err)
-				continue
-			}
-
-			if tool != nil && !seen[tool.ToolID] {
-				tools = append(tools, json.RawMessage(tool.Definition))
-				seen[tool.ToolID] = true
-			}
+		if tool != nil {
+			tools = append(tools, json.RawMessage(tool.Definition))
 		}
 	}
 
@@ -658,9 +656,38 @@ func (h *ChatHandler) serveWithExecutor(
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
 
+	// ── Tenant model policy — pre-auto check (Round 48, 2026-06-21) ──
+	// Must run BEFORE auto_route + GetCandidates so a denied request
+	// never reaches the upstream provider.  model="auto" is exempt
+	// here (user decision); the post-rewrite check below re-evaluates
+	// after auto_route resolves the model, preventing auto as a
+	// bypass vector.
+	//
+	// fail-open: a governance DB outage must not become an
+	// availability outage.  See internal/modelpolicy/checker.go.
+	if keyInfo != nil {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.modelPolicy, h.resolver, profile,
+		)
+		if denied {
+			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			captureAndEmitFailure("model_forbidden", msg, nil, nil)
+			span := trace.SpanFromContext(r.Context())
+			span.SetAttributes(
+				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
+				attribute.String("tenant.deny_model", canonical),
+			)
+			writeErrorJSON(w, http.StatusForbidden, requestID, msg,
+				"permission_error", "model_forbidden")
+			return
+		}
+	}
+
 	// ── v2.0 auto-route ────────────────────────────────────────────────
 	// If the client requested model="auto", classify the task and pick
 	// the best credential. Rewrites body model + sets X-Gw-Auto-Decision.
+	preAutoModel := clientModel
 	if clientModel == autoRequestMagic {
 		apiKeyID := 0
 		if keyInfo != nil {
@@ -678,6 +705,30 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	clientModel = reqBody.Model
 	logCtx.SetClientModel(clientModel)
+	}
+
+	// ── Tenant model policy — post-auto check (Round 48) ─────────────
+	// If the original request was model="auto" and auto_route rewrote
+	// it to a specific model, re-check the policy with the rewritten
+	// model.  Without this, a tenant could bypass the denylist by
+	// always sending model="auto" (the pre-auto check exempts auto).
+	if keyInfo != nil && preAutoModel == autoRequestMagic && clientModel != autoRequestMagic {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicyAfterAuto(
+			r.Context(), preAutoModel, clientModel, keyInfo, h.modelPolicy, h.resolver, profile,
+		)
+		if denied {
+			msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			captureAndEmitFailure("model_forbidden_after_auto", msg, nil, nil)
+			span := trace.SpanFromContext(r.Context())
+			span.SetAttributes(
+				attribute.String(observability.AttrTenantID, keyInfo.TenantID),
+				attribute.String("tenant.deny_model", canonical),
+			)
+			writeErrorJSON(w, http.StatusForbidden, requestID, msg,
+				"permission_error", "model_forbidden")
+			return
+		}
 	}
 
 	// ── Phase 3: tool_ids expansion ────────────────────────────────────
@@ -1295,6 +1346,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		LatencyMs:        intPtr(result.LatencyMs),
 		Success:          true,
 		RequestStatus:    strPtr(telemetry.RequestStatusSuccess),
+		// 2026-06-20: explicitly clear ErrorKind so any stale
+		// error_kind from a prior failed UPDATE attempt for the
+		// same request_id is wiped. The UPSERT also handles this
+		// via CASE WHEN success=TRUE, but setting it here makes
+		// the intent obvious and removes a class of cross-request
+		// pollution where an old failure tag leaks into a fresh
+		// success row.
+		ErrorKind:        strPtr(""),
 		IdentityHash:     strPtr(evt.IdentityHash),
 		RequestPreview:   requestPreviewPtr,
 		TransformSummary: transformSummaryPtr,

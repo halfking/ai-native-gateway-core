@@ -53,3 +53,8 @@ func (a *ToolRegistryAdapter) GetCategory(ctx context.Context, tenantID, categor
 
 	return result, nil
 }
+
+// ExpandToolIDs 展开 tool_ids 通配符
+func (a *ToolRegistryAdapter) ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string {
+	return a.tr.ExpandToolIDs(ctx, tenantID, toolIDs)
+}
