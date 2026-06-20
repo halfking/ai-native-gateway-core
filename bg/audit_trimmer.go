@@ -91,8 +91,12 @@ func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDel
 	// routing_overrides_audit (P7.9 trigger-based log)
 	res1, err := t.pool.Exec(ctx, `
 		DELETE FROM routing_overrides_audit
-		WHERE ts < NOW() - $1::interval
-		LIMIT 5000
+		WHERE id IN (
+			SELECT id FROM routing_overrides_audit
+			WHERE ts < NOW() - $1::interval
+			ORDER BY ts
+			LIMIT 5000
+		)
 	`, t.retention.String())
 	if err != nil {
 		slog.Warn("audit_trimmer: routing_overrides_audit delete failed", "error", err)
@@ -103,8 +107,12 @@ func (t *AuditTrimmer) TrimOnce(ctx context.Context) (overridesDeleted, auditDel
 	// routing_audit_log (P7.9.1 app-level log)
 	res2, err := t.pool.Exec(ctx, `
 		DELETE FROM routing_audit_log
-		WHERE ts < NOW() - $1::interval
-		LIMIT 5000
+		WHERE id IN (
+			SELECT id FROM routing_audit_log
+			WHERE ts < NOW() - $1::interval
+			ORDER BY ts
+			LIMIT 5000
+		)
 	`, t.retention.String())
 	if err != nil {
 		slog.Warn("audit_trimmer: routing_audit_log delete failed", "error", err)

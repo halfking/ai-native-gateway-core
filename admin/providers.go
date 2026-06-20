@@ -808,6 +808,7 @@ func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error
 			SELECT 1 FROM providers p
 			WHERE p.tenant_id = 'default' AND p.catalog_code = pc.code
 		)
+		ON CONFLICT (tenant_id, code) DO NOTHING
 	`)
 	if err != nil {
 		return 0, err
