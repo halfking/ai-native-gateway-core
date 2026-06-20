@@ -273,6 +273,30 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	attemptClientModel = reqBody.Model
 
 	clientModel := reqBody.Model
+
+	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
+	// Inserted here so a denied request never reaches GetCandidates.
+	// The /v1/messages path does not use auto_route (Anthropic
+	// clients don't send model="auto") so a single pre-check is
+	// sufficient.
+	if keyInfo != nil {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.chatHandler.modelPolicy, h.chatHandler.resolver, profile,
+		)
+		if denied {
+			attemptErrCode = "model_forbidden"
+			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			attemptClientModel = canonical
+			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
+				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusForbidden, "permission_error",
+				fmt.Sprintf("Model '%s' is not available for your account", canonical))
+			return
+		}
+	}
+
 	isStream := reqBody.Stream
 	sessionID := r.Header.Get("X-Gw-Session-Id")
 	if sessionID == "" {
@@ -863,7 +887,7 @@ func anthropicStreamWrapper(requestID, clientModel, outboundModel string, captur
 		if c == nil {
 			c = capture
 		}
-		return StreamAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c)
+		return StreamAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c, nil)
 	}
 }
 

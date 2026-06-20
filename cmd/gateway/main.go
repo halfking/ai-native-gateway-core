@@ -287,29 +287,7 @@ func main() {
 					pc = relay.NewPendingCapturer(0)
 				}
 				outcome := relay.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, relay.StripMinimaxFieldsBody, pc)
-				if pc != nil {
-					if body, state, ok := pc.Snapshot(); ok {
-						saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
-						if err := pendingStore.Save(saveCtx, &pending.Response{
-							SessionID:    relay.SessionIDFromResp(resp),
-							RequestID:    relay.RequestIDFromResp(resp),
-							Status:       pending.Status(state.Status),
-							Body:         string(body),
-							ContentType:  "text/event-stream",
-							IsStream:     true,
-							CreatedAt:    time.Now().Unix(),
-							CompletedAt:  state.CompletedAt,
-							ErrorMessage: state.ErrMessage,
-						}); err != nil {
-							slog.Warn("pending_save_failed",
-								"session_id", relay.SessionIDFromResp(resp),
-								"request_id", relay.RequestIDFromResp(resp),
-								"error", err,
-							)
-						}
-						saveCancel()
-					}
-				}
+				saveCapturedPending(pendingStore, pc, resp)
 				return outcome
 			},
 			auditSink,
@@ -329,19 +307,46 @@ func main() {
 		// upstream http.Request and is read on every SSE line.
 		routingExec.QualityProcessNonStream = relay.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = relay.WrapSetQualityFixModeOnContext()
-		routingExec.AnthropicPassthroughStream = relay.StreamAnthropicPassthrough
-		routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
-		routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
-		// Q3 streaming: openai client -> anthropic upstream. Translates
-		// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
-		// doesn't choke on event: ... lines. Fixes the "供应商错误"
-		// symptom on minimax-M2.7 / minimax-M3 etc. (Q3 model routes).
-		routingExec.AnthropicToOpenAIStream = func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, cap *audit.StreamCapture) routing.StreamOutcome {
-			// relay.StreamOutcome and routing.StreamOutcome are
-			// structurally identical; explicit conversion to bridge the
-			// import boundary (routing can't import relay).
-			return routing.StreamOutcome(relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap))
-		}
+// Q4 streaming: Anthropic client → Anthropic upstream. Capturer-aware
+// (Track C C5, 2026-06-21): builds a pending-store capturer per request
+// when the upstream HTTP request carries a session id, so the body can
+// be replayed via GET /v1/sessions/{id}/pending-response on client
+// disconnect. Mirrors the OpenAI path wiring further below.
+routingExec.AnthropicPassthroughStream = func(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	cap *audit.StreamCapture,
+	pcAny any,
+) routing.StreamOutcome {
+	var pc *relay.PendingCapturer
+	if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
+		pc = relay.NewPendingCapturer(0)
+	}
+	outcome := relay.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
+	saveCapturedPending(pendingStore, pc, resp)
+	return outcome
+}
+routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
+routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+// Q3 streaming: openai client -> anthropic upstream. Translates
+// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
+// doesn't choke on event: ... lines. Capturer-aware (Track C C5).
+routingExec.AnthropicToOpenAIStream = func(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	cap *audit.StreamCapture,
+	pcAny any,
+) routing.StreamOutcome {
+	var pc *relay.PendingCapturer
+	if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
+		pc = relay.NewPendingCapturer(0)
+	}
+	outcome := relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
+	saveCapturedPending(pendingStore, pc, resp)
+	return outcome
+}
 		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
 		// chat.completion JSON. Fixes the missing `content` field on
 		// minimax-M2.7 non-stream responses.
@@ -1169,6 +1174,43 @@ func (a *pendingStoreAdapter) toEntry(r *pending.Response) *sessions.PendingEntr
 		IsStream:     r.IsStream,
 		CompletedAt:   r.CompletedAt,
 		ErrorMessage: r.ErrorMessage,
+	}
+}
+
+// saveCapturedPending persists the capturer's buffered SSE body to the
+// pending store so a client that disconnects mid-stream can pick up
+// the response via GET /v1/sessions/{id}/pending-response (Track C C5,
+// 2026-06-21). Shared by the OpenAI and both Anthropic (Q3 + Q4) stream
+// paths so all three contribute to the same pending store namespace.
+//
+// Best-effort: nil store or nil pc short-circuits; a save error is
+// logged at WARN and the streaming hot path is not affected.
+func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *http.Response) {
+	if pc == nil || store == nil {
+		return
+	}
+	body, state, ok := pc.Snapshot()
+	if !ok {
+		return
+	}
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer saveCancel()
+	if err := store.Save(saveCtx, &pending.Response{
+		SessionID:    relay.SessionIDFromResp(resp),
+		RequestID:    relay.RequestIDFromResp(resp),
+		Status:       pending.Status(state.Status),
+		Body:         string(body),
+		ContentType:  "text/event-stream",
+		IsStream:     true,
+		CreatedAt:    time.Now().Unix(),
+		CompletedAt:  state.CompletedAt,
+		ErrorMessage: state.ErrMessage,
+	}); err != nil {
+		slog.Warn("pending_save_failed",
+			"session_id", relay.SessionIDFromResp(resp),
+			"request_id", relay.RequestIDFromResp(resp),
+			"error", err,
+		)
 	}
 }
 

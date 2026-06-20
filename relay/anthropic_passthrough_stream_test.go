@@ -26,7 +26,7 @@ func TestStreamAnthropicPassthrough_ForwardsBytes(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	outcome := StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-1", capture)
+	outcome := StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-1", capture, nil)
 
 	if outcome.Interrupted {
 		t.Errorf("stream interrupted: %s", outcome.Reason)
@@ -66,7 +66,7 @@ func TestStreamAnthropicPassthrough_DetectsThinking(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	_ = StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-2", capture)
+	_ = StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-2", capture, nil)
 	if !capture.HasThinking {
 		t.Error("expected capture.HasThinking=true when thinking block present")
 	}
@@ -94,7 +94,7 @@ func TestStreamAnthropicPassthrough_AccumulatesUsage(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	_ = StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-3", capture)
+	_ = StreamAnthropicPassthrough(rec, resp, "MiniMax-M2.7", "MiniMax-M2.7", "req-3", capture, nil)
 	if capture.InputTokens == nil || *capture.InputTokens != 42 {
 		t.Errorf("InputTokens = %v, want 42", capture.InputTokens)
 	}

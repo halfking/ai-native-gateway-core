@@ -50,7 +50,7 @@ func TestStreamAnthropicSSEToOpenAI_TextOnly(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "MiniMax-M3", "MiniMax-M3", "req-1", &audit.StreamCapture{})
+	out := StreamAnthropicSSEToOpenAI(rec, resp, "MiniMax-M3", "MiniMax-M3", "req-1", &audit.StreamCapture{}, nil)
 
 	if out.Interrupted {
 		t.Fatalf("expected clean completion, got interrupted: %s", out.Reason)
@@ -95,7 +95,7 @@ func TestStreamAnthropicSSEToOpenAI_WithThinkBlock(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "MiniMax-M3", "MiniMax-M3", "req-2", &audit.StreamCapture{})
+	out := StreamAnthropicSSEToOpenAI(rec, resp, "MiniMax-M3", "MiniMax-M3", "req-2", &audit.StreamCapture{}, nil)
 	if out.Interrupted {
 		t.Fatalf("expected clean completion, got interrupted: %s", out.Reason)
 	}
@@ -128,7 +128,7 @@ func TestStreamAnthropicSSEToOpenAI_PingDropped(t *testing.T) {
 		StatusCode: 200,
 	}
 	rec := httptest.NewRecorder()
-	_ = StreamAnthropicSSEToOpenAI(rec, resp, "M", "M", "req-4", &audit.StreamCapture{})
+	_ = StreamAnthropicSSEToOpenAI(rec, resp, "M", "M", "req-4", &audit.StreamCapture{}, nil)
 
 	if strings.Contains(rec.Body.String(), `"type":"ping"`) {
 		t.Errorf("ping event leaked into OpenAI output:\n%s", rec.Body.String())
