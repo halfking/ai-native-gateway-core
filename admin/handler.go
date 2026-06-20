@@ -70,12 +70,28 @@ type Handler struct {
 		Pause()
 		Resume()
 	}
+	// modelPolicy (Round 48, 2026-06-21) is the tenant-scoped model
+	// denylist cache.  admin handlers call Invalidate after every
+	// write so the next chat request sees the change without waiting
+	// for the 60s TTL.  Interface avoids an import cycle (admin
+	// → relay would be ugly; relay → admin already exists).
+	modelPolicy interface {
+		Invalidate(tenantID string)
+	}
 	refreshMu    sync.Mutex             // guards lazy init of refreshState
 	refreshState *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	return &Handler{db: db, secret: secretKey, encKey: encKey}
+}
+
+// SetModelPolicy (Round 48, 2026-06-21) wires the tenant-scoped model
+// denylist cache so admin write endpoints can invalidate per-tenant
+// entries.  Called from cmd/gateway/main.go after constructing both
+// the admin Handler and the modelpolicy.Checker.
+func (h *Handler) SetModelPolicy(mp interface{ Invalidate(string) }) {
+	h.modelPolicy = mp
 }
 
 // SetKeyring configures AES-256-GCM key rotation.  Call this at startup after

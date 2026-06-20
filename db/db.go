@@ -107,6 +107,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -824,5 +828,126 @@ func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("passive_probe_state schema ensured (table + 1 index + 3 model_probe_state columns)")
+	return nil
+}
+
+// ensureTenantModelPoliciesSchema mirrors
+// db/migrations/024_tenant_model_policies.sql for startup apply.
+// Idempotent. Creates:
+//   1. tenant_model_policies table (Pattern A: tenant_id NOT NULL, RLS)
+//   2. tenant_model_policies_active view (excludes soft-deleted rows)
+//   3. tenant_model_policies_audit table + trigger
+//
+// Without this, internal/modelpolicy/Checker.IsForbidden would
+// return false (fail-open) for all tenants because the table would
+// not exist, masking the gate as if it were never wired.
+func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS tenant_model_policies (
+		    id              BIGSERIAL PRIMARY KEY,
+		    tenant_id       VARCHAR(64) NOT NULL REFERENCES tenants(code) ON DELETE CASCADE,
+		    canonical_name  TEXT NOT NULL,
+		    reason          TEXT NOT NULL DEFAULT '',
+		    created_by      VARCHAR(128) NOT NULL DEFAULT '',
+		    deleted_at      TIMESTAMPTZ,
+		    deleted_by      VARCHAR(128),
+		    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    UNIQUE (tenant_id, canonical_name),
+		    CHECK (canonical_name <> '')
+		);
+		CREATE INDEX IF NOT EXISTS idx_tmp_tenant_active
+		    ON tenant_model_policies (tenant_id) WHERE deleted_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_tmp_canonical
+		    ON tenant_model_policies (canonical_name);
+
+		ALTER TABLE tenant_model_policies ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_tmp ON public.tenant_model_policies;
+		CREATE POLICY tenant_isolation_tmp ON public.tenant_model_policies
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+		CREATE OR REPLACE VIEW tenant_model_policies_active AS
+		    SELECT id, tenant_id, canonical_name, reason, created_by,
+		           created_at, updated_at
+		    FROM tenant_model_policies
+		    WHERE deleted_at IS NULL;
+
+		CREATE TABLE IF NOT EXISTS tenant_model_policies_audit (
+		    id              BIGSERIAL PRIMARY KEY,
+		    ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    action          TEXT NOT NULL CHECK (action IN ('insert','update','delete','undelete')),
+		    policy_id       BIGINT,
+		    tenant_id       TEXT,
+		    canonical_name  TEXT,
+		    reason          TEXT,
+		    actor           TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_tmp_audit_ts ON tenant_model_policies_audit (ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_tmp_audit_tenant_ts ON tenant_model_policies_audit (tenant_id, ts DESC);
+		ALTER TABLE tenant_model_policies_audit ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_tmp_audit ON public.tenant_model_policies_audit;
+		CREATE POLICY tenant_isolation_tmp_audit ON public.tenant_model_policies_audit
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text
+		           OR (tenant_id) IS NULL);
+
+		CREATE OR REPLACE FUNCTION tenant_model_policies_audit_fn()
+		RETURNS TRIGGER AS $$
+		DECLARE
+		    v_actor TEXT := COALESCE(
+		        NULLIF(current_setting('app.current_admin', true), ''),
+		        'system'
+		    );
+		BEGIN
+		    IF (TG_OP = 'INSERT') THEN
+		        INSERT INTO tenant_model_policies_audit
+		            (action, policy_id, tenant_id, canonical_name, reason, actor)
+		        VALUES
+		            ('insert', NEW.id, NEW.tenant_id, NEW.canonical_name, NEW.reason, v_actor);
+		        RETURN NEW;
+		    ELSIF (TG_OP = 'UPDATE') THEN
+		        IF NEW.deleted_at IS DISTINCT FROM OLD.deleted_at THEN
+		            IF NEW.deleted_at IS NULL THEN
+		                INSERT INTO tenant_model_policies_audit
+		                    (action, policy_id, tenant_id, canonical_name, reason, actor)
+		                VALUES
+		                    ('undelete', NEW.id, NEW.tenant_id, NEW.canonical_name, NEW.reason, v_actor);
+		            ELSE
+		                INSERT INTO tenant_model_policies_audit
+		                    (action, policy_id, tenant_id, canonical_name, reason, actor)
+		                VALUES
+		                    ('delete', NEW.id, NEW.tenant_id, NEW.canonical_name, OLD.reason, v_actor);
+		            END IF;
+		        ELSIF NEW.reason IS DISTINCT FROM OLD.reason
+		              OR NEW.canonical_name IS DISTINCT FROM OLD.canonical_name
+		        THEN
+		            INSERT INTO tenant_model_policies_audit
+		                (action, policy_id, tenant_id, canonical_name, reason, actor)
+		            VALUES
+		                ('update', NEW.id, NEW.tenant_id, NEW.canonical_name, NEW.reason, v_actor);
+		        END IF;
+		        RETURN NEW;
+		    ELSIF (TG_OP = 'DELETE') THEN
+		        INSERT INTO tenant_model_policies_audit
+		            (action, policy_id, tenant_id, canonical_name, reason, actor)
+		        VALUES
+		            ('delete', OLD.id, OLD.tenant_id, OLD.canonical_name, OLD.reason, v_actor);
+		        RETURN OLD;
+		    END IF;
+		    RETURN NULL;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS tenant_model_policies_audit_trg ON tenant_model_policies;
+		CREATE TRIGGER tenant_model_policies_audit_trg
+		    AFTER INSERT OR UPDATE OR DELETE ON tenant_model_policies
+		    FOR EACH ROW EXECUTE FUNCTION tenant_model_policies_audit_fn();
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("tenant_model_policies schema ensured (table + RLS + active view + audit trigger)")
 	return nil
 }

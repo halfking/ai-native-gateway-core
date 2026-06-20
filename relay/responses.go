@@ -232,6 +232,30 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	attemptClientModel = reqBody.Model
 
 	clientModel := reqBody.Model
+
+	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
+	// Inserted here so a denied request never reaches GetCandidates.
+	// The /v1/responses path does not use auto_route, so a single
+	// pre-check is sufficient.
+	if keyInfo != nil {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.chatHandler.modelPolicy, h.chatHandler.resolver, profile,
+		)
+		if denied {
+			attemptErrCode = "model_forbidden"
+			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			attemptClientModel = canonical
+			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
+				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusForbidden,
+				fmt.Sprintf("Model '%s' is not available for your account", canonical),
+				"permission_error", "model_forbidden")
+			return
+		}
+	}
+
 	isStream := reqBody.Stream
 	sessionID := r.Header.Get("X-Gw-Session-Id")
 	if sessionID == "" {
