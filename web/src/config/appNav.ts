@@ -69,6 +69,13 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    id: 'data-ops',
+    label: '数据运维',
+    items: [
+      { path: '/admin/data-lifecycle', label: '数据生命周期', icon: '💾', platformOps: true, hideForTenant: true },
+    ],
+  },
+  {
     id: 'guide',
     label: '接入指南',
     items: [{ path: '/examples', label: '接入示例', icon: '📝' }],
