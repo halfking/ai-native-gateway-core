@@ -6,11 +6,10 @@ package metatools
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Category represents a tool category with metadata.
@@ -35,11 +34,11 @@ type LoadToolsResult struct {
 
 // Handler provides meta-tool operations (list_categories, load_tools).
 type Handler struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
 // NewHandler creates a new meta-tool handler.
-func NewHandler(db *sql.DB) *Handler {
+func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{db: db}
 }
 
@@ -54,7 +53,7 @@ func (h *Handler) ListCategories(ctx context.Context) ([]Category, error) {
 		ORDER BY c.display_order
 	`
 
-	rows, err := h.db.QueryContext(ctx, query)
+	rows, err := h.db.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query categories: %w", err)
 	}
@@ -93,7 +92,7 @@ func (h *Handler) LoadTools(ctx context.Context, categories []string) (*LoadTool
 		ORDER BY priority DESC, tool_name
 	`
 
-	rows, err := h.db.QueryContext(ctx, query, pq.Array(categories))
+	rows, err := h.db.Query(ctx, query, categories)
 	if err != nil {
 		return nil, fmt.Errorf("query tools: %w", err)
 	}

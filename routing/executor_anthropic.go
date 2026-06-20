@@ -94,11 +94,11 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 	return req, nil
 }
 
-func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error {
+func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Copy upstream response headers, but drop hop-by-hop / length headers
 	// (Content-Length will be re-derived from the body bytes written, and
@@ -159,7 +159,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		_, err = w.Write(body)
-		return err
+		return body, err
 	}
 
 	// Q4 mode (anthropic client -> anthropic upstream): passthrough
@@ -183,7 +183,7 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
-	return err
+	return body, err
 }
 
 // splitEmbeddedThinkTags inspects an Anthropic Messages response body and,
@@ -701,7 +701,8 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	var qualitySignals QualitySignals
-	if err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals); err != nil {
+	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
+	if err != nil {
 		return nil, err
 	}
 	return &ExecuteResult{
@@ -709,6 +710,7 @@ func (e *Executor) executeAnthropicOnce(
 		Candidate:   cand,
 		LatencyMs:   latencyMs,
 		RequestBody: append([]byte(nil), bodyBytes...),
+		ResponseBody: responseBody,
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
 		// Q3 (openai client -> anthropic upstream) non-stream
 		// signals come back from the AnthropicExecutor's hook so

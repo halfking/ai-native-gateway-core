@@ -51,7 +51,7 @@ type ProtocolHandler interface {
 	// ExecuteResult for emitTelemetry. Implementations that do not
 	// run a quality hook MUST leave *qualitySignals untouched; the
 	// caller treats nil as "no signals".
-	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) error
+	WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error)
 
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether
