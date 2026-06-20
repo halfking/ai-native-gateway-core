@@ -949,7 +949,17 @@ if convErr != nil {
 			errCode = "model_not_found"
 			realKind := mapExecuteErrorToKind(execErrTyped)
 			logCtx.SetOutboundModel(explicitOutbound)
-			logCtx.failAndMark("model_not_found",
+			// 2026-06-20: write the REAL underlying kind to
+			// request_logs.error_kind (e.g. "rate_limit",
+			// "concurrent", "upstream_down") instead of the
+			// backward-compat "model_not_found". The HTTP
+			// error.code stays "model_not_found" for old clients
+			// (set below in writeErrorJSONWithKind); the new
+			// error_kind column + error.kind JSON field carry the
+			// precise cause. Operators can now filter on
+			// error_kind='rate_limit' directly without parsing the
+			// X-Gateway-Last-Kind header.
+			logCtx.failAndMark(errorKindOrFallback(realKind),
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				providerID, credentialID)
 			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
@@ -2279,6 +2289,19 @@ func mapExecuteErrorToKind(err *routing.ExecuteError) string {
 		return "no_candidates"
 	}
 	return "unknown"
+}
+
+// errorKindOrFallback (2026-06-20) returns the real underlying error
+// kind for request_logs.error_kind. Falls back to "model_not_found"
+// when the kind is empty or "unknown" so we never write a misleading
+// empty/garbage value to the database. The HTTP error.code is handled
+// separately (see serveWithExecutor's Exhausted branch) and stays
+// "model_not_found" for backward compatibility.
+func errorKindOrFallback(kind string) string {
+	if kind == "" || kind == "unknown" {
+		return "model_not_found"
+	}
+	return kind
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut
