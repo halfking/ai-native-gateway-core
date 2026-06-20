@@ -159,7 +159,11 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// /api/admin/tenants/{code}/users|keys|stats
+	// /api/admin/tenants/{code}/users|keys|stats|model-policies
+	if sub == "model-policies" {
+		h.handleTenantModelPolicies(w, r, code)
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
