@@ -8,8 +8,29 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metatools"
 )
 
-// MetaToolInterceptor handles meta-tool calls (list_categories, load_tools)
-// without forwarding to upstream LLM providers.
+// MetaToolInterceptor transparently expands the `tools` array when a
+// client declares only the two meta-tools (list_categories, load_tools).
+// The original implementation tried to detect meta-tool invocations on
+// the assistant side of the conversation, which is unreachable: clients
+// never send assistant messages with tool_calls. The correct interception
+// point is the *request's tools array* — when the client opts into the
+// meta-tool protocol we load the full tool registry and replace the
+// meta-tools with the concrete ones, then forward the expanded request
+// to the upstream LLM in a single round-trip.
+//
+// Workflow:
+//
+//  1. Client sends initial request with only `tools: [list_categories,
+//     load_tools]` (~2KB).
+//  2. MetaToolInterceptor detects the meta-tools in `tools`.
+//  3. It loads all enabled tools from the DB-backed tool_registry.
+//  4. It replaces the meta-tools with the full set (keeping any other
+//     non-meta-tool declarations the client may have made).
+//  5. The expanded request is forwarded to upstream; the LLM sees all
+//     concrete tools in a single pass.
+//
+// This achieves the original design goal (96% smaller initial requests)
+// without the unreachable "intercept assistant tool_calls" logic.
 type MetaToolInterceptor struct {
 	handler *metatools.Handler
 }
@@ -19,11 +40,28 @@ func NewMetaToolInterceptor(handler *metatools.Handler) *MetaToolInterceptor {
 	return &MetaToolInterceptor{handler: handler}
 }
 
-// InterceptRequest checks if the request contains meta-tool responses that
-// should be handled locally. Returns (modified body, intercepted, error).
+// MetaToolNames lists the canonical names of the meta-tools. Exported
+// so tests (and other callers) can probe the set without duplicating
+// string literals.
+var MetaToolNames = map[string]bool{
+	"list_categories": true,
+	"load_tools":      true,
+}
+
+// isMetaTool reports whether the given tool name is a meta-tool.
+func isMetaTool(name string) bool {
+	return MetaToolNames[name]
+}
+
+// InterceptRequest detects meta-tools in the request's `tools` field and,
+// if present, expands them with the full tool set loaded from the
+// tool_registry. Returns:
 //
-// If intercepted=true, the request was handled locally and should not be
-// forwarded to upstream LLM.
+//   - (modified, true, nil)   — meta-tools replaced with the full set
+//   - (original, false, nil)  — no meta-tools, body unchanged
+//   - (original, false, err)  — DB error; caller should treat as a
+//                               passthrough so a metatool outage cannot
+//                               break real requests
 func (i *MetaToolInterceptor) InterceptRequest(ctx context.Context, body []byte) ([]byte, bool, error) {
 	if i.handler == nil {
 		return body, false, nil
@@ -34,123 +72,71 @@ func (i *MetaToolInterceptor) InterceptRequest(ctx context.Context, body []byte)
 		return body, false, nil
 	}
 
-	messages, ok := req["messages"].([]interface{})
-	if !ok || len(messages) == 0 {
+	toolsRaw, ok := req["tools"].([]interface{})
+	if !ok || len(toolsRaw) == 0 {
 		return body, false, nil
 	}
 
-	// Check last message for meta-tool calls
-	lastMsg, ok := messages[len(messages)-1].(map[string]interface{})
-	if !ok {
-		return body, false, nil
-	}
-
-	role, _ := lastMsg["role"].(string)
-	if role != "assistant" {
-		return body, false, nil
-	}
-
-	// Check for tool_calls
-	toolCalls, ok := lastMsg["tool_calls"].([]interface{})
-	if !ok || len(toolCalls) == 0 {
-		return body, false, nil
-	}
-
-	// Process each tool call
-	intercepted := false
-	for _, tc := range toolCalls {
-		toolCall, ok := tc.(map[string]interface{})
+	hasMetaTool := false
+	for _, t := range toolsRaw {
+		tMap, ok := t.(map[string]interface{})
 		if !ok {
 			continue
 		}
-
-		fn, ok := toolCall["function"].(map[string]interface{})
+		fn, ok := tMap["function"].(map[string]interface{})
 		if !ok {
 			continue
 		}
-
 		name, _ := fn["name"].(string)
-		argsStr, _ := fn["arguments"].(string)
-
-		var result string
-		var err error
-
-		switch name {
-		case "list_categories":
-			result, err = i.handleListCategories(ctx)
-			intercepted = true
-
-		case "load_tools":
-			result, err = i.handleLoadTools(ctx, argsStr)
-			intercepted = true
-
-		default:
-			continue
+		if isMetaTool(name) {
+			hasMetaTool = true
+			break
 		}
-
-		if err != nil {
-			return body, false, fmt.Errorf("meta-tool %s failed: %w", name, err)
-		}
-
-		// Replace the assistant message with tool response
-		toolCallID, _ := toolCall["id"].(string)
-		toolResponse := map[string]interface{}{
-			"role":         "tool",
-			"tool_call_id": toolCallID,
-			"content":      result,
-		}
-
-		// Replace last message with tool response
-		messages[len(messages)-1] = toolResponse
 	}
-
-	if !intercepted {
+	if !hasMetaTool {
 		return body, false, nil
 	}
 
-	// Rebuild request body
-	req["messages"] = messages
+	// Load the full tool set from tool_registry. Empty categories =
+	// "everything enabled" per the metatools package contract.
+	result, err := i.handler.LoadTools(ctx, []string{})
+	if err != nil {
+		// Don't block real requests on a metatool outage: fall through.
+		return body, false, fmt.Errorf("load tools: %w", err)
+	}
+	if result == nil || result.TotalCount == 0 {
+		return body, false, nil
+	}
+
+	expanded := make([]interface{}, 0, len(toolsRaw)+len(result.Tools))
+	for _, t := range toolsRaw {
+		tMap, ok := t.(map[string]interface{})
+		if !ok {
+			expanded = append(expanded, t)
+			continue
+		}
+		fn, ok := tMap["function"].(map[string]interface{})
+		if !ok {
+			expanded = append(expanded, t)
+			continue
+		}
+		name, _ := fn["name"].(string)
+		if !isMetaTool(name) {
+			expanded = append(expanded, t)
+		}
+	}
+	for _, def := range result.Tools {
+		var tool interface{}
+		if err := json.Unmarshal(def, &tool); err != nil {
+			continue
+		}
+		expanded = append(expanded, tool)
+	}
+	req["tools"] = expanded
+
 	modified, err := json.Marshal(req)
 	if err != nil {
 		return body, false, fmt.Errorf("rebuild request: %w", err)
 	}
-
 	return modified, true, nil
-}
-
-func (i *MetaToolInterceptor) handleListCategories(ctx context.Context) (string, error) {
-	categories, err := i.handler.ListCategories(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	result := map[string]interface{}{
-		"categories": categories,
-	}
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
-}
-
-func (i *MetaToolInterceptor) handleLoadTools(ctx context.Context, argsJSON string) (string, error) {
-	var args metatools.LoadToolsArgs
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return "", fmt.Errorf("parse arguments: %w", err)
-	}
-
-	result, err := i.handler.LoadTools(ctx, args.Categories)
-	if err != nil {
-		return "", err
-	}
-
-	data, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
 }

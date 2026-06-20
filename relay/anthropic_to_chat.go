@@ -52,7 +52,12 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 				textParts = append(textParts, c.Text)
 			}
 		case "tool_use":
-			argsJSON, _ := json.Marshal(c.Input)
+			argsJSON, err := json.Marshal(c.Input)
+			if err != nil {
+				// Skip this tool_use block; partial conversion is safer
+				// than aborting the entire response.
+				continue
+			}
 			toolCalls = append(toolCalls, map[string]any{
 				"id":   c.ID,
 				"type": "function",
@@ -113,8 +118,12 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			"reasoning_content_chars": len(reasoningContent),
 		}
 	}
-	
-	return json.Marshal(out)
+
+	result, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat response: %w", err)
+	}
+	return result, nil
 }
 
 func joinTextParts(parts []string) string {
