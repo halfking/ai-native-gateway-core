@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -40,19 +39,19 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		StrategyDist: make(map[string]int),
 	}
 
-	rows, err := h.db.Query(ctx, `
-		SELECT
-			COALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,
-			COUNT(*) AS cnt,
-			COUNT(rl.outbound_body)::bigint AS with_outbound,
-			SUM(rl.outbound_token_est)::bigint AS total_tok_after,
-			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN rl.outbound_token_est ELSE 0 END)::bigint AS compressed_tok
-		FROM request_logs rl
-		WHERE rl.ts > now() - ($1 || ' hours')::interval
-		  AND ($2 OR rl.success)
-		GROUP BY strategy
-		ORDER BY cnt DESC
-	`, fmt.Sprintf("%d", hours), !IsTenantAdmin(r))
+		rows, err := h.db.Query(ctx, `
+			SELECT
+				COALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,
+				COUNT(*) AS cnt,
+				COUNT(rl.outbound_body)::bigint AS with_outbound,
+				SUM(rl.outbound_token_est)::bigint AS total_tok_after,
+				SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN rl.outbound_token_est ELSE 0 END)::bigint AS compressed_tok
+			FROM request_logs rl
+			WHERE rl.ts > now() - $1::int * interval '1 hour'
+			  AND ($2 OR rl.success)
+			GROUP BY strategy
+			ORDER BY cnt DESC
+		`, hours, !IsTenantAdmin(r))
 	if err != nil {
 		slog.Warn("compression_stats query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
