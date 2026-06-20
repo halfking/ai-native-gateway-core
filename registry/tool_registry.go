@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -290,4 +291,128 @@ func (tr *ToolRegistry) ExpandToolIDs(ctx context.Context, tenantID string, tool
 	}
 
 	return result
+}
+
+// IsDeprecated 检查工具是否已废弃（Phase 3.2: 版本管理）
+func (tr *ToolRegistry) IsDeprecated(toolID string) bool {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	key := "default:" + toolID
+	if tool, ok := tr.cache.tools[key]; ok {
+		return tool.IsDeprecated()
+	}
+	return false
+}
+
+// IsSuperseded 检查工具是否被新版本替代（Phase 3.2: 版本管理）
+func (tr *ToolRegistry) IsSuperseded(toolID string) bool {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	key := "default:" + toolID
+	if tool, ok := tr.cache.tools[key]; ok {
+		return tool.IsSuperseded()
+	}
+	return false
+}
+
+// GetSupersededBy 获取替代工具ID（Phase 3.2: 版本管理）
+func (tr *ToolRegistry) GetSupersededBy(toolID string) string {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	key := "default:" + toolID
+	if tool, ok := tr.cache.tools[key]; ok {
+		return tool.SupersededBy
+	}
+	return ""
+}
+
+// IsAllowed 检查租户是否有权限使用该工具（Phase 3.4: 权限控制）
+// 返回: allowed, reason
+func (tr *ToolRegistry) IsAllowed(tenantID, toolID string) (bool, string) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	policies := tr.cache.policies[tenantID]
+	if len(policies) == 0 {
+		return true, ""
+	}
+
+	// 先检查 deny 规则（黑名单优先级最高）
+	for _, p := range policies {
+		if !p.Enabled || p.PolicyType != "deny" {
+			continue
+		}
+		if matchPattern(p.ToolPattern, toolID) {
+			return false, p.Reason
+		}
+	}
+
+	// 再检查 allow 规则（白名单）
+	hasAllow := false
+	for _, p := range policies {
+		if !p.Enabled || p.PolicyType != "allow" {
+			continue
+		}
+		if matchPattern(p.ToolPattern, toolID) {
+			hasAllow = true
+			break
+		}
+	}
+
+	if hasAllow {
+		return true, ""
+	}
+
+	// 如果只有 deny 规则，没有 allow 规则，则允许
+	for _, p := range policies {
+		if p.Enabled && p.PolicyType == "allow" {
+			return false, "no allow policy matches"
+		}
+	}
+
+	return true, ""
+}
+
+// GetPolicies 获取租户的所有策略（Phase 3.4: 权限控制）
+func (tr *ToolRegistry) GetPolicies(tenantID string) []*TenantPolicy {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	policies := tr.cache.policies[tenantID]
+	result := make([]*TenantPolicy, len(policies))
+	copy(result, policies)
+	return result
+}
+
+// matchPattern 检查 toolID 是否匹配 pattern
+// 支持精确匹配和通配符 (* 表示任意字符)
+func matchPattern(pattern, toolID string) bool {
+	if pattern == toolID {
+		return true
+	}
+	if !strings.Contains(pattern, "*") {
+		return false
+	}
+	// 简单的通配符匹配: 只支持 * 和 prefix.* 形式
+	if strings.HasSuffix(pattern, ".*") {
+		prefix := strings.TrimSuffix(pattern, ".*")
+		return strings.HasPrefix(toolID, prefix+".")
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := strings.TrimPrefix(pattern, "*.")
+		return strings.HasSuffix(toolID, "."+suffix)
+	}
+	// 更复杂的匹配使用 strings.Contains
+	return strings.Contains(toolID, strings.ReplaceAll(pattern, "*", ""))
 }
