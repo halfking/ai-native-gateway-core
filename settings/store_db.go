@@ -116,8 +116,8 @@ func (s *StoreDB) SetTenant(tenantID, key string, value any) (jsonRawMessage, er
 	}
 	var oldVal []byte
 	err = s.pool.QueryRow(context.Background(), `
-		INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, scope, category, updated_at)
-		VALUES ($1, $2, $3::jsonb, $4, 'tenant', $5, now())
+		INSERT INTO tenant_settings_kv (tenant_id, key, value, value_type, category, updated_at)
+		VALUES ($1, $2, $3::jsonb, $4, $5, now())
 		ON CONFLICT (tenant_id, key) DO UPDATE
 		  SET value = EXCLUDED.value,
 		      value_type = EXCLUDED.value_type,
