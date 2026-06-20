@@ -164,28 +164,16 @@ const strategyMaxCount = computed(() => {
 })
 
 // Time series chart
-const chartMax = computed(() => {
-  if (!stats.value?.hourly_series?.length) return 1
-  return Math.max(...stats.value.hourly_series.map(h => h.total))
-})
-
-const barHeight = 80
-
-function barStyle(bucket: { total: number }) {
-  const pct = chartMax.value > 0 ? (bucket.total / chartMax.value) * 100 : 0
-  return { height: barHeight + 'px', width: pct + '%' }
-}
-
-function compressedBarStyle(bucket: { total: number; compressed: number }) {
-  if (bucket.total === 0) return { width: '0%' }
-  return { width: (bucket.compressed / bucket.total) * 100 + '%' }
-}
-
 const timeBucketLabel = computed(() => {
   if (!stats.value?.hourly_series?.length) return ''
-  if (stats.value.hourly_series.length > 48) return '按天'
-  if (stats.value.hourly_series.length > 24) return '每6小时'
-  return '按小时'
+  const hours = activeTab.value === 'custom'
+    ? (customFrom.value && customTo.value
+        ? (new Date(customTo.value).getTime() - new Date(customFrom.value).getTime()) / 3600000
+        : 24)
+    : (displayHours.value || 24)
+  if (hours <= 48) return '按小时'
+  if (hours <= 168) return '每6小时'
+  return '按天'
 })
 
 const chartBuckets = computed(() => {
@@ -197,7 +185,7 @@ const chartBuckets = computed(() => {
   return series.filter((_, i) => i % step === 0)
 })
 
-// truncated ID
+// Shorten session ID for display (show first 8 chars + ellipsis)
 function shortID(id: string): string {
   if (!id || id.length <= 12) return id || '—'
   return id.slice(0, 8) + '…'
