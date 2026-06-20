@@ -59,7 +59,7 @@ func TestStreamAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
 
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "minimax-m3", "MiniMax-M3", "req-split", capture)
+	StreamAnthropicSSE(rec, resp, "minimax-m3", "MiniMax-M3", "req-split", capture, nil)
 
 	body := rec.Body.String()
 	type block struct {
@@ -140,7 +140,7 @@ func TestStreamAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-no", capture)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-no", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"text":"HI"`) {
 		t.Errorf("expected text_delta carrying HI; got:\n%s", body)
@@ -170,7 +170,7 @@ func TestStreamAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-cross", capture)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-cross", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"thinking":"step 1\nstep 2"`) {
 		t.Errorf("expected thinking_delta with full multi-chunk content; got:\n%s", body)
@@ -198,7 +198,7 @@ func TestStreamAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-empty", capture)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-empty", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"thinking":"only thinking"`) {
 		t.Errorf("expected thinking_delta; got:\n%s", body)
@@ -225,7 +225,7 @@ func TestStreamAnthropicSSE_EmptyContent(t *testing.T) {
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-nocontent", capture)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-nocontent", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"index":0,"type":"content_block_stop"`) {
 		t.Errorf("expected content_block_stop at index 0; got:\n%s", body)
@@ -249,7 +249,7 @@ func TestStreamAnthropicSSE_UsageAndMessageStop(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-tail", capture)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-tail", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"output_tokens":3`) {
 		t.Errorf("message_delta should carry output_tokens; got:\n%s", body)
@@ -276,7 +276,7 @@ func TestStreamAnthropicSSE_PreservesAnthropicEnvelope(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-env", nil)
+	StreamAnthropicSSE(rec, resp, "m", "m", "req-env", nil, nil)
 	body := rec.Body.String()
 	for _, evt := range []string{
 		"event: message_start",

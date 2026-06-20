@@ -59,9 +59,12 @@ type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel,
 type StreamWrapperFunc func(w http.ResponseWriter, resp *http.Response, norm NormalizerFunc, capture *audit.StreamCapture) StreamOutcome
 
 // AnthropicPassthroughFunc is the signature for the Q4 Anthropic SSE
-// passthrough hook (relay/anthropic_passthrough_stream.go). Wired from
-// main.go so the routing package does not import relay.
-type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+// AnthropicPassthroughFunc forwards Anthropic-format SSE upstream to the
+// client unchanged (Q4 path: anthropic client → anthropic upstream).
+// pc is an optional pending-store capturer (Track C C5, 2026-06-21)
+// that records the SSE body so it can be replayed on client reconnect.
+// Wired from main.go so the routing package does not import relay.
+type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // ChatToAnthropicFunc converts an OpenAI chat completions body to
 // Anthropic Messages format. Wired from main.go so the routing
@@ -69,14 +72,15 @@ type AnthropicPassthroughFunc func(w http.ResponseWriter, resp *http.Response, c
 type ChatToAnthropicFunc func(body []byte) ([]byte, error)
 
 // AnthropicToOpenAIFunc converts an Anthropic Messages body to OpenAI
-// chat completions format. Wired from main.go so the routing package
-// does not import relay.
+// chat completions format. Wired from main.go so the routing
+// package does not import relay.
 type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 
 // AnthropicToOpenAISSEFunc is the streaming counterpart of
 // AnthropicToOpenAIFunc: reads Anthropic-format SSE upstream and
-// writes OpenAI-format SSE chunks to w. Wired from main.go.
-type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+// writes OpenAI-format SSE chunks to w (Q3 path: openai client →
+// anthropic upstream). pc is the optional pending-store capturer.
+type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI

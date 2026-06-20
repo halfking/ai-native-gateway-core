@@ -689,6 +689,11 @@ func (p *pendingCapturer) markInterrupted(reason string) {
 // guards against it (returning 404 for empty body) but the Status field
 // itself is wrong, and any future code path inspecting Status == "completed"
 // would misread it as a successful, replayable response.
+//
+// Track C C5 (2026-06-21): "client_disconnected" (used by the Anthropic
+// passthrough path) is treated identically to "client_cancel" for
+// replayability — both indicate the upstream kept streaming but the
+// client went away mid-stream, so we have the body for replay.
 func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 	if p == nil {
 		return
@@ -698,15 +703,16 @@ func (p *pendingCapturer) finalize(outcome StreamOutcome) {
 	if p.finalized {
 		return
 	}
+	clientWentAway := outcome.Reason == "client_cancel" || outcome.Reason == "client_disconnected"
 	if outcome.Interrupted {
-		if outcome.Reason == "client_cancel" && p.bytes > 0 {
+		if clientWentAway && p.bytes > 0 {
 			// Client disconnected but we captured at least one chunk —
 			// the body is replayable.
 			p.finalState = PendingFinalState{
 				Status:      "completed",
 				CompletedAt: time.Now().Unix(),
 			}
-		} else if outcome.Reason == "client_cancel" {
+		} else if clientWentAway {
 			// Client cancelled before the first byte arrived. Nothing to
 			// replay; mark failed so the GET endpoint returns a clear error.
 			p.finalState = PendingFinalState{
