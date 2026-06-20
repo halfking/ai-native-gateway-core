@@ -29,6 +29,7 @@ import WorkTypesView          from './views/WorkTypesView.vue'
 import UsersView              from './views/UsersView.vue'
 import AuditLogView          from './views/AuditLogView.vue'
 import CompressionView       from './views/CompressionView.vue'
+import DataLifecycleView     from './views/DataLifecycleView.vue'
 import SessionContextLayout      from './layouts/SessionContextLayout.vue'
 import SessionContextListView    from './views/session-context/SessionContextListView.vue'
 import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
@@ -115,6 +116,7 @@ export const router = createRouter({
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
+    { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 

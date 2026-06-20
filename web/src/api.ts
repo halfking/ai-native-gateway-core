@@ -3673,3 +3673,83 @@ export function getRoutingAudit(params: {
   const path = '/api/admin/routing/overrides/audit' + (q.toString() ? '?' + q : '')
   return req<RoutingAuditResponse>('GET', path)
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Data Lifecycle Management API
+// ─────────────────────────────────────────────────────────────────
+
+export interface DataSegment {
+  rows: number
+  size_bytes: number
+  size_human: string
+  days: number
+  percent_of_total: number
+}
+
+export interface TenantDataStats {
+  tenant_id: string
+  rows: number
+  size_bytes: number
+  size_human: string
+}
+
+export interface DailyGrowth {
+  date: string
+  requests: number
+  compressed: number
+  compression_rate: number
+}
+
+export interface DataLifecycleStatsResponse {
+  total_rows: number
+  total_size_bytes: number
+  total_size_human: string
+  hot_data: DataSegment | null
+  warm_data: DataSegment | null
+  cold_data: DataSegment | null
+  expired_data: DataSegment | null
+  by_tenant: TenantDataStats[]
+  growth_trend: DailyGrowth[]
+}
+
+export function dataLifecycleStats() {
+  return req<DataLifecycleStatsResponse>('GET', '/api/admin/data-lifecycle/stats')
+}
+
+export interface CleanupPreviewResponse {
+  affected_rows: number
+  estimated_freed_bytes: number
+  estimated_freed_human: string
+  warning_message?: string
+}
+
+export function dataLifecycleCleanupPreview(
+  action: string,
+  from: string,
+  to: string
+) {
+  return req<CleanupPreviewResponse>('POST', '/api/admin/data-lifecycle/cleanup/preview', {
+    action,
+    from,
+    to
+  })
+}
+
+export interface DataLifecycleMetricsResponse {
+  total_rows: number
+  total_size_bytes: number
+  hot_data_rows: number
+  hot_data_size_bytes: number
+  warm_data_rows: number
+  warm_data_size_bytes: number
+  cold_data_rows: number
+  cold_data_size_bytes: number
+  expired_data_rows: number
+  expired_data_size_bytes: number
+  last_cleanup_at?: string
+  last_archive_at?: string
+}
+
+export function dataLifecycleMetrics() {
+  return req<DataLifecycleMetricsResponse>('GET', '/api/admin/data-lifecycle/metrics')
+}
