@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/sessions"
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -118,6 +119,17 @@ type QualityProcessNonStreamFunc func(body []byte, mode string) (outBody []byte,
 // with qualityFixModeFromContext on every SSE line so the streaming
 // path can run the same checks as the non-stream path.
 type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
+
+// RequestLogEmitter (2026-06-20) is the minimum interface needed by
+// runAsyncRetry to update request_logs when a backgrounded retry
+// eventually succeeds. Implemented by *telemetry.Client in
+// production. Using an interface (rather than a direct
+// *telemetry.Client field) so tests can inject a mock without
+// needing a real database.
+type RequestLogEmitter interface {
+	Enabled() bool
+	EmitRequestLogUpdate(entry *telemetry.RequestLogEntry)
+}
 
 type Executor struct {
 	Router        *Router
@@ -263,6 +275,18 @@ type Executor struct {
 	AsyncShortTimeout       time.Duration
 	AsyncLongTimeout        time.Duration
 	AsyncMaxFallbackCreds   int  // cap on credential fallbacks in async goroutine
+
+	// RequestLogEmitter (2026-06-20): optional hook that runAsyncRetry
+	// calls when a backgrounded retry succeeds, so the original
+	// request_logs row (stuck at "in_progress" because the sync phase
+	// did not call emitTelemetry) gets corrected to "success".
+	//
+	// Without this hook, async-retry success leaves request_logs in
+	// its post-sync state, and operators see "model_not_found" /
+	// "in_progress" for requests that actually completed via the
+	// async path. Wired from cmd/gateway/main.go after telemetryClient
+	// is created. Nil is safe (preserves the pre-fix behavior).
+	RequestLogEmitter RequestLogEmitter
 
 	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
@@ -1524,6 +1548,17 @@ func (e *Executor) runAsyncRetry(
 				})
 			}
 		}
+
+		// 2026-06-20: correct the request_logs row that the
+		// synchronous phase left at "in_progress" (because the
+		// handler returned 202 + AsyncPendingError without
+		// calling emitTelemetry). Best-effort: nil-safe, no
+		// failure path on writeback error.
+		if e.RequestLogEmitter != nil && e.RequestLogEmitter.Enabled() {
+			e.RequestLogEmitter.EmitRequestLogUpdate(e.buildAsyncSuccessEntry(
+				requestID, sessionID, startedAt, result, params,
+			))
+		}
 		return
 	}
 
@@ -1545,6 +1580,135 @@ func (e *Executor) runAsyncRetry(
 
 	_ = trace
 	_ = priorAttempts
+}
+
+// buildAsyncSuccessEntry (2026-06-20) constructs a minimal
+// RequestLogEntry for async-retry success writeback. Only the
+// fields available in the executor's scope are populated:
+//   - RequestID, sessionID, startedAt (from runAsyncRetry params)
+//   - ClientModel, OutboundModel (from ExecParams)
+//   - CredentialID, ProviderID, EgressProtocol (from result.Candidate)
+//   - ResponsePreview (truncated, for admin UI inspection)
+//   - IdentityHash (from params.ClientID)
+//
+// TenantID, APIKeyID, and tokens/cost are intentionally NOT
+// populated — the sync-phase handler has these but the executor
+// does not. A minimal success row is still far better than the
+// pre-fix behavior of leaving the row at "in_progress".
+//
+// ErrorKind is explicitly set to "" (NOT nil) so the SQL CASE in
+// the UPSERT / UPDATE writes NULL to the column. Without this,
+// COALESCE would preserve any stale error_kind from a prior
+// failure update.
+//
+// Returned entry has Op="" — the caller is expected to use
+// EmitRequestLogUpdate which sets Op=RequestLogUpdate.
+func (e *Executor) buildAsyncSuccessEntry(
+	requestID, sessionID string,
+	startedAt time.Time,
+	result *ExecuteResult,
+	params *ExecParams,
+) *telemetry.RequestLogEntry {
+	// Defensive nil check. In practice runAsyncRetry always passes
+	// a non-nil params (it received it from the executor caller),
+	// but staticcheck rightly flags the field accesses below.
+	if params == nil {
+		latencyMs := int(time.Since(startedAt).Milliseconds())
+		status := telemetry.RequestStatusSuccess
+		emptyKind := ""
+		return &telemetry.RequestLogEntry{
+			RequestID:     requestID,
+			Success:       true,
+			RequestStatus: &status,
+			LatencyMs:     &latencyMs,
+			ErrorKind:     &emptyKind,
+			GwSessionID:   strPtr(sessionID),
+		}
+	}
+	latencyMs := int(time.Since(startedAt).Milliseconds())
+	success := true
+	status := telemetry.RequestStatusSuccess
+	emptyKind := ""
+
+	entry := &telemetry.RequestLogEntry{
+		RequestID:     requestID,
+		TenantID:      tenantFromCtx(params.R),
+		ClientModel:   strPtr(params.ClientModel),
+		OutboundModel: strPtr(params.OutboundModel),
+		Success:       success,
+		RequestStatus: &status,
+		LatencyMs:     &latencyMs,
+		ErrorKind:     &emptyKind, // empty string → COALESCE writes NULL
+		GwSessionID:   strPtr(sessionID),
+	}
+	if result != nil {
+		if result.Candidate.CredentialID != 0 {
+			id := result.Candidate.CredentialID
+			entry.CredentialID = &id
+		}
+		if result.Candidate.ProviderID != 0 {
+			id := result.Candidate.ProviderID
+			entry.ProviderID = &id
+		}
+		if result.Candidate.Protocol != "" {
+			entry.EgressProtocol = strPtr(result.Candidate.Protocol)
+		}
+		if len(result.ResponseBody) > 0 {
+			preview := string(result.ResponseBody)
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			entry.ResponsePreview = &preview
+		}
+		// 2026-06-20 audit enhancement: include the request body
+		// preview (truncated) so operators can correlate async-retry
+		// success with the original intent without joining against
+		// usage_ledger. Bounded at 200 chars to match the
+		// ResponsePreview policy.
+		if len(result.RequestBody) > 0 {
+			preview := string(result.RequestBody)
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			entry.RequestPreview = &preview
+		}
+		// 2026-06-20 audit enhancement: forward Round 47 compression
+		// metadata so the parent-child chain remains queryable for
+		// async-retry successes. Without this, the chain breaks at
+		// any async-retry that triggered a 4xx recovery.
+		if result.CompressionReason != nil {
+			entry.CompressionReason = result.CompressionReason
+		}
+		if result.CompressionStrategy != nil {
+			entry.CompressionStrategy = result.CompressionStrategy
+		}
+		if len(result.CompressionMeta) > 0 {
+			entry.CompressionMeta = result.CompressionMeta
+		}
+		// Note: result.Trace (planned candidates) and
+		// result.Candidate.CanonicalID are NOT forwarded here.
+		// RequestLogEntry doesn't have a trace field (it lives
+		// on DecisionLogEntry, written separately by the sync
+		// phase), and provider.Candidate has no CanonicalID.
+		// The sync-phase emitTelemetry already populates these
+		// via its dedicated decision log emit; we don't need to
+		// duplicate here.
+	}
+	if params.ClientID.IdentityHash != "" {
+		ih := params.ClientID.IdentityHash
+		entry.IdentityHash = &ih
+	}
+	return entry
+}
+
+// strPtr is a small local helper for building *string fields in
+// RequestLogEntry. Returns nil for empty input so the COALESCE
+// pattern in the SQL UPDATE leaves the column unchanged.
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // tenantFromCtx pulls the tenant id from request context, falling
