@@ -103,6 +103,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensurePassiveProbeStateSchema(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -765,12 +769,60 @@ func (d *DB) ensureRoutingOverridesAudit(ctx context.Context) error {
 
 		DROP TRIGGER IF EXISTS routing_overrides_audit_trg ON routing_overrides;
 		CREATE TRIGGER routing_overrides_audit_trg
-		    AFTER INSERT OR UPDATE OR DELETE ON routing_overrides
-		    FOR EACH ROW EXECUTE FUNCTION routing_overrides_audit_fn();
+			AFTER INSERT OR UPDATE OR DELETE ON routing_overrides
+			FOR EACH ROW EXECUTE FUNCTION routing_overrides_audit_fn();
 	`)
 	if err != nil {
 		return err
 	}
 	slog.Info("routing_overrides_audit ensured (table + 3 indexes + trigger)")
+	return nil
+}
+
+// ensurePassiveProbeStateSchema mirrors db/migrations/019_passive_probe_state.sql
+// for startup apply. Idempotent. Creates:
+//   1. passive_probe_state table for Layer 5 passive observation
+//   2. model_probe_state v5 columns (last_unavailable_reason, last_err_code, next_retry_at_override)
+//   3. Index for fast reviewing state queries
+//
+// Without this startup apply, the PassiveProbeListener worker logs
+// "relation does not exist" errors every 30s and the /api/routing/
+// recent-model-failures endpoint returns 500.
+func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS passive_probe_state (
+		    credential_id       INTEGER NOT NULL,
+		    raw_model_name      TEXT NOT NULL,
+		    error_kind          TEXT NOT NULL,
+		    consecutive_count   INTEGER NOT NULL DEFAULT 0,
+		    total_recent_count  INTEGER NOT NULL DEFAULT 0,
+		    window_total_count  INTEGER NOT NULL DEFAULT 0,
+		    first_seen_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    last_seen_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    in_reviewing        BOOLEAN NOT NULL DEFAULT FALSE,
+		    reviewing_until     TIMESTAMPTZ,
+		    final_marked_at     TIMESTAMPTZ,
+		    unavailable_reason  TEXT,
+		    last_response_body_preview TEXT,
+		    PRIMARY KEY (credential_id, raw_model_name, error_kind)
+		);
+		CREATE INDEX IF NOT EXISTS idx_passive_probe_reviewing
+		    ON passive_probe_state (in_reviewing, reviewing_until)
+		    WHERE in_reviewing = TRUE;
+		ALTER TABLE model_probe_state
+		    ADD COLUMN IF NOT EXISTS last_unavailable_reason TEXT,
+		    ADD COLUMN IF NOT EXISTS last_err_code TEXT,
+		    ADD COLUMN IF NOT EXISTS next_retry_at_override TIMESTAMPTZ;
+		CREATE INDEX IF NOT EXISTS idx_model_probe_state_retry
+		    ON model_probe_state (state, next_retry_at)
+		    WHERE state = 'recovering';
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("passive_probe_state schema ensured (table + 1 index + 3 model_probe_state columns)")
 	return nil
 }
