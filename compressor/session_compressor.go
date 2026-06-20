@@ -24,6 +24,8 @@ package compressor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -147,6 +149,19 @@ func (sc *SessionCompressor) Prepare(
 	res.MsgCount = diffResult.MsgCount
 	res.TokenEst = diffResult.TokenEst
 	res.MsgHashes = marshalHashes(diffResult.MsgHashes)
+
+	// ── Tools caching (Phase 1 optimization) ─────────────────────────────
+	// If tools array hasn't changed since last request, remove it from
+	// outboundBody and add "_tools_cached": true marker. The executor will
+	// restore tools before forwarding to upstream LLM provider.
+	var toolsCached bool
+	if state != nil {
+		outboundBody, toolsCached = applyToolsCaching(outboundBody, state)
+		if toolsCached {
+			// Recalculate token estimate after removing tools
+			res.TokenEst = estimateBodyTokens(outboundBody)
+		}
+	}
 
 	// ── Window trigger check ─────────────────────────────────────────────
 	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
@@ -365,4 +380,50 @@ func marshalHashes(hashes []MsgHash) json.RawMessage {
 	}
 	b, _ := json.Marshal(hashes)
 	return b
+}
+
+// applyToolsCaching checks if tools array has changed since last request.
+// If unchanged, removes tools from outboundBody and adds "_tools_cached": true marker.
+// Updates state.ToolsHash for next comparison.
+// Phase 1 optimization: reduces 50KB+ tools re-transmission to ~5 bytes.
+func applyToolsCaching(outboundBody []byte, state *SessionState) ([]byte, bool) {
+	if state == nil {
+		return outboundBody, false
+	}
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(outboundBody, &body); err != nil {
+		return outboundBody, false
+	}
+
+	toolsRaw, hasTools := body["tools"]
+	if !hasTools || len(toolsRaw) == 0 {
+		return outboundBody, false
+	}
+
+	// Compute SHA256 of tools array
+	currentHash := sha256Hex(toolsRaw)
+
+	// Check if tools changed
+	if state.ToolsHash != "" && state.ToolsHash == currentHash {
+		// Tools unchanged → remove from body, add cache marker
+		delete(body, "tools")
+		body["_tools_cached"] = json.RawMessage(`true`)
+		modified, _ := json.Marshal(body)
+		return modified, true
+	}
+
+	// Tools changed or first time → update state hash
+	state.ToolsHash = currentHash
+	return outboundBody, false
+}
+
+// sha256Hash computes the SHA256 hash of the given data and returns it as a hex string.
+func sha256Hash(data any) string {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }
