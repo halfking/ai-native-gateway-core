@@ -274,6 +274,9 @@ func (sc *SessionCompressor) updateCache(
 	if prevState != nil {
 		newState.LastCompressedAt = prevState.LastCompressedAt
 		newState.RecentlyCompressedAt = prevState.RecentlyCompressedAt
+		// ── Phase 1 optimization: preserve tools cache fields ──
+		newState.ToolsHash = prevState.ToolsHash
+		newState.SystemPrompt = prevState.SystemPrompt
 	}
 	if didCompress {
 		newState.LastCompressedAt = now
