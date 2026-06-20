@@ -55,7 +55,12 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	defer cancel()
 
 	isTenantAdmin := IsTenantAdmin(r)
-	includeAll := !isTenantAdmin
+	var tenantID string
+	var tenantFilter string
+	if isTenantAdmin {
+		tenantID = GetTenantID(r)
+		tenantFilter = " AND tenant_id = '" + tenantID + "'"
+	}
 
 	stats := dataLifecycleStats{
 		ByTenant:    make([]tenantDataStats, 0),
@@ -65,14 +70,14 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	// 1. Overall stats
 	var totalSize int64
 	var totalSizeStr string
-	err := h.db.QueryRow(ctx, `
+	query := `
 		SELECT 
 			COUNT(*) AS total_rows,
 			pg_total_relation_size('request_logs') AS total_size,
 			pg_size_pretty(pg_total_relation_size('request_logs')) AS total_size_human
 		FROM request_logs
-		WHERE $1 OR success
-	`, includeAll).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
+		WHERE 1=1` + tenantFilter
+	err := h.db.QueryRow(ctx, query).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats total failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -89,9 +94,9 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		SizeHuman string
 	}
 	
-	segmentRows, err := h.db.Query(ctx, `
+	segmentQuery := `
 		WITH total AS (
-			SELECT COUNT(*) AS total_count FROM request_logs WHERE $1 OR success
+			SELECT COUNT(*) AS total_count FROM request_logs WHERE 1=1` + tenantFilter + `
 		),
 		segments AS (
 			SELECT 
@@ -100,7 +105,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
 			FROM request_logs
-			WHERE ts > NOW() - INTERVAL '7 days' AND ($1 OR success)
+			WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'warm',
@@ -108,7 +113,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days' AND ($1 OR success)
+			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'cold',
@@ -116,7 +121,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days' AND ($1 OR success)
+			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'` + tenantFilter + `
 			UNION ALL
 			SELECT 
 				'expired',
@@ -124,10 +129,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts < NOW() - INTERVAL '90 days' AND ($1 OR success)
+			WHERE ts < NOW() - INTERVAL '90 days'` + tenantFilter + `
 		)
 		SELECT segment, rows, size_bytes, size_human FROM segments
-	`, includeAll)
+	`
+	segmentRows, err := h.db.Query(ctx, segmentQuery)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats segments failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -170,18 +176,19 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	// 3. By tenant (top 10)
-	tenantRows, err := h.db.Query(ctx, `
+	tenantQuery := `
 		SELECT 
 			COALESCE(tenant_id, 'default') AS tenant,
 			COUNT(*) AS rows,
-			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint AS size_bytes,
-			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS size_human
+			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs WHERE 1=1` + tenantFilter + `), 0))::bigint AS size_bytes,
+			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs WHERE 1=1` + tenantFilter + `), 0))::bigint) AS size_human
 		FROM request_logs
-		WHERE $1 OR success
+		WHERE 1=1` + tenantFilter + `
 		GROUP BY tenant_id
 		ORDER BY rows DESC
 		LIMIT 10
-	`, includeAll)
+	`
+	tenantRows, err := h.db.Query(ctx, tenantQuery)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats tenant failed", "error", err)
 		// non-fatal, continue
@@ -197,17 +204,18 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	// 4. Growth trend (last 7 days)
-	trendRows, err := h.db.Query(ctx, `
+	trendQuery := `
 		SELECT 
 			DATE(ts) AS day,
 			COUNT(*) AS requests,
 			COUNT(*) FILTER (WHERE outbound_body IS NOT NULL) AS compressed
 		FROM request_logs
-		WHERE ts > NOW() - INTERVAL '7 days' AND ($1 OR success)
+		WHERE ts > NOW() - INTERVAL '7 days'` + tenantFilter + `
 		GROUP BY DATE(ts)
 		ORDER BY day DESC
 		LIMIT 7
-	`, includeAll)
+	`
+	trendRows, err := h.db.Query(ctx, trendQuery)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats trend failed", "error", err)
 		// non-fatal
@@ -266,12 +274,17 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	defer cancel()
 
 	isTenantAdmin := IsTenantAdmin(r)
-	includeAll := !isTenantAdmin
-
+	
 	// Build where clause with parameterized queries
-	whereClause := "WHERE $1 OR success"
-	args := []interface{}{includeAll}
-	argIdx := 2
+	whereClause := "WHERE 1=1"
+	args := []interface{}{}
+	argIdx := 1
+	
+	if isTenantAdmin {
+		whereClause += " AND tenant_id = $" + strconv.Itoa(argIdx)
+		args = append(args, GetTenantID(r))
+		argIdx++
+	}
 	
 	if req.From != "" {
 		whereClause += " AND ts >= $" + strconv.Itoa(argIdx) + "::date"
