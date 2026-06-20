@@ -76,11 +76,20 @@ func (l *PassiveProbeListener) run(ctx context.Context) {
 
 // pollNewErrors scans request_logs for recent failures and updates
 // passive_probe_state counters.
+//
+// Design: every poll cycle (30s), we count errors from the last 5 minutes
+// but only those rows that have NOT been counted in the last 15 seconds
+// (half the poll interval). This avoids double-counting while still
+// accumulating ALL errors across cycles — the ON CONFLICT DO UPDATE path
+// adds the new COUNT to the existing counter each cycle.
+//
+// v5 audit fix 2026-06-20: counters now use COUNT(*) instead of hardcoded 1,
+// GROUP BY no longer includes response_body (prevents fragmentation), and
+// the HAVING clause is removed (reviewPromotion handles threshold logic).
 func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Cursor-based: only look at errors from the last 5 minutes.
 	_, err := l.db.Exec(timeout, `
 		INSERT INTO passive_probe_state
 		    (credential_id, raw_model_name, error_kind,
@@ -90,15 +99,15 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    rl.credential_id,
 		    COALESCE(rl.outbound_model, rl.client_model) AS raw_model_name,
 		    COALESCE(rl.error_kind, 'unknown') AS error_kind,
-		    1, 1, 1,
-		    NOW(), NOW(),
+		    COUNT(*), COUNT(*), COUNT(*),
+		    MIN(rl.ts), NOW(),
 		    LEFT(COALESCE(rl.response_body::text, ''), 200)
 		FROM request_logs rl
 		LEFT JOIN passive_probe_state pps
 		    ON pps.credential_id = rl.credential_id
 		    AND pps.raw_model_name = COALESCE(rl.outbound_model, rl.client_model)
 		    AND pps.error_kind = COALESCE(rl.error_kind, 'unknown')
-		    AND pps.last_seen_at > NOW() - INTERVAL '5 minutes'
+		    AND pps.last_seen_at > NOW() - INTERVAL '15 seconds'
 		WHERE rl.success = FALSE
 		  AND rl.ts > NOW() - INTERVAL '5 minutes'
 		  AND rl.error_kind IN (
@@ -108,14 +117,15 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  )
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
-		  AND pps.credential_id IS NULL  -- only new rows not already counted
-		GROUP BY rl.credential_id, rl.outbound_model, rl.client_model, rl.error_kind, rl.response_body
-		HAVING COUNT(*) >= 3  -- secondary verification: 3 consecutive = trigger
+		  AND pps.credential_id IS NULL  -- skip rows already counted in last 15s
+		GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model), COALESCE(rl.error_kind, 'unknown')
 		ON CONFLICT (credential_id, raw_model_name, error_kind)
 		DO UPDATE SET
-		    consecutive_count  = passive_probe_state.consecutive_count + EXCLUDED.consecutive_count,
-		    total_recent_count = passive_probe_state.total_recent_count + EXCLUDED.total_recent_count,
-		    last_seen_at       = NOW(),
+		    consecutive_count     = passive_probe_state.consecutive_count + EXCLUDED.consecutive_count,
+		    total_recent_count    = passive_probe_state.total_recent_count + EXCLUDED.total_recent_count,
+		    window_total_count    = passive_probe_state.window_total_count + EXCLUDED.window_total_count,
+		    first_seen_at         = LEAST(passive_probe_state.first_seen_at, EXCLUDED.first_seen_at),
+		    last_seen_at          = NOW(),
 		    last_response_body_preview = EXCLUDED.last_response_body_preview
 	`)
 	if err != nil {

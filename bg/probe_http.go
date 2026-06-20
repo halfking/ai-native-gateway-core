@@ -52,6 +52,16 @@ type httpProbeResult struct {
 	modelIDs       []string // all model IDs from the response (used to evaluate modelListed)
 }
 
+var (
+	// probeHTTPClient is reused across all Layer 1 GET /v1/models probes.
+	// 5s timeout matches the spec for free model-list calls.
+	probeHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+	// probeChatClient is reused across all Layer 4 POST chat-completion probes.
+	// 15s timeout allows for upstream LLM response even with max_tokens=1.
+	probeChatClient = &http.Client{Timeout: 15 * time.Second}
+)
+
 // singleGet does ONE GET /v1/models request with 5s timeout, returns parsed result.
 func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.Descriptor) httpProbeResult {
 	start := time.Now()
@@ -65,8 +75,7 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 	}
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := probeHTTPClient.Do(req)
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,
@@ -100,8 +109,7 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 	req.Header.Set("Content-Type", "application/json")
 	providercap.ApplyAuthHeaders(req, desc, apiKey)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := probeChatClient.Do(req)
 	if err != nil {
 		return httpProbeResult{
 			status: "network", category: probeCategoryProviderError,

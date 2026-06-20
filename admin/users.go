@@ -2,14 +2,16 @@ package admin
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -105,7 +107,15 @@ func EnsureSeedAdmin(pool *pgxpool.Pool) {
 
 	seedPassword := os.Getenv("LLM_GATEWAY_SEED_ADMIN_PASSWORD")
 	if seedPassword == "" {
-		seedPassword = "<ADMIN_PASSWORD_REDACTED>"
+		// Generate a random password if not provided via environment variable
+		// This is more secure than using a hardcoded default
+		randomBytes := make([]byte, 16)
+		if _, err := crypto_rand.Read(randomBytes); err != nil {
+			slog.Error("seed admin: failed to generate random password", "error", err)
+			return
+		}
+		seedPassword = fmt.Sprintf("Admin_%s", hex.EncodeToString(randomBytes))
+		slog.Warn("seed admin: no LLM_GATEWAY_SEED_ADMIN_PASSWORD set, using generated password", "hint", "Set LLM_GATEWAY_SEED_ADMIN_PASSWORD env var for predictable password")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(seedPassword), bcrypt.DefaultCost)
