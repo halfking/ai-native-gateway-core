@@ -5,20 +5,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
 // Data lifecycle stats for UI display
 type dataLifecycleStats struct {
-	TotalRows        int64  `json:"total_rows"`
-	TotalSizeBytes   int64  `json:"total_size_bytes"`
-	TotalSizeHuman   string `json:"total_size_human"`
-	HotData          *dataSegment `json:"hot_data"`   // 0-7 days
-	WarmData         *dataSegment `json:"warm_data"`  // 7-30 days
-	ColdData         *dataSegment `json:"cold_data"`  // 30-90 days
-	ExpiredData      *dataSegment `json:"expired_data"` // >90 days
+	TotalRows        int64            `json:"total_rows"`
+	TotalSizeBytes   int64            `json:"total_size_bytes"`
+	TotalSizeHuman   string           `json:"total_size_human"`
+	HotData          *dataSegment     `json:"hot_data"`   // 0-7 days
+	WarmData         *dataSegment     `json:"warm_data"`  // 7-30 days
+	ColdData         *dataSegment     `json:"cold_data"`  // 30-90 days
+	ExpiredData      *dataSegment     `json:"expired_data"` // >90 days
 	ByTenant         []tenantDataStats `json:"by_tenant"`
-	GrowthTrend      []dailyGrowth `json:"growth_trend"`
+	GrowthTrend      []dailyGrowth    `json:"growth_trend"`
 }
 
 type dataSegment struct {
@@ -37,9 +38,9 @@ type tenantDataStats struct {
 }
 
 type dailyGrowth struct {
-	Date            string `json:"date"`
-	Requests        int64  `json:"requests"`
-	Compressed      int64  `json:"compressed"`
+	Date            string  `json:"date"`
+	Requests        int64   `json:"requests"`
+	Compressed      int64   `json:"compressed"`
 	CompressionRate float64 `json:"compression_rate"`
 }
 
@@ -53,7 +54,8 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	tenantFilter := IsTenantAdmin(r)
+	isTenantAdmin := IsTenantAdmin(r)
+	includeAll := !isTenantAdmin
 
 	stats := dataLifecycleStats{
 		ByTenant:    make([]tenantDataStats, 0),
@@ -69,7 +71,8 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			pg_total_relation_size('request_logs') AS total_size,
 			pg_size_pretty(pg_total_relation_size('request_logs')) AS total_size_human
 		FROM request_logs
-		`+tenantFilter).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
+		WHERE $1 OR success
+	`, includeAll).Scan(&stats.TotalRows, &totalSize, &totalSizeStr)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats total failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -88,7 +91,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	
 	segmentRows, err := h.db.Query(ctx, `
 		WITH total AS (
-			SELECT COUNT(*) AS total_count FROM request_logs `+tenantFilter+`
+			SELECT COUNT(*) AS total_count FROM request_logs WHERE $1 OR success
 		),
 		segments AS (
 			SELECT 
@@ -97,7 +100,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint AS size_bytes,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint) AS size_human
 			FROM request_logs
-			WHERE ts > NOW() - INTERVAL '7 days' `+tenantFilter+`
+			WHERE ts > NOW() - INTERVAL '7 days' AND ($1 OR success)
 			UNION ALL
 			SELECT 
 				'warm',
@@ -105,7 +108,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days' `+tenantFilter+`
+			WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days' AND ($1 OR success)
 			UNION ALL
 			SELECT 
 				'cold',
@@ -113,7 +116,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days' `+tenantFilter+`
+			WHERE ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days' AND ($1 OR success)
 			UNION ALL
 			SELECT 
 				'expired',
@@ -121,10 +124,10 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 				(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint,
 				pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT total_count FROM total), 0))::bigint)
 			FROM request_logs
-			WHERE ts < NOW() - INTERVAL '90 days' `+tenantFilter+`
+			WHERE ts < NOW() - INTERVAL '90 days' AND ($1 OR success)
 		)
 		SELECT segment, rows, size_bytes, size_human FROM segments
-	`)
+	`, includeAll)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats segments failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -174,11 +177,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint AS size_bytes,
 			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS size_human
 		FROM request_logs
-		`+tenantFilter+`
+		WHERE $1 OR success
 		GROUP BY tenant_id
 		ORDER BY rows DESC
 		LIMIT 10
-	`)
+	`, includeAll)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats tenant failed", "error", err)
 		// non-fatal, continue
@@ -200,11 +203,11 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 			COUNT(*) AS requests,
 			COUNT(*) FILTER (WHERE outbound_body IS NOT NULL) AS compressed
 		FROM request_logs
-		WHERE ts > NOW() - INTERVAL '7 days' `+tenantFilter+`
+		WHERE ts > NOW() - INTERVAL '7 days' AND ($1 OR success)
 		GROUP BY DATE(ts)
 		ORDER BY day DESC
 		LIMIT 7
-	`)
+	`, includeAll)
 	if err != nil {
 		slog.Warn("data_lifecycle_stats trend failed", "error", err)
 		// non-fatal
@@ -262,15 +265,23 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	tenantFilter := IsTenantAdmin(r)
+	isTenantAdmin := IsTenantAdmin(r)
+	includeAll := !isTenantAdmin
 
-	// Build where clause
-	whereClause := "WHERE 1=1 " + tenantFilter
+	// Build where clause with parameterized queries
+	whereClause := "WHERE $1 OR success"
+	args := []interface{}{includeAll}
+	argIdx := 2
+	
 	if req.From != "" {
-		whereClause += " AND ts >= '" + req.From + "'::date"
+		whereClause += " AND ts >= $" + strconv.Itoa(argIdx) + "::date"
+		args = append(args, req.From)
+		argIdx++
 	}
 	if req.To != "" {
-		whereClause += " AND ts < '" + req.To + "'::date + INTERVAL '1 day'"
+		whereClause += " AND ts < $" + strconv.Itoa(argIdx) + "::date + INTERVAL '1 day'"
+		args = append(args, req.To)
+		argIdx++
 	}
 
 	var resp cleanupPreviewResponse
@@ -280,7 +291,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 			(pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint AS freed_bytes,
 			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS freed_human
 		FROM request_logs
-		`+whereClause).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
+		`+whereClause, args...).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
 	
 	if err != nil {
 		slog.Warn("cleanup_preview failed", "error", err)
