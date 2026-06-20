@@ -181,6 +181,41 @@ func StreamChatWithPendingCapture(
 	}
 
 	if firstLine != "" {
+		// 2026-06-20 audit fix: when the upstream returns a
+		// non-SSE JSON error body (e.g. {"error":{"type":
+		// "service_unavailable","message":"积分不足"}}) for a
+		// stream request, do NOT pass the body through to the
+		// client as if it were a valid first chunk. Treat it
+		// as a resumable stream interruption so the executor
+		// falls back to the next credential. This branch fires
+		// before the firstLine is written to the client, so the
+		// client never sees a 200 + the raw JSON error.
+		//
+		// Resumable=true + ChunkCount=0 < StreamRetryThreshold
+		// (default 5) → executor_chat.go:521 will surface this
+		// as a streamInterruptedError → executor.go:737 will
+		// continue to the next candidate.
+		if isErr, errKind, errMsg := isJSONErrorBody([]byte(firstLine)); isErr {
+			slog.Warn("stream: upstream returned JSON error instead of SSE",
+				"kind", errKind,
+				"message", errMsg,
+				"client_model", clientModel,
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("json_error_in_stream")
+			}
+			// Surface a clean SSE error to the client instead of
+			// the raw vendor error envelope, so SDK clients can
+			// parse it as a normal chat.completion.chunk stream
+			// error rather than choking on an unexpected shape.
+			safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", errMsg, "upstream_error", errKind))
+			safeFlush(flusher)
+			outcome.Interrupted = true
+			outcome.Reason = "json_error_in_stream"
+			outcome.Resumable = true
+			outcome.ChunkCount = 0
+			return outcome
+		}
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
 		// before XML coercion so the scanner sees the raw upstream
 		// delta.tool_calls shape and can rewrite empty names to

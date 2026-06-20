@@ -244,6 +244,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
 	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
 	mux.HandleFunc("/api/admin/compression/stats", admin(h.handleCompressionStats))
+	mux.HandleFunc("/api/admin/compression/sessions", admin(h.handleCompressionSessions))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
 	mux.HandleFunc("/api/routing/policy", h.superAdmin(h.handleRoutingPolicy))
 	mux.HandleFunc("/api/routing/featured", h.superAdmin(h.handleRoutingFeatured))
