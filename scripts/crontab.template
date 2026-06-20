@@ -1,0 +1,35 @@
+# LLM Gateway 数据清理 Crontab 配置
+# 安装: sudo cp crontab.template /etc/cron.d/llm-gateway-cleanup
+#       或使用: sudo bash scripts/install-cleanup-cron.sh
+
+# 环境变量配置
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=ops@kaixuan.com
+
+# 数据库配置
+DB_HOST=172.31.0.4
+DB_PORT=5432
+DB_NAME=llm_gateway
+DB_USER=stockuser
+DB_PASSWORD=184_stock_pass_change_me
+
+# 清理策略配置
+ENABLE_TRIM=false           # 温数据裁剪（7-30天）
+ENABLE_ARCHIVE=true         # 冷数据归档（30-90天）
+ENABLE_DELETE=true          # 过期数据删除（>90天）
+ARCHIVE_DIR=/opt/llm-gateway-archive
+LOG_FILE=/var/log/llm-gateway-cleanup.log
+
+# 定时任务
+# 每天凌晨 2:00 执行数据清理
+0 2 * * * root cd /opt/llm-gateway-go && bash scripts/cleanup-request-logs.sh >> /var/log/llm-gateway-cleanup.log 2>&1
+
+# 每周日凌晨 3:00 执行完整备份（可选）
+# 0 3 * * 0 root cd /opt/llm-gateway-go && bash scripts/backup-request-logs.sh --full >> /var/log/llm-gateway-backup.log 2>&1
+
+# 每月1日凌晨 4:00 清理旧归档文件（保留 6 个月）
+# 0 4 1 * * root find /opt/llm-gateway-archive -name "request_logs_*.gz" -mtime +180 -delete
+
+# 每天凌晨 1:00 日志轮转
+0 1 * * * root find /var/log/llm-gateway-*.log -size +100M -exec bash -c 'mv "$1" "$1.$(date +\%Y\%m\%d\%H\%M\%S)" && gzip "$1.$(date +\%Y\%m\%d\%H\%M\%S)"' _ {} \;
