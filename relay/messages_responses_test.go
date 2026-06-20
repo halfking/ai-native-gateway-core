@@ -260,7 +260,7 @@ func TestAnthropicStreamSSE_NonStreaming(t *testing.T) {
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "claude-3", "claude-3-opus", "test-req-id", capture)
+	StreamAnthropicSSE(rec, resp, "claude-3", "claude-3-opus", "test-req-id", capture, nil)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "event: message_start") {

@@ -414,8 +414,16 @@ func (e *Executor) executeAnthropic(
 		if params.R != nil {
 			requestID = params.R.Header.Get("X-Request-Id")
 		}
+		// Track C C5 (2026-06-21): the capturer is built by the main.go
+		// wrapper that owns the AnthropicPassthroughStream closure (it
+		// has access to pendingStore + the upstream resp to check the
+		// session header). This layer just forwards nil because the
+		// upstream http.Response passed in already carries the session
+		// id in its headers, so the main.go wrapper can re-derive pc
+		// from resp.Request.Header on each call. To avoid double-build
+		// we currently pass nil here; the real wiring is in main.go.
 		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
@@ -425,7 +433,7 @@ func (e *Executor) executeAnthropic(
 			requestID = params.R.Header.Get("X-Request-Id")
 		}
 		ae.OpenAITranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
-			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {
@@ -437,8 +445,10 @@ func (e *Executor) executeAnthropic(
 		if params.R != nil {
 			requestID = params.R.Header.Get("X-Request-Id")
 		}
+		// Second assignment is defensive (the if-block at line 411
+		// already assigned this); the capturer plumbing is identical.
 		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
-			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture)
+			return e.AnthropicPassthroughStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 
@@ -575,7 +585,19 @@ func (e *Executor) executeAnthropicOnce(
 	if params.IsStream {
 		timeout = e.StreamTimeout
 	}
-	ctx, cancel := context.WithTimeout(params.R.Context(), timeout)
+	// Track C (2026-06-21): when the request carries a gateway session
+	// id (X-Gw-Session-Id / X-Session-Id), decouple the upstream context
+	// from the client request context so a client disconnect does not
+	// cancel the vendor call. The capturer in the Anthropic stream
+	// (cmd/gateway/main.go wiring) keeps reading until completion and
+	// saves the body to pending store, letting the client pick up the
+	// reply on reconnect via GET /v1/sessions/{id}/pending-response.
+	//
+	// For non-session requests we keep the original behaviour: client
+	// disconnect cancels upstream immediately to avoid wasting vendor
+	// budget on requests the client will not retrieve. The timeout is
+	// still respected in both cases.
+	ctx, cancel := e.upstreamContext(params, timeout)
 	defer cancel()
 	req = req.WithContext(ctx)
 

@@ -15,7 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
-func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
+func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {
@@ -25,6 +25,15 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			if pc != nil {
+				pc.markInterrupted("stream_panic")
+			}
+		}
+		// Best-effort capturer finalise so the caller can snapshot and
+		// persist (see cmd/gateway/main.go saveCapturedPending helper).
+		// Mirrors StreamChatWithPendingCapture behaviour.
+		if pc != nil {
+			pc.finalize(outcome)
 		}
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
@@ -51,6 +60,24 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		msgID += requestID
 	}
 
+	// captureSSE writes a single Anthropic-shaped SSE event to w and
+	// also appends the same bytes to the capturer buffer (Track C C5,
+	// 2026-06-21). Use this for every writeSSE call below so the
+	// capturer sees what the client sees — this is the body the client
+	// expects to receive, and what we replay on reconnect via
+	// GET /v1/sessions/{id}/pending-response.
+	captureSSE := func(event string, payload any) {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+		w.Write([]byte(line))
+		if pc != nil {
+			pc.append(line)
+		}
+	}
+
 	initialMsg := map[string]any{
 		"type":  "message_start",
 		"message": map[string]any{
@@ -64,7 +91,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			"usage":         map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},
 	}
-	writeSSE(w, "message_start", initialMsg)
+	captureSSE("message_start", initialMsg)
 	flusher.Flush()
 
 	blockStart := map[string]any{
@@ -72,10 +99,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		"index":         0,
 		"content_block": map[string]any{"type": "text", "text": ""},
 	}
-	writeSSE(w, "content_block_start", blockStart)
+	captureSSE("content_block_start", blockStart)
 	flusher.Flush()
 
-	writeSSE(w, "ping", map[string]any{"type": "ping"})
+	captureSSE("ping", map[string]any{"type": "ping"})
 	flusher.Flush()
 
 	var ctx context.Context
@@ -128,9 +155,9 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			"type":  "error",
 			"error": map[string]any{"type": "timeout", "message": "upstream first-byte timeout"},
 		}
-		writeSSE(w, "error", errPayload)
+		captureSSE("error", errPayload)
 		flusher.Flush()
-		writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
+		writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		return outcome
@@ -155,7 +182,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			if capture != nil {
 				capture.MarkInterruptedWithReason("json_error_in_stream")
 			}
-			writeSSE(w, "error", map[string]any{
+			captureSSE("error", map[string]any{
 				"type":  "error",
 				"error": map[string]any{"type": "upstream_error", "message": errMsg, "code": errKind},
 			})
@@ -236,11 +263,11 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				} else {
 					// Probe decided: not a <think> prefix. Flush probe verbatim
 					// then enter passthrough for the rest of the stream.
-					writeSSE(w, "content_block_delta", map[string]any{
-						"type":  "content_block_delta",
-						"index": 0,
-						"delta": map[string]any{"type": "text_delta", "text": probeStr},
-					})
+writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+							"type":  "content_block_delta",
+							"index": 0,
+							"delta": map[string]any{"type": "text_delta", "text": probeStr},
+						})
 					if flusher != nil {
 						flusher.Flush()
 					}
@@ -249,7 +276,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			case textAccBuffering:
 				bufferedText.WriteString(textDelta)
 			case textAccPassthrough:
-				writeSSE(w, "content_block_delta", map[string]any{
+				writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": 0,
 					"delta": map[string]any{"type": "text_delta", "text": textDelta},
@@ -288,7 +315,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 						"input": map[string]any{},
 					},
 				}
-				writeSSE(w, "content_block_start", startEvent)
+				writeSSEWithCapturer(w, pc, "content_block_start", startEvent)
 
 				if fn != nil {
 					args, _ := fn["arguments"].(string)
@@ -298,7 +325,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 							"index": idx,
 							"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
 						}
-						writeSSE(w, "content_block_delta", argEvent)
+						writeSSEWithCapturer(w, pc, "content_block_delta", argEvent)
 					}
 				}
 				lastSend = time.Now()
@@ -331,7 +358,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					"type":  "error",
 					"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
 				}
-				writeSSE(w, "error", errPayload)
+				writeSSEWithCapturer(w, pc, "error", errPayload)
 				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
@@ -344,7 +371,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 					"type":  "error",
 					"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
 				}
-				writeSSE(w, "error", errPayload)
+				writeSSEWithCapturer(w, pc, "error", errPayload)
 				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
@@ -369,26 +396,26 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	switch textAccMode {
 	case textAccProbing:
 		if probeBuf.Len() > 0 {
-			writeSSE(w, "content_block_delta", map[string]any{
+			writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 				"type":  "content_block_delta",
 				"index": 0,
 				"delta": map[string]any{"type": "text_delta", "text": probeBuf.String()},
 			})
 		}
-		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 		if flusher != nil {
 			flusher.Flush()
 		}
 	case textAccBuffering:
-		flushBufferedText(w, flusher, bufferedText.String(), capture)
+		flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
 	case textAccPassthrough:
-		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
 
-	writeAnthropicTail(w, flusher, msgID, clientModel, finalFinishReason, outputTokens)
+	writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens)
 
 	// Only mark the capture as "done" if the stream was NOT interrupted.
 	// If we received an interruption (e.g. stream_timeout, read_error,
@@ -402,7 +429,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	return outcome
 }
 
-func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, msgID, clientModel, finishReason string, outputTokens int) {
+func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int) {
 	stopReason := mapAnthropicStopReason(finishReason)
 
 	// Note: the trailing content_block_stop is intentionally omitted. Phase 4's
@@ -418,10 +445,27 @@ func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, msgID, clie
 		},
 		"usage": map[string]any{"output_tokens": outputTokens},
 	}
-	writeSSE(w, "message_delta", deltaPayload)
+	writeSSEWithCapturer(w, pc, "message_delta", deltaPayload)
 
-	writeSSE(w, "message_stop", map[string]any{"type": "message_stop"})
+	writeSSEWithCapturer(w, pc, "message_stop", map[string]any{"type": "message_stop"})
 	flusher.Flush()
+}
+
+// writeSSEWithCapturer is the capturer-aware variant of writeSSE for the
+// Anthropic path. When pc is non-nil the same bytes are appended to the
+// capturer buffer so the gateway can replay them via the pending-response
+// endpoint on client reconnect (Track C C5, 2026-06-21). nil pc is fine —
+// it just writes to w.
+func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	w.Write([]byte(line))
+	if pc != nil {
+		pc.append(line)
+	}
 }
 
 func writeSSE(w http.ResponseWriter, event string, payload any) {
@@ -438,10 +482,13 @@ func writeSSE(w http.ResponseWriter, event string, payload any) {
 // The caller has already emitted the content_block_start (text, index=0);
 // we emit the deltas, the stop, and (on split) a fresh thinking block
 // at index 0 plus an optional text block at index 1.
-func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, fullText string, capture *audit.StreamCapture) {
+//
+// pc is the optional pending-store capturer (Track C, 2026-06-21);
+// every emitted event is also appended to its buffer for replay.
+func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, fullText string, capture *audit.StreamCapture) {
 	if fullText == "" {
 		// No text emitted. Close the pre-declared empty text block at index 0.
-		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 		flusher.Flush()
 		return
 	}
@@ -450,12 +497,12 @@ func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, fullText str
 	if !ok {
 		// No <think> prefix: emit the whole content as a single text_delta
 		// on the pre-declared block, then close it.
-		writeSSE(w, "content_block_delta", map[string]any{
+		writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": 0,
 			"delta": map[string]any{"type": "text_delta", "text": fullText},
 		})
-		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 		flusher.Flush()
 		return
 	}
@@ -465,34 +512,34 @@ func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, fullText str
 	// 2. Open a thinking block at index 0 (reuse the slot).
 	// 3. Emit the thinking delta + stop.
 	// 4. If rest is non-empty, open a NEW text block at index 1 + delta + stop.
-	writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-	writeSSE(w, "content_block_start", map[string]any{
+	writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
 		"type":          "content_block_start",
 		"index":         0,
 		"content_block": map[string]any{"type": "thinking", "thinking": ""},
 	})
-	writeSSE(w, "content_block_delta", map[string]any{
+	writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 		"type":  "content_block_delta",
 		"index": 0,
 		"delta": map[string]any{"type": "thinking_delta", "thinking": think},
 	})
-	writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 	if capture != nil {
 		capture.HasThinking = true
 		capture.ThinkingBlocksN++
 	}
 	if rest != "" {
-		writeSSE(w, "content_block_start", map[string]any{
+		writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
 			"type":          "content_block_start",
 			"index":         1,
 			"content_block": map[string]any{"type": "text", "text": ""},
 		})
-		writeSSE(w, "content_block_delta", map[string]any{
+		writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 			"type":  "content_block_delta",
 			"index": 1,
 			"delta": map[string]any{"type": "text_delta", "text": rest},
 		})
-		writeSSE(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 1})
 	}
 	flusher.Flush()
 }

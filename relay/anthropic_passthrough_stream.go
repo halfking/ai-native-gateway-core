@@ -23,19 +23,44 @@ const anthropicSSEBufSize = 64 * 1024
 // This is the "Q4" path: client speaks Anthropic, upstream speaks
 // Anthropic (e.g. anthropic provider, or minimax's /anthropic
 // compatible endpoint), no protocol conversion required.
+//
+// Track C C5 (2026-06-21): when pc is non-nil, every byte forwarded to
+// the client is also appended to the capturer buffer so the gateway can
+// replay the full SSE response from pending store after a client
+// disconnect. The capturer is finalized before return so the caller can
+// snapshot and persist it (see cmd/gateway/main.go's saveCapturedPending
+// helper). nil pc is fine (legacy / non-session requests).
 func StreamAnthropicPassthrough(
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
-) routing.StreamOutcome {
+	pc *pendingCapturer,
+) (outcome routing.StreamOutcome) {
 	defer resp.Body.Close()
+	// Top-level panic recovery. Mirrors StreamChatWithPendingCapture
+	// so a panic during streaming (e.g. JSON parse failure, write to
+	// a closed connection) does not skip the deferred capturer
+	// finalize and lose the pending-store entry entirely.
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("anthropic passthrough panic", "panic", r, "stack", string(debug.Stack()))
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_panic")
 			}
+			outcome.Interrupted = true
+			outcome.Reason = "stream_panic"
+			if pc != nil {
+				pc.markInterrupted("stream_panic")
+			}
+		}
+		// Best-effort capturer finalise. If the stream completed
+		// normally, the capturer holds the full body ready for replay
+		// via GET /v1/sessions/{id}/pending-response. If terminated
+		// abnormally, the capturer still holds whatever was captured
+		// so the admin API can inspect (status=failed).
+		if pc != nil {
+			pc.finalize(outcome)
 		}
 	}()
 
@@ -54,7 +79,6 @@ func StreamAnthropicPassthrough(
 	flusher.Flush()
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
-	outcome := routing.StreamOutcome{}
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -76,6 +100,14 @@ func StreamAnthropicPassthrough(
 				capture.MarkInterruptedWithReason("client_disconnected")
 			}
 			return outcome
+		}
+		// Track C C5 (2026-06-21): record every line into the capturer
+		// BEFORE the side-channel audit observer runs so a panic in
+		// observeAnthropicPayload does not skip the buffer write.
+		// Anthropic SSE events span 2-3 lines each (`event:` + `data:`
+		// + blank line); storing the whole line is correct for replay.
+		if pc != nil {
+			pc.append(line)
 		}
 		if capture != nil && strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")

@@ -57,6 +57,7 @@ func StreamAnthropicSSEToOpenAI(
 	resp *http.Response,
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
+	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	defer resp.Body.Close()
 	defer func() {
@@ -69,6 +70,14 @@ func StreamAnthropicSSEToOpenAI(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			if pc != nil {
+				pc.markInterrupted("stream_panic")
+			}
+		}
+		// Capturer finalise mirrors StreamChatWithPendingCapture and the
+		// other Anthropic stream paths (Track C C5, 2026-06-21).
+		if pc != nil {
+			pc.finalize(outcome)
 		}
 	}()
 
@@ -110,6 +119,24 @@ func StreamAnthropicSSEToOpenAI(
 
 	// emit a single OpenAI chat.completion.chunk; clear finishReason
 	// after each emit so subsequent chunks don't repeat it.
+	// emitChunk writes a single OpenAI chat.completion.chunk to w and
+	// (Track C C5, 2026-06-21) appends the same bytes to the
+	// pending-store capturer so the gateway can replay them on
+	// reconnect. The chunkCount is incremented here so all write
+	// paths (regular emit, [DONE] sentinel) flow through the same
+	// capturer-aware write.
+	emitChunk := func(payload []byte) {
+		_, _ = w.Write([]byte(sseDataPrefix))
+		_, _ = w.Write(payload)
+		_, _ = w.Write([]byte("\n\n"))
+		if pc != nil {
+			pc.append(sseDataPrefix)
+			pc.append(string(payload))
+			pc.append("\n\n")
+		}
+		flusher.Flush()
+		chunkCount++
+	}
 	emit := func(deltaContent, deltaReasoning string, toolCalls json.RawMessage) {
 		c := anthropicToOpenAIChunk{
 			ID: chatID, Object: "chat.completion.chunk",
@@ -141,11 +168,7 @@ func StreamAnthropicSSEToOpenAI(
 		}
 		c.Choices[0].FinishReason = finishReason
 		body, _ := json.Marshal(c)
-		_, _ = w.Write([]byte(sseDataPrefix))
-		_, _ = w.Write(body)
-		_, _ = w.Write([]byte("\n\n"))
-		flusher.Flush()
-		chunkCount++
+		emitChunk(body)
 		finishReason = nil
 	}
 
@@ -174,11 +197,7 @@ func StreamAnthropicSSEToOpenAI(
 			TotalTokens      int `json:"total_tokens"`
 		}{PromptTokens: inputTokens, CompletionTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
 		body, _ := json.Marshal(c)
-		_, _ = w.Write([]byte(sseDataPrefix))
-		_, _ = w.Write(body)
-		_, _ = w.Write([]byte("\n\n"))
-		flusher.Flush()
-		chunkCount++
+		emitChunk(body)
 	}
 
 	emitRolePrelude := func() {
@@ -209,12 +228,8 @@ func StreamAnthropicSSEToOpenAI(
 			}{PromptTokens: inputTokens, CompletionTokens: 0, TotalTokens: inputTokens}
 		}
 		body, _ := json.Marshal(c)
-		_, _ = w.Write([]byte(sseDataPrefix))
-		_, _ = w.Write(body)
-		_, _ = w.Write([]byte("\n\n"))
-		flusher.Flush()
+		emitChunk(body)
 		emittedRole = true
-		chunkCount++
 	}
 
 	emitToolCall := func(toolID, toolName string, args json.RawMessage) {
@@ -251,8 +266,7 @@ func StreamAnthropicSSEToOpenAI(
 		if err != nil {
 			if err == io.EOF || ctx.Err() != nil {
 				emitUsage()
-				_, _ = w.Write([]byte(sseDataPrefix + "[DONE]\n\n"))
-				flusher.Flush()
+				emitChunk([]byte("[DONE]"))
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			if capture != nil {
@@ -376,9 +390,7 @@ func StreamAnthropicSSEToOpenAI(
 			}
 			emit("", "", nil) // emit finish_reason + clear
 			emitUsage()
-			_, _ = w.Write([]byte(sseDataPrefix + "[DONE]\n\n"))
-			flusher.Flush()
-			chunkCount++
+			emitChunk([]byte("[DONE]"))
 			return StreamOutcome{ChunkCount: chunkCount}
 
 		case "ping":
