@@ -124,13 +124,6 @@ async function saveFormatConversion(enabled: boolean | null) {
   }
 }
 
-const editBaseUrl = ref(props.provider.base_url)
-const editProtocol = ref(props.provider.protocol)
-const editKind = ref(props.provider.kind)
-const editCategory = ref(props.provider.category)
-const editDiscountRate = ref(props.provider.discount_rate)
-const editEgressProfile = ref(props.provider.egress_profile || 'direct')
-const editNotes = ref(props.provider.notes || '')
 const saving = ref(false)
 const msg = ref('')
 const batchMsg = ref('')
