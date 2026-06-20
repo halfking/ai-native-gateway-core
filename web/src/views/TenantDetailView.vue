@@ -11,6 +11,7 @@ import {
 import type { Tenant, TenantUser, TenantKey, TenantStats, MaasWallet, MaasLedgerEntry, MaasBillingOrder } from '../api'
 import TenantEditDialog from './TenantEditDialog.vue'
 import FeeCostCell from '../components/FeeCostCell.vue'
+import TenantModelPolicyPanel from '../components/TenantModelPolicyPanel.vue'
 import { isPlatformOpsView } from '../store'
 
 const route = useRoute()
@@ -262,6 +263,7 @@ watch(() => route.params.tenantId, loadTenant)
         <button :class="{ active: activeTab === 'overview' }" @click="switchTab('overview')">概览</button>
         <button :class="{ active: activeTab === 'users' }" @click="switchTab('users')">用户 ({{ tenant.user_count }})</button>
         <button :class="{ active: activeTab === 'keys' }" @click="switchTab('keys')">密钥 ({{ tenant.api_key_count }})</button>
+        <button :class="{ active: activeTab === 'model-policies' }" @click="switchTab('model-policies')">模型管控</button>
         <button :class="{ active: activeTab === 'stats' }" @click="switchTab('stats')">统计</button>
         <button :class="{ active: activeTab === 'wallet' }" @click="switchTab('wallet')">钱包</button>
         <button :class="{ active: activeTab === 'orders' }" @click="switchTab('orders')">订单</button>
@@ -389,6 +391,11 @@ watch(() => route.params.tenantId, loadTenant)
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- Model Policies Tab (Round 48, 2026-06-21) -->
+      <div v-if="activeTab === 'model-policies'" class="tab-content">
+        <TenantModelPolicyPanel :tenant-code="tenant.code" />
       </div>
 
       <!-- Stats Tab -->
