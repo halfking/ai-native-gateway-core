@@ -10,10 +10,9 @@ import (
 // response (non-stream) into OpenAI Chat Completions response.
 // Used for Q3 (openai client <- anthropic upstream).
 //
-// CRITICAL: thinking blocks (type: "thinking") MUST be dropped
-// because OpenAI chat message.content is a string, not an array.
-// Audit/telemetry MUST record has_thinking=true so operators can
-// see when content was silently truncated.
+// Enhanced (2026-06-20): thinking blocks are now preserved in the
+// reasoning_content field (OpenAI o1-style extended thinking support).
+// The _kxg_meta field records statistics for audit/telemetry.
 func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, error) {
 	var src struct {
 		ID      string `json:"id"`
@@ -44,6 +43,7 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 	}
 	var textParts []string
 	var toolCalls []map[string]any
+	var thinkingParts []string
 	thinkingBlocks := 0
 	for _, c := range src.Content {
 		switch c.Type {
@@ -63,6 +63,9 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			})
 		case "thinking":
 			thinkingBlocks++
+			if c.Thinking != "" {
+				thinkingParts = append(thinkingParts, c.Thinking)
+			}
 		}
 	}
 	msg := map[string]any{"role": "assistant"}
@@ -73,6 +76,12 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 	} else {
 		msg["content"] = ""
 	}
+	
+	// Preserve thinking blocks in reasoning_content field (OpenAI o1-style)
+	if len(thinkingParts) > 0 {
+		msg["reasoning_content"] = joinTextParts(thinkingParts)
+	}
+	
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
 	}
@@ -93,11 +102,18 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			"completion_tokens": src.Usage.OutputTokens,
 			"total_tokens":      totalTokens,
 		},
-		"_kxg_meta": map[string]any{
-			"has_thinking":            thinkingBlocks > 0,
-			"thinking_blocks_dropped": thinkingBlocks,
-		},
 	}
+	
+	// Record thinking block statistics in metadata
+	if thinkingBlocks > 0 {
+		reasoningContent, _ := msg["reasoning_content"].(string)
+		out["_kxg_meta"] = map[string]any{
+			"has_thinking":            true,
+			"thinking_blocks_count":   thinkingBlocks,
+			"reasoning_content_chars": len(reasoningContent),
+		}
+	}
+	
 	return json.Marshal(out)
 }
 
