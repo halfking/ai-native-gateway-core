@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
+	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/sessions"
@@ -81,6 +82,10 @@ type chatRequestBody struct {
 	// Tools is the optional function/tool definitions array.
 	// Used by autoroute (v2.0) to detect multi-tool agent requests.
 	Tools json.RawMessage `json:"tools,omitempty"`
+	// ToolIDs (Phase 3, 2026-06-21) is the optional tool ID array.
+	// Format: ["filesystem.*", "network.http_get"]
+	// Expands to full tool definitions via toolRegistry.
+	ToolIDs []string `json:"tool_ids,omitempty"`
 }
 
 type chatResponseBody struct {
@@ -147,7 +152,19 @@ type ChatHandler struct {
 	// (list_categories, load_tools) locally without forwarding to upstream.
 	// nil disables Phase 2 meta-tools.
 	metaToolInterceptor *MetaToolInterceptor
+
+	// toolRegistry (Phase 3, 2026-06-21) provides centralized tool definitions.
+	// When non-nil, requests with tool_ids expand to full tool definitions.
+	// nil disables Phase 3 tool registry (tool_ids are ignored).
+	toolRegistry ToolRegistryService
 }
+
+// ToolRegistryService is the interface for tool registry access.
+type ToolRegistryService interface {
+	Get(ctx context.Context, tenantID, toolID string) (*registry.ToolDef, error)
+	GetCategory(ctx context.Context, tenantID, category string) ([]*registry.ToolDef, error)
+}
+
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
 	if auditor == nil {
@@ -184,6 +201,67 @@ func (h *ChatHandler) SetSessionCompressor(sc *compressor.SessionCompressor) {
 // are handled locally without forwarding to upstream LLM providers.
 func (h *ChatHandler) SetMetaToolInterceptor(i *MetaToolInterceptor) {
 	h.metaToolInterceptor = i
+}
+
+// SetToolRegistry wires the Phase 3 tool registry.
+// When set, requests containing tool_ids expand to full tool definitions.
+func (h *ChatHandler) SetToolRegistry(tr ToolRegistryService) {
+	h.toolRegistry = tr
+}
+
+// expandToolIDs (Phase 3, 2026-06-21) expands tool_ids to full tool definitions.
+// Supports wildcards (filesystem.*) and exact matches (network.http_get).
+// Returns expanded tools as JSON array, or nil if no tool_ids provided.
+func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolIDs []string) ([]byte, error) {
+	if len(toolIDs) == 0 || h.toolRegistry == nil {
+		return nil, nil
+	}
+
+	var tools []json.RawMessage
+	seen := make(map[string]bool) // deduplication
+
+	for _, pattern := range toolIDs {
+		if strings.HasSuffix(pattern, ".*") {
+			// Wildcard: load entire category
+			category := strings.TrimSuffix(pattern, ".*")
+			categoryTools, err := h.toolRegistry.GetCategory(ctx, tenantID, category)
+			if err != nil {
+				slog.Warn("failed to get category",
+					"tenant", tenantID,
+					"category", category,
+					"error", err)
+				continue // partial failure tolerance
+			}
+
+			for _, tool := range categoryTools {
+				if !seen[tool.ToolID] {
+					tools = append(tools, json.RawMessage(tool.Definition))
+					seen[tool.ToolID] = true
+				}
+			}
+		} else {
+			// Exact match
+			tool, err := h.toolRegistry.Get(ctx, tenantID, pattern)
+			if err != nil {
+				slog.Warn("failed to get tool",
+					"tenant", tenantID,
+					"tool_id", pattern,
+					"error", err)
+				continue
+			}
+
+			if tool != nil && !seen[tool.ToolID] {
+				tools = append(tools, json.RawMessage(tool.Definition))
+				seen[tool.ToolID] = true
+			}
+		}
+	}
+
+	if len(tools) == 0 {
+		return nil, nil
+	}
+
+	return json.Marshal(tools)
 }
 
 func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
@@ -600,6 +678,41 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	clientModel = reqBody.Model
 	logCtx.SetClientModel(clientModel)
+	}
+
+	// ── Phase 3: tool_ids expansion ────────────────────────────────────
+	// If the client provided tool_ids, expand them to full tool definitions.
+	// tool_ids takes precedence over tools (if both provided, tools is ignored).
+	if len(reqBody.ToolIDs) > 0 {
+		tenantID := "default"
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+
+		expandedTools, err := h.expandToolIDs(r.Context(), tenantID, reqBody.ToolIDs)
+		if err != nil {
+			slog.Error("failed to expand tool_ids",
+				"tenant", tenantID,
+				"tool_ids", reqBody.ToolIDs,
+				"error", err)
+			// Degradation: continue with original tools (if any)
+		} else if expandedTools != nil {
+			if len(reqBody.Tools) > 0 {
+				slog.Warn("both tools and tool_ids provided, tool_ids takes precedence",
+					"tenant", tenantID,
+					"tools_count", len(reqBody.Tools),
+					"tool_ids", reqBody.ToolIDs)
+			}
+			// Replace tools with expanded definitions
+			reqBody.Tools = expandedTools
+			// Re-marshal bodyBytes with expanded tools
+			newBody, err := json.Marshal(reqBody)
+			if err == nil {
+				bodyBytes = newBody
+			} else {
+				slog.Error("failed to re-marshal body after tool expansion", "error", err)
+			}
+		}
 	}
 
 	// NOTE: v3 session-level compression runs AFTER candidate resolution
