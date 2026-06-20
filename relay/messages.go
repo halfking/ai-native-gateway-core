@@ -204,6 +204,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(bodyBytes) > maxBodySize {
 		attemptErrCode = "body_too_large"
 		attemptErrMsg = "request body too large"
+		// 2026-06-20 audit fix: extract model from the (truncated) body
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes[:maxBodySize])
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = "<unknown>"
+		}
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
@@ -212,6 +219,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
 		attemptErrCode = "json_parse_error"
 		attemptErrMsg = "invalid JSON in request body"
+		// 2026-06-20 audit fix: extract model from the invalid JSON (best effort)
+		if attemptClientModel == "" {
+			attemptClientModel = extractModelFromBody(bodyBytes)
+		}
+		if attemptClientModel == "" {
+			attemptClientModel = "<unknown>"
+		}
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON in request body")
 		return
 	}
