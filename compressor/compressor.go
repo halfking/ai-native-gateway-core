@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Mode is the three-state compression gate (v7 §2).
@@ -77,6 +79,32 @@ func envMode() Mode {
 	default:
 		return ModeOn4xx
 	}
+}
+
+// LoadMode resolves compression.mode via settings.Global (DB > env > default).
+// Falls back to envModeLegacy() when settings.Global is not yet initialised
+// (early-init paths, unit tests). Kept for hot-path speed: we cache the
+// value in NewCompressor() so each request does NOT hit the registry.
+func LoadMode() Mode {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.mode"); sp != nil {
+			v, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && len(v) > 0 {
+				var s string
+				if err := json.Unmarshal(v, &s); err == nil {
+					switch s {
+					case "off":
+						return ModeOff
+					case "auto_threshold":
+						return ModeAutoThreshold
+					case "on_4xx":
+						return ModeOn4xx
+					}
+				}
+			}
+		}
+	}
+	return envMode()
 }
 
 // CompressionReason is the canonical value written to
@@ -143,7 +171,7 @@ type Compressor struct {
 // Cheap to construct (no I/O); can be built per-request if needed.
 func NewCompressor() *Compressor {
 	return &Compressor{
-		mode: envMode(),
+		mode: LoadMode(),
 		est:  NewEstimator(),
 	}
 }

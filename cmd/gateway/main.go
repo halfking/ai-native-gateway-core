@@ -53,6 +53,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/sessions"
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
@@ -197,6 +198,26 @@ func main() {
 		DefaultLimit: cfg.DefaultCredentialConcurrency,
 		Enabled:      cfg.EnableCredentialFpSlots,
 	}, fpSlotRedis)
+
+	// ── Settings registry (Q1: B, Q2: A) ───────────────────────────────
+	// Initialise the unified runtime-config registry. Specs registered here
+	// become readable via settings.Global.EffectiveValue(scope, key, tenantID).
+	// Order matters: must run BEFORE any code that calls LoadMode/LoadFraction
+	// (e.g. compressor.NewCompressor).
+	if dbConn != nil && dbConn.Enabled() {
+		settingsDB := settings.NewStoreDB(dbConn.Pool())
+		settings.Init(settingsDB)
+		for _, sp := range settings.PlatformSpecs() {
+			settings.Global.MustRegisterSpec(sp)
+		}
+		for _, sp := range settings.TenantSpecs() {
+			settings.Global.MustRegisterSpec(sp)
+		}
+		slog.Info("settings: registry initialised",
+			"platform_specs", len(settings.Global.AllSpecs()))
+	} else {
+		slog.Info("settings: registry disabled (no DB)")
+	}
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
@@ -493,7 +514,16 @@ slog.Info("compressor initialized",
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
-		slog.Info("telemetry emission enabled")
+		// 2026-06-20: wire telemetry into the executor so that
+		// runAsyncRetry can write success back to request_logs.
+		// Without this, async-retry success leaves the original
+		// in_progress / model_not_found row uncorrected (the sync
+		// phase returns 202 + AsyncPendingError without calling
+		// emitTelemetry).
+		if routingExec != nil {
+			routingExec.RequestLogEmitter = telemetryClient
+		}
+		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
@@ -574,6 +604,9 @@ slog.Info("compressor initialized",
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
+		// settings-management: inject the DB-backed settings store so the
+		// /api/admin/settings/* endpoints can read/write settings_kv.
+		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
 
 		// Ensure users table exists for multi-tenant admin auth
 		migCtx, migCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -604,6 +637,7 @@ slog.Info("compressor initialized",
 		var passiveProbe *bg.PassiveProbeListener
 		var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
+	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
@@ -672,6 +706,10 @@ slog.Info("compressor initialized",
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
 		stickyCleaner.Start(context.Background())
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
+
+		// settings-management: 7-day audit retention worker (Q6: C).
+		settingsAuditCleaner := bg.NewSettingsAuditCleaner(dbConn.Pool())
+		settingsAuditCleaner.Start(context.Background())
 		envelopeCleaner.Start(context.Background())
 		if !bgDataPlaneOnly {
 			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
@@ -1008,6 +1046,9 @@ slog.Info("compressor initialized",
 	}
 	if envelopeCleaner != nil {
 		envelopeCleaner.Stop()
+	}
+	if settingsAuditCleaner != nil {
+		settingsAuditCleaner.Stop()
 	}
 	if peakCollector != nil {
 		peakCollector.Stop()

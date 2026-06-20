@@ -72,6 +72,7 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'data-ops',
     label: '数据运维',
     items: [
+      { path: '/admin/settings', label: '系统设置', icon: '⚙️', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', icon: '💾', platformOps: true, hideForTenant: true },
     ],
   },

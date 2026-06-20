@@ -23,9 +23,11 @@
 package compressor
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
 
+	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/transform"
 )
 
@@ -52,6 +54,24 @@ func envFraction() float64 {
 	return v
 }
 
+// LoadFraction resolves compression.window_fraction via settings.Global
+// (DB > env > default). Falls back to envFractionLegacy() when settings.Global
+// is not yet initialised (early-init paths, unit tests).
+func LoadFraction() float64 {
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.window_fraction"); sp != nil {
+			v, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && len(v) > 0 {
+				var f float64
+				if err := json.Unmarshal(v, &f); err == nil && f > 0 && f <= 1.0 {
+					return f
+				}
+			}
+		}
+	}
+	return envFraction()
+}
+
 // Estimator carries the env-derived fraction once so the hot path
 // doesn't re-read os.Getenv on every request. Construct via NewEstimator()
 // at executor init time. The struct is tiny (one float64) so passing by
@@ -64,7 +84,7 @@ type Estimator struct {
 // enough to construct per-request if needed, but typically built once at
 // startup and held on the Executor struct.
 func NewEstimator() *Estimator {
-	return &Estimator{fraction: envFraction()}
+	return &Estimator{fraction: LoadFraction()}
 }
 
 // Fraction returns the active fraction (read-only).
