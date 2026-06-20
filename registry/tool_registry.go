@@ -11,8 +11,9 @@ import (
 
 // toolCache 进程内缓存
 type toolCache struct {
-	tools       map[string]*Tool   // key: "tenant_id:tool_id"
-	byCategory  map[string][]*Tool // key: "tenant_id:category"
+	tools       map[string]*Tool         // key: "tenant_id:tool_id"
+	byCategory  map[string][]*Tool       // key: "tenant_id:category"
+	policies    map[string][]*TenantPolicy // key: tenant_id
 	lastRefresh time.Time
 }
 
@@ -35,6 +36,7 @@ func NewToolRegistry(db *pgxpool.Pool, logger *slog.Logger) *ToolRegistry {
 		cache: &toolCache{
 			tools:      make(map[string]*Tool),
 			byCategory: make(map[string][]*Tool),
+			policies:   make(map[string][]*TenantPolicy),
 		},
 		logger: logger,
 	}
