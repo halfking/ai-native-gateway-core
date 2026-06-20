@@ -260,7 +260,9 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = format('%L', $1)", createdBy); err != nil {
+	// SET LOCAL does not support placeholders; manually escape single quotes
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
 		return
 	}
@@ -339,7 +341,9 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = format('%L', $1)", createdBy); err != nil {
+	// SET LOCAL does not support placeholders; manually escape single quotes
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
 		return
 	}
@@ -404,7 +408,9 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = format('%L', $1)", createdBy); err != nil {
+	// SET LOCAL does not support placeholders; manually escape single quotes
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
 		return
 	}
@@ -467,7 +473,9 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = format('%L', $1)", createdBy); err != nil {
+	// SET LOCAL does not support placeholders; manually escape single quotes
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
 		return
 	}
