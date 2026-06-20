@@ -197,3 +197,95 @@ func (tr *ToolRegistry) Stats() map[string]interface{} {
 		"last_refresh":     tr.cache.lastRefresh,
 	}
 }
+
+// ExpandToolIDs 展开 tool_ids 通配符
+// 支持三种模式：
+// 1. 精确匹配: "filesystem.read_file" -> ["filesystem.read_file"]
+// 2. 分类通配: "filesystem.*" -> ["filesystem.read_file", "filesystem.write_file", ...]
+// 3. 全局通配: "*" -> 所有工具
+//
+// 返回: 展开后的 tool_id 列表（去重）
+func (tr *ToolRegistry) ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string {
+	if len(toolIDs) == 0 {
+		return nil
+	}
+
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, pattern := range toolIDs {
+		if pattern == "" {
+			continue
+		}
+
+		// Case 1: 全局通配 "*"
+		if pattern == "*" {
+			// 先尝试租户工具
+			for _, tool := range tr.cache.tools {
+				if tool.TenantID == tenantID && !seen[tool.ToolID] {
+					seen[tool.ToolID] = true
+					result = append(result, tool.ToolID)
+				}
+			}
+			// 回退到 default
+			for _, tool := range tr.cache.tools {
+				if tool.TenantID == "default" && !seen[tool.ToolID] {
+					seen[tool.ToolID] = true
+					result = append(result, tool.ToolID)
+				}
+			}
+			continue
+		}
+
+		// Case 2: 分类通配 "category.*"
+		if len(pattern) > 2 && pattern[len(pattern)-2:] == ".*" {
+			category := pattern[:len(pattern)-2]
+			
+			// 先尝试租户工具
+			catKey := tenantID + ":" + category
+			if tools, ok := tr.cache.byCategory[catKey]; ok {
+				for _, tool := range tools {
+					if !seen[tool.ToolID] {
+						seen[tool.ToolID] = true
+						result = append(result, tool.ToolID)
+					}
+				}
+			}
+			
+			// 回退到 default
+			defaultCatKey := "default:" + category
+			if tools, ok := tr.cache.byCategory[defaultCatKey]; ok {
+				for _, tool := range tools {
+					if !seen[tool.ToolID] {
+						seen[tool.ToolID] = true
+						result = append(result, tool.ToolID)
+					}
+				}
+			}
+			continue
+		}
+
+		// Case 3: 精确匹配 "category.tool_name"
+		if !seen[pattern] {
+			// 验证工具是否存在（使用 Get 逻辑）
+			key := tenantID + ":" + pattern
+			if _, ok := tr.cache.tools[key]; ok {
+				seen[pattern] = true
+				result = append(result, pattern)
+				continue
+			}
+			
+			// 回退到 default
+			defaultKey := "default:" + pattern
+			if _, ok := tr.cache.tools[defaultKey]; ok {
+				seen[pattern] = true
+				result = append(result, pattern)
+			}
+		}
+	}
+
+	return result
+}
