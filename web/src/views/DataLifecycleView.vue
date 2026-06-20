@@ -1,114 +1,128 @@
 <template>
   <div class="data-lifecycle-view">
-    <h1 class="page-title">数据生命周期管理</h1>
+    <div class="page-header">
+      <h2 class="page-title">数据生命周期管理</h2>
+      <div class="header-actions">
+        <button class="btn btn-ghost btn-sm" @click="loadStats" :disabled="isLoading">
+          {{ isLoading ? '加载中…' : '刷新' }}
+        </button>
+      </div>
+    </div>
 
     <!-- 统计面板 -->
-    <div class="stats-panel">
+    <div class="stats-row" v-if="stats">
       <div class="stat-card">
         <div class="stat-label">总数据量</div>
-        <div class="stat-value">{{ formatNumber(stats.total_rows) }} 行</div>
+        <div class="stat-value">{{ formatNumber(stats.total_rows) }}</div>
         <div class="stat-meta">{{ stats.total_size_human }}</div>
       </div>
 
-      <div class="stat-card hot">
+      <div class="stat-card segment-hot">
         <div class="stat-label">热数据 (0-7天)</div>
-        <div class="stat-value">{{ formatNumber(stats.hot_data?.rows || 0) }} 行</div>
+        <div class="stat-value">{{ formatNumber(stats.hot_data?.rows || 0) }}</div>
         <div class="stat-meta">
           {{ stats.hot_data?.size_human || '0 B' }}
-          ({{ (stats.hot_data?.percent_of_total || 0).toFixed(1) }}%)
+          <span class="stat-percent">({{ (stats.hot_data?.percent_of_total || 0).toFixed(1) }}%)</span>
         </div>
       </div>
 
-      <div class="stat-card warm">
+      <div class="stat-card segment-warm">
         <div class="stat-label">温数据 (7-30天)</div>
-        <div class="stat-value">{{ formatNumber(stats.warm_data?.rows || 0) }} 行</div>
+        <div class="stat-value">{{ formatNumber(stats.warm_data?.rows || 0) }}</div>
         <div class="stat-meta">
           {{ stats.warm_data?.size_human || '0 B' }}
-          ({{ (stats.warm_data?.percent_of_total || 0).toFixed(1) }}%)
+          <span class="stat-percent">({{ (stats.warm_data?.percent_of_total || 0).toFixed(1) }}%)</span>
         </div>
       </div>
 
-      <div class="stat-card cold">
+      <div class="stat-card segment-cold">
         <div class="stat-label">冷数据 (30-90天)</div>
-        <div class="stat-value">{{ formatNumber(stats.cold_data?.rows || 0) }} 行</div>
+        <div class="stat-value">{{ formatNumber(stats.cold_data?.rows || 0) }}</div>
         <div class="stat-meta">
           {{ stats.cold_data?.size_human || '0 B' }}
-          ({{ (stats.cold_data?.percent_of_total || 0).toFixed(1) }}%)
+          <span class="stat-percent">({{ (stats.cold_data?.percent_of_total || 0).toFixed(1) }}%)</span>
         </div>
       </div>
 
-      <div class="stat-card expired">
+      <div class="stat-card segment-expired">
         <div class="stat-label">过期数据 (>90天)</div>
-        <div class="stat-value">{{ formatNumber(stats.expired_data?.rows || 0) }} 行</div>
+        <div class="stat-value">{{ formatNumber(stats.expired_data?.rows || 0) }}</div>
         <div class="stat-meta">
           {{ stats.expired_data?.size_human || '0 B' }}
-          ({{ (stats.expired_data?.percent_of_total || 0).toFixed(1) }}%)
+          <span class="stat-percent">({{ (stats.expired_data?.percent_of_total || 0).toFixed(1) }}%)</span>
         </div>
       </div>
     </div>
 
-    <!-- 数据分布图表 -->
-    <div class="chart-section">
-      <h2>数据分布</h2>
-      <div class="chart-container">
-        <canvas ref="distributionChart"></canvas>
+    <!-- 数据分布图表 + 增长趋势 -->
+    <div class="charts-row" v-if="stats">
+      <div class="card chart-card">
+        <h3 class="card-title">数据分布</h3>
+        <div class="chart-container">
+          <canvas ref="distributionChart"></canvas>
+        </div>
       </div>
-    </div>
 
-    <!-- 增长趋势 -->
-    <div class="trend-section">
-      <h2>增长趋势（最近7天）</h2>
-      <div class="trend-table">
-        <table>
-          <thead>
-            <tr>
-              <th>日期</th>
-              <th>请求数</th>
-              <th>压缩数</th>
-              <th>压缩率</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="trend in stats.growth_trend" :key="trend.date">
-              <td>{{ trend.date }}</td>
-              <td>{{ formatNumber(trend.requests) }}</td>
-              <td>{{ formatNumber(trend.compressed) }}</td>
-              <td>{{ trend.compression_rate.toFixed(1) }}%</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="card trend-card">
+        <h3 class="card-title">增长趋势（最近7天）</h3>
+        <div class="trend-table-wrap" v-if="stats.growth_trend.length">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>请求数</th>
+                <th>压缩数</th>
+                <th>压缩率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="trend in stats.growth_trend" :key="trend.date">
+                <td>{{ trend.date }}</td>
+                <td>{{ formatNumber(trend.requests) }}</td>
+                <td>{{ formatNumber(trend.compressed) }}</td>
+                <td>
+                  <span class="rate-badge" :class="{ high: trend.compression_rate > 50 }">
+                    {{ trend.compression_rate.toFixed(1) }}%
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="empty-hint">暂无趋势数据</div>
       </div>
     </div>
 
     <!-- 清理操作 -->
-    <div class="cleanup-section">
-      <h2>清理操作</h2>
-      
+    <div class="card cleanup-card">
+      <h3 class="card-title">清理操作</h3>
+
       <div class="cleanup-form">
         <div class="form-row">
-          <label>操作类型：</label>
-          <select v-model="cleanupForm.action">
-            <option value="archive">归档（Archive）</option>
-            <option value="delete">删除（Delete）</option>
-            <option value="trim">裁剪（Trim）</option>
+          <label class="form-label">操作类型：</label>
+          <select v-model="cleanupForm.action" class="form-select">
+            <option value="archive">归档（推荐）</option>
+            <option value="delete">删除（危险）</option>
+            <option value="trim">裁剪（待实施）</option>
           </select>
         </div>
 
-        <div class="form-row">
-          <label>起始日期：</label>
-          <input type="date" v-model="cleanupForm.from" />
-        </div>
-
-        <div class="form-row">
-          <label>结束日期：</label>
-          <input type="date" v-model="cleanupForm.to" />
+        <div class="form-row form-row-dates">
+          <div class="date-group">
+            <label class="form-label">起始日期：</label>
+            <input type="date" v-model="cleanupForm.from" class="form-input" />
+          </div>
+          <div class="date-group">
+            <label class="form-label">结束日期：</label>
+            <input type="date" v-model="cleanupForm.to" class="form-input" />
+          </div>
         </div>
 
         <div class="form-actions">
-          <button @click="previewCleanup" :disabled="isLoading" class="btn-preview">
-            {{ isLoading ? '加载中...' : '预览影响' }}
+          <button class="btn btn-primary btn-sm" @click="previewCleanup" :disabled="isLoading">
+            {{ isLoading ? '加载中…' : '预览影响' }}
           </button>
-          <button @click="executeCleanup" :disabled="isLoading || !previewResult" class="btn-execute">
+          <button class="btn btn-ghost btn-sm" @click="executeCleanup" :disabled="isLoading || !previewResult">
             执行清理
           </button>
         </div>
@@ -116,14 +130,13 @@
 
       <!-- 预览结果 -->
       <div v-if="previewResult" class="preview-result">
-        <h3>预览结果</h3>
         <div class="preview-item">
           <span class="preview-label">影响行数：</span>
           <span class="preview-value">{{ formatNumber(previewResult.affected_rows) }} 行</span>
         </div>
         <div class="preview-item">
           <span class="preview-label">预计释放：</span>
-          <span class="preview-value">{{ previewResult.estimated_freed_human }}</span>
+          <span class="preview-value highlight">{{ previewResult.estimated_freed_human }}</span>
         </div>
         <div v-if="previewResult.warning_message" class="preview-warning">
           ⚠️ {{ previewResult.warning_message }}
@@ -132,22 +145,32 @@
     </div>
 
     <!-- 租户统计（Top 10） -->
-    <div class="tenant-section">
-      <h2>租户数据统计（Top 10）</h2>
-      <div class="tenant-table">
-        <table>
+    <div class="card tenant-card" v-if="stats && stats.by_tenant.length">
+      <h3 class="card-title">租户数据统计（Top 10）</h3>
+      <div class="tenant-table-wrap">
+        <table class="data-table">
           <thead>
             <tr>
               <th>租户 ID</th>
               <th>行数</th>
               <th>占用空间</th>
+              <th>占比</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="tenant in stats.by_tenant" :key="tenant.tenant_id">
-              <td>{{ tenant.tenant_id }}</td>
+              <td><code class="tenant-code">{{ tenant.tenant_id }}</code></td>
               <td>{{ formatNumber(tenant.rows) }}</td>
               <td>{{ tenant.size_human }}</td>
+              <td>
+                <div class="tenant-bar-track">
+                  <div
+                    class="tenant-bar-fill"
+                    :style="{ width: getTenantPercent(tenant.rows) + '%' }"
+                  ></div>
+                  <span class="tenant-bar-text">{{ getTenantPercent(tenant.rows).toFixed(1) }}%</span>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -159,43 +182,18 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
-import { dataLifecycleStats, dataLifecycleCleanupPreview } from '../api'
+import {
+  dataLifecycleStats,
+  dataLifecycleCleanupPreview,
+  type DataLifecycleStatsResponse,
+  type DataSegment,
+  type TenantDataStats,
+  type DailyGrowth,
+} from '../api'
 
 Chart.register(...registerables)
 
-interface DataSegment {
-  rows: number
-  size_bytes: number
-  size_human: string
-  days: number
-  percent_of_total: number
-}
-
-interface TenantStats {
-  tenant_id: string
-  rows: number
-  size_bytes: number
-  size_human: string
-}
-
-interface GrowthTrend {
-  date: string
-  requests: number
-  compressed: number
-  compression_rate: number
-}
-
-interface Stats {
-  total_rows: number
-  total_size_bytes: number
-  total_size_human: string
-  hot_data: DataSegment | null
-  warm_data: DataSegment | null
-  cold_data: DataSegment | null
-  expired_data: DataSegment | null
-  by_tenant: TenantStats[]
-  growth_trend: GrowthTrend[]
-}
+interface Stats extends DataLifecycleStatsResponse {}
 
 interface CleanupPreview {
   affected_rows: number
@@ -204,22 +202,12 @@ interface CleanupPreview {
   warning_message?: string
 }
 
-const stats = ref<Stats>({
-  total_rows: 0,
-  total_size_bytes: 0,
-  total_size_human: '0 B',
-  hot_data: null,
-  warm_data: null,
-  cold_data: null,
-  expired_data: null,
-  by_tenant: [],
-  growth_trend: []
-})
+const stats = ref<Stats | null>(null)
 
 const cleanupForm = ref({
   action: 'archive',
   from: '',
-  to: ''
+  to: '',
 })
 
 const previewResult = ref<CleanupPreview | null>(null)
@@ -231,23 +219,29 @@ function formatNumber(n: number): string {
   return n.toLocaleString('zh-CN')
 }
 
+function getTenantPercent(rows: number): number {
+  if (!stats.value || stats.value.total_rows === 0) return 0
+  return (rows / stats.value.total_rows) * 100
+}
+
 async function loadStats() {
+  isLoading.value = true
   try {
     const data = await dataLifecycleStats()
-    stats.value = data
-    
-    // 渲染图表
+    stats.value = data as Stats
+
     await nextTick()
     renderChart()
   } catch (error) {
     console.error('Failed to load stats:', error)
-    alert('加载数据失败')
+  } finally {
+    isLoading.value = false
   }
 }
 
 function renderChart() {
-  if (!distributionChart.value) return
-  
+  if (!distributionChart.value || !stats.value) return
+
   if (chartInstance) {
     chartInstance.destroy()
   }
@@ -259,38 +253,50 @@ function renderChart() {
     stats.value.hot_data?.rows || 0,
     stats.value.warm_data?.rows || 0,
     stats.value.cold_data?.rows || 0,
-    stats.value.expired_data?.rows || 0
+    stats.value.expired_data?.rows || 0,
   ]
 
   const config: ChartConfiguration = {
     type: 'doughnut',
     data: {
       labels: ['热数据 (0-7天)', '温数据 (7-30天)', '冷数据 (30-90天)', '过期数据 (>90天)'],
-      datasets: [{
-        data,
-        backgroundColor: [
-          'rgba(52, 211, 153, 0.8)',
-          'rgba(251, 191, 36, 0.8)',
-          'rgba(96, 165, 250, 0.8)',
-          'rgba(248, 113, 113, 0.8)'
-        ],
-        borderColor: [
-          'rgba(52, 211, 153, 1)',
-          'rgba(251, 191, 36, 1)',
-          'rgba(96, 165, 250, 1)',
-          'rgba(248, 113, 113, 1)'
-        ],
-        borderWidth: 2
-      }]
+      datasets: [
+        {
+          data,
+          backgroundColor: [
+            'rgba(52, 211, 153, 0.7)',
+            'rgba(251, 191, 36, 0.7)',
+            'rgba(96, 165, 250, 0.7)',
+            'rgba(248, 113, 113, 0.7)',
+          ],
+          borderColor: [
+            'rgba(52, 211, 153, 1)',
+            'rgba(251, 191, 36, 1)',
+            'rgba(96, 165, 250, 1)',
+            'rgba(248, 113, 113, 1)',
+          ],
+          borderWidth: 2,
+        },
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: {
-          position: 'bottom'
+          position: 'bottom',
+          labels: {
+            color: '#e6edf3',
+            font: { size: 12 },
+            padding: 12,
+          },
         },
         tooltip: {
+          backgroundColor: 'rgba(15, 17, 23, 0.95)',
+          titleColor: '#e6edf3',
+          bodyColor: '#e6edf3',
+          borderColor: 'rgba(99, 102, 241, 0.5)',
+          borderWidth: 1,
           callbacks: {
             label: (context) => {
               const label = context.label || ''
@@ -298,11 +304,11 @@ function renderChart() {
               const total = data.reduce((a, b) => a + b, 0)
               const percentage = total > 0 ? (value / total * 100).toFixed(1) : '0.0'
               return `${label}: ${formatNumber(value)} 行 (${percentage}%)`
-            }
-          }
-        }
-      }
-    }
+            },
+          },
+        },
+      },
+    },
   }
 
   chartInstance = new Chart(ctx, config)
@@ -345,13 +351,11 @@ async function executeCleanup() {
   if (!confirmed) return
 
   alert('清理功能将在下一阶段实现。请使用命令行脚本执行清理操作。')
-  // TODO: 实现实际的清理执行
 }
 
 onMounted(() => {
   loadStats()
-  
-  // 默认设置日期范围（30-90天前）
+
   const now = new Date()
   const from = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
   const to = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
@@ -362,194 +366,368 @@ onMounted(() => {
 
 <style scoped>
 .data-lifecycle-view {
-  padding: 20px;
+  padding: 16px;
   max-width: 1400px;
   margin: 0 auto;
 }
 
-.page-title {
-  font-size: 24px;
-  font-weight: 600;
-  margin-bottom: 24px;
-  color: #1f2937;
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
-.stats-panel {
+.page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ===== 统计卡片 ===== */
+.stats-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-  margin-bottom: 32px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .stat-card {
-  background: white;
-  border-radius: 8px;
-  padding: 20px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  border-left: 4px solid #6b7280;
+  background: var(--bg-card, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
 }
 
-.stat-card.hot { border-left-color: #34d399; }
-.stat-card.warm { border-left-color: #fbbf24; }
-.stat-card.cold { border-left-color: #60a5fa; }
-.stat-card.expired { border-left-color: #f87171; }
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  background: var(--text-secondary, #6b7280);
+}
+
+.stat-card.segment-hot::before { background: #34d399; }
+.stat-card.segment-warm::before { background: #fbbf24; }
+.stat-card.segment-cold::before { background: #60a5fa; }
+.stat-card.segment-expired::before { background: #f87171; }
 
 .stat-label {
-  font-size: 14px;
-  color: #6b7280;
-  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+  margin-bottom: 6px;
 }
 
 .stat-value {
-  font-size: 24px;
-  font-weight: 600;
-  color: #1f2937;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary, #e6edf3);
   margin-bottom: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-meta {
-  font-size: 12px;
-  color: #9ca3af;
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
 }
 
-.chart-section, .trend-section, .cleanup-section, .tenant-section {
-  background: white;
-  border-radius: 8px;
-  padding: 24px;
-  margin-bottom: 24px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+.stat-percent {
+  color: var(--text-tertiary, #6b7280);
+  margin-left: 4px;
 }
 
-h2 {
-  font-size: 18px;
-  font-weight: 600;
+/* ===== 卡片通用 ===== */
+.card {
+  background: var(--bg-card, #161b22);
+  border: 1px solid var(--border, #30363d);
+  border-radius: 10px;
+  padding: 16px;
   margin-bottom: 16px;
-  color: #1f2937;
+}
+
+.card-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #e6edf3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ===== 图表行 ===== */
+.charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.chart-card {
+  margin-bottom: 0;
 }
 
 .chart-container {
-  height: 300px;
+  height: 240px;
 }
 
-.trend-table table, .tenant-table table {
+/* ===== 趋势表 ===== */
+.trend-table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
   width: 100%;
   border-collapse: collapse;
+  font-size: 13px;
 }
 
-.trend-table th, .trend-table td,
-.tenant-table th, .tenant-table td {
-  padding: 12px;
+.data-table th {
   text-align: left;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 8px 10px;
+  color: var(--text-secondary, #8b949e);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border, #30363d);
+  white-space: nowrap;
 }
 
-.trend-table th, .tenant-table th {
-  background: #f9fafb;
-  font-weight: 600;
-  color: #374151;
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #30363d);
+  color: var(--text-primary, #e6edf3);
+  font-variant-numeric: tabular-nums;
 }
 
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.rate-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-h, #818cf8);
+  font-weight: 500;
+}
+
+.rate-badge.high {
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+}
+
+/* ===== 清理表单 ===== */
 .cleanup-form {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .form-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.form-row label {
-  min-width: 100px;
-  font-weight: 500;
-  color: #374151;
+.form-row-dates {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
 }
 
-.form-row select, .form-row input {
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
+.date-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.form-label {
+  font-size: 13px;
+  color: var(--text-secondary, #8b949e);
+  white-space: nowrap;
+  min-width: 70px;
+}
+
+.form-select, .form-input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg, #0f1117);
+  border: 1px solid var(--border, #30363d);
   border-radius: 6px;
-  font-size: 14px;
+  color: var(--text-primary, #e6edf3);
+  font-size: 13px;
+}
+
+.form-select:focus, .form-input:focus {
+  outline: none;
+  border-color: var(--accent, #6366f1);
 }
 
 .form-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  gap: 8px;
+  margin-top: 4px;
 }
 
-.btn-preview, .btn-execute {
-  padding: 10px 20px;
-  border: none;
+.btn {
+  padding: 6px 14px;
   border-radius: 6px;
-  font-size: 14px;
+  border: 1px solid transparent;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.15s;
 }
 
-.btn-preview {
-  background: #3b82f6;
-  color: white;
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
-.btn-preview:hover:not(:disabled) {
-  background: #2563eb;
+.btn-primary {
+  background: var(--accent, #6366f1);
+  color: #fff;
 }
 
-.btn-execute {
-  background: #ef4444;
-  color: white;
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-h, #818cf8);
 }
 
-.btn-execute:hover:not(:disabled) {
-  background: #dc2626;
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border, #30363d);
+  color: var(--text-primary, #e6edf3);
 }
 
-.btn-preview:disabled, .btn-execute:disabled {
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover, #21262d);
+  border-color: var(--text-secondary, #8b949e);
+}
+
+.btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
+/* ===== 预览结果 ===== */
 .preview-result {
-  margin-top: 20px;
-  padding: 16px;
-  background: #f0fdf4;
-  border: 1px solid #86efac;
+  margin-top: 12px;
+  padding: 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
   border-radius: 6px;
-}
-
-.preview-result h3 {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  color: #166534;
 }
 
 .preview-item {
   display: flex;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.preview-item:last-child {
+  margin-bottom: 0;
 }
 
 .preview-label {
-  font-weight: 500;
-  color: #166534;
+  color: var(--text-secondary, #8b949e);
 }
 
 .preview-value {
+  color: var(--text-primary, #e6edf3);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-value.highlight {
+  color: #fbbf24;
   font-weight: 600;
-  color: #15803d;
 }
 
 .preview-warning {
-  margin-top: 12px;
-  padding: 8px 12px;
-  background: #fef3c7;
-  border-left: 3px solid #f59e0b;
-  color: #92400e;
-  font-size: 14px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(251, 191, 36, 0.1);
+  border-left: 2px solid #fbbf24;
+  color: #fbbf24;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+/* ===== 租户表 ===== */
+.tenant-table-wrap {
+  overflow-x: auto;
+}
+
+.tenant-code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg, #0f1117);
+  border-radius: 4px;
+  color: var(--accent-h, #818cf8);
+}
+
+.tenant-bar-track {
+  position: relative;
+  width: 100%;
+  height: 18px;
+  background: var(--bg, #0f1117);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.tenant-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.5), rgba(99, 102, 241, 0.8));
+  transition: width 0.3s;
+}
+
+.tenant-bar-text {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  line-height: 18px;
+  font-size: 11px;
+  color: var(--text-primary, #e6edf3);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 空状态 ===== */
+.empty-hint {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-secondary, #8b949e);
+  font-size: 13px;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 800px) {
+  .stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .charts-row {
+    grid-template-columns: 1fr;
+  }
+  .form-row-dates {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
