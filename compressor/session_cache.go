@@ -73,6 +73,8 @@ type SessionState struct {
 	TokenEstimate        int    `json:"te"`   // outbound token estimate
 	SummaryMarker        string `json:"smm"`  // "smm_v1:<sha256>" or ""
 	RecentlyCompressedAt int64  `json:"rcat"` // unix seconds (60s mutual-exclusion)
+	ToolsHash            string `json:"th,omitempty"`  // sha256 hex of tools array (Phase 1 optimization)
+	SystemPrompt         string `json:"sys,omitempty"` // cached system prompt (Phase 1 optimization)
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
