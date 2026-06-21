@@ -56,9 +56,10 @@ ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
-# kx-base:go-vue already provides ca-certificates + tzdata + adduser.
-# Only the llmgw user is missing — create it.
-RUN adduser -D -u 1001 llmgw
+# kx-base:go-vue already provides ca-certificates + tzdata + useradd.
+# Only the llmgw user is missing — create it (Debian's useradd uses -m
+# for create-home; alpine's adduser -D is the equivalent).
+RUN useradd -m -u 1001 -s /sbin/nologin llmgw
 
 WORKDIR /
 
