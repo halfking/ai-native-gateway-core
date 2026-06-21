@@ -360,6 +360,27 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"client_model", logCtx.ClientModel)
 			logCtx.EmitFailure(logCtx.ErrCode, logCtx.ErrMsg, logCtx.ProviderID, logCtx.CredentialID)
 		}
+		// ── 2026-06-22: Request WAL client-disconnect safety net ─────────
+		// If the client disconnected before we logged completion, the WAL
+		// record would otherwise stay at stage=0/pending forever. Mark it
+		// as stage=13 (response_fail) so audit completeness stays at 100%.
+		// Only runs if the request context is canceled (client disconnect)
+		// AND we never successfully completed via the success path.
+		if h.requestLogger != nil && r.Context().Err() != nil {
+			// Use Background context since request context is already canceled
+			update := &telemetry.LogUpdate{
+				RequestID: requestID,
+				Stage:     telemetry.StageResponseFail,
+				Status:    telemetry.StatusFailure,
+				Error:     "client_disconnect: " + r.Context().Err().Error(),
+			}
+			// Use 2-second timeout to avoid blocking the request lifecycle
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if err := h.requestLogger.UpdateSync(ctx, update); err != nil {
+				slog.Warn("request_logger: client-disconnect UpdateSync failed", "request_id", requestID, "error", err)
+			}
+			cancel()
+		}
 	}()
 
 	// GET probe — return 200 for client compatibility checks
