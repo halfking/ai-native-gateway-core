@@ -299,3 +299,102 @@ export interface DataLifecycleMetricsResponse {
 export function dataLifecycleMetrics() {
   return req<DataLifecycleMetricsResponse>('GET', '/api/admin/data-lifecycle/metrics')
 }
+
+// ── Tuning proposals + accuracy (Phase 5) ──────────────────────────────
+//
+// Three endpoints are mounted by admin/auto_route_tuning.go:
+//
+//   GET  /api/admin/auto-route/tuning/proposals?status=&category=&limit=
+//   POST /api/admin/auto-route/tuning/proposals/:id/approve
+//   POST /api/admin/auto-route/tuning/proposals/:id/reject  (body: {reason}?)
+//   GET  /api/admin/auto-route/tuning/accuracy?days=
+//
+// `triggerTuningAnalyze` is currently a frontend-only call: there is no
+// matching backend endpoint yet (auto_route_tuning.go mounts 4 routes,
+// none of which trigger an ad-hoc analyzer run). The function below
+// posts to /tuning/analyze; the existing try/catch in TuningView.vue
+// surfaces the 404 as a user-facing alert. When the backend adds the
+// trigger endpoint the call will start succeeding.
+
+export type TuningProposalCategory = 'keyword_add' | 'weight_adjust' | 'threshold_change'
+export type TuningProposalStatus = 'pending' | 'approved' | 'rejected' | 'applied'
+
+export interface TuningProposal {
+  id: number
+  ts: string
+  category: TuningProposalCategory
+  task_type: string | null
+  proposal: Record<string, unknown>
+  evidence: Record<string, unknown>
+  status: TuningProposalStatus
+  reviewed_by: string | null
+  reviewed_at: string | null
+  applied_at: string | null
+  review_note: string | null
+}
+
+export interface TuningProposalsResponse {
+  proposals: TuningProposal[]
+  count: number
+  filter: { status: string; category: string }
+}
+
+export function getTuningProposals(params: {
+  status?: TuningProposalStatus | ''
+  category?: TuningProposalCategory | ''
+  limit?: number
+} = {}) {
+  const q = new URLSearchParams()
+  if (params.status) q.set('status', params.status)
+  if (params.category) q.set('category', params.category)
+  if (params.limit != null) q.set('limit', String(params.limit))
+  const s = q.toString()
+  return req<TuningProposalsResponse>('GET', `/api/admin/auto-route/tuning/proposals${s ? '?' + s : ''}`)
+}
+
+export function approveTuningProposal(id: number) {
+  return req<{ id: number; status: string; message: string }>(
+    'POST', `/api/admin/auto-route/tuning/proposals/${id}/approve`
+  )
+}
+
+export function rejectTuningProposal(id: number, reason?: string) {
+  return req<{ id: number; status: string; message: string }>(
+    'POST', `/api/admin/auto-route/tuning/proposals/${id}/reject`,
+    { reason: reason ?? null }
+  )
+}
+
+export interface AccuracyBreakdownRow {
+  task_type: string
+  classifier: string
+  total: number
+  avg_quality: number
+  avg_success: number
+  avg_latency: number
+  avg_cost: number
+  drift_rate: number
+}
+
+export interface TuningAccuracyResponse {
+  window_days: number
+  breakdown: AccuracyBreakdownRow[]
+  generated_at: string
+}
+
+export function getTuningAccuracy(days = 7) {
+  return req<TuningAccuracyResponse>('GET', `/api/admin/auto-route/tuning/accuracy?days=${days}`)
+}
+
+export interface TriggerTuningAnalyzeResponse {
+  completed_at: string
+  triggered_by: string
+}
+
+export function triggerTuningAnalyze() {
+  // TODO(backend): no matching endpoint in admin/auto_route_tuning.go
+  // yet. Post path is a placeholder — when the trigger endpoint lands,
+  // update this path to match. Until then the call will 404 and the
+  // TuningView.vue catch handler will show the error to the user.
+  return req<TriggerTuningAnalyzeResponse>('POST', '/api/admin/auto-route/tuning/analyze')
+}
