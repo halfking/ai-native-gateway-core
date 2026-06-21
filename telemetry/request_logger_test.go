@@ -111,11 +111,15 @@ func TestRequestLogger_UpdateBuilder_LogAsync(t *testing.T) {
 		asyncQueue: queue,
 		done:      make(chan struct{}),
 	}
+	t.Logf("rl.config.Enabled = %v, queue cap = %d, queue len = %d", rl.config.Enabled, cap(queue), len(queue))
+	t.Logf("rl.Enabled() = %v", rl.Enabled())
 
 	rl.NewUpdateBuilder().
 		RequestID("req-async").
 		Stage(StageCompressed).
 		LogAsync(rl)
+
+	t.Logf("After LogAsync: queue len = %d", len(queue))
 
 	select {
 	case u := <-queue:
