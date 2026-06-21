@@ -3,20 +3,14 @@ import type { AnalyticsFlow } from '../../api-autoroute'
 /** Minimum node height (label readability). */
 export const SANKEY_NODE_H = 18
 /** Max height ratio within a column (hot node vs smallest allocated). */
-export const SANKEY_MAX_HEIGHT_RATIO = 3.5
-/** Per-layer pow exponents (layer 0 uses log1p instead). */
-export const SANKEY_LAYER_EXPONENTS = [0.32, 0.42, 0.5] as const
+export const SANKEY_MAX_HEIGHT_RATIO = 8
+/** Mild sublinear exponent — preserves proportion feel without extreme domination. */
+export const SANKEY_HEIGHT_EXPONENT = 0.85
 
-/**
- * Map raw flow total to layout weight.
- * Layer 0 (task types): log1p — strongest dampening, traffic↑ coefficient↓.
- * Other layers: pow(total, k) with moderate k.
- */
+/** Map raw flow total to layout weight (mild sublinear so large nodes don't dominate). */
 export function scaleNodeTotal(total: number, layer = 0): number {
   if (total <= 0) return 0
-  const li = Math.min(Math.max(layer, 0), 2)
-  if (li === 0) return Math.log1p(total)
-  return Math.pow(total, SANKEY_LAYER_EXPONENTS[li])
+  return Math.pow(total, SANKEY_HEIGHT_EXPONENT)
 }
 
 /** Allocate node heights for one column with sublinear weights + max/min cap. */
