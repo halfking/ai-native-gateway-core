@@ -227,6 +227,7 @@ func main() {
 	// become readable via settings.Global.EffectiveValue(scope, key, tenantID).
 	// Order matters: must run BEFORE any code that calls LoadMode/LoadFraction
 	// (e.g. compressor.NewCompressor).
+	var providerSettingsResolver *settings.ProviderSettingsResolver
 	if dbConn != nil && dbConn.Enabled() {
 		settingsDB := settings.NewStoreDB(dbConn.Pool())
 		settings.Init(settingsDB)
@@ -238,6 +239,10 @@ func main() {
 		}
 		slog.Info("settings: registry initialised",
 			"platform_specs", len(settings.Global.AllSpecs()))
+		
+		// Phase 3.2: Provider-level settings resolver
+		providerSettingsResolver = settings.NewProviderSettingsResolver(dbConn.Pool(), settings.Global)
+		slog.Info("settings: provider-level resolver initialised")
 	} else {
 		slog.Info("settings: registry disabled (no DB)")
 	}
@@ -453,16 +458,24 @@ routingExec.AnthropicToOpenAIStream = func(
 				"max_fallback_creds", routingExec.AsyncMaxFallbackCreds,
 			)
 		}
-// Round 47 compression v7 T16: build the unified compression dispatcher.
-// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
-// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
-// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
-// misconfigured install degrades gracefully to ModeOff.
-routingExec.Compressor = compressor.NewCompressor()
-slog.Info("compressor initialized",
-	"mode", routingExec.Compressor.Mode().String(),
-	"window_fraction", routingExec.Compressor.Estimator().Fraction(),
-)
+	// Round 47 compression v7 T16: build the unified compression dispatcher.
+	// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
+	// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
+	// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
+	// misconfigured install degrades gracefully to ModeOff.
+	routingExec.Compressor = compressor.NewCompressor()
+	slog.Info("compressor initialized",
+		"mode", routingExec.Compressor.Mode().String(),
+		"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+	)
+
+	// Phase 3.2: Wire provider-level settings resolver into executor and compressor
+	if providerSettingsResolver != nil {
+		routingExec.ProviderSettings = providerSettingsResolver
+		routingExec.Compressor.ProviderSettings = providerSettingsResolver
+		slog.Info("provider-level settings resolver wired to executor")
+	}
+
 
 // Memora: optional context-compression oracle. When the
 		// LLM_GATEWAY_MEMORA_BASE_URL env is set, the executor can ask

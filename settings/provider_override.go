@@ -95,6 +95,25 @@ func (r *ProviderSettingsResolver) GetBool(ctx context.Context, providerID int, 
 	return b, ok
 }
 
+// GetInt64 is a convenience method for int64-typed settings.
+func (r *ProviderSettingsResolver) GetInt64(ctx context.Context, providerID int, key string) (int64, bool) {
+	val, ok := r.Get(ctx, providerID, key)
+	if !ok {
+		return 0, false
+	}
+	// Handle both int64 and float64 (JSON numbers)
+	switch v := val.(type) {
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
 // queryDB queries the provider_settings table and falls back to platform/default.
 func (r *ProviderSettingsResolver) queryDB(ctx context.Context, providerID int, key string) (interface{}, bool) {
 	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

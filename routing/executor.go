@@ -313,6 +313,16 @@ type Executor struct {
 	// shared across all request goroutines — a plain int would
 	// race under concurrent requests.
 	asyncDepth atomic.Int32
+
+	// ProviderSettings (Phase 3.2, 2026-06-21): resolver for provider-level
+	// setting overrides. When non-nil, the executor checks provider-specific
+	// compression.mode, cache.enabled, and format_conversion.enabled before
+	// applying global defaults. Wired from main.go.
+	ProviderSettings interface {
+		GetString(ctx context.Context, providerID int, key string) (string, bool)
+		GetBool(ctx context.Context, providerID int, key string) (bool, bool)
+		GetInt64(ctx context.Context, providerID int, key string) (int64, bool)
+	}
 }
 
 func NewExecutor(

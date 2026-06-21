@@ -26,6 +26,7 @@
 package compressor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -165,6 +166,15 @@ func (m Meta) Marshal() []byte {
 type Compressor struct {
 	mode Mode
 	est  *Estimator
+
+	// ProviderSettings (Phase 3.2, 2026-06-21): optional resolver for
+	// provider-level compression.mode and cache.enabled overrides.
+	// When non-nil and a provider-specific setting exists, it takes
+	// precedence over the global mode. Wired from main.go.
+	ProviderSettings interface {
+		GetString(ctx context.Context, providerID int, key string) (string, bool)
+		GetBool(ctx context.Context, providerID int, key string) (bool, bool)
+	}
 }
 
 // NewCompressor builds a Compressor with the current env config.
