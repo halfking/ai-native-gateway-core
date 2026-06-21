@@ -48,6 +48,7 @@ func TestPassiveProbe_TransientErrorTracking(t *testing.T) {
 	// Create and run passive probe listener
 	listener := &PassiveProbeListener{
 		db:           pool,
+		stateWriter:  nil, // not needed for poll-only test
 		pollInterval: 1 * time.Second,
 	}
 
@@ -97,6 +98,7 @@ func TestPassiveProbe_ReviewPromotion_TransientThreshold(t *testing.T) {
 
 	listener := &PassiveProbeListener{
 		db:           pool,
+		stateWriter:  nil,
 		pollInterval: 1 * time.Second,
 	}
 
@@ -152,6 +154,7 @@ func TestPassiveProbe_ReviewPromotion_TransientErrorRate(t *testing.T) {
 
 	listener := &PassiveProbeListener{
 		db:           pool,
+		stateWriter:  nil,
 		pollInterval: 1 * time.Second,
 	}
 
@@ -171,9 +174,11 @@ func TestPassiveProbe_ReviewPromotion_TransientErrorRate(t *testing.T) {
 	assert.True(t, inReviewing, "should promote to reviewing with 60% transient error rate")
 }
 
-// TestPassiveProbe_OtherErrorKindsStillTracked verifies that the fix doesn't
-// break existing error kind tracking (regression test).
-func TestPassiveProbe_OtherErrorKindsStillTracked(t *testing.T) {
+// TestPassiveProbe_TransientKindsTracked verifies that only transient-class
+// error kinds are tracked by the passive probe (BUG-G fix). Non-transient
+// kinds (model_not_found, quota, rate_limit, auth) have their own dedicated
+// state machines and must NOT enter the reviewing → unreachable path.
+func TestPassiveProbe_TransientKindsTracked(t *testing.T) {
 	dsn := getTestDSN(t)
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set")
@@ -187,13 +192,17 @@ func TestPassiveProbe_OtherErrorKindsStillTracked(t *testing.T) {
 	setupTestData(t, pool)
 	defer cleanupTestData(t, pool)
 
-	errorKinds := []string{
-		"model_not_found", "quota", "rate_limit", "auth", "upstream_down",
-		"timeout", "network", "concurrent", "stream_timeout",
+	// Transient-class kinds SHOULD be tracked.
+	trackedKinds := []string{
+		"transient", "timeout", "network", "concurrent", "stream_timeout", "upstream_down",
+	}
+	// Non-transient kinds should NOT be tracked by Layer 5.
+	untrackedKinds := []string{
+		"model_not_found", "quota", "rate_limit", "auth",
 	}
 
 	now := time.Now()
-	for _, kind := range errorKinds {
+	for _, kind := range append(trackedKinds, untrackedKinds...) {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO request_logs 
 			(tenant_id, api_key_id, credential_id, client_model, outbound_model, 
@@ -207,13 +216,14 @@ func TestPassiveProbe_OtherErrorKindsStillTracked(t *testing.T) {
 
 	listener := &PassiveProbeListener{
 		db:           pool,
+		stateWriter:  nil,
 		pollInterval: 1 * time.Second,
 	}
 
 	listener.pollNewErrors(ctx)
 
-	// Verify: All error kinds should be tracked
-	for _, kind := range errorKinds {
+	// Verify: transient kinds should be tracked.
+	for _, kind := range trackedKinds {
 		var count int
 		err := pool.QueryRow(ctx, `
 			SELECT COUNT(*) 
@@ -222,7 +232,19 @@ func TestPassiveProbe_OtherErrorKindsStillTracked(t *testing.T) {
 			  AND error_kind = $1
 		`, kind).Scan(&count)
 		require.NoError(t, err)
-		assert.Equal(t, 1, count, "error_kind %s should be tracked", kind)
+		assert.Equal(t, 1, count, "transient error_kind %s should be tracked", kind)
+	}
+
+	// Verify: non-transient kinds should NOT be tracked.
+	for _, kind := range untrackedKinds {
+		var count int
+		_ = pool.QueryRow(ctx, `
+			SELECT COUNT(*) 
+			FROM passive_probe_state 
+			WHERE credential_id = 999 
+			  AND error_kind = $1
+		`, kind).Scan(&count)
+		assert.Equal(t, 0, count, "non-transient error_kind %s should NOT be tracked", kind)
 	}
 }
 
@@ -286,4 +308,25 @@ func cleanupTestData(t *testing.T, pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, "DELETE FROM request_logs WHERE credential_id = 999")
 	_, _ = pool.Exec(ctx, "DELETE FROM credentials WHERE id = 999")
 	_, _ = pool.Exec(ctx, "DELETE FROM providers WHERE id = 1")
+}
+
+// TestPassiveProbe_TransientErrorKinds_Filter (no DB required) verifies that
+// the transientErrorKinds list only contains transient-class errors and does
+// NOT include quota/auth/model_not_found (BUG-G fix).
+func TestPassiveProbe_TransientErrorKinds_Filter(t *testing.T) {
+	// All transient kinds should be in the list.
+	expected := map[string]bool{
+		"transient": true, "timeout": true, "network": true,
+		"concurrent": true, "stream_timeout": true, "upstream_down": true,
+	}
+	for _, k := range transientErrorKinds {
+		assert.True(t, expected[k], "unexpected kind %q in transientErrorKinds", k)
+	}
+
+	// Non-transient kinds must NOT be in the list.
+	for _, bad := range []string{"model_not_found", "quota", "quota_periodic", "rate_limit", "auth", "auth_revoked"} {
+		for _, k := range transientErrorKinds {
+			assert.NotEqual(t, bad, k, "non-transient kind %q must not be in transientErrorKinds", bad)
+		}
+	}
 }
