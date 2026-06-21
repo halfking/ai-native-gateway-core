@@ -295,6 +295,29 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
+		// 2026-06-21 debug: detect upstream sending OpenAI-format chunks
+		// instead of Anthropic events. Some providers (e.g. glm-5.2) may
+		// mix formats, causing empty choices[] chunks to leak through.
+		if ev.Type == "" {
+			// Check if this is an OpenAI-format chunk leaked from upstream
+			var oaiCheck struct {
+				Choices []any  `json:"choices"`
+				ID      string `json:"id"`
+				Created int64  `json:"created"`
+			}
+			if err := json.Unmarshal(data, &oaiCheck); err == nil {
+				if oaiCheck.Choices != nil || oaiCheck.ID != "" || oaiCheck.Created > 0 {
+					slog.Warn("anthropic_to_openai: upstream sent OpenAI-format chunk, skipping",
+						"has_choices", oaiCheck.Choices != nil,
+						"choices_len", len(oaiCheck.Choices),
+						"id", oaiCheck.ID,
+						"created", oaiCheck.Created,
+						"request_id", requestID)
+					continue
+				}
+			}
+		}
+
 		switch ev.Type {
 		case "message_start":
 			var msg struct {
