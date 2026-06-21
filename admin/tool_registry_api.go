@@ -55,10 +55,7 @@ func (api *ToolRegistryAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 
 	category := r.URL.Query().Get("category")
 
@@ -103,10 +100,7 @@ func (api *ToolRegistryAPI) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 
 	toolID := r.URL.Query().Get("tool_id")
 	if toolID == "" {

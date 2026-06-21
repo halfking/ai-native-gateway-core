@@ -14,7 +14,7 @@ import (
 
 // fakeVerifyAdminAuthStubs is a small interface for testing the middleware.
 // In real code, verifyAdminAuth is a closure that queries DB; for tests we
-// can't easily stub it, so the test focuses on superAdminMiddleware logic
+// can't easily stub it, so the test focuses on SuperAdminMiddleware logic
 // (JWT role check) which is the new critical path.
 func TestSuperAdminMiddleware_RejectsTenantAdminJWT(t *testing.T) {
 	// Build a JWT with role=tenant_admin and a known secret
@@ -29,7 +29,7 @@ func TestSuperAdminMiddleware_RejectsTenantAdminJWT(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := superAdminMiddleware(next, nil, "test-secret")
+	mw := SuperAdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
@@ -55,7 +55,7 @@ func TestSuperAdminMiddleware_AllowsSuperAdminJWT(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := superAdminMiddleware(next, nil, "test-secret")
+	mw := SuperAdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestSuperAdminMiddleware_RejectsInvalidJWT(t *testing.T) {
 	})
 	_ = next
 
-	mw := superAdminMiddleware(next, nil, "test-secret")
+	mw := SuperAdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	req.Header.Set("Authorization", "Bearer invalid.token.here")
 	rr := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestSuperAdminMiddleware_RejectsNoAuth(t *testing.T) {
 		nextCalled = true
 	})
 
-	mw := superAdminMiddleware(next, nil, "test-secret")
+	mw := SuperAdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/users", nil)
 	rr := httptest.NewRecorder()
 	mw(rr, req)
@@ -117,7 +117,7 @@ func TestAdminMiddleware_AllowsTenantAdminJWT(t *testing.T) {
 		nextCalled = true
 	})
 
-	mw := adminMiddleware(next, nil, "test-secret")
+	mw := AdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/keys", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestAdminMiddleware_RejectsExpiredJWT(t *testing.T) {
 		nextCalled = true
 	})
 
-	mw := adminMiddleware(next, nil, "test-secret")
+	mw := AdminMiddleware(next, nil, "test-secret")
 	req := httptest.NewRequest("GET", "/api/keys", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()

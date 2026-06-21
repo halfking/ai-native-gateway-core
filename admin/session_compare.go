@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -71,10 +72,7 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID := r.URL.Query().Get("session_id")
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 
 	if sessionID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -366,6 +364,10 @@ func estimateTokens(s string) int {
 }
 
 func truncateStr(s string, max int) string {
+	// Audit P2 fix (2026-06-22): guard against max < 0 to avoid slice[:n] panic.
+	if max < 0 {
+		return ""
+	}
 	if len(s) > max {
 		return s[:max]
 	}
@@ -422,9 +424,7 @@ func (api *HandoffAPI) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if req.TenantID == "" {
-		req.TenantID = "default"
-	}
+	req.TenantID = EffectiveTenantID(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -451,13 +451,13 @@ func (api *HandoffAPI) executeHandoff(ctx context.Context, req HandoffRequest) (
 		summary = "Session completed"
 	}
 
-	// 3. Log the handoff event
-	_, _ = api.db.Exec(ctx, `
-		INSERT INTO schema_migration_audit (table_name, operation, details, performed_by)
-		VALUES ('session_handoff', 'HANDOFF', $1, 'admin_api')
-		ON CONFLICT DO NOTHING
-	`, fmt.Sprintf(`{"session_id":"%s","tenant_id":"%s","summary":"%s"}`,
-		req.SessionID, req.TenantID, truncateStr(summary, 200)))
+	// 3. Log the handoff event (slog only — no DB write, schema_migration_audit
+	// has incompatible columns for this use case)
+	slog.Info("session_handoff",
+		"session_id", req.SessionID,
+		"tenant_id", req.TenantID,
+		"summary", truncateStr(summary, 200),
+	)
 
 	resp := &HandoffResponse{
 		Status:         "ok",
