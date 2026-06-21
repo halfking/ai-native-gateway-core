@@ -204,7 +204,8 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -265,7 +266,8 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
@@ -328,7 +330,8 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = $1", createdBy); err != nil {
+	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
