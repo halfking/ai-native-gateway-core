@@ -105,14 +105,14 @@ async function save() {
 function getEnumLabel(key: string, value: any): string {
   const labels: Record<string, Record<string, string>> = {
     'compression.mode': {
-      '0': '关闭 (off)',
-      '1': '自动阈值 (auto_threshold)',
-      '2': '4xx时压缩 (on_4xx)',
+      '0': '0 - 关闭 (off)',
+      '1': '1 - 自动阈值 (auto_threshold)',
+      '2': '2 - 4xx时压缩 (on_4xx)',
     },
     'compression.strategy': {
-      'naive': '朴素压缩',
-      'smart': '智能压缩',
-      'adaptive': '自适应压缩',
+      'naive': 'naive - 朴素压缩',
+      'smart': 'smart - 智能压缩',
+      'adaptive': 'adaptive - 自适应压缩',
     },
   }
   return labels[key]?.[String(value)] || String(value)
@@ -128,6 +128,62 @@ function getEnumDescription(key: string, value: string): string {
     },
   }
   return descriptions[key]?.[value] || ''
+}
+
+// Get detailed documentation for settings
+function getSettingDocs(key: string): { title: string; content: string } | null {
+  const docs: Record<string, { title: string; content: string }> = {
+    'compression.mode': {
+      title: '📖 压缩模式详解',
+      content: `<p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>
+<ul>
+  <li><code>0 (off)</code> - 关闭压缩，当上下文超限时直接返回错误</li>
+  <li><code>1 (auto_threshold)</code> - 预判模式，当消息长度接近模型的context window时主动压缩</li>
+  <li><code>2 (on_4xx)</code> - 响应式模式，收到4xx错误后压缩并重试【推荐】</li>
+</ul>
+<p class="docs-note">💡 <strong>推荐使用模式2</strong>：仅在必要时压缩，避免不必要的性能开销</p>`
+    },
+    'cache.enabled': {
+      title: '📖 会话缓存详解',
+      content: `<p><strong>会话缓存</strong>控制是否启用L1/L2/L3三级缓存：</p>
+<ul>
+  <li><strong>L1</strong> - 内存缓存（最快）</li>
+  <li><strong>L2</strong> - Redis缓存（中等）</li>
+  <li><strong>L3</strong> - 数据库缓存（最慢）</li>
+</ul>
+<p class="docs-note">⚠️ 关闭后所有会话状态将不被保存，影响上下文连续性</p>`
+    },
+    'format_conversion.enabled': {
+      title: '📖 格式转换详解',
+      content: `<p><strong>格式转换</strong>允许不同协议之间的请求格式自动转换：</p>
+<ul>
+  <li><strong>Q2路径</strong>：Anthropic格式 → OpenAI模型</li>
+  <li><strong>Q3路径</strong>：OpenAI格式 → Anthropic模型</li>
+</ul>
+<p class="docs-note">💡 支持Provider级别覆盖，可针对特定供应商禁用转换</p>`
+    },
+    'rate_limit_rpm': {
+      title: '📖 RPM限流详解',
+      content: `<p><strong>RPM (Requests Per Minute)</strong> 限制每个租户每分钟的请求次数：</p>
+<ul>
+  <li>适用于粗粒度的流量控制</li>
+  <li>基于滑动窗口算法，精确到秒级</li>
+  <li>超限后返回429状态码</li>
+</ul>
+<p class="docs-note">⚠️ <strong>租户级配置</strong>：此设置需要指定tenant_id，在租户管理页面设置</p>`
+    },
+    'rate_limit_concurrent': {
+      title: '📖 并发限流详解',
+      content: `<p><strong>并发限流</strong>限制每个租户同时处理的请求数量：</p>
+<ul>
+  <li>适用于保护系统资源，防止单个租户占用过多连接</li>
+  <li>基于计数器实现，响应速度快</li>
+  <li>超限后排队或返回429</li>
+</ul>
+<p class="docs-note">⚠️ <strong>租户级配置</strong>：此设置需要指定tenant_id，在租户管理页面设置</p>`
+    },
+  }
+  return docs[key] || null
 }
 
 async function rollback() {
@@ -208,43 +264,19 @@ const filteredCount = computed(() => items.value.length)
         </h3>
         <p class="detail-desc">{{ selected.description }}</p>
         
-        <!-- Additional documentation for specific settings -->
-        <div v-if="selectedKey === 'compression.mode'" class="detail-docs">
-          <div class="docs-title">📖 详细说明</div>
-          <div class="docs-content">
-            <p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>
-            <ul>
-              <li><code>0 (off)</code> - 关闭压缩，当上下文超限时直接返回错误</li>
-              <li><code>1 (auto_threshold)</code> - 预判模式，当消息长度接近模型的context window时主动压缩</li>
-              <li><code>2 (on_4xx)</code> - 响应式模式，收到4xx错误后压缩并重试【推荐】</li>
-            </ul>
-            <p class="docs-note">💡 <strong>推荐使用模式2</strong>：仅在必要时压缩，避免不必要的性能开销</p>
+        <!-- Tenant-scoped warning -->
+        <div v-if="selected.scope === 'tenant'" class="tenant-warning">
+          <div class="warning-icon">⚠️</div>
+          <div class="warning-content">
+            <strong>租户级配置</strong>
+            <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>
           </div>
         </div>
         
-        <div v-else-if="selectedKey === 'cache.enabled'" class="detail-docs">
-          <div class="docs-title">📖 详细说明</div>
-          <div class="docs-content">
-            <p><strong>会话缓存</strong>控制是否启用L1/L2/L3三级缓存：</p>
-            <ul>
-              <li><strong>L1</strong> - 内存缓存（最快）</li>
-              <li><strong>L2</strong> - Redis缓存（中等）</li>
-              <li><strong>L3</strong> - 数据库缓存（最慢）</li>
-            </ul>
-            <p class="docs-note">⚠️ 关闭后所有会话状态将不被保存，影响上下文连续性</p>
-          </div>
-        </div>
-        
-        <div v-else-if="selectedKey === 'format_conversion.enabled'" class="detail-docs">
-          <div class="docs-title">📖 详细说明</div>
-          <div class="docs-content">
-            <p><strong>格式转换</strong>允许不同协议之间的请求格式自动转换：</p>
-            <ul>
-              <li><strong>Q2路径</strong>：OpenAI格式 → Anthropic模型</li>
-              <li><strong>Q3路径</strong>：Anthropic格式 → OpenAI模型</li>
-            </ul>
-            <p class="docs-note">💡 支持Provider级别覆盖，可针对特定供应商禁用转换</p>
-          </div>
+        <!-- Detailed documentation -->
+        <div v-if="getSettingDocs(selectedKey)" class="detail-docs">
+          <div class="docs-title" v-html="getSettingDocs(selectedKey)!.title"></div>
+          <div class="docs-content" v-html="getSettingDocs(selectedKey)!.content"></div>
         </div>
 
         <dl class="meta">
@@ -273,7 +305,7 @@ const filteredCount = computed(() => items.value.length)
           </dd>
         </dl>
 
-        <div class="editor">
+        <div v-if="selected.scope !== 'tenant'" class="editor">
           <label class="editor-label">新值</label>
           
           <!-- Boolean type: Switch -->
@@ -714,6 +746,41 @@ const filteredCount = computed(() => items.value.length)
 }
 
 /* === Documentation Section === */
+.tenant-warning {
+  display: flex;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 16px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-left: 4px solid rgb(251, 191, 36);
+  border-radius: 8px;
+}
+
+.warning-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.warning-content {
+  flex: 1;
+}
+
+.warning-content strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.warning-content p {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0;
+}
+
 .detail-docs {
   margin: 16px 0;
   padding: 16px;

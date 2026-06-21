@@ -293,47 +293,23 @@ async function checkModelAcrossCredentials() {
   
   try {
     const credentials = await getProviderCredentials(props.providerId)
+    const modelName = selected.value.raw_model_name
     
-    // Check each credential concurrently
-    const results = await Promise.all(
-      credentials.map(async (cred) => {
-        try {
-          const result = await checkCredential(props.providerId, cred.id)
-          
-          // Check if this model is in the returned_models array
-          const modelName = selected.value!.raw_model_name
-          const isAvailable = result.returned_models?.includes(modelName) ?? false
-          
-          // Determine status and error message
-          let status: 'ok' | 'unavailable' | 'error'
-          let error: string | null = null
-          
-          if (isAvailable) {
-            status = 'ok'
-          } else if (result.models_ok === false) {
-            status = 'error'
-            error = result.models_error || result.models_failure_reason || '模型列表获取失败'
-          } else {
-            status = 'unavailable'
-            error = `该凭据未返回此模型（共返回 ${result.returned_models?.length ?? 0} 个模型）`
-          }
-          
-          return {
-            credential_id: cred.id,
-            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-            status,
-            error
-          }
-        } catch (e: unknown) {
-          return {
-            credential_id: cred.id,
-            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-            status: 'error' as const,
-            error: e instanceof Error ? e.message : String(e)
-          }
-        }
-      })
-    )
+    // Check which credentials have this model in the offers list
+    const results = credentials.map((cred) => {
+      // Find if this credential has an offer for the current model
+      const hasModel = offers.value.some(
+        offer => offer.credential_id === cred.id && 
+                 offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
+      )
+      
+      return {
+        credential_id: cred.id,
+        credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+        status: hasModel ? 'ok' as const : 'unavailable' as const,
+        error: hasModel ? null : '该凭据的模型列表中未找到此模型'
+      }
+    })
     
     modelCheckResults.value = results
   } catch (e: unknown) {
