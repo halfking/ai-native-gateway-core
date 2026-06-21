@@ -78,11 +78,19 @@ func parseAnalyticsMetric(raw string) (string, error) {
 // buildMatrixQuery assembles the SELECT query used by handleMatrix.
 // Extracted so it can be unit-tested without a real database.
 //
+// Axis orientation (2026-06-22 swap):
+//   - ROW  = model   (canonical, alias-collapsed). Was col before the swap.
+//   - COL  = task_type | work_type, depending on rowDim. Was row before.
+//
 // The query buckets auto requests by their L1 task_type and explicit-model
-// requests under the synthetic __specified__ task label. The column axis
+// requests under the synthetic __specified__ task label. The model axis
 // falls back from outbound_model to client_model so that explicit-model
 // requests still appear in the heatmap even when no L1/L2 rewrite
 // populated outbound_model.
+//
+// Why swap: with 50+ models and only 7-8 task types, putting models on
+// rows makes the table tall and narrow — easy to scan each model's full
+// task distribution without horizontal scroll.
 func buildMatrixQuery(rowDim, metric string) (string, error) {
 	if rowDim != "task_type" && rowDim != "work_type" {
 		return "", fmt.Errorf("row must be task_type or work_type")
@@ -105,14 +113,20 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		metricExpr = "COALESCE(SUM(cost_usd), 0)"
 	}
 
-	rowExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
-	rowNullFilter := "(task_type IS NOT NULL OR is_auto_request = FALSE)"
+	// Row = model. Falls back outbound_model -> client_model for explicit-model
+	// requests where the gateway did not rewrite the body.
+	rowExpr := "COALESCE(NULLIF(outbound_model, ''), client_model)"
+	rowNullFilter := "COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL"
+
+	// Col = task or work_type. Same effective-task logic as before; the
+	// __specified__ synthetic key still appears as a column. The col
+	// null filter is the same one used previously for the row axis;
+	// the row axis (now model) is gated by its own rowNullFilter above.
+	colExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	if rowDim == "work_type" {
-		rowExpr = `COALESCE(NULLIF(work_type, ''), 'unknown')`
-		rowNullFilter = `work_type IS NOT NULL AND work_type <> ''`
+		colExpr = `COALESCE(NULLIF(work_type, ''), 'unknown')`
 	}
 
-	outColExpr := "COALESCE(NULLIF(outbound_model, ''), client_model)"
 	return fmt.Sprintf(`
 		SELECT %s AS row_key,
 		       %s AS col_key,
@@ -126,7 +140,7 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, rowExpr, outColExpr, metricExpr, rowNullFilter, outColExpr, rowExpr, outColExpr), nil
+	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, rowExpr, colExpr), nil
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row
@@ -194,10 +208,16 @@ func buildFlowL23Query() string {
 	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
 }
 
-// handleMatrix returns a row_dim × canonical_model heatmap.
+// handleMatrix returns a canonical_model × row_dim heatmap.
 //
 // Query params: window=24h|7d, row=task_type|work_type, metric=count|success_rate|p95_ms|cost_usd
-// Column keys are canonical model names; meta.col_aliases maps canonical → raw outbound names.
+// Row keys are canonical model names (meta.row_aliases maps canonical → raw
+// outbound/client names). Column keys are task_type or work_type values
+// depending on the row query param.
+//
+// Axis orientation (2026-06-22 swap): rows = models, columns = tasks.
+// The frontend renders the matrix directly from data.rows / data.cols;
+// swapping at the source keeps the API contract aligned with the visual.
 func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -242,7 +262,9 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 
 	type cellKey struct{ row, col string }
 	cellMap := map[cellKey]float64{}
-	rawColSet := map[string]struct{}{}
+	// rawRowSet collects the model name strings (raw, pre-canonicalization)
+	// seen in the row key — the row is now the model axis (2026-06-22 swap).
+	rawRowSet := map[string]struct{}{}
 
 	for rows.Next() {
 		var rowKey, colKey string
@@ -250,15 +272,15 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		if err := rows.Scan(&rowKey, &colKey, &val); err != nil {
 			continue
 		}
-		rawColSet[colKey] = struct{}{}
+		rawRowSet[rowKey] = struct{}{}
 		cellMap[cellKey{rowKey, colKey}] = val
 	}
 
 	aliasIdx, _ := loadModelAliasIndex(ctx, h.db)
-	canonColAliases := map[string][]string{}
-	canonColSet := map[string]struct{}{}
+	canonRowAliases := map[string][]string{}
+	canonRowSet := map[string]struct{}{}
 	rawToCanon := map[string]string{}
-	for raw := range rawColSet {
+	for raw := range rawRowSet {
 		canon := raw
 		if aliasIdx != nil {
 			canon = aliasIdx.canonicalFor(raw)
@@ -267,25 +289,25 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 			canon = normalizeModelName(raw)
 		}
 		rawToCanon[raw] = canon
-		canonColSet[canon] = struct{}{}
-		canonColAliases[canon] = appendUnique(canonColAliases[canon], raw)
+		canonRowSet[canon] = struct{}{}
+		canonRowAliases[canon] = appendUnique(canonRowAliases[canon], raw)
 	}
 
-	rowSet := map[string]struct{}{}
+	colSet := map[string]struct{}{}
 	for k := range cellMap {
-		rowSet[k.row] = struct{}{}
+		colSet[k.col] = struct{}{}
 	}
-	rowKeys := make([]string, 0, len(rowSet))
-	for k := range rowSet {
-		rowKeys = append(rowKeys, k)
-	}
-	sort.Strings(rowKeys)
-
-	colKeys := make([]string, 0, len(canonColSet))
-	for k := range canonColSet {
+	colKeys := make([]string, 0, len(colSet))
+	for k := range colSet {
 		colKeys = append(colKeys, k)
 	}
 	sort.Strings(colKeys)
+
+	rowKeys := make([]string, 0, len(canonRowSet))
+	for k := range canonRowSet {
+		rowKeys = append(rowKeys, k)
+	}
+	sort.Strings(rowKeys)
 
 	cells := make([][]float64, len(rowKeys))
 	for i, rk := range rowKeys {
@@ -293,10 +315,10 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 		for j, ck := range colKeys {
 			var sum float64
 			for raw, canon := range rawToCanon {
-				if canon != ck {
+				if canon != rk {
 					continue
 				}
-				sum += cellMap[cellKey{rk, raw}]
+				sum += cellMap[cellKey{raw, ck}]
 			}
 			cells[i][j] = sum
 		}
@@ -310,7 +332,7 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 			"window":      windowLabel,
 			"metric":      metric,
 			"row":         rowDim,
-			"col_aliases": canonColAliases,
+			"row_aliases": canonRowAliases,
 		},
 	})
 }

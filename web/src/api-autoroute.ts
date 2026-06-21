@@ -203,7 +203,10 @@ export interface AnalyticsMatrix {
     window: AnalyticsWindow
     metric: AnalyticsMetric
     row?: AnalyticsRowDim
-    col_aliases?: Record<string, string[]>
+    /** Per-row (model) alias map: canonical name → raw outbound/client
+     *  names seen for that model. Surfaced as a tooltip on the row
+     *  header. (2026-06-22: was col_aliases when cols were models.) */
+    row_aliases?: Record<string, string[]>
   }
 }
 
