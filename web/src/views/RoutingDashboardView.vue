@@ -85,17 +85,12 @@ const sankeyCardHeight = computed(() =>
 
 const heatmapCardHeight = computed(() => heatmapContentHeight.value + HEATMAP_CARD_CHROME)
 
-/** Shared card height: taller of heatmap vs Sankey cards. */
-const chartHeight = computed(() =>
-  Math.max(heatmapCardHeight.value, sankeyCardHeight.value),
-)
-
 const heatmapBodyMinHeight = computed(() =>
-  Math.max(0, chartHeight.value - HEATMAP_CARD_CHROME),
+  Math.max(0, heatmapContentHeight.value),
 )
 
 const sankeySvgMinHeight = computed(() =>
-  Math.max(0, chartHeight.value - SANKEY_SECTION_HEAD_H - SANKEY_DOM_LEGEND_H),
+  Math.max(0, sankeyCardHeight.value - SANKEY_SECTION_HEAD_H - SANKEY_DOM_LEGEND_H),
 )
 
 const cellDecisions = ref<AutoRouteDecision[]>([])
@@ -652,7 +647,7 @@ onUnmounted(() => stopPoll())
           <AnalyticsKpiBar :audit="audit" />
         </div>
         <div class="analytics-charts">
-          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: heatmapCardHeight + 'px' }">
             <div class="card-toolbar">
               <div class="toolbar-left">
                 <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
@@ -692,7 +687,7 @@ onUnmounted(() => stopPoll())
               @cell-click="onMatrixCellClick"
             />
           </div>
-          <div class="card compact-card chart-card" :style="{ minHeight: chartHeight + 'px' }">
+          <div class="card compact-card chart-card" :style="{ minHeight: sankeyCardHeight + 'px' }">
             <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
             <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgMinHeight" />
           </div>
