@@ -576,9 +576,16 @@ func (e *Executor) executeAnthropicOnce(
 		req.Header.Set("X-Virtual-MAC", params.ClientID.VirtualMAC)
 	}
 
-	// Apply disguise headers (User-Agent / Accept-Language rotation).
+	// Apply disguise headers (User-Agent / Accept-Language).
+	// Slot-bound sessions get a stable UA per slot (no churn between
+	// requests). Stateless requests (no fpLease) fall back to a random
+	// pick so the pool still gets exercised.
 	if e.DisguisePool != nil {
-		for k, v := range e.DisguisePool.Headers() {
+		slotIdx := -1
+		if fpLease != nil {
+			slotIdx = fpLease.SlotIndex
+		}
+		for k, v := range e.DisguisePool.HeadersForSlot(slotIdx) {
 			req.Header.Set(k, v)
 		}
 		e.DisguisePool.MaybeRotate()
@@ -690,6 +697,7 @@ func (e *Executor) executeAnthropicOnce(
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 		}
 		if !errorsx.IsRetryable(errKind) {
 			if errorsx.IsContextLength(errKind) || shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {

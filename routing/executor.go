@@ -208,10 +208,13 @@ type Executor struct {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
 	}
-	// DisguisePool injects rotating User-Agent / Accept-Language headers.
-	// Nil disables the feature.
+	// DisguisePool injects User-Agent / Accept-Language headers.
+	// HeadersForSlot returns deterministic headers keyed by slot index
+	// (same slot → same UA, every call). Headers is the random fallback
+	// for stateless (no-slot) requests. Nil disables the feature.
 	DisguisePool interface {
 		Headers() map[string]string
+		HeadersForSlot(slot int) map[string]string
 		MaybeRotate()
 	}
 
@@ -805,8 +808,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				}
 				lastErr = execErr
 				lastKind = kind
@@ -832,6 +837,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				}
 				slog.Warn("candidate stream interrupted (non-resumable), returning error",
 					"credential_id", cand.CredentialID,
@@ -873,6 +879,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+			e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 		}
 	}
 
@@ -1285,6 +1292,23 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	// without waiting for the 30-second cache expiry. This is critical for quota exhaustion
 	// scenarios where we need to immediately exclude the exhausted credential.
 	provider.InvalidateAllCandidateCache()
+}
+
+// forceUnpinOnFatalKind clears the session pin for a credential whose kind
+// indicates the credential is permanently dead (auth revoked, quota
+// exhausted, etc.). Transient blip kinds (network/timeout/upstream-down),
+// client-bug kinds (model_not_found, tool_call_id_mismatch), and
+// provider-side congestion (KindConcurrent/KindStreamTimeout) are NOT fatal
+// to the credential, so we keep the pin for them. Concurrent calls are safe
+// because pin is keyed by (holder, credentialID).
+func (e *Executor) forceUnpinOnFatalKind(ctx context.Context, holder string, credentialID int, kind errorsx.ErrorKind) {
+	if e.FpSlots == nil || !e.FpSlots.Enabled() {
+		return
+	}
+	if !errorsx.IsCredentialFatal(kind) {
+		return
+	}
+	e.FpSlots.ForceUnpin(ctx, holder, credentialID)
 }
 
 func (e *Executor) stickyCredentialID(stickyKey string) *int {

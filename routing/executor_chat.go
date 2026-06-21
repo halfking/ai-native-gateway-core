@@ -296,10 +296,16 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 
-			// Apply disguise headers (User-Agent / Accept-Language rotation).
-			// These override any UA already set above.
+			// Apply disguise headers (User-Agent / Accept-Language).
+			// Slot-bound sessions get a stable UA per slot (no churn
+			// between requests). Stateless requests (no fpLease) fall
+			// back to a random pick so the pool still gets exercised.
 			if e.DisguisePool != nil {
-				for k, v := range e.DisguisePool.Headers() {
+				slotIdx := -1
+				if fpLease != nil {
+					slotIdx = fpLease.SlotIndex
+				}
+				for k, v := range e.DisguisePool.HeadersForSlot(slotIdx) {
 					req.Header.Set(k, v)
 				}
 				e.DisguisePool.MaybeRotate()
@@ -437,6 +443,7 @@ func (e *Executor) executeOpenAI(
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
 						fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
@@ -557,13 +564,16 @@ func (e *Executor) executeOpenAI(
 						if streamKind == errorsx.KindConcurrent {
 							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
+							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
 							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
+						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
 							"credential_id", cand.CredentialID,
 							"provider_id", cand.ProviderID,
@@ -575,6 +585,7 @@ func (e *Executor) executeOpenAI(
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
 							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
+							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 						slog.Warn("non-resumable stream interrupted",
 							"credential_id", cand.CredentialID,

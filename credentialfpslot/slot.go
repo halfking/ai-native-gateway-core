@@ -141,16 +141,27 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 	return nil, false
 }
 
-// Release frees a previously acquired slot.
+// Release frees a previously acquired slot while preserving the session pin.
+//
+// The pin survives release so the same holder's next request re-uses the same
+// slot within sessionPinTTLSeconds (30 min). If the slot was taken by another
+// holder meanwhile, acquireRedis's pin path migrates to a new free slot and
+// updates the pin atomically (see acquireSlotScript). This gives us:
+//   - stability for the common case (low contention, no credential death)
+//   - graceful migration under contention (slot can change, but only when forced)
+//   - clean cleanup of stale pins when the credential is force-unpinned
+//
+// Call ForceUnpin explicitly when a credential is dead (auth revoked, quota
+// permanent) so the next request doesn't try to re-acquire a slot in a dead
+// credential.
 func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if lease == nil || lease.Unlimited {
 		return
 	}
 	if m.client != nil {
 		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
-		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
 		released, err := releaseSlotScript.Run(ctx, m.client,
-			[]string{key, pinKey},
+			[]string{key},
 			lease.Holder,
 		).Bool()
 		if err != nil {
@@ -163,24 +174,50 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	m.releaseMemory(lease.CredentialID, lease.SlotIndex, lease.Holder)
 }
 
+// ForceUnpin removes a holder's pin for a credential, regardless of slot state.
+//
+// Called by the executor when the credential is dead (auth revoked, quota
+// permanent) so the next request doesn't try to re-acquire a slot in a dead
+// credential. The slot itself is untouched; this only clears the pinning hint.
+func (m *Manager) ForceUnpin(ctx context.Context, holder string, credentialID int) {
+	if holder == "" {
+		return
+	}
+	pinKey := pinRedisKey(holder, credentialID)
+	if m.client != nil {
+		if _, err := forceUnpinScript.Run(ctx, m.client, []string{pinKey}).Result(); err != nil {
+			slog.Debug("cred_fp_slot force-unpin redis failed", "cred", credentialID, "holder", holder, "error", err)
+		}
+	}
+	m.mu.Lock()
+	delete(m.memPins, pinKey)
+	m.mu.Unlock()
+}
+
 var releaseSlotScript = redis.NewScript(`
 	local slotKey = KEYS[1]
-	local pinKey = KEYS[2]
 	local holder = ARGV[1]
-	
+
 	-- Check if slot is owned by this holder
 	local current = redis.call('GET', slotKey)
 	if current ~= holder then
 		return false
 	end
-	
-	-- Delete slot and pin
+
+	-- Delete only the slot; pin is preserved so the holder's next
+	-- request can re-acquire the same slot (or migrate if taken).
 	redis.call('DEL', slotKey)
-	if pinKey ~= "" then
-		redis.call('DEL', pinKey)
-	end
-	
+
 	return true
+`)
+
+var forceUnpinScript = redis.NewScript(`
+	local pinKey = KEYS[1]
+	if redis.call('EXISTS', pinKey) == 0 then
+		return 0
+	end
+	redis.call('DEL', pinKey)
+	return 1
 `)
 
 // Stats returns occupancy snapshot for admin dashboards.
@@ -388,9 +425,8 @@ func (m *Manager) releaseMemory(credentialID, slotIndex int, holder string) {
 	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
 	if cur, ok := m.memSlots[key]; ok && cur.holder == holder {
 		delete(m.memSlots, key)
-		// H-5: also remove the session pin so the holder isn't re-pinned to a
-		// stale slot on the next Acquire (mirrors Python _release_memory fix)
-		delete(m.memPins, pinRedisKey(holder, credentialID))
+		// Pin survives release; expires naturally via TTL in
+		// purgeExpiredLocked, or is cleared explicitly by ForceUnpin.
 	}
 }
 
