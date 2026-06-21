@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/memora"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -124,6 +125,26 @@ type QualityProcessNonStreamFunc func(body []byte, mode string) (outBody []byte,
 // path can run the same checks as the non-stream path.
 type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
 
+// IRConverter is the unified protocol-conversion interface (Phase B, 2026-06-22).
+// It replaces the 6 scattered callbacks (ChatToAnthropic, AnthropicToOpenAI,
+// AnthropicToOpenAIStream, AnthropicToChatResponse, SanitizeAnthropicTools,
+// NormalizeOpenAITools) with a single Parse→IR→Serialize pipeline.
+//
+// Protocol coverage:
+//   - ParseOpenAI: OpenAI Chat Completions → IR
+//   - ParseAnthropic: Anthropic Messages → IR
+//   - SerializeOpenAI: IR → OpenAI Chat Completions (for Q2: anthropic client → openai upstream)
+//   - SerializeAnthropic: IR → Anthropic Messages (for Q3: openai client → anthropic upstream)
+//
+// Complexity reduced from O(N²) to O(N): adding a new protocol only requires
+// one Parser + one Serializer.
+type IRConverter interface {
+	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
+	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
+	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
+	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
+}
+
 // RequestLogEmitter (2026-06-20) is the minimum interface needed by
 // runAsyncRetry to update request_logs when a backgrounded retry
 // eventually succeeds. Implemented by *telemetry.Client in
@@ -159,6 +180,11 @@ type Executor struct {
 	// qualityFixModeFromContext. Wired from main.go
 	// (relay.SetQualityFixModeOnContext wrapped as a func).
 	QualitySetMode QualitySetModeFunc
+	// IR (Phase B, 2026-06-22) is the unified protocol converter.
+	// When non-nil, the executor uses Parse→IR→Serialize instead of
+	// the 6 scattered callbacks (ChatToAnthropic, AnthropicToOpenAI, etc).
+	// When nil (default), falls back to existing callback wiring.
+	IR IRConverter
 	// AnthropicPassthroughStream is the Q4 Anthropic SSE forwarder with
 	// side-channel audit capture. Wired from main.go (relay.StreamAnthropicPassthrough).
 	AnthropicPassthroughStream AnthropicPassthroughFunc
