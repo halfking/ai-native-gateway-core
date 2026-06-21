@@ -65,6 +65,13 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
+function onBlur() {
+  // Vue template inline expressions don't resolve the global setTimeout,
+  // so the blur handler is wrapped in a script-defined function. 150ms
+  // delay lets the user click a suggestion before the dropdown closes.
+  setTimeout(() => (showSuggest.value = false), 150)
+}
+
 function nsHint(ns: string) {
   draft.value = `${ns}:`
 }
@@ -86,7 +93,7 @@ onMounted(loadTags)
         placeholder="输入 <ns>:<值>，Enter 添加"
         @keydown="onKey"
         @focus="showSuggest = true"
-        @blur="setTimeout(() => (showSuggest = false), 150)"
+        @blur="onBlur"
       />
     </div>
     <div class="ns-hints">
