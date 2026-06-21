@@ -285,7 +285,7 @@ function closeDrawer() {
   modelCheckResults.value = null  // Clear check results when closing
 }
 
-// Phase 3.2: Check model availability across all credentials (2-step)
+// Phase 3.2: Check model availability across all credentials
 async function checkModelAcrossCredentials() {
   if (!selected.value) return
   
@@ -296,13 +296,13 @@ async function checkModelAcrossCredentials() {
     const credentials = await getProviderCredentials(props.providerId)
     const modelName = selected.value.raw_model_name
     
-    // Check each credential
+    // Check each credential concurrently
     const results = await Promise.all(
       credentials.map(async (cred) => {
         // Step 1: Static check - does the credential have this model in offers?
         const offerMatch = offers.value.find(
           offer => offer.credential_id === cred.id && 
-                   offer.raw_model_name === modelName  // Exact match
+                   offer.raw_model_name.toLowerCase() === modelName.toLowerCase()  // Case-insensitive
         )
         
         if (!offerMatch) {
@@ -315,28 +315,13 @@ async function checkModelAcrossCredentials() {
           }
         }
         
-        // Step 2: Dynamic check - test chat call with this specific model
+        // Step 2: Dynamic check - use checkCredential to test this credential
         try {
-          // Use the gateway's chat endpoint to test this specific credential + model
-          const testPayload = {
-            model: modelName,
-            messages: [{ role: 'user', content: 'ping' }],
-            max_tokens: 5
-          }
+          const result = await checkCredential(props.providerId, cred.id)
           
-          // Make a test request through the provider's credential
-          // Note: We need to use the credential's API key and test directly
-          const response = await fetch('/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Provider-ID': String(props.providerId),
-              'X-Credential-ID': String(cred.id),
-            },
-            body: JSON.stringify(testPayload)
-          })
-          
-          if (response.ok) {
+          // checkCredential performs health check and returns probe results
+          // Check if probe was successful
+          if (result.probe_ok) {
             return {
               credential_id: cred.id,
               credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
@@ -344,12 +329,14 @@ async function checkModelAcrossCredentials() {
               error: null
             }
           } else {
-            const errorData = await response.json().catch(() => ({}))
+            // Probe failed - get error details
+            const error = result.probe_error || result.health_error || '探测失败'
+            const statusCode = result.probe_http_status || result.response_status
             return {
               credential_id: cred.id,
               credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
               status: 'error' as const,
-              error: `调用失败: ${errorData.error?.message || response.statusText} (HTTP ${response.status})`
+              error: `调用失败: ${error}${statusCode ? ` (HTTP ${statusCode})` : ''}`
             }
           }
         } catch (e: unknown) {
