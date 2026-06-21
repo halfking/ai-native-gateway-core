@@ -132,23 +132,36 @@ func AnalyzeTasks(msgs []map[string]any) *TaskAnalysisResult {
 	}
 
 	// Build task boundaries from completion signals
+	// Audit P1 fix (2026-06-22): boundary 应由 completion signal 触发,
+	// 不是 new_task signal. 修复前 bug: 同消息含 "done" + "next task" 时,
+	// new_task 信号覆盖 completion 信号, 导致 CompletedCount=0.
+	// 修复后: completion 信号触发 boundary, new_task 只设 lastEnd.
+	// 同时防御: completion signal MessageIdx <= lastEnd 时跳过 (避免
+	// end < start 的负向 boundary).
 	var boundaries []TaskBoundary
 	lastEnd := -1
 
 	for _, signal := range completionSignals {
-		if !signal.IsCompletion {
-			// New task starts here
-			if lastEnd >= 0 {
-				boundaries = append(boundaries, TaskBoundary{
-					StartIdx:   lastEnd + 1,
-					EndIdx:     signal.MessageIdx - 1,
-					Completed:  true,
-					Description: signal.Signal,
-				})
-				result.CompletedCount++
+		if signal.IsCompletion {
+			// Skip if this completion is at or before the current boundary end
+			// (can happen when same message produces both completion and new_task signals)
+			if signal.MessageIdx <= lastEnd+1 {
+				continue
 			}
+			// Completion signal: previous task ends here
+			boundaries = append(boundaries, TaskBoundary{
+				StartIdx:   lastEnd + 1,
+				EndIdx:     signal.MessageIdx - 1,
+				Completed:  true,
+				Description: signal.Signal,
+			})
+			result.CompletedCount++
 			lastEnd = signal.MessageIdx
 			continue
+		}
+		// new_task signal: just update lastEnd if not set
+		if lastEnd < 0 {
+			lastEnd = signal.MessageIdx
 		}
 	}
 
