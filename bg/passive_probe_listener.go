@@ -119,7 +119,8 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		  AND rl.error_kind IN (
 		      'model_not_found', 'quota', 'quota_periodic', 'quota_balance',
 		      'quota_permanent', 'rate_limit',
-		      'auth', 'auth_revoked', 'upstream_down'
+		      'auth', 'auth_revoked', 'upstream_down',
+		      'transient', 'timeout', 'network', 'concurrent', 'stream_timeout'
 		  )
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
