@@ -8,7 +8,7 @@
 --      management project, untouched).
 --   2. settings_audit lives in 023_settings_audit.sql (same).
 --   3. tenant_tool_policies, tool_call_events, tool_usage_stats live
---      in 025_tool_registry_enhancements.sql (tool-registry team,
+--      in 030_tool_registry_enhancements.sql (tool-registry team,
 --      also untouched).
 --
 -- Per the deployment protocol for Round 48, we ship a single RLS-
