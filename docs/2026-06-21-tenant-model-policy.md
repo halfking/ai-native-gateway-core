@@ -3,7 +3,7 @@
 > **Status**: implemented, awaiting 184 k3s deploy.
 > **Author**: Kaixuan DevOps
 > **Reviewer**: TBD
-> **Round**: 48 (per docs/llm-gateway-go/multi-tenant-2026-06-15.md numbering)
+> **Round**: 48 (主仓库 `docs/llm-gateway-go/multi-tenant-2026-06-15.md` 计数延续; 24 + 24 = 48, 详见主仓库 AGENTS.md §多租户审计)
 
 ---
 
@@ -407,7 +407,7 @@ From the pre-implementation audit (5 blocking, 4 high-risk):
 
 ## 15. References
 
-- `docs/multi-tenant-standards.md` — Pattern A, RLS, audit
+- `主仓库 docs/multi-tenant-standards.md` — Pattern A, RLS, audit (跨仓库引用, 子模块内无此文件)
   pattern (this work is a Pattern A application)
 - `docs/services-onboarding-checklist.md` — checklist this PR
   followed
