@@ -61,6 +61,12 @@ func shouldHeuristicCompact(status int, kind errorsx.ErrorKind, bodyLen int, con
 	if kind == errorsx.KindConcurrent || kind == errorsx.KindModelNotFound {
 		return false
 	}
+	// 413 Request Entity Too Large is a strong signal of context length issue.
+	// Even if the body doesn't match our contextLengthRe regex, the HTTP status
+	// code itself is authoritative — we should attempt compression recovery.
+	if status == 413 {
+		return true
+	}
 	if contextWindow == nil || *contextWindow <= 0 {
 		return false
 	}

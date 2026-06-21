@@ -14,10 +14,10 @@ package admin
 
 import (
 	"context"
-	"log/slog"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -404,12 +404,18 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 // (last 7 days). Output:
 //
 //	{
-//	  "total_auto_requests":   int,
-//	  "success_rate":          float64,
-//	  "task_distribution":     { "code": 120, ... },
-//	  "profile_distribution":  { "smart": 100, ... },
-//	  "top_chosen_models":     [{ "model": "...", "count": 100 }, ...]
+//	  "total_auto_requests":          int,   // auto requests only
+//	  "specified_model_requests":     int,   // client specified a model (non-auto)
+//	  "total_requests":               int,   // auto + specified
+//	  "success_rate":                 float64, // over total_requests
+//	  "task_distribution":            { "code": 120, "__specified__": 80, ... },
+//	  "profile_distribution":         { "smart": 100, ... },
+//	  "top_chosen_models":            [{ "model": "...", "count": 100 }, ...]
 //	}
+//
+// Task distribution spans both L1-classified task_types (auto) and the
+// synthetic __specified__ key (explicit-model requests), giving a single
+// uniform view of routing volume.
 func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -420,37 +426,52 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 
 	out := map[string]interface{}{}
 
-	// Total + success rate
-	var total, successes int
+	// Total + success rate — over BOTH auto and specified-model requests
+	// so the headline KPI reflects actual gateway volume.
+	var total, successes, totalAuto, totalSpecified int
 	err := h.db.QueryRow(ctx, `
-		SELECT COUNT(*),
-		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)
+		SELECT
+		  COUNT(*),
+		  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN NOT is_auto_request THEN 1 ELSE 0 END), 0)
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'
-	`).Scan(&total, &successes)
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+	`).Scan(&total, &successes, &totalAuto, &totalSpecified)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
 	}
-	out["total_auto_requests"] = total
+	out["total_requests"] = total
+	out["total_auto_requests"] = totalAuto
+	out["specified_model_requests"] = totalSpecified
 	if total > 0 {
 		out["success_rate"] = float64(successes) / float64(total)
 	} else {
 		out["success_rate"] = 0.0
 	}
 
-	// Task distribution
+	// Task distribution — unified view spanning L1 task_types and the
+	// synthetic __specified__ key. Auto-only profile distribution
+	// follows below.
 	taskDist := map[string]int{}
-	rows, err := h.db.Query(ctx, `
-		SELECT COALESCE(task_type, 'unknown') AS task_type, COUNT(*)
+	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s AS task_type, COUNT(*)
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
 		GROUP BY task_type
 		ORDER BY COUNT(*) DESC
 		LIMIT 20
-	`)
+	`, taskExpr))
 	if err == nil {
 		for rows.Next() {
 			var t string
@@ -486,14 +507,18 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		out["profile_distribution"] = profileDist
 	}
 
-	// Top chosen models
+	// Top chosen models — union auto and specified so users can see
+	// which explicit models are consuming volume.
 	rows, err = h.db.Query(ctx, `
-		SELECT outbound_model, COUNT(*) AS c
+		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'
-		  AND outbound_model IS NOT NULL
-		GROUP BY outbound_model
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY m
 		ORDER BY c DESC
 		LIMIT 10
 	`)

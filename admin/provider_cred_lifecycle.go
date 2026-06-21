@@ -28,6 +28,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
@@ -71,6 +73,7 @@ func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	h.db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3`, req.LifecycleStatus, credID, providerID)
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -83,6 +86,7 @@ func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Req
 		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
 		WHERE id = $1 AND provider_id = $2
 	`, credID, providerID)
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
 
@@ -93,6 +97,7 @@ func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, p
 		UPDATE credentials SET quota_state = 'ok', quota_recover_at = NULL
 		WHERE id = $1 AND provider_id = $2
 	`, credID, providerID)
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
 
@@ -239,6 +244,7 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		return
 	}
 	recoveredCreds := int(credTag.RowsAffected())
+	provider.InvalidateAllCandidateCache()
 
 	offerTag, err := h.db.Exec(ctx, `
 		UPDATE model_offers

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -320,6 +321,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	if req.BalanceUSD != nil {
 		h.db.Exec(ctx, `UPDATE credentials SET balance_usd = $1 WHERE id = $2 AND provider_id = $3`, *req.BalanceUSD, credID, providerID)
 	}
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -331,5 +333,6 @@ func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, provi
 		writeError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
 }

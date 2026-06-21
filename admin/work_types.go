@@ -115,9 +115,12 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(work_type, 'unknown'), COUNT(*)
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '24 hours'
+		WHERE ts >= NOW() - INTERVAL '24 hours'
 		  AND work_type IS NOT NULL AND work_type <> ''
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
 		GROUP BY work_type
 	`)
 	if err == nil {
@@ -131,15 +134,21 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		rows.Close()
 	}
 
-	// L1 task_type distribution (mapped to work types)
+	// L1 task_type distribution (mapped to work types). Includes
+	// __specified__ for explicit-model requests so the L1-task view
+	// is also complete.
+	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
-	rows, err = h.db.Query(ctx, `
-		SELECT COALESCE(task_type, 'unknown'), COUNT(*)
+	rows, err = h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s, COUNT(*)
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '24 hours'
+		WHERE ts >= NOW() - INTERVAL '24 hours'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
 		GROUP BY task_type
-	`)
+	`, taskExpr))
 	if err == nil {
 		for rows.Next() {
 			var k string
@@ -152,12 +161,16 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	out["by_l1_task"] = l1Dist
 
-	var totalAuto int
+	var totalAuto, totalSpec int
 	_ = h.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM request_logs
-		WHERE is_auto_request = TRUE AND ts >= NOW() - INTERVAL '24 hours'
-	`).Scan(&totalAuto)
+		SELECT
+		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
+		  COALESCE(SUM(CASE WHEN NOT is_auto_request AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
+		FROM request_logs
+		WHERE ts >= NOW() - INTERVAL '24 hours'
+	`).Scan(&totalAuto, &totalSpec)
 	out["total_auto"] = totalAuto
+	out["total_specified"] = totalSpec
 
 	// Build per-work-type stats from config + L1 mapping
 	type wtRow struct {
@@ -194,26 +207,29 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 			count = row.CountL1
 		}
 		byWT[row.Key] = map[string]interface{}{
-			"key":           row.Key,
-			"label":         row.Label,
-			"category":      row.Category,
-			"l1_task_type":  row.L1TaskType,
-			"count_24h":     count,
-			"count_direct":  row.CountDirect,
+			"key":            row.Key,
+			"label":          row.Label,
+			"category":       row.Category,
+			"l1_task_type":   row.L1TaskType,
+			"count_24h":      count,
+			"count_direct":   row.CountDirect,
 			"count_l1_proxy": row.CountL1,
 		}
 	}
 	out["by_work_type"] = byWT
 
-	// Top models 24h
+	// Top models 24h (union auto + specified, with client_model fallback)
 	topModels := make([]map[string]interface{}, 0)
 	rows, err = h.db.Query(ctx, `
-		SELECT outbound_model, COUNT(*) AS c
+		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
 		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '24 hours'
-		  AND outbound_model IS NOT NULL
-		GROUP BY outbound_model
+		WHERE ts >= NOW() - INTERVAL '24 hours'
+		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY m
 		ORDER BY c DESC
 		LIMIT 10
 	`)
@@ -265,28 +281,28 @@ func (h *WorkTypeHandlers) handleSyncFromACC(w http.ResponseWriter, r *http.Requ
 }
 
 type workTypeConfig struct {
-	Key              string     `json:"key"`
-	Label            string     `json:"label"`
-	Category         string     `json:"category"`
-	L1TaskType       string     `json:"l1_task_type"`
-	DefaultProfile   string     `json:"default_profile"`
-	Tags             []string   `json:"tags"`
-	PromptKeywords   []string   `json:"prompt_keywords"`
-	SystemPrompt     *string    `json:"system_prompt,omitempty"`
-	ACCTaskType      *string    `json:"acc_task_type,omitempty"`
-	Enabled          bool       `json:"enabled"`
-	SortOrder        int        `json:"sort_order"`
-	SyncedFromACCAt  *time.Time `json:"synced_from_acc_at,omitempty"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	ModelRoutes      []modelRoute `json:"model_routes,omitempty"`
+	Key             string       `json:"key"`
+	Label           string       `json:"label"`
+	Category        string       `json:"category"`
+	L1TaskType      string       `json:"l1_task_type"`
+	DefaultProfile  string       `json:"default_profile"`
+	Tags            []string     `json:"tags"`
+	PromptKeywords  []string     `json:"prompt_keywords"`
+	SystemPrompt    *string      `json:"system_prompt,omitempty"`
+	ACCTaskType     *string      `json:"acc_task_type,omitempty"`
+	Enabled         bool         `json:"enabled"`
+	SortOrder       int          `json:"sort_order"`
+	SyncedFromACCAt *time.Time   `json:"synced_from_acc_at,omitempty"`
+	UpdatedAt       time.Time    `json:"updated_at"`
+	ModelRoutes     []modelRoute `json:"model_routes,omitempty"`
 }
 
 type modelRoute struct {
-	ID             int     `json:"id,omitempty"`
-	CanonicalName  string  `json:"canonical_name"`
-	Weight         float64 `json:"weight"`
-	MinScore       float64 `json:"min_score"`
-	Enabled        bool    `json:"enabled"`
+	ID            int     `json:"id,omitempty"`
+	CanonicalName string  `json:"canonical_name"`
+	Weight        float64 `json:"weight"`
+	MinScore      float64 `json:"min_score"`
+	Enabled       bool    `json:"enabled"`
 }
 
 func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request) {
