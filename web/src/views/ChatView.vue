@@ -152,7 +152,7 @@ function sessionListModelLabel(s: (typeof sessions.value)[0]): string {
   return formatSessionModelLabel(s, modelDisplayMap.value)
 }
 
-function stripFailedAssistantTail(msgs: { role: string; content: string }[]) {
+function stripFailedAssistantTail<T extends { role: string; content: string }>(msgs: T[]): T[] {
   const copy = [...msgs]
   const last = copy[copy.length - 1]
   if (last?.role === 'assistant' && (!last.content || last.content.startsWith('错误：'))) {

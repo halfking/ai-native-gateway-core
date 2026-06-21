@@ -78,7 +78,7 @@ async function save() {
     let parsed: any
     // Smart parsing based on type
     if (selected.value.type === 'bool') {
-      parsed = editBuffer.value === 'true' || editBuffer.value === true
+      parsed = editBuffer.value === 'true'
     } else if (selected.value.type === 'int' || selected.value.type === 'float') {
       parsed = Number(editBuffer.value)
       if (isNaN(parsed)) {

@@ -411,6 +411,7 @@ const API = '/api/pricing'
 interface Offer {
   offer_id: number
   raw_model_name: string
+  canonical_name?: string | null
   unit_price_in_per_1m: number | null
   unit_price_out_per_1m: number | null
   cache_read_price_per_1m: number | null

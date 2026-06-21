@@ -24,7 +24,7 @@ const keys = ref<TenantKey[]>([])
 const stats = ref<TenantStats | null>(null)
 const loading = ref(false)
 const error = ref('')
-const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders'>('overview')
+const activeTab = ref<'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders' | 'model-policies'>('overview')
 const statsDays = ref(7)
 const showEdit = ref(false)
 const maasWallet = ref<MaasWallet | null>(null)
@@ -179,7 +179,7 @@ function ledgerTypeLabel(t: string) {
   return MAAS_LEDGER_TYPE_LABELS[t] || t
 }
 
-async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders') {
+async function switchTab(t: 'overview' | 'users' | 'keys' | 'stats' | 'wallet' | 'ledger' | 'orders' | 'model-policies') {
   activeTab.value = t
   if (t === 'users' && users.value.length === 0) await loadUsers()
   if (t === 'keys' && keys.value.length === 0) await loadKeys()

@@ -102,6 +102,12 @@ export interface ProbeResult {
   latency_ms: number
   reply?: string
   error?: string
+  // Optional — backend's /routing/probe response doesn't currently
+  // return this field, but WorkTypesView references it as a v-if guard
+  // (which means the dependent span is never rendered). Kept optional
+  // so the TS check passes; UI behavior is unchanged. See v6.0 audit
+  // followup notes.
+  model_name?: string
 }
 
 export interface RoutingResolveResponse {

@@ -92,7 +92,7 @@ async function runDiagnose() {
   diagError.value = ''
   diagResult.value = null
   try {
-    diagResult.value = await diagnoseProvider(providerId.value, { force: true })
+    diagResult.value = await diagnoseProvider(providerId.value, { force: true }) as never
   } catch (e: unknown) {
     diagError.value = e instanceof Error ? e.message : '诊断失败'
   } finally {

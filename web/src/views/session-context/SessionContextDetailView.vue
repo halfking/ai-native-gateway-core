@@ -424,7 +424,7 @@ watch(
             <span class="badge badge-blue">{{ sourceLabel(block.source) }}</span>
             <span v-if="block.kind === 'json'" class="badge badge-purple">JSON</span>
             <span v-if="block.score" class="badge badge-green">{{ fmtScore(block.score) }}</span>
-            <span v-for="t in (block.tags || [])" :key="t" :class="'badge ' + tagClass(block.tags)">{{ t }}</span>
+            <span v-for="t in (block.tags || [])" :key="t" :class="'badge ' + tagClass(block.tags ?? null)">{{ t }}</span>
           </div>
           <pre v-if="block.kind === 'json'" class="json-block">{{ block.text }}</pre>
           <div v-else class="block-body">{{ block.text }}</div>
