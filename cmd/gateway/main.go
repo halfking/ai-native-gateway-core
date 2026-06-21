@@ -577,6 +577,20 @@ routingExec.AnthropicToOpenAIStream = func(
 		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 
+	// ── Request WAL (Request Logger) ───────────────────────────────────────
+	// 2026-06-22: Synchronous initial log + async batch updates for request lifecycle.
+	// Uses same DB pool as telemetryClient. Disabled if env var LLM_GATEWAY_REQUEST_WAL_DISABLE=true.
+	if dbConn != nil && dbConn.Enabled() && os.Getenv("LLM_GATEWAY_REQUEST_WAL_DISABLE") != "true" {
+		requestLogger := telemetry.NewRequestLogger(dbConn.Pool(), &telemetry.RequestLoggerConfig{
+			QueueSize:    10000,
+			BatchSize:    50,
+			FlushTimeout: 100 * time.Millisecond,
+			Enabled:      true,
+		})
+		chatHandler.SetRequestLogger(requestLogger)
+		slog.Info("request WAL enabled", "queue_size", 10000, "batch_size", 50)
+	}
+
 	// v3 (2026-06-19) session-level intelligent compression.
 	// Builds SessionCache (L1+L2+L3) and SessionCompressor (orchestrator),
 	// then wires them into the chat handler. Feature-flagged via

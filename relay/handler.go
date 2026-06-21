@@ -1239,6 +1239,44 @@ if convErr != nil {
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody, logCtx)
+	
+	// ── Request WAL: async update on execution success ─────────────
+	if h.requestLogger != nil && result != nil {
+		var pid, cid *int64
+		if result.Candidate.ProviderID > 0 {
+			p := int64(result.Candidate.ProviderID)
+			pid = &p
+		}
+		if result.Candidate.CredentialID > 0 {
+			c := int64(result.Candidate.CredentialID)
+			cid = &c
+		}
+		
+		// Extract token counts from streamCapture if available
+		var promptTokens, completionTokens int
+		if streamCapture != nil {
+			m := streamCapture.SummaryAsMap()
+			if pt, ok := m["prompt_tokens"].(int); ok {
+				promptTokens = pt
+			}
+			if ct, ok := m["completion_tokens"].(int); ok {
+				completionTokens = ct
+			}
+		}
+		
+		completedAt := time.Now()
+		h.requestLogger.Update(&telemetry.LogUpdate{
+			RequestID:            requestID,
+			Stage:                telemetry.StageCompleted,
+			Status:               telemetry.StatusSuccess,
+			UpstreamProviderID:   pid,
+			UpstreamCredentialID: cid,
+			CompletionTokens:     completionTokens,
+			PromptTokens:         promptTokens,
+			CompletedAt:          completedAt,
+		})
+	}
+	
 	markLogged()
 }
 
