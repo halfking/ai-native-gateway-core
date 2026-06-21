@@ -288,6 +288,19 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
+		// 2026-06-21 enhancement: Early coarse filter to drop OpenAI-format
+		// data before JSON parsing. This catches the glm-5.2 empty choices
+		// issue confirmed in production testing where the upstream sends
+		// {"choices":[],"usage":{...}} blocks at stream end.
+		// See openai_format_detector.go for detection logic.
+		if isOpenAIFormatData(data) {
+			slog.Warn("anthropic_to_openai: detected OpenAI-format data, dropping",
+				"event_type", eventType,
+				"data_preview", truncateForLog(string(data), 100),
+				"request_id", requestID)
+			continue
+		}
+
 		var ev sseAnthropicEvent
 		if err := json.Unmarshal(data, &ev); err != nil {
 			slog.Warn("anthropic_to_openai: malformed event JSON",
