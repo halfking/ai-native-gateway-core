@@ -768,9 +768,12 @@ routingExec.AnthropicToOpenAIStream = func(
 				}
 				modelProbe.Start(context.Background())
 
-				// v5 (2026-06-20): Layer 5 passive probe observer.
-				// Scans request_logs every 30s for failures and updates passive_probe_state.
-				passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool())
+				// v6 (2026-06-22): Layer 5 passive probe observer.
+				// Scans request_logs every 30s for failures, promotes to
+				// reviewing, and after the 5-min observation window resolves:
+				// still-failing → mark unreachable; recovered → clear.
+				// stateWriter lets it write availability_state='unreachable'.
+				passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credentialstate.NewWriter(dbConn.Pool()))
 				passiveProbe.Start(context.Background())
 			}
 
