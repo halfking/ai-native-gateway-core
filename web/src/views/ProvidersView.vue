@@ -70,7 +70,7 @@ const credentialStatuses: Array<{ value: CredentialStatus; label: string }> = [
   { value: 'disabled', label: '停用' },
 ]
 
-function providerChannelLabel(category: string | undefined): { label: string; cls: string } {
+function providerChannelLabel(category: string | null | undefined): { label: string; cls: string } {
   if (category === 'official') return { label: '原厂', cls: 'badge-blue' }
   if (!category) return { label: '未知', cls: 'badge-gray' }
   return { label: '中转', cls: 'badge-orange' }
@@ -495,7 +495,7 @@ async function openDiagnose(prov: Provider) {
   diagnoseLoading.value = true
   try {
     const r = await diagnoseProvider(prov.id, { force: true })
-    diagnoseResult.value = r
+    diagnoseResult.value = r as never
   } catch (e: unknown) {
     diagnoseError.value = e instanceof Error ? e.message : '诊断失败'
   } finally {
