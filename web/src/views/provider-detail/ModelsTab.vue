@@ -296,86 +296,72 @@ async function checkModelAcrossCredentials() {
     const credentials = await getProviderCredentials(props.providerId)
     const modelName = selected.value.raw_model_name
     
-    // Step 1: Static check - does the credential have this model in offers?
-    const staticResults = credentials.map((cred) => {
-      const hasModel = offers.value.some(
-        offer => offer.credential_id === cred.id && 
-                 offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
-      )
-      return {
-        credential_id: cred.id,
-        credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-        hasModel
-      }
-    })
-    
-    // Filter credentials that have the model
-    const credsWithModel = staticResults.filter(r => r.hasModel)
-    
-    if (credsWithModel.length === 0) {
-      // No credential has this model
-      modelCheckResults.value = staticResults.map(r => ({
-        credential_id: r.credential_id,
-        credential_label: r.credential_label,
-        status: 'unavailable' as const,
-        error: '该凭据的模型列表中未找到此模型'
-      }))
-      return
-    }
-    
-    // Step 2: Dynamic check - test chat with those credentials
-    // Use diagnoseProvider to test actual chat calls
-    const diagnoseResult = await diagnoseProvider(props.providerId, { force: true })
-    
-    const results = staticResults.map((r) => {
-      if (!r.hasModel) {
-        return {
-          credential_id: r.credential_id,
-          credential_label: r.credential_label,
-          status: 'unavailable' as const,
-          error: '该凭据的模型列表中未找到此模型'
+    // Check each credential
+    const results = await Promise.all(
+      credentials.map(async (cred) => {
+        // Step 1: Static check - does the credential have this model in offers?
+        const offerMatch = offers.value.find(
+          offer => offer.credential_id === cred.id && 
+                   offer.raw_model_name === modelName  // Exact match
+        )
+        
+        if (!offerMatch) {
+          // Not in offers list
+          return {
+            credential_id: cred.id,
+            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            status: 'unavailable' as const,
+            error: '该凭据的模型列表中未找到此模型'
+          }
         }
-      }
-      
-      // Find chat probe result for this credential
-      const credResult = diagnoseResult.credentials?.find(
-        (c: any) => c.credential_id === r.credential_id
-      )
-      
-      if (!credResult) {
-        return {
-          credential_id: r.credential_id,
-          credential_label: r.credential_label,
-          status: 'unavailable' as const,
-          error: '未找到诊断结果'
+        
+        // Step 2: Dynamic check - test chat call with this specific model
+        try {
+          // Use the gateway's chat endpoint to test this specific credential + model
+          const testPayload = {
+            model: modelName,
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 5
+          }
+          
+          // Make a test request through the provider's credential
+          // Note: We need to use the credential's API key and test directly
+          const response = await fetch('/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Provider-ID': String(props.providerId),
+              'X-Credential-ID': String(cred.id),
+            },
+            body: JSON.stringify(testPayload)
+          })
+          
+          if (response.ok) {
+            return {
+              credential_id: cred.id,
+              credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+              status: 'ok' as const,
+              error: null
+            }
+          } else {
+            const errorData = await response.json().catch(() => ({}))
+            return {
+              credential_id: cred.id,
+              credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+              status: 'error' as const,
+              error: `调用失败: ${errorData.error?.message || response.statusText} (HTTP ${response.status})`
+            }
+          }
+        } catch (e: unknown) {
+          return {
+            credential_id: cred.id,
+            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            status: 'error' as const,
+            error: `测试请求失败: ${e instanceof Error ? e.message : String(e)}`
+          }
         }
-      }
-      
-      // Check chat probe status
-      const chatProbe = credResult.chat_probe
-      if (chatProbe && chatProbe.status_code === 200) {
-        return {
-          credential_id: r.credential_id,
-          credential_label: r.credential_label,
-          status: 'ok' as const,
-          error: null
-        }
-      } else if (chatProbe && chatProbe.error) {
-        return {
-          credential_id: r.credential_id,
-          credential_label: r.credential_label,
-          status: 'error' as const,
-          error: `调用失败: ${chatProbe.error} (HTTP ${chatProbe.status_code || 'N/A'})`
-        }
-      } else {
-        return {
-          credential_id: r.credential_id,
-          credential_label: r.credential_label,
-          status: 'error' as const,
-          error: '调用测试未完成或失败'
-        }
-      }
-    })
+      })
+    )
     
     modelCheckResults.value = results
   } catch (e: unknown) {
