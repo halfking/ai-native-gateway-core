@@ -1,5 +1,5 @@
 -- Phase 3: Tool Registry Extensions - Tenant Isolation and Tool IDs
--- Migration: 024_tool_registry_extensions.sql
+-- Migration: 028_tool_registry_extensions.sql
 -- Date: 2026-06-21
 
 BEGIN;

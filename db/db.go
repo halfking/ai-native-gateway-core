@@ -999,10 +999,20 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 			DROP POLICY IF EXISTS tenant_isolation_tool_usage_stats ON public.tool_usage_stats;
 			CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats
 			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+			-- 2026-06-21 audit: tool_registry also has tenant_id column
+			-- (added in 028_tool_registry_extensions.sql) but no RLS policy.
+			-- Without RLS, any tenant can SELECT/INSERT/UPDATE another tenant's
+			-- tool_registry rows. Idempotent: drop-if-exists + recreate.
+			ALTER TABLE tool_registry ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_tool_registry ON public.tool_registry;
+			CREATE POLICY tenant_isolation_tool_registry ON public.tool_registry
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text
+			           OR (tenant_id) IS NULL OR (tenant_id) = 'default');
 		`)
 		if err != nil {
 			return err
 		}
-		slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats)")
+		slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
 		return nil
 	}
