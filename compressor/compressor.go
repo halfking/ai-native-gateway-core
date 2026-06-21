@@ -39,12 +39,18 @@ import (
 //   ModeOff           (0)  → never compress
 //   ModeAutoThreshold (1)  → pre-request gate, dynamic threshold
 //   ModeOn4xx         (2)  → only after upstream context_length_exceeded 4xx
+//   ModeDeltaOnly     (3)  → v4: only delta-append, no compression
+//   ModeSmart         (4)  → v4: intelligent (strip + task-analysis + summary)
+//   ModeAggressive    (5)  → v4: always strip + compress when possible
 type Mode int
 
 const (
 	ModeOff Mode = iota
 	ModeAutoThreshold
 	ModeOn4xx
+	ModeDeltaOnly
+	ModeSmart
+	ModeAggressive
 )
 
 // String implements fmt.Stringer for logging / metrics labels.
@@ -56,19 +62,26 @@ func (m Mode) String() string {
 		return "auto_threshold"
 	case ModeOn4xx:
 		return "on_4xx"
+	case ModeDeltaOnly:
+		return "delta_only"
+	case ModeSmart:
+		return "smart"
+	case ModeAggressive:
+		return "aggressive"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(m))
 	}
 }
 
-// envMode reads LLM_GATEWAY_COMPRESSION_MODE (v7 §2). Falls back to
-// ModeOn4xx (the default per user Q1) on parse error or unset.
+// envMode reads LLM_GATEWAY_COMPRESSION_MODE (v7 §2 + v4).
+// Falls back to ModeSmart (v4 default) on parse error or unset.
 //
-// 0 → ModeOff, 1 → ModeAutoThreshold, 2 → ModeOn4xx.
+// 0 → ModeOff, 1 → ModeAutoThreshold, 2 → ModeOn4xx,
+// 3 → ModeDeltaOnly, 4 → ModeSmart, 5 → ModeAggressive.
 func envMode() Mode {
 	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_MODE"))
 	if raw == "" {
-		return ModeOn4xx
+		return ModeSmart // v4 default: smart
 	}
 	switch raw {
 	case "0":
@@ -77,8 +90,14 @@ func envMode() Mode {
 		return ModeAutoThreshold
 	case "2":
 		return ModeOn4xx
+	case "3":
+		return ModeDeltaOnly
+	case "4":
+		return ModeSmart
+	case "5":
+		return ModeAggressive
 	default:
-		return ModeOn4xx
+		return ModeSmart
 	}
 }
 
@@ -100,6 +119,12 @@ func LoadMode() Mode {
 						return ModeAutoThreshold
 					case "on_4xx":
 						return ModeOn4xx
+					case "delta_only":
+						return ModeDeltaOnly
+					case "smart":
+						return ModeSmart
+					case "aggressive":
+						return ModeAggressive
 					}
 				}
 			}
