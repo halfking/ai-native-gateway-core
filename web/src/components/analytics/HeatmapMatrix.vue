@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalyticsMatrix, AnalyticsMetric } from '../../api-autoroute'
+import { SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL } from '../../api-autoroute'
 
 const props = defineProps<{
   data: AnalyticsMatrix | null
@@ -13,6 +14,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   cellClick: [row: string, col: string, value: number]
 }>()
+
+/** Returns the display label for a row key. The synthetic
+ *  `__specified__` row is rendered as 「指定模型」 to the user. */
+function displayRowLabel(row: string): string {
+  return row === SPECIFIED_MODEL_TASK_KEY ? SPECIFIED_MODEL_DISPLAY_LABEL : row
+}
+
+function isSpecifiedRow(row: string): boolean {
+  return row === SPECIFIED_MODEL_TASK_KEY
+}
 
 const flatValues = computed(() => {
   if (!props.data?.cells?.length) return []
@@ -84,15 +95,15 @@ const isEmpty = computed(() =>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, ri) in data!.rows" :key="row">
-            <th class="row-head" :title="row">{{ row }}</th>
+          <tr v-for="(row, ri) in data!.rows" :key="row" :class="{ 'row-specified': isSpecifiedRow(row) }">
+            <th class="row-head" :title="row">{{ displayRowLabel(row) }}</th>
             <td
               v-for="(col, ci) in data!.cols"
               :key="col"
               class="heat-cell"
-              :class="{ clickable: data!.cells[ri][ci] > 0 }"
+              :class="{ clickable: data!.cells[ri][ci] > 0, 'cell-specified': isSpecifiedRow(row) }"
               :style="{ background: cellColor(data!.cells[ri][ci]) }"
-              :title="`${row} × ${col}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
+              :title="`${displayRowLabel(row)} × ${col}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
               @click="data!.cells[ri][ci] > 0 && emit('cellClick', row, col, data!.cells[ri][ci])"
             >
               {{ fmtValue(data!.cells[ri][ci]) }}
@@ -155,5 +166,19 @@ const isEmpty = computed(() =>
 .heat-cell.clickable:hover {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* "specified model" row gets a fixed gray accent + bold italic so it
+   reads as a first-class axis without competing with the per-task
+   heatmap colors. */
+.heatmap-table tr.row-specified > .row-head {
+  color: #6b7280;
+  font-weight: 700;
+  font-style: italic;
+  border-left: 3px solid #6b7280;
+}
+.heatmap-table tr.row-specified > .heat-cell.cell-specified {
+  font-style: italic;
+  color: #6b7280;
 }
 </style>

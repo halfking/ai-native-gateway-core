@@ -17,6 +17,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
+func intPtr(i int) *int {
+	return &i
+}
+
 func TestRebuildOpenAIBodyAfterSummary(t *testing.T) {
 	body := []byte(`{
 		"model":"minimax-m3",
@@ -556,6 +560,30 @@ func TestShouldHeuristicCompact(t *testing.T) {
 			kind:          errorsx.KindTransient,
 			bodyLen:       int(float64(smallWindow) * 0.95 * 3.5), // ~95%
 			contextWindow: &smallWindow,
+			want:          true,
+		},
+		{
+			name:          "413 always triggers (even with nil window and small body)",
+			status:        413,
+			kind:          errorsx.KindTransient,
+			bodyLen:       100, // tiny body
+			contextWindow: nil, // unknown window
+			want:          true,
+		},
+		{
+			name:          "413 with nil context window → trigger",
+			status:        413,
+			kind:          errorsx.KindTransient,
+			bodyLen:       1000,
+			contextWindow: nil,
+			want:          true,
+		},
+		{
+			name:          "413 with zero context window → trigger",
+			status:        413,
+			kind:          errorsx.KindTransient,
+			bodyLen:       1000,
+			contextWindow: intPtr(0),
 			want:          true,
 		},
 	}

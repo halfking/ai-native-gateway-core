@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AnalyticsFlow } from '../../api-autoroute'
+import { SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL } from '../../api-autoroute'
 import {
   SANKEY_GAP,
   SANKEY_NODE_H,
@@ -34,14 +35,26 @@ const TASK_COLORS: Record<string, string> = {
   vision:        '#06b6d4', // cyan
   function_call: '#eab308', // yellow
 }
-const FALLBACK_COLOR = '#94a3b8' // slate-400
+const SPECIFIED_COLOR = '#6b7280' // gray-500 — neutral accent for explicit-model traffic
+const FALLBACK_COLOR = '#94a3b8'   // slate-400
 
 function colorForTask(taskKey: string): string {
+  if (taskKey === SPECIFIED_MODEL_TASK_KEY) return SPECIFIED_COLOR
   return TASK_COLORS[taskKey] || FALLBACK_COLOR
 }
 
 function linkColor(taskType?: string): string {
-  return taskType ? colorForTask(taskType) : FALLBACK_COLOR
+  if (!taskType) return FALLBACK_COLOR
+  return colorForTask(taskType)
+}
+
+/** Display label for a node. Sankey node ids carry a "task:" / "model:" / "prov:"
+ *  prefix; the task label is the slice after "task:". */
+function nodeLabel(node: { id: string; label: string }): string {
+  if (node.id.startsWith('task:') && node.label === SPECIFIED_MODEL_TASK_KEY) {
+    return SPECIFIED_MODEL_DISPLAY_LABEL
+  }
+  return node.label
 }
 
 const layers = computed(() => buildSankeyLayers(props.data))
@@ -129,6 +142,7 @@ const activeTaskTypes = computed(() => {
 const TASK_LABELS: Record<string, string> = {
   chat: '通用对话', reasoning: '逻辑推理', code: '代码生成', agent: 'Agent',
   creative: '创意写作', long_context: '长文档', vision: '图像理解', function_call: '函数调用',
+  [SPECIFIED_MODEL_TASK_KEY]: SPECIFIED_MODEL_DISPLAY_LABEL,
 }
 </script>
 
@@ -178,11 +192,11 @@ const TASK_LABELS: Record<string, string> = {
               :height="n.h"
               rx="3"
               class="flow-node"
-              :class="'layer-' + n.layer"
+              :class="['layer-' + n.layer, { 'node-specified': n.id === 'task:' + SPECIFIED_MODEL_TASK_KEY }]"
             />
-            <title>{{ n.label }}</title>
+            <title>{{ nodeLabel(n) }}</title>
             <text :x="n.x + 4" :y="n.y + n.h / 2 + 3" class="node-label">
-              {{ truncLabel(n.label) }}
+              {{ truncLabel(nodeLabel(n)) }}
             </text>
           </g>
         </g>
@@ -257,6 +271,12 @@ const TASK_LABELS: Record<string, string> = {
 .flow-node.layer-0 { fill: color-mix(in srgb, var(--accent) 25%, var(--bg-subtle)); }
 .flow-node.layer-1 { fill: color-mix(in srgb, var(--success) 20%, var(--bg-subtle)); }
 .flow-node.layer-2 { fill: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle)); }
+/* "specified model" task node: gray fill, dashed border, italic label */
+.flow-node.node-specified {
+  fill: #f3f4f6;
+  stroke: #6b7280;
+  stroke-dasharray: 4 2;
+}
 .node-label {
   font-size: 11px;
   fill: var(--text);
