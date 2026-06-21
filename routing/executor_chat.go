@@ -729,6 +729,47 @@ func (e *Executor) executeOpenAI(
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
 // transforms (Q2 anthropic→openai conversion, disguise, prompt-cache injection).
 func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize instead of
+	// the legacy AnthropicToOpenAI callback. This reduces conversion complexity
+	// from O(N²) to O(N) and unifies all protocol handling through the IR layer.
+	if params.ClientProtocol == "anthropic-messages" && e.IR != nil {
+		// Check format_conversion.enabled (provider-level override)
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
+			}
+		}
+		// Parse Anthropic body → IR → Serialize OpenAI
+		irReq, err := e.IR.ParseAnthropic(sourceBody)
+		if err != nil {
+			return nil, fmt.Errorf("ir parse anthropic: %w", err)
+		}
+		// Override model to outbound model (matching existing behavior)
+		irReq.Model = resolveOutboundModel(params, cand)
+		bodyBytes, err := e.IR.SerializeOpenAI(irReq)
+		if err != nil {
+			return nil, fmt.Errorf("ir serialize openai: %w", err)
+		}
+		// Apply remaining OpenAI-path transforms (disguise, prompt cache)
+		if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
+			profileName := ""
+			if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
+				profileName = params.Transform.DisguiseProfileID
+			} else if params.ClientID.Fingerprint.ClientProfile != "" {
+				profileName = params.ClientID.Fingerprint.ClientProfile
+			}
+			if profileName != "" {
+				bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
+				slog.Debug("disguise layer applied", "profile", profileName)
+			}
+		}
+		if params.SessionKey != "" && cand.SupportsPromptCache {
+			bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
+		}
+		return bodyBytes, nil
+	}
+
+	// Legacy path (no IR converter set): use existing callbacks
 	p := *params
 	p.BodyBytes = sourceBody
 	bodyBytes := prepareRequestBody(&p, cand)

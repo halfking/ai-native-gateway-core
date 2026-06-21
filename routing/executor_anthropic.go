@@ -318,6 +318,45 @@ func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) Str
 // trim here so proxy clients (OpenCode/Cursor/RooCode) behave like direct API
 // users.
 func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize for Q3
+	// (openai → anthropic) conversion instead of the legacy ChatToAnthropic callback.
+	if params.ClientProtocol != "anthropic-messages" && params.ClientProtocol != "" && e.IR != nil {
+		// Check format_conversion.enabled (provider-level override)
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (openai→anthropic)", cand.ProviderID)
+			}
+		}
+		// Parse OpenAI body → IR → Serialize Anthropic
+		irReq, err := e.IR.ParseOpenAI(sourceBody)
+		if err != nil {
+			return nil, fmt.Errorf("ir parse openai: %w", err)
+		}
+		// Override model to outbound model (matching existing behavior)
+		irReq.Model = resolveOutboundModel(params, cand)
+		bodyBytes, err := e.IR.SerializeAnthropic(irReq)
+		if err != nil {
+			return nil, fmt.Errorf("ir serialize anthropic: %w", err)
+		}
+		// Apply remaining Anthropic-path transforms (sanitize, fix, validate)
+		if e.SanitizeAnthropicTools != nil {
+			bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
+		}
+		fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
+		if fixErr != nil {
+			return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
+		}
+		bodyBytes = fixedBytes
+		if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
+			slog.Warn("invalid anthropic message sequence after fix",
+				"error", valErr,
+				"tenant_id", params.TenantID,
+			)
+		}
+		return bodyBytes, nil
+	}
+
+	// Legacy path (no IR converter set): use existing callbacks
 	bodyBytes := append([]byte(nil), sourceBody...)
 
 	if cand.ContextWindow != nil {
