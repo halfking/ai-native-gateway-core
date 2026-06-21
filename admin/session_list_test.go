@@ -1,6 +1,9 @@
 package admin
 
 import (
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,5 +95,46 @@ func TestFormatDuration_Negative(t *testing.T) {
 	got := formatDuration(-2 * time.Hour)
 	if got != "-2h" {
 		t.Logf("audit pin: formatDuration(-2h) = %q (negative passes through)", got)
+	}
+}
+
+// TestSessionList_NoURLTenantID verifies that session_list.go does NOT read
+// tenant_id from URL query params. Regression guard for P0 security fix.
+func TestSessionList_NoURLTenantID(t *testing.T) {
+	data, err := os.ReadFile("session_list.go")
+	if err != nil {
+		t.Fatalf("cannot read session_list.go: %v", err)
+	}
+	src := string(data)
+	if strings.Contains(src, `r.URL.Query().Get("tenant_id")`) {
+		t.Fatal("session_list.go must NOT read tenant_id from URL query — use EffectiveTenantID(r)")
+	}
+	if !strings.Contains(src, "EffectiveTenantID(r)") {
+		t.Fatal("session_list.go must use EffectiveTenantID(r) for tenant scoping")
+	}
+}
+
+// TestSessionList_EffectiveTenantID_FromJWT verifies tenant isolation via JWT.
+func TestSessionList_EffectiveTenantID_FromJWT(t *testing.T) {
+	tests := []struct {
+		name   string
+		auth   *AuthContext
+		wantID string
+	}{
+		{"nil auth → default", nil, "default"},
+		{"tenant_admin → own tenant", &AuthContext{Role: "tenant_admin", TenantID: "acme"}, "acme"},
+		{"super_admin → default", &AuthContext{Role: "super_admin", TenantID: "default"}, "default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/admin/sessions?tenant_id=hacker", nil)
+			if tt.auth != nil {
+				req = SetAuthContext(req, tt.auth)
+			}
+			got := EffectiveTenantID(req)
+			if got != tt.wantID {
+				t.Errorf("EffectiveTenantID = %q, want %q (tenant_id=hacker must be ignored)", got, tt.wantID)
+			}
+		})
 	}
 }
