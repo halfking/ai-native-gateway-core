@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getKeys, listModels, getFeatured, applyForKey, type ApiKey, type ModelCanonical } from '../api'
+import { getKeys, listModels, getFeatured, applyForKey, revealKey, type ApiKey, type ModelCanonical } from '../api'
 import {
   TOOLS, OS_INFO,
   type ToolId, type OS, type ModelScope,
@@ -220,21 +220,30 @@ async function generate() {
   let models = selectedModels.value
   if (selectedScope.value === 'featured') models = [...featuredModels.value]
 
+  // Pre-existing safety bug (caught by vue-tsc): the render helpers
+  // expect a string apiKey, but `key` is the full ApiKey object.
+  // The old code passed the object, which JSON.stringify would have
+  // serialized to a giant metadata blob — the generated config
+  // never worked because the consumer expected a string. Reveal the
+  // real key server-side, then pass the string.
+  const revealed = await revealKey(key.id)
+  const apiKey = revealed.api_key
+
   let fileContent: any
   if (props.tool === 'zcode') {
-    fileContent = renderZCodeConfig(key, models)
+    fileContent = renderZCodeConfig(apiKey, models)
   } else if (props.tool === 'opencode') {
-    fileContent = renderOpenCodeConfig(key, models)
+    fileContent = renderOpenCodeConfig(apiKey, models)
   } else if (props.tool === 'cherry_studio') {
-    fileContent = renderCherryStudioConfig(key, models)
+    fileContent = renderCherryStudioConfig(apiKey, models)
   } else if (props.tool === 'roocode') {
-    fileContent = renderRooCodeSettings(key, baseURL)
+    fileContent = renderRooCodeSettings(apiKey, baseURL)
   } else {
     fileContent = { note: 'Cursor 不支持文件写入，请在 Settings UI 中手动配置' }
   }
 
   generatedFile.value = JSON.stringify(fileContent, null, 2)
-  generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, key)
+  generatedScript.value = generateShellScript(props.tool, selectedOS.value, generatedFile.value, apiKey)
   generatedManual.value = getManualSteps(props.tool, selectedOS.value)
   hasGenerated.value = true
   generating.value = false

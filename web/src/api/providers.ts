@@ -159,6 +159,9 @@ export interface ProviderCredential {
   id: number
   provider_id: number
   label: string
+  // Optional display name (ModelsTab falls back to cred.name when
+  // cred.label is empty). Backend may or may not populate it.
+  name?: string | null
   key_masked?: string | null
   key_mask_error?: string | null
   status: CredentialStatus
