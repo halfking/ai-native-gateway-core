@@ -1,8 +1,10 @@
 -- Request WAL (Write-Ahead Log) for request lifecycle tracking
 -- 2026-06-22: Phase 1 implementation
+-- NOTE: Uses SEPARATE table name (request_wal, not request_logs) to avoid
+-- conflicting with the existing telemetry request_logs table.
 
--- Create partitioned request_logs table
-CREATE TABLE IF NOT EXISTS request_logs (
+-- Create partitioned request_wal table
+CREATE TABLE IF NOT EXISTS request_wal (
     request_id VARCHAR(64) NOT NULL,
     tenant_id VARCHAR(64) NOT NULL,
     gw_session_id VARCHAR(128),
@@ -24,19 +26,19 @@ CREATE TABLE IF NOT EXISTS request_logs (
 ) PARTITION BY RANGE (created_at);
 
 -- Create initial partitions
-CREATE TABLE IF NOT EXISTS request_logs_2026_06 PARTITION OF request_logs
+CREATE TABLE IF NOT EXISTS request_wal_2026_06 PARTITION OF request_wal
     FOR VALUES FROM ('2026-06-01') TO ('2026-07-01');
 
-CREATE TABLE IF NOT EXISTS request_logs_2026_07 PARTITION OF request_logs
+CREATE TABLE IF NOT EXISTS request_wal_2026_07 PARTITION OF request_wal
     FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
 
 -- Create indexes
-CREATE INDEX IF NOT EXISTS idx_status_stage ON request_logs (status, stage);
-CREATE INDEX IF NOT EXISTS idx_session ON request_logs (gw_session_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_tenant_created ON request_logs (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wal_status_stage ON request_wal (status, stage);
+CREATE INDEX IF NOT EXISTS idx_wal_session ON request_wal (gw_session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_wal_tenant_created ON request_wal (tenant_id, created_at DESC);
 
--- Create request_bodies table for large outbound bodies
-CREATE TABLE IF NOT EXISTS request_bodies (
+-- Create request_wal_bodies table for large outbound bodies
+CREATE TABLE IF NOT EXISTS request_wal_bodies (
     request_id VARCHAR(64) PRIMARY KEY,
     outbound_body TEXT,
     compression_meta JSONB,
@@ -44,5 +46,5 @@ CREATE TABLE IF NOT EXISTS request_bodies (
 );
 
 -- Add comment
-COMMENT ON TABLE request_logs IS 'Request WAL: synchronous initial log + async batch updates for request lifecycle';
-COMMENT ON TABLE request_bodies IS 'Large outbound bodies separated for performance';
+COMMENT ON TABLE request_wal IS 'Request WAL: synchronous initial log + async batch updates for request lifecycle';
+COMMENT ON TABLE request_wal_bodies IS 'Large outbound bodies separated for performance';

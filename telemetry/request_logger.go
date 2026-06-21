@@ -93,18 +93,18 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 }
 
 func (rl *RequestLogger) Enabled() bool {
-	return rl != nil && rl.config != nil && rl.config.Enabled && rl.db != nil
+	return rl != nil && rl.config != nil && rl.config.Enabled
 }
 
 func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest) error {
-	if !rl.Enabled() {
+	if !rl.Enabled() || rl.db == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	_, err := rl.db.Exec(ctx, `
-		INSERT INTO request_logs (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+		INSERT INTO request_wal (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (request_id, created_at) DO NOTHING
 	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
@@ -171,7 +171,7 @@ func (rl *RequestLogger) worker() {
 }
 
 func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
-	if len(batch) == 0 {
+	if len(batch) == 0 || rl.db == nil {
 		return
 	}
 
@@ -199,6 +199,9 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 }
 
 func (rl *RequestLogger) persistUpdate(ctx context.Context, update *LogUpdate) error {
+	if rl.db == nil {
+		return nil
+	}
 	tx, err := rl.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -216,7 +219,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	compressionMetaJSON, _ := json.Marshal(update.CompressionMeta)
 
 	_, err := tx.Exec(ctx, `
-		UPDATE request_logs SET
+		UPDATE request_wal SET
 			status = COALESCE(NULLIF($2, ''), status),
 			stage = COALESCE($3, stage),
 			completed_at = COALESCE($4, completed_at),
@@ -231,7 +234,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			compression_meta = COALESCE($13, compression_meta)
 		WHERE request_id = $1
 		  AND created_at = (
-		      SELECT created_at FROM request_logs
+		      SELECT created_at FROM request_wal
 		      WHERE request_id = $1
 		      ORDER BY created_at DESC
 		      LIMIT 1
@@ -248,7 +251,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 
 	if len(update.OutboundBody) > 0 {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO request_bodies (request_id, outbound_body, compression_meta)
+			INSERT INTO request_wal_bodies (request_id, outbound_body, compression_meta)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (request_id) DO UPDATE SET
 				outbound_body = EXCLUDED.outbound_body,
