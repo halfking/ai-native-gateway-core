@@ -285,7 +285,7 @@ function closeDrawer() {
   modelCheckResults.value = null  // Clear check results when closing
 }
 
-// Phase 3.2: Check model availability across all credentials
+// Phase 3.2: Check model availability across all credentials with 2-phase validation
 async function checkModelAcrossCredentials() {
   if (!selected.value) return
   
@@ -296,55 +296,115 @@ async function checkModelAcrossCredentials() {
     const credentials = await getProviderCredentials(props.providerId)
     const modelName = selected.value.raw_model_name
     
-    // Check each credential concurrently
+    // Check each credential with 2-phase validation
     const results = await Promise.all(
       credentials.map(async (cred) => {
-        // Step 1: Static check - does the credential have this model in offers?
+        // Phase 1: Static check - does the credential have this model in offers?
         const offerMatch = offers.value.find(
           offer => offer.credential_id === cred.id && 
-                   offer.raw_model_name.toLowerCase() === modelName.toLowerCase()  // Case-insensitive
+                   offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
         )
         
         if (!offerMatch) {
-          // Not in offers list
+          // Phase 1 failed: Not in offers list
           return {
             credential_id: cred.id,
             credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            phase1_status: 'unavailable' as const,
+            phase1_message: '模型列表中无此模型',
+            phase2_status: null,
+            phase2_message: null,
             status: 'unavailable' as const,
             error: '该凭据的模型列表中未找到此模型'
           }
         }
         
-        // Step 2: Dynamic check - use checkCredential to test this credential
+        // Phase 1 passed: Model exists in offers
+        // Phase 2: Dynamic check - run checkCredential for health check
         try {
           const result = await checkCredential(props.providerId, cred.id)
           
-          // checkCredential performs health check and returns probe results
-          // Check if probe was successful
-          if (result.probe_ok) {
-            return {
-              credential_id: cred.id,
-              credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-              status: 'ok' as const,
-              error: null
-            }
+          // Analyze Phase 1: models_ok (ability to fetch model list)
+          let phase1Status: 'ok' | 'warning' | 'error'
+          let phase1Message: string
+          
+          if (result.models_ok) {
+            phase1Status = 'ok'
+            phase1Message = '✓ 模型列表获取成功'
+          } else if (result.effective_source === 'manifest' || result.effective_source === 'manifest_only') {
+            phase1Status = 'warning'
+            phase1Message = '⚠ 使用manifest备用（API不可达）'
           } else {
-            // Probe failed - get error details
-            const error = result.probe_error || result.health_error || '探测失败'
-            const statusCode = result.probe_http_status || result.response_status
-            return {
-              credential_id: cred.id,
-              credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-              status: 'error' as const,
-              error: `调用失败: ${error}${statusCode ? ` (HTTP ${statusCode})` : ''}`
+            phase1Status = 'error'
+            const reason = result.models_failure_reason || result.models_error || '未知错误'
+            phase1Message = `✗ 模型列表获取失败: ${reason}`
+          }
+          
+          // Analyze Phase 2: probe_ok (actual chat test)
+          let phase2Status: 'ok' | 'error' | null = null
+          let phase2Message: string | null = null
+          let finalStatus: 'ok' | 'error' | 'warning'
+          let finalError: string | null = null
+          
+          if (result.probe_ok) {
+            phase2Status = 'ok'
+            phase2Message = '✓ Chat调用测试成功'
+            finalStatus = 'ok'
+          } else if (result.probe_error) {
+            phase2Status = 'error'
+            
+            // Classify error types
+            const error = result.probe_error.toLowerCase()
+            const statusCode = result.probe_http_status
+            
+            if (statusCode === 401 || error.includes('unauthorized') || error.includes('invalid') || error.includes('api key')) {
+              phase2Message = `✗ 认证失败: ${result.probe_error}`
+            } else if (statusCode === 402 || statusCode === 429 || error.includes('quota') || error.includes('insufficient') || error.includes('balance')) {
+              phase2Message = `✗ 配额/费用问题: ${result.probe_error}`
+            } else if (statusCode === 404 || error.includes('not found') || error.includes('does not exist')) {
+              phase2Message = `✗ 模型不存在/不支持: ${result.probe_error}`
+            } else if (statusCode && statusCode >= 500) {
+              phase2Message = `✗ 服务器错误: ${result.probe_error}`
+            } else if (error.includes('timeout') || error.includes('network')) {
+              phase2Message = `✗ 网络/超时: ${result.probe_error}`
+            } else {
+              phase2Message = `✗ 调用失败: ${result.probe_error}`
             }
+            
+            if (statusCode) {
+              phase2Message += ` (HTTP ${statusCode})`
+            }
+            
+            finalStatus = 'error'
+            finalError = phase2Message
+          } else {
+            // No probe result
+            phase2Status = null
+            phase2Message = '未执行chat测试'
+            finalStatus = 'warning'
+            finalError = '健康检查未包含chat测试'
+          }
+          
+          return {
+            credential_id: cred.id,
+            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            phase1_status: phase1Status,
+            phase1_message: phase1Message,
+            phase2_status: phase2Status,
+            phase2_message: phase2Message,
+            status: finalStatus,
+            error: finalError
           }
         } catch (e: unknown) {
           return {
             credential_id: cred.id,
             credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            phase1_status: 'ok' as const,
+            phase1_message: '✓ 模型在列表中',
+            phase2_status: 'error' as const,
+            phase2_message: `✗ 检查失败: ${e instanceof Error ? e.message : String(e)}`,
             status: 'error' as const,
-            error: `测试请求失败: ${e instanceof Error ? e.message : String(e)}`
+            error: `检查请求失败: ${e instanceof Error ? e.message : String(e)}`
           }
         }
       })
@@ -728,10 +788,31 @@ load()
                 <div class="result-header">
                   <span class="credential-label">{{ result.credential_label }}</span>
                   <span class="status-badge" :class="result.status">
-                    {{ result.status === 'ok' ? '✓ 可用' : result.status === 'unavailable' ? '✗ 不可用' : '✗ 错误' }}
+                    {{ result.status === 'ok' ? '✓ 可用' : result.status === 'unavailable' ? '✗ 不可用' : result.status === 'warning' ? '⚠ 警告' : '✗ 错误' }}
                   </span>
                 </div>
-                <div v-if="result.error" class="result-error">
+                
+                <!-- Two-phase validation details -->
+                <div class="phase-details">
+                  <!-- Phase 1: Model availability -->
+                  <div class="phase-row">
+                    <span class="phase-label">阶段1 - 模型列表:</span>
+                    <span class="phase-status" :class="result.phase1_status">
+                      {{ result.phase1_message }}
+                    </span>
+                  </div>
+                  
+                  <!-- Phase 2: Chat test (if applicable) -->
+                  <div v-if="result.phase2_message" class="phase-row">
+                    <span class="phase-label">阶段2 - Chat测试:</span>
+                    <span class="phase-status" :class="result.phase2_status">
+                      {{ result.phase2_message }}
+                    </span>
+                  </div>
+                </div>
+                
+                <!-- Overall error message (if different from phase messages) -->
+                <div v-if="result.error && result.status === 'unavailable'" class="result-error">
                   {{ result.error }}
                 </div>
               </div>
@@ -1025,11 +1106,53 @@ load()
   background: rgba(239, 68, 68, 0.1);
   color: rgb(239, 68, 68);
 }
+.status-badge.warning {
+  background: rgba(251, 191, 36, 0.1);
+  color: rgb(251, 191, 36);
+}
 .result-error {
   margin-top: 4px;
   font-size: 11px;
   color: var(--muted);
   line-height: 1.4;
+}
+.phase-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 4px;
+}
+.phase-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.phase-label {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 110px;
+}
+.phase-status {
+  flex: 1;
+  color: var(--text);
+}
+.phase-status.ok {
+  color: rgb(34, 197, 94);
+}
+.phase-status.error {
+  color: rgb(239, 68, 68);
+}
+.phase-status.warning {
+  color: rgb(251, 191, 36);
+}
+.phase-status.unavailable {
+  color: var(--muted);
 }
 .btn-row--space-between {
   display: flex;
