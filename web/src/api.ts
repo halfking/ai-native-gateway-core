@@ -4056,3 +4056,77 @@ export async function setProviderSetting(providerId: number, key: string, value:
 export async function deleteProviderSetting(providerId: number, key: string): Promise<void> {
   await req('DELETE', `/api/providers/${providerId}/settings/${key}`)
 }
+
+// ── Session Compare API (v4, 2026-06-21) ───────────────────────────────
+
+export interface MessageView {
+  index: number
+  role: string
+  content: string
+  tool_calls?: string
+  token_count: number
+}
+
+export interface CacheInfo {
+  l1_hit: boolean
+  l2_hit: boolean
+  l3_fallback: boolean
+  last_refresh: string
+}
+
+export interface SessionStats {
+  original_tokens: number
+  compressed_tokens: number
+  saved_tokens: number
+  saved_percent: number
+  compression_strategy: string
+  compression_timestamp: string
+}
+
+export interface SessionCompareData {
+  session_id: string
+  tenant_id: string
+  original_msgs: MessageView[]
+  compressed_msgs: MessageView[]
+  response_msgs: MessageView[]
+  cache_info: CacheInfo
+  stats: SessionStats
+  is_compressed: boolean
+  context_usage: number
+  context_window: number
+  model_used: string
+  msg_count: number
+}
+
+export interface HandoffRequest {
+  session_id: string
+  tenant_id?: string
+  create_new: boolean
+}
+
+export interface HandoffResponse {
+  status: string
+  session_id: string
+  handoff_summary: string
+  new_session_id?: string
+  new_session_hint?: string
+  completed_tasks: number
+}
+
+/**
+ * Get session compare data.
+ * GET /api/admin/session-compare?session_id=xxx&tenant_id=default
+ */
+export async function getSessionCompare(sessionId: string, tenantId?: string): Promise<SessionCompareData> {
+  let path = `/api/admin/session-compare?session_id=${encodeURIComponent(sessionId)}`
+  if (tenantId) path += `&tenant_id=${encodeURIComponent(tenantId)}`
+  return req<SessionCompareData>('GET', path)
+}
+
+/**
+ * Execute session handoff.
+ * POST /api/admin/session-handoff
+ */
+export async function executeHandoff(reqData: HandoffRequest): Promise<HandoffResponse> {
+  return req<HandoffResponse>('POST', '/api/admin/session-handoff', reqData)
+}

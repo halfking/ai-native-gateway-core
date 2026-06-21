@@ -186,6 +186,8 @@ const editProtocol  = ref('')
 const editNotes     = ref('')
 const editSaving    = ref(false)
 const editErr       = ref('')
+const editProbeResult = ref<ProbeURLResult | null>(null)
+const editProbing   = ref(false)
 
 function openEdit(p: Provider) {
   editProvider.value = p
@@ -194,7 +196,25 @@ function openEdit(p: Provider) {
   editProtocol.value = p.protocol ?? 'openai-completions'
   editNotes.value    = p.notes ?? ''
   editErr.value      = ''
+  editProbeResult.value = null
   showEdit.value     = true
+}
+
+async function doEditProbe() {
+  if (!editProvider.value) return
+  const url = editBaseUrl.value.trim()
+  if (!url) { editErr.value = '请先填写 Base URL'; return }
+  editProbing.value = true
+  editProbeResult.value = null
+  editErr.value = ''
+  try {
+    const r = await probeProviderURL(editProvider.value.id)
+    editProbeResult.value = r
+  } catch (e: unknown) {
+    editProbeResult.value = { reachable: false, error: e instanceof Error ? e.message : '探测失败' }
+  } finally {
+    editProbing.value = false
+  }
 }
 
 async function submitEdit() {
@@ -233,18 +253,20 @@ function closeManageCred() {
 }
 
 // ── Add credential modal ────────────────────────────────────────────────────
-const showCred     = ref(false)
-const credProvider = ref<Provider | null>(null)
-const credKey      = ref('')
-const credLabel    = ref('')
-const credSaving   = ref(false)
-const credErr      = ref('')
+const showCred         = ref(false)
+const credProvider     = ref<Provider | null>(null)
+const credKey          = ref('')
+const credLabel        = ref('')
+const credSaving       = ref(false)
+const credErr          = ref('')
+const credProbeStatus  = ref<string | null>(null) // "probing" | "done" | "failed"
 
 function openCred(p: Provider) {
   credProvider.value = p
   credKey.value      = ''
   credLabel.value    = ''
   credErr.value      = ''
+  credProbeStatus.value = null
   showCred.value     = true
 }
 
@@ -253,15 +275,29 @@ async function submitCred() {
   if (!credProvider.value) return
   credSaving.value = true
   credErr.value    = ''
+  credProbeStatus.value = null
   try {
     const pid = credProvider.value.id
-    await addCredential(pid, { api_key: credKey.value, label: credLabel.value || undefined })
+    const { id: credId } = await addCredential(pid, { api_key: credKey.value, label: credLabel.value || undefined })
     await loadCredentials(pid)
+
+    // ── Auto probe after credential creation ──
+    credProbeStatus.value = 'probing'
+    credErr.value = ''
+    try {
+      await checkCredential(pid, credId)
+      credProbeStatus.value = 'done'
+      await loadCredentials(pid)
+    } catch {
+      credProbeStatus.value = 'failed'
+    }
+
     const activeCount = (credentialsByProvider.value[pid] ?? []).filter((c) => c.status === 'active').length
     credProvider.value.active_credential_count = activeCount
     const listed = providers.value.find((row) => row.id === pid)
     if (listed) listed.active_credential_count = activeCount
-    showCred.value = false
+    // Close after a brief delay so the user sees the probe result
+    setTimeout(() => { showCred.value = false }, 1500)
   } catch (e: unknown) {
     credErr.value = e instanceof Error ? e.message : '添加失败'
   } finally {
@@ -852,7 +888,34 @@ onUnmounted(() => {
         </div>
         <div class="form-group">
           <label>Base URL</label>
-          <input v-model="editBaseUrl" placeholder="https://api.example.com/v1" />
+          <div style="display:flex;gap:8px">
+            <input v-model="editBaseUrl" placeholder="https://api.example.com/v1" style="flex:1" />
+            <button
+              class="btn btn-sm"
+              :class="editProbeResult?.reachable ? 'btn-green' : 'btn-ghost'"
+              @click="doEditProbe"
+              :disabled="editProbing || !editBaseUrl.trim()"
+              :title="'使用现有凭据探测此 URL'"
+            >{{ editProbing ? '探测中…' : '探测' }}</button>
+          </div>
+          <div v-if="editProbeResult" style="margin-top:6px;font-size:12px">
+            <template v-if="editProbeResult.reachable">
+              <span style="color:var(--success)">✅ 可达</span>
+              <span v-if="editProbeResult.protocol" style="margin-left:8px;color:var(--muted)">
+                协议: {{ editProbeResult.protocol }}
+              </span>
+              <span v-if="editProbeResult.models_count != null" style="margin-left:8px;color:var(--muted)">
+                模型: {{ editProbeResult.models_count }} 个
+              </span>
+              <span v-if="editProbeResult.auth_ok === false" style="margin-left:8px;color:var(--warning)">
+                ⚠️ API Key 无效
+              </span>
+            </template>
+            <template v-else>
+              <span style="color:var(--danger)">❌ 不可达</span>
+              <span v-if="editProbeResult.error" style="margin-left:8px;color:var(--muted)">{{ editProbeResult.error }}</span>
+            </template>
+          </div>
         </div>
         <div class="form-group">
           <label>备注</label>
@@ -1096,16 +1159,25 @@ onUnmounted(() => {
         <div v-if="credErr" class="alert alert-danger">{{ credErr }}</div>
         <div class="form-group">
           <label>API Key</label>
-          <input v-model="credKey" type="password" placeholder="sk-…" autocomplete="off" />
+          <input v-model="credKey" type="password" placeholder="sk-…" autocomplete="off" :disabled="credSaving" />
         </div>
         <div class="form-group">
           <label>标签（可选）</label>
-          <input v-model="credLabel" placeholder="如: 生产密钥" />
+          <input v-model="credLabel" placeholder="如: 生产密钥" :disabled="credSaving" />
+        </div>
+        <div v-if="credProbeStatus === 'probing'" style="margin:8px 0;font-size:13px;color:var(--accent)">
+          ⏳ 凭据已保存，正在自动探测凭据状态…
+        </div>
+        <div v-else-if="credProbeStatus === 'done'" style="margin:8px 0;font-size:13px;color:var(--success)">
+          ✅ 探测完成
+        </div>
+        <div v-else-if="credProbeStatus === 'failed'" style="margin:8px 0;font-size:13px;color:var(--warning)">
+          ⚠️ 凭据已保存，但自动探测未完成（可稍后手动检测）
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" @click="showCred = false">取消</button>
+          <button class="btn btn-ghost" @click="showCred = false" :disabled="credSaving && credProbeStatus === 'probing'">取消</button>
           <button class="btn btn-primary" @click="submitCred" :disabled="credSaving">
-            {{ credSaving ? '保存中…' : '添加' }}
+            {{ credSaving && !credProbeStatus ? '保存中…' : credProbeStatus === 'probing' ? '探测中…' : '添加' }}
           </button>
         </div>
       </div>
