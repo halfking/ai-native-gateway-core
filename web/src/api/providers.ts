@@ -26,6 +26,12 @@ export interface Provider {
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
   created_at: string
+  // Optional fields populated by /api/providers/.../{id} (ProviderDetail)
+  // but not by the /api/providers list endpoint. The provider list
+  // view falls back to N/A when these are missing.
+  protocol?: string | null
+  category?: string | null
+  vendor_name?: string | null
 }
 
 export interface CredentialCheckResult {
@@ -194,6 +200,9 @@ export interface ProviderCredential {
   total_cost_usd: number | string
   total_prompt_tokens: number
   total_completion_tokens: number
+  // Per-credential USD balance (from /api/providers/{id}/credentials
+  // detail endpoint). Optional because some legacy list paths omit it.
+  balance_usd?: number | string | null
   quotas: CredentialQuota[]
   quota_summary: CredentialQuotaSummary | null
 }
@@ -230,9 +239,9 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   concurrency_limit: number | null
   effective_at: string | null
   expires_at: string | null
+  balance_usd: number | null
   tags: string[]
   notes: string
-  balance_usd: number | null
 }>) {
   return req<{ message: string }>('PATCH', `/api/providers/${providerId}/credentials/${credId}`, data)
 }
