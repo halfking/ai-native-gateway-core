@@ -43,14 +43,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
     go build -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
-# 2026-06-21: switched from alpine:3.20 to kx-base:go-vue-amd64 (Debian 13).
-# Why: alpine 3.20's package index (dl-cdn.alpinelinux.org) suffers from
-# intermittent SSL handshake failures from the buildx network (GFW). The
-# kx-base image already provides ca-certificates + tzdata + adduser, and
-# is served from registry.kxpms.cn (no upstream dependency). The size
-# increase (~900MB vs 5MB) is acceptable for a server-side data plane.
-# See deploy/shared/docs/base-image-strategy.md for the registry catalog.
-FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue-amd64
+# 2026-06-22 T14: switched from kx-base:go-vue-amd64 (1.09GB Debian) to
+# kx-base:go-vue-alpine-slim-runtime (15.6MB alpine 3.20). Runtime only
+# needs ca-certs + tzdata + non-root appuser; no Go SDK / nodejs / pip
+# packages (those are build-time only). 预估 kx-llm-gateway-go 镜像
+# 2.14GB → ~0.95GB (-55%).
+# Builder stage (above) still uses kx-base:go-vue for Go toolchain
+# compatibility (Q2 decision: only swap runtime, keep builder).
+FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue-alpine-slim-runtime
 
 ARG GIT_SHA=""
 ARG BUILD_DATE=""
