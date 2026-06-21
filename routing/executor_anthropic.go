@@ -718,6 +718,18 @@ func (e *Executor) executeAnthropicOnce(
 			}
 			return nil, fmt.Errorf("upstream %d", resp.StatusCode)
 		}
+		// Even for retryable kinds (e.g. 413 classified as KindTransient),
+		// check if this is a heuristic-compact candidate (413 or body-size
+		// overflow). If so, return contextLengthHTTPError so the outer
+		// loop triggers compaction recovery instead of wastefully retrying
+		// the same oversized body.
+		if shouldHeuristicCompact(resp.StatusCode, errKind, len(bodyBytes), cand.ContextWindow) {
+			return nil, &contextLengthHTTPError{
+				status:  resp.StatusCode,
+				body:    append([]byte(nil), body[:n]...),
+				headers: resp.Header.Clone(),
+			}
+		}
 		return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
 	}
 
