@@ -14,6 +14,9 @@ func TestMode_String(t *testing.T) {
 		{ModeOff, "off"},
 		{ModeAutoThreshold, "auto_threshold"},
 		{ModeOn4xx, "on_4xx"},
+		{ModeDeltaOnly, "delta_only"},
+		{ModeSmart, "smart"},
+		{ModeAggressive, "aggressive"},
 		{Mode(99), "unknown(99)"},
 	}
 	for _, tc := range cases {
@@ -24,10 +27,10 @@ func TestMode_String(t *testing.T) {
 }
 
 func TestEnvMode_Defaults(t *testing.T) {
-	// Unset → ModeOn4xx (v7 §2 default per user Q1).
+	// Unset → ModeSmart (v4 default).
 	t.Setenv("LLM_GATEWAY_COMPRESSION_MODE", "")
-	if got := envMode(); got != ModeOn4xx {
-		t.Errorf("envMode unset: want ModeOn4xx, got %v", got)
+	if got := envMode(); got != ModeSmart {
+		t.Errorf("envMode unset: want ModeSmart, got %v", got)
 	}
 }
 
@@ -39,11 +42,13 @@ func TestEnvMode_ExplicitValues(t *testing.T) {
 		{"0", ModeOff},
 		{"1", ModeAutoThreshold},
 		{"2", ModeOn4xx},
-		// Bad values fall back to ModeOn4xx (defensive default).
-		{"", ModeOn4xx},
-		{"3", ModeOn4xx},
-		{"abc", ModeOn4xx},
-		{"  ", ModeOn4xx},
+		{"3", ModeDeltaOnly},
+		{"4", ModeSmart},
+		{"5", ModeAggressive},
+		// Bad values fall back to ModeSmart (v4 default).
+		{"", ModeSmart},
+		{"abc", ModeSmart},
+		{"  ", ModeSmart},
 	}
 	for _, tc := range cases {
 		t.Setenv("LLM_GATEWAY_COMPRESSION_MODE", tc.raw)
