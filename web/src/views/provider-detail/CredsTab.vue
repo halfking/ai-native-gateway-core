@@ -225,7 +225,7 @@ async function setLifecycle(value: string) {
   if (!c) return
   try {
     await updateCredentialLifecycle(props.provider.id, c.id, value)
-    c.lifecycle_status = value
+    c.lifecycle_status = value as 'active' | 'disabled' | 'suspended' | 'retired' | null
     emit('refresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : '设置失败')
