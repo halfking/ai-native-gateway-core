@@ -300,16 +300,29 @@ async function checkModelAcrossCredentials() {
         try {
           const result = await checkCredential(props.providerId, cred.id)
           
-          // Find if this model is in the check results
-          const modelResult = result.models?.find(
-            (m: any) => m.model === selected.value!.raw_model_name
-          )
+          // Check if this model is in the returned_models array
+          const modelName = selected.value!.raw_model_name
+          const isAvailable = result.returned_models?.includes(modelName) ?? false
+          
+          // Determine status and error message
+          let status: 'ok' | 'unavailable' | 'error'
+          let error: string | null = null
+          
+          if (isAvailable) {
+            status = 'ok'
+          } else if (result.models_ok === false) {
+            status = 'error'
+            error = result.models_error || result.models_failure_reason || '模型列表获取失败'
+          } else {
+            status = 'unavailable'
+            error = `该凭据未返回此模型（共返回 ${result.returned_models?.length ?? 0} 个模型）`
+          }
           
           return {
             credential_id: cred.id,
             credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-            status: modelResult?.available ? 'ok' : 'unavailable',
-            error: modelResult?.error || (modelResult?.available ? null : '模型不可用')
+            status,
+            error
           }
         } catch (e: unknown) {
           return {
