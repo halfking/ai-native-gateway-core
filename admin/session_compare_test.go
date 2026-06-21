@@ -2,6 +2,8 @@ package admin
 
 import (
 	"encoding/json"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -94,5 +96,49 @@ func TestExtractTextContent_NonJSON(t *testing.T) {
 	got := extractTextContent(raw)
 	if got != "plain text not json" {
 		t.Errorf("non-json should fallback to raw, got %q", got)
+	}
+}
+
+// TestHandleCompare_NoURLTenantID verifies that HandleCompare does NOT read
+// tenant_id from URL query params. This is a regression guard for the P0
+// security fix that replaced URL param extraction with EffectiveTenantID(r).
+func TestHandleCompare_NoURLTenantID(t *testing.T) {
+	data, err := os.ReadFile("session_compare.go")
+	if err != nil {
+		t.Fatalf("cannot read session_compare.go: %v", err)
+	}
+	src := string(data)
+	if strings.Contains(src, `r.URL.Query().Get("tenant_id")`) {
+		t.Fatal("session_compare.go must NOT read tenant_id from URL query — use EffectiveTenantID(r)")
+	}
+	if !strings.Contains(src, "EffectiveTenantID(r)") {
+		t.Fatal("session_compare.go must use EffectiveTenantID(r) for tenant scoping")
+	}
+}
+
+// TestHandleCompare_EffectiveTenantID_FromJWT verifies that HandleCompare
+// uses the JWT AuthContext for tenant isolation, not URL params.
+func TestHandleCompare_EffectiveTenantID_FromJWT(t *testing.T) {
+	tests := []struct {
+		name   string
+		auth   *AuthContext
+		wantID string
+	}{
+		{"nil auth → default", nil, "default"},
+		{"super_admin → default", &AuthContext{Role: "super_admin", TenantID: "default"}, "default"},
+		{"tenant_admin → own tenant", &AuthContext{Role: "tenant_admin", TenantID: "acme"}, "acme"},
+		{"admin_key → default", &AuthContext{Role: "admin_key", TenantID: "default"}, "default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/admin/session-compare?session_id=x&tenant_id=hacker", nil)
+			if tt.auth != nil {
+				req = SetAuthContext(req, tt.auth)
+			}
+			got := EffectiveTenantID(req)
+			if got != tt.wantID {
+				t.Errorf("EffectiveTenantID = %q, want %q (URL ?tenant_id=hacker must be ignored)", got, tt.wantID)
+			}
+		})
 	}
 }
