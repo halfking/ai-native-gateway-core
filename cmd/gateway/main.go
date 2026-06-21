@@ -29,6 +29,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
@@ -334,6 +335,16 @@ routingExec.AnthropicPassthroughStream = func(
 }
 routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
 routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+
+	// Phase B (2026-06-22): IR-based protocol converter.
+	// When LLM_GATEWAY_IR_CONVERTER=true, use the new Parse→IR→Serialize
+	// pipeline instead of the 6 scattered callbacks. Reduces conversion
+	// complexity from O(N²) to O(N).
+	if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
+		routingExec.IR = &irAdapter{}
+		slog.Info("ir_converter", "enabled", true)
+	}
+
 // Q3 streaming: openai client -> anthropic upstream. Translates
 // Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
 // doesn't choke on event: ... lines. Capturer-aware (Track C C5).
@@ -1325,4 +1336,25 @@ func buildAutoLLMCaller() autoroute.LLMCaller {
 		Inner:   autoroute.NewCircuitBreakerCaller(caller),
 		Metrics: &autoroute.CallerMetrics{},
 	}
+}
+
+// irAdapter implements routing.IRConverter by wrapping the ir package functions.
+// Used when LLM_GATEWAY_IR_CONVERTER=true to enable the Phase B Parse→IR→Serialize
+// pipeline, reducing protocol conversion complexity from O(N²) to O(N).
+type irAdapter struct{}
+
+func (a *irAdapter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
+	return ir.ParseOpenAI(body)
+}
+
+func (a *irAdapter) ParseAnthropic(body []byte) (*ir.InternalRequest, error) {
+	return ir.ParseAnthropic(body)
+}
+
+func (a *irAdapter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
+	return ir.SerializeOpenAI(req)
+}
+
+func (a *irAdapter) SerializeAnthropic(req *ir.InternalRequest) ([]byte, error) {
+	return ir.SerializeAnthropic(req)
 }
