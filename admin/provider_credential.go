@@ -88,6 +88,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		h.runHealthCheck(pid, cid, taskID)
 	}(providerID, id)
 
+	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
 }
 
