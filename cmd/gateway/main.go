@@ -1029,50 +1029,61 @@ routingExec.AnthropicToOpenAIStream = func(
 		slog.Info("admin API enabled")
 	}
 
+	// wrapAdmin wraps a handler with admin JWT/API-key authentication.
+	// Used for Phase 2/3 admin endpoints registered outside RegisterRoutes.
+	var wrapAdmin func(http.HandlerFunc) http.HandlerFunc
+	if dbConn != nil {
+		pool := dbConn.Pool()
+		secret := cfg.SecretKey
+		wrapAdmin = func(fn http.HandlerFunc) http.HandlerFunc {
+			return admin.AdminMiddleware(fn, pool, secret)
+		}
+	}
+
 	// Phase 2: Meta-tools API routes
 	if dbConn != nil && dbConn.Enabled() {
 		metaHandler := metatools.NewHandler(dbConn.Pool())
 		metaAPI := admin.NewMetaToolsHandler(metaHandler)
-		mux.HandleFunc("/api/meta-tools/definitions", metaAPI.GetMetaToolDefinitions)
-		mux.HandleFunc("/api/meta-tools/categories", metaAPI.ListCategories)
-		mux.HandleFunc("/api/meta-tools/load", metaAPI.LoadTools)
+		mux.HandleFunc("/api/meta-tools/definitions", wrapAdmin(metaAPI.GetMetaToolDefinitions))
+		mux.HandleFunc("/api/meta-tools/categories", wrapAdmin(metaAPI.ListCategories))
+		mux.HandleFunc("/api/meta-tools/load", wrapAdmin(metaAPI.LoadTools))
 		slog.Info("Phase 2 meta-tools API enabled (/api/meta-tools/*)")
 	}
 
 	// Phase 3: Tool Registry Admin API routes
-	if toolRegistryAPI != nil {
-		mux.HandleFunc("/api/admin/tools/reload", toolRegistryAPI.HandleReload)
-		mux.HandleFunc("/api/admin/tools/list", toolRegistryAPI.HandleList)
-		mux.HandleFunc("/api/admin/tools/get", toolRegistryAPI.HandleGet)
+	if toolRegistryAPI != nil && wrapAdmin != nil {
+		mux.HandleFunc("/api/admin/tools/reload", wrapAdmin(toolRegistryAPI.HandleReload))
+		mux.HandleFunc("/api/admin/tools/list", wrapAdmin(toolRegistryAPI.HandleList))
+		mux.HandleFunc("/api/admin/tools/get", wrapAdmin(toolRegistryAPI.HandleGet))
 		slog.Info("Phase 3 tool registry admin API enabled (/api/admin/tools/*)")
 	}
 
 	// Phase 3.4: Tool Policy Admin API routes
 	if dbConn != nil && toolRegistry != nil {
 		policyAPI := admin.NewPolicyAPI(dbConn.Pool(), toolRegistry)
-		mux.HandleFunc("/api/admin/policies", policyAPI.HandleCreate)
-		mux.HandleFunc("/api/admin/policies/list", policyAPI.HandleList)
-		mux.HandleFunc("/api/admin/policies/delete", policyAPI.HandleDelete)
-		mux.HandleFunc("/api/admin/policies/check", policyAPI.HandleCheck)
+		mux.HandleFunc("/api/admin/policies", wrapAdmin(policyAPI.HandleCreate))
+		mux.HandleFunc("/api/admin/policies/list", wrapAdmin(policyAPI.HandleList))
+		mux.HandleFunc("/api/admin/policies/delete", wrapAdmin(policyAPI.HandleDelete))
+		mux.HandleFunc("/api/admin/policies/check", wrapAdmin(policyAPI.HandleCheck))
 		slog.Info("Phase 3.4 tool policy admin API enabled (/api/admin/policies/*)")
 
 		// Phase 3.3: Usage Statistics API
 		statsAPI := admin.NewUsageStatsAPI(dbConn.Pool())
-		mux.HandleFunc("/api/admin/tools/stats", statsAPI.HandleStats)
-		mux.HandleFunc("/api/admin/tools/top", statsAPI.HandleTopTools)
+		mux.HandleFunc("/api/admin/tools/stats", wrapAdmin(statsAPI.HandleStats))
+		mux.HandleFunc("/api/admin/tools/top", wrapAdmin(statsAPI.HandleTopTools))
 		slog.Info("Phase 3.3 tool usage stats API enabled (/api/admin/tools/stats, /top)")
 
 		// Phase 3.5: Session Compare & Handoff API
 		compareAPI := admin.NewSessionCompareAPI(dbConn.Pool())
-		mux.HandleFunc("/api/admin/session-compare", compareAPI.HandleCompare)
+		mux.HandleFunc("/api/admin/session-compare", wrapAdmin(compareAPI.HandleCompare))
 		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
-		mux.HandleFunc("/api/admin/session-handoff", handoffAPI.HandleHandoff)
+		mux.HandleFunc("/api/admin/session-handoff", wrapAdmin(handoffAPI.HandleHandoff))
 		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
 
 		// Phase 3.5: Session List & Detail API
 		sessionListAPI := admin.NewSessionListAPI(dbConn.Pool())
-		mux.HandleFunc("/api/admin/sessions", sessionListAPI.HandleList)
-		mux.HandleFunc("/api/admin/sessions/", sessionListAPI.HandleDetail)
+		mux.HandleFunc("/api/admin/sessions", wrapAdmin(sessionListAPI.HandleList))
+		mux.HandleFunc("/api/admin/sessions/", wrapAdmin(sessionListAPI.HandleDetail))
 		slog.Info("Phase 3.5 session list API enabled (/api/admin/sessions)")
 	}
 

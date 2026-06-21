@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -58,10 +59,7 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 	page := parseIntParam(r.URL.Query().Get("page"), 1)
 	size := parseIntParam(r.URL.Query().Get("size"), 20)
 	searchQ := r.URL.Query().Get("q")
@@ -218,8 +216,16 @@ func parseIntParam(s string, def int) int {
 }
 
 func formatDuration(d time.Duration) string {
+	// Audit P2 fix (2026-06-22): use round-to-nearest-day instead of
+	// floor division so 23h59m -> "1d" (was "24h" because
+	// 23.98/24 = 0.99 floor 0, falling through to hours branch).
+	// Use math.Round to round to nearest whole day.
 	if d.Hours() >= 24 {
-		return fmt.Sprintf("%.0fd", d.Hours()/24)
+		days := int(math.Round(d.Hours() / 24))
+		if days < 1 {
+			days = 1
+		}
+		return fmt.Sprintf("%dd", days)
 	}
 	if d.Hours() >= 1 {
 		return fmt.Sprintf("%.0fh", d.Hours())
@@ -260,10 +266,7 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sessionID := r.PathValue("id")
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 
 	if sessionID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{

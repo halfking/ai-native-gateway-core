@@ -348,6 +348,12 @@ func (h *Handler) upsertExtractionLog(ctx context.Context, taskID string, writte
 }
 
 func truncateSamples(candidates []string, n int) []string {
+	// Audit P2 fix (2026-06-22): guard against n < 0. Without this,
+	// `len(candidates) <= n` is false for n<0 (e.g. 1<=-1 -> false),
+	// falling through to `candidates[:n]` which panics.
+	if n < 0 {
+		return []string{}
+	}
 	if len(candidates) <= n {
 		return candidates
 	}

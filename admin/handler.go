@@ -250,13 +250,13 @@ func (h *Handler) fpSlotsDefaultLimit() int {
 }
 
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
-	return adminMiddleware(fn, h.db, h.secret)
+	return AdminMiddleware(fn, h.db, h.secret)
 }
 
 // superAdmin wraps the handler with auth + super_admin role enforcement.
 // tenant_admin gets 403 Forbidden.
 func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
-	return superAdminMiddleware(fn, h.db, h.secret)
+	return SuperAdminMiddleware(fn, h.db, h.secret)
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
