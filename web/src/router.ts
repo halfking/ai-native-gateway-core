@@ -34,6 +34,7 @@ import SettingsView          from './views/SettingsView.vue'
 import SessionContextLayout      from './layouts/SessionContextLayout.vue'
 import SessionContextListView    from './views/session-context/SessionContextListView.vue'
 import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
+import SessionCompareView        from './views/SessionCompareView.vue'
 import ForbiddenView          from './views/ForbiddenView.vue'
 import MaaSAccountView        from './views/tenant/MaaSAccountView.vue'
 import MaaSPricingView        from './views/tenant/MaaSPricingView.vue'
@@ -116,6 +117,7 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuperAdmin: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuperAdmin: true } },
     { path: '/request-logs',       component: RequestLogsView },
+    { path: '/session-compare',    component: SessionCompareView },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

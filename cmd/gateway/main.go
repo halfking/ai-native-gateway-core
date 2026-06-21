@@ -1058,6 +1058,13 @@ routingExec.AnthropicToOpenAIStream = func(
 		mux.HandleFunc("/api/admin/tools/stats", statsAPI.HandleStats)
 		mux.HandleFunc("/api/admin/tools/top", statsAPI.HandleTopTools)
 		slog.Info("Phase 3.3 tool usage stats API enabled (/api/admin/tools/stats, /top)")
+
+		// Phase 3.5: Session Compare & Handoff API
+		compareAPI := admin.NewSessionCompareAPI(dbConn.Pool())
+		mux.HandleFunc("/api/admin/session-compare", compareAPI.HandleCompare)
+		handoffAPI := admin.NewHandoffAPI(dbConn.Pool())
+		mux.HandleFunc("/api/admin/session-handoff", handoffAPI.HandleHandoff)
+		slog.Info("Phase 3.5 session compare & handoff API enabled (/api/admin/session-compare, /session-handoff)")
 	}
 
 	// ── Middleware stack (declarative chain) ─────────────────────────────
