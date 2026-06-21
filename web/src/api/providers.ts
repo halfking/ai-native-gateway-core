@@ -535,6 +535,7 @@ export interface ProviderLogEntry {
   ts: string | null
   request_id: string | null
   credential_id: number | null
+  credential_label?: string | null
   client_model: string | null
   outbound_model: string | null
   success: boolean

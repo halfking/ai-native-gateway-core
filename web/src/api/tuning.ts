@@ -325,12 +325,28 @@ export interface TuningProposal {
   category: TuningProposalCategory
   task_type: string | null
   proposal: Record<string, unknown>
-  evidence: Record<string, unknown>
+  evidence: ProposalEvidence
   status: TuningProposalStatus
   reviewed_by: string | null
   reviewed_at: string | null
   applied_at: string | null
   review_note: string | null
+}
+
+// The analyzer writes a different evidence shape per category
+// (see bg/feedback_analyzer.go lines 244-249 and 319-324). The
+// frontend only renders a few fields in evidenceSummary so we keep
+// the optional+typed model: present fields per category, others
+// undefined.
+export interface ProposalEvidence {
+  sample_count?: number
+  window_days?: number
+  quality_threshold?: number
+  actual_success?: number
+  predicted_match?: number
+  avg_quality?: number
+  rationale?: string
+  confidence?: number
 }
 
 export interface TuningProposalsResponse {

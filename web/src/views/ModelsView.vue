@@ -638,14 +638,14 @@ function statusBadgeClass(status: string): string {
   return 'badge-gray'
 }
 
-function healthBadgeClass(status?: string): string {
+function healthBadgeClass(status: string | null | undefined): string {
   if (status === 'healthy') return 'badge-green'
   if (status === 'warning') return 'badge-yellow'
   if (status === 'unreachable') return 'badge-red'
   return 'badge-gray'
 }
 
-function healthLabel(status?: string): string {
+function healthLabel(status: string | null | undefined): string {
   if (status === 'healthy') return '正常'
   if (status === 'warning') return '警示'
   if (status === 'unreachable') return '不可达'

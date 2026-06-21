@@ -159,8 +159,8 @@ export function displayTitle(s: MemoraSession): string {
 export function displayMemoraPreview(s: MemoraSession): string {
   if (s.no_topic) return '—'
   if (!s.memora_status) return '—'
-  if (s.memora_status === 'unavailable') return 'Memora 不可用'
   if (s.memora_status === 'error') return 'Memora 检索失败'
+  if (s.memora_status === 'skipped') return 'Memora 跳过'
   const preview = s.memora_preview?.trim()
   if (preview) return preview
   return 'Memora中没有'
