@@ -52,11 +52,19 @@ async function loadList() {
 async function selectKey(key: string) {
   selectedKey.value = key
   try {
-    const r = await getSetting(key)
-    selected.value = r.spec
-    currentValue.value = r.value
-    currentSource.value = r.source
-    editBuffer.value = JSON.stringify(r.value, null, 2)
+    const resp = await getSetting(key)
+    selected.value = resp.spec
+    currentValue.value = resp.value
+    currentSource.value = resp.source
+    
+    // Smart initialization based on type
+    if (resp.spec.type === 'bool') {
+      editBuffer.value = String(resp.value ?? resp.spec.default)
+    } else if (resp.spec.type === 'int' || resp.spec.type === 'float' || resp.spec.type === 'string') {
+      editBuffer.value = String(resp.value ?? resp.spec.default)
+    } else {
+      editBuffer.value = JSON.stringify(resp.value ?? resp.spec.default, null, 2)
+    }
   } catch (e: any) {
     error.value = e.message || '加载详情失败'
   }
@@ -67,7 +75,22 @@ async function save() {
   saving.value = true
   error.value = null
   try {
-    const parsed = JSON.parse(editBuffer.value)
+    let parsed: any
+    // Smart parsing based on type
+    if (selected.value.type === 'bool') {
+      parsed = editBuffer.value === 'true' || editBuffer.value === true
+    } else if (selected.value.type === 'int' || selected.value.type === 'float') {
+      parsed = Number(editBuffer.value)
+      if (isNaN(parsed)) {
+        throw new Error('请输入有效的数字')
+      }
+    } else if (selected.value.type === 'string') {
+      parsed = String(editBuffer.value)
+    } else {
+      // Fallback to JSON parsing
+      parsed = JSON.parse(editBuffer.value)
+    }
+    
     await updateSetting(selectedKey.value, { value: parsed })
     await loadList()
     await selectKey(selectedKey.value)
@@ -76,6 +99,35 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+// Helper to get friendly label for enum values
+function getEnumLabel(key: string, value: any): string {
+  const labels: Record<string, Record<string, string>> = {
+    'compression.mode': {
+      '0': '关闭 (off)',
+      '1': '自动阈值 (auto_threshold)',
+      '2': '4xx时压缩 (on_4xx)',
+    },
+    'compression.strategy': {
+      'naive': '朴素压缩',
+      'smart': '智能压缩',
+      'adaptive': '自适应压缩',
+    },
+  }
+  return labels[key]?.[String(value)] || String(value)
+}
+
+// Get description for enum options
+function getEnumDescription(key: string, value: string): string {
+  const descriptions: Record<string, Record<string, string>> = {
+    'compression.mode': {
+      '0': '完全关闭消息压缩功能',
+      '1': '当消息长度超过context window阈值时自动压缩',
+      '2': '收到4xx错误（如context_length_exceeded）时触发压缩',
+    },
+  }
+  return descriptions[key]?.[value] || ''
 }
 
 async function rollback() {
@@ -152,9 +204,48 @@ const filteredCount = computed(() => items.value.length)
 
       <aside class="detail-pane" v-if="selected">
         <h3 class="detail-title">
-          <code>{{ selected.key }}</code>
+          <code>{{ selectedKey }}</code>
         </h3>
         <p class="detail-desc">{{ selected.description }}</p>
+        
+        <!-- Additional documentation for specific settings -->
+        <div v-if="selectedKey === 'compression.mode'" class="detail-docs">
+          <div class="docs-title">📖 详细说明</div>
+          <div class="docs-content">
+            <p><strong>压缩模式</strong>控制系统如何处理超长对话上下文：</p>
+            <ul>
+              <li><code>0 (off)</code> - 关闭压缩，当上下文超限时直接返回错误</li>
+              <li><code>1 (auto_threshold)</code> - 预判模式，当消息长度接近模型的context window时主动压缩</li>
+              <li><code>2 (on_4xx)</code> - 响应式模式，收到4xx错误后压缩并重试【推荐】</li>
+            </ul>
+            <p class="docs-note">💡 <strong>推荐使用模式2</strong>：仅在必要时压缩，避免不必要的性能开销</p>
+          </div>
+        </div>
+        
+        <div v-else-if="selectedKey === 'cache.enabled'" class="detail-docs">
+          <div class="docs-title">📖 详细说明</div>
+          <div class="docs-content">
+            <p><strong>会话缓存</strong>控制是否启用L1/L2/L3三级缓存：</p>
+            <ul>
+              <li><strong>L1</strong> - 内存缓存（最快）</li>
+              <li><strong>L2</strong> - Redis缓存（中等）</li>
+              <li><strong>L3</strong> - 数据库缓存（最慢）</li>
+            </ul>
+            <p class="docs-note">⚠️ 关闭后所有会话状态将不被保存，影响上下文连续性</p>
+          </div>
+        </div>
+        
+        <div v-else-if="selectedKey === 'format_conversion.enabled'" class="detail-docs">
+          <div class="docs-title">📖 详细说明</div>
+          <div class="docs-content">
+            <p><strong>格式转换</strong>允许不同协议之间的请求格式自动转换：</p>
+            <ul>
+              <li><strong>Q2路径</strong>：OpenAI格式 → Anthropic模型</li>
+              <li><strong>Q3路径</strong>：Anthropic格式 → OpenAI模型</li>
+            </ul>
+            <p class="docs-note">💡 支持Provider级别覆盖，可针对特定供应商禁用转换</p>
+          </div>
+        </div>
 
         <dl class="meta">
           <dt>类型</dt><dd>{{ selected.type }}</dd>
@@ -183,13 +274,69 @@ const filteredCount = computed(() => items.value.length)
         </dl>
 
         <div class="editor">
-          <label class="editor-label">新值 (JSON 格式)</label>
-          <textarea
-            v-model="editBuffer"
-            rows="4"
-            class="editor-textarea"
-            spellcheck="false"
-          />
+          <label class="editor-label">新值</label>
+          
+          <!-- Boolean type: Switch -->
+          <div v-if="selected.type === 'bool'" class="editor-boolean">
+            <label class="switch-label">
+              <input 
+                type="checkbox" 
+                v-model="editBuffer"
+                :true-value="'true'"
+                :false-value="'false'"
+                class="switch-input"
+              />
+              <span class="switch-track"></span>
+              <span class="switch-text">{{ editBuffer === 'true' ? '启用' : '禁用' }}</span>
+            </label>
+          </div>
+          
+          <!-- Enum type with known options: Select -->
+          <div v-else-if="selectedKey === 'compression.mode'" class="editor-select">
+            <select v-model="editBuffer" class="select-input">
+              <option value="0">0 - 关闭 (off)</option>
+              <option value="1">1 - 自动阈值 (auto_threshold)</option>
+              <option value="2">2 - 4xx时压缩 (on_4xx) 【推荐】</option>
+            </select>
+            <div class="select-hint">
+              <div v-if="editBuffer === '0'" class="hint-item">完全关闭消息压缩功能</div>
+              <div v-else-if="editBuffer === '1'" class="hint-item">当消息长度超过context window阈值时自动压缩</div>
+              <div v-else-if="editBuffer === '2'" class="hint-item">收到4xx错误（如context_length_exceeded）时触发压缩并重试</div>
+            </div>
+          </div>
+          
+          <!-- Number type: Number input -->
+          <div v-else-if="selected.type === 'int' || selected.type === 'float'" class="editor-number">
+            <input 
+              type="number"
+              v-model="editBuffer"
+              class="number-input"
+              :step="selected.type === 'float' ? '0.01' : '1'"
+            />
+          </div>
+          
+          <!-- String type: Text input -->
+          <div v-else-if="selected.type === 'string'" class="editor-string">
+            <input 
+              type="text"
+              v-model="editBuffer"
+              class="text-input"
+              placeholder="输入字符串值"
+            />
+          </div>
+          
+          <!-- Fallback: JSON textarea -->
+          <div v-else class="editor-json">
+            <textarea
+              v-model="editBuffer"
+              rows="4"
+              class="editor-textarea"
+              spellcheck="false"
+              placeholder="输入JSON格式的值"
+            />
+            <div class="json-hint">复杂类型请使用JSON格式</div>
+          </div>
+          
           <div class="editor-actions">
             <button class="btn btn-primary" :disabled="saving" @click="save">
               {{ saving ? '保存中…' : '保存' }}
@@ -469,6 +616,153 @@ const filteredCount = computed(() => items.value.length)
 }
 .btn-ghost:hover {
   background: var(--bg-hover, #21262d);
+}
+
+/* === Smart Editor Styles === */
+.editor-boolean {
+  padding: 16px 0;
+}
+
+.switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  transition: background 0.2s;
+}
+
+.switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.switch-input:checked + .switch-track {
+  background: var(--primary, #3b82f6);
+}
+
+.switch-input:checked + .switch-track::after {
+  transform: translateX(20px);
+}
+
+.switch-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.editor-select, .editor-number, .editor-string, .editor-json {
+  margin: 12px 0;
+}
+
+.select-input, .number-input, .text-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.select-input:focus, .number-input:focus, .text-input:focus {
+  outline: none;
+  border-color: var(--primary, #3b82f6);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.select-hint {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.05);
+  border-left: 3px solid var(--primary, #3b82f6);
+  border-radius: 4px;
+}
+
+.hint-item {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.json-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* === Documentation Section === */
+.detail-docs {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.docs-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.docs-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.docs-content p {
+  margin: 8px 0;
+}
+
+.docs-content ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.docs-content li {
+  margin: 4px 0;
+}
+
+.docs-content code {
+  padding: 2px 6px;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+
+.docs-note {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.08);
+  border-left: 3px solid var(--primary, #3b82f6);
+  border-radius: 4px;
+  font-size: 13px;
 }
 
 /* === Responsive === */
