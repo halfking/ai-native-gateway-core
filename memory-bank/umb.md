@@ -1,12 +1,83 @@
-# UMB — llm-gateway-go v3 会话级智能压缩
+# UMB — llm-gateway-go 3 天修改全面审计 (v6.0)
 
-> **最后更新**：2026-06-19
-> **模式**：build（已完成 + 已部署 + 已验证）
-> **任务**：在 v7 按请求压缩（mode 0/1/2）之上新增 v3 **按会话**智能压缩
-> **镜像**：`kx-llm-gateway-go:gitsha-e82ebd00` seq-313
-> **部署**：184 k3s `pms-test/llm-gateway-go-deployment-7cd576c677-sw6zh`
+> **最后更新**：2026-06-21
+> **模式**：audit → fix（已完成 184 SSH 验证 + UMB 续上）
+> **任务**：对 2026-06-18 ~ 2026-06-21 的 ~110 个 commit 做全面审计
+> **镜像**：`kx-llm-gateway-go:gitsha-8cc5b8d7` (与子模块 HEAD 一致)
+> **部署**：184 k3s `pms-test/llm-gateway-go-deployment-7fdbb875fb-cx846`
 > **Healthz**：https://llmgo.kxpms.cn/healthz → 200 OK
-> **Health**：admin UI `/request-logs` 完整显示 v3 字段
+> **审计报告**：`docs/2026-06-21-three-day-audit.md`
+
+## 🎯 任务 (本轮)
+
+老板提出：审计 6/18-6/21 三天 llm-gateway-go 的所有修改，特别注意"反复出现的问题"。
+
+## 🏗️ 工作流
+
+1. **Plan 模式 5 轮迭代** 产出 v1.0 → v5.0
+2. **Build 模式**：切到 build 后跑 T1-T3 三个 P0 验证 (SSH 到 184 k3s pod)
+3. **UMB 续上**：本文件最后更新从 2026-06-19 推到 2026-06-21
+4. **修复**：处理 v5.0 列出的 6 个 P0/P1 反复问题
+
+## ✅ T1-T3 验证结果 (2026-06-21 5 min 跑完)
+
+| 验证 | 命令 | 结果 |
+|------|------|------|
+| T1 tool_registry 字段 | `information_schema.columns` | 15 列完整 (含 tool_id/tenant_id/version + 6/21 之后 4 列) |
+| T2 020 UNIQUE index | `pg_indexes WHERE indexname='idx_request_logs_request_id_ts_unique'` | 存在 |
+| T3 022/023/025 settings 表 | `pg_tables` | 8 张表全在 |
+| T3 RLS policy | `pg_policies` | 7 张表有 RLS (settings_audit/tenant_settings_kv/tenant_tool_policies/tool_call_events/tool_usage_stats/tenant_model_policies/tenant_model_policies_audit) |
+
+**所有 P0 解除**。新发现：tool_registry 表**没有 RLS policy**（其它 7 张都有）— 见 P1 修复列表。
+
+## ✅ 已完成修复
+
+- [x] T1-T3 三个 P0 验证 (15 min)
+- [x] UMB 续上 (本文件)
+- [x] Dockerfile `USER root` 修复 commit (chown 需要 root 权限)
+
+## 🔧 待办修复 (按 P 排序)
+
+| P | 任务 | 状态 |
+|---|------|------|
+| P1 | tool_registry 加 RLS policy (与其它 7 张表对齐) | 待办 |
+| P1 | 修 024/025 migration 编号冲突 (改 028/029/030) | 待办 |
+| P1 | pre-commit hook 加 vue-tsc / SQL lint / 编号去重 / markdown-link-check | 待办 |
+| P1 | 拆 `admin/providers.go` 4555→<1500 | 待办 |
+| P2 | web 端加 vitest, 4 个 view 写测试 | 待办 |
+| P2 | 修 docs 死链 (`docs/llm-gateway-go/` 引用) | 待办 |
+| P2 | Dockerfile 镜像瘦身 (kx-base alpine-slim) | 待办 |
+| P2 | 给 `model_policies.go` 写最小单测 (80%) | 待办 |
+| P2 | 71 同步到 8cc5b8d7 | 待办 |
+| P3 | 拆 `web/src/api.ts` 4176→<2000 | 待办 |
+| P3 | bg/model_config_validator 加 writeAuditLog | 待办 |
+
+## 📊 关键数字 (审计基线)
+
+| 维度 | 数量 |
+|------|------|
+| 3 天 commit 数 (6/18-6/21) | ~110 |
+| fix-of-fix 反复 commit | 19 (17.3%) |
+| 6/18-6/21 新增 0 测试的核心文件 | 13 |
+| `web/` TypeScript 测试文件 | 0 |
+| 184 `llm_gateway` DB 表数 | 95 |
+| 184 `request_logs` 行数 | 41150 |
+| 184 `tool_registry` 行数 | 7 |
+| 184 `tenant_model_policies` 行数 | 1 (Round 48 已生效) |
+| 184 image tag | `gitsha-8cc5b8d7` ✓ 与 git HEAD 一致 |
+| 71 image tag | `1f60e8ef` (落后 5+ commit) |
+
+## 📌 Round 编号
+
+- 主仓库 AGENTS.md 提 Round 24 (multi-tenant audit)
+- 子模块代码提 Round 48 (= Round 24 + 24，"第二轮 L1 审计" 推测)
+- 未来 UMB 顶部固定 Round 定义
+
+## 🔗 链接
+
+- 审计报告 v6.0 终版: `docs/2026-06-21-three-day-audit.md`
+- Round 24 历史: 主仓库 `docs/llm-gateway-go/multi-tenant-2026-06-15.md` + 24 轮 handoff
+- 反复问题 commit 索引: `git log --since="2026-06-18" --until="2026-06-21 23:59" --pretty="format:%h %s" | grep -E "fix|duplicate"`
 
 ## 🎯 任务
 
