@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -85,7 +86,12 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	data, err := api.loadCompareData(ctx, tenantID, sessionID)
+	var data *SessionCompareData
+	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
+		var txErr error
+		data, txErr = api.loadCompareData(ctx, tx, tenantID, sessionID)
+		return txErr
+	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
@@ -107,7 +113,7 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, data)
 }
 
-func (api *SessionCompareAPI) loadCompareData(ctx context.Context, tenantID, sessionID string) (*SessionCompareData, error) {
+func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
 	// Query all request_logs for this session, ordered by time
 	query := `
 		SELECT 
@@ -122,7 +128,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, tenantID, ses
 		LIMIT 500
 	`
 
-	rows, err := api.db.Query(ctx, query, sessionID, tenantID)
+	rows, err := q.Query(ctx, query, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query request_logs: %w", err)
 	}
@@ -480,34 +486,40 @@ func (api *HandoffAPI) executeHandoff(ctx context.Context, req HandoffRequest) (
 }
 
 func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, tenantID string) (string, error) {
-	// Get the last few messages for context
-	rows, err := api.db.Query(ctx, `
-		SELECT request_body, response_body, created_at
-		FROM request_logs
-		WHERE gw_session_id = $1 AND tenant_id = $2
-		ORDER BY created_at DESC
-		LIMIT 3
-	`, sessionID, tenantID)
+	// Get the last few messages for context (wrapped in tenant tx for RLS)
+	var summaries []string
+	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT request_body, response_body, created_at
+			FROM request_logs
+			WHERE gw_session_id = $1 AND tenant_id = $2
+			ORDER BY created_at DESC
+			LIMIT 3
+		`, sessionID, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var reqBody, respBody *string
+			var createdAt time.Time
+			if err := rows.Scan(&reqBody, &respBody, &createdAt); err != nil {
+				continue
+			}
+			s := fmt.Sprintf("[%s] ", createdAt.Format("15:04:05"))
+			if reqBody != nil {
+				s += extractUserIntent(*reqBody)
+			}
+			if respBody != nil {
+				s += " → " + extractResponseSummary(*respBody)
+			}
+			summaries = append(summaries, s)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", err
-	}
-	defer rows.Close()
-
-	var summaries []string
-	for rows.Next() {
-		var reqBody, respBody *string
-		var createdAt time.Time
-		if err := rows.Scan(&reqBody, &respBody, &createdAt); err != nil {
-			continue
-		}
-		s := fmt.Sprintf("[%s] ", createdAt.Format("15:04:05"))
-		if reqBody != nil {
-			s += extractUserIntent(*reqBody)
-		}
-		if respBody != nil {
-			s += " → " + extractResponseSummary(*respBody)
-		}
-		summaries = append(summaries, s)
 	}
 
 	if len(summaries) == 0 {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -79,7 +80,12 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	resp, err := api.loadSessions(ctx, tenantID, page, size, searchQ, status, hours)
+	var resp *SessionListResponse
+	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
+		var txErr error
+		resp, txErr = api.loadSessions(ctx, tx, tenantID, page, size, searchQ, status, hours)
+		return txErr
+	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status": "error",
@@ -93,7 +99,7 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *SessionListAPI) loadSessions(
-	ctx context.Context, tenantID string,
+	ctx context.Context, q pgx.Tx, tenantID string,
 	page, size int, searchQ, status string, hours int,
 ) (*SessionListResponse, error) {
 	offset := (page - 1) * size
@@ -114,7 +120,7 @@ func (api *SessionListAPI) loadSessions(
 	}
 
 	var total int
-	if err := api.db.QueryRow(ctx, countQuery, argsCount...).Scan(&total); err != nil {
+	if err := q.QueryRow(ctx, countQuery, argsCount...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("count sessions: %w", err)
 	}
 
@@ -146,7 +152,7 @@ func (api *SessionListAPI) loadSessions(
 	// Get total before pagination
 	query += fmt.Sprintf(" LIMIT %d OFFSET %d", size, offset)
 
-	rows, err := api.db.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sessions: %w", err)
 	}
@@ -279,7 +285,12 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	detail, err := api.loadSessionDetail(ctx, sessionID, tenantID)
+	var detail *SessionDetail
+	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
+		var txErr error
+		detail, txErr = api.loadSessionDetail(ctx, tx, sessionID, tenantID)
+		return txErr
+	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"status":  "error",
@@ -300,7 +311,7 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, detail)
 }
 
-func (api *SessionListAPI) loadSessionDetail(ctx context.Context, sessionID, tenantID string) (*SessionDetail, error) {
+func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sessionID, tenantID string) (*SessionDetail, error) {
 	// Get session summary
 	query := `
 		SELECT 
@@ -323,7 +334,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, sessionID, ten
 		model              *string
 	)
 
-	err := api.db.QueryRow(ctx, query, sessionID, tenantID).Scan(
+	err := q.QueryRow(ctx, query, sessionID, tenantID).Scan(
 		&reqCount, &errCount, &compressed,
 		&compressionStr, &startTime, &endTime, &model,
 	)
@@ -374,7 +385,7 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, sessionID, ten
 		LIMIT 500
 	`
 
-	rows, err := api.db.Query(ctx, logQuery, sessionID, tenantID)
+	rows, err := q.Query(ctx, logQuery, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query request logs: %w", err)
 	}
