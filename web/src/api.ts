@@ -4130,3 +4130,47 @@ export async function getSessionCompare(sessionId: string, tenantId?: string): P
 export async function executeHandoff(reqData: HandoffRequest): Promise<HandoffResponse> {
   return req<HandoffResponse>('POST', '/api/admin/session-handoff', reqData)
 }
+
+// ── Session List API (v4, 2026-06-21) ────────────────────────────────
+
+export interface SessionSummary {
+  session_id: string
+  tenant_id: string
+  msg_count: number
+  request_count: number
+  token_total: number
+  model_used: string
+  time_start: string
+  time_end: string
+  duration: string
+  is_compressed: boolean
+  compression_strategy?: string
+  first_user_msg?: string
+  last_response?: string
+  error_count: number
+  success_rate: number
+}
+
+export interface SessionListResponse {
+  sessions: SessionSummary[]
+  total: number
+  page: number
+  size: number
+  pages: number
+}
+
+/**
+ * Get session list.
+ * GET /api/admin/sessions?tenant_id=&page=&size=&hours=&q=
+ */
+export async function getSessionList(params: {
+  tenant_id?: string; page?: number; size?: number; hours?: number; q?: string
+}): Promise<SessionListResponse> {
+  const q = new URLSearchParams()
+  if (params.tenant_id) q.set('tenant_id', params.tenant_id)
+  if (params.page) q.set('page', String(params.page))
+  if (params.size) q.set('size', String(params.size))
+  if (params.hours) q.set('hours', String(params.hours))
+  if (params.q) q.set('q', params.q)
+  return req<SessionListResponse>('GET', '/api/admin/sessions?' + q.toString())
+}
