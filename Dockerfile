@@ -70,7 +70,9 @@ COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
 # ./.deploy_seq, /.deploy_seq, /opt/llm-gateway-go/VERSION and
 # /opt/llm-gateway-go/.deploy_seq from a single image, regardless
 # of which path the runtime / post-deploy script picks.
-RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
+# (chown -R so the appuser runtime can re-stamp these on post-deploy.)
+RUN chown -R appuser:appuser /opt/llm-gateway-go && \
+    echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
     echo "${BUILD_SEQ:-0}" > /opt/llm-gateway-go/.deploy_seq && \
     printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
     printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
