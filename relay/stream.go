@@ -401,6 +401,23 @@ func StreamChatWithPendingCapture(
 			pc.append(line)
 		}
 
+		// 2026-06-22 fix: Filter empty choices blocks from OpenAI streams.
+		// Some upstreams (e.g. glm-5.2 at https://api.supxh.xin) send
+		// {"choices":[],"usage":{...}} blocks at stream end, which crash
+		// OpenAI clients that assume choices[0] exists. Drop these blocks
+		// before writing to the client.
+		checkPayload := extractPayload(line)
+		if checkPayload != "" && checkPayload != "[DONE]" {
+			if isOpenAIFormatData([]byte(checkPayload)) {
+				// Check if it has empty choices array
+				if strings.Contains(checkPayload, `"choices":[]`) {
+					slog.Warn("relay: dropping empty choices block",
+						"payload_preview", truncateForLog(checkPayload, 100))
+					continue // Skip this chunk
+				}
+			}
+		}
+
 		safeWriteSSE(w, line)
 		safeFlush(flusher)
 		lastSend = time.Now()
