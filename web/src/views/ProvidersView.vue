@@ -5,9 +5,9 @@ import {
   getProviders, createProvider, updateProvider, toggleProvider,
   addCredential, deleteCredential, getCatalog, getProviderCredentials,
   updateCredential, checkProvider, checkCredential, diagnoseProvider,
-  getBackgroundTasksStatus,
+  getBackgroundTasksStatus, probeURL, probeProviderURL,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
-  type BackgroundTasksStatus, type CredentialCheckResult,
+  type BackgroundTasksStatus, type CredentialCheckResult, type ProbeURLResult,
 } from '../api'
 
 const providers = ref<Provider[]>([])
@@ -87,6 +87,8 @@ const addProtocol  = ref('openai-completions')
 const addNotes     = ref('')
 const addSaving    = ref(false)
 const addErr       = ref('')
+const addProbeResult = ref<ProbeURLResult | null>(null)
+const addProbing   = ref(false)
 
 // Derive base_url placeholder from currently-selected catalog entry
 const selectedCat = computed<CatalogEntry | undefined>(
@@ -109,7 +111,27 @@ function openAdd() {
   addProtocol.value = 'openai-completions'
   addNotes.value    = ''
   addErr.value      = ''
+  addProbeResult.value = null
   showAdd.value     = true
+}
+
+async function doProbe() {
+  const url = isCustom.value ? addBaseUrl.value.trim() : addBaseUrl.value.trim()
+  if (!url) { addErr.value = '请先填写 Base URL'; return }
+  addProbing.value = true
+  addProbeResult.value = null
+  addErr.value = ''
+  try {
+    const r = await probeURL({ base_url: url })
+    addProbeResult.value = r
+    if (r.reachable && r.protocol && !isCustom.value) {
+      addProtocol.value = r.protocol
+    }
+  } catch (e: unknown) {
+    addProbeResult.value = { reachable: false, error: e instanceof Error ? e.message : '探测失败' }
+  } finally {
+    addProbing.value = false
+  }
 }
 
 async function submitAdd() {
@@ -747,12 +769,40 @@ onUnmounted(() => {
         <!-- Base URL (always shown) -->
         <div class="form-group">
           <label>Base URL{{ isCustom ? ' *' : '（可选，覆盖目录默认值）' }}</label>
-          <input
-            v-model="addBaseUrl"
-            :placeholder="isCustom ? 'https://your-api.example.com/v1' : (selectedCat?.base_url_template || 'https://api.example.com/v1')"
-          />
-          <div v-if="!isCustom && selectedCat" style="font-size:11px;color:var(--muted);margin-top:4px">
+          <div style="display:flex;gap:8px">
+            <input
+              v-model="addBaseUrl"
+              :placeholder="isCustom ? 'https://your-api.example.com/v1' : (selectedCat?.base_url_template || 'https://api.example.com/v1')"
+              style="flex:1"
+            />
+            <button
+              class="btn btn-sm"
+              :class="addProbeResult?.reachable ? 'btn-green' : 'btn-ghost'"
+              @click="doProbe"
+              :disabled="addProbing || !addBaseUrl.trim()"
+              :title="'探测此 URL 是否可达并自动识别协议'"
+            >{{ addProbing ? '探测中…' : '探测' }}</button>
+          </div>
+          <div v-if="isCustom && selectedCat" style="font-size:11px;color:var(--muted);margin-top:4px">
             目录默认: {{ selectedCat.base_url_template }}
+          </div>
+          <div v-if="addProbeResult" style="margin-top:6px;font-size:12px">
+            <template v-if="addProbeResult.reachable">
+              <span style="color:var(--success)">✅ 可达</span>
+              <span v-if="addProbeResult.protocol" style="margin-left:8px;color:var(--muted)">
+                协议: {{ addProbeResult.protocol }}
+              </span>
+              <span v-if="addProbeResult.models_count != null" style="margin-left:8px;color:var(--muted)">
+                模型: {{ addProbeResult.models_count }}
+              </span>
+              <span v-if="addProbeResult.auth_ok === false" style="margin-left:8px;color:var(--warning)">
+                ⚠️ 需 API Key
+              </span>
+            </template>
+            <template v-else>
+              <span style="color:var(--danger)">❌ 不可达</span>
+              <span v-if="addProbeResult.error" style="margin-left:8px;color:var(--muted)">{{ addProbeResult.error }}</span>
+            </template>
           </div>
         </div>
 
