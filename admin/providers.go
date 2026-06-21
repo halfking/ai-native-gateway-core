@@ -140,6 +140,172 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 	})
 }
 
+// ── Probe endpoints ──────────────────────────────────────────────────────────
+
+// probeURLResult is the response shape for both probe-url endpoints.
+type probeURLResult struct {
+	Reachable    bool     `json:"reachable"`
+	Protocol     string   `json:"protocol,omitempty"`
+	HTTPStatus   int      `json:"http_status,omitempty"`
+	ModelsCount  int      `json:"models_count,omitempty"`
+	SampleModels []string `json:"sample_models,omitempty"`
+	AuthOK       bool     `json:"auth_ok,omitempty"`
+	Error        string   `json:"error,omitempty"`
+}
+
+// probeURL (POST /api/providers/probe-url) probes a base_url WITHOUT
+// requiring an existing provider. Used by the "add provider" form:
+// the user fills in base_url + optional api_key and clicks "探测".
+//
+// Body: { "base_url": "...", "api_key": "..." (optional) }
+func (h *Handler) probeURL(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		APIKey  string `json:"api_key,omitempty"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.BaseURL == "" {
+		writeError(w, http.StatusBadRequest, "base_url required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	result := h.doProbeURL(ctx, req.BaseURL, req.APIKey)
+	writeJSON(w, http.StatusOK, result)
+}
+
+// probeProviderURL (POST /api/providers/{id}/probe-url) probes a
+// provider's base_url using its existing credentials. Used by the
+// "edit provider" form: user sees current base_url + protocol and
+// clicks "探测".
+func (h *Handler) probeProviderURL(w http.ResponseWriter, r *http.Request, providerID int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var baseURL, protocol string
+	err := h.db.QueryRow(ctx, `SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions') FROM providers WHERE id = $1 AND tenant_id = 'default'`, providerID).Scan(&baseURL, &protocol)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+	if baseURL == "" {
+		writeJSON(w, http.StatusOK, probeURLResult{Reachable: false, Error: "provider has no base_url"})
+		return
+	}
+
+	result := h.doProbeURL(ctx, baseURL, "")
+	// If the provider has active credentials, try probing with each api_key
+	// to get auth_ok status.
+	var apiKey string
+	rows, err := h.db.Query(ctx, `SELECT secret_ciphertext FROM credentials WHERE provider_id = $1 AND status = 'active' LIMIT 1`, providerID)
+	if err == nil {
+		defer rows.Close()
+		if rows.Next() {
+			var ciphertext []byte
+			if rows.Scan(&ciphertext) == nil {
+				if dec, decErr := h.decryptCredStr(string(ciphertext)); decErr == nil {
+					apiKey = dec
+				}
+			}
+		}
+	}
+	if apiKey != "" {
+		result2 := h.doProbeURL(ctx, baseURL, apiKey)
+		result.AuthOK = result2.AuthOK
+		if result2.Reachable {
+			result = result2
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// doProbeURL is the shared probe logic. It tries the URL with each
+// known protocol (openai-completions first, then anthropic-messages)
+// and returns which protocol worked.
+func (h *Handler) doProbeURL(ctx context.Context, baseURL, apiKey string) probeURLResult {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	protocols := []string{"openai-completions", "anthropic-messages"}
+
+	hasKey := strings.TrimSpace(apiKey) != ""
+
+	for _, protocol := range protocols {
+		desc := providercap.Resolve(protocol, "")
+		probeURL := providercap.ProbeEndpointURL(baseURL, desc)
+		if probeURL == "" {
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", probeURL, nil)
+		if err != nil {
+			continue
+		}
+		providercap.ApplyAuthHeaders(req, desc, apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 8 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+
+		// Accept 200, 401, 403 (auth required but reachable)
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			result := probeURLResult{
+				Reachable:  true,
+				Protocol:   protocol,
+				HTTPStatus: resp.StatusCode,
+				AuthOK:     resp.StatusCode == http.StatusOK || !hasKey,
+			}
+			if hasKey && resp.StatusCode == http.StatusOK {
+				var modelsData []map[string]any
+				var mResp struct {
+					Data   []map[string]any `json:"data"`
+					Models []map[string]any `json:"models"`
+				}
+				if json.Unmarshal(body, &mResp) == nil {
+					modelsData = mResp.Data
+					if len(modelsData) == 0 {
+						modelsData = mResp.Models
+					}
+				}
+				result.ModelsCount = len(modelsData)
+				limit := 3
+				if len(modelsData) < limit {
+					limit = len(modelsData)
+				}
+				for i := 0; i < limit; i++ {
+					if id, ok := modelsData[i]["id"].(string); ok {
+						result.SampleModels = append(result.SampleModels, id)
+					} else if name, ok := modelsData[i]["name"].(string); ok {
+						result.SampleModels = append(result.SampleModels, name)
+					}
+				}
+				if result.SampleModels == nil {
+					result.SampleModels = []string{}
+				}
+			}
+			return result
+		}
+	}
+
+	// None of the known protocols worked
+	msg := "无法连接到该 base_url"
+	if hasKey {
+		// Try again without auth to distinguish "unreachable" from "auth failed"
+		if result := h.doProbeURL(ctx, baseURL, ""); result.Reachable {
+			return probeURLResult{Reachable: true, Protocol: result.Protocol, AuthOK: false, HTTPStatus: 401, Error: "API Key 无效或凭据错误"}
+		}
+	}
+	return probeURLResult{Reachable: false, Error: msg}
+}
+
 func probeProvider(ctx context.Context, baseURL, protocol, apiKey string) (bool, error) {
 	if baseURL == "" {
 		return false, fmt.Errorf("empty base URL")
@@ -190,6 +356,16 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Root-level probe endpoints (no provider ID) ──
+	if remaining == "probe-url" {
+		if r.Method == http.MethodPost {
+			h.probeURL(w, r)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
 	idStr := remaining
 	subPath := ""
 	for i, c := range remaining {
@@ -211,6 +387,12 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 			h.updateProvider(w, r, providerID)
 		} else if r.Method == http.MethodGet {
 			h.getProvider(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "probe-url":
+		if r.Method == http.MethodPost {
+			h.probeProviderURL(w, r, providerID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -664,12 +846,6 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		EgressProfile  *string  `json:"egress_profile"`
 		Notes          *string  `json:"notes"`
 		Enabled        *bool    `json:"enabled"`
-		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		// Three-state: "off" (passthrough), "detect_only" (annotate only),
-		// "fix" (detect + actively rewrite the response body). The
-		// column has a CHECK constraint that rejects other values; we
-		// surface the DB error verbatim so the operator sees a clear
-		// "violates check constraint" instead of a silent 500.
 		QualityFixMode *string  `json:"quality_fix_mode"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -679,14 +855,19 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Track whether base_url or protocol changed — if so, auto-reprobe all active credentials.
+	needsReprobe := false
+
 	if req.DisplayName != nil {
 		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.DisplayName, id)
 	}
 	if req.BaseURL != nil {
 		h.db.Exec(ctx, `UPDATE providers SET base_url = $1, updated_at = now() WHERE id = $2`, *req.BaseURL, id)
+		needsReprobe = true
 	}
 	if req.Protocol != nil {
 		h.db.Exec(ctx, `UPDATE providers SET protocol = $1, updated_at = now() WHERE id = $2`, *req.Protocol, id)
+		needsReprobe = true
 	}
 	if req.Kind != nil {
 		h.db.Exec(ctx, `UPDATE providers SET kind = $1, updated_at = now() WHERE id = $2`, *req.Kind, id)
@@ -712,6 +893,36 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 			return
 		}
 	}
+
+	// ── Auto reprobe on base_url/protocol change ──
+	if needsReprobe {
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		rows, err := h.db.Query(ctx2, `SELECT id FROM credentials WHERE provider_id = $1 AND status = 'active'`, id)
+		if err == nil {
+			var credIDs []int
+			for rows.Next() {
+				var cid int
+				if rows.Scan(&cid) == nil {
+					credIDs = append(credIDs, cid)
+				}
+			}
+			rows.Close()
+			for _, cid := range credIDs {
+				cid := cid
+				go func(pid, cid int) {
+					taskID, taskErr := insertBackgroundTask(context.Background(), h.db, "health_check", &pid, &cid,
+						map[string]any{"provider_id": pid, "credential_id": cid, "source": "auto_on_provider_update"})
+					if taskErr != nil {
+						slog.Warn("auto-reprobe: task insert failed", "provider_id", pid, "credential_id", cid, "error", taskErr)
+						return
+					}
+					h.runHealthCheck(pid, cid, taskID)
+				}(id, cid)
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
@@ -973,6 +1184,20 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
 	}
+
+	// ── Auto probe: fire-and-forget health check after credential creation ──
+	// Runs asynchronously in a goroutine so the API returns immediately.
+	// The UI can poll the credential's health_status to see the result.
+	go func(pid, cid int) {
+		taskID, taskErr := insertBackgroundTask(context.Background(), h.db, "health_check", &pid, &cid,
+			map[string]any{"provider_id": pid, "credential_id": cid, "source": "auto_on_create"})
+		if taskErr != nil {
+			slog.Warn("auto-probe: task insert failed", "provider_id", pid, "credential_id", cid, "error", taskErr)
+			return
+		}
+		h.runHealthCheck(pid, cid, taskID)
+	}(providerID, id)
+
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
 }
 

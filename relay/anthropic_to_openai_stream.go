@@ -180,7 +180,11 @@ func StreamAnthropicSSEToOpenAI(
 			ID: chatID, Object: "chat.completion.chunk",
 			Created: createdAt, Model: chunkModel,
 		}
-		c.Choices = append(c.Choices, struct {
+		// OpenAI streaming spec requires a non-empty choices array in every chunk.
+		// Emit an empty delta {} so the choice object is well-formed even when
+		// only usage is being reported. Without this, some clients encounter
+		// "list index out of range" when choices is serialized as [].
+		choice := struct {
 			Index int `json:"index"`
 			Delta struct {
 				Role             string          `json:"role,omitempty"`
@@ -189,8 +193,9 @@ func StreamAnthropicSSEToOpenAI(
 				ToolCalls        json.RawMessage `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
-		}{})
-		c.Choices[0].Index = 0
+		}{}
+		choice.Index = 0
+		c.Choices = append(c.Choices, choice)
 		c.Usage = &struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
