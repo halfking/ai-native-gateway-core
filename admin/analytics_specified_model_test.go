@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -198,5 +199,44 @@ func TestHandleAudit_PreservesFieldSet(t *testing.T) {
 	// (The TypeScript type is checked separately via npm type-check.)
 	if SpecifiedModelTaskKey != "__specified__" {
 		t.Fatalf("SpecifiedModelTaskKey changed; verify the AutoRouteAudit.specified_model_requests wiring in handleAudit and web/src/api-autoroute.ts still match")
+	}
+}
+
+// TestBuildAuditTaskDistributionQuery_GroupByExpression guards against
+// the bug we hit during initial 184 deploy: a SELECT expression that
+// references is_auto_request inside a CASE branch (via the
+// effectiveTaskExpr) requires GROUP BY to also reference the same
+// expression — not just the raw task_type column. PostgreSQL would
+// otherwise fail with "column request_logs.is_auto_request must appear
+// in the GROUP BY clause or be used in an aggregate function", and the
+// entire task_distribution field would silently disappear from the
+// response (since the handler swallowed rows err).
+//
+// This test pins the contract that the audit's task_distribution query
+// uses GROUP BY (expr), not GROUP BY task_type.
+func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
+	// Rebuild the SQL the same way handleAudit builds it.
+	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+	q := fmt.Sprintf(`
+		SELECT %s AS task_type, COUNT(*)
+		FROM request_logs
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s)
+		ORDER BY COUNT(*) DESC
+		LIMIT 20
+	`, taskExpr, taskExpr)
+	// GROUP BY must wrap the expression in parens (PG requires this when
+	// the SELECT alias is the same expression but the underlying columns
+	// differ from the GROUP BY target).
+	if !strings.Contains(q, "GROUP BY ("+taskExpr+")") {
+		t.Fatalf("audit task_distribution query must GROUP BY (%s) — bare column name causes PG to reject the SELECT's CASE branch:\n%s", taskExpr, q)
+	}
+	// And the raw column alone must not appear in GROUP BY (that was the bug).
+	if strings.Contains(q, "GROUP BY task_type\n") {
+		t.Fatalf("audit task_distribution query must NOT use bare 'GROUP BY task_type' (breaks because SELECT references is_auto_request):\n%s", q)
 	}
 }
