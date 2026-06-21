@@ -66,7 +66,7 @@ func verifyAdminAuth(r *http.Request, db *pgxpool.Pool, secretKey string) bool {
 	return appCode == "admin"
 }
 
-func adminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// ── Try JWT auth first (no DB needed) ─────────────────
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
@@ -262,9 +262,9 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 	return
 }
 
-// superAdminMiddleware wraps admin auth + role check (super_admin or admin_key only).
+// SuperAdminMiddleware wraps admin auth + role check (super_admin or admin_key only).
 // tenant_admin requests get 403 Forbidden.
-func superAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Try JWT first (no DB needed)
 		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {

@@ -56,9 +56,10 @@ func (api *PolicyAPI) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	req.TenantID = EffectiveTenantID(r)
 
 	// Validate
-	if req.TenantID == "" || req.ToolPattern == "" {
+	if req.ToolPattern == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"status":  "error",
 			"message": "tenant_id and tool_pattern are required",
@@ -129,10 +130,7 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
-	}
+	tenantID := EffectiveTenantID(r)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -255,7 +253,7 @@ func (api *PolicyAPI) HandleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
+	tenantID := EffectiveTenantID(r)
 	toolID := r.URL.Query().Get("tool_id")
 
 	if toolID == "" {
@@ -311,7 +309,7 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	toolID := r.URL.Query().Get("tool_id")
-	tenantID := r.URL.Query().Get("tenant_id")
+	tenantID := EffectiveTenantID(r)
 	daysStr := r.URL.Query().Get("days")
 
 	days := 7
@@ -402,7 +400,7 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
+	tenantID := EffectiveTenantID(r)
 	limitStr := r.URL.Query().Get("limit")
 	daysStr := r.URL.Query().Get("days")
 
