@@ -226,7 +226,9 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			upstream_credential_id = COALESCE($8, upstream_credential_id),
 			completion_tokens = COALESCE($9, completion_tokens),
 			prompt_tokens = COALESCE($10, prompt_tokens),
-			error = COALESCE($11, error)
+			error = COALESCE($11, error),
+			compression_strategy = COALESCE(NULLIF($12, ''), compression_strategy),
+			compression_meta = COALESCE($13, compression_meta)
 		WHERE request_id = $1
 		  AND created_at = (
 		      SELECT created_at FROM request_logs
@@ -237,7 +239,8 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	`, update.RequestID, update.Status, update.Stage, update.CompletedAt,
 		update.UpstreamRequestAt, update.UpstreamResponseAt,
 		update.UpstreamProviderID, update.UpstreamCredentialID,
-		update.CompletionTokens, update.PromptTokens, update.Error)
+		update.CompletionTokens, update.PromptTokens, update.Error,
+		update.CompressionStrategy, compressionMetaJSON)
 
 	if err != nil {
 		return err
