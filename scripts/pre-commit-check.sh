@@ -75,23 +75,17 @@ skip_check() {
   SKIP=$((SKIP + 1))
 }
 
-# run_vue_tsc_warn: vue-tsc is currently WARN-only (see check_vue_tsc body).
-# Reports PASS or WARN but never FAIL. Kept separate so the run_check
-# function does not need to know about the WARN semantic.
-run_vue_tsc_warn() {
-  printf "  [Vue: vue-tsc (WARN)] "
+# run_vue_tsc: vue-tsc is now a hard gate (see check_vue_tsc body).
+# Reports PASS or FAIL but never WARN. Kept separate so the run_check
+# function does not need to know about the FAIL semantic.
+run_vue_tsc() {
+  printf "  [Vue: vue-tsc] "
   local vout
   if vout=$(check_vue_tsc 2>&1); then
-    if echo "$vout" | grep -q '^WARN:'; then
-      echo "WARN"
-      WARN=$((WARN + 1))
-    else
-      echo "PASS"
-      PASS=$((PASS + 1))
-    fi
+    echo "PASS"
+    PASS=$((PASS + 1))
   else
-    # check_vue_tsc always returns 0; this branch is defensive.
-    echo "FAIL (unexpected)"
+    echo "FAIL"
     FAIL=$((FAIL + 1))
     FAILURES+=("Vue: vue-tsc")
   fi
@@ -166,17 +160,14 @@ check_vue_tsc() {
     echo "web/node_modules not installed (cd web && npm ci to enable); skipping"
     return 0
   fi
-  # vue-tsc: WARN-only for now.
+  # vue-tsc: HARD GATE.
   #
-  # v6.0 audit found 13+ real TypeScript errors in web/ (RadarCompare,
-  # ClientConfigDialog, TagEditor, ChatView, ModelsView, etc.) that have
-  # been silently shipping because nobody ran vue-tsc. The Round-48 fix
-  # cycle (3 duplicate-edit fixes, 4 model-check UI reworks) was caused
-  # partly by these errors. Until those are fixed, this hook WARNS rather
-  # than FAILS — but the message is loud so reviewers see it.
-  #
-  # TODO: fix the 13+ vue-tsc errors (separate task), then change `return 0`
-  # back to `return 1` so vue-tsc becomes a hard gate again.
+  # 2026-06-22: 62 pre-existing vue-tsc errors (v6.0 audit) were
+  # all fixed in commits 8c2c6d57 through 7c923c5c. The hook is
+  # now a hard fail when new errors creep in. Last batch also fixed
+  # the ClientConfigDialog safety bug (ApiKey object passed where
+  # string was expected, causing config files to ship a giant
+  # metadata blob instead of a real API key).
   local out
   if out=$(cd web && npx vue-tsc --noEmit 2>&1); then
     return 0
@@ -184,10 +175,9 @@ check_vue_tsc() {
   local rc=$?
   local err_count
   err_count=$(echo "$out" | grep -cE 'error TS[0-9]+' || echo 0)
-  echo "WARN: vue-tsc found $err_count TypeScript error(s) (hook is WARN-only; will become FAIL after fix)"
-  echo "First 5 errors (full list: cd web && npx vue-tsc --noEmit):"
-  echo "$out" | grep -E 'error TS[0-9]+' | head -5 | sed 's/^/         /'
-  return 0
+  echo "FAIL: vue-tsc found $err_count TypeScript error(s) (full list: cd web && npx vue-tsc --noEmit):"
+  echo "$out" | grep -E 'error TS[0-9]+' | head -10 | sed 's/^/         /'
+  return 1
 }
 
 # ── runner ────────────────────────────────────────────────────────────
@@ -199,7 +189,7 @@ run_check "SQL: no SET+placeholder" check_sql_set_local
 run_check "Migration: unique NNN"   check_migration_unique
 if [[ -d web/node_modules ]]; then
   # vue-tsc is a WARN-only check; failures are reported but do not block.
-  run_vue_tsc_warn
+  run_vue_tsc
 else
   skip_check "Vue: vue-tsc" "web/node_modules not installed (cd web && npm ci to enable)"
 fi
