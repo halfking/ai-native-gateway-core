@@ -21,6 +21,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// SpecifiedModelTaskKey is the synthetic task_type label used to bucket
+// "client specified a model" requests in analytics. The double-underscore
+// prefix protects against collision with any future real task_type values
+// emitted by the L1 classifier.
+const SpecifiedModelTaskKey = "__specified__"
+
+// SpecifiedModelDisplayLabel is the human-readable label rendered in the
+// analytics UI. The backend always emits SpecifiedModelTaskKey; the
+// frontend may substitute this label at render time.
+const SpecifiedModelDisplayLabel = "指定模型"
+
 // AnalyticsHandlers serves matrix / flow / model-task-index endpoints.
 type AnalyticsHandlers struct {
 	db *pgxpool.Pool
@@ -64,6 +75,125 @@ func parseAnalyticsMetric(raw string) (string, error) {
 	}
 }
 
+// buildMatrixQuery assembles the SELECT query used by handleMatrix.
+// Extracted so it can be unit-tested without a real database.
+//
+// The query buckets auto requests by their L1 task_type and explicit-model
+// requests under the synthetic __specified__ task label. The column axis
+// falls back from outbound_model to client_model so that explicit-model
+// requests still appear in the heatmap even when no L1/L2 rewrite
+// populated outbound_model.
+func buildMatrixQuery(rowDim, metric string) (string, error) {
+	if rowDim != "task_type" && rowDim != "work_type" {
+		return "", fmt.Errorf("row must be task_type or work_type")
+	}
+	switch metric {
+	case "count", "success_rate", "p95_ms", "cost_usd":
+	default:
+		return "", fmt.Errorf("metric must be one of: count, success_rate, p95_ms, cost_usd")
+	}
+
+	var metricExpr string
+	switch metric {
+	case "count":
+		metricExpr = "COUNT(*)::float8"
+	case "success_rate":
+		metricExpr = "AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)"
+	case "p95_ms":
+		metricExpr = "percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)"
+	case "cost_usd":
+		metricExpr = "COALESCE(SUM(cost_usd), 0)"
+	}
+
+	rowExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+	rowNullFilter := "(task_type IS NOT NULL OR is_auto_request = FALSE)"
+	if rowDim == "work_type" {
+		rowExpr = `COALESCE(NULLIF(work_type, ''), 'unknown')`
+		rowNullFilter = `work_type IS NOT NULL AND work_type <> ''`
+	}
+
+	outColExpr := "COALESCE(NULLIF(outbound_model, ''), client_model)"
+	return fmt.Sprintf(`
+		SELECT %s AS row_key,
+		       %s AS col_key,
+		       %s AS val
+		FROM request_logs
+		WHERE ts >= NOW() - $1::interval
+		  AND %s
+		  AND %s IS NOT NULL
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s), (%s)
+	`, rowExpr, outColExpr, metricExpr, rowNullFilter, outColExpr, rowExpr, outColExpr), nil
+}
+
+// effectiveTaskExpr returns the SQL expression that produces the row
+// axis key for both auto and explicit-model requests. Auto requests use
+// their L1-classified task_type (or 'unknown' if the classifier missed);
+// explicit-model requests collapse to the synthetic SpecifiedModelTaskKey
+// so the heatmap/Sankey can show "client chose model X" as a first-class
+// row instead of a silent gap.
+func effectiveTaskExpr() string {
+	return fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+}
+
+// effectiveModelExpr returns the SQL expression that produces the
+// column axis key: outbound_model for auto requests (where the gateway
+// rewrites the body), client_model for explicit-model requests (where
+// no rewrite happens and outbound_model is typically NULL).
+func effectiveModelExpr() string {
+	return `COALESCE(NULLIF(outbound_model, ''), client_model)`
+}
+
+// buildFlowL12Query assembles the L1→L2 (task → model) Sankey SELECT.
+// It is a pure helper kept separate from the handler so the SQL can be
+// unit-tested without standing up a database.
+func buildFlowL12Query() string {
+	taskExpr := effectiveTaskExpr()
+	modelExpr := effectiveModelExpr()
+	return fmt.Sprintf(`
+		SELECT %s AS src,
+		       %s AS dst,
+		       COUNT(*)::float8 AS val
+		FROM request_logs
+		WHERE ts >= NOW() - $1::interval
+		  AND %s IS NOT NULL
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s), (%s)
+	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+}
+
+// buildFlowL23Query assembles the L2→L3 (model × task → provider)
+// Sankey SELECT. The task column still carries the synthetic
+// __specified__ key for explicit-model requests so the Sankey link
+// color matches the heatmap row.
+func buildFlowL23Query() string {
+	taskExpr := effectiveTaskExpr()
+	modelExpr := effectiveModelExpr()
+	return fmt.Sprintf(`
+		SELECT %s AS task_type,
+		       %s AS src,
+		       COALESCE(p.display_name, 'unknown') AS dst,
+		       COUNT(*)::float8 AS val
+		FROM request_logs rl
+		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
+		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
+		))
+		WHERE rl.ts >= NOW() - $1::interval
+		  AND %s IS NOT NULL
+		  AND (
+		    rl.is_auto_request = TRUE
+		    OR (rl.is_auto_request = FALSE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
+		  )
+		GROUP BY (%s), (%s), p.display_name
+	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+}
+
 // handleMatrix returns a row_dim × canonical_model heatmap.
 //
 // Query params: window=24h|7d, row=task_type|work_type, metric=count|success_rate|p95_ms|cost_usd
@@ -96,36 +226,11 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	var metricExpr string
-	switch metric {
-	case "count":
-		metricExpr = "COUNT(*)::float8"
-	case "success_rate":
-		metricExpr = "AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)"
-	case "p95_ms":
-		metricExpr = "percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)"
-	case "cost_usd":
-		metricExpr = "COALESCE(SUM(cost_usd), 0)"
+	query, err := buildMatrixQuery(rowDim, metric)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
-
-	rowExpr := "COALESCE(task_type, 'unknown')"
-	rowNullFilter := "task_type IS NOT NULL"
-	if rowDim == "work_type" {
-		rowExpr = "COALESCE(NULLIF(work_type, ''), 'unknown')"
-		rowNullFilter = "work_type IS NOT NULL AND work_type <> ''"
-	}
-
-	query := fmt.Sprintf(`
-		SELECT %s AS row_key,
-		       outbound_model AS col_key,
-		       %s AS val
-		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - $1::interval
-		  AND %s
-		  AND outbound_model IS NOT NULL
-		GROUP BY row_key, outbound_model
-	`, rowExpr, metricExpr, rowNullFilter)
 
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 	rows, err := h.db.Query(ctx, query, intervalStr)
@@ -243,17 +348,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
 	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
-	l12Query := `
-		SELECT COALESCE(task_type, 'unknown') AS src,
-		       outbound_model AS dst,
-		       COUNT(*)::float8 AS val
-		FROM request_logs
-		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - $1::interval
-		  AND task_type IS NOT NULL
-		  AND outbound_model IS NOT NULL
-		GROUP BY task_type, outbound_model
-	`
+	l12Query := buildFlowL12Query()
 	l12Rows, err := h.db.Query(ctx, l12Query, intervalStr)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -302,22 +397,10 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	// Layer 2→3: task_type × canonical_model → provider_name
 	// Grouped by task_type so each link carries the original task color.
+	// Includes both auto requests and explicit-model requests; the latter
+	// use client_model as the model anchor and __specified__ as the task.
 	// NOTE: providers table column is display_name, NOT name.
-	l23Query := `
-		SELECT COALESCE(rl.task_type, 'unknown') AS task_type,
-		       rl.outbound_model AS src,
-		       COALESCE(p.display_name, 'unknown') AS dst,
-		       COUNT(*)::float8 AS val
-		FROM request_logs rl
-		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
-		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
-		))
-		WHERE rl.is_auto_request = TRUE
-		  AND rl.ts >= NOW() - $1::interval
-		  AND rl.outbound_model IS NOT NULL
-		  AND rl.task_type IS NOT NULL
-		GROUP BY rl.task_type, rl.outbound_model, p.display_name
-	`
+	l23Query := buildFlowL23Query()
 	l23Rows, err := h.db.Query(ctx, l23Query, intervalStr)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -387,8 +470,8 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 	}
 	if !latestBucket.Valid {
 		writeJSONOk(w, map[string]interface{}{
-			"bucket": nil,
-			"items":  []map[string]interface{}{},
+			"bucket":  nil,
+			"items":   []map[string]interface{}{},
 			"warning": "model_task_index is empty; awaiting first bg worker refresh",
 		})
 		return

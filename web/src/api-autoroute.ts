@@ -81,11 +81,25 @@ export interface AutoRouteDecision {
 
 export interface AutoRouteAudit {
   total_auto_requests: number
+  /** Non-auto requests where the client specified a model name directly. */
+  specified_model_requests?: number
+  /** Sum of auto + specified-model requests over the audit window. */
+  total_requests?: number
   success_rate: number
   task_distribution: Record<string, number>
   profile_distribution: Record<string, number>
   top_chosen_models: Array<{ model: string; count: number }>
 }
+
+/**
+ * Synthetic task_type key the gateway emits for explicit-model requests
+ * (model != "auto"). Surfaced as a first-class row in the analytics
+ * heatmap / Sankey so users can see the full routing volume.
+ */
+export const SPECIFIED_MODEL_TASK_KEY = '__specified__'
+
+/** Human-readable label rendered in the UI in place of the synthetic key. */
+export const SPECIFIED_MODEL_DISPLAY_LABEL = '指定模型'
 
 export interface CustomerCostRow {
   api_key_id: number

@@ -6,6 +6,7 @@ import {
   getCustomerCost, getModelCost, refreshAutoRouteIndex, simulateAutoRoute,
   getAnalyticsMatrix, getAnalyticsFlow, getAnalyticsFunnel, getDecisionReplay,
   DEFAULT_PROFILE_WEIGHTS, TASK_TYPES, TASK_TAGS,
+  SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL,
   type AutoRouteIndexEntry, type AutoRouteDecision, type AutoRouteAudit,
   type CustomerCostRow, type ModelCostRow, type ProfileWeights,
   type AnalyticsMatrix, type AnalyticsFlow, type AnalyticsMetric, type AnalyticsWindow,
@@ -43,6 +44,11 @@ interface ResolveLogEntry {
 
 const route = useRoute()
 const activeTab = ref<'analytics' | 'overview' | 'policy' | 'live' | 'resolve'>('analytics')
+
+/** Map the synthetic __specified__ task key to its display label. */
+function displayTaskKey(key: string): string {
+  return key === SPECIFIED_MODEL_TASK_KEY ? SPECIFIED_MODEL_DISPLAY_LABEL : key
+}
 
 function tabFromQuery(q: unknown): typeof activeTab.value | null {
   if (q === 'analytics' || q === 'resolve' || q === 'overview' || q === 'policy' || q === 'live') return q
@@ -144,15 +150,18 @@ async function onMatrixCellClick(row: string, col: string, value: number) {
   modalDecisionId.value = ''
   funnelStages.value = []
   try {
-    const rowFilter = analyticsRowDim.value === 'work_type'
-      ? { workType: row }
-      : { task: row }
+    const isSpecified = row === SPECIFIED_MODEL_TASK_KEY
+    // For the synthetic __specified__ row, request_logs.task_type is
+    // NULL — we cannot pass a task filter; the model column alone
+    // narrows the result set for the decisions modal.
+    const taskArg = isSpecified ? undefined : (analyticsRowDim.value === 'task_type' ? row : undefined)
+    const workTypeArg = analyticsRowDim.value === 'work_type' ? row : undefined
     cellDecisions.value = await getAutoRouteDecisions(
       10,
-      rowFilter.task,
+      taskArg,
       undefined,
       col,
-      rowFilter.workType,
+      workTypeArg,
     )
     await loadFunnel(col)
   } catch (e) {
@@ -726,7 +735,7 @@ onUnmounted(() => stopPoll())
         <div class="modal-panel card compact-card">
           <div class="card-toolbar">
             <div class="toolbar-left">
-              <span class="toolbar-title">{{ cellPopup.row }} × {{ cellPopup.col }}</span>
+              <span class="toolbar-title">{{ displayTaskKey(cellPopup.row) }} × {{ cellPopup.col }}</span>
               <span class="text-muted">最近决策</span>
             </div>
             <button class="btn btn-ghost btn-sm" @click="closeCellModal">关闭</button>
