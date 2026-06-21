@@ -316,7 +316,7 @@ async function savePolicy() {
   try {
     const dirty: Partial<RoutingPolicy> = {}
     for (const f of POLICY_FIELDS) {
-      if (policyDraft.value[f.key] !== policy.value![f.key]) dirty[f.key] = policyDraft.value[f.key]
+      if (policyDraft.value[f.key] !== policy.value![f.key]) (dirty as Record<string, unknown>)[f.key] = policyDraft.value[f.key]
     }
     if (Object.keys(dirty).length > 0) {
       policy.value = await patchPolicy(dirty)
