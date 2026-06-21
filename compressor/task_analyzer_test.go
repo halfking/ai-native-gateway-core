@@ -200,22 +200,18 @@ func TestAnalyzeTasks_EmptyAndShort(t *testing.T) {
 	}
 }
 
-// TestAnalyzeTasks_CompleteWorkflow pins the current behaviour.
+// TestAnalyzeTasks_CompleteWorkflow pins the fixed behaviour.
 //
-// Known behaviour (audit pin): 当 user 消息同时包含 "done" + "next task"
-// (e.g. "thanks, done, next task: deploy"), AnalyzeTasks 给该消息
-// 同时产生一个 completion signal 和一个 new_task signal. 代码逻辑
-// 把 new_task 信号当作 boundary 起点, 但**丢弃前一条 completion
-// signal** —— CompletedCount 保持 0.
-//
-// 这是 task_analyzer 的设计 bug: 同一条消息内的 completion 应该优先
-// 标记上一 task 为完成, 而不是被 new_task 覆盖. 测试 pin 真实行为,
-// 留给 v6.0 §7 P1 修复.
+// Audit P1 fix (2026-06-22): boundary 由 completion signal 触发, 不是
+// new_task signal. 修复后, msg[2] "thanks, done" (IsCompletion=true) 产生
+// boundary msg[0-1] Completed, msg[3] "next task" (IsCompletion=false) 不
+// 再覆盖前一个 completion. 同时 msg[3] 作为新 task 起点, 最终剩
+// boundary msg[3-4] active.
 func TestAnalyzeTasks_CompleteWorkflow(t *testing.T) {
 	msgs := []map[string]any{
 		{"role": "user", "content": "first task: write hello world"},
 		{"role": "assistant", "content": "Here's the code: ..."},
-		{"role": "user", "content": "thanks, done"},        // completion signal: "done"
+		{"role": "user", "content": "thanks, done"},         // completion signal: "done"
 		{"role": "user", "content": "next task: deploy it"}, // completion: "next task" + new_task
 		{"role": "assistant", "content": "Deploying..."},
 	}
@@ -226,18 +222,20 @@ func TestAnalyzeTasks_CompleteWorkflow(t *testing.T) {
 	if !result.HasAnalysis {
 		t.Error("expected HasAnalysis=true for >= 4 messages")
 	}
-	// Pin: 1 boundary (active task 4-4), CompletedCount=0 (bug: 前一个
-	// "done" completion 被同消息 "next task" new_task 覆盖)
-	if len(result.Boundaries) != 1 {
-		t.Errorf("pin: expected 1 boundary, got %d (boundaries=%+v)",
-			len(result.Boundaries), result.Boundaries)
-	}
-	if result.CompletedCount != 0 {
-		t.Errorf("audit pin: expected CompletedCount=0 (bug: msg[2] done 被 msg[3] next task 覆盖), got %d",
-			result.CompletedCount)
+	// Fix verification: CompletedCount=2 (msg[0-1] 完成 + msg[3-4] active 完成)
+	// Wait, after fix: msg[2] "done" creates boundary 0-1 Completed=true.
+	// msg[3] "next task" sets lastEnd=3 but doesn't create boundary.
+	// msg[4] is last (len-1), so add active task msg[3-4].
+	if result.CompletedCount != 1 {
+		t.Errorf("audit pin (post-fix): expected CompletedCount=1 (msg[0-1] from done signal), got %d (boundaries=%+v)",
+			result.CompletedCount, result.Boundaries)
 	}
 	if result.ActiveCount != 1 {
-		t.Errorf("expected ActiveCount=1 (msg[4]), got %d", result.ActiveCount)
+		t.Errorf("expected ActiveCount=1 (msg[3-4] from msg[3] new_task signal), got %d", result.ActiveCount)
+	}
+	if len(result.Boundaries) != 2 {
+		t.Errorf("expected 2 boundaries (msg[0-1] completed + msg[3-4] active), got %d (boundaries=%+v)",
+			len(result.Boundaries), result.Boundaries)
 	}
 }
 

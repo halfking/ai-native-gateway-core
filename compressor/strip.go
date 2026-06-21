@@ -127,8 +127,9 @@ func detectToolRounds(msgs []json.RawMessage) map[int]bool {
 
 			if resultsFound >= len(toolIDs) {
 				// Round completed (all tool_calls have matching results)
-				// Remove: assistant[tool_calls] + tool_results
-				// Keep: user acknowledgement (if any)
+				// Mark all completed rounds; filterMessages later keeps the
+				// LAST round's assistant tool_call for context continuity
+				// (and skips its matching tool_results, see filterMessages).
 				remove[i] = true // assistant with tool_calls
 				for k := i + 1; k <= i+len(toolIDs) && k < len(msgs); k++ {
 					if isToolResult(msgs[k]) {
@@ -143,6 +144,18 @@ func detectToolRounds(msgs []json.RawMessage) map[int]bool {
 	}
 
 	return remove
+}
+
+// hasAnyToolCallsAfter is unused but kept for future use.
+// (Removed detectToolRounds "skip last round" optimization because
+// filterMessages already handles "keep last round" correctly.)
+func hasAnyToolCallsAfter(msgs []json.RawMessage, start int) bool {
+	for k := start; k < len(msgs); k++ {
+		if hasToolCalls(msgs[k]) {
+			return true
+		}
+	}
+	return false
 }
 
 // filterMessages applies the strip rules:
