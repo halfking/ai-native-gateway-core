@@ -295,6 +295,31 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
+		// 2026-06-21 fix: Some anthropic-compatible upstreams (notably
+		// glm-5.2-oneday at https://api.supxh.xin) leak OpenAI-format
+		// chunks into the Anthropic SSE stream. The mixed chunks have
+		// `event:` prefixes (so they survive the empty-event filter
+		// above) but carry OpenAI fields like {"choices":[],"model":"x"}.
+		// Without this guard, they pass the switch below, fall through
+		// every Anthropic case, and get emitted as-is — producing empty
+		// choices[] chunks that crash OpenAI streaming clients with
+		// "list index out of range".
+		//
+		// Drop any event whose `type` field is not a known Anthropic
+		// event name. Unknown event types are already silently dropped
+		// by the switch below, but the OpenAI-shaped data still
+		// pollutes the client stream because the empty default case
+		// emits nothing — however the upstream-sent OpenAI data is
+		// already on the wire by the time the case falls through.
+		// The real fix is to filter at the SSE layer: if the JSON does
+		// not carry an Anthropic-shaped top-level `type` field, drop
+		// the event before any emit.
+		if !isKnownAnthropicEventType(ev.Type) {
+			slog.Warn("anthropic_to_openai: dropping non-Anthropic event from upstream",
+				"event_type", eventType, "ev_type", ev.Type, "request_id", requestID)
+			continue
+		}
+
 		// 2026-06-21 debug: detect upstream sending OpenAI-format chunks
 		// instead of Anthropic events. Some providers (e.g. glm-5.2) may
 		// mix formats, causing empty choices[] chunks to leak through.
@@ -529,6 +554,30 @@ func readSSEEvent(_ context.Context, reader io.Reader, _ streamRuntimeConfig) (e
 			return eventType, nil, io.EOF
 		}
 	}
+}
+
+// isKnownAnthropicEventType returns true if t is one of the Anthropic
+// Messages streaming event types. Used to filter out non-Anthropic
+// payloads that some upstreams (e.g. glm-5.2-oneday) leak into their
+// Anthropic SSE stream. See the call site for full context.
+//
+// Reference (Anthropic Messages streaming spec):
+//
+//	message_start, message_delta, message_stop, content_block_start,
+//	content_block_delta, content_block_stop, ping, error
+func isKnownAnthropicEventType(t string) bool {
+	switch t {
+	case "message_start",
+		"message_delta",
+		"message_stop",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"ping",
+		"error":
+		return true
+	}
+	return false
 }
 
 var _ = fmt.Sprintf
