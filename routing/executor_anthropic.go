@@ -354,6 +354,24 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	if e.SanitizeAnthropicTools != nil {
 		bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
 	}
+
+	// 2026-06-21: Fix empty response issue (Request ID: 92ef59e52efae25c396d0504efbfa2e6)
+	// Claude API doesn't support "tool" role and requires user/assistant alternation.
+	// Convert "tool" role to "user" + tool_result block and merge consecutive messages.
+	fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
+	if fixErr != nil {
+		return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
+	}
+	bodyBytes = fixedBytes
+
+	// Validate message sequence (warning mode only, don't block requests)
+	if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
+		slog.Warn("invalid anthropic message sequence after fix",
+			"error", valErr,
+			"tenant_id", params.TenantID,
+		)
+	}
+
 	return bodyBytes, nil
 }
 
