@@ -43,14 +43,22 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
     go build -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 docker.m.daocloud.io/library/alpine:3.20
+# 2026-06-21: switched from alpine:3.20 to kx-base:go-vue-amd64 (Debian 13).
+# Why: alpine 3.20's package index (dl-cdn.alpinelinux.org) suffers from
+# intermittent SSL handshake failures from the buildx network (GFW). The
+# kx-base image already provides ca-certificates + tzdata + adduser, and
+# is served from registry.kxpms.cn (no upstream dependency). The size
+# increase (~900MB vs 5MB) is acceptable for a server-side data plane.
+# See deploy/shared/docs/base-image-strategy.md for the registry catalog.
+FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue-amd64
 
 ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
-RUN apk add --no-cache ca-certificates tzdata && \
-    adduser -D -u 1001 llmgw
+# kx-base:go-vue already provides ca-certificates + tzdata + adduser.
+# Only the llmgw user is missing — create it.
+RUN adduser -D -u 1001 llmgw
 
 WORKDIR /
 
