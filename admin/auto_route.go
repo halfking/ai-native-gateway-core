@@ -468,10 +468,10 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		    is_auto_request = TRUE
 		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
 		  )
-		GROUP BY task_type
+		GROUP BY (%s)
 		ORDER BY COUNT(*) DESC
 		LIMIT 20
-	`, taskExpr))
+	`, taskExpr, taskExpr))
 	if err == nil {
 		for rows.Next() {
 			var t string
