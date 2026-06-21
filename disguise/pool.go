@@ -23,7 +23,16 @@ type Pool struct {
 }
 
 // DefaultPool is the package-level pool used by main.go.
-var DefaultPool = NewPool(5 * time.Minute)
+//
+// Rotation interval: 30 minutes (up from 5 min).
+//
+// Why longer? With HeadersForSlot(slot) the same slot now returns the
+// same UA every call, so the per-call random rotation in Headers() only
+// matters for the no-slot fallback path. The MaybeRotate shuffle
+// represents "this virtual device's user reinstalled their browser",
+// which realistically takes weeks, not minutes. 30 min keeps the
+// disguise pool "fresh" without churning the per-slot identity mid-session.
+var DefaultPool = NewPool(30 * time.Minute)
 
 // NewPool returns a pool seeded with the default user-agent and
 // accept-language lists and the given rotation interval.
@@ -40,6 +49,10 @@ func NewPool(rotateInterval time.Duration) *Pool {
 // values for use in an outbound HTTP request. Always returns a non-nil
 // map with both keys present; an empty value signals "no pool
 // available, do not send the header".
+//
+// This path picks randomly per call and is the right choice for
+// stateless (no-slot) requests. For slot-bound requests, prefer
+// HeadersForSlot so the same virtual device keeps a stable UA.
 func (p *Pool) Headers() map[string]string {
 	if p == nil {
 		return map[string]string{
@@ -52,6 +65,39 @@ func (p *Pool) Headers() map[string]string {
 	return map[string]string{
 		"User-Agent":      p.agents[rand.Intn(len(p.agents))],
 		"Accept-Language": p.languages[rand.Intn(len(p.languages))],
+	}
+}
+
+// HeadersForSlot returns deterministic UA/Accept-Language for a given
+// slot index. Same slot → same headers, every call. Different slots →
+// different UAs (the disguise goal: many virtual devices, each stable).
+//
+// This matches the "连接后保持稳定" (stable after connection) contract:
+// a session that has acquired slot N keeps UA[N] for as long as it
+// holds that slot. If the slot migrates (contention), the UA changes
+// consistently with the new slot — the supplier sees one consistent
+// "virtual device" per slot ownership window.
+//
+// Pass slot < 0 to fall back to the random Headers() path (for stateless
+// requests with no acquired slot).
+func (p *Pool) HeadersForSlot(slot int) map[string]string {
+	if p == nil {
+		return map[string]string{
+			"User-Agent":      "",
+			"Accept-Language": "",
+		}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if slot < 0 {
+		return map[string]string{
+			"User-Agent":      p.agents[rand.Intn(len(p.agents))],
+			"Accept-Language": p.languages[rand.Intn(len(p.languages))],
+		}
+	}
+	return map[string]string{
+		"User-Agent":      p.agents[slot%len(p.agents)],
+		"Accept-Language": p.languages[slot%len(p.languages)],
 	}
 }
 
