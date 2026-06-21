@@ -116,11 +116,11 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, tenantID, ses
 			request_id, request_body, outbound_body, response_body,
 			compression_strategy, compression_meta, 
 			outbound_msg_count, outbound_token_est,
-			model, provider, credential_name,
-			created_at, cache_hit
+			client_model, outbound_model,
+			ts, provider_id
 		FROM request_logs
 		WHERE gw_session_id = $1 AND tenant_id = $2
-		ORDER BY created_at ASC
+		ORDER BY ts ASC
 		LIMIT 500
 	`
 
@@ -146,29 +146,32 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, tenantID, ses
 
 	for rows.Next() {
 		var (
-			requestID, model, provider, credName string
+			requestID, clientModel, outboundModel string
 			requestBody, outboundBody, responseBody *string
 			compressionStrategy                   *string
 			compressionMeta                       *string
 			outboundMsgCount                      *int
 			outboundTokenEst                      *int
 			createdAt                             time.Time
-			cacheHit                              *bool
+			providerID                            *int
 		)
 
 		err := rows.Scan(
 			&requestID, &requestBody, &outboundBody, &responseBody,
 			&compressionStrategy, &compressionMeta,
 			&outboundMsgCount, &outboundTokenEst,
-			&model, &provider, &credName,
-			&createdAt, &cacheHit,
+			&clientModel, &outboundModel,
+			&createdAt, &providerID,
 		)
 		if err != nil {
 			continue
 		}
 
-		if model != "" && modelUsed == "" {
-			modelUsed = model
+		if clientModel != "" && modelUsed == "" {
+			modelUsed = clientModel
+		}
+		if outboundModel != "" && modelUsed == "" {
+			modelUsed = outboundModel
 		}
 
 		// Parse original messages from request_body
