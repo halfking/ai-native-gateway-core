@@ -2580,11 +2580,14 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 
 	apiKey, decErr := h.decryptCredStr(string(cred.secretCipher))
 	probeOk := false
+	modelsOk := false
 	var healthStatus, healthError string
 	var healthLatencyMs int
 	var modelsCount int
 	var sampleModels []string
 	var apiModelsErr *string
+	var effectiveSource string
+	var modelsStatus int
 
 	if decErr != nil {
 		healthStatus = "error"
@@ -2595,20 +2598,24 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		start := time.Now()
 		models, source, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
+		effectiveSource = source
 
 		if fetchErr != nil {
 			healthStatus = "unreachable"
 			healthError = fetchErr.Error()
 			msg := fetchErr.Error()
 			apiModelsErr = &msg
+			modelsStatus = -1
 		} else if len(models) == 0 {
 			healthStatus = "unreachable"
 			healthError = fmt.Sprintf("no models returned (source=%s)", source)
 			msg := healthError
 			apiModelsErr = &msg
+			modelsStatus = -1
 		} else {
 			healthStatus = "healthy"
 			probeOk = source == "api" || source == "api+manifest"
+			modelsOk = source == "api" || source == "api+manifest"
 			modelsCount = len(models)
 			limit := 3
 			if len(models) < limit {
@@ -2618,6 +2625,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 			if source != "api" && source != "api+manifest" {
 				healthError = fmt.Sprintf("used %s fallback (%d models)", source, len(models))
 			}
+			modelsStatus = 1
 		}
 	}
 
@@ -2630,12 +2638,23 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		    health_latency_ms = $3, health_source = 'probe', api_models_ok = $4,
 		    api_models_last_checked_at = now(), api_models_error = $5
 		WHERE id = $6
-	`, healthStatus, healthError, healthLatencyMs, probeOk, apiModelsErr, credID)
+	`, healthStatus, healthError, healthLatencyMs, modelsOk, apiModelsErr, credID)
 
 	return map[string]any{
-		"credential_id": credID, "health_status": healthStatus, "probe_ok": probeOk,
-		"health_latency_ms": healthLatencyMs, "health_error": healthError,
-		"models_count": modelsCount, "sample_models": sampleModels,
+		"credential_id":          credID,
+		"health_status":          healthStatus,
+		"probe_ok":               probeOk,
+		"models_ok":              modelsOk,
+		"models_count":           modelsCount,
+		"health_latency_ms":      healthLatencyMs,
+		"health_error":           healthError,
+		"models_failure_reason":  apiModelsErr,
+		"models_error":           apiModelsErr,
+		"models_status":          modelsStatus,
+		"sample_models":          sampleModels,
+		"effective_source":       effectiveSource,
+		"discovery_strategy":     cred.discoveryStrategy,
+		"models_endpoint_template": cred.modelsEndpointTpl,
 	}, nil
 }
 

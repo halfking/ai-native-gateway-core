@@ -64,9 +64,10 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '请求与会话',
     items: [
       { path: '/request-logs', label: '请求日志', icon: '📋' },
+      { path: '/sessions', label: '会话列表', icon: '💬' },
       { path: '/session-compare', label: '会话对比', icon: '🔍' },
       { path: '/admin/compression', label: '压缩概览', icon: '📦', platformOps: true, hideForTenant: true },
-      { path: '/session-context', label: '会话上下文', icon: '💬' },
+      { path: '/session-context', label: '会话上下文', icon: '💭' },
     ],
   },
   {
