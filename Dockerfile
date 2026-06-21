@@ -66,6 +66,10 @@ WORKDIR /
 COPY --from=builder /llm-gateway-go /usr/local/bin/llm-gateway-go
 COPY --from=builder /src/web/dist /opt/llm-gateway-go/web/dist
 
+# kx-base:go-vue defaults USER=appuser (uid=1001); the COPY --from=builder
+# files are owned by root, so we need root to chown them to appuser.
+USER root
+
 # Stamp version files after COPY so the running process can read
 # ./.deploy_seq, /.deploy_seq, /opt/llm-gateway-go/VERSION and
 # /opt/llm-gateway-go/.deploy_seq from a single image, regardless
