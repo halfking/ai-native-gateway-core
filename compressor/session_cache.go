@@ -75,6 +75,15 @@ type SessionState struct {
 	RecentlyCompressedAt int64  `json:"rcat"` // unix seconds (60s mutual-exclusion)
 	ToolsHash            string `json:"th,omitempty"`  // sha256 hex of tools array (Phase 1 optimization)
 	SystemPrompt         string `json:"sys,omitempty"` // cached system prompt (Phase 1 optimization)
+
+	// v4: Full session tracking
+	FullSessionHash      string `json:"fsh,omitempty"` // sha256 of the complete (uncompressed) session body
+	LastStripAt          int64  `json:"lsat,omitempty"` // unix seconds of last tool/thinking strip
+	StripsApplied        int    `json:"sa,omitempty"`   // count of strip operations applied
+	CompletedTasks       int    `json:"ct,omitempty"`   // count of completed tasks detected
+	CompressionMode      string `json:"cm,omitempty"`   // current v4 compression mode: "off"|"delta"|"smart"|"aggressive"
+	MessagesAfterStrip   int    `json:"mas,omitempty"`  // message count after last strip
+	TokensAfterStrip     int    `json:"tas,omitempty"`  // token estimate after last strip
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -332,6 +341,25 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if st.SystemPrompt != "" {
 		fields = append(fields, "sys", st.SystemPrompt)
 	}
+	// v4: Full session tracking
+	if st.FullSessionHash != "" {
+		fields = append(fields, "fsh", st.FullSessionHash)
+	}
+	if st.LastStripAt > 0 {
+		fields = append(fields, "lsat", fmt.Sprintf("%d", st.LastStripAt))
+	}
+	if st.StripsApplied > 0 {
+		fields = append(fields, "sa", fmt.Sprintf("%d", st.StripsApplied))
+	}
+	if st.CompressionMode != "" {
+		fields = append(fields, "cm", st.CompressionMode)
+	}
+	if st.CompletedTasks > 0 {
+		fields = append(fields, "ct", fmt.Sprintf("%d", st.CompletedTasks))
+	}
+	if st.MessagesAfterStrip > 0 {
+		fields = append(fields, "mas", fmt.Sprintf("%d", st.MessagesAfterStrip))
+	}
 	return fields
 }
 
@@ -351,6 +379,13 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	// Phase 1 optimization: restore ToolsHash and SystemPrompt
 	st.ToolsHash = fields["th"]
 	st.SystemPrompt = fields["sys"]
+	// v4: Full session tracking
+	st.FullSessionHash = fields["fsh"]
+	st.LastStripAt = parseInt(fields["lsat"])
+	st.StripsApplied = int(parseInt(fields["sa"]))
+	st.CompressionMode = fields["cm"]
+	st.CompletedTasks = int(parseInt(fields["ct"]))
+	st.MessagesAfterStrip = int(parseInt(fields["mas"]))
 	return nil
 }
 

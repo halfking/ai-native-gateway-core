@@ -113,17 +113,12 @@ func (sc *SessionCompressor) Prepare(
 	res := &PrepareResult{}
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
-		// No session context — forward as-is.
-		if len(clientBody) > 0 {
-			hashes := computeHashes(mustExtractMessages(clientBody))
-			res.MsgHashes = marshalHashes(hashes)
-			res.MsgCount = countMessages(clientBody)
-			res.TokenEst = estimateBodyTokens(clientBody)
-		}
-		return res
+		return sc.fallbackResult(clientBody, res)
 	}
 
-	// ── Load session state ───────────────────────────────────────────────
+	mode := sc.resolveCompressionMode()
+
+	// ── Phase 1: Load session state ──────────────────────────────────────
 	var (
 		state           *SessionState
 		lastOutboundBody []byte
@@ -137,12 +132,12 @@ func (sc *SessionCompressor) Prepare(
 		}
 	}
 
-	// ── Delta-append: find new turns, build outbound body ────────────────
+	// ── Phase 2: Delta-append (find new turns) ────────────────────────────
 	diffResult, err := BuildOutboundMessages(clientBody, state, lastOutboundBody, protocol)
 	if err != nil {
 		slog.Warn("session_compressor: diff failed, forwarding client body",
 			"session", gwSessionID, "error", err)
-		return sc.fallbackResult(clientBody)
+		return sc.fallbackResult(clientBody, res)
 	}
 
 	outboundBody := diffResult.Body
@@ -150,24 +145,76 @@ func (sc *SessionCompressor) Prepare(
 	res.TokenEst = diffResult.TokenEst
 	res.MsgHashes = marshalHashes(diffResult.MsgHashes)
 
-	// ── Tools caching (Phase 1 optimization) ─────────────────────────────
-	// If tools array hasn't changed since last request, remove it from
-	// outboundBody and add "_tools_cached": true marker. The executor will
-	// restore tools before forwarding to upstream LLM provider.
+	// ── Phase 3: Tools caching ────────────────────────────────────────────
 	var toolsCached bool
 	if state != nil {
 		outboundBody, toolsCached = applyToolsCaching(outboundBody, state)
 		if toolsCached {
-			// Recalculate token estimate after removing tools
 			res.TokenEst = estimateBodyTokens(outboundBody)
 		}
 	}
 
-	// ── Window trigger check ─────────────────────────────────────────────
+	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
+	// For delta_only mode: just delta-append, no compression
+	if mode == ModeDeltaOnly {
+		if !diffResult.Unchanged && !diffResult.IsNewSess {
+			res.OutboundBody = outboundBody
+			res.CompressionStrategy = "delta_append"
+		}
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		return res
+	}
+
+	// For smart/aggressive modes: apply tool/thinking stripping + task analysis
+	if mode == ModeSmart || mode == ModeAggressive {
+		// ── Phase 4a: Tool/thinking strip ──────────────────────────────────
+		strippedBody, stripResult := StripToolInfo(outboundBody, protocol)
+		if stripResult.DidStrip {
+			slog.Info("v4: tool info stripped",
+				"tools_removed", stripResult.ToolCallsRemoved,
+				"thinking_removed", stripResult.ThinkingRemoved,
+				"bytes_before", stripResult.BytesBefore,
+				"bytes_after", stripResult.BytesAfter)
+			outboundBody = strippedBody
+			res.MsgCount = countMessages(outboundBody)
+			res.TokenEst = estimateBodyTokens(outboundBody)
+			res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
+
+			// Update state tracking
+			if state != nil {
+				state.StripsApplied++
+				state.MessagesAfterStrip = res.MsgCount
+				state.TokensAfterStrip = res.TokenEst
+				state.LastStripAt = time.Now().Unix()
+			}
+		}
+
+		// ── Phase 4b: Task analysis (aggressive mode only) ────────────
+		if mode == ModeAggressive {
+			msgs := mustExtractMessages(outboundBody)
+			msgMaps := make([]map[string]any, 0, len(msgs))
+			for _, m := range msgs {
+				var msg map[string]any
+				if json.Unmarshal(m, &msg) == nil {
+					msgMaps = append(msgMaps, msg)
+				}
+			}
+			taskResult := AnalyzeTasks(msgMaps)
+			if taskResult.HasAnalysis {
+				slog.Info("v4: task analysis completed",
+					"completed_tasks", taskResult.CompletedCount,
+					"active_tasks", taskResult.ActiveCount)
+				if state != nil {
+					state.CompletedTasks += taskResult.CompletedCount
+				}
+			}
+		}
+	}
+
+	// ── Phase 5: Window trigger check ─────────────────────────────────────
 	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
 
 	if winResult.SkipStream {
-		// Stream already started — no rewrite possible.
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
@@ -180,7 +227,6 @@ func (sc *SessionCompressor) Prepare(
 		res.WindowTriggered = winResult.Reason
 
 		if winResult.Degraded {
-			// Mutual-exclusion guard active — degrade to mechanical trim.
 			res.Degraded = true
 			trimmed := mechanicalTrim(outboundBody, contextWindow, protocol)
 			if len(trimmed) < len(outboundBody) {
@@ -241,6 +287,16 @@ func (sc *SessionCompressor) Prepare(
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+// resolveCompressionMode returns the effective v4 compression mode.
+// Priority: SessionState mode → env mode → default (ModeSmart).
+func (sc *SessionCompressor) resolveCompressionMode() Mode {
+	env := envMode()
+	if env != ModeSmart {
+		return env
+	}
+	return ModeSmart
+}
+
 func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, protocol, taskType string) ([]byte, bool) {
 	if sc.deps.CompactionDeps == nil {
 		return nil, false
@@ -287,13 +343,14 @@ func (sc *SessionCompressor) updateCache(
 	}
 }
 
-func (sc *SessionCompressor) fallbackResult(clientBody []byte) *PrepareResult {
-	hashes := computeHashes(mustExtractMessages(clientBody))
-	return &PrepareResult{
-		MsgHashes: marshalHashes(hashes),
-		MsgCount:  countMessages(clientBody),
-		TokenEst:  estimateBodyTokens(clientBody),
+func (sc *SessionCompressor) fallbackResult(clientBody []byte, res *PrepareResult) *PrepareResult {
+	if len(clientBody) > 0 {
+		hashes := computeHashes(mustExtractMessages(clientBody))
+		res.MsgHashes = marshalHashes(hashes)
+		res.MsgCount = countMessages(clientBody)
+		res.TokenEst = estimateBodyTokens(clientBody)
 	}
+	return res
 }
 
 // mechanicalTrim calls the existing v7 mechanical trim path.
