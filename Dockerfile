@@ -56,10 +56,10 @@ ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
-# kx-base:go-vue already provides ca-certificates + tzdata + useradd.
-# Only the llmgw user is missing — create it (Debian's useradd uses -m
-# for create-home; alpine's adduser -D is the equivalent).
-RUN useradd -m -u 1001 -s /sbin/nologin llmgw
+# kx-base:go-vue already provides ca-certificates + tzdata + a non-root
+# 'appuser' (uid=1001). The runtime runs as this user (matches the
+# original alpine llmgw user spec: uid=1001, no shell). No additional
+# user creation is needed.
 
 WORKDIR /
 
@@ -75,7 +75,7 @@ RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/ll
     printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
     printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
 
-USER llmgw
+USER appuser
 
 EXPOSE 8781
 
