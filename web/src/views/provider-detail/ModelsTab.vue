@@ -12,6 +12,7 @@ import {
   triggerProviderProbeAll,
   getProviderCredentials,
   checkCredential,
+  diagnoseProvider,
   type ModelOffer,
   type ModelOfferSuggestion,
   type ProviderRefreshRun,
@@ -284,7 +285,7 @@ function closeDrawer() {
   modelCheckResults.value = null  // Clear check results when closing
 }
 
-// Phase 3.2: Check model availability across all credentials
+// Phase 3.2: Check model availability across all credentials (2-step)
 async function checkModelAcrossCredentials() {
   if (!selected.value) return
   
@@ -295,19 +296,84 @@ async function checkModelAcrossCredentials() {
     const credentials = await getProviderCredentials(props.providerId)
     const modelName = selected.value.raw_model_name
     
-    // Check which credentials have this model in the offers list
-    const results = credentials.map((cred) => {
-      // Find if this credential has an offer for the current model
+    // Step 1: Static check - does the credential have this model in offers?
+    const staticResults = credentials.map((cred) => {
       const hasModel = offers.value.some(
         offer => offer.credential_id === cred.id && 
                  offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
       )
-      
       return {
         credential_id: cred.id,
         credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
-        status: hasModel ? 'ok' as const : 'unavailable' as const,
-        error: hasModel ? null : '该凭据的模型列表中未找到此模型'
+        hasModel
+      }
+    })
+    
+    // Filter credentials that have the model
+    const credsWithModel = staticResults.filter(r => r.hasModel)
+    
+    if (credsWithModel.length === 0) {
+      // No credential has this model
+      modelCheckResults.value = staticResults.map(r => ({
+        credential_id: r.credential_id,
+        credential_label: r.credential_label,
+        status: 'unavailable' as const,
+        error: '该凭据的模型列表中未找到此模型'
+      }))
+      return
+    }
+    
+    // Step 2: Dynamic check - test chat with those credentials
+    // Use diagnoseProvider to test actual chat calls
+    const diagnoseResult = await diagnoseProvider(props.providerId, { force: true })
+    
+    const results = staticResults.map((r) => {
+      if (!r.hasModel) {
+        return {
+          credential_id: r.credential_id,
+          credential_label: r.credential_label,
+          status: 'unavailable' as const,
+          error: '该凭据的模型列表中未找到此模型'
+        }
+      }
+      
+      // Find chat probe result for this credential
+      const credResult = diagnoseResult.credentials?.find(
+        (c: any) => c.credential_id === r.credential_id
+      )
+      
+      if (!credResult) {
+        return {
+          credential_id: r.credential_id,
+          credential_label: r.credential_label,
+          status: 'unavailable' as const,
+          error: '未找到诊断结果'
+        }
+      }
+      
+      // Check chat probe status
+      const chatProbe = credResult.chat_probe
+      if (chatProbe && chatProbe.status_code === 200) {
+        return {
+          credential_id: r.credential_id,
+          credential_label: r.credential_label,
+          status: 'ok' as const,
+          error: null
+        }
+      } else if (chatProbe && chatProbe.error) {
+        return {
+          credential_id: r.credential_id,
+          credential_label: r.credential_label,
+          status: 'error' as const,
+          error: `调用失败: ${chatProbe.error} (HTTP ${chatProbe.status_code || 'N/A'})`
+        }
+      } else {
+        return {
+          credential_id: r.credential_id,
+          credential_label: r.credential_label,
+          status: 'error' as const,
+          error: '调用测试未完成或失败'
+        }
       }
     })
     
