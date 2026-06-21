@@ -10,6 +10,8 @@ import {
   updateModelOffer,
   getRoutableSummary,
   triggerProviderProbeAll,
+  getProviderCredentials,
+  checkCredential,
   type ModelOffer,
   type ModelOfferSuggestion,
   type ProviderRefreshRun,
@@ -50,6 +52,15 @@ const probeAllResults = ref<ProbeAllResult[]>([])
 const probeAllSummary = ref<{ ok: number; model_unavailable: number; provider_error: number; skipped: number } | null>(null)
 
 const selected = ref<ModelOffer | null>(null)
+
+// Phase 3.2: Model check across credentials
+const checkingModel = ref(false)
+const modelCheckResults = ref<Array<{
+  credential_id: number
+  credential_label: string
+  status: 'ok' | 'unavailable' | 'error'
+  error: string | null
+}> | null>(null)
 
 interface EditDraft {
   standardized_name: string
@@ -270,6 +281,53 @@ async function openDrawer(o: ModelOffer) {
 
 function closeDrawer() {
   selected.value = null
+  modelCheckResults.value = null  // Clear check results when closing
+}
+
+// Phase 3.2: Check model availability across all credentials
+async function checkModelAcrossCredentials() {
+  if (!selected.value) return
+  
+  checkingModel.value = true
+  modelCheckResults.value = null
+  
+  try {
+    const credentials = await getProviderCredentials(props.providerId)
+    
+    // Check each credential concurrently
+    const results = await Promise.all(
+      credentials.map(async (cred) => {
+        try {
+          const result = await checkCredential(props.providerId, cred.id)
+          
+          // Find if this model is in the check results
+          const modelResult = result.models?.find(
+            (m: any) => m.model === selected.value!.raw_model_name
+          )
+          
+          return {
+            credential_id: cred.id,
+            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            status: modelResult?.available ? 'ok' : 'unavailable',
+            error: modelResult?.error || (modelResult?.available ? null : '模型不可用')
+          }
+        } catch (e: unknown) {
+          return {
+            credential_id: cred.id,
+            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            status: 'error' as const,
+            error: e instanceof Error ? e.message : String(e)
+          }
+        }
+      })
+    )
+    
+    modelCheckResults.value = results
+  } catch (e: unknown) {
+    alert('检查失败: ' + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    checkingModel.value = false
+  }
 }
 
 function applyRuleBased() {
@@ -625,14 +683,52 @@ load()
               <b>{{ selected.success_rate != null ? (selected.success_rate * 100).toFixed(1) + '%' : '—' }}</b>
             </div>
           </div>
+
+          <!-- Phase 3.2: Batch credential check results -->
+          <div v-if="modelCheckResults" class="drawer-section">
+            <div class="drawer-section-title">
+              凭据检查结果
+              <span class="cell-sub">({{ modelCheckResults.length }}个凭据)</span>
+            </div>
+            
+            <div class="check-results">
+              <div 
+                v-for="result in modelCheckResults" 
+                :key="result.credential_id"
+                class="check-result-row"
+              >
+                <div class="result-header">
+                  <span class="credential-label">{{ result.credential_label }}</span>
+                  <span class="status-badge" :class="result.status">
+                    {{ result.status === 'ok' ? '✓ 可用' : result.status === 'unavailable' ? '✗ 不可用' : '✗ 错误' }}
+                  </span>
+                </div>
+                <div v-if="result.error" class="result-error">
+                  {{ result.error }}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="drawer-footer">
-          <div class="btn-row btn-row--end">
-            <button class="btn btn-ghost" @click="closeDrawer">取消</button>
-            <button class="btn btn-primary" :disabled="draft.saving" @click="saveEdit">
-              {{ draft.saving ? '保存中…' : '保存标准化名' }}
+          <div class="btn-row btn-row--space-between">
+            <!-- Left: Check all credentials button -->
+            <button 
+              class="btn btn-outline" 
+              :disabled="checkingModel"
+              @click="checkModelAcrossCredentials"
+            >
+              {{ checkingModel ? '检查中…' : '检查所有凭据' }}
             </button>
+            
+            <!-- Right: Save and cancel buttons -->
+            <div class="btn-row btn-row--end">
+              <button class="btn btn-ghost" @click="closeDrawer">取消</button>
+              <button class="btn btn-primary" :disabled="draft.saving" @click="saveEdit">
+                {{ draft.saving ? '保存中…' : '保存标准化名' }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -859,5 +955,58 @@ load()
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Phase 3.2: Model check results styles */
+.check-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.check-result-row {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.credential-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.status-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.status-badge.ok {
+  background: rgba(34, 197, 94, 0.1);
+  color: rgb(34, 197, 94);
+}
+.status-badge.unavailable,
+.status-badge.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: rgb(239, 68, 68);
+}
+.result-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.btn-row--space-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
 }
 </style>

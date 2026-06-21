@@ -330,6 +330,12 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	if params.ClientProtocol != "anthropic-messages" && params.ClientProtocol != "" {
+		// Phase 3.2: Check format_conversion.enabled (provider-level override)
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (openai→anthropic)", cand.ProviderID)
+			}
+		}
 		if e.ChatToAnthropic != nil {
 			converted, err := e.ChatToAnthropic(bodyBytes)
 			if err != nil {

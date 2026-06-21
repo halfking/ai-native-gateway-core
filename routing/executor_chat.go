@@ -725,6 +725,12 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
 	if params.ClientProtocol == "anthropic-messages" {
+		// Phase 3.2: Check format_conversion.enabled (provider-level override)
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
+			}
+		}
 		if e.AnthropicToOpenAI != nil {
 			converted, err := e.AnthropicToOpenAI(bodyBytes)
 			if err != nil {
