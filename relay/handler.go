@@ -164,6 +164,10 @@ type ChatHandler struct {
 	// denylist.  nil disables enforcement (every model allowed).
 	// Wire from main.go after constructing the Checker.
 	modelPolicy *modelpolicy.Checker
+
+	// requestLogger (Request WAL) provides synchronous initial logging
+	// at request arrival and asynchronous stage updates. nil disables.
+	requestLogger *telemetry.RequestLogger
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -273,6 +277,12 @@ func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
 
 func (h *ChatHandler) SetMaas(svc *maas.Service) {
 	h.maasSvc = svc
+}
+
+// SetRequestLogger wires the Request WAL logger.
+// nil disables Request WAL (default).
+func (h *ChatHandler) SetRequestLogger(rl *telemetry.RequestLogger) {
+	h.requestLogger = rl
 }
 
 // SetRequestLogHook installs an in-memory sink that records every
@@ -957,6 +967,40 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
 			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
 			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+
+			// ── Request WAL: async update on compression success ──────────────
+			if h.requestLogger != nil && scResult != nil {
+				meta := map[string]interface{}{
+					"strategy": scResult.CompressionStrategy,
+					"msg_count": scResult.MsgCount,
+					"token_est": scResult.TokenEst,
+					"window_triggered": scResult.WindowTriggered,
+				}
+				h.requestLogger.Update(&telemetry.LogUpdate{
+					RequestID: requestID,
+					Stage:     telemetry.StageCompressed,
+					Status:     telemetry.StatusPending,
+					CompressionStrategy: scResult.CompressionStrategy,
+					CompressionMeta: meta,
+				})
+			}
+		}
+	}
+
+	// ── Request WAL: initial synchronous log at request arrival ─────────────
+	if h.requestLogger != nil {
+		tenantID := "default"
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		initialReq := &telemetry.InitialRequest{
+			RequestID:   requestID,
+			TenantID:    tenantID,
+			SessionID:   gwSessionID,
+			ClientModel: clientModel,
+		}
+		if err := h.requestLogger.CreateInitial(r.Context(), initialReq); err != nil {
+			slog.Warn("request_logger: CreateInitial failed", "request_id", requestID, "error", err)
 		}
 	}
 
@@ -1063,6 +1107,27 @@ if convErr != nil {
 	})
 
 	if execErr != nil {
+		// ── Request WAL: synchronous update on execution failure ─────────────
+		if h.requestLogger != nil {
+			var pid, cid *int64
+			if len(candidates) > 0 {
+				p := int64(candidates[0].ProviderID)
+				c := int64(candidates[0].CredentialID)
+				pid, cid = &p, &c
+			}
+			update := &telemetry.LogUpdate{
+				RequestID:            requestID,
+				Stage:               telemetry.StageExecuteFail,
+				Status:              telemetry.StatusFailure,
+				Error:               execErr.Error(),
+				UpstreamProviderID:   pid,
+				UpstreamCredentialID: cid,
+			}
+			if err := h.requestLogger.UpdateSync(r.Context(), update); err != nil {
+				slog.Warn("request_logger: UpdateSync failed", "request_id", requestID, "error", err)
+			}
+		}
+
 		slog.Error("executor failed",
 			"error", execErr,
 			"model", clientModel,
