@@ -141,29 +141,33 @@ async function loadAnalytics() {
 }
 
 async function onMatrixCellClick(row: string, col: string, value: number) {
+  // 2026-06-22 axis swap: row is the model, col is the task (or
+  // work_type). The cell popup stores them as (model, task) so the
+  // modal title and downstream filters map cleanly to the user's
+  // mental model: "what did model X do on task Y?".
   cellPopup.value = { row, col, value }
-  selectedHeatmapTask.value = analyticsRowDim.value === 'task_type' ? row : ''
-  selectedHeatmapModel.value = col
+  selectedHeatmapModel.value = row
+  selectedHeatmapTask.value = analyticsRowDim.value === 'task_type' ? col : ''
   cellModalOpen.value = true
   cellLoading.value = true
   cellDecisions.value = []
   modalDecisionId.value = ''
   funnelStages.value = []
   try {
-    const isSpecified = row === SPECIFIED_MODEL_TASK_KEY
-    // For the synthetic __specified__ row, request_logs.task_type is
-    // NULL — we cannot pass a task filter; the model column alone
+    const isSpecified = col === SPECIFIED_MODEL_TASK_KEY
+    // For the synthetic __specified__ column, request_logs.task_type
+    // is NULL — we cannot pass a task filter; the model row alone
     // narrows the result set for the decisions modal.
-    const taskArg = isSpecified ? undefined : (analyticsRowDim.value === 'task_type' ? row : undefined)
-    const workTypeArg = analyticsRowDim.value === 'work_type' ? row : undefined
+    const taskArg = isSpecified ? undefined : (analyticsRowDim.value === 'task_type' ? col : undefined)
+    const workTypeArg = analyticsRowDim.value === 'work_type' ? col : undefined
     cellDecisions.value = await getAutoRouteDecisions(
       10,
       taskArg,
       undefined,
-      col,
+      row,
       workTypeArg,
     )
-    await loadFunnel(col)
+    await loadFunnel(row)
   } catch (e) {
     console.error('onMatrixCellClick', e)
   } finally {
@@ -690,7 +694,7 @@ onUnmounted(() => stopPoll())
             <HeatmapMatrix
               :data="matrixData"
               :metric="analyticsMetric"
-              :col-aliases="matrixData?.meta?.col_aliases"
+              :row-aliases="matrixData?.meta?.row_aliases"
               :loading="analyticsLoading"
               :min-height="heatmapBodyMinHeight"
               @cell-click="onMatrixCellClick"
@@ -735,7 +739,7 @@ onUnmounted(() => stopPoll())
         <div class="modal-panel card compact-card">
           <div class="card-toolbar">
             <div class="toolbar-left">
-              <span class="toolbar-title">{{ displayTaskKey(cellPopup.row) }} × {{ cellPopup.col }}</span>
+              <span class="toolbar-title">{{ cellPopup.row }} × {{ displayTaskKey(cellPopup.col) }}</span>
               <span class="text-muted">最近决策</span>
             </div>
             <button class="btn btn-ghost btn-sm" @click="closeCellModal">关闭</button>

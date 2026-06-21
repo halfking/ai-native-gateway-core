@@ -116,6 +116,75 @@ func TestBuildMatrixQuery_RejectsBadInput(t *testing.T) {
 	}
 }
 
+// TestBuildMatrixQuery_RowIsModel guards the 2026-06-22 axis swap: the
+// row key expression must reference outbound_model/client_model (model
+// axis), and the col key expression must reference task_type (task axis).
+// If anyone re-introduces the old orientation, this test will fail with
+// a clear pointer to the file:line that needs to be updated.
+func TestBuildMatrixQuery_RowIsModel(t *testing.T) {
+	q, err := buildMatrixQuery("task_type", "count")
+	if err != nil {
+		t.Fatalf("buildMatrixQuery: %v", err)
+	}
+
+	// Find the SELECT list and parse the two expressions.
+	// We use a simple approach: the first AS row_key must be the model
+	// expression, and the second AS col_key must be the task expression.
+	rowIdx := strings.Index(q, "AS row_key")
+	colIdx := strings.Index(q, "AS col_key")
+	if rowIdx < 0 || colIdx < 0 {
+		t.Fatalf("query missing row_key / col_key aliases:\n%s", q)
+	}
+	// The slice between SELECT and AS row_key is the row expression.
+	selectIdx := strings.Index(q, "SELECT ")
+	if selectIdx < 0 {
+		t.Fatalf("query missing SELECT:\n%s", q)
+	}
+	rowExpr := strings.TrimSpace(q[selectIdx+len("SELECT "):rowIdx])
+	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key "):colIdx])
+
+	// Row expression must reference outbound_model or client_model
+	// (the model axis), NOT task_type.
+	if !strings.Contains(rowExpr, "outbound_model") {
+		t.Fatalf("after axis swap, row expression should be the model expression (outbound_model/client_model), got:\n%s", rowExpr)
+	}
+	if strings.Contains(rowExpr, "task_type") {
+		t.Fatalf("after axis swap, row expression must NOT reference task_type, got:\n%s", rowExpr)
+	}
+	// Col expression must reference task_type (or __specified__ key).
+	if !strings.Contains(colExpr, "task_type") {
+		t.Fatalf("after axis swap, col expression should be the task expression, got:\n%s", colExpr)
+	}
+	if !strings.Contains(colExpr, SpecifiedModelTaskKey) {
+		t.Fatalf("col expression must surface the synthetic %s key, got:\n%s", SpecifiedModelTaskKey, colExpr)
+	}
+}
+
+// TestBuildMatrixQuery_WorkTypeRowDim_ColIsWorkType guards the work_type
+// mode: when rowDim="work_type", the col key must reference work_type
+// (after the swap, this is the column, not the row).
+func TestBuildMatrixQuery_WorkTypeRowDim_ColIsWorkType(t *testing.T) {
+	q, err := buildMatrixQuery("work_type", "count")
+	if err != nil {
+		t.Fatalf("buildMatrixQuery: %v", err)
+	}
+	// Find the col expression (between AS row_key and AS col_key).
+	rowIdx := strings.Index(q, "AS row_key")
+	colIdx := strings.Index(q, "AS col_key")
+	if rowIdx < 0 || colIdx < 0 {
+		t.Fatalf("query missing aliases:\n%s", q)
+	}
+	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key "):colIdx])
+	if !strings.Contains(colExpr, "work_type") {
+		t.Fatalf("work_type mode: col expression must reference work_type, got:\n%s", colExpr)
+	}
+	// And the row must STILL be the model (independent of rowDim).
+	rowExpr := strings.TrimSpace(q[strings.Index(q, "SELECT ")+len("SELECT "):rowIdx])
+	if !strings.Contains(rowExpr, "outbound_model") {
+		t.Fatalf("work_type mode: row must still be the model axis, got:\n%s", rowExpr)
+	}
+}
+
 // TestEffectiveTaskExpr_IncludesSpecifiedKey guards that the COALESCE
 // fallback path uses SpecifiedModelTaskKey (not a hardcoded "specified"
 // or empty string) so analytics renders "指定模型" for non-auto rows.
