@@ -1135,8 +1135,8 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		  AND raw_model_name = $2
 		  AND status = 'http_4xx'
 		  AND error_code = 'model_not_found'
-		  AND created_at > now() - interval '10 minutes'
-	`, credentialID, rawModel).Scan(&recentCount)
+		  AND created_at > now() - interval '1 minute' * $3
+	`, credentialID, rawModel, coolMins).Scan(&recentCount)
 	if err != nil {
 		slog.Debug("cool_binding_mnf: count query failed",
 			"credential_id", credentialID,
@@ -1153,10 +1153,10 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		SET available = FALSE,
 		    unavailable_reason = 'mnf_cooling',
 		    unavailable_at = now()
-		FROM provider_models pm
-		WHERE pm.id = cmb.provider_model_id
+		FROM model_offers mo
+		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
-		  AND pm.raw_model_name = $2
+		  AND COALESCE(mo.outbound_model_name, mo.raw_model_name) = $2
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
