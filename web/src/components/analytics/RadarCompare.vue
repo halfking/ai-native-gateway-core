@@ -33,7 +33,7 @@ const COLORS = ['var(--accent)', 'var(--success)', '#d29922']
 const top3 = computed(() => props.candidates.slice(0, 3))
 
 function val(c: RadarCandidate, key: string): number {
-  const v = (c as Record<string, number | undefined>)[key]
+  const v = (c as unknown as Record<string, number | undefined>)[key]
   if (v === undefined || v === null || isNaN(v)) return 0
   return Math.max(0, Math.min(100, v)) / 100
 }

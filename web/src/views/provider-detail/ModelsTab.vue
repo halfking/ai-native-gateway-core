@@ -15,6 +15,7 @@ import {
   diagnoseProvider,
   type ModelOffer,
   type ModelOfferSuggestion,
+  type ProbeAllResult,
   type ProviderRefreshRun,
 } from '../../api'
 
@@ -59,7 +60,11 @@ const checkingModel = ref(false)
 const modelCheckResults = ref<Array<{
   credential_id: number
   credential_label: string
-  status: 'ok' | 'unavailable' | 'error'
+  phase1_status?: 'ok' | 'warning' | 'error' | 'unavailable'
+  phase1_message?: string
+  phase2_status?: 'ok' | 'warning' | 'error' | null
+  phase2_message?: string | null
+  status: 'ok' | 'unavailable' | 'error' | 'warning'
   error: string | null
 }> | null>(null)
 
