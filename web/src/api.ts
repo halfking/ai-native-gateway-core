@@ -265,6 +265,24 @@ export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
 
+export interface ProbeURLResult {
+  reachable: boolean
+  protocol?: string
+  http_status?: number
+  models_count?: number
+  sample_models?: string[]
+  auth_ok?: boolean
+  error?: string
+}
+
+export function probeURL(data: { base_url: string; api_key?: string }) {
+  return req<ProbeURLResult>('POST', '/api/providers/probe-url', data)
+}
+
+export function probeProviderURL(providerId: number) {
+  return req<ProbeURLResult>('POST', `/api/providers/${providerId}/probe-url`)
+}
+
 export async function checkCredential(providerId: number, credId: number) {
   const { task_id } = await req<{ task_id: number; status: string }>(
     'POST', `/api/providers/${providerId}/credentials/${credId}/check`,
