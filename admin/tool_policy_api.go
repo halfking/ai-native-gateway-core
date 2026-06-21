@@ -38,6 +38,10 @@ type PolicyRequest struct {
 // HandleCreate handles POST /api/admin/policies
 // Creates a new tenant tool policy
 func (api *PolicyAPI) HandleCreate(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -116,6 +120,10 @@ func (api *PolicyAPI) HandleCreate(w http.ResponseWriter, r *http.Request) {
 // HandleList handles GET /api/admin/policies?tenant_id=
 // Lists policies for a tenant
 func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -183,6 +191,10 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 // HandleDelete handles DELETE /api/admin/policies?id=
 // Deletes a policy by ID
 func (api *PolicyAPI) HandleDelete(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -234,6 +246,10 @@ func (api *PolicyAPI) HandleDelete(w http.ResponseWriter, r *http.Request) {
 // HandleCheck handles GET /api/admin/policies/check?tenant_id=&tool_id=
 // Checks if a tenant is allowed to use a tool (for testing)
 func (api *PolicyAPI) HandleCheck(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -285,6 +301,10 @@ func NewUsageStatsAPI(db *pgxpool.Pool) *UsageStatsAPI {
 // HandleStats handles GET /api/admin/tools/stats?tool_id=&tenant_id=&days=7
 // Returns tool usage statistics
 func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -373,6 +393,10 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 // HandleTopTools handles GET /api/admin/tools/top?tenant_id=&limit=10&days=7
 // Returns most used tools
 func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request) {
+	if api.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return

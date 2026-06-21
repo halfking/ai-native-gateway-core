@@ -91,23 +91,11 @@ func TestNewPolicyAPI(t *testing.T) {
 	}
 }
 
-// TestPolicyAPI_HandleCreate_DBRequired pins the current behaviour.
+// TestPolicyAPI_HandleCreate_DBRequired pins the fixed behaviour.
 //
-// Known behaviour (audit P0 bug): HandleCreate does NOT check for db == nil
-// before calling db.QueryRow at line 90. With db=nil, the handler panics
-// with a nil-pointer dereference (reproduced via testing.T helper).
-//
-// This is a real production risk: if the gateway starts without a configured
-// DB pool, every POST /api/admin/policies crashes the entire process via
-// unrecovered panic (pgxpool.Pool.Acquire panics on nil receiver).
-//
-// The fix is a one-liner: add `if api.db == nil { writeError(w, 503); return }`
-// at the top of HandleCreate (and HandleList / HandleDelete / HandleCheck
-// for consistency). The v6.0 audit §7 lists this as a P0 fix item.
-//
-// This test intentionally captures the panic so CI passes while the
-// audit trail stays visible. After the fix lands, the test should be
-// inverted to assert the 503 response (no panic).
+// Fix (commit: T10 P0 fix): HandleCreate now has db=nil guard at top,
+// returning 503 BEFORE reaching db.QueryRow. This was the most critical
+// of 6 P0 db=nil panic fixes applied here.
 func TestPolicyAPI_HandleCreate_DBRequired(t *testing.T) {
 	api := NewPolicyAPI(nil, nil)
 	body := strings.NewReader(`{"tenant_id":"acme","tool_pattern":"x","policy_type":"deny","reason":"r","created_by":"u"}`)
@@ -115,36 +103,20 @@ func TestPolicyAPI_HandleCreate_DBRequired(t *testing.T) {
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	defer func() {
-		if rec := recover(); rec != nil {
-			t.Logf("AUDIT P0 BUG CONFIRMED: HandleCreate panics with db=nil: %v", rec)
-			t.Logf("Fix: add 'if api.db == nil { writeError(w, 503); return }' at top of HandleCreate")
-		}
-	}()
-
 	api.HandleCreate(w, r)
 
-	// If we get here without panic, the db guard exists (good).
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 (db required), got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
-// TestPolicyAPI_HandleList_DBRequired pins the current behaviour.
+// TestPolicyAPI_HandleList_DBRequired pins the fixed behaviour.
 //
-// AUDIT P0 BUG: HandleList panics on db=nil (no early return guard).
-// Same pattern as HandleCreate — see TestPolicyAPI_HandleCreate_DBRequired
-// doc comment for the fix and the audit context.
+// Fix (commit: T10 P0 fix): HandleList now has db=nil guard.
 func TestPolicyAPI_HandleList_DBRequired(t *testing.T) {
 	api := NewPolicyAPI(nil, nil)
 	r := httptest.NewRequest(http.MethodGet, "/api/admin/policies", nil)
 	w := httptest.NewRecorder()
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			t.Logf("AUDIT P0 BUG CONFIRMED: HandleList panics with db=nil: %v", rec)
-		}
-	}()
 
 	api.HandleList(w, r)
 
@@ -153,23 +125,13 @@ func TestPolicyAPI_HandleList_DBRequired(t *testing.T) {
 	}
 }
 
-// TestPolicyAPI_HandleDelete_DBRequired pins the current behaviour.
+// TestPolicyAPI_HandleDelete_DBRequired pins the fixed behaviour.
 //
-// HandleDelete uses ?id=N query param. With valid id but db=nil, the
-// handler proceeds past parameter validation and reaches db.QueryRow,
-// which panics on nil receiver.
-//
-// AUDIT P0 BUG: no db=nil guard at top of HandleDelete.
+// Fix (commit: T10 P0 fix): HandleDelete now has db=nil guard.
 func TestPolicyAPI_HandleDelete_DBRequired(t *testing.T) {
 	api := NewPolicyAPI(nil, nil)
 	r := httptest.NewRequest(http.MethodDelete, "/api/admin/policies?id=42", nil)
 	w := httptest.NewRecorder()
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			t.Logf("AUDIT P0 BUG CONFIRMED: HandleDelete (db=nil, id=42) panics: %v", rec)
-		}
-	}()
 
 	api.HandleDelete(w, r)
 
@@ -178,22 +140,13 @@ func TestPolicyAPI_HandleDelete_DBRequired(t *testing.T) {
 	}
 }
 
-// TestPolicyAPI_HandleCheck_DBRequired pins the current behaviour.
+// TestPolicyAPI_HandleCheck_DBRequired pins the fixed behaviour.
 //
-// HandleCheck is GET with ?tenant_id=&tool_id=. With valid params but
-// db=nil, the handler panics on db.QueryRow.
-//
-// AUDIT P0 BUG: no db=nil guard at top of HandleCheck.
+// Fix (commit: T10 P0 fix): HandleCheck now has db=nil guard.
 func TestPolicyAPI_HandleCheck_DBRequired(t *testing.T) {
 	api := NewPolicyAPI(nil, nil)
 	r := httptest.NewRequest(http.MethodGet, "/api/admin/policies/check?tenant_id=acme&tool_id=filesystem.read", nil)
 	w := httptest.NewRecorder()
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			t.Logf("AUDIT P0 BUG CONFIRMED: HandleCheck (db=nil, valid params) panics: %v", rec)
-		}
-	}()
 
 	api.HandleCheck(w, r)
 
@@ -202,9 +155,9 @@ func TestPolicyAPI_HandleCheck_DBRequired(t *testing.T) {
 	}
 }
 
-// TestUsageStatsAPI_DBRequired pins the current behaviour.
+// TestUsageStatsAPI_DBRequired pins the fixed behaviour.
 //
-// AUDIT P0 BUG: UsageStatsAPI.HandleStats panics on db=nil (same pattern).
+// Fix (commit: T10 P0 fix): UsageStatsAPI.HandleStats now has db=nil guard.
 func TestUsageStatsAPI_DBRequired(t *testing.T) {
 	api := NewUsageStatsAPI(nil)
 	if api == nil {
@@ -212,12 +165,6 @@ func TestUsageStatsAPI_DBRequired(t *testing.T) {
 	}
 	r := httptest.NewRequest(http.MethodGet, "/api/admin/usage/stats", nil)
 	w := httptest.NewRecorder()
-
-	defer func() {
-		if rec := recover(); rec != nil {
-			t.Logf("AUDIT P0 BUG CONFIRMED: UsageStatsAPI.HandleStats panics with db=nil: %v", rec)
-		}
-	}()
 
 	api.HandleStats(w, r)
 
@@ -228,14 +175,12 @@ func TestUsageStatsAPI_DBRequired(t *testing.T) {
 
 // TestPolicyAPI_HandleCreate_InvalidJSON 验证 malformed JSON 不 panic.
 //
-// TestPolicyAPI_HandleCreate_InvalidJSON_DBRequired pins the current behaviour.
+// TestPolicyAPI_HandleCreate_InvalidJSON_DBRequired pins the fixed behaviour.
 //
-// HandleCreate 没有 db=nil guard. 当 JSON malformed 时, handler 返回
-// 400 (JSON parse error), 然后流程应该继续到 DB 操作 — 但因为我们
-// 测的是 db=nil, 还没到 db.QueryRow, 所以返回 400. 这反而是 audit
-// 上的"问题变好": malformed JSON 早返回, 不会触发 panic.
-//
-// AUDIT P0 BUG 仍然存在: 但只在 valid JSON + db=nil 时触发.
+// Fix (commit: T10 P0 fix): HandleCreate now has db=nil guard at top,
+// so it returns 503 BEFORE attempting JSON decode. Previously the
+// handler would JSON-decode first, then panic on db.QueryRow. With the
+// fix, malformed JSON + db=nil returns 503 (db unavailable), not 400.
 func TestPolicyAPI_HandleCreate_InvalidJSON_DBRequired(t *testing.T) {
 	api := NewPolicyAPI(nil, nil)
 	body := strings.NewReader(`{malformed`)
@@ -245,9 +190,9 @@ func TestPolicyAPI_HandleCreate_InvalidJSON_DBRequired(t *testing.T) {
 
 	api.HandleCreate(w, r)
 
-	// Pin: malformed JSON 返回 400 (JSON parse error), 不 panic
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for malformed JSON, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 (db guard before JSON parse), got %d body=%s",
+			w.Code, w.Body.String())
 	}
 }
 
