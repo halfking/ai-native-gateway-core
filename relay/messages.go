@@ -14,7 +14,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
-	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/sessions"
@@ -254,22 +253,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Q2 vs Q4 dispatch happens after candidate selection below:
-	// if the first candidate's upstream speaks Anthropic, the
-	// original Anthropic body bytes are forwarded unchanged (Q4
-	// passthrough). Otherwise the body is converted to OpenAI chat
-	// format (Q2 path). We precompute the converted body here so
-	// the conversion-error path stays in one place; the Q4 path
-	// discards it later via selectUpstreamBodyBytes.
-	chatBody := convertToChatBody(&reqBody)
-	chatBodyBytes, err := json.Marshal(chatBody)
-	if err != nil {
-		attemptErrCode = "conversion_error"
-		attemptErrMsg = "internal conversion error"
-		attemptClientModel = reqBody.Model
-		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Internal conversion error")
-		return
-	}
+	// Phase C (2026-06-22): Per-candidate protocol conversion now lives
+	// in the executor (IR path). The original body bytes are forwarded
+	// unchanged; the executor handles Q2/Q4 dispatch internally.
 	attemptClientModel = reqBody.Model
 
 	clientModel := reqBody.Model
@@ -346,13 +332,10 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		attemptCredentialID = &cid
 	}
 
-	// Q2 vs Q4 dispatch: when the chosen upstream candidate speaks
-	// Anthropic, forward the original body bytes unchanged. Otherwise
-	// use the pre-converted OpenAI chat body. The pre-conversion
-	// above is wasted work in the Q4 case but it lets us keep the
-	// conversion-error path in one place; for the Q4 fast-path the
-	// cost is a single in-memory json.Marshal on a small body.
-	upstreamBody := selectUpstreamBodyBytes(candidates, bodyBytes, chatBodyBytes)
+	// Phase C (2026-06-22): Per-candidate protocol conversion now lives
+	// in the executor (IR path). Pass bodyBytes unchanged; the executor
+	// handles Q2/Q4 dispatch internally via IR.
+	upstreamBody := bodyBytes
 
 	var modelResolution *resolve.Resolution
 	if h.chatHandler.resolver != nil {
@@ -522,13 +505,6 @@ func ConvertAnthropicBodyToOpenAI(bodyBytes []byte) ([]byte, error) {
 	}
 	chatBody := convertToChatBody(&reqBody)
 	return json.Marshal(chatBody)
-}
-
-// selectUpstreamBodyBytes is kept for backward compatibility but now
-// always returns originalBody. The Q2/Q4 dispatch has moved into the
-// executor (per-candidate) to avoid the candidates[0] mismatch bug.
-func selectUpstreamBodyBytes(candidates []provider.Candidate, originalBody, convertedBody []byte) []byte {
-	return originalBody
 }
 
 func convertAnthropicMessage(msg map[string]any) map[string]any {

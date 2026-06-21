@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/limiter"
@@ -1057,22 +1058,26 @@ func (h *ChatHandler) serveWithExecutor(
 
 stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
 
-upstreamBody, convErr := selectChatUpstreamBodyBytes(candidates, bodyBytes)
-if convErr != nil {
-	// Body already captured, just emit + mark
-	logCtx.SetError("chat_to_anthropic_conversion_error", convErr.Error())
-	logCtx.EmitFailure("chat_to_anthropic_conversion_error", convErr.Error(), nil, nil)
-	logCtx.MarkLogged()
-	writeErrorJSON(w, http.StatusBadRequest, requestID, convErr.Error(), "invalid_request", "chat_to_anthropic_conversion_error")
-	return
-}
+	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
+	// protocol conversion now lives in the executor (IR path). The
+	// degenerate selectChatUpstreamBodyBytes wrapper has been deleted.
+	upstreamBody := bodyBytes
+
+	// Phase C (2026-06-22): Protocol auto-detection via ir.DetectProtocol.
+	// Falls back to "openai-completions" for backward compatibility when
+	// IR mode is not active (h.executor.IR == nil).
+	clientProtocol := "openai-completions"
+	if h.executor.IR != nil {
+		detected, _, _ := ir.DetectProtocol(bodyBytes)
+		clientProtocol = detected
+	}
 
 	result, execErr := h.executor.Execute(&routing.ExecParams{
 		W:              w,
 		R:              r,
 		BodyBytes:      upstreamBody,
 		IsStream:       isStream,
-		ClientProtocol: "openai-completions",
+		ClientProtocol: clientProtocol,
 		ClientModel:    clientModel,
 		OutboundModel:  outboundForLog,
 		ClientID:       clientID,
@@ -2198,15 +2203,6 @@ func ReplaceModelInResponseBody(body []byte, clientModel string) []byte {
 	buf.WriteString(`"` + clientModel + `"`)
 	buf.Write(suffix)
 	return buf.Bytes()
-}
-
-// selectChatUpstreamBodyBytes is kept for backward compatibility but
-// now always returns originalBody unchanged. The Q1/Q3 dispatch has
-// moved into the executor (per-candidate) to avoid the candidates[0]
-// mismatch bug where the body format didn't match the candidate the
-// executor actually routed to.
-func selectChatUpstreamBodyBytes(candidates []provider.Candidate, originalBody []byte) ([]byte, error) {
-	return originalBody, nil
 }
 
 func requestHasTools(body []byte) bool {

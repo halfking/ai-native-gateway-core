@@ -4,49 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/kaixuan/llm-gateway-go/provider"
 )
-
-// TestChatSelectUpstreamBodyBytes_AlwaysPassthrough verifies the
-// fix: selectChatUpstreamBodyBytes no longer converts to Anthropic
-// based on candidates[0].Protocol. It always returns the original
-// body. Conversion now happens per-candidate inside executeAnthropic
-// via the ChatToAnthropic callback, which avoids the body-format /
-// routed-candidate mismatch bug that caused "invalid tool type" (2013)
-// errors when candidates[0] was anthropic but the executor picked an
-// openai-completions credential.
-func TestChatSelectUpstreamBodyBytes_AlwaysPassthrough(t *testing.T) {
-	originalBody := []byte(`{
-        "model":"MiniMax-M2.7","max_tokens":256,
-        "messages":[
-            {"role":"system","content":"you are a poet"},
-            {"role":"user","content":"hi"}
-        ]
-    }`)
-
-	protocols := []string{"anthropic-messages", "openai-completions", "", "openai-responses"}
-	for _, proto := range protocols {
-		cands := []provider.Candidate{{Protocol: proto}}
-		out, err := selectChatUpstreamBodyBytes(cands, originalBody)
-		if err != nil {
-			t.Errorf("protocol=%q: unexpected error: %v", proto, err)
-			continue
-		}
-		if string(out) != string(originalBody) {
-			t.Errorf("protocol=%q: expected passthrough; got %s", proto, string(out))
-		}
-	}
-
-	// Also with no candidates
-	out, err := selectChatUpstreamBodyBytes(nil, originalBody)
-	if err != nil {
-		t.Fatalf("nil candidates: unexpected error: %v", err)
-	}
-	if string(out) != string(originalBody) {
-		t.Errorf("nil candidates: expected passthrough; got %s", string(out))
-	}
-}
 
 // TestChatHandler_OpenAIToAnthropic_ConvertsBodyBeforeUpstream verifies
 // that the per-candidate conversion (via ConvertChatRequestToAnthropic)

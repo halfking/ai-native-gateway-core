@@ -3,33 +3,7 @@ package relay
 import (
 	"encoding/json"
 	"testing"
-
-	"github.com/kaixuan/llm-gateway-go/provider"
 )
-
-// TestSelectUpstreamBodyBytes_AlwaysReturnsOriginal verifies the fix:
-// selectUpstreamBodyBytes no longer dispatches based on candidates[0].Protocol.
-// It always returns originalBody. The Q2/Q4 dispatch has moved into the
-// executor (per-candidate) to avoid the candidates[0] mismatch bug.
-func TestSelectUpstreamBodyBytes_AlwaysReturnsOriginal(t *testing.T) {
-	originalBody := []byte(`{"model":"x","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
-	convertedBody := []byte(`{"model":"x","max_tokens":256,"messages":[{"role":"user","content":"hi"}],"stream":false}`)
-
-	protocols := []string{"anthropic-messages", "openai-completions", "", "openai-responses"}
-	for _, proto := range protocols {
-		candidates := []provider.Candidate{{ProviderID: 1, CredentialID: 1, Protocol: proto}}
-		got := selectUpstreamBodyBytes(candidates, originalBody, convertedBody)
-		if string(got) != string(originalBody) {
-			t.Errorf("protocol=%q: expected original body passthrough; got %s", proto, string(got))
-		}
-	}
-
-	// Also with no candidates
-	got := selectUpstreamBodyBytes(nil, originalBody, convertedBody)
-	if string(got) != string(originalBody) {
-		t.Errorf("nil candidates: expected original body passthrough; got %s", string(got))
-	}
-}
 
 // TestConvertChatResponseToAnthropic_ReasoningContent verifies that
 // OpenAI-style reasoning_content emitted by thinking upstreams
