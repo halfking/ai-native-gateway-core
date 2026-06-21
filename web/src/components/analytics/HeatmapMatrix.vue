@@ -6,7 +6,9 @@ import { SPECIFIED_MODEL_TASK_KEY, SPECIFIED_MODEL_DISPLAY_LABEL } from '../../a
 const props = defineProps<{
   data: AnalyticsMatrix | null
   metric: AnalyticsMetric
-  colAliases?: Record<string, string[]>
+  /** Aliases for the row key (model canonical name → raw outbound/client
+   *  names). Used as tooltip on row headers. */
+  rowAliases?: Record<string, string[]>
   loading?: boolean
   minHeight?: number
 }>()
@@ -15,14 +17,14 @@ const emit = defineEmits<{
   cellClick: [row: string, col: string, value: number]
 }>()
 
-/** Returns the display label for a row key. The synthetic
- *  `__specified__` row is rendered as 「指定模型」 to the user. */
-function displayRowLabel(row: string): string {
-  return row === SPECIFIED_MODEL_TASK_KEY ? SPECIFIED_MODEL_DISPLAY_LABEL : row
+/** Returns the display label for a column key. The synthetic
+ *  `__specified__` column is rendered as 「指定模型」 to the user. */
+function displayColLabel(col: string): string {
+  return col === SPECIFIED_MODEL_TASK_KEY ? SPECIFIED_MODEL_DISPLAY_LABEL : col
 }
 
-function isSpecifiedRow(row: string): boolean {
-  return row === SPECIFIED_MODEL_TASK_KEY
+function isSpecifiedCol(col: string): boolean {
+  return col === SPECIFIED_MODEL_TASK_KEY
 }
 
 const flatValues = computed(() => {
@@ -59,12 +61,15 @@ function fmtValue(value: number): string {
   }
 }
 
-function colTitle(col: string): string {
-  const aliases = props.colAliases?.[col]
-  if (!aliases?.length) return col
-  const extras = aliases.filter(a => a !== col)
-  if (!extras.length) return col
-  return `${col} (别名: ${extras.join(', ')})`
+/** Build the tooltip for a row header (a model name). Includes any
+ *  raw aliases the gateway has seen so the user can recognise the
+ *  same model from a non-canonical request. */
+function rowTitle(row: string): string {
+  const aliases = props.rowAliases?.[row]
+  if (!aliases?.length) return row
+  const extras = aliases.filter(a => a !== row)
+  if (!extras.length) return row
+  return `${row} (别名: ${extras.join(', ')})`
 }
 
 const metricLabel = computed(() => {
@@ -90,20 +95,29 @@ const isEmpty = computed(() =>
       <table class="heatmap-table">
         <thead>
           <tr>
-            <th class="corner">{{ metricLabel }}</th>
-            <th v-for="col in data!.cols" :key="col" class="col-head" :title="colTitle(col)">{{ col }}</th>
+            <th class="corner">{{ metricLabel }} \ 模型</th>
+            <th
+              v-for="col in data!.cols"
+              :key="col"
+              class="col-head"
+              :class="{ 'col-specified': isSpecifiedCol(col) }"
+              :title="displayColLabel(col)"
+            >{{ displayColLabel(col) }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(row, ri) in data!.rows" :key="row" :class="{ 'row-specified': isSpecifiedRow(row) }">
-            <th class="row-head" :title="row">{{ displayRowLabel(row) }}</th>
+          <tr v-for="(row, ri) in data!.rows" :key="row">
+            <th class="row-head" :title="rowTitle(row)">{{ row }}</th>
             <td
               v-for="(col, ci) in data!.cols"
               :key="col"
               class="heat-cell"
-              :class="{ clickable: data!.cells[ri][ci] > 0, 'cell-specified': isSpecifiedRow(row) }"
+              :class="{
+                clickable: data!.cells[ri][ci] > 0,
+                'cell-specified-col': isSpecifiedCol(col),
+              }"
               :style="{ background: cellColor(data!.cells[ri][ci]) }"
-              :title="`${displayRowLabel(row)} × ${col}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
+              :title="`${row} × ${displayColLabel(col)}\n${metricLabel}: ${fmtValue(data!.cells[ri][ci]) || '0'}`"
               @click="data!.cells[ri][ci] > 0 && emit('cellClick', row, col, data!.cells[ri][ci])"
             >
               {{ fmtValue(data!.cells[ri][ci]) }}
@@ -145,19 +159,35 @@ const isEmpty = computed(() =>
   font-size: 9px;
   color: var(--muted);
   background: var(--bg-subtle);
-  min-width: 72px;
+  min-width: 100px;
+  white-space: nowrap;
 }
-.col-head, .row-head {
+/* Row header (model name) — allow up to 220px so a long model name like
+ * "minimaxai/minimax-m2.7" is readable; CSS ellipsis handles overflow. */
+.col-head {
   font-size: 9px;
   font-weight: 500;
   color: var(--muted);
   background: var(--bg-subtle);
-  max-width: 100px;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.row-head { text-align: left; }
+.row-head {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg-subtle);
+  text-align: left;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
 .heat-cell {
   min-width: 44px;
   transition: background 0.12s;
@@ -168,16 +198,17 @@ const isEmpty = computed(() =>
   outline-offset: -1px;
 }
 
-/* "specified model" row gets a fixed gray accent + bold italic so it
-   reads as a first-class axis without competing with the per-task
-   heatmap colors. */
-.heatmap-table tr.row-specified > .row-head {
+/* "specified model" column gets a fixed gray accent + bold italic so
+   it reads as a first-class axis without competing with the per-model
+   heatmap colors. (2026-06-22 axis swap: was a row highlight, now a
+   column highlight.) */
+.heatmap-table th.col-specified {
   color: #6b7280;
   font-weight: 700;
   font-style: italic;
-  border-left: 3px solid #6b7280;
+  border-top: 3px solid #6b7280;
 }
-.heatmap-table tr.row-specified > .heat-cell.cell-specified {
+.heatmap-table td.cell-specified-col {
   font-style: italic;
   color: #6b7280;
 }
