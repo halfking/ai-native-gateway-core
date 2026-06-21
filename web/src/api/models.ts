@@ -180,6 +180,13 @@ export interface DiscoverModelsResult {
   models_seen: number
   offers_upserted: number
   canonicals_created_or_matched: number
+  // Optional credential-health breakdown (populated by the
+  // /api/models/discover backend when it tallies credential health
+  // at end of run; older runs may omit these). ModelsView renders
+  // them via discoverResult?.healthy_credentials ?? 0.
+  healthy_credentials?: number
+  warning_credentials?: number
+  unreachable_credentials?: number
   items: Array<{
     provider_id: number
     credential_id: number
