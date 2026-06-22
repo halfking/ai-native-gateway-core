@@ -165,13 +165,13 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		  AND COALESCE(cmb.unavailable_reason, '') <> 'manual'
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND (
 		      COALESCE(v.is_routable, FALSE) = FALSE
 		      OR mps.state = 'recovering'
 		  )
 		  AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed'
-		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at <= NOW())
+		  AND mps.next_retry_at <= NOW()
 		ORDER BY mps.next_retry_at NULLS FIRST, cmb.id
 		LIMIT $1
 	`, MaxBatchPerCycle)

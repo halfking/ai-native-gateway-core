@@ -738,13 +738,13 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 			    (credential_id, raw_model_name, state,
 			     consecutive_successes, consecutive_failures, total_attempts,
 			     last_attempt_at, next_retry_at, last_status)
-			VALUES ($1, $2, 'unknown', 0, 0, 0, NOW(), NULL, 'manual_offline')
+			VALUES ($1, $2, 'unknown', 0, 0, 0, NOW(), NOW() + INTERVAL '100 years', 'manual_offline')
 			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
 			    state = 'unknown',
 			    consecutive_successes = 0,
 			    consecutive_failures = 0,
 			    last_attempt_at = NOW(),
-			    next_retry_at = NULL,
+			    next_retry_at = NOW() + INTERVAL '100 years',
 			    last_status = 'manual_offline'
 		`, req.CredentialID, req.RawModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
