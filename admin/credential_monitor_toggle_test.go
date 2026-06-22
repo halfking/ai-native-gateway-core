@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -193,5 +194,43 @@ func TestModelToggleHandler_RoutesRegistered(t *testing.T) {
 		if pattern == "" {
 			t.Errorf("route %s is not registered (mux returned empty pattern)", path)
 		}
+	}
+}
+
+// TestHandleModelToggle_OfflineNextRetryNotNull guards the 2026-06-23 P0 fix:
+// the offline branch in handleModelToggle must NOT write NULL into
+// model_probe_state.next_retry_at (column is NOT NULL). It uses
+// NOW() + INTERVAL '100 years' so the probe runner never re-picks a
+// manually-offline binding until the operator toggles it back online.
+func TestHandleModelToggle_OfflineNextRetryNotNull(t *testing.T) {
+	src, err := os.ReadFile("credential_monitor.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	// Both the INSERT and the ON CONFLICT UPDATE branches must use
+	// NOW() + INTERVAL '100 years' — never NULL.
+	if !strings.Contains(body, "VALUES ($1, $2, 'unknown', 0, 0, 0, NOW(), NOW() + INTERVAL '100 years', 'manual_offline')") {
+		t.Errorf("offline INSERT VALUES clause must use NOW() + INTERVAL '100 years' for next_retry_at (not NULL); see 2026-06-23 P0 bug fix")
+	}
+	offlineIdx := strings.Index(body, "INSERT INTO model_probe_state")
+	if offlineIdx < 0 {
+		t.Fatalf("could not locate model_probe_state INSERT in source")
+	}
+	// Find the next-retry-at assignment within the offline ON CONFLICT block.
+	conflictIdx := strings.Index(body[offlineIdx:], "ON CONFLICT")
+	if conflictIdx < 0 {
+		t.Fatalf("could not locate ON CONFLICT clause after offline INSERT")
+	}
+	endIdx := offlineIdx + conflictIdx + 240
+	if endIdx > len(body) {
+		endIdx = len(body)
+	}
+	if !strings.Contains(body[offlineIdx:endIdx], "next_retry_at = NOW() + INTERVAL '100 years'") {
+		t.Errorf("offline ON CONFLICT UPDATE must set next_retry_at = NOW() + INTERVAL '100 years' (not NULL); see 2026-06-23 P0 bug fix")
+	}
+	// And the online branch already used NOW() — make sure we didn't regress it.
+	if !strings.Contains(body, "VALUES ($1, $2, 'recovering', 0, 0, 0, NOW(), NOW(), 'manual_online')") {
+		t.Errorf("online VALUES clause must keep NOW() for next_retry_at")
 	}
 }
