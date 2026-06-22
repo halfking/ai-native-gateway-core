@@ -149,6 +149,7 @@ func (h *HTTPLlmCaller) Call(ctx context.Context, prompt string) (string, error)
 		RecordLLMHTTPStatus("network_error")
 		return "", fmt.Errorf("autoroute: HTTP call: %w", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	RecordLLMHTTPStatus(classifyHTTPStatus(resp.StatusCode))
 

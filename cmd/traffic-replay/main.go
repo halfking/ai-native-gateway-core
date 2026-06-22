@@ -87,6 +87,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer db.Close()
 
 	rows, err := loadHistoricalRows(ctx, db, *days, *taskType, *maxSamples)
@@ -140,6 +141,7 @@ func loadHistoricalRows(ctx context.Context, db *sql.DB, days int, taskType stri
 	if err != nil {
 		return nil, err
 	}
+	//nolint:errcheck // best-effort close
 	defer rows.Close()
 
 	var out []requestRow

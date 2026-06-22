@@ -62,6 +62,7 @@ func postJSON(t *testing.T, url string, headers map[string]string, body any) (in
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b
@@ -177,6 +178,7 @@ func TestMinimaxAnthropic_Stream_EventOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
@@ -265,6 +267,7 @@ func TestMinimaxAnthropic_ModelsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)

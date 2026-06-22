@@ -191,6 +191,7 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body createSessionRequest
+	//nolint:errcheck // test parse, non-critical
 	json.NewDecoder(r.Body).Decode(&body)
 
 	taskID := body.TaskID
@@ -205,6 +206,7 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"session_id":  session.SessionID,
 		"session_key": session.SessionKey,
@@ -232,6 +234,7 @@ func (h *Handler) GetSessionByID(w http.ResponseWriter, r *http.Request, session
 		return
 	}
 
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(session)
 }
 
@@ -258,6 +261,7 @@ func (h *Handler) DeleteSessionByID(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
@@ -312,6 +316,7 @@ func (h *Handler) MigrateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"session_id":   session.SessionID,
 		"session_key":  session.SessionKey,
@@ -327,6 +332,7 @@ func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, 
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(status)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]string{
 			"message":    msg,

@@ -558,6 +558,7 @@ func invokeOpenAISummarize(ctx context.Context, deps *Dependencies, cand *Provid
 	if err != nil {
 		return "", err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxCompactionBody)))
 	if resp.StatusCode >= 400 {
@@ -601,6 +602,7 @@ func invokeAnthropicSummarize(ctx context.Context, deps *Dependencies, cand *Pro
 	if err != nil {
 		return "", err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(maxCompactionBody)))
 	if resp.StatusCode >= 400 {

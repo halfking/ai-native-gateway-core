@@ -21,11 +21,13 @@ func streamSourceServer(t *testing.T, chunks []string) string {
 		w.WriteHeader(200)
 		flusher, _ := w.(http.Flusher)
 		for _, c := range chunks {
+			//nolint:errcheck // test write, non-critical
 			io.WriteString(w, "data: "+c+"\n\n")
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
+		//nolint:errcheck // test write, non-critical
 		io.WriteString(w, "data: [DONE]\n\n")
 		if flusher != nil {
 			flusher.Flush()
@@ -55,6 +57,7 @@ func TestStreamAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	capture := audit.NewStreamCapture()
@@ -137,6 +140,7 @@ func TestStreamAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
@@ -167,6 +171,7 @@ func TestStreamAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
@@ -195,6 +200,7 @@ func TestStreamAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
@@ -222,6 +228,7 @@ func TestStreamAnthropicSSE_EmptyContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
@@ -246,6 +253,7 @@ func TestStreamAnthropicSSE_UsageAndMessageStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
@@ -274,6 +282,7 @@ func TestStreamAnthropicSSE_PreservesAnthropicEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
 	StreamAnthropicSSE(rec, resp, "m", "m", "req-env", nil, nil)

@@ -16,6 +16,7 @@ import (
 func TestDo_SuccessFirstTry(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"id":"test"}`))
 	}))
 	defer server.Close()
@@ -30,6 +31,7 @@ func TestDo_SuccessFirstTry(t *testing.T) {
 	if uErr != nil {
 		t.Fatalf("unexpected error: %v", uErr)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -45,6 +47,7 @@ func TestDo_RetryOn500(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
@@ -60,6 +63,7 @@ func TestDo_RetryOn500(t *testing.T) {
 	if uErr != nil {
 		t.Fatalf("unexpected error: %v", uErr)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
@@ -177,6 +181,7 @@ func TestDo_NonRetryable429(t *testing.T) {
 	if uErr != nil {
 		t.Fatalf("unexpected error: %v", uErr)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d", resp.StatusCode)

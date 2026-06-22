@@ -28,6 +28,7 @@ func (h *MetaToolsHandler) ListCategories(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"categories": categories,
 	})
@@ -53,6 +54,7 @@ func (h *MetaToolsHandler) LoadTools(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(result)
 }
 
@@ -62,6 +64,7 @@ func (h *MetaToolsHandler) GetMetaToolDefinitions(w http.ResponseWriter, r *http
 	defs := metatools.MetaToolDefinitions()
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"meta_tools": defs,
 	})

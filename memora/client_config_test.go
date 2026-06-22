@@ -20,12 +20,14 @@ func TestClient_SmartSearchUsesSmartBaseURL(t *testing.T) {
 	smartSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&smartHits, 1)
 		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"reranked":[{"id":"s1","memory":"smart","score":0.9}]}`))
 	}))
 	defer smartSrv.Close()
 	baseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&baseHits, 1)
 		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"code":0,"data":{"text_mem":[{"cube_id":"kb","memories":[{"id":"b1","memory":"base","relativity":0.5}]}]}}`))
 	}))
 	defer baseSrv.Close()
@@ -55,12 +57,14 @@ func TestClient_SearchUsesBaseURLOnly(t *testing.T) {
 	var smartHits, baseHits int32
 	smartSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&smartHits, 1)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"reranked":[]}`))
 	}))
 	defer smartSrv.Close()
 	baseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&baseHits, 1)
 		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"code":0,"data":{"text_mem":[{"cube_id":"kb","memories":[{"id":"b1","memory":"base","relativity":0.5}]}]}}`))
 	}))
 	defer baseSrv.Close()
@@ -91,6 +95,7 @@ func TestClient_SmartSearchFallbackOnSmartError(t *testing.T) {
 	baseSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&baseHits, 1)
 		w.Header().Set("Content-Type", "application/json")
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"code":0,"data":{"text_mem":[{"cube_id":"kb","memories":[{"id":"b1","memory":"fallback","relativity":0.5}]}]}}`))
 	}))
 	defer baseSrv.Close()
@@ -119,9 +124,11 @@ func TestClient_SmartSearchEmptyConfigUsesBaseURL(t *testing.T) {
 		switch {
 		case len(r.URL.Path) >= len("/api/smart_search") && r.URL.Path[len(r.URL.Path)-len("/api/smart_search"):] == "/api/smart_search":
 			w.Header().Set("Content-Type", "application/json")
+			//nolint:errcheck // HTTP write error non-recoverable
 			w.Write([]byte(`{"reranked":[]}`))
 		default:
 			w.Header().Set("Content-Type", "application/json")
+			//nolint:errcheck // HTTP write error non-recoverable
 			w.Write([]byte(`{"code":0,"data":{"text_mem":[{"cube_id":"kb","memories":[{"id":"b1","memory":"single-host","relativity":0.5}]}]}}`))
 		}
 	}))

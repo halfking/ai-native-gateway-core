@@ -13,7 +13,9 @@ func TestStreamAnthropicPassthrough_ForwardsBytes(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\"}}\n\n"))
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
 	}))
 	defer upstream.Close()
@@ -22,6 +24,7 @@ func TestStreamAnthropicPassthrough_ForwardsBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
@@ -54,6 +57,7 @@ func TestStreamAnthropicPassthrough_DetectsThinking(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 		}
 		for _, e := range events {
+			//nolint:errcheck // HTTP write error non-recoverable
 			w.Write([]byte(e))
 		}
 	}))
@@ -62,6 +66,7 @@ func TestStreamAnthropicPassthrough_DetectsThinking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
@@ -82,6 +87,7 @@ func TestStreamAnthropicPassthrough_AccumulatesUsage(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 		}
 		for _, e := range events {
+			//nolint:errcheck // HTTP write error non-recoverable
 			w.Write([]byte(e))
 		}
 	}))
@@ -90,6 +96,7 @@ func TestStreamAnthropicPassthrough_AccumulatesUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()

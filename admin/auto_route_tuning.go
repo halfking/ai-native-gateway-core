@@ -206,6 +206,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 		writeInternalErr(w, err)
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx) // safe no-op if Commit succeeds
 
 	// Lock the proposal row + fetch its current state.

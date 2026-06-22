@@ -331,6 +331,7 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderID int64, note string) 
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	var o BillingOrder
@@ -439,6 +440,7 @@ func (s *Service) GrantCredits(ctx context.Context, tenantID string, amount int6
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
 		return err

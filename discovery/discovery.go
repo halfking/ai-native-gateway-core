@@ -473,6 +473,7 @@ func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string
 	if err != nil {
 		return nil, err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

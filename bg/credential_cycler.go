@@ -234,6 +234,7 @@ func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string)
 			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 
 		switch {

@@ -87,6 +87,7 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 		}
 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 
 		if !isAcceptableStatus(resp.StatusCode) {
@@ -168,6 +169,7 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 	if err != nil {
 		return nil, err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)

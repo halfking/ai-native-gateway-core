@@ -7,6 +7,7 @@ import (
 
 func TestEstimator_Fraction_Default(t *testing.T) {
 	// Unset env → defaultWindowFraction (0.8 per v7 §2).
+	//nolint:errcheck // test env, non-critical
 	os.Unsetenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	e := NewEstimator()
 	if got := e.Fraction(); got != defaultWindowFraction {
@@ -15,7 +16,9 @@ func TestEstimator_Fraction_Default(t *testing.T) {
 }
 
 func TestEstimator_Fraction_FromEnv(t *testing.T) {
+	//nolint:errcheck // test env, non-critical
 	os.Setenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION", "0.75")
+	//nolint:errcheck // test env, non-critical
 	defer os.Unsetenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	e := NewEstimator()
 	if got := e.Fraction(); got != 0.75 {
@@ -26,12 +29,14 @@ func TestEstimator_Fraction_FromEnv(t *testing.T) {
 func TestEstimator_Fraction_BadEnvFallsBack(t *testing.T) {
 	cases := []string{"abc", "0", "-1", "1.5", "2"}
 	for _, bad := range cases {
+		//nolint:errcheck // test env, non-critical
 		os.Setenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION", bad)
 		e := NewEstimator()
 		if got := e.Fraction(); got != defaultWindowFraction {
 			t.Errorf("Fraction() with bad env %q: want fallback %v, got %v",
 				bad, defaultWindowFraction, got)
 		}
+		//nolint:errcheck // test env, non-critical
 		os.Unsetenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	}
 }
@@ -52,6 +57,7 @@ func TestEstimator_NilSafety(t *testing.T) {
 }
 
 func TestEstimator_NeedsCompression_GateLogic(t *testing.T) {
+	//nolint:errcheck // test env, non-critical
 	os.Unsetenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	e := NewEstimator()
 	// Default fraction 0.8 over 128K window = 358400 byte trigger.
@@ -84,6 +90,7 @@ func TestEstimator_NeedsCompression_GateLogic(t *testing.T) {
 }
 
 func TestEstimator_ThresholdBytes_Dynamic(t *testing.T) {
+	//nolint:errcheck // test env, non-critical
 	os.Unsetenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	e := NewEstimator()
 	// 0.8 × 3.5 = 2.8 per token. 128K tokens = 358400 bytes.

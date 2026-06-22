@@ -473,9 +473,11 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	if req.DisplayName != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
 	}
 	if req.Status != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
@@ -743,6 +745,7 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 	defer cancel()
 
 	var exists int
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.QueryRow(ctx, `SELECT 1 FROM models_canonical WHERE id = $1`, modelID).Scan(&exists)
 
 	quantization := ""
@@ -892,6 +895,7 @@ func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `UPDATE models_canonical SET tags = $1 WHERE id = $2`, req.Tags, id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
@@ -899,6 +903,7 @@ func (h *Handler) updateModelTags(w http.ResponseWriter, r *http.Request, id int
 func (h *Handler) resetModelTags(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `UPDATE models_canonical SET tags = '[]'::jsonb WHERE id = $1`, id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }

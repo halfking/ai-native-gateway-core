@@ -71,5 +71,6 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(metrics)
 }

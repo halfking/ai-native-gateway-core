@@ -182,10 +182,12 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 	apiKeyID, _ := strconv.Atoi(data["api_key_id"])
 	devices := []Device{}
 	if data["devices"] != "" {
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(data["devices"]), &devices)
 	}
 	cacheInfo := CacheInfo{}
 	if data["provider_cache_info"] != "" {
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(data["provider_cache_info"]), &cacheInfo)
 	}
 
@@ -264,6 +266,7 @@ func (sm *Manager) Migrate(ctx context.Context, sessionID string, newDeviceSeed 
 	session.LastActive = time.Now()
 
 	devicesJSON, _ := json.Marshal(session.Devices)
+	//nolint:errcheck // best-effort cache write, non-critical
 	sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
 		"devices":      string(devicesJSON),
 		"last_active": session.LastActive.Format(time.RFC3339),

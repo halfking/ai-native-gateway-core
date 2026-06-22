@@ -207,6 +207,7 @@ func (rl *RequestLogger) persistUpdate(ctx context.Context, update *LogUpdate) e
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if err := rl.persistUpdateInTx(ctx, tx, update); err != nil {

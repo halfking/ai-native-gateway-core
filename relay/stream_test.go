@@ -240,6 +240,7 @@ func TestStreamingModelReplacementE2E(t *testing.T) {
 
 	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
+		//nolint:errcheck // test parse, non-critical
 		json.NewDecoder(r.Body).Decode(&req)
 		stream, _ := req["stream"].(bool)
 
@@ -259,9 +260,11 @@ func TestStreamingModelReplacementE2E(t *testing.T) {
 			fmt.Sprintf(`{"id":"chat-1","model":"%s","choices":[{"delta":{},"finish_reason":"stop","index":0}]}`, upstreamModel),
 		}
 		for _, chunk := range chunks {
+			//nolint:errcheck // test write, non-critical
 			fmt.Fprintf(w, "data: %s\n\n", chunk)
 			flusher.Flush()
 		}
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
@@ -288,6 +291,7 @@ func TestStreamingModelReplacementE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
@@ -323,10 +327,12 @@ func TestNonStreamingModelReplacementE2E(t *testing.T) {
 
 	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
+		//nolint:errcheck // test parse, non-critical
 		json.NewDecoder(r.Body).Decode(&req)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // HTTP write error non-recoverable
 		json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-1",
 			"object":  "chat.completion",
@@ -357,9 +363,11 @@ func TestNonStreamingModelReplacementE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	var result map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.NewDecoder(resp.Body).Decode(&result)
 
 	if result["model"] != clientModel {
@@ -394,9 +402,11 @@ func TestStreamingToolCallsE2E(t *testing.T) {
 			fmt.Sprintf(`{"id":"chat-1","model":"%s","choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}`, upstreamModel),
 		}
 		for _, chunk := range chunks {
+			//nolint:errcheck // test write, non-critical
 			fmt.Fprintf(w, "data: %s\n\n", chunk)
 			flusher.Flush()
 		}
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
@@ -423,6 +433,7 @@ func TestStreamingToolCallsE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
@@ -454,9 +465,13 @@ func TestStreamingSSEEmptyLineHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"model\":\"outbound\"}\n\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"model\":\"outbound\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
@@ -483,6 +498,7 @@ func TestStreamingSSEEmptyLineHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
@@ -504,10 +520,13 @@ func TestStreamingWithUsageChunk(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
 
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"model\":\"outbound\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}\n\n")
 		flusher.Flush()
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"model\":\"outbound\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n")
 		flusher.Flush()
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
@@ -534,6 +553,7 @@ func TestStreamingWithUsageChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)

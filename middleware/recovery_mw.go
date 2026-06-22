@@ -27,6 +27,7 @@ func (m *RecoveryMiddleware) Wrap(next http.Handler) http.Handler {
 				)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
+				//nolint:errcheck // HTTP write error non-recoverable
 				w.Write([]byte(`{"error":{"message":"internal server error","type":"server_error","code":"panic"}}`))
 			}
 		}()

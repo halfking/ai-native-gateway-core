@@ -118,6 +118,7 @@ func (p *DefaultProbePicker) repickAll(ctx context.Context) {
 			continue
 		}
 		// Audit log
+		//nolint:errcheck // best-effort exec, non-critical
 		p.db.Exec(timeoutCtx, `
 			INSERT INTO credential_probe_model_log
 			    (tenant_id, credential_id, source, old_model, new_model, actor, reason)

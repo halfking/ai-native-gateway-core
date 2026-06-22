@@ -91,6 +91,7 @@ func (c *Client) ListModels(ctx context.Context, baseURL, apiKey string) ([]stri
 			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK {
@@ -145,6 +146,7 @@ func (c *Client) Chat(ctx context.Context, baseURL, apiKey string, req ChatReque
 	if err != nil {
 		return nil, err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

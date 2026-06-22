@@ -75,10 +75,12 @@ func newFakeUpstream(t *testing.T) (*httptest.Server, *turnTracker) {
 
 				for i := 0; i < 3; i++ {
 					chunk := fmt.Sprintf(`data: {"id":"chat-%d","object":"chat.completion.chunk","choices":[{"delta":{"content":"Turn %d chunk %d "},"index":0}]}`, turn, turn, i)
+					//nolint:errcheck // test write, non-critical
 					fmt.Fprintf(w, "%s\n\n", chunk)
 					flusher.Flush()
 					time.Sleep(5 * time.Millisecond)
 				}
+				//nolint:errcheck // test write, non-critical
 				fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 			} else {
@@ -105,6 +107,7 @@ func newFakeUpstream(t *testing.T) (*httptest.Server, *turnTracker) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
+				//nolint:errcheck // HTTP write error non-recoverable
 				json.NewEncoder(w).Encode(resp)
 			}
 			return
@@ -169,6 +172,7 @@ func TestMultiTurnChatNonStreaming(t *testing.T) {
 		if err != nil {
 			t.Fatalf("turn %d request failed: %v", turn, err)
 		}
+		//nolint:errcheck // best-effort close
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
@@ -239,6 +243,7 @@ func TestMultiTurnChatStreaming(t *testing.T) {
 		if err != nil {
 			t.Fatalf("turn %d request failed: %v", turn, err)
 		}
+		//nolint:errcheck // best-effort close
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
@@ -266,6 +271,7 @@ func TestCircuitBreakerBlocksAfterFailures(t *testing.T) {
 		if r.URL.Path == "/v1/chat/completions" {
 			failCount.Add(1)
 			w.WriteHeader(http.StatusInternalServerError)
+			//nolint:errcheck // HTTP write error non-recoverable
 			json.NewEncoder(w).Encode(map[string]string{"error": "upstream error"})
 			return
 		}
@@ -297,6 +303,7 @@ func TestCircuitBreakerBlocksAfterFailures(t *testing.T) {
 			t.Logf("request %d: error %v", i, err)
 			continue
 		}
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 	}
 
@@ -312,6 +319,7 @@ func TestConcurrencyLimiterRejectsWhenSaturated(t *testing.T) {
 	slowUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // HTTP write error non-recoverable
 		json.NewEncoder(w).Encode(map[string]any{
 			"id":      "test",
 			"object":  "chat.completion",
@@ -352,6 +360,7 @@ func TestConcurrencyLimiterRejectsWhenSaturated(t *testing.T) {
 				failCount.Add(1)
 				return
 			}
+			//nolint:errcheck // best-effort close
 			defer resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				successCount.Add(1)
@@ -385,6 +394,7 @@ func TestHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -414,6 +424,7 @@ func TestHealthEndpointFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("health check failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	var result map[string]any

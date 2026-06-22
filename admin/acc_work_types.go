@@ -90,6 +90,7 @@ func fetchACCWorkTypes(ctx context.Context, cfg accSyncConfig) ([]accWorkTypePay
 	if err != nil {
 		return nil, fmt.Errorf("ACC 请求失败: %w", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -138,6 +139,7 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 	if err != nil {
 		return workTypeSyncResult{}, err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	for _, item := range items {

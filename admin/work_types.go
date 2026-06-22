@@ -586,6 +586,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		writeInternalErr(w, err)
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `DELETE FROM work_type_model_route WHERE work_type_key = $1`, key); err != nil {

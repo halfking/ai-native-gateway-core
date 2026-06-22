@@ -56,6 +56,7 @@ func TestAnthropicExecutor_StreamResponse_Passthrough(t *testing.T) {
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 		}
 		for _, e := range events {
+			//nolint:errcheck // HTTP write error non-recoverable
 			w.Write([]byte(e))
 			flusher.Flush()
 		}
@@ -66,6 +67,7 @@ func TestAnthropicExecutor_StreamResponse_Passthrough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
@@ -123,6 +125,7 @@ func TestExecutor_DispatchesAnthropic(t *testing.T) {
 		seenPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"MiniMax-M2.7","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}`))
 	}))
 	defer srv.Close()

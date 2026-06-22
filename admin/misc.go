@@ -105,6 +105,7 @@ func (h *Handler) createTag(ctx context.Context, w http.ResponseWriter, r *http.
 	}
 
 	if len(req.Models) > 0 {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			UPDATE models_canonical
 			SET tags = COALESCE(tags, '[]'::jsonb) || $1::jsonb

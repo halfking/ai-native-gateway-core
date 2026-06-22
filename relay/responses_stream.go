@@ -15,6 +15,7 @@ import (
 )
 
 func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {
@@ -160,6 +161,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		var choices []map[string]any
 		if raw, ok := chunk["choices"]; ok {
+			//nolint:errcheck // test parse, non-critical
 			json.Unmarshal(raw, &choices)
 		}
 		if len(choices) == 0 {
