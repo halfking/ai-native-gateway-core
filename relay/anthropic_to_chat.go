@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -71,6 +72,22 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			if c.Thinking != "" {
 				thinkingParts = append(thinkingParts, c.Thinking)
 			}
+		default:
+			// Handle unknown content types by attempting to extract text or thinking fields
+			slog.Warn("unknown_content_type_in_anthropic_response",
+				"type", c.Type,
+				"model", src.Model,
+				"has_text", c.Text != "",
+				"has_thinking", c.Thinking != "",
+				"message_id", src.ID)
+
+			// Try to extract text field first
+			if c.Text != "" {
+				textParts = append(textParts, c.Text)
+			} else if c.Thinking != "" {
+				// Or thinking field as fallback
+				thinkingParts = append(thinkingParts, c.Thinking)
+			}
 		}
 	}
 	msg := map[string]any{"role": "assistant"}
@@ -81,15 +98,29 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 	} else {
 		msg["content"] = ""
 	}
-	
+
 	// Preserve thinking blocks in reasoning_content field (OpenAI o1-style)
 	if len(thinkingParts) > 0 {
 		msg["reasoning_content"] = joinTextParts(thinkingParts)
 	}
-	
+
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
 	}
+
+	// Detect empty responses (all content blocks were unknown types or empty)
+	if len(textParts) == 0 && len(toolCalls) == 0 && len(thinkingParts) == 0 {
+		slog.Error("empty_response_after_anthropic_to_openai_conversion",
+			"model", src.Model,
+			"message_id", src.ID,
+			"content_blocks_count", len(src.Content),
+			"input_tokens", src.Usage.InputTokens,
+			"output_tokens", src.Usage.OutputTokens,
+			"stop_reason", src.StopReason)
+		return nil, fmt.Errorf("empty response from model %s: %d content blocks produced no extractable text/tool/thinking content",
+			src.Model, len(src.Content))
+	}
+
 	finishReason := mapAnthropicFinishReasonToChat(src.StopReason)
 	totalTokens := src.Usage.InputTokens + src.Usage.OutputTokens
 	out := map[string]any{
@@ -108,7 +139,7 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			"total_tokens":      totalTokens,
 		},
 	}
-	
+
 	// Record thinking block statistics in metadata
 	if thinkingBlocks > 0 {
 		reasoningContent, _ := msg["reasoning_content"].(string)
