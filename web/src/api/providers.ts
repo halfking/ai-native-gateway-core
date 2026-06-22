@@ -494,6 +494,12 @@ export function resetCredentialQuota(providerId: number, credId: number) {
   return req<{ message: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reset-quota`)
 }
 
+export function resetCredentialFpSlots(providerId: number, credId: number) {
+  return req<{ message: string; deleted_slots: number; deleted_pins: number }>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/reset-fp-slots`
+  )
+}
+
 export function forceRecoverCredential(credId: number) {
   return req<{ triggered: boolean; credential_id: number }>(
     'POST', `/api/providers/credentials/${credId}/force-recover`

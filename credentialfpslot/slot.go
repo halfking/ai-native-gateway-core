@@ -28,18 +28,18 @@ type Config struct {
 
 // Lease is one acquired fingerprint slot.
 type Lease struct {
-	SlotIndex      int
-	Egress         *identity.EgressIdentity
-	Unlimited      bool
-	CredentialID   int
-	Holder         string
+	SlotIndex    int
+	Egress       *identity.EgressIdentity
+	Unlimited    bool
+	CredentialID int
+	Holder       string
 }
 
 // Manager owns slot acquisition against Redis (or in-memory fallback).
 type Manager struct {
-	cfg    Config
-	client *redis.Client
-	mu     sync.Mutex
+	cfg      Config
+	client   *redis.Client
+	mu       sync.Mutex
 	memSlots map[slotKey]memEntry
 	memPins  map[string]memPinEntry
 }
@@ -442,6 +442,100 @@ func (m *Manager) purgeExpiredLocked(now time.Time) {
 		}
 	}
 }
+
+// ResetSlots clears all slot and pin keys for a credential, resetting occupancy to zero.
+// Used by admin UI "复位" button when slots appear stuck due to:
+//   - Gateway restart before defer cleanup
+//   - Redis key expiry delays
+//   - Program panic during request handling
+//
+// Returns (deleted_slots, deleted_pins, error).
+func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) (int, int, error) {
+	if !m.Enabled() {
+		return 0, 0, nil
+	}
+	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
+	if eff == nil {
+		return 0, 0, nil
+	}
+
+	if m.client != nil {
+		// Delete all slot keys and pin keys via Lua script for atomicity
+		result, err := resetSlotsScript.Run(ctx, m.client,
+			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+			*eff,
+			credentialID,
+		).Result()
+		if err != nil {
+			return 0, 0, fmt.Errorf("redis reset failed: %w", err)
+		}
+		// Lua returns two integers
+		results := result.([]interface{})
+		slots := int(results[0].(int64))
+		pins := int(results[1].(int64))
+		slog.Info("cred_fp_slot reset completed",
+			"credential_id", credentialID,
+			"deleted_slots", slots,
+			"deleted_pins", pins,
+		)
+		return slots, pins, nil
+	}
+
+	// Memory fallback
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deletedSlots := 0
+	deletedPins := 0
+	for k := range m.memSlots {
+		if k.credentialID == credentialID {
+			delete(m.memSlots, k)
+			deletedSlots++
+		}
+	}
+	// Pin keys contain credentialID at the end: "llmgw:sess_cred_fp:{holder}:{credentialID}"
+	pinSuffix := fmt.Sprintf(":%d", credentialID)
+	for k := range m.memPins {
+		if strings.HasSuffix(k, pinSuffix) {
+			delete(m.memPins, k)
+			deletedPins++
+		}
+	}
+	return deletedSlots, deletedPins, nil
+}
+
+var resetSlotsScript = redis.NewScript(`
+	local prefix = KEYS[1]
+	local limit = tonumber(ARGV[1])
+	local credentialID = tonumber(ARGV[2])
+	
+	local deletedSlots = 0
+	local deletedPins = 0
+	
+	-- Delete all slot keys (llmgw:cred_fp_slot:{credentialID}:{slot})
+	for slot = 0, limit - 1 do
+		local slotKey = prefix .. ':' .. tostring(slot)
+		if redis.call('DEL', slotKey) > 0 then
+			deletedSlots = deletedSlots + 1
+		end
+	end
+	
+	-- Delete all pin keys (llmgw:sess_cred_fp:*:{credentialID})
+	-- Use SCAN to find matching pin keys
+	local pinPattern = 'llmgw:sess_cred_fp:*:' .. tostring(credentialID)
+	local cursor = '0'
+	repeat
+		local result = redis.call('SCAN', cursor, 'MATCH', pinPattern, 'COUNT', 100)
+		cursor = result[1]
+		local keys = result[2]
+		for _, key in ipairs(keys) do
+			if redis.call('DEL', key) > 0 then
+				deletedPins = deletedPins + 1
+			end
+		end
+	until cursor == '0'
+	
+	return {deletedSlots, deletedPins}
+`)
 
 // ApplyEgressHeaders overwrites upstream-facing identity headers.
 func ApplyEgressHeaders(hdr httpHeader, egress *identity.EgressIdentity) {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
 func extractID(path string) (int, bool) {
@@ -125,15 +125,14 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"accepted":  true,
-		"reason":    "health check completed",
-		"checked":   checked,
-		"healthy":   healthy,
+		"accepted": true,
+		"reason":   "health check completed",
+		"checked":  checked,
+		"healthy":  healthy,
 	})
 }
 
 // ── Probe endpoints ──────────────────────────────────────────────────────────
-
 
 // probeURL (POST /api/providers/probe-url) probes a base_url WITHOUT
 // requiring an existing provider. Used by the "add provider" form:
@@ -568,37 +567,37 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type provider struct {
-		ID                     int        `json:"id"`
-		TenantID               string     `json:"tenant_id"`
-		Code                   string     `json:"code"`
-		DisplayName            string     `json:"display_name"`
-		CatalogCode            *string    `json:"catalog_code"`
-		IsCustom               bool       `json:"is_custom"`
-		Kind                   string     `json:"kind"`
-		Category               string     `json:"category"`
-		Protocol               string     `json:"protocol"`
-		BaseURL                string     `json:"base_url"`
-		EgressProfile          string     `json:"egress_profile"`
-		Domestic               bool       `json:"domestic"`
-		DiscountRate           float64    `json:"discount_rate"`
-		Enabled                bool       `json:"enabled"`
-		Notes                  string     `json:"notes"`
-		NetworkQualityScore    *string    `json:"network_quality_score"`
-		OwnerUser              *string    `json:"owner_user"`
-		CreatedAt              *time.Time `json:"created_at"`
-		UpdatedAt              *time.Time `json:"updated_at"`
-		VendorName             string     `json:"vendor_name"`
-		HeaderProfileCode      string     `json:"header_profile_code"`
-		ActiveCredCount        int        `json:"active_credential_count"`
-		HealthyCredCount       int        `json:"healthy_credential_count"`
-		WarningCredCount       int        `json:"warning_credential_count"`
-		UnreachableCredCount   int        `json:"unreachable_credential_count"`
-		HealthCheckedAt        *time.Time `json:"health_checked_at"`
-		FreeModelCount         int        `json:"free_model_count"`
-		HealthStatus           string     `json:"health_status"`
-		RoutableBindingCount   int        `json:"routable_binding_count"`
-		TotalBindingCount      int        `json:"total_binding_count"`
-		QualityFixMode         string     `json:"quality_fix_mode"`
+		ID                   int        `json:"id"`
+		TenantID             string     `json:"tenant_id"`
+		Code                 string     `json:"code"`
+		DisplayName          string     `json:"display_name"`
+		CatalogCode          *string    `json:"catalog_code"`
+		IsCustom             bool       `json:"is_custom"`
+		Kind                 string     `json:"kind"`
+		Category             string     `json:"category"`
+		Protocol             string     `json:"protocol"`
+		BaseURL              string     `json:"base_url"`
+		EgressProfile        string     `json:"egress_profile"`
+		Domestic             bool       `json:"domestic"`
+		DiscountRate         float64    `json:"discount_rate"`
+		Enabled              bool       `json:"enabled"`
+		Notes                string     `json:"notes"`
+		NetworkQualityScore  *string    `json:"network_quality_score"`
+		OwnerUser            *string    `json:"owner_user"`
+		CreatedAt            *time.Time `json:"created_at"`
+		UpdatedAt            *time.Time `json:"updated_at"`
+		VendorName           string     `json:"vendor_name"`
+		HeaderProfileCode    string     `json:"header_profile_code"`
+		ActiveCredCount      int        `json:"active_credential_count"`
+		HealthyCredCount     int        `json:"healthy_credential_count"`
+		WarningCredCount     int        `json:"warning_credential_count"`
+		UnreachableCredCount int        `json:"unreachable_credential_count"`
+		HealthCheckedAt      *time.Time `json:"health_checked_at"`
+		FreeModelCount       int        `json:"free_model_count"`
+		HealthStatus         string     `json:"health_status"`
+		RoutableBindingCount int        `json:"routable_binding_count"`
+		TotalBindingCount    int        `json:"total_binding_count"`
+		QualityFixMode       string     `json:"quality_fix_mode"`
 	}
 	providers := make([]provider, 0)
 	for rows.Next() {
@@ -647,31 +646,31 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	var p struct {
-		ID                   int     `json:"id"`
-		Code                 string  `json:"code"`
-		DisplayName          string  `json:"display_name"`
-		CatalogCode          *string `json:"catalog_code"`
-		Kind                 string  `json:"kind"`
-		Category             string  `json:"category"`
-		Protocol             string  `json:"protocol"`
-		BaseURL              string  `json:"base_url"`
-		EgressProfile        *string `json:"egress_profile"`
-		Domestic             bool    `json:"domestic"`
-		DiscountRate         float64 `json:"discount_rate"`
-		Enabled              bool    `json:"enabled"`
-		ManualDisabled       bool    `json:"manual_disabled"`
-		HeaderProfileCode    string  `json:"header_profile_code"`
-		Notes                *string `json:"notes"`
-		VendorName           *string `json:"vendor_name"`
-		ActiveCredCount      int     `json:"active_cred_count"`
-		HealthyCredCount     int     `json:"healthy_cred_count"`
-		WarningCredCount     int     `json:"warning_cred_count"`
-		CoolingCredCount     int     `json:"cooling_cred_count"`
-		UnreachableCredCount int     `json:"unreachable_cred_count"`
-		AvailableModelCount  int     `json:"available_model_count"`
-		UnavailableModelCount int    `json:"unavailable_model_count"`
-		ErrorRate24h         float64 `json:"error_rate_24h"`
-		CreatedAt            *time.Time `json:"created_at"`
+		ID                    int        `json:"id"`
+		Code                  string     `json:"code"`
+		DisplayName           string     `json:"display_name"`
+		CatalogCode           *string    `json:"catalog_code"`
+		Kind                  string     `json:"kind"`
+		Category              string     `json:"category"`
+		Protocol              string     `json:"protocol"`
+		BaseURL               string     `json:"base_url"`
+		EgressProfile         *string    `json:"egress_profile"`
+		Domestic              bool       `json:"domestic"`
+		DiscountRate          float64    `json:"discount_rate"`
+		Enabled               bool       `json:"enabled"`
+		ManualDisabled        bool       `json:"manual_disabled"`
+		HeaderProfileCode     string     `json:"header_profile_code"`
+		Notes                 *string    `json:"notes"`
+		VendorName            *string    `json:"vendor_name"`
+		ActiveCredCount       int        `json:"active_cred_count"`
+		HealthyCredCount      int        `json:"healthy_cred_count"`
+		WarningCredCount      int        `json:"warning_cred_count"`
+		CoolingCredCount      int        `json:"cooling_cred_count"`
+		UnreachableCredCount  int        `json:"unreachable_cred_count"`
+		AvailableModelCount   int        `json:"available_model_count"`
+		UnavailableModelCount int        `json:"unavailable_model_count"`
+		ErrorRate24h          float64    `json:"error_rate_24h"`
+		CreatedAt             *time.Time `json:"created_at"`
 	}
 
 	err := h.db.QueryRow(ctx, `
@@ -995,9 +994,9 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE tenant_id = 'default'`).Scan(&total)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"message":  fmt.Sprintf("Seeded %d new providers from catalog", len(created)),
-		"created":  len(created),
-		"total":    total,
+		"message":   fmt.Sprintf("Seeded %d new providers from catalog", len(created)),
+		"created":   len(created),
+		"total":     total,
 		"providers": created,
 	})
 }
@@ -1129,12 +1128,16 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "reset-fp-slots":
+		if r.Method == http.MethodPost {
+			h.resetCredentialFpSlots(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
 		http.NotFound(w, r)
 	}
 }
-
-
 
 func (h *Handler) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
