@@ -453,15 +453,14 @@ CREATE INDEX IF NOT EXISTS idx_tenants_status ON tenants(status);
 CREATE INDEX IF NOT EXISTS idx_tenants_name ON tenants(name);
 `
 
-
 // ensureTuningSignalsStrategyColumn adds the dedicated `strategy`
 // column to tuning_signals (P7.1). The strategy was previously
 // stored only in signal_payload->>'strategy' (JSONB extract), which
 // is slow and not indexable. This migration promotes it to a
 // proper TEXT column with two indexes:
 //
-//   idx_tuning_signals_strategy_ts    (strategy, ts DESC) — A/B summary
-//   idx_tuning_signals_strategy_task  (strategy, task_type, ts DESC) — breakdown
+//	idx_tuning_signals_strategy_ts    (strategy, ts DESC) — A/B summary
+//	idx_tuning_signals_strategy_task  (strategy, task_type, ts DESC) — breakdown
 //
 // Backward compatibility: rows that pre-date this column have
 // strategy = 'pattern_layered' (the historical default). The
@@ -588,8 +587,8 @@ func (d *DB) ensureSessionTitles(ctx context.Context) error {
 //
 // Two views:
 //
-//   tuning_signals_5m   — 5-minute buckets, retained 7 days
-//   tuning_signals_daily — 1-day buckets, retained 90 days
+//	tuning_signals_5m   — 5-minute buckets, retained 7 days
+//	tuning_signals_daily — 1-day buckets, retained 90 days
 //
 // Both are regular (not materialised) views. The bg worker
 // (bg/tuning_view_refresher.go) refreshes them every 5 minutes.
@@ -657,7 +656,6 @@ func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	slog.Info("tuning_signals views ensured (5m + daily, 2 supporting indexes)")
 	return nil
 }
-
 
 // ensureRoutingOverridesTable creates the routing_overrides table used by
 // admin CRUD and autoroute OverrideStore (P7.6).
@@ -789,9 +787,9 @@ func (d *DB) ensureRoutingOverridesAudit(ctx context.Context) error {
 
 // ensurePassiveProbeStateSchema mirrors db/migrations/019_passive_probe_state.sql
 // for startup apply. Idempotent. Creates:
-//   1. passive_probe_state table for Layer 5 passive observation
-//   2. model_probe_state v5 columns (last_unavailable_reason, last_err_code, next_retry_at_override)
-//   3. Index for fast reviewing state queries
+//  1. passive_probe_state table for Layer 5 passive observation
+//  2. model_probe_state v5 columns (last_unavailable_reason, last_err_code, next_retry_at_override)
+//  3. Index for fast reviewing state queries
 //
 // Without this startup apply, the PassiveProbeListener worker logs
 // "relation does not exist" errors every 30s and the /api/routing/
@@ -827,6 +825,18 @@ func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_model_probe_state_retry
 		    ON model_probe_state (state, next_retry_at)
 		    WHERE state = 'recovering';
+		CREATE OR REPLACE FUNCTION model_probe_backoff(consecutive_failures INTEGER)
+		    RETURNS INTERVAL
+		    LANGUAGE SQL
+		    IMMUTABLE
+		AS $$
+		    SELECT CASE
+			WHEN consecutive_failures <= 0 THEN INTERVAL '30 seconds'
+			WHEN consecutive_failures = 1  THEN INTERVAL '2 minutes'
+			WHEN consecutive_failures = 2  THEN INTERVAL '5 minutes'
+			ELSE                                  INTERVAL '15 minutes'
+		    END;
+		$$;
 	`)
 	if err != nil {
 		return err
@@ -838,9 +848,9 @@ func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 // ensureTenantModelPoliciesSchema mirrors
 // db/migrations/024_tenant_model_policies.sql for startup apply.
 // Idempotent. Creates:
-//   1. tenant_model_policies table (Pattern A: tenant_id NOT NULL, RLS)
-//   2. tenant_model_policies_active view (excludes soft-deleted rows)
-//   3. tenant_model_policies_audit table + trigger
+//  1. tenant_model_policies table (Pattern A: tenant_id NOT NULL, RLS)
+//  2. tenant_model_policies_active view (excludes soft-deleted rows)
+//  3. tenant_model_policies_audit table + trigger
 //
 // Without this, internal/modelpolicy/Checker.IsForbidden would
 // return false (fail-open) for all tenants because the table would
@@ -952,28 +962,28 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-		slog.Info("tenant_model_policies schema ensured (table + RLS + active view + audit trigger)")
-		return nil
-	}
+	slog.Info("tenant_model_policies schema ensured (table + RLS + active view + audit trigger)")
+	return nil
+}
 
 // ensureSupplementalRLS — Round 48 (2026-06-21)
-	//
-	// Adds RLS policies to tables whose CREATE TABLE statements live in
-	// earlier migrations owned by other projects (022/023 settings,
-	// 025 tool_registry). Without this, pg-rls-lint flags L1 for the
-	// five pre-existing tenant-scoped tables and the cross-tenant
-	// defense-in-depth guarantee is missing in production.
-	//
-	// Idempotent (DROP POLICY IF EXISTS guard).  We do NOT modify the
-	// original migrations; this function applies the same CREATE
-	// POLICY statements that 026_supplemental_rls.sql contains so the
-	// linter and the live DB stay in sync even if the .sql file
-	// never gets re-applied.
-	func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
-		if d == nil || d.pool == nil {
-			return nil
-		}
-		_, err := d.pool.Exec(ctx, `
+//
+// Adds RLS policies to tables whose CREATE TABLE statements live in
+// earlier migrations owned by other projects (022/023 settings,
+// 025 tool_registry). Without this, pg-rls-lint flags L1 for the
+// five pre-existing tenant-scoped tables and the cross-tenant
+// defense-in-depth guarantee is missing in production.
+//
+// Idempotent (DROP POLICY IF EXISTS guard).  We do NOT modify the
+// original migrations; this function applies the same CREATE
+// POLICY statements that 026_supplemental_rls.sql contains so the
+// linter and the live DB stay in sync even if the .sql file
+// never gets re-applied.
+func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
 			ALTER TABLE tenant_settings_kv ENABLE ROW LEVEL SECURITY;
 			DROP POLICY IF EXISTS tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv;
 			CREATE POLICY tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv
@@ -1010,9 +1020,9 @@ func (d *DB) ensureTenantModelPoliciesSchema(ctx context.Context) error {
 			    USING ((tenant_id)::text = (public.get_current_tenant())::text
 			           OR (tenant_id) IS NULL OR (tenant_id) = 'default');
 		`)
-		if err != nil {
-			return err
-		}
-		slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
-		return nil
+	if err != nil {
+		return err
 	}
+	slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
+	return nil
+}
