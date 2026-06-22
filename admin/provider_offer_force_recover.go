@@ -103,8 +103,10 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			writeError(w, http.StatusBadRequest, "canonical model not found")
 			return
 		}
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
 		if req.StandardizedName == nil {
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
 			// 2026-06-19 audit: mirror the write to the underlying
 			// provider_models table.  model_offers is a VIEW with an
@@ -112,6 +114,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			// from raw_model_name on conflict, which was clobbering the
 			// admin's manual edit ("一会就被刷新").  Writing both sides
 			// keeps the view and the base table in lockstep.
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				UPDATE provider_models
 				SET standardized_name = $1
@@ -127,9 +130,11 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	if req.StandardizedName != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
 		// 2026-06-19 audit: mirror to provider_models so the view's
 		// INSTEAD OF UPDATE trigger cannot re-clobber the value.
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			UPDATE provider_models
 			SET standardized_name = $1
@@ -166,13 +171,14 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var result struct {
-		ID               int     `json:"id"`
-		RawModelName     string  `json:"raw_model_name"`
-		StandardizedName *string `json:"standardized_name"`
-		CanonicalID      *int    `json:"canonical_id"`
-		CanonicalName    *string `json:"canonical_name"`
-		OutboundModelName *string `json:"outbound_model_name"`
+		ID               int
+		RawModelName     string
+		StandardizedName string
+		CanonicalID      *int
+		CanonicalName    *string
+		OutboundModelName *string
 	}
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
 		       mc.canonical_name, mo.outbound_model_name
@@ -287,6 +293,7 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 		}
 	} else {
 		// Admin disable: set reason='manual' and clear protection.
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			UPDATE model_offers SET available = FALSE,
 			unavailable_reason = 'manual', unavailable_at = now(),
@@ -295,6 +302,7 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 		`, offerID)
 	}
 
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		UPDATE credentials SET availability_state = 'ready',
 		availability_recover_at = NULL, state_reason_code = NULL,
@@ -403,6 +411,7 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 	}
 	actorCopy := actor
 	reqCopy := req
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO model_offer_events
 		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
@@ -457,6 +466,7 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 	}
 	actorCopy := actor
 	reqCopy := req
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO model_offer_events
 		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
@@ -517,6 +527,7 @@ func (h *Handler) setDefaultProbeModel(w http.ResponseWriter, r *http.Request, p
 
 	actorCopy := actor
 	reqCopy := req
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO credential_probe_model_log
 		    (tenant_id, credential_id, source, old_model, new_model, actor, reason)
@@ -577,6 +588,7 @@ func (h *Handler) pickDefaultProbeModel(w http.ResponseWriter, r *http.Request, 
 	}
 
 	actorCopy := actor
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO credential_probe_model_log
 		    (tenant_id, credential_id, source, old_model, new_model, actor, reason)

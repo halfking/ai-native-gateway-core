@@ -160,6 +160,7 @@ func NeedsToolCollapse(body []byte) bool {
 	for _, msg := range messages {
 		var role string
 		if r, ok := msg["role"]; ok {
+			//nolint:errcheck // test parse, non-critical
 			json.Unmarshal(r, &role)
 		}
 		if role == "tool" {

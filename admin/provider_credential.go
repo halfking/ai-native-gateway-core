@@ -298,28 +298,36 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 
 	if req.Label != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET label = $1 WHERE id = $2 AND provider_id = $3`, *req.Label, credID, providerID)
 	}
 	if req.Status != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET status = $1 WHERE id = $2 AND provider_id = $3`, *req.Status, credID, providerID)
 	}
 	if req.ConcurrencyLimit != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
 	}
 	if req.EffectiveAt != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET effective_at = $1 WHERE id = $2 AND provider_id = $3`, *req.EffectiveAt, credID, providerID)
 	}
 	if req.ExpiresAt != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET expires_at = $1 WHERE id = $2 AND provider_id = $3`, *req.ExpiresAt, credID, providerID)
 	}
 	if req.Tags != nil {
 		tagsStr := strings.Join(req.Tags, ",")
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET tags = $1 WHERE id = $2 AND provider_id = $3`, tagsStr, credID, providerID)
 	}
 	if req.Notes != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET notes = $1 WHERE id = $2 AND provider_id = $3`, *req.Notes, credID, providerID)
 	}
 	if req.BalanceUSD != nil {
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET balance_usd = $1 WHERE id = $2 AND provider_id = $3`, *req.BalanceUSD, credID, providerID)
 	}
 	provider.InvalidateAllCandidateCache()

@@ -1288,6 +1288,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		slog.Warn("disable_model_offer: begin tx failed", "error", err)
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	reason := "auto_" + string(kind)

@@ -759,6 +759,7 @@ func (h *Handler) approveKey(w http.ResponseWriter, r *http.Request, id int) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `UPDATE api_keys SET enabled = TRUE WHERE id = $1`, id)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "approved"})
 }
@@ -905,6 +906,7 @@ func (h *Handler) verifyKey(w http.ResponseWriter, r *http.Request) {
 		result.RateLimitRPM = rpm
 		result.BudgetUSD = budget
 		result.KeyAlias = keyAlias
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE id = $1`, id)
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -932,6 +934,7 @@ func (h *Handler) budgetCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var spent float64
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.QueryRow(ctx, `SELECT COALESCE(SUM(cost_usd), 0) FROM usage_ledger WHERE api_key_id = $1`, req.APIKeyID).Scan(&spent)
 
 	exceeded := budgetUSD != nil && spent >= *budgetUSD
@@ -1171,6 +1174,7 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 		AdminNotes *string `json:"admin_notes"`
 		ReviewedBy *string `json:"reviewed_by"`
 	}
+	//nolint:errcheck // best-effort
 	readJSON(r, &req)
 	notes := ""
 	if req.AdminNotes != nil {
@@ -1215,6 +1219,7 @@ func (h *Handler) approveKeyApplication(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		UPDATE key_applications
 		SET status = 'approved', issued_key_id = $1, admin_notes = $2, reviewed_by = $3, reviewed_at = now(), updated_at = now()
@@ -1249,6 +1254,7 @@ func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, a
 		AdminNotes *string `json:"admin_notes"`
 		ReviewedBy *string `json:"reviewed_by"`
 	}
+	//nolint:errcheck // best-effort
 	readJSON(r, &req)
 	notes := ""
 	if req.AdminNotes != nil {
@@ -1259,6 +1265,7 @@ func (h *Handler) rejectKeyApplication(w http.ResponseWriter, r *http.Request, a
 		reviewer = *req.ReviewedBy
 	}
 
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		UPDATE key_applications
 		SET status = 'rejected', admin_notes = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()

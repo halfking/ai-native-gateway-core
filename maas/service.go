@@ -122,6 +122,7 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 	if err != nil {
 		return 0, err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
@@ -628,6 +629,7 @@ func (s *Service) AdjustCredits(ctx context.Context, tenantID string, amount int
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	if err := s.ensureWallet(ctx, tx, tenantID); err != nil {
 		return err

@@ -1061,11 +1061,13 @@ routingExec.AnthropicToOpenAIStream = func(
 				slog.Error("config: hot-reload failed", "error", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
+				//nolint:errcheck // HTTP write error non-recoverable
 				json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
 				return
 			}
 			slog.Info("config: hot-reload succeeded")
 			w.Header().Set("Content-Type", "application/json")
+			//nolint:errcheck // HTTP write error non-recoverable
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		})
 		slog.Info("config: hot-reload endpoint enabled", "path", configFile)
@@ -1080,6 +1082,7 @@ routingExec.AnthropicToOpenAIStream = func(
 			if r.URL.Path == "/" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
+				//nolint:errcheck // HTTP write error non-recoverable
 				w.Write([]byte(`{"service":"llm-gateway-go","version":"0.3.0"}`))
 				return
 			}

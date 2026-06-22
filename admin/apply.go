@@ -89,6 +89,7 @@ func (h *Handler) v1ApplyForkey(w http.ResponseWriter, r *http.Request) {
 			resp["message"] = "您的申请已提交，等待管理员审核"
 		} else if existingStatus == "approved" && existingKeyID != nil {
 			var keyPrefix string
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.QueryRow(ctx, `SELECT key_prefix FROM api_keys WHERE id = $1`, *existingKeyID).Scan(&keyPrefix)
 			resp["key_prefix"] = keyPrefix
 			resp["message"] = "申请已通过，请联系管理员获取完整密钥"
@@ -162,6 +163,7 @@ func (h *Handler) v1GetApplicationStatus(w http.ResponseWriter, r *http.Request)
 	case "approved":
 		if issuedKeyID != nil {
 			var keyPrefix string
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.QueryRow(ctx, `SELECT key_prefix FROM api_keys WHERE id = $1`, *issuedKeyID).Scan(&keyPrefix)
 			resp["key_prefix"] = keyPrefix
 			resp["message"] = "申请已通过，请联系管理员获取完整密钥"

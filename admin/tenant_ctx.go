@@ -29,6 +29,7 @@ func withTenantTx(ctx context.Context, pool *pgxpool.Pool, tenantID string, fn f
 	if err != nil {
 		return fmt.Errorf("begin tenant tx: %w", err)
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	escaped := strings.ReplaceAll(tenantID, "'", "''")

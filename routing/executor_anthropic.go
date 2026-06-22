@@ -101,6 +101,7 @@ func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, i
 }
 
 func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -728,6 +729,7 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	if resp != nil && resp.StatusCode >= 400 {
+		//nolint:errcheck // best-effort close
 		defer resp.Body.Close()
 		body := make([]byte, 4096)
 		n, _ := resp.Body.Read(body)
@@ -781,6 +783,7 @@ func (e *Executor) executeAnthropicOnce(
 			}
 			params.W.WriteHeader(resp.StatusCode)
 			if n > 0 {
+				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(body[:n])
 			}
 			return nil, fmt.Errorf("upstream %d", resp.StatusCode)

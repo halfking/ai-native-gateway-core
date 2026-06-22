@@ -18,6 +18,7 @@ func TestApplyRequestWhitelist_Passthrough(t *testing.T) {
 	result := ApplyRequestWhitelist(body, []string{"model", "messages", "stream"}, nil)
 
 	var obj map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
 	if _, ok := obj["extra_field"]; ok {
@@ -36,6 +37,7 @@ func TestApplyRequestWhitelist_StripOnly(t *testing.T) {
 	result := ApplyRequestWhitelist(body, nil, []string{"parallel_tool_calls", "reasoning_effort"})
 
 	var obj map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
 	if _, ok := obj["parallel_tool_calls"]; ok {
@@ -54,6 +56,7 @@ func TestApplyRequestWhitelist_BothLists(t *testing.T) {
 	result := ApplyRequestWhitelist(body, []string{"model", "messages", "stream"}, []string{"extra"})
 
 	var obj map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
 	if _, ok := obj["extra"]; ok {
@@ -104,6 +107,7 @@ func TestCollapseToolHistory_Basic(t *testing.T) {
 	result := CollapseToolHistory(body)
 
 	var obj map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
 	if _, ok := obj["tools"]; ok {
@@ -134,6 +138,7 @@ func TestCollapseToolHistory_AttemptCompletion(t *testing.T) {
 
 	result := CollapseToolHistory(body)
 	var obj map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
 	msgs, _ := obj["messages"].([]any)
@@ -202,6 +207,7 @@ func TestSimplifyTools_CanonicalShape(t *testing.T) {
 	}`)
 	out := SimplifyTools(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 1 {
@@ -229,6 +235,7 @@ func TestSimplifyTools_MissingType(t *testing.T) {
 	}`)
 	out := SimplifyTools(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 1 {
@@ -260,6 +267,7 @@ func TestSimplifyTools_TopLevelFunctionFields(t *testing.T) {
 	}`)
 	out := SimplifyTools(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 1 {
@@ -289,6 +297,7 @@ func TestSimplifyTools_MissingOptionalFields(t *testing.T) {
 	}`)
 	out := SimplifyTools(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 1 {
@@ -333,6 +342,7 @@ func TestSimplifyTools_MixedFormats(t *testing.T) {
 	}`)
 	out := SimplifyTools(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 2 {

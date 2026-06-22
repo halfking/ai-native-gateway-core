@@ -52,6 +52,7 @@ func TestStreamChat_UpstreamReturnsJSONError_TriggersFallback(t *testing.T) {
 			if err != nil {
 				t.Fatalf("upstream request failed: %v", err)
 			}
+			//nolint:errcheck // best-effort close
 			defer resp.Body.Close()
 
 			rec := httptest.NewRecorder()
@@ -137,6 +138,7 @@ func TestStreamChat_ValidSSE_NotMisclassified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upstream request failed: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()

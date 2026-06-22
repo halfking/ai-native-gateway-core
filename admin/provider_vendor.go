@@ -387,6 +387,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	for _, m := range models {
 		stdName := modelname.StandardizeName(m)
 		if stdName != "" {
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				INSERT INTO models_canonical (canonical_name, family, source, status)
 				VALUES ($1, 'unknown', 'provider_refresh', 'active')

@@ -229,6 +229,7 @@ func (h *Handler) postAdminLLMChat(
 	if err != nil {
 		return "", "", err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	resolvedModel = model

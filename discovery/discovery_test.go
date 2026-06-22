@@ -293,6 +293,7 @@ func TestXiaomiMiMo_LiveIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTP GET %s: %v", modelsURL, err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -358,6 +359,7 @@ func TestFetchModels_XiaomiMiMo_MockServer(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
+		//nolint:errcheck // HTTP write error non-recoverable
 		json.NewEncoder(w).Encode(map[string]any{
 			"object": "list",
 			"data": []map[string]any{
@@ -387,6 +389,7 @@ func TestFetchModels_XiaomiMiMo_MockServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {

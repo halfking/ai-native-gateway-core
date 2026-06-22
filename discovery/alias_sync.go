@@ -55,6 +55,7 @@ func (s *AliasSyncService) Start(ctx context.Context) {
 	slog.Info("alias sync service starting", "interval", s.interval)
 
 	go func() {
+		//nolint:errcheck // best-effort sync, non-critical
 		s.runSync(ctx)
 
 		ticker := time.NewTicker(s.interval)
@@ -63,6 +64,7 @@ func (s *AliasSyncService) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
+				//nolint:errcheck // best-effort sync, non-critical
 				s.runSync(ctx)
 			case <-s.stopCh:
 				slog.Info("alias sync service stopping")
@@ -135,6 +137,7 @@ func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *Ali
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // best-effort
 	defer rows.(interface{ Close() error }).Close()
 
 	var toDisable []int
@@ -157,6 +160,7 @@ func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *Ali
 	}
 
 	for _, id := range toDisable {
+		//nolint:errcheck // best-effort exec, non-critical
 		s.db.Exec(ctx, `UPDATE model_aliases SET status = 'inactive' WHERE id = $1`, id)
 	}
 
@@ -177,6 +181,7 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // best-effort
 	defer rows.(interface{ Close() error }).Close()
 
 	for rows.(interface{ Next() bool }).Next() {
@@ -190,6 +195,7 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 			SELECT canonical_name FROM models_canonical WHERE id = $1 AND status = 'active'
 		`, r.CanonicalID).Scan(&canonicalName)
 		if err != nil {
+			//nolint:errcheck // best-effort exec, non-critical
 			s.db.Exec(ctx, `UPDATE model_aliases SET status = 'inactive' WHERE canonical_id = $1`, r.CanonicalID)
 			result.CleanedAliases++
 		}
@@ -240,6 +246,7 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 	if err != nil {
 		return "", fmt.Errorf("query providers: %w", err)
 	}
+	//nolint:errcheck // best-effort
 	defer rows.(interface{ Close() error }).Close()
 
 	for rows.(interface{ Next() bool }).Next() {
@@ -262,6 +269,7 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 	if err != nil {
 		return "", fmt.Errorf("query families: %w", err)
 	}
+	//nolint:errcheck // best-effort close
 	defer rows2.(interface{ Close() error }).Close()
 
 	for rows2.(interface{ Next() bool }).Next() {

@@ -389,6 +389,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `
@@ -673,6 +674,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {

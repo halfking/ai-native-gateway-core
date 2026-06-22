@@ -40,6 +40,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int) error {
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `
 		UPDATE credentials

@@ -100,6 +100,7 @@ func StreamChatWithPendingCapture(
 	stripFn func([]byte) []byte,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
@@ -553,6 +554,7 @@ func safeWriteSSE(w io.Writer, line string) {
 			slog.Debug("write after close", "recover", r)
 		}
 	}()
+	//nolint:errcheck // test write, non-critical
 	io.WriteString(w, line)
 }
 

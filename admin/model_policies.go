@@ -258,6 +258,7 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	// SET LOCAL does not support placeholders; manually escape single quotes
@@ -340,6 +341,7 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	// SET LOCAL does not support placeholders; manually escape single quotes
 	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
@@ -407,6 +409,7 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	// SET LOCAL does not support placeholders; manually escape single quotes
 	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
@@ -472,6 +475,7 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 	// SET LOCAL does not support placeholders; manually escape single quotes
 	escapedActor := strings.ReplaceAll(createdBy, "'", "''")

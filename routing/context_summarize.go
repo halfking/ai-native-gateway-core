@@ -364,6 +364,7 @@ func (e *Executor) invokeOpenAISummarize(ctx context.Context, params *ExecParams
 	if err != nil {
 		return "", err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if resp.StatusCode >= 400 {
@@ -403,6 +404,7 @@ func (e *Executor) invokeAnthropicSummarize(ctx context.Context, params *ExecPar
 	if err != nil {
 		return "", err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if resp.StatusCode >= 400 {

@@ -93,6 +93,7 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	fmt.Printf("Status: %d\n", resp.StatusCode)

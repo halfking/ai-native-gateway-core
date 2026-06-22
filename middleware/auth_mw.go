@@ -57,6 +57,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 func writeAuthUnauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": msg,

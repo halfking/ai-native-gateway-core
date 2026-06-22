@@ -451,6 +451,7 @@ func (h *ChatHandler) serveWithExecutor(
 	r *http.Request,
 	logCtx *RequestLogContext,
 ) {
+	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 
 	requestID := logCtx.RequestID
@@ -629,6 +630,7 @@ func (h *ChatHandler) serveWithExecutor(
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer touchCancel()
+				//nolint:errcheck // best-effort touch, non-critical
 				h.sessionGetter.Touch(touchCtx, sessionID)
 			}()
 			ctx = sessions.SessionFromContextWith(ctx, sessionInfo)
@@ -2244,6 +2246,7 @@ func requestHasTools(body []byte) bool {
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(data)
 }
 
@@ -2291,6 +2294,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(resp)
 }
 
@@ -2546,6 +2550,7 @@ func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, 
 	if debug != nil {
 		errObj["gateway_debug"] = debug
 	}
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
 	})
@@ -2577,6 +2582,7 @@ func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, e
 	if debug != nil {
 		errObj["gateway_debug"] = debug
 	}
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
 	})

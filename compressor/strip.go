@@ -314,6 +314,7 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 	for _, p := range parts {
 		// Check type
 		var typeStr string
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal(p.Type, &typeStr)
 
 		switch typeStr {

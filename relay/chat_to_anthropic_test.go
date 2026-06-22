@@ -16,6 +16,7 @@ func TestChatToAnthropic_SimpleMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	if v["model"] != "MiniMax-M2.7" {
 		t.Error("model not preserved")
@@ -42,6 +43,7 @@ func TestChatToAnthropic_SystemMessageExtracted(t *testing.T) {
     }`)
 	out, _ := ConvertChatRequestToAnthropic(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	if v["system"] != "you are a poet" {
 		t.Errorf("system not extracted to top-level: %v", v)
@@ -66,6 +68,7 @@ func TestChatToAnthropic_ToolsConverted(t *testing.T) {
     }`)
 	out, _ := ConvertChatRequestToAnthropic(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	tools := v["tools"].([]any)
 	if len(tools) != 1 {
@@ -87,6 +90,7 @@ func TestChatToAnthropic_StopRenamedToStopSequences(t *testing.T) {
 	in := []byte(`{"model":"x","max_tokens":10,"stop":["END"],"messages":[{"role":"user","content":"hi"}]}`)
 	out, _ := ConvertChatRequestToAnthropic(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	if v["stop_sequences"] == nil {
 		t.Error("stop not renamed to stop_sequences")
@@ -105,6 +109,7 @@ func TestChatToAnthropic_ImageURLConvertedToImageBlock(t *testing.T) {
     }`)
 	out, _ := ConvertChatRequestToAnthropic(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	msgs := v["messages"].([]any)
 	user := msgs[0].(map[string]any)
@@ -130,6 +135,7 @@ func TestChatToAnthropic_ToolCallIDToToolUseID(t *testing.T) {
     }`)
 	out, _ := ConvertChatRequestToAnthropic(in)
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	msgs := v["messages"].([]any)
 	if len(msgs) != 3 {
@@ -170,6 +176,7 @@ func TestChatToAnthropic_UserFieldToMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	
 	// Check that user field is converted to metadata.user_id
@@ -199,6 +206,7 @@ func TestChatToAnthropic_NoUserField(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	
 	// Should not have metadata when no user field
@@ -219,6 +227,7 @@ func TestChatToAnthropic_EmptyUserField(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	
 	// Should not have metadata when user is empty string

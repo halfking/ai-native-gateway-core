@@ -162,6 +162,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				// Update last_login_at
+				//nolint:errcheck // best-effort exec, non-critical
 				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
 				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret)
@@ -221,6 +222,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err == nil && ciphertext != "" {
 		decrypted, decErr := h.decryptCredStr(ciphertext)
 		if decErr == nil {
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
 			loginLimiter.Reset(clientIP)

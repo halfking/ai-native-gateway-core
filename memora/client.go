@@ -110,6 +110,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 256))
 	return nil
@@ -183,6 +184,7 @@ func (c *Client) addMessageOnce(ctx context.Context, userID string, messages []M
 	if err != nil {
 		return err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -278,6 +280,7 @@ func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int
 		// Transport error → safe fallback.
 		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		// Upstream rejected → safe fallback.
@@ -358,6 +361,7 @@ func (c *Client) searchWithTimeout(ctx context.Context, userID, query string, to
 	if err != nil {
 		return nil, err
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		_, _ = io.Copy(io.Discard, resp.Body)

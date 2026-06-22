@@ -320,6 +320,7 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "transaction start failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	var t tenantInfo

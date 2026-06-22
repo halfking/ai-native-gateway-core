@@ -20,6 +20,7 @@ func TestAnthropicToChat_ThinkingBlocksDropped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
@@ -56,6 +57,7 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
@@ -99,6 +101,7 @@ func TestAnthropicToChat_NoThinkingBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
@@ -129,6 +132,7 @@ func TestAnthropicToChat_ThinkingWithToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
@@ -159,6 +163,7 @@ func TestAnthropicToChat_ToolUseToToolCalls(t *testing.T) {
     }`)
 	out, _ := ConvertAnthropicResponseToChat(in, "x")
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
@@ -190,6 +195,7 @@ func TestAnthropicToChat_StopReasonMapping(t *testing.T) {
 		in := []byte(`{"content":[{"type":"text","text":"x"}],"usage":{},"stop_reason":"` + tc.from + `"}`)
 		out, _ := ConvertAnthropicResponseToChat(in, "x")
 		var v map[string]any
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal(out, &v)
 		choice := v["choices"].([]any)[0].(map[string]any)
 		if choice["finish_reason"] != tc.want {
@@ -202,6 +208,7 @@ func TestAnthropicToChat_UsageMapped(t *testing.T) {
 	in := []byte(`{"content":[{"type":"text","text":"x"}],"usage":{"input_tokens":42,"output_tokens":17},"stop_reason":"end_turn"}`)
 	out, _ := ConvertAnthropicResponseToChat(in, "x")
 	var v map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(out, &v)
 	usage := v["usage"].(map[string]any)
 	if int(usage["prompt_tokens"].(float64)) != 42 {

@@ -435,6 +435,7 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadGateway, "mail.tm domains request failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // best-effort close
 	defer domainsResp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(domainsResp.Body)
@@ -473,6 +474,7 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadGateway, "account create failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // best-effort close
 	defer createResp.Body.Close()
 	if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(createResp.Body)
@@ -483,6 +485,7 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	//nolint:errcheck // test write, non-critical
 	io.Copy(io.Discard, createResp.Body)
 
 	// Get token
@@ -497,6 +500,7 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadGateway, "token request failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // best-effort close
 	defer tokenResp.Body.Close()
 	if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := io.ReadAll(tokenResp.Body)
@@ -575,6 +579,7 @@ func (h *Handler) handleFreePoolTempEmailPoll(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadGateway, "mail.tm request failed: "+err.Error())
 		return
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -756,6 +761,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 					modelCount = len(rows)
 				}
 			}
+			//nolint:errcheck // best-effort close
 			resp.Body.Close()
 
 			authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
@@ -777,6 +783,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 			}, nil
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 		lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
 	}
@@ -799,6 +806,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 			status := resp.StatusCode
 			lastStatus = &status
 			if status == 200 || status == 400 || status == 422 {
+				//nolint:errcheck // best-effort close
 				resp.Body.Close()
 				authValid := true
 				return map[string]any{
@@ -812,6 +820,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 				}, nil
 			}
 			bodyBytes, _ := io.ReadAll(resp.Body)
+			//nolint:errcheck // best-effort close
 			resp.Body.Close()
 			lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
 		} else {

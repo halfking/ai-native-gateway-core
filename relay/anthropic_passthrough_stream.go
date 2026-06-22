@@ -37,6 +37,7 @@ func StreamAnthropicPassthrough(
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
 ) (outcome routing.StreamOutcome) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	// Top-level panic recovery. Mirrors StreamChatWithPendingCapture
 	// so a panic during streaming (e.g. JSON parse failure, write to

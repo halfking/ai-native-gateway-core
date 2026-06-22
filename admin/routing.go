@@ -90,6 +90,7 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	// Schema (sql/030_routing_v2.sql): id, ts, actor, action, target_type, target_id,
 	// before_json, after_json. Use action as target_type so logAudit stays a
 	// single-call helper; structured details go into after_json.
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
 		VALUES ($1, $2, $3, $4)
@@ -600,6 +601,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 	hideCredentialDetails := IsTenantAdmin(r)
 
 	var featuredModels []string
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) FROM routing_policy WHERE tenant_id = 'default' ORDER BY id LIMIT 1`).Scan(&featuredModels)
 
 	rows, err := h.db.Query(ctx, `
@@ -1686,6 +1688,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var provName string
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `SELECT COALESCE(display_name,'') FROM providers WHERE id = $1`, provID).Scan(&provName)
 
 	// ── Actually probe the provider with a lightweight request ───────────
@@ -1713,6 +1716,7 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 	if probeErr != nil {
 		probeMsg = fmt.Sprintf("probe request failed: %v", probeErr)
 	} else {
+		//nolint:errcheck // best-effort close
 		defer probeResp.Body.Close()
 		probeStatus = probeResp.StatusCode
 		probeOK = probeStatus >= 200 && probeStatus < 300
@@ -2458,6 +2462,7 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	}
 
 	var providerID int
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT id FROM providers WHERE catalog_code = $1 AND tenant_id = 'default'
 	`, req.CatalogCode).Scan(&providerID)
@@ -2474,6 +2479,7 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 			SELECT id FROM credentials WHERE provider_id = $1 AND label = $2
 		`, providerID, credLabel).Scan(&existingID)
 		if findErr != nil {
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				INSERT INTO credentials (provider_id, tenant_id, label, secret_ciphertext,
 					trust_level, status, lifecycle_status, availability_state, quota_state,
@@ -2482,6 +2488,7 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 					'active', 'ready', 'ok', 'free')
 			`, providerID, credLabel, encrypted)
 		} else {
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				UPDATE credentials SET
 					secret_ciphertext = $3,
@@ -2499,6 +2506,7 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 		if err := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND pool_group = 'free' LIMIT 1`, providerID).Scan(&freeCredID); err != nil {
 			continue
 		}
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, raw_model_name, available,
 				routing_tier, billing_mode, currency, unit_price_in_per_1m, unit_price_out_per_1m,
@@ -2747,7 +2755,9 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 		for rows.Next() {
 			var id int
 			var label string
+			//nolint:errcheck // best-effort
 			rows.Scan(&id, &label)
+			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled', availability_state = 'unreachable', updated_at = NOW() WHERE id = $1`, id)
 			cleanupResults = append(cleanupResults, map[string]any{"id": id, "label": label})
 		}
@@ -2781,6 +2791,7 @@ func (h *Handler) handleFreePoolBootstrap(w http.ResponseWriter, r *http.Request
 		for statusRows.Next() {
 			var code, name, label, status string
 			var offers int
+			//nolint:errcheck // best-effort
 			statusRows.Scan(&code, &name, &label, &status, &offers)
 			poolStatus = append(poolStatus, map[string]any{
 				"catalog_code": code, "provider_name": name,
@@ -2853,6 +2864,7 @@ func (h *Handler) handleFreePoolDiscover(w http.ResponseWriter, r *http.Request)
 
 	// Check capacity
 	var count int
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM credentials WHERE pool_group = 'free' AND status = 'active'`).Scan(&count)
 	if count >= 30 {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -3008,6 +3020,7 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 	defer cancel()
 
 	// 1. Upsert provider_catalog
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO provider_catalog (code, tier, display_name, category, kind, protocol,
 			base_url_template, discovery_strategy, domestic, hidden, notes)
@@ -3017,6 +3030,7 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL)
 
 	// 2. Upsert provider
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.Exec(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
 			kind, category, protocol, base_url, egress_profile, domestic, enabled)
@@ -3063,6 +3077,7 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 		}
 	} else {
 		// Update existing
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			UPDATE credentials SET secret_ciphertext = $1, status = 'active',
 				pool_group = 'free', acquisition_source = $2, acquisition_detail = $3,
@@ -3078,6 +3093,7 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 		if err := h.db.QueryRow(ctx, `SELECT id FROM models_canonical WHERE canonical_name ILIKE $1 LIMIT 1`, model).Scan(&cid); err == nil {
 			canonID = &cid
 		}
+		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
 				available, routing_tier, billing_mode, currency,
