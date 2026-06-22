@@ -15,51 +15,51 @@ import (
 )
 
 type Event struct {
-	RequestID      string    `json:"request_id"`
-	Timestamp      time.Time `json:"ts"`
-	TenantID       string    `json:"tenant_id"`
-	ApplicationID  int       `json:"application_id"`
-	APIKeyID       int       `json:"api_key_id"`
-	ClientModel    string    `json:"client_model"`
-	OutboundModel  string    `json:"outbound_model"`
-	ResolutionPath string    `json:"resolution_path,omitempty"`
-	CanonicalName  string    `json:"canonical_name,omitempty"`
-	IdentityHash   string    `json:"identity_hash"`
-	ClientProfile  string    `json:"client_profile,omitempty"`
-	Stream         bool      `json:"stream"`
-	ProviderID     int       `json:"provider_id"`
-	CredentialID   int       `json:"credential_id"`
-	LatencyMs      int       `json:"latency_ms"`
-	Success        bool      `json:"success"`
-	ErrorKind      string    `json:"error_kind,omitempty"`
-	FailureStage   string    `json:"failure_stage,omitempty"`
-	PromptTokens   int       `json:"prompt_tokens,omitempty"`
-	CompletionToken int      `json:"completion_tokens,omitempty"`
-	CostUSD        float64   `json:"cost_usd,omitempty"`
-	TransformRule  string    `json:"transform_rule,omitempty"`
-	RequestChecksum string   `json:"request_checksum,omitempty"`
-	StreamChunkCount int     `json:"stream_chunk_count,omitempty"`
-	StreamTTFBMs   int       `json:"stream_ttfb_ms,omitempty"`
-	DecisionTrace  any       `json:"decision_trace,omitempty"`
-	StreamDone     bool      `json:"stream_done,omitempty"`
-	StreamInterrupted bool   `json:"stream_interrupted,omitempty"`
+	RequestID         string    `json:"request_id"`
+	Timestamp         time.Time `json:"ts"`
+	TenantID          string    `json:"tenant_id"`
+	ApplicationID     int       `json:"application_id"`
+	APIKeyID          int       `json:"api_key_id"`
+	ClientModel       string    `json:"client_model"`
+	OutboundModel     string    `json:"outbound_model"`
+	ResolutionPath    string    `json:"resolution_path,omitempty"`
+	CanonicalName     string    `json:"canonical_name,omitempty"`
+	IdentityHash      string    `json:"identity_hash"`
+	ClientProfile     string    `json:"client_profile,omitempty"`
+	Stream            bool      `json:"stream"`
+	ProviderID        int       `json:"provider_id"`
+	CredentialID      int       `json:"credential_id"`
+	LatencyMs         int       `json:"latency_ms"`
+	Success           bool      `json:"success"`
+	ErrorKind         string    `json:"error_kind,omitempty"`
+	FailureStage      string    `json:"failure_stage,omitempty"`
+	PromptTokens      int       `json:"prompt_tokens,omitempty"`
+	CompletionToken   int       `json:"completion_tokens,omitempty"`
+	CostUSD           float64   `json:"cost_usd,omitempty"`
+	TransformRule     string    `json:"transform_rule,omitempty"`
+	RequestChecksum   string    `json:"request_checksum,omitempty"`
+	StreamChunkCount  int       `json:"stream_chunk_count,omitempty"`
+	StreamTTFBMs      int       `json:"stream_ttfb_ms,omitempty"`
+	DecisionTrace     any       `json:"decision_trace,omitempty"`
+	StreamDone        bool      `json:"stream_done,omitempty"`
+	StreamInterrupted bool      `json:"stream_interrupted,omitempty"`
 	// Link layer event fields
-	EventType      string    `json:"event_type,omitempty"`      // Event type (e.g., "credential_switch", "pool_state_change")
-	FromCredential int       `json:"from_credential,omitempty"` // Previous credential ID
-	ToCredential   int       `json:"to_credential,omitempty"`   // New credential ID
-	Reason         string    `json:"reason,omitempty"`          // Reason for state change
-	ChunkCount     int       `json:"chunk_count,omitempty"`     // Chunks sent before interruption
-	FromState      string    `json:"from_state,omitempty"`      // Previous state
-	ToState        string    `json:"to_state,omitempty"`        // New state
+	EventType      string `json:"event_type,omitempty"`      // Event type (e.g., "credential_switch", "pool_state_change")
+	FromCredential int    `json:"from_credential,omitempty"` // Previous credential ID
+	ToCredential   int    `json:"to_credential,omitempty"`   // New credential ID
+	Reason         string `json:"reason,omitempty"`          // Reason for state change
+	ChunkCount     int    `json:"chunk_count,omitempty"`     // Chunks sent before interruption
+	FromState      string `json:"from_state,omitempty"`      // Previous state
+	ToState        string `json:"to_state,omitempty"`        // New state
 }
 
 // maxTextContentBytes caps the reconstructed stream text per request. The
 // reconstructed body is emitted into request_logs.response_body so downstream
-// auditors/queries can inspect the full assistant message. 128 KiB is large
-// enough for the longest completions seen in production (max observed
-// completion_tokens in 24h ≈ 4500 ≈ 18 KiB) and still keeps per-request
-// memory bounded under high concurrency (100 concurrent captures ≈ 12 MiB).
-const maxTextContentBytes = 128 * 1024
+// auditors/queries can inspect the full assistant message. 2 MiB is large
+// enough for very long completions (≈ 500K tokens ≈ 2 MB) and still keeps
+// per-request memory bounded under high concurrency (100 concurrent captures ≈ 200 MiB).
+// Increased from 128 KiB to 2 MiB on 2026-06-22 to support long-context models.
+const maxTextContentBytes = 2 * 1024 * 1024
 
 // isInterruptionCode reports whether a `finalFinish` value looks like a
 // stream-interruption / failure code (rather than a normal upstream
@@ -374,13 +374,13 @@ func EmitCredentialSwitch(sink Sink, requestID string, fromCred, toCred int, rea
 		return
 	}
 	event := Event{
-		RequestID:    requestID,
-		Timestamp:    time.Now(),
-		EventType:    EventTypeCredentialSwitch,
+		RequestID:      requestID,
+		Timestamp:      time.Now(),
+		EventType:      EventTypeCredentialSwitch,
 		FromCredential: fromCred,
-		ToCredential: toCred,
-		Reason:       reason,
-		ChunkCount:   chunkCount,
+		ToCredential:   toCred,
+		Reason:         reason,
+		ChunkCount:     chunkCount,
 	}
 	sink.Emit(context.Background(), event)
 	slog.Info("audit: credential switch",
@@ -532,26 +532,30 @@ func NewEvent() *EventBuilder {
 	}
 }
 
-func (b *EventBuilder) RequestID(id string) *EventBuilder      { b.event.RequestID = id; return b }
-func (b *EventBuilder) ClientModel(m string) *EventBuilder     { b.event.ClientModel = m; return b }
-func (b *EventBuilder) OutboundModel(m string) *EventBuilder   { b.event.OutboundModel = m; return b }
-func (b *EventBuilder) ResolutionPath(p string) *EventBuilder  { b.event.ResolutionPath = p; return b }
-func (b *EventBuilder) CanonicalName(n string) *EventBuilder   { b.event.CanonicalName = n; return b }
+func (b *EventBuilder) RequestID(id string) *EventBuilder     { b.event.RequestID = id; return b }
+func (b *EventBuilder) ClientModel(m string) *EventBuilder    { b.event.ClientModel = m; return b }
+func (b *EventBuilder) OutboundModel(m string) *EventBuilder  { b.event.OutboundModel = m; return b }
+func (b *EventBuilder) ResolutionPath(p string) *EventBuilder { b.event.ResolutionPath = p; return b }
+func (b *EventBuilder) CanonicalName(n string) *EventBuilder  { b.event.CanonicalName = n; return b }
 func (b *EventBuilder) DecisionTrace(t any) *EventBuilder     { b.event.DecisionTrace = t; return b }
-func (b *EventBuilder) IdentityHash(h string) *EventBuilder    { b.event.IdentityHash = h; return b }
-func (b *EventBuilder) ClientProfile(p string) *EventBuilder   { b.event.ClientProfile = p; return b }
-func (b *EventBuilder) Stream(s bool) *EventBuilder            { b.event.Stream = s; return b }
-func (b *EventBuilder) Provider(id int) *EventBuilder          { b.event.ProviderID = id; return b }
-func (b *EventBuilder) Credential(id int) *EventBuilder        { b.event.CredentialID = id; return b }
-func (b *EventBuilder) Success(s bool) *EventBuilder           { b.event.Success = s; return b }
-func (b *EventBuilder) ErrorKind(k string) *EventBuilder       { b.event.ErrorKind = k; return b }
-func (b *EventBuilder) FailureStage(s string) *EventBuilder    { b.event.FailureStage = s; return b }
-func (b *EventBuilder) Tokens(p, c int) *EventBuilder          { b.event.PromptTokens = p; b.event.CompletionToken = c; return b }
-func (b *EventBuilder) Cost(usd float64) *EventBuilder         { b.event.CostUSD = usd; return b }
-func (b *EventBuilder) TransformRule(r string) *EventBuilder   { b.event.TransformRule = r; return b }
-func (b *EventBuilder) TenantID(id string) *EventBuilder       { b.event.TenantID = id; return b }
-func (b *EventBuilder) ApplicationID(id int) *EventBuilder     { b.event.ApplicationID = id; return b }
-func (b *EventBuilder) APIKeyID(id int) *EventBuilder          { b.event.APIKeyID = id; return b }
+func (b *EventBuilder) IdentityHash(h string) *EventBuilder   { b.event.IdentityHash = h; return b }
+func (b *EventBuilder) ClientProfile(p string) *EventBuilder  { b.event.ClientProfile = p; return b }
+func (b *EventBuilder) Stream(s bool) *EventBuilder           { b.event.Stream = s; return b }
+func (b *EventBuilder) Provider(id int) *EventBuilder         { b.event.ProviderID = id; return b }
+func (b *EventBuilder) Credential(id int) *EventBuilder       { b.event.CredentialID = id; return b }
+func (b *EventBuilder) Success(s bool) *EventBuilder          { b.event.Success = s; return b }
+func (b *EventBuilder) ErrorKind(k string) *EventBuilder      { b.event.ErrorKind = k; return b }
+func (b *EventBuilder) FailureStage(s string) *EventBuilder   { b.event.FailureStage = s; return b }
+func (b *EventBuilder) Tokens(p, c int) *EventBuilder {
+	b.event.PromptTokens = p
+	b.event.CompletionToken = c
+	return b
+}
+func (b *EventBuilder) Cost(usd float64) *EventBuilder       { b.event.CostUSD = usd; return b }
+func (b *EventBuilder) TransformRule(r string) *EventBuilder { b.event.TransformRule = r; return b }
+func (b *EventBuilder) TenantID(id string) *EventBuilder     { b.event.TenantID = id; return b }
+func (b *EventBuilder) ApplicationID(id int) *EventBuilder   { b.event.ApplicationID = id; return b }
+func (b *EventBuilder) APIKeyID(id int) *EventBuilder        { b.event.APIKeyID = id; return b }
 
 func (b *EventBuilder) Latency(d time.Duration) *EventBuilder {
 	b.event.LatencyMs = int(d.Milliseconds())
