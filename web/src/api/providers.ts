@@ -500,6 +500,32 @@ export function resetCredentialFpSlots(providerId: number, credId: number) {
   )
 }
 
+export interface FpSlotDetail {
+  index: number
+  holder: string
+  ttl_seconds: number
+  expired: boolean
+  memory_mode?: boolean
+}
+
+export interface FpSlotStats {
+  credential_id: number
+  slot_limit?: number
+  healthy_slots: number
+  occupied_slots: number
+  free_slots?: number
+  holders?: string[]
+  details?: FpSlotDetail[]
+  unlimited?: boolean
+  message?: string
+}
+
+export function getCredentialFpSlotStats(providerId: number, credId: number) {
+  return req<FpSlotStats>(
+    'GET', `/api/providers/${providerId}/credentials/${credId}/fp-slot-stats`
+  )
+}
+
 export function forceRecoverCredential(credId: number) {
   return req<{ triggered: boolean; credential_id: number }>(
     'POST', `/api/providers/credentials/${credId}/force-recover`
