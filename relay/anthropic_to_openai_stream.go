@@ -135,6 +135,28 @@ func StreamAnthropicSSEToOpenAI(
 			pc.append(string(payload))
 			pc.append("\n\n")
 		}
+		// Capture the OpenAI-format chunk for audit trail
+		if capture != nil {
+			// Extract finish_reason from the chunk if present
+			var finishReasonFromChunk string
+			if string(payload) == "[DONE]" {
+				finishReasonFromChunk = ""
+			} else {
+				// Try to extract finish_reason from JSON
+				var chunk map[string]any
+				if json.Unmarshal(payload, &chunk) == nil {
+					if choices, ok := chunk["choices"].([]any); ok && len(choices) > 0 {
+						if choice, ok := choices[0].(map[string]any); ok {
+							if fr, ok := choice["finish_reason"].(string); ok {
+								finishReasonFromChunk = fr
+							}
+						}
+					}
+				}
+			}
+			isDone := string(payload) == "[DONE]"
+			capture.ObservePayload(string(payload), finishReasonFromChunk, isDone)
+		}
 		flusher.Flush()
 		chunkCount++
 	}
