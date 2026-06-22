@@ -32,11 +32,12 @@ type sseAnthropicEvent struct {
 }
 
 type sseAnthropicDelta struct {
-	Type       string          `json:"type,omitempty"`
-	Text       string          `json:"text,omitempty"`
-	Thinking   string          `json:"thinking,omitempty"`
-	InputJSON  json.RawMessage `json:"input_json,omitempty"`
-	StopReason *string         `json:"stop_reason,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Thinking    string          `json:"thinking,omitempty"`
+	InputJSON   json.RawMessage `json:"input_json,omitempty"`
+	PartialJSON string          `json:"partial_json,omitempty"` // For input_json_delta
+	StopReason  *string         `json:"stop_reason,omitempty"`
 }
 
 // StreamAnthropicSSEToOpenAI converts Anthropic-format SSE upstream
@@ -116,7 +117,8 @@ func StreamAnthropicSSEToOpenAI(
 		emittedRole         bool
 		chunkCount          int
 		bufferedText        strings.Builder
-		hasEmittedToolCalls bool // Track whether any tool_calls were actually emitted
+		hasEmittedToolCalls bool            // Track whether any tool_calls were actually emitted
+		bufferedToolArgs    strings.Builder // Accumulate input_json_delta partial_json
 	)
 
 	// emit a single OpenAI chat.completion.chunk; clear finishReason
@@ -446,6 +448,12 @@ func StreamAnthropicSSEToOpenAI(
 			case "input_json":
 				emitToolCall("", "", d.InputJSON)
 
+			case "input_json_delta":
+				// Accumulate partial JSON from input_json_delta events
+				if d.PartialJSON != "" {
+					bufferedToolArgs.WriteString(d.PartialJSON)
+				}
+
 			default:
 				// Handle unknown delta types
 				slog.Warn("unknown_delta_type_in_stream",
@@ -478,6 +486,11 @@ func StreamAnthropicSSEToOpenAI(
 					emit(bufferedText.String(), "", nil)
 				}
 				bufferedText.Reset()
+			}
+			// Flush accumulated tool arguments from input_json_delta events
+			if bufferedToolArgs.Len() > 0 {
+				emitToolCall("", "", json.RawMessage(bufferedToolArgs.String()))
+				bufferedToolArgs.Reset()
 			}
 
 		case "message_delta":
