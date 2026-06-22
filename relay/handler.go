@@ -169,6 +169,12 @@ type ChatHandler struct {
 	// requestLogger (Request WAL) provides synchronous initial logging
 	// at request arrival and asynchronous stage updates. nil disables.
 	requestLogger *telemetry.RequestLogger
+
+	// autoTitleGenerator (2026-06-22) automatically generates session titles
+	// after the first successful request. nil disables auto-title generation.
+	autoTitleGenerator interface {
+		MaybeGenerateTitle(sessionID, tenantID string)
+	}
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -177,7 +183,6 @@ type ToolRegistryService interface {
 	GetCategory(ctx context.Context, tenantID, category string) ([]*registry.ToolDef, error)
 	ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string
 }
-
 
 func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
 	if auditor == nil {
@@ -284,6 +289,13 @@ func (h *ChatHandler) SetMaas(svc *maas.Service) {
 // nil disables Request WAL (default).
 func (h *ChatHandler) SetRequestLogger(rl *telemetry.RequestLogger) {
 	h.requestLogger = rl
+}
+
+// SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
+func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
+	MaybeGenerateTitle(sessionID, tenantID string)
+}) {
+	h.autoTitleGenerator = atg
 }
 
 // SetRequestLogHook installs an in-memory sink that records every
@@ -459,7 +471,7 @@ func (h *ChatHandler) serveWithExecutor(
 	logCtx.EnsureCaptured()
 
 	markLogged := func() { logCtx.MarkLogged() }
-	
+
 	// 2026-06-20 audit fix helper: capture body + model + emit failure
 	// for early-exit error paths. Without this every 405/401/400/503
 	// row shows empty body + model="<unknown>" and the operator cannot
@@ -612,20 +624,20 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.SetSession(si)
 			if keyInfo != nil && si.APIKeyID != keyInfo.ID {
 				if si.APIKeyID == 0 {
-				if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
-					slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
+					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
+						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
+						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
+						writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+						return
+					}
+					si.APIKeyID = keyInfo.ID
+					si.TenantID = keyInfo.TenantID
+					sessionInfo = si
+				} else {
 					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
 					writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
 					return
 				}
-				si.APIKeyID = keyInfo.ID
-				si.TenantID = keyInfo.TenantID
-				sessionInfo = si
-			} else {
-				captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
-				writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
-				return
-			}
 			}
 			go func() {
 				touchCtx, touchCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -737,8 +749,8 @@ func (h *ChatHandler) serveWithExecutor(
 		} else {
 			logCtx.IsAutoRequest = true
 		}
-	clientModel = reqBody.Model
-	logCtx.SetClientModel(clientModel)
+		clientModel = reqBody.Model
+		logCtx.SetClientModel(clientModel)
 	}
 
 	// ── Tenant model policy — post-auto check (Round 48) ─────────────
@@ -959,7 +971,7 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
 			bodyBytes = scResult.OutboundBody
-			
+
 			// ── Tools restoration (Phase 1 optimization) ──────────────────
 			// If compressor cached tools (marked with "_tools_cached": true),
 			// restore them from the original request body before forwarding
@@ -995,17 +1007,17 @@ func (h *ChatHandler) serveWithExecutor(
 			// ── Request WAL: async update on compression success ──────────────
 			if h.requestLogger != nil && scResult != nil {
 				meta := map[string]interface{}{
-					"strategy": scResult.CompressionStrategy,
-					"msg_count": scResult.MsgCount,
-					"token_est": scResult.TokenEst,
+					"strategy":         scResult.CompressionStrategy,
+					"msg_count":        scResult.MsgCount,
+					"token_est":        scResult.TokenEst,
 					"window_triggered": scResult.WindowTriggered,
 				}
 				h.requestLogger.Update(&telemetry.LogUpdate{
-					RequestID: requestID,
-					Stage:     telemetry.StageCompressed,
-					Status:     telemetry.StatusPending,
+					RequestID:           requestID,
+					Stage:               telemetry.StageCompressed,
+					Status:              telemetry.StatusPending,
 					CompressionStrategy: scResult.CompressionStrategy,
-					CompressionMeta: meta,
+					CompressionMeta:     meta,
 				})
 			}
 		}
@@ -1070,16 +1082,16 @@ func (h *ChatHandler) serveWithExecutor(
 				"request_id":  requestID,
 				"retry_after": 2,
 				"idempotent":  true,
-		})
-		logCtx.SetError("idempotent_replay", "duplicate request, returning in_progress")
-		// Body and model already captured (from earlier reqBody parse)
-		logCtx.EmitFailure("idempotent_replay", "duplicate request, returning in_progress", nil, nil)
-		markLogged()
-		return
+			})
+			logCtx.SetError("idempotent_replay", "duplicate request, returning in_progress")
+			// Body and model already captured (from earlier reqBody parse)
+			logCtx.EmitFailure("idempotent_replay", "duplicate request, returning in_progress", nil, nil)
+			markLogged()
+			return
+		}
 	}
-}
 
-stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
+	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
 
 	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
 	// protocol conversion now lives in the executor (IR path). The
@@ -1145,9 +1157,9 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 			}
 			update := &telemetry.LogUpdate{
 				RequestID:            requestID,
-				Stage:               telemetry.StageExecuteFail,
-				Status:              telemetry.StatusFailure,
-				Error:               execErr.Error(),
+				Stage:                telemetry.StageExecuteFail,
+				Status:               telemetry.StatusFailure,
+				Error:                execErr.Error(),
 				UpstreamProviderID:   pid,
 				UpstreamCredentialID: cid,
 			}
@@ -1269,7 +1281,7 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
-	
+
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {
 		var pid, cid *int64
@@ -1281,7 +1293,7 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 			c := int64(result.Candidate.CredentialID)
 			cid = &c
 		}
-		
+
 		// Extract token counts from streamCapture if available
 		var promptTokens, completionTokens int
 		if streamCapture != nil {
@@ -1293,7 +1305,7 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 				completionTokens = ct
 			}
 		}
-		
+
 		completedAt := time.Now()
 		h.requestLogger.Update(&telemetry.LogUpdate{
 			RequestID:            requestID,
@@ -1306,7 +1318,7 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 			CompletedAt:          completedAt,
 		})
 	}
-	
+
 	markLogged()
 }
 
@@ -1462,23 +1474,23 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	loggedOutbound := outboundModelForLog(evt.ClientModel, evt.OutboundModel, result.Candidate.RawModel)
 
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:        evt.RequestID,
-		TenantID:         tenantID,
-		ApplicationID:    applicationID,
-		APIKeyID:         apiKeyID,
-		APIKeyPrefix:     strPtr(keyPrefix),
-		APIKeyOwnerUser:  strPtr(keyOwner),
-		ApplicationCode:  strPtr(appCode),
-		EndUserID:        strPtr(endUser),
-		ClientModel:      strPtr(evt.ClientModel),
-		OutboundModel:    strPtr(loggedOutbound),
-		CredentialID:     intPtr(result.Candidate.CredentialID),
-		ProviderID:       intPtr(result.Candidate.ProviderID),
-		ClientProfile:    strPtr(evt.ClientProfile),
-		RequestMode:      strPtr(requestMode),
-		LatencyMs:        intPtr(result.LatencyMs),
-		Success:          true,
-		RequestStatus:    strPtr(telemetry.RequestStatusSuccess),
+		RequestID:       evt.RequestID,
+		TenantID:        tenantID,
+		ApplicationID:   applicationID,
+		APIKeyID:        apiKeyID,
+		APIKeyPrefix:    strPtr(keyPrefix),
+		APIKeyOwnerUser: strPtr(keyOwner),
+		ApplicationCode: strPtr(appCode),
+		EndUserID:       strPtr(endUser),
+		ClientModel:     strPtr(evt.ClientModel),
+		OutboundModel:   strPtr(loggedOutbound),
+		CredentialID:    intPtr(result.Candidate.CredentialID),
+		ProviderID:      intPtr(result.Candidate.ProviderID),
+		ClientProfile:   strPtr(evt.ClientProfile),
+		RequestMode:     strPtr(requestMode),
+		LatencyMs:       intPtr(result.LatencyMs),
+		Success:         true,
+		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
 		// 2026-06-20: explicitly clear ErrorKind so any stale
 		// error_kind from a prior failed UPDATE attempt for the
 		// same request_id is wiped. The UPSERT also handles this
@@ -1743,6 +1755,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			latencyMs = *reqLog.LatencyMs
 		}
 		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
+	}
+
+	// v2.2 (2026-06-22): auto-generate session title after first successful request.
+	// Fire-and-forget async call; never blocks the request path.
+	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" {
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID)
 	}
 }
 
