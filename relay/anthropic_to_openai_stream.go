@@ -290,12 +290,16 @@ func StreamAnthropicSSEToOpenAI(
 		if toolName != "" {
 			entry["type"] = "function"
 			funcMap := map[string]any{"name": toolName}
-			// 2026-06-23 fix: Only include arguments if non-empty.
-			// Omit the field entirely for the initial chunk (ID+name only),
-			// then send arguments in subsequent deltas. This prevents
-			// clients from concatenating "{}"+"{real}" → invalid JSON.
+			// 2026-06-23 CRITICAL FIX: OpenAI requires arguments field in the
+			// first chunk (the one with name). If we don't have args yet,
+			// send empty string "" instead of omitting the field entirely.
+			// Client validation error: "Expected 'function.name' to be a string"
+			// actually means function.arguments is missing when name is present.
 			if len(args) > 0 && string(args) != "{}" {
 				funcMap["arguments"] = string(args)
+			} else {
+				// First chunk with name MUST have arguments, even if empty
+				funcMap["arguments"] = ""
 			}
 			entry["function"] = funcMap
 		} else if len(args) > 0 && string(args) != "{}" {
