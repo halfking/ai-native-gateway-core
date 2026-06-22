@@ -2,12 +2,17 @@
 ARG BASE_IMAGE=kx-llm-gateway-go:latest
 FROM ${BASE_IMAGE}
 
+ARG GIT_TAG=""
 ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
 USER root
 COPY web/dist /opt/llm-gateway-go/web/dist
-RUN echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > VERSION && \
-    echo "${BUILD_SEQ}" > .deploy_seq
+# Match the canonical 4-part version format from the main Dockerfile
+# (see services/llm-gateway-go/Dockerfile + version-build-info.sh):
+#   <semver>-<8char-sha>-<YYYYMMDD>-<build_seq>
+RUN SEMVER="${GIT_TAG:-v0.0.0}"; SEMVER="${SEMVER#v}"; \
+    echo "${SEMVER}-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}-${BUILD_SEQ:-0}" > VERSION && \
+    echo "${BUILD_SEQ:-0}" > .deploy_seq
 USER llmgw
