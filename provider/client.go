@@ -17,43 +17,43 @@ import (
 )
 
 type Candidate struct {
-	CredentialID        int      `json:"credential_id"`
-	ProviderID          int      `json:"provider_id"`
-	BaseURL             string   `json:"base_url"`
-	Protocol            string   `json:"protocol"`
-	CatalogCode         string   `json:"catalog_code"`
-	Tier                int      `json:"tier"`
-	Weight              int      `json:"weight"`
-	RawModel            string   `json:"model_name"` // upstream name: COALESCE(outbound_model_name, raw_model_name)
-	OfferRawModel       string   `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
-	StandardizedName    string   `json:"standardized_name"`
-	SuccessRate         float64  `json:"success_rate"`
-	P95LatencyMs        int      `json:"p95_latency_ms"`
-	ConcurrencyLimit    *int     `json:"concurrency_limit"`
-	BalanceUSD          *float64 `json:"balance_usd"`
-	CircuitState        string   `json:"circuit_state"`
-	AvailabilityState   string   `json:"availability_state"`
-	QuotaState          string   `json:"quota_state"`
-	LifecycleStatus     string   `json:"lifecycle_status"`
-	Routable            bool     `json:"runtime_routable"`
-	BlockReason         *string  `json:"runtime_block_reason"`
-	PriceInPer1M        *float64 `json:"unit_price_in_per_1m"`
-	PriceOutPer1M       *float64 `json:"unit_price_out_per_1m"`
-	CacheReadPricePer1M *float64 `json:"cache_read_price_per_1m"`
+	CredentialID         int      `json:"credential_id"`
+	ProviderID           int      `json:"provider_id"`
+	BaseURL              string   `json:"base_url"`
+	Protocol             string   `json:"protocol"`
+	CatalogCode          string   `json:"catalog_code"`
+	Tier                 int      `json:"tier"`
+	Weight               int      `json:"weight"`
+	RawModel             string   `json:"model_name"`               // upstream name: COALESCE(outbound_model_name, raw_model_name)
+	OfferRawModel        string   `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
+	StandardizedName     string   `json:"standardized_name"`
+	SuccessRate          float64  `json:"success_rate"`
+	P95LatencyMs         int      `json:"p95_latency_ms"`
+	ConcurrencyLimit     *int     `json:"concurrency_limit"`
+	BalanceUSD           *float64 `json:"balance_usd"`
+	CircuitState         string   `json:"circuit_state"`
+	AvailabilityState    string   `json:"availability_state"`
+	QuotaState           string   `json:"quota_state"`
+	LifecycleStatus      string   `json:"lifecycle_status"`
+	Routable             bool     `json:"runtime_routable"`
+	BlockReason          *string  `json:"runtime_block_reason"`
+	PriceInPer1M         *float64 `json:"unit_price_in_per_1m"`
+	PriceOutPer1M        *float64 `json:"unit_price_out_per_1m"`
+	CacheReadPricePer1M  *float64 `json:"cache_read_price_per_1m"`
 	CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
-	SupportsPromptCache bool     `json:"supports_prompt_cache"`
-	CacheMode           string   `json:"cache_mode"`
-	ManualPriority      int      `json:"manual_priority"`
-	ActiveSessions      int      `json:"active_sessions"`
-	ConsecutiveFailures int      `json:"consecutive_failures"`
-	CompositeScore      float64  `json:"composite_score"`
-	Currency            string   `json:"currency"`
-	BillingMode         string   `json:"billing_mode"`
+	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
+	CacheMode            string   `json:"cache_mode"`
+	ManualPriority       int      `json:"manual_priority"`
+	ActiveSessions       int      `json:"active_sessions"`
+	ConsecutiveFailures  int      `json:"consecutive_failures"`
+	CompositeScore       float64  `json:"composite_score"`
+	Currency             string   `json:"currency"`
+	BillingMode          string   `json:"billing_mode"`
 	// ContextWindow is the upstream model's context window in tokens, read
 	// from models_canonical.context_window. Used by the Q1/Q2/Q3 client-side
 	// context trim path (transform.CompressMessagesIfNeeded). nil means
 	// "unknown" — in which case the trim path is a no-op.
-	ContextWindow *int `json:"context_window,omitempty"`
+	ContextWindow *int   `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
 	// QualityFixMode mirrors providers.quality_fix_mode (017_quality_fix_mode.sql).
 	// Empty string is treated as "off" by every consumer; relay/stream.go
@@ -152,7 +152,7 @@ type Policy struct {
 	// minute-floor in executor.go).  Fix 2026-06-13: rename the field to
 	// match the unit carried across the wire, then multiply by
 	// time.Second at the use site.
-	StickyTTLSeconds      int `json:"sticky_ttl_seconds"`
+	StickyTTLSeconds       int `json:"sticky_ttl_seconds"`
 	TransientFailThreshold int `json:"transient_fail_threshold"`
 }
 
@@ -651,7 +651,12 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 		  -- min-sample threshold avoids cold-start false positives (a brand-new
 		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
 		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5)
+		  -- 2026-06-23 TEMPORARY: lower threshold to 0.3 to allow recovery after
+		  -- resource leak fix. The leak caused 54% failure rate; with the fix
+		  -- deployed, new requests will succeed and gradually push the rolling
+		  -- 50-request window above 0.5. This gate will be restored to 0.5 once
+		  -- the success rate recovers (expected within 50-100 requests).
+		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.3)
 		  AND (
 		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
 		      lower(mo.raw_model_name) = $1
