@@ -183,6 +183,7 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 		slog.Warn("request_logger: flush batch begin failed", "error", err)
 		return
 	}
+	//nolint:errcheck
 	defer tx.Rollback(ctx)
 
 	for _, update := range batch {
@@ -218,6 +219,25 @@ func (rl *RequestLogger) persistUpdate(ctx context.Context, update *LogUpdate) e
 func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, update *LogUpdate) error {
 	compressionMetaJSON, _ := json.Marshal(update.CompressionMeta)
 
+	// Terminal-state guard (2026-06-22 audit P0-2):
+	//
+	// Once a WAL row reaches a terminal status ('success' or 'failure'),
+	// a later update must NOT regress it. This was a real bug: the handler
+	// writes StageCompleted/StatusSuccess via async Update(), then the
+	// deferred client-disconnect safety net fires UpdateSync() with
+	// StageResponseFail/StatusFailure whenever the client closes the
+	// connection right after reading a successful response — clobbering
+	// the success row. COALESCE($3, stage) offered no protection because
+	// the incoming stage is non-zero.
+	//
+	// The guard works by excluding already-terminal rows from the UPDATE.
+	// The safety net still does its real job — promoting rows stuck at
+	// 'pending' to 'failure' — because those rows are non-terminal.
+	//
+	// Note: we compare against the incoming update's own status. If the
+	// caller passes an empty status (incremental update that only sets
+	// tokens/provider), the guard is skipped via NULLIF so legitimate
+	// mid-flight field updates still apply.
 	_, err := tx.Exec(ctx, `
 		UPDATE request_wal SET
 			status = COALESCE(NULLIF($2, ''), status),
@@ -238,6 +258,11 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 		      WHERE request_id = $1
 		      ORDER BY created_at DESC
 		      LIMIT 1
+		  )
+		  AND (
+		      NULLIF($2, '') IS NULL
+		      OR request_wal.status IS NULL
+		      OR request_wal.status = 'pending'
 		  )
 	`, update.RequestID, update.Status, update.Stage, update.CompletedAt,
 		update.UpstreamRequestAt, update.UpstreamResponseAt,
