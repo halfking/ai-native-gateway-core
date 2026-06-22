@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry } from '../api'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction } from '../api'
 import { Chart, registerables } from 'chart.js'
 
 Chart.register(...registerables)
@@ -28,6 +28,19 @@ const promoteReason = ref('')
 const concurrencyDialogOpen = ref(false)
 const concurrencyValue = ref(5)
 const concurrencyReason = ref('')
+
+// ── 2026-06-23: per-model manual online/offline + state-change history ──
+const toggleBusy = ref<Record<string, boolean>>({})
+const toggleDialogOpen = ref(false)
+const toggleTarget = ref<{
+  credId: number
+  rawModel: string
+  action: ModelToggleAction
+  prevReason: string | null
+} | null>(null)
+const toggleReason = ref('')
+const historyLoading = ref(false)
+const historyEvents = ref<ModelHistoryEvent[]>([])
 
 // Auto refresh
 const autoRefresh = ref(false)
@@ -141,8 +154,10 @@ function openDetail(cred: CredentialMonitorSummary) {
   selectedModel.value = pick?.raw_model_name || ''
   if (selectedModel.value) {
     loadSlidingWindow(cred.id, selectedModel.value)
+    loadHistory()
   } else {
     windowEntries.value = []
+    historyEvents.value = []
   }
 }
 
@@ -165,6 +180,7 @@ function selectModel(model: string) {
   if (!selectedCred.value || model === selectedModel.value) return
   selectedModel.value = model
   loadSlidingWindow(selectedCred.value.id, model)
+  loadHistory()
 }
 
 function renderErrorPieChart(errorKinds: Record<string, number>) {
@@ -299,6 +315,64 @@ async function submitConcurrency() {
   } catch (e) {
     alert('设置失败: ' + (e instanceof Error ? e.message : String(e)))
   }
+}
+
+// ── 2026-06-23: per-model toggle + history helpers ────────────────────────
+function openToggleDialog(m: CredentialModelStatus, action: ModelToggleAction) {
+  if (!selectedCred.value) return
+  toggleTarget.value = {
+    credId: selectedCred.value.id,
+    rawModel: m.raw_model_name,
+    action,
+    prevReason: m.binding_unavailable_reason ?? null,
+  }
+  toggleReason.value = ''
+  toggleDialogOpen.value = true
+}
+
+async function submitToggle() {
+  if (!toggleTarget.value || !toggleReason.value.trim()) return
+  const t = toggleTarget.value
+  const key = `${t.credId}|${t.rawModel}`
+  toggleBusy.value[key] = true
+  try {
+    await toggleModelAvailability(t.credId, t.rawModel, t.action, toggleReason.value.trim())
+    toggleDialogOpen.value = false
+    await load() // refresh summary so the row badge updates
+    await loadHistory() // refresh history with the new manual event on top
+  } catch (e) {
+    alert(`${t.action === 'offline' ? '下线' : '上线'}失败: ` + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    toggleBusy.value[key] = false
+  }
+}
+
+async function loadHistory() {
+  if (!selectedCred.value || !selectedModel.value) {
+    historyEvents.value = []
+    return
+  }
+  historyLoading.value = true
+  try {
+    const res = await getModelHistory(selectedCred.value.id, selectedModel.value, 50)
+    historyEvents.value = res.events
+  } catch (e) {
+    console.error('history failed', e)
+    historyEvents.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function formatTs(ts: string) {
+  // '2026-06-23T10:00:00Z' -> '06-23 10:00'
+  const d = new Date(ts)
+  if (isNaN(d.getTime())) return ts
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const h = String(d.getHours()).padStart(2, '0')
+  const min = String(d.getMinutes()).padStart(2, '0')
+  return `${m}-${day} ${h}:${min}`
 }
 
 // ── Badge / color helpers ──────────────────────────────────────────────
@@ -556,6 +630,7 @@ onUnmounted(() => {
                         <th>probe</th>
                         <th>成功率</th>
                         <th>样本</th>
+                        <th>操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -569,6 +644,27 @@ onUnmounted(() => {
                         <td><span class="badge" :class="probeBadge(m.probe_state)">{{ m.probe_state }}</span></td>
                         <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
                         <td class="cell-sub">{{ m.recent_samples }}</td>
+                        <td @click.stop>
+                          <button
+                            v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
+                            class="btn btn-xs btn-ghost"
+                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
+                            @click="openToggleDialog(m, 'offline')"
+                          >🔴 下线</button>
+                          <button
+                            v-else-if="m.binding_unavailable_reason === 'manual_offline'"
+                            class="btn btn-xs btn-ghost"
+                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            title="恢复后下一轮自动探测（~10 min）会重新评估"
+                            @click="openToggleDialog(m, 'online')"
+                          >🟢 上线</button>
+                          <span
+                            v-else
+                            class="cell-muted"
+                            :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
+                          >auto</span>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -623,6 +719,57 @@ onUnmounted(() => {
                 <div style="height:200px;position:relative">
                   <canvas id="errorPieChart"></canvas>
                 </div>
+              </div>
+
+              <div class="drawer-section">
+                <div class="drawer-section-title" style="display:flex;align-items:center;gap:8px">
+                  状态变化历史
+                  <span v-if="historyEvents.length" class="cell-sub">({{ historyEvents.length }})</span>
+                  <button
+                    class="btn btn-xs btn-ghost"
+                    :disabled="historyLoading || !selectedModel"
+                    style="margin-left:auto"
+                    @click="loadHistory"
+                  >↻ 刷新</button>
+                </div>
+                <div v-if="!selectedModel" class="cell-muted">点击模型查看</div>
+                <div v-else-if="historyLoading">加载中...</div>
+                <div v-else-if="!historyEvents.length" class="cell-muted">无状态变化记录</div>
+                <table v-else class="history-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>来源</th>
+                      <th>事件</th>
+                      <th>详情</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(ev, i) in historyEvents" :key="i" :class="`hist-${ev.event}`">
+                      <td class="mono-sm">{{ formatTs(ev.ts) }}</td>
+                      <td>
+                        <span
+                          v-if="ev.source === 'auto'"
+                          class="badge"
+                          :class="ev.event === 'broke' ? 'badge-red' : 'badge-green'"
+                        >自动 · {{ ev.triggered_by || 'scheduler' }}</span>
+                        <span
+                          v-else
+                          class="badge"
+                          :class="ev.event === 'offline' ? 'badge-red' : 'badge-green'"
+                        >手动 · {{ ev.actor || 'admin' }}</span>
+                      </td>
+                      <td><code class="mono-sm">{{ ev.event }}</code></td>
+                      <td class="cell-sub">
+                        <template v-if="ev.source === 'auto' && ev.error_code">
+                          {{ ev.error_code }}{{ ev.http_status ? ' (' + ev.http_status + ')' : '' }}
+                        </template>
+                        <template v-else-if="ev.reason">{{ ev.reason }}</template>
+                        <template v-else>—</template>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -698,6 +845,39 @@ onUnmounted(() => {
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button class="btn btn-ghost" @click="concurrencyDialogOpen = false">取消</button>
           <button class="btn btn-primary" @click="submitConcurrency">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2026-06-23: per-model toggle dialog -->
+    <div v-if="toggleDialogOpen" class="drawer-backdrop" @click="toggleDialogOpen = false">
+      <div class="card" @click.stop style="max-width:480px;margin:auto;margin-top:120px;padding:20px">
+        <h3 style="margin-top:0">
+          确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}
+        </h3>
+        <div class="cell-sub" style="margin-bottom:12px">
+          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 #{{ toggleTarget?.credId }}
+        </div>
+        <div v-if="toggleTarget?.action === 'offline'" class="cell-sub" style="margin-bottom:12px">
+          下线后自动探测将不再触碰该模型（原因 = <code>manual_offline</code>），需你手动恢复。
+        </div>
+        <div v-else class="cell-sub" style="margin-bottom:12px">
+          恢复后下一轮自动探测（~10 min）会重新评估。
+        </div>
+        <label class="field-label">原因（必填）</label>
+        <input
+          v-model="toggleReason"
+          class="field-input"
+          placeholder="例如: 误判 broken / 紧急封禁 / 灰度验证"
+          @keyup.enter="submitToggle"
+        />
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-ghost" @click="toggleDialogOpen = false">取消</button>
+          <button
+            :class="toggleTarget?.action === 'offline' ? 'btn btn-danger' : 'btn btn-success'"
+            :disabled="!toggleReason.trim()"
+            @click="submitToggle"
+          >确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}</button>
         </div>
       </div>
     </div>
@@ -870,5 +1050,38 @@ onUnmounted(() => {
   .summary-row {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+/* 2026-06-23: per-model toggle + state-change history */
+.history-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.history-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.history-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.history-table tr.hist-broke td:nth-child(3),
+.history-table tr.hist-offline td:nth-child(3) {
+  color: var(--danger);
+  font-weight: 600;
+}
+.history-table tr.hist-recovered td:nth-child(3),
+.history-table tr.hist-online td:nth-child(3) {
+  color: var(--success);
+  font-weight: 600;
+}
+.btn-xs {
+  padding: 2px 6px;
+  font-size: 11px;
 }
 </style>

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
 	"github.com/redis/go-redis/v9"
 )
@@ -75,6 +77,9 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 	mux.HandleFunc("/api/credentials/promote", wrap(m.handlePromote))
 	mux.HandleFunc("/api/credentials/demote", wrap(m.handleDemote))
 	mux.HandleFunc("/api/credentials/set-concurrency-auto", wrap(m.handleSetConcurrencyAuto))
+	// 2026-06-23: per-(credential, model) manual online/offline + state-change history.
+	mux.HandleFunc("/api/credentials/model-toggle", wrap(m.handleModelToggle))
+	mux.HandleFunc("/api/credentials/model-history", wrap(m.handleModelHistory))
 }
 
 // CredentialMonitorSummary represents a credential's monitoring state.
@@ -589,5 +594,393 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": "concurrency_limit_auto updated",
+	})
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Per-(credential, model) manual online/offline toggle + state-change history
+//
+// Added 2026-06-23 for the credential monitor drawer. Operators can flip a
+// single model binding off the candidate pool immediately (or back on) without
+// touching the rest of the credential. The status is overlaid on top of the
+// automatic probe consensus:
+//
+//   - "manual_offline" unavailable_reason is treated by the probe runner
+//     cycle's SQL filter (AND COALESCE(cmb.unavailable_reason,'') <> 'manual')
+//     and by applyResult's NOT LIKE 'manual%' guard as a sticky lock — the
+//     auto probe will NOT touch it until the operator toggles it back to
+//     "online".
+//
+//   - "online" clears unavailable_reason='manual_offline' and resets
+//     model_probe_state to 'recovering' with next_retry_at=NOW() so the next
+//     10-min probe cycle re-evaluates immediately. It does NOT touch bindings
+//     with auto reasons (e.g. 'model_probe_broken') — those are owned by the
+//     auto probe and only recover when consensus flips back to healthy.
+//
+// All operations are logged to routing_audit_log with action
+// 'credential.model_toggle_online' / 'credential.model_toggle_offline' and
+// target_type='credential_model' (the JSON payload carries credential_id +
+// raw_model_name since the audit table's target_id is a single bigint).
+// ──────────────────────────────────────────────────────────────────────────────
+
+// modelToggleRequest is the POST body for /api/credentials/model-toggle.
+type modelToggleRequest struct {
+	CredentialID int    `json:"credential_id"`
+	RawModel     string `json:"raw_model_name"`
+	Action       string `json:"action"` // "online" | "offline"
+	Reason       string `json:"reason"` // required, ≤500 chars; written to audit
+}
+
+// ModelToggleResponse is returned by /api/credentials/model-toggle.
+type ModelToggleResponse struct {
+	Success           bool    `json:"success"`
+	Available         bool    `json:"available"`
+	UnavailableReason *string `json:"unavailable_reason,omitempty"`
+	PrevAvailable     bool    `json:"prev_available"`
+	PrevReason        *string `json:"prev_reason,omitempty"`
+	Action            string  `json:"action"`
+}
+
+// validateModelToggleRequest is the pure pre-DB validation for the
+// /api/credentials/model-toggle body. Split out of handleModelToggle so
+// unit tests can exercise it without standing up a pgxpool.
+func validateModelToggleRequest(req *modelToggleRequest) error {
+	if req.CredentialID == 0 || req.RawModel == "" {
+		return fmt.Errorf("credential_id and raw_model_name required")
+	}
+	if req.Action != "online" && req.Action != "offline" {
+		return fmt.Errorf(`action must be "online" or "offline"`)
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return fmt.Errorf("reason is required")
+	}
+	if len(reason) > 500 {
+		return fmt.Errorf("reason must be ≤500 chars")
+	}
+	return nil
+}
+
+// handleModelToggle manually toggles a (credential_id, raw_model_name) binding
+// online or offline.
+//
+// POST /api/credentials/model-toggle
+// Body: {"credential_id": 11, "raw_model_name": "gpt-4o", "action": "offline", "reason": "误判 broken"}
+func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	var req modelToggleRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := validateModelToggleRequest(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tx, err := m.h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin tx: "+err.Error())
+		return
+	}
+	defer tx.Rollback(context.Background())
+
+	// Lock the binding row for the duration of the tx so concurrent toggles
+	// and the auto probe runner cannot interleave.
+	var prevAvailable bool
+	var prevReason *string
+	if err := tx.QueryRow(ctx, `
+		SELECT cmb.available, cmb.unavailable_reason
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1 AND pm.raw_model_name = $2
+		FOR UPDATE OF cmb
+	`, req.CredentialID, req.RawModel).Scan(&prevAvailable, &prevReason); err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "binding not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup failed: "+err.Error())
+		return
+	}
+
+	var newAvailable bool
+	var newReason *string
+	if req.Action == "offline" {
+		offlineReason := "manual_offline"
+		if _, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available = FALSE,
+			    unavailable_reason = $3,
+			    unavailable_at = NOW()
+			FROM provider_models pm
+			WHERE cmb.provider_model_id = pm.id
+			  AND cmb.credential_id = $1
+			  AND pm.raw_model_name = $2
+		`, req.CredentialID, req.RawModel, offlineReason); err != nil {
+			writeError(w, http.StatusInternalServerError, "offline update failed: "+err.Error())
+			return
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO model_probe_state
+			    (credential_id, raw_model_name, state,
+			     consecutive_successes, consecutive_failures, total_attempts,
+			     last_attempt_at, next_retry_at, last_status)
+			VALUES ($1, $2, 'unknown', 0, 0, 0, NOW(), NULL, 'manual_offline')
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    state = 'unknown',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    last_attempt_at = NOW(),
+			    next_retry_at = NULL,
+			    last_status = 'manual_offline'
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
+		newAvailable = false
+		newReason = &offlineReason
+	} else {
+		// Online: only clear manual_offline locks. We refuse to override
+		// auto reasons (e.g. model_probe_broken) — those are owned by the
+		// probe consensus and should be re-evaluated by TriggerManual or
+		// a natural cycle, not by an operator clicking "online".
+		if prevReason == nil || *prevReason != "manual_offline" {
+			writeError(w, http.StatusConflict,
+				"binding is not in manual_offline state (current: "+
+					strconvIfaceDeref(prevReason)+"); only manual_offline can be toggled back to online")
+			return
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available = TRUE,
+			    unavailable_reason = NULL,
+			    unavailable_at = NULL
+			FROM provider_models pm
+			WHERE cmb.provider_model_id = pm.id
+			  AND cmb.credential_id = $1
+			  AND pm.raw_model_name = $2
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "online update failed: "+err.Error())
+			return
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO model_probe_state
+			    (credential_id, raw_model_name, state,
+			     consecutive_successes, consecutive_failures, total_attempts,
+			     last_attempt_at, next_retry_at, last_status)
+			VALUES ($1, $2, 'recovering', 0, 0, 0, NOW(), NOW(), 'manual_online')
+			ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+			    state = 'recovering',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    last_attempt_at = NOW(),
+			    next_retry_at = NOW(),
+			    last_status = 'manual_online'
+		`, req.CredentialID, req.RawModel); err != nil {
+			writeError(w, http.StatusInternalServerError, "probe state reset failed: "+err.Error())
+			return
+		}
+		newAvailable = true
+		newReason = nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
+		return
+	}
+
+	// Audit log: target_id uses credential_id; raw_model_name + reason go
+	// in the JSON payload. The handleModelHistory query keys on the JSON
+	// fields so the composite lookup is symmetric.
+	m.h.auditLog("admin",
+		"credential.model_toggle_"+req.Action,
+		"credential_model",
+		req.CredentialID,
+		map[string]any{
+			"credential_id":  req.CredentialID,
+			"raw_model_name": req.RawModel,
+			"reason":         reason,
+			"prev_available": prevAvailable,
+			"prev_reason":    prevReason,
+			"new_available":  newAvailable,
+			"new_reason":     newReason,
+		},
+	)
+
+	writeJSON(w, http.StatusOK, ModelToggleResponse{
+		Success:           true,
+		Available:         newAvailable,
+		UnavailableReason: newReason,
+		PrevAvailable:     prevAvailable,
+		PrevReason:        prevReason,
+		Action:            req.Action,
+	})
+}
+
+// strconvIfaceDeref dereferences a *string for human-readable error messages;
+// returns "<nil>" if p is nil.
+func strconvIfaceDeref(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
+
+// ModelHistoryEvent is one row in the response of /api/credentials/model-history.
+//
+// The "source" field is the operator-visible tag: "auto" for probe consensus
+// transitions, "manual" for the operator toggles added 2026-06-23.
+type ModelHistoryEvent struct {
+	TS           string  `json:"ts"`
+	Source       string  `json:"source"`
+	TriggeredBy  *string `json:"triggered_by"`
+	Event        string  `json:"event"`
+	ProbeStatus  *string `json:"probe_status"`
+	HTTPStatus   *int    `json:"http_status"`
+	ErrorCode    *string `json:"error_code"`
+	ErrorMessage *string `json:"error_message"`
+	Actor        *string `json:"actor"`
+	Reason       *string `json:"reason"`
+}
+
+// handleModelHistory returns the merged history of automatic probe state
+// transitions and manual operator toggles for a single (credential, model)
+// binding, ordered by timestamp DESC.
+//
+// GET /api/credentials/model-history?credential_id=X&raw_model_name=Y&limit=50
+func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	credentialID := queryInt(r, "credential_id", 0)
+	rawModel := queryString(r, "raw_model_name")
+	limit := queryInt(r, "limit", 50)
+	if credentialID == 0 {
+		writeError(w, http.StatusBadRequest, "credential_id required")
+		return
+	}
+	if rawModel == "" {
+		writeError(w, http.StatusBadRequest, "raw_model_name required")
+		return
+	}
+	if limit < 1 || limit > 200 {
+		writeError(w, http.StatusBadRequest, "limit must be 1-200")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := m.h.db.Query(ctx, `
+		WITH auto_events AS (
+			SELECT
+				mpr.created_at      AS ts,
+				'auto'              AS source,
+				mpr.triggered_by    AS triggered_by,
+				mpr.state_change    AS event,
+				mpr.status          AS probe_status,
+				mpr.http_status     AS http_status,
+				mpr.error_code      AS error_code,
+				mpr.error_message   AS error_message,
+				NULL::text          AS actor,
+				NULL::text          AS reason
+			FROM model_probe_runs mpr
+			WHERE mpr.credential_id = $1
+			  AND mpr.raw_model_name = $2
+			  AND mpr.state_change IN ('recovered', 'broke')
+		),
+		manual_events AS (
+			SELECT
+				al.ts               AS ts,
+				'manual'            AS source,
+				NULL::text          AS triggered_by,
+				CASE al.action
+				    WHEN 'credential.model_toggle_online'  THEN 'online'
+				    WHEN 'credential.model_toggle_offline' THEN 'offline'
+				END                 AS event,
+				NULL::text          AS probe_status,
+				NULL::int           AS http_status,
+				NULL::text          AS error_code,
+				NULL::text          AS error_message,
+				al.actor            AS actor,
+				COALESCE(al.after_json->>'reason', '') AS reason
+			FROM routing_audit_log al
+			WHERE al.target_type = 'credential_model'
+			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
+			  AND (al.after_json->>'credential_id')::int = $1
+			  AND al.after_json->>'raw_model_name' = $2
+		)
+		SELECT ts, source, triggered_by, event,
+		       probe_status, http_status, error_code, error_message,
+		       actor, reason
+		FROM (
+			SELECT * FROM auto_events
+			UNION ALL
+			SELECT * FROM manual_events
+		) u
+		ORDER BY ts DESC
+		LIMIT $3
+	`, credentialID, rawModel, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	events := make([]ModelHistoryEvent, 0)
+	for rows.Next() {
+		var (
+			ev          ModelHistoryEvent
+			probeStatus *string
+			httpStatus  *int
+			errCode     *string
+			errMsg      *string
+			actor       *string
+			reason      *string
+		)
+		var ts time.Time
+		if err := rows.Scan(&ts, &ev.Source, &ev.TriggeredBy, &ev.Event,
+			&probeStatus, &httpStatus, &errCode, &errMsg,
+			&actor, &reason); err != nil {
+			continue
+		}
+		ev.TS = ts.UTC().Format(time.RFC3339)
+		ev.ProbeStatus = probeStatus
+		ev.HTTPStatus = httpStatus
+		ev.ErrorCode = errCode
+		ev.ErrorMessage = errMsg
+		ev.Actor = actor
+		if reason != nil && *reason != "" {
+			ev.Reason = reason
+		} else {
+			ev.Reason = nil
+		}
+		events = append(events, ev)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"credential_id":  credentialID,
+		"raw_model_name": rawModel,
+		"events":         events,
+		"count":          len(events),
 	})
 }
