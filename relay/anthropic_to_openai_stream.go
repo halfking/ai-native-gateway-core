@@ -471,7 +471,7 @@ func StreamAnthropicSSEToOpenAI(
 		case "message_delta":
 			var d sseAnthropicDelta
 			if err := json.Unmarshal(ev.Delta, &d); err == nil && d.StopReason != nil {
-				sr := mapAnthropicStopReason(*d.StopReason) // identical function from messages.go
+				sr := mapAnthropicFinishReasonToChat(*d.StopReason) // Anthropic → OpenAI mapping
 				finishReason = &sr
 			}
 			var u struct {
