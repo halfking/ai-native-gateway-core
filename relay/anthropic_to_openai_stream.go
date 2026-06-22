@@ -274,8 +274,20 @@ func StreamAnthropicSSEToOpenAI(
 			return
 		}
 		hasEmittedToolCalls = true // Mark that we've emitted at least one tool call
-		idx := toolCallIndex
-		toolCallIndex++
+		// 2026-06-23 CRITICAL FIX: Only use current index for new tool calls.
+		// OpenAI spec: index identifies the tool_calls array position.
+		// Same tool call = same index across all its delta chunks.
+		// Only increment AFTER emitting the first chunk (with name).
+		var idx int
+		if toolName != "" {
+			// This is a NEW tool call (first chunk with name)
+			idx = toolCallIndex
+			toolCallIndex++ // Increment for next tool call
+		} else {
+			// This is a delta chunk for existing tool call
+			// Use the SAME index as the first chunk
+			idx = toolCallIndex - 1
+		}
 		entry := map[string]any{"index": idx}
 		// 2026-06-23 fix: Always include an ID field. If toolID is empty
 		// (which can happen when input_json_delta arrives without a

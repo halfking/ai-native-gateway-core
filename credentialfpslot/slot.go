@@ -257,6 +257,108 @@ func (m *Manager) Stats(ctx context.Context, credentialID int, limit *int) (slot
 	return &l, &u2, &f
 }
 
+// SlotDetail describes a single fingerprint slot's state for monitoring.
+type SlotDetail struct {
+	Index      int    `json:"index"`
+	Holder     string `json:"holder"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	Expired    bool   `json:"expired"`
+	MemoryMode bool   `json:"memory_mode"`
+}
+
+// DetailedStats returns per-slot occupancy for monitoring and diagnostics.
+//
+// This method is intended for admin dashboards and debugging tools that need
+// to inspect the actual state of each fingerprint slot — e.g. diagnosing
+// the "cred-11/minimax-m3 alternating success/failure" issue where one
+// session bounces between credentials due to intermittent failures.
+func (m *Manager) DetailedStats(ctx context.Context, credentialID int, limit *int) (slotLimit *int, holders []string, details []SlotDetail, healthySlots int) {
+	if !m.Enabled() {
+		return nil, nil, nil, 0
+	}
+	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
+	if eff == nil {
+		return nil, nil, nil, 0
+	}
+	limitVal := *eff
+	slotLimit = &limitVal
+
+	if m.client != nil {
+		holders, details, healthySlots = m.detailedStatsRedis(ctx, credentialID, limitVal)
+		return slotLimit, holders, details, healthySlots
+	}
+
+	holders, details, healthySlots = m.detailedStatsMemory(credentialID, limitVal)
+	return slotLimit, holders, details, healthySlots
+}
+
+func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit int) ([]string, []SlotDetail, int) {
+	holders := make([]string, 0, limit)
+	details := make([]SlotDetail, 0, limit)
+	healthySlots := 0
+
+	pipe := m.client.Pipeline()
+	getCmds := make([]*redis.StringCmd, limit)
+	ttlCmds := make([]*redis.DurationCmd, limit)
+	for slot := 0; slot < limit; slot++ {
+		key := slotRedisKey(credentialID, slot)
+		getCmds[slot] = pipe.Get(ctx, key)
+		ttlCmds[slot] = pipe.TTL(ctx, key)
+	}
+	pipe.Exec(ctx)
+
+	for slot := 0; slot < limit; slot++ {
+		holder, err := getCmds[slot].Result()
+		ttl, _ := ttlCmds[slot].Result()
+		ttlSeconds := int(ttl.Seconds())
+
+		if err == redis.Nil {
+			details = append(details, SlotDetail{Index: slot, Holder: "", TTLSeconds: 0, Expired: true})
+			continue
+		}
+		if err != nil {
+			details = append(details, SlotDetail{Index: slot, Holder: "", TTLSeconds: 0, Expired: true})
+			continue
+		}
+
+		healthySlots++
+		holders = append(holders, holder)
+		details = append(details, SlotDetail{Index: slot, Holder: holder, TTLSeconds: ttlSeconds, Expired: ttlSeconds <= 0})
+	}
+
+	return holders, details, healthySlots
+}
+
+func (m *Manager) detailedStatsMemory(credentialID, limit int) ([]string, []SlotDetail, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	m.purgeExpiredLocked(now)
+
+	holders := make([]string, 0, limit)
+	details := make([]SlotDetail, 0, limit)
+	healthySlots := 0
+
+	for slot := 0; slot < limit; slot++ {
+		key := slotKey{credentialID: credentialID, slotIndex: slot}
+		cur, exists := m.memSlots[key]
+		if !exists {
+			details = append(details, SlotDetail{Index: slot, Holder: "", Expired: true, MemoryMode: true})
+			continue
+		}
+
+		ttlSeconds := int(time.Until(cur.exp).Seconds())
+		expired := ttlSeconds <= 0
+		if !expired {
+			healthySlots++
+			holders = append(holders, cur.holder)
+		}
+		details = append(details, SlotDetail{Index: slot, Holder: cur.holder, TTLSeconds: ttlSeconds, Expired: expired, MemoryMode: true})
+	}
+
+	return holders, details, healthySlots
+}
+
 // AvailableCount returns free slots.
 func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *int) (int, error) {
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
