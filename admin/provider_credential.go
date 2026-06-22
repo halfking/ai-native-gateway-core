@@ -388,3 +388,58 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 		"deleted_pins":  deletedPins,
 	})
 }
+
+// getCredentialFpSlotStats returns detailed fingerprint slot statistics for
+// monitoring and diagnostics.
+//
+// GET /api/providers/{provider_id}/credentials/{cred_id}/fp-slot-stats
+//
+// Returns per-slot details including holder identifier and remaining TTL.
+// Used to diagnose issues like the "minimax-m3 alternating success/failure"
+// pattern where a session repeatedly bounces between credentials.
+func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.fpSlots == nil || !h.fpSlots.Enabled() {
+		writeError(w, http.StatusBadRequest, "fingerprint slots not enabled")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var concurrencyLimit *int
+	err := h.db.QueryRow(ctx, `
+		SELECT concurrency_limit 
+		FROM credentials 
+		WHERE id = $1 AND provider_id = $2
+	`, credID, providerID).Scan(&concurrencyLimit)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+
+	limit, holders, details, healthySlots := h.fpSlots.DetailedStats(ctx, credID, concurrencyLimit)
+
+	if limit == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"credential_id": credID,
+			"unlimited":     true,
+			"message":       "credential has no fingerprint slot limit",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"credential_id":  credID,
+		"slot_limit":     *limit,
+		"healthy_slots":  healthySlots,
+		"occupied_slots": len(holders),
+		"free_slots":     *limit - healthySlots,
+		"holders":        holders,
+		"details":        details,
+	})
+}

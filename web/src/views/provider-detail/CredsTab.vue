@@ -6,6 +6,7 @@ import {
   setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
   resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
   updateCredentialLifecycle, resetCredentialFpSlots,
+  getCredentialFpSlotStats, type FpSlotStats,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
 
@@ -26,6 +27,9 @@ const addCredKey = ref('')
 const addCredLabel = ref('')
 const addCredSaving = ref(false)
 const addCredErr = ref('')
+
+const fpSlotStats = ref<FpSlotStats | null>(null)
+const fpSlotStatsLoading = ref(false)
 
 const statuses: Array<{ value: CredentialStatus; label: string }> = [
   { value: 'active', label: '可用' },
@@ -300,10 +304,38 @@ async function resetFpSlots() {
   try {
     const r = await resetCredentialFpSlots(props.provider.id, c.id)
     alert(`复位成功：清空 ${r.deleted_slots} 个槽位，${r.deleted_pins} 个会话绑定`)
+    fpSlotStats.value = null
     emit('refresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : '复位失败')
   }
+}
+
+async function loadFpSlotStats() {
+  const c = selected.value
+  if (!c) return
+  fpSlotStatsLoading.value = true
+  try {
+    fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
+  } catch (e: unknown) {
+    fpSlotStats.value = null
+    alert(e instanceof Error ? e.message : '加载指纹槽统计失败')
+  } finally {
+    fpSlotStatsLoading.value = false
+  }
+}
+
+function fmtTtl(seconds: number): string {
+  if (seconds <= 0) return '已过期'
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (hours >= 1) return `${hours}h${minutes}m`
+  return `${minutes}m`
+}
+
+function holderShort(h: string): string {
+  if (!h) return ''
+  return h.length > 12 ? `…${h.slice(-8)}` : h
 }
 
 function onEffectiveInput(ev: Event) {
@@ -491,6 +523,9 @@ function onTagsInput(ev: Event) {
                   <button class="btn btn-sm btn-warning-outline" @click="resetFpSlots" title="清空所有占用的指纹槽">
                     复位槽位
                   </button>
+                  <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading" title="查看每个槽位的详细状态">
+                    {{ fpSlotStatsLoading ? '加载中…' : '查看详情' }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -530,6 +565,54 @@ function onTagsInput(ev: Event) {
               placeholder="tag1, tag2"
               @input="onTagsInput"
             />
+          </div>
+
+          <div v-if="fpSlotStats" class="drawer-section">
+            <div class="drawer-section-title">指纹槽详细状态</div>
+            <div v-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
+            <div v-else>
+              <div class="fp-slot-summary">
+                <div class="fp-slot-stat">
+                  <div class="fp-slot-stat-label">总槽位数</div>
+                  <div class="fp-slot-stat-value">{{ fpSlotStats.slot_limit }}</div>
+                </div>
+                <div class="fp-slot-stat">
+                  <div class="fp-slot-stat-label">已占用</div>
+                  <div class="fp-slot-stat-value">{{ fpSlotStats.occupied_slots }}</div>
+                </div>
+                <div class="fp-slot-stat">
+                  <div class="fp-slot-stat-label">空闲</div>
+                  <div class="fp-slot-stat-value" :class="{ 'fp-slot-stat-value--danger': (fpSlotStats.free_slots ?? 0) === 0 }">
+                    {{ fpSlotStats.free_slots }}
+                  </div>
+                </div>
+              </div>
+              <div v-if="fpSlotStats.details && fpSlotStats.details.length" class="fp-slot-list">
+                <div class="fp-slot-list-header">
+                  <span>槽位</span>
+                  <span>Holder</span>
+                  <span>剩余 TTL</span>
+                </div>
+                <div
+                  v-for="d in fpSlotStats.details"
+                  :key="d.index"
+                  class="fp-slot-list-row"
+                  :class="{ 'fp-slot-list-row--empty': d.expired && !d.holder }"
+                >
+                  <span class="fp-slot-list-index">#{{ d.index }}</span>
+                  <span class="fp-slot-list-holder">
+                    <code v-if="d.holder">{{ holderShort(d.holder) }}</code>
+                    <span v-else class="cell-muted">空闲</span>
+                  </span>
+                  <span class="fp-slot-list-ttl" :class="{ 'cell-sub--danger': d.expired }">
+                    {{ d.expired && !d.holder ? '—' : fmtTtl(d.ttl_seconds) }}
+                  </span>
+                </div>
+              </div>
+              <div v-if="fpSlotStats.holders && fpSlotStats.holders.length" class="cell-sub fp-slot-holders-hint">
+                共 {{ fpSlotStats.holders.length }} 个会话占用此凭据的指纹池
+              </div>
+            </div>
           </div>
 
           <div class="drawer-section drawer-section--danger">
@@ -707,6 +790,80 @@ function onTagsInput(ev: Event) {
 .drawer-section--danger {
   padding-top: 12px;
   border-top: 1px dashed var(--border);
+}
+.fp-slot-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.fp-slot-stat {
+  background: var(--bg-subtle, #161b22);
+  padding: 10px;
+  border-radius: 6px;
+  text-align: center;
+}
+.fp-slot-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.fp-slot-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fp-slot-stat-value--danger {
+  color: var(--danger, #ef4444);
+}
+.fp-slot-list {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.fp-slot-list-header {
+  display: grid;
+  grid-template-columns: 50px 1fr 80px;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-subtle, #161b22);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.fp-slot-list-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 80px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  align-items: center;
+}
+.fp-slot-list-row--empty {
+  opacity: 0.5;
+}
+.fp-slot-list-index {
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+}
+.fp-slot-list-holder code {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  background: var(--bg-subtle, #161b22);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.fp-slot-list-ttl {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.fp-slot-holders-hint {
+  margin-top: 8px;
+  font-size: 11px;
 }
 .probe-status {
   display: inline-flex;
