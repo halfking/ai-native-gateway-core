@@ -81,7 +81,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 
 	initialMsg := map[string]any{
-		"type":  "message_start",
+		"type": "message_start",
 		"message": map[string]any{
 			"id":            msgID,
 			"type":          "message",
@@ -159,7 +159,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		}
 		captureSSE("error", errPayload)
 		flusher.Flush()
-		writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens)
+		writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		return outcome
@@ -266,11 +266,11 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				} else {
 					// Probe decided: not a <think> prefix. Flush probe verbatim
 					// then enter passthrough for the rest of the stream.
-writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
-							"type":  "content_block_delta",
-							"index": 0,
-							"delta": map[string]any{"type": "text_delta", "text": probeStr},
-						})
+					writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{"type": "text_delta", "text": probeStr},
+					})
 					if flusher != nil {
 						flusher.Flush()
 					}
@@ -418,7 +418,7 @@ writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 		}
 	}
 
-	writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens)
+	writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 
 	// Only mark the capture as "done" if the stream was NOT interrupted.
 	// If we received an interruption (e.g. stream_timeout, read_error,
@@ -432,8 +432,13 @@ writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
 	return outcome
 }
 
-func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int) {
+func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) {
 	stopReason := mapAnthropicStopReason(finishReason)
+
+	// Record usage in capture for audit trail
+	if capture != nil && (inputTokens > 0 || outputTokens > 0) {
+		capture.ObserveUsage(&inputTokens, &outputTokens, nil, nil)
+	}
 
 	// Note: the trailing content_block_stop is intentionally omitted. Phase 4's
 	// flushBufferedText already emits per-block stops for the first text
