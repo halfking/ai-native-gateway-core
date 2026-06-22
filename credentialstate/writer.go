@@ -269,18 +269,16 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// resolve "test route" + admin UI). Sibling models on the same
 		// credential are NOT touched — that was the 2026-06-22 audit bug.
 		//
-		// credentials.availability_state is updated too so admin UI badges
-		// reflect the cooling state, but the production router is driven
-		// exclusively by cmb.available via v_routable_credential_models.
-		availability := "cooling"
-		if failure.Kind == errorsx.KindRateLimit {
-			availability = "rate_limited"
-		}
+		// 2026-06-23 fix: Use writeModelLevelFailureOnly to avoid polluting
+		// credentials.availability_state, which would incorrectly mark ALL
+		// models on this credential as unavailable (cross-model pollution bug).
 		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
-		return w.writeModelLevelFailure(ctx, credentialID, rawModel, "auto_"+string(failure.Kind), availability, recoverAt, detail)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_"+string(failure.Kind), recoverAt, detail)
 	case errorsx.KindNetwork:
+		// 2026-06-23 fix: Network errors are per-model. Don't pollute the
+		// entire credential's availability_state.
 		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
-		return w.writeModelLevelFailure(ctx, credentialID, rawModel, "auto_network", "unreachable", recoverAt, detail)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_network", recoverAt, detail)
 	default:
 		return nil
 	}
@@ -377,6 +375,81 @@ func (w *Writer) writeModelLevelFailure(
 	`, availability, recoverAt, reason, detail, credentialID); err != nil {
 		return err
 	}
+	return nil
+}
+
+// writeModelLevelFailureOnly applies a per-(credential, model) failure ONLY to
+// the model-level state surfaces (cmb and model_offers), without touching
+// credentials.availability_state. This prevents cross-model pollution where a
+// single model's failure incorrectly marks the entire credential as unavailable.
+//
+// Use this for model-specific errors (network, timeout, concurrent, etc.).
+// For credential-wide errors (quota, auth), use writeModelLevelFailure instead.
+//
+// 2026-06-23: Extracted from writeModelLevelFailure to fix the credential-state
+// pollution bug where minimax-m3 failing would mark minimax-01 unavailable too.
+func (w *Writer) writeModelLevelFailureOnly(
+	ctx context.Context,
+	credentialID int,
+	rawModel, reason string,
+	recoverAt time.Time,
+	detail *string,
+) error {
+	// 1. Per-binding state on cmb (the production router's source of truth)
+	if rawModel == "" {
+		if _, err := w.dbPool.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available          = FALSE,
+			    unavailable_reason = $1,
+			    unavailable_at     = now(),
+			    updated_at         = now()
+			WHERE cmb.credential_id = $2
+			  AND cmb.available = TRUE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		`, reason, credentialID); err != nil {
+			return err
+		}
+	} else {
+		if _, err := w.dbPool.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available          = FALSE,
+			    unavailable_reason = $1,
+			    unavailable_at     = now(),
+			    updated_at         = now()
+			FROM provider_models pm
+			WHERE pm.id = cmb.provider_model_id
+			  AND cmb.credential_id = $2
+			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $3
+			  AND cmb.available = TRUE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		`, reason, credentialID, rawModel); err != nil {
+			return err
+		}
+	}
+
+	// 2. Mirror to model_offers so /api/routing/resolve reflects the same
+	//    state. Skip the write if rawModel is empty (no clean JOIN).
+	if rawModel != "" {
+		if _, err := w.dbPool.Exec(ctx, `
+			UPDATE model_offers mo
+			SET available          = FALSE,
+			    unavailable_reason = $1,
+			    unavailable_at     = now()
+			WHERE mo.credential_id = $2
+			  AND mo.raw_model_name = $3
+			  AND mo.available = TRUE
+			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+		`, reason, credentialID, rawModel); err != nil {
+			return err
+		}
+	}
+
+	// 3. ✅ DO NOT update credentials.availability_state.
+	//    This is the key difference from writeModelLevelFailure.
+	//    Model-level failures should not pollute the credential-level state,
+	//    which would incorrectly block all other healthy models on this credential.
 	return nil
 }
 

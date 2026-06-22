@@ -56,10 +56,10 @@ func newSQLOnlyMock() pgxmock.PgxPoolIface {
 //     (cred, model) was failing, killing sibling models on the same
 //     credential
 //
-// After the fix: cmb is updated for the (cred, model) pair, model_offers
-// is mirrored so /api/routing/resolve stays in lock-step, and the
-// legacy credentials.availability_state column is updated LAST (admin
-// badge only) so the admin UI keeps its cooling indicator.
+// 2026-06-23 fix: Model-level errors now use writeModelLevelFailureOnly,
+// which updates ONLY cmb and model_offers, NOT credentials.availability_state.
+// This prevents cross-model pollution where minimax-m3 failing would
+// incorrectly mark minimax-01 unavailable too.
 func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 	cases := []struct {
 		name string
@@ -79,7 +79,6 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 	//   credentials:   $1=availability, $2=recoverAt, $3=reason,
 	//                  $4=detail, $5=credentialID (5 args)
 	any3 := []interface{}{pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()}
-	any5 := []interface{}{pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -91,9 +90,6 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			mockDB.ExpectExec(`UPDATE model_offers`).
 				WithArgs(any3...).
-				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-			mockDB.ExpectExec(`UPDATE credentials`).
-				WithArgs(any5...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 			w := &Writer{dbPool: mockDB}
@@ -160,7 +156,12 @@ func TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials(t *testing.T) {
 // historical behaviour of WriteOnError for callers that don't know
 // the model — they still flip the whole credential's bindings, but
 // they do so on the cmb table (the source of truth) rather than on
-// credentials.availability_state (which the router ignores).
+// credentials.availability_state (which would incorrectly pollute the
+// credential-level state).
+//
+// 2026-06-23: Updated to reflect the fix for credential-state pollution.
+// Model-level errors (KindNetwork) now route through writeModelLevelFailureOnly,
+// which does NOT update credentials.availability_state.
 func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	mockDB := newSQLOnlyMock()
 	defer mockDB.Close()
@@ -172,9 +173,6 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
-	mockDB.ExpectExec(`UPDATE credentials`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	w := &Writer{dbPool: mockDB}
 	err := w.WriteOnError(context.Background(), 42, "", Failure{Kind: errorsx.KindNetwork})
