@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -15,6 +16,12 @@ var tierOrder = [4]int{1, 2, 3, 9}
 type Router struct {
 	Sticky  *StickyCache
 	Limiter *limiter.Limiter
+	// FpSlots is the credential-level concurrency tracker. When set,
+	// loadScore includes FP slot pressure in its P2C selection.
+	FpSlots interface {
+		Enabled() bool
+		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
+	}
 }
 
 func NewRouter(sticky *StickyCache, lim *limiter.Limiter) *Router {
@@ -100,7 +107,7 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		if len(bucket) == 0 {
 			continue
 		}
-		ordered = append(ordered, p2cOrder(bucket, r.Limiter)...)
+		ordered = append(ordered, p2cOrder(bucket, r)...)
 		tiersUsed++
 		if tiersUsed >= policy.TierFallbackMax {
 			break
@@ -124,7 +131,7 @@ func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 	return out
 }
 
-func p2cOrder(cands []provider.Candidate, lim *limiter.Limiter) []provider.Candidate {
+func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
 	}
@@ -132,6 +139,8 @@ func p2cOrder(cands []provider.Candidate, lim *limiter.Limiter) []provider.Candi
 	pool := make([]provider.Candidate, len(cands))
 	copy(pool, cands)
 	out := make([]provider.Candidate, 0, len(pool))
+
+	ctx := context.Background() // for FpSlots.Stats
 
 	for len(pool) > 0 {
 		if len(pool) == 1 {
@@ -154,7 +163,7 @@ func p2cOrder(cands []provider.Candidate, lim *limiter.Limiter) []provider.Candi
 
 		a, b := randomPair(samplePool)
 		chosen := a
-		if loadScore(b, lim) < loadScore(a, lim) {
+		if loadScore(b, r, ctx) < loadScore(a, r, ctx) {
 			chosen = b
 		}
 
@@ -189,7 +198,7 @@ func cheapestCost(pool []provider.Candidate) float64 {
 	return min
 }
 
-func loadScore(c provider.Candidate, lim *limiter.Limiter) float64 {
+func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	w := c.Weight
 	if w <= 0 {
 		w = 1
@@ -207,12 +216,39 @@ func loadScore(c provider.Candidate, lim *limiter.Limiter) float64 {
 		latencyPenalty = 1.0
 	}
 
+	// Per-identity in-flight from limiter (legacy)
 	inFlight := 0
-	if cred := lim.Credential(c.ProviderID, c.CredentialID); cred != nil {
-		inFlight = cred.Used()
+	if r.Limiter != nil {
+		if cred := r.Limiter.Credential(c.ProviderID, c.CredentialID); cred != nil {
+			inFlight = cred.Used()
+		}
 	}
 
-	return float64(inFlight) * latencyPenalty / (float64(w) * quality)
+	// Global credential-level concurrency from FpSlots (load-aware routing)
+	// This is the key addition: we now factor in the credential's total
+	// concurrent usage across all identities, not just this request's identity.
+	fpUsed := 0
+	fpLimit := 5 // default
+	if r.FpSlots != nil && r.FpSlots.Enabled() {
+		if limit, used, _ := r.FpSlots.Stats(ctx, c.CredentialID, c.ConcurrencyLimit); used != nil {
+			fpUsed = *used
+			if limit != nil {
+				fpLimit = *limit
+			}
+		}
+	}
+
+	// Pressure ratio: how full is this credential's concurrency pool?
+	// 0.0 = empty, 1.0 = saturated
+	pressure := float64(fpUsed) / float64(fpLimit)
+	if pressure > 1.0 {
+		pressure = 1.0
+	}
+
+	// Weighted score: higher pressure → higher score → less likely to be chosen
+	// Legacy inFlight is kept for backward compat (per-identity fairness)
+	// New pressure term dominates when fpUsed >> inFlight
+	return (float64(inFlight) + pressure*float64(fpLimit)) * latencyPenalty / (float64(w) * quality)
 }
 
 func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candidate) {
