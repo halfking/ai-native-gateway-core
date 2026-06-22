@@ -50,22 +50,30 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
     updated_at = NOW(),
     available = CASE
         WHEN credential_model_bindings.available = FALSE
-             -- 'manual%' in PostgreSQL LIKE matches any string starting with 'manual'
-             -- (e.g. 'manual_disabled', 'manual_perf_test'). The double-'%' from
-             -- the earlier Go raw string was a harmless typo but confusing to readers.
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
+             AND (
+                 -- Preserve manual disables
+                 credential_model_bindings.unavailable_reason LIKE 'manual%'
+                 -- Preserve admin-protected disables (e.g., from passive probe, model probe)
+                 OR COALESCE(credential_model_bindings.admin_protected, FALSE) = TRUE
+             )
         THEN credential_model_bindings.available
         ELSE TRUE
     END,
     unavailable_reason = CASE
         WHEN credential_model_bindings.available = FALSE
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
+             AND (
+                 credential_model_bindings.unavailable_reason LIKE 'manual%'
+                 OR COALESCE(credential_model_bindings.admin_protected, FALSE) = TRUE
+             )
         THEN credential_model_bindings.unavailable_reason
         ELSE NULL
     END,
     unavailable_at = CASE
         WHEN credential_model_bindings.available = FALSE
-             AND credential_model_bindings.unavailable_reason LIKE 'manual%'
+             AND (
+                 credential_model_bindings.unavailable_reason LIKE 'manual%'
+                 OR COALESCE(credential_model_bindings.admin_protected, FALSE) = TRUE
+             )
         THEN credential_model_bindings.unavailable_at
         ELSE NULL
     END
@@ -126,9 +134,29 @@ func ClearProviderBindings(ctx context.Context, db *pgxpool.Pool, providerID int
 
 // PreserveManualDisable reports whether an existing binding's disable state
 // should survive a vendor re-fetch upsert.
+//
+// DEPRECATED: This function only checks unavailable_reason, not admin_protected.
+// The SQL ON CONFLICT logic now handles both. Keep this for legacy callers but
+// prefer checking both fields directly.
 func PreserveManualDisable(available bool, unavailableReason *string) bool {
 	if available || unavailableReason == nil {
 		return false
 	}
 	return strings.HasPrefix(*unavailableReason, "manual")
+}
+
+// PreserveDisableState reports whether an existing binding's disable state
+// should survive a vendor re-fetch upsert, checking both manual and admin-protected.
+func PreserveDisableState(available bool, unavailableReason *string, adminProtected bool) bool {
+	if available {
+		return false
+	}
+	// Preserve if manually disabled OR admin-protected
+	if adminProtected {
+		return true
+	}
+	if unavailableReason != nil && strings.HasPrefix(*unavailableReason, "manual") {
+		return true
+	}
+	return false
 }
