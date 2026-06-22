@@ -393,12 +393,13 @@ func StreamAnthropicSSEToOpenAI(
 				continue
 			}
 			switch d.Type {
-			case "text":
+			case "text", "text_delta":
 				// Accumulate all text deltas in a single buffer. The
 				// <think>...</think> split is performed on content_block_stop
 				// when the full text is available — see below. This avoids
 				// the cross-chunk probe problem (a single character at a
 				// time is not enough to detect the leading think tag).
+				// Claude Opus 4-8 uses "text_delta" instead of "text"
 				bufferedText.WriteString(d.Text)
 
 			case "thinking":
