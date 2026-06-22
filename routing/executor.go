@@ -288,6 +288,11 @@ type Executor struct {
 	// single-tenant installs.
 	Compressor *compressor.Compressor
 
+	// HealthTracker records call history for intelligent availability
+	// tracking, continuous failure detection, and concurrency auto-tuning.
+	// Nil disables the feature.
+	HealthTracker *HealthTracker
+
 	// Memora is the optional context-compression oracle. When non-nil
 	// and enabled, the executor (a) enqueues per-request writes to
 	// Memora for later retrieval, and (b) on context-length overflow,
@@ -698,6 +703,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// request from this sticky session will not be tripped by
 			// a stale counter from a prior intermittent failure.
 			e.resetMnfStreak(params, cand.CredentialID)
+			
+			// Record successful call for health tracking
+			if e.HealthTracker != nil {
+				requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
+				e.HealthTracker.OnSuccess(
+					params.R.Context(),
+					cand.CredentialID,
+					cand.RawModel,
+					result.LatencyMs,
+					requestID,
+				)
+			}
+			
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -906,6 +924,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind = errorsx.ClassifyError(execErr, nil)
 		}
 		lastKind = kind
+		
+		// Record failed call for health tracking
+		if e.HealthTracker != nil {
+			requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
+			e.HealthTracker.OnError(
+				params.R.Context(),
+				cand.CredentialID,
+				cand.RawModel,
+				kind,
+				requestID,
+			)
+		}
+		
 		attempts = append(attempts, AttemptRecord{
 			ProviderID:   cand.ProviderID,
 			CredentialID: cand.CredentialID,
