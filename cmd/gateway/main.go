@@ -731,13 +731,16 @@ routingExec.AnthropicToOpenAIStream = func(
 		// Seed initial admin user if table is empty
 		admin.EnsureSeedAdmin(dbConn.Pool())
 
-		seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool()); err != nil {
-			slog.Warn("provider catalog seed failed", "error", err)
-		} else if created > 0 {
-			slog.Info("seeded providers from catalog", "created", created)
-		}
-		seedCancel()
+		// Seed providers asynchronously to avoid blocking HTTP server startup (2026-06-22)
+		go func() {
+			seedCtx, seedCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer seedCancel()
+			if created, err := admin.SeedProvidersFromCatalog(seedCtx, dbConn.Pool()); err != nil {
+				slog.Warn("provider catalog seed failed", "error", err)
+			} else if created > 0 {
+				slog.Info("seeded providers from catalog", "created", created)
+			}
+		}()
 	}
 
 	// ── Background Services ─────────────────────────────────────────────
