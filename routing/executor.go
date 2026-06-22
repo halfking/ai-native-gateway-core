@@ -22,8 +22,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/memora"
-	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/sessions"
@@ -168,13 +168,13 @@ type RequestLogEmitter interface {
 }
 
 type Executor struct {
-	Router        *Router
-	Circuit       *circuit.Manager
-	Limiter       *limiter.Limiter
-	Pools         *pool.PoolManager
-	Upstream      *upstreampkg.Client
-	Normalize     NormalizerFunc
-	StreamChat    StreamHandler
+	Router     *Router
+	Circuit    *circuit.Manager
+	Limiter    *limiter.Limiter
+	Pools      *pool.PoolManager
+	Upstream   *upstreampkg.Client
+	Normalize  NormalizerFunc
+	StreamChat StreamHandler
 	// XMLCoerceNonStream post-processes a non-stream chat response body to
 	// turn XML-style tool calls into structured tool_calls. Wired from
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
@@ -228,17 +228,17 @@ type Executor struct {
 	// the chat response body before it is returned to the client.
 	// Wired from main.go (relay.StripMinimaxFieldsBody).
 	StripMinimaxFields StripMinimaxFieldsFunc
-	Auditor       audit.Sink
-	State         *credentialstate.Writer
+	Auditor            audit.Sink
+	State              *credentialstate.Writer
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
 	// *provider.Client satisfies the interface, so production wiring
 	// is unchanged.
-	Provider      providerResolver
-	DB            *db.DB
+	Provider       providerResolver
+	DB             *db.DB
 	HeaderProfiles *HeaderProfileCache
-	FpSlots          *credentialfpslot.Manager
+	FpSlots        *credentialfpslot.Manager
 	// PeakCollector records per-credential-model concurrency for the
 	// auto-tune background worker. Nil disables the feature.
 	PeakCollector interface {
@@ -320,10 +320,10 @@ type Executor struct {
 	// Nil disables both async retry and the async branch — the
 	// executor falls back to the existing synchronous exhaustion
 	// path. Wired from main.go when Redis is available.
-	PendingStore            *pending.Store
-	AsyncShortTimeout       time.Duration
-	AsyncLongTimeout        time.Duration
-	AsyncMaxFallbackCreds   int  // cap on credential fallbacks in async goroutine
+	PendingStore          *pending.Store
+	AsyncShortTimeout     time.Duration
+	AsyncLongTimeout      time.Duration
+	AsyncMaxFallbackCreds int // cap on credential fallbacks in async goroutine
 
 	// RequestLogEmitter (2026-06-20): optional hook that runAsyncRetry
 	// calls when a backgrounded retry succeeds, so the original
@@ -333,25 +333,25 @@ type Executor struct {
 	// Without this hook, async-retry success leaves request_logs in
 	// its post-sync state, and operators see "model_not_found" /
 	// "in_progress" for requests that actually completed via the
-		// async path. Wired from cmd/gateway/main.go after telemetryClient
-		// is created. Nil is safe (preserves the pre-fix behavior).
-		RequestLogEmitter RequestLogEmitter
+	// async path. Wired from cmd/gateway/main.go after telemetryClient
+	// is created. Nil is safe (preserves the pre-fix behavior).
+	RequestLogEmitter RequestLogEmitter
 
-		// SyncRetryTimeout (2026-06-21): when ALL candidates fail for a
-		// non-streaming request, the executor keeps retrying candidates
-		// synchronously for this duration before returning an error to
-		// the client. During this period the HTTP connection is held
-		// open, the client's context is respected (disconnect aborts the
-		// loop via ctx.Done()), and the async fallback path is NOT
-		// started. This prevents wasting tokens on retries that the
-		// client can no longer consume.
-		//
-		// Default 120s (set in cmd/gateway/main.go). <= 0 disables sync
-		// retry and preserves the old behavior (immediate async fallback
-		// or synchronous exhaustion).
-		SyncRetryTimeout time.Duration
+	// SyncRetryTimeout (2026-06-21): when ALL candidates fail for a
+	// non-streaming request, the executor keeps retrying candidates
+	// synchronously for this duration before returning an error to
+	// the client. During this period the HTTP connection is held
+	// open, the client's context is respected (disconnect aborts the
+	// loop via ctx.Done()), and the async fallback path is NOT
+	// started. This prevents wasting tokens on retries that the
+	// client can no longer consume.
+	//
+	// Default 120s (set in cmd/gateway/main.go). <= 0 disables sync
+	// retry and preserves the old behavior (immediate async fallback
+	// or synchronous exhaustion).
+	SyncRetryTimeout time.Duration
 
-		// asyncDepth is the recursion guard (Track C C4). The async
+	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
 	// so shouldAsyncFallback returns false on the inner call.
 	// Uses atomic.Int32 because the Executor is a singleton
@@ -387,36 +387,36 @@ func NewExecutor(
 		normalize = func(chunk []byte, isStream bool) []byte { return chunk }
 	}
 	return &Executor{
-		Router:          router,
-		Circuit:         cm,
-		Limiter:         lim,
-		Pools:           pools,
-		Upstream:        upstream,
-		Normalize:       normalize,
-		StreamChat:      streamChat,
-		Auditor:         auditor,
-		StreamTimeout:   900 * time.Second,
-		UpstreamTimeout: 120 * time.Second,
+		Router:               router,
+		Circuit:              cm,
+		Limiter:              lim,
+		Pools:                pools,
+		Upstream:             upstream,
+		Normalize:            normalize,
+		StreamChat:           streamChat,
+		Auditor:              auditor,
+		StreamTimeout:        900 * time.Second,
+		UpstreamTimeout:      120 * time.Second,
 		StreamRetryThreshold: 5, // Default: allow stream failover if < 5 chunks sent
 	}
 }
 
 type ExecParams struct {
-	W             http.ResponseWriter
-	R             *http.Request
-	BodyBytes     []byte
-	IsStream      bool
+	W                    http.ResponseWriter
+	R                    *http.Request
+	BodyBytes            []byte
+	IsStream             bool
 	SuppressSuccessWrite bool
-	ClientModel   string
-	OutboundModel string
-	ClientID      identity.ClientIdentity
-	Transform     *transform.TransformResult
-	Resolution    *resolve.Resolution
-	Candidates    []provider.Candidate
-	Policy        *provider.Policy
-	AuditBuilder  *audit.EventBuilder
-	Capture       *audit.StreamCapture
-	StreamWrapper StreamWrapperFunc
+	ClientModel          string
+	OutboundModel        string
+	ClientID             identity.ClientIdentity
+	Transform            *transform.TransformResult
+	Resolution           *resolve.Resolution
+	Candidates           []provider.Candidate
+	Policy               *provider.Policy
+	AuditBuilder         *audit.EventBuilder
+	Capture              *audit.StreamCapture
+	StreamWrapper        StreamWrapperFunc
 	// ToolsRequested indicates the upstream request body carried a non-empty
 	// `tools` array. Some providers (Xiaomi MiMo, MiniMax M2.7) cannot emit
 	// structured `tool_calls` and instead fall back to embedding
@@ -459,9 +459,9 @@ type ExecuteResult struct {
 	// protocol conversion. Set once at the first ExecuteResult creation
 	// and never modified across retries. Use this for audit/日志 that
 	// need the canonical client request.
-	InboundBody []byte
+	InboundBody  []byte
 	ResponseBody []byte
-	Trace     *Trace
+	Trace        *Trace
 	// Round 47 compression v7 T-NEW-2: optional compression event captured
 	// by handleContextLengthRecovery. Populated when a 4xx recovery rewrote
 	// the body (mechanical trim / memora L1 / LLM summary). nil otherwise.
@@ -493,11 +493,11 @@ type ExecuteResult struct {
 }
 
 type AttemptRecord struct {
-	ProviderID   int              `json:"provider_id"`
-	CredentialID int              `json:"credential_id"`
-	RawModel     string           `json:"raw_model"`
+	ProviderID   int               `json:"provider_id"`
+	CredentialID int               `json:"credential_id"`
+	RawModel     string            `json:"raw_model"`
 	Kind         errorsx.ErrorKind `json:"kind"`
-	Reason       string           `json:"reason,omitempty"`
+	Reason       string            `json:"reason,omitempty"`
 }
 
 type ExecuteError struct {
@@ -696,14 +696,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		if execErr == nil {
-			e.restoreCredentialState(params.R.Context(), cand.CredentialID)
+			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
 			e.recordStickySuccess(params, cand.CredentialID)
 			// Step 6 (2026-06-18): a successful response on this
 			// credential clears its model_not_found streak. The next
 			// request from this sticky session will not be tripped by
 			// a stale counter from a prior intermittent failure.
 			e.resetMnfStreak(params, cand.CredentialID)
-			
+
 			// Record successful call for health tracking
 			if e.HealthTracker != nil {
 				requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
@@ -715,7 +715,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					requestID,
 				)
 			}
-			
+
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -870,10 +870,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// authoritative before that next lookup.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				}
 				lastErr = execErr
@@ -899,7 +899,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// consistent and ensures the kind is recorded.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 				}
 				slog.Warn("candidate stream interrupted (non-resumable), returning error",
@@ -924,7 +924,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind = errorsx.ClassifyError(execErr, nil)
 		}
 		lastKind = kind
-		
+
 		// Record failed call for health tracking
 		if e.HealthTracker != nil {
 			requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
@@ -936,7 +936,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				requestID,
 			)
 		}
-		
+
 		attempts = append(attempts, AttemptRecord{
 			ProviderID:   cand.ProviderID,
 			CredentialID: cand.CredentialID,
@@ -954,7 +954,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       fmt.Sprintf("request_failed:%s", kind),
 		})
 		if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
-			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, kind, execErr)
+			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 			e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
 		}
 	}
@@ -1086,7 +1086,6 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace, Attempts: attempts, LastKind: lastKind}
 }
-
 
 // recordModelNotFound logs a single upstream model_not_found 404 to the
 // model_probe_runs table so that the /api/routing/recent-model-failures
@@ -1253,13 +1252,12 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 	)
 }
 
-
-func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int) {
+func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int, rawModel string) {
 	if e.State == nil || !e.State.Enabled() {
 		return
 	}
-	if err := e.State.RestoreOnSuccess(ctx, credentialID); err != nil {
-		slog.Debug("credential state restore failed", "credential_id", credentialID, "error", err)
+	if err := e.State.RestoreOnSuccess(ctx, credentialID, rawModel); err != nil {
+		slog.Debug("credential state restore failed", "credential_id", credentialID, "raw_model", rawModel, "error", err)
 	}
 }
 
@@ -1307,12 +1305,43 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		return
 	}
 
+	// Mirror the disable to credential_model_bindings (the production
+	// router's source of truth via v_routable_credential_models). Without
+	// this, a disableModelOffer() on a single (cred, model) pair leaves
+	// cmb.available=TRUE and the router keeps picking the just-disabled
+	// model until the 60s cache expiry. Sibling models on the same
+	// credential are NOT touched.
+	cmbTag, err := tx.Exec(ctx,
+		`UPDATE credential_model_bindings cmb
+		 SET available = FALSE,
+		     unavailable_reason = $3,
+		     unavailable_at = now(),
+		     updated_at = now()
+		 FROM provider_models pm
+		 WHERE pm.id = cmb.provider_model_id
+		   AND cmb.credential_id = $1
+		   AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+		   AND cmb.available = TRUE
+		   AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		   AND COALESCE(cmb.admin_protected, FALSE) = FALSE`,
+		credentialID, rawModel, reason,
+	)
+	if err != nil {
+		slog.Warn("disable_model_offer: credential_model_bindings update failed", "error", err)
+		return
+	}
+
 	coolingSeconds := 60
 	detailStr := detail
 	if len(detailStr) > 500 {
 		detailStr = detailStr[:500]
 	}
 
+	// Legacy credentials.availability_state update. KEPT for the admin
+	// UI badge — but it is no longer the router's source of truth (the
+	// router reads cmb.available). A single model's failure should
+	// flip the credential's cooling badge but NOT touch the other
+	// models' bindings (those are individually toggled above).
 	_, err = tx.Exec(ctx,
 		`UPDATE credentials SET availability_state = 'cooling',
 			availability_recover_at = now() + ($2 || ' seconds')::interval,
@@ -1336,11 +1365,13 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 		return
 	}
 
-	if tag.RowsAffected() > 0 {
+	if tag.RowsAffected() > 0 || cmbTag.RowsAffected() > 0 {
 		slog.Info("model_offer_disabled",
 			"credential_id", credentialID,
 			"model", rawModel,
 			"reason", reason,
+			"model_offers_rows", tag.RowsAffected(),
+			"cmb_rows", cmbTag.RowsAffected(),
 		)
 		// 2026-06-13: Invalidate the in-memory candidate cache so the next
 		// request reflects the new state immediately rather than waiting
@@ -1350,7 +1381,7 @@ func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawM
 	}
 }
 
-func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID int, kind errorsx.ErrorKind, err error) {
+func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, err error) {
 	if e.State == nil || !e.State.Enabled() {
 		return
 	}
@@ -1361,7 +1392,7 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	if err != nil {
 		failure.Detail = err.Error()
 	}
-	if err := e.State.WriteOnError(ctx, credentialID, failure); err != nil {
+	if err := e.State.WriteOnError(ctx, credentialID, rawModel, failure); err != nil {
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
 		return
 	}
@@ -1450,10 +1481,10 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 // and the request is eligible for the async fallback. The handler
 // (relay/handler.go) recognises this via errors.As and returns
 //
-//   HTTP 202 Accepted
-//   X-Gw-Pending: {sessionID}
-//   X-Gw-Pending-Request: {requestID}
-//   body: {"status":"in_progress", ...}
+//	HTTP 202 Accepted
+//	X-Gw-Pending: {sessionID}
+//	X-Gw-Pending-Request: {requestID}
+//	body: {"status":"in_progress", ...}
 //
 // The client then polls GET /v1/sessions/{id}/pending-response
 // (see sessions/handler.go C3) until the goroutine finishes and
@@ -1982,7 +2013,7 @@ func (e *modelNotFoundError) Error() string {
 type streamInterruptedError struct {
 	reason       string
 	credentialID int
-	resumable    bool // Whether the stream can be resumed with a different credential
+	resumable    bool              // Whether the stream can be resumed with a different credential
 	kind         errorsx.ErrorKind // Errorsx kind to record on the circuit (defaults to KindStreamTimeout)
 }
 
