@@ -120,7 +120,7 @@ function logout() {
             :key="item.path + item.label"
             :to="item.path"
             class="nav-item nav-item-primary"
-            :class="{ active: isNavItemActive(item.path, route.path) }"
+            :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
             :title="collapsed ? item.label : undefined"
           >
             <span class="nav-icon">{{ item.icon }}</span>
@@ -152,7 +152,7 @@ function logout() {
               :key="item.path + item.label"
               :to="item.path"
               class="nav-item"
-              :class="{ active: isNavItemActive(item.path, route.path) }"
+              :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
               :title="collapsed ? item.label : undefined"
             >
               <span class="nav-icon">{{ item.icon }}</span>
