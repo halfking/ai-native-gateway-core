@@ -14,6 +14,7 @@ import (
 type DBQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
 	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
 }
 
 // Tuner dynamically adjusts credential concurrency limits based on error patterns.
