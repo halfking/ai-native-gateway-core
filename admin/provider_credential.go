@@ -140,47 +140,47 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	defer rows.Close()
 
 	type cred struct {
-		ID                      int        `json:"id"`
-		ProviderID              int        `json:"provider_id"`
-		Label                   string     `json:"label"`
-		Status                  string     `json:"status"`
-		TrustLevel              string     `json:"trust_level"`
-		ConcurrencyLimit        *int       `json:"concurrency_limit"`
-		BalanceUSD              *float64   `json:"balance_usd"`
-		CircuitState            string     `json:"circuit_state"`
-		CircuitOpenedAt         *time.Time `json:"circuit_opened_at"`
-		ConsecutiveFailures     int        `json:"consecutive_failures"`
+		ID                     int        `json:"id"`
+		ProviderID             int        `json:"provider_id"`
+		Label                  string     `json:"label"`
+		Status                 string     `json:"status"`
+		TrustLevel             string     `json:"trust_level"`
+		ConcurrencyLimit       *int       `json:"concurrency_limit"`
+		BalanceUSD             *float64   `json:"balance_usd"`
+		CircuitState           string     `json:"circuit_state"`
+		CircuitOpenedAt        *time.Time `json:"circuit_opened_at"`
+		ConsecutiveFailures    int        `json:"consecutive_failures"`
 		CoolingUntil           *time.Time `json:"cooling_until"`
-		LifecycleStatus         string     `json:"lifecycle_status"`
-		AvailabilityState       string     `json:"availability_state"`
-		AvailabilityRecoverAt   *time.Time `json:"availability_recover_at"`
-		QuotaState              string     `json:"quota_state"`
-		QuotaRecoverAt          *time.Time `json:"quota_recover_at"`
-		StateReasonCode         *string    `json:"state_reason_code"`
-		StateReasonDetail       *string    `json:"state_reason_detail"`
-		StateUpdatedAt          *time.Time `json:"state_updated_at"`
-		HealthStatus            string     `json:"health_status"`
-		HealthCheckedAt         *time.Time `json:"health_checked_at"`
-		HealthSource            *string    `json:"health_source"`
-		HealthWarningCode       *string    `json:"health_warning_code"`
-		HealthError             *string    `json:"health_error"`
-		HealthLatencyMs         *int       `json:"health_latency_ms"`
-		HealthProbeModel        *string    `json:"health_probe_model"`
-		ApiModelsOk             *bool      `json:"api_models_ok"`
-		ApiModelsLastCheckedAt  *time.Time `json:"api_models_last_checked_at"`
-		ApiModelsError          *string    `json:"api_models_error"`
-		EffectiveAt             *time.Time `json:"effective_at"`
-		ExpiresAt               *time.Time `json:"expires_at"`
-		Tags                    []string   `json:"tags"`
-		Notes                   string     `json:"notes"`
-		KeyMasked               *string    `json:"key_masked"`
-		KeyMaskError            *string    `json:"key_mask_error"`
-		FpSlotLimit             *int       `json:"fp_slot_limit"`
-		FpSlotsUsed             *int       `json:"fp_slots_used"`
-		FpSlotsFree             *int       `json:"fp_slots_free"`
-		EffectiveFpSlotLimit    *int       `json:"effective_fp_slot_limit"`
-		CreatedAt               *time.Time `json:"created_at"`
-		UpdatedAt               *time.Time `json:"updated_at"`
+		LifecycleStatus        string     `json:"lifecycle_status"`
+		AvailabilityState      string     `json:"availability_state"`
+		AvailabilityRecoverAt  *time.Time `json:"availability_recover_at"`
+		QuotaState             string     `json:"quota_state"`
+		QuotaRecoverAt         *time.Time `json:"quota_recover_at"`
+		StateReasonCode        *string    `json:"state_reason_code"`
+		StateReasonDetail      *string    `json:"state_reason_detail"`
+		StateUpdatedAt         *time.Time `json:"state_updated_at"`
+		HealthStatus           string     `json:"health_status"`
+		HealthCheckedAt        *time.Time `json:"health_checked_at"`
+		HealthSource           *string    `json:"health_source"`
+		HealthWarningCode      *string    `json:"health_warning_code"`
+		HealthError            *string    `json:"health_error"`
+		HealthLatencyMs        *int       `json:"health_latency_ms"`
+		HealthProbeModel       *string    `json:"health_probe_model"`
+		ApiModelsOk            *bool      `json:"api_models_ok"`
+		ApiModelsLastCheckedAt *time.Time `json:"api_models_last_checked_at"`
+		ApiModelsError         *string    `json:"api_models_error"`
+		EffectiveAt            *time.Time `json:"effective_at"`
+		ExpiresAt              *time.Time `json:"expires_at"`
+		Tags                   []string   `json:"tags"`
+		Notes                  string     `json:"notes"`
+		KeyMasked              *string    `json:"key_masked"`
+		KeyMaskError           *string    `json:"key_mask_error"`
+		FpSlotLimit            *int       `json:"fp_slot_limit"`
+		FpSlotsUsed            *int       `json:"fp_slots_used"`
+		FpSlotsFree            *int       `json:"fp_slots_free"`
+		EffectiveFpSlotLimit   *int       `json:"effective_fp_slot_limit"`
+		CreatedAt              *time.Time `json:"created_at"`
+		UpdatedAt              *time.Time `json:"updated_at"`
 	}
 
 	var creds []cred
@@ -344,4 +344,47 @@ func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
+}
+
+// resetCredentialFpSlots clears all fingerprint slots for a credential.
+// POST /api/providers/{provider_id}/credentials/{cred_id}/reset-fp-slots
+func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.fpSlots == nil || !h.fpSlots.Enabled() {
+		writeError(w, http.StatusBadRequest, "fingerprint slots not enabled")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Fetch credential to get concurrency_limit
+	var concurrencyLimit *int
+	err := h.db.QueryRow(ctx, `
+		SELECT concurrency_limit 
+		FROM credentials 
+		WHERE id = $1 AND provider_id = $2
+	`, credID, providerID).Scan(&concurrencyLimit)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+
+	// Reset all slots
+	deletedSlots, deletedPins, err := h.fpSlots.ResetSlots(ctx, credID, concurrencyLimit)
+	if err != nil {
+		slog.Error("reset fp slots failed", "credential_id", credID, "error", err)
+		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "reset completed",
+		"deleted_slots": deletedSlots,
+		"deleted_pins":  deletedPins,
+	})
 }

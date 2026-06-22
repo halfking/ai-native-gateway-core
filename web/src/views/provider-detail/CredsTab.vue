@@ -5,7 +5,7 @@ import {
   addCredential,
   setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
   resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
-  updateCredentialLifecycle,
+  updateCredentialLifecycle, resetCredentialFpSlots,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
 
@@ -294,6 +294,18 @@ async function repickDefault() {
   }
 }
 
+async function resetFpSlots() {
+  const c = selected.value
+  if (!c || !confirm(`确认复位 ${c.label} 的指纹槽（将清空所有占用）？`)) return
+  try {
+    const r = await resetCredentialFpSlots(props.provider.id, c.id)
+    alert(`复位成功：清空 ${r.deleted_slots} 个槽位，${r.deleted_pins} 个会话绑定`)
+    emit('refresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '复位失败')
+  }
+}
+
 function onEffectiveInput(ev: Event) {
   const c = selected.value
   if (!c) return
@@ -474,6 +486,11 @@ function onTagsInput(ev: Event) {
                     <span v-if="(selected.fp_slots_free ?? 0) === 0" class="cell-sub--danger">已满</span>
                   </template>
                   <template v-else>无限</template>
+                </div>
+                <div v-if="selected.fp_slot_limit != null" class="btn-row" style="margin-top:4px">
+                  <button class="btn btn-sm btn-warning-outline" @click="resetFpSlots" title="清空所有占用的指纹槽">
+                    复位槽位
+                  </button>
                 </div>
               </div>
             </div>
@@ -678,6 +695,14 @@ function onTagsInput(ev: Event) {
 .btn-danger-outline {
   color: var(--danger);
   border-color: var(--danger);
+}
+.btn-warning-outline {
+  color: #f59e0b;
+  border-color: #f59e0b;
+  background: transparent;
+}
+.btn-warning-outline:hover {
+  background: rgba(245, 158, 11, 0.1);
 }
 .drawer-section--danger {
   padding-top: 12px;
