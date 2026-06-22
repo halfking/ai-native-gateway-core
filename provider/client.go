@@ -60,6 +60,14 @@ type Candidate struct {
 	// and routing/executor_chat.go both short-circuit when the value is
 	// blank. Allowed values: "" (off), "off", "detect_only", "fix".
 	QualityFixMode string `json:"quality_fix_mode,omitempty"`
+	// RecentSuccessRate / RecentSamples are the live last-N success rate from
+	// request_logs (see recent_success_rate() in db/migrations/035). nil when
+	// there are no recent samples; in that case the router falls back to the
+	// static SuccessRate. Used by router.loadScore as a soft quality signal so
+	// a failing-but-not-yet-excluded credential is de-prioritized before it
+	// hits the hard-exclude threshold. Added 2026-06-22 (defect ③ soft layer).
+	RecentSuccessRate *float64 `json:"recent_success_rate,omitempty"`
+	RecentSamples     int      `json:"recent_samples,omitempty"`
 }
 
 func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens, cacheWriteTokens *int) float64 {
@@ -594,7 +602,15 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			-- the non-stream body post-processor. Empty string means
 			-- the column was just added and the row hasn't been backfilled
 			-- (will be 'off' on next reconnect after the migration).
-			COALESCE(NULLIF(p.quality_fix_mode, ''), 'off') AS quality_fix_mode
+			COALESCE(NULLIF(p.quality_fix_mode, ''), 'off') AS quality_fix_mode,
+			-- 2026-06-22 last-N success gate (035_routing_recent_success_rate.sql).
+			-- Live success rate over the most recent 50 request_logs rows for
+			-- this (credential, outbound_model). rsr.samples=0 when there are
+			-- no recent rows (cold start) — caller keeps the pair. rsr.rate is
+			-- used both for the hard-exclude filter below and (via the
+			-- RecentSuccessRate field) for soft de-prioritization in the router.
+			rsr.rate   AS recent_success_rate,
+			rsr.samples AS recent_samples
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
@@ -606,12 +622,36 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 		       ON lower(ma.raw_name) = lower(mo.raw_model_name)
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		-- Last-N success rate over request_logs. LATERAL so each candidate
+		-- row carries its own recent (rate, samples). STABLE function, hits
+		-- idx_request_logs_credential_ts (credential_id, ts DESC) so the
+		-- LIMIT 50 is a 50-row index descent per candidate — not a window
+		-- aggregate over the whole partitioned table.
+		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 		WHERE p.tenant_id = 'default'
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
 		  -- (provider.manual_disabled, credentials.manual_disabled, or cmb.unavailable_reason='manual')
 		  AND v.is_routable = TRUE
+		  -- 2026-06-22 defect (2): drop (credential, model) pairs whose
+		  -- model_probe_state is 'broken_confirmed'. The probe worker marks a
+		  -- binding broken_confirmed after 3 consecutive targeted-probe
+		  -- failures; without this filter the pair stays routable as long as
+		  -- the credential-level availability_state is 'ready', so the router
+		  -- keeps re-selecting it (the cred-11/minimax-m3 loop).
+		  AND NOT EXISTS (
+		      SELECT 1 FROM model_probe_state mps
+		      WHERE mps.credential_id = c.id
+		        AND mps.raw_model_name = mo.raw_model_name
+		        AND mps.state = 'broken_confirmed'
+		  )
+		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
+		  -- success rate is below 0.5 once we have at least 20 samples. The
+		  -- min-sample threshold avoids cold-start false positives (a brand-new
+		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
+		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
+		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.5)
 		  AND (
 		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
 		      lower(mo.raw_model_name) = $1
@@ -638,7 +678,10 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			COALESCE(mo.manual_priority, 99),
 			COALESCE(mo.routing_tier, 2),
 			COALESCE(mo.weight, 100) DESC,
-			COALESCE(mo.success_rate, 0.9) DESC
+			-- Prefer the live recent rate when present; fall back to the static
+			-- (often default 0.9) column. This makes healthy credentials sort
+			-- above soft-degraded ones even when the static column is equal.
+			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 	`, clientModelLower)
 	if err != nil {
 		return nil, err
@@ -683,6 +726,8 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			&offerRawModel,
 			&cand.ContextWindow,
 			&cand.QualityFixMode,
+			&cand.RecentSuccessRate,
+			&cand.RecentSamples,
 		); err != nil {
 			return nil, err
 		}

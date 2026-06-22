@@ -129,6 +129,18 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
+	// 2026-06-22 defect (1): idempotent reconciliation. ensure every
+	// (credential, model) pair whose model_probe_state is 'broken_confirmed'
+	// has its credential_model_bindings.available=FALSE. The event-driven
+	// propagation in applyResult only fires on a fresh state transition, so
+	// pairs that reached broken_confirmed before the P4 code (2026-06-19)
+	// landed — or whose binding was flipped back to available by a non-P4
+	// path — can drift back to available=TRUE and re-enter the candidate
+	// pool. This re-applies the invariant each cycle without relying on a
+	// state-change event. Cheap: one UPDATE, guarded by NOT LIKE 'manual%'
+	// so admin-set manual reasons are never overwritten.
+	r.reconcileBrokenConfirmedBindings(timeoutCtx)
+
 	rows, err := r.db.Query(timeoutCtx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
 		       COALESCE(pm.outbound_model_name, ''),
@@ -414,6 +426,39 @@ func (r *ModelProbeRunner) computeConsensus(
 // Receives the pre-computed consensus result so we don't recompute it
 // (the caller already has it).  This avoids the DRY trap of two
 // computeConsensus calls that must agree.
+//
+// reconcileBrokenConfirmedBindings (defect 1, 2026-06-22) re-applies the
+// broken_confirmed → binding available=FALSE invariant for every pair whose
+// model_probe_state is broken_confirmed. Idempotent; safe to run every cycle.
+// Guards: never overwrite a manual unavailable_reason, and only touches
+// bindings that are currently available=TRUE (the common drift case). Called
+// once at the top of cycle() so the candidate pool converges even without a
+// fresh state-change event.
+func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available          = FALSE,
+		    unavailable_reason = 'model_probe_broken',
+		    unavailable_at     = NOW()
+		FROM provider_models pm
+		WHERE cmb.provider_model_id = pm.id
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND EXISTS (
+		      SELECT 1 FROM model_probe_state mps
+		      WHERE mps.credential_id = cmb.credential_id
+		        AND mps.raw_model_name = pm.raw_model_name
+		        AND mps.state = 'broken_confirmed'
+		  )
+	`)
+	if err != nil {
+		slog.Warn("model probe: broken_confirmed reconciliation failed", "error", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("model probe: reconciled broken_confirmed bindings to unavailable",
+			"count", tag.RowsAffected())
+	}
+}
+
 func (r *ModelProbeRunner) applyResult(
 	ctx context.Context, t probeTarget,
 	status string, httpStatus *int, errCode, errMsg string, latencyMs int,
