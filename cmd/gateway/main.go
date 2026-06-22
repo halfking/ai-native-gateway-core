@@ -753,11 +753,15 @@ routingExec.AnthropicToOpenAIStream = func(
 		}()
 	}
 
+	slog.Info("CHECKPOINT: after admin handler init block")
+
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
 	var pendingSweeper *bg.PendingSweeper
+
+	slog.Info("CHECKPOINT: before bg services init")
 	var defaultProbePicker *bg.DefaultProbePicker
 	
 	// Health tracking workers (2026-06-22)
@@ -773,8 +777,10 @@ routingExec.AnthropicToOpenAIStream = func(
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 	if dbConn != nil && dbConn.Enabled() {
+		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
+		slog.Info("CHECKPOINT: credRecovery started")
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
 		// abandoned in_progress entries (e.g. a crashed async
 		// goroutine, a client that never polls) as failed so
