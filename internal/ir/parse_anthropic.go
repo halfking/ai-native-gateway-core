@@ -251,7 +251,7 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 		case "tool_use":
 			id, _ := blockMap["id"].(string)
 			name, _ := blockMap["name"].(string)
-			inputRaw, _ := blockMap["input"]
+			inputRaw := blockMap["input"]
 			inputJSON, _ := json.Marshal(inputRaw)
 
 			irBlock.ToolUse = &ToolUse{
@@ -341,7 +341,7 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 	case "tool_use":
 		id, _ := blockMap["id"].(string)
 		name, _ := blockMap["name"].(string)
-		inputRaw, _ := blockMap["input"]
+		inputRaw := blockMap["input"]
 		inputJSON, _ := json.Marshal(inputRaw)
 		irBlock.ToolUse = &ToolUse{ID: id, Name: name, Input: inputJSON}
 	case "tool_result":

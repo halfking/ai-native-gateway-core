@@ -197,10 +197,13 @@ func serializeAnthropicMessageContent(msg Message) []map[string]any {
 			"id":   tc.ID,
 			"name": tc.Function.Name,
 		}
-		// Parse arguments JSON
+		// Parse arguments JSON. If arguments isn't valid JSON, fall back to
+		// passing the raw string through as the tool_use input.
 		var args any
 		if tc.Function.Arguments != "" {
-			json.Unmarshal([]byte(tc.Function.Arguments), &args)
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+				args = tc.Function.Arguments
+			}
 		}
 		toolUse["input"] = args
 		result = append(result, toolUse)
@@ -238,10 +241,13 @@ func serializeAnthropicContentBlock(block ContentBlock) map[string]any {
 		if block.ToolUse != nil {
 			out["id"] = block.ToolUse.ID
 			out["name"] = block.ToolUse.Name
-			// Parse input JSON
+			// Parse input JSON. If input isn't valid JSON, pass the raw
+			// bytes through as a string.
 			var input any
 			if block.ToolUse.Input != nil {
-				json.Unmarshal(block.ToolUse.Input, &input)
+				if err := json.Unmarshal(block.ToolUse.Input, &input); err != nil {
+					input = string(block.ToolUse.Input)
+				}
 			}
 			out["input"] = input
 		}

@@ -174,10 +174,9 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 				})
 			}
 		case "tool_use":
-			if block.ToolUse != nil {
-				// Convert tool_use block to OpenAI tool_calls format
-				// This is stored in message.ToolCalls, not content
-			}
+			// tool_use blocks are converted to OpenAI tool_calls format and
+			// stored in message.ToolCalls (handled by the caller), not in the
+			// content array.
 		case "tool_result":
 			// For tool results in content blocks, serialize as text
 			if block.ToolResult != nil {

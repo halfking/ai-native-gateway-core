@@ -1,7 +1,6 @@
 package ir
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -654,8 +653,4 @@ func BenchmarkParseAnthropic(b *testing.B) {
 func TestParseAnthropic_TableDriven(t *testing.T) {
 	// Currently no simple table-driven tests defined
 	// Individual features are tested in dedicated test functions
-}
-
-func errfAnthropic(format string, args ...any) error {
-	return fmt.Errorf(format, args...)
 }
