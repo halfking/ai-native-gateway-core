@@ -29,10 +29,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
-	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
-	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/circuit"
 	"github.com/kaixuan/llm-gateway-go/compressor"
 	"github.com/kaixuan/llm-gateway-go/config"
@@ -41,6 +37,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
+	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/memora"
@@ -57,9 +56,10 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/settings"
-	"github.com/redis/go-redis/v9"
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -240,7 +240,7 @@ func main() {
 		}
 		slog.Info("settings: registry initialised",
 			"platform_specs", len(settings.Global.AllSpecs()))
-		
+
 		// Phase 3.2: Provider-level settings resolver
 		providerSettingsResolver = settings.NewProviderSettingsResolver(dbConn.Pool(), settings.Global)
 		slog.Info("settings: provider-level resolver initialised")
@@ -263,15 +263,15 @@ func main() {
 			}
 		}
 		router := routing.NewRouter(stickyCache, lim)
-		
+
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
-		
+
 		norm := relay.NewNormalizer()
 		routingExec = routing.NewExecutor(
-		router, cm, lim, pools, upClient,
-		norm.NormalizeChunk,
-		func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
+			router, cm, lim, pools, upClient,
+			norm.NormalizeChunk,
+			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
 				// Track C C2 (2026-06-18): wrap the streaming hot path
 				// so a client that disconnects mid-stream can still
 				// recover the response via
@@ -317,56 +317,56 @@ func main() {
 		// upstream http.Request and is read on every SSE line.
 		routingExec.QualityProcessNonStream = relay.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = relay.WrapSetQualityFixModeOnContext()
-// Q4 streaming: Anthropic client → Anthropic upstream. Capturer-aware
-// (Track C C5, 2026-06-21): builds a pending-store capturer per request
-// when the upstream HTTP request carries a session id, so the body can
-// be replayed via GET /v1/sessions/{id}/pending-response on client
-// disconnect. Mirrors the OpenAI path wiring further below.
-routingExec.AnthropicPassthroughStream = func(
-	w http.ResponseWriter,
-	resp *http.Response,
-	clientModel, outboundModel, requestID string,
-	cap *audit.StreamCapture,
-	pcAny any,
-) routing.StreamOutcome {
-	var pc *relay.PendingCapturer
-	if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
-		pc = relay.NewPendingCapturer(0)
-	}
-	outcome := relay.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
-	saveCapturedPending(pendingStore, pc, resp)
-	return outcome
-}
-routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
-routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+		// Q4 streaming: Anthropic client → Anthropic upstream. Capturer-aware
+		// (Track C C5, 2026-06-21): builds a pending-store capturer per request
+		// when the upstream HTTP request carries a session id, so the body can
+		// be replayed via GET /v1/sessions/{id}/pending-response on client
+		// disconnect. Mirrors the OpenAI path wiring further below.
+		routingExec.AnthropicPassthroughStream = func(
+			w http.ResponseWriter,
+			resp *http.Response,
+			clientModel, outboundModel, requestID string,
+			cap *audit.StreamCapture,
+			pcAny any,
+		) routing.StreamOutcome {
+			var pc *relay.PendingCapturer
+			if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
+				pc = relay.NewPendingCapturer(0)
+			}
+			outcome := relay.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			saveCapturedPending(pendingStore, pc, resp)
+			return outcome
+		}
+		routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
+		routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
 
-	// Phase B (2026-06-22): IR-based protocol converter.
-	// When LLM_GATEWAY_IR_CONVERTER=true, use the new Parse→IR→Serialize
-	// pipeline instead of the 6 scattered callbacks. Reduces conversion
-	// complexity from O(N²) to O(N).
-	if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
-		routingExec.IR = &irAdapter{}
-		slog.Info("ir_converter", "enabled", true)
-	}
+		// Phase B (2026-06-22): IR-based protocol converter.
+		// When LLM_GATEWAY_IR_CONVERTER=true, use the new Parse→IR→Serialize
+		// pipeline instead of the 6 scattered callbacks. Reduces conversion
+		// complexity from O(N²) to O(N).
+		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
+			routingExec.IR = &irAdapter{}
+			slog.Info("ir_converter", "enabled", true)
+		}
 
-// Q3 streaming: openai client -> anthropic upstream. Translates
-// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
-// doesn't choke on event: ... lines. Capturer-aware (Track C C5).
-routingExec.AnthropicToOpenAIStream = func(
-	w http.ResponseWriter,
-	resp *http.Response,
-	clientModel, outboundModel, requestID string,
-	cap *audit.StreamCapture,
-	pcAny any,
-) routing.StreamOutcome {
-	var pc *relay.PendingCapturer
-	if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
-		pc = relay.NewPendingCapturer(0)
-	}
-	outcome := relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
-	saveCapturedPending(pendingStore, pc, resp)
-	return outcome
-}
+		// Q3 streaming: openai client -> anthropic upstream. Translates
+		// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
+		// doesn't choke on event: ... lines. Capturer-aware (Track C C5).
+		routingExec.AnthropicToOpenAIStream = func(
+			w http.ResponseWriter,
+			resp *http.Response,
+			clientModel, outboundModel, requestID string,
+			cap *audit.StreamCapture,
+			pcAny any,
+		) routing.StreamOutcome {
+			var pc *relay.PendingCapturer
+			if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
+				pc = relay.NewPendingCapturer(0)
+			}
+			outcome := relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			saveCapturedPending(pendingStore, pc, resp)
+			return outcome
+		}
 		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
 		// chat.completion JSON. Fixes the missing `content` field on
 		// minimax-M2.7 non-stream responses.
@@ -473,26 +473,25 @@ routingExec.AnthropicToOpenAIStream = func(
 				"max_fallback_creds", routingExec.AsyncMaxFallbackCreds,
 			)
 		}
-	// Round 47 compression v7 T16: build the unified compression dispatcher.
-	// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
-	// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
-	// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
-	// misconfigured install degrades gracefully to ModeOff.
-	routingExec.Compressor = compressor.NewCompressor()
-	slog.Info("compressor initialized",
-		"mode", routingExec.Compressor.Mode().String(),
-		"window_fraction", routingExec.Compressor.Estimator().Fraction(),
-	)
+		// Round 47 compression v7 T16: build the unified compression dispatcher.
+		// The Compressor reads LLM_GATEWAY_COMPRESSION_MODE (default=on_4xx per
+		// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
+		// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
+		// misconfigured install degrades gracefully to ModeOff.
+		routingExec.Compressor = compressor.NewCompressor()
+		slog.Info("compressor initialized",
+			"mode", routingExec.Compressor.Mode().String(),
+			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+		)
 
-	// Phase 3.2: Wire provider-level settings resolver into executor and compressor
-	if providerSettingsResolver != nil {
-		routingExec.ProviderSettings = providerSettingsResolver
-		routingExec.Compressor.ProviderSettings = providerSettingsResolver
-		slog.Info("provider-level settings resolver wired to executor")
-	}
+		// Phase 3.2: Wire provider-level settings resolver into executor and compressor
+		if providerSettingsResolver != nil {
+			routingExec.ProviderSettings = providerSettingsResolver
+			routingExec.Compressor.ProviderSettings = providerSettingsResolver
+			slog.Info("provider-level settings resolver wired to executor")
+		}
 
-
-// Memora: optional context-compression oracle. When the
+		// Memora: optional context-compression oracle. When the
 		// LLM_GATEWAY_MEMORA_BASE_URL env is set, the executor can ask
 		// Memora for L1 session facts on context overflow and rebuild
 		// the body around them. Disabled by default (no env var).
@@ -524,7 +523,7 @@ routingExec.AnthropicToOpenAIStream = func(
 			routingExec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
 		routingExec.FpSlots = fpSlots
-		
+
 		// Health tracking (2026-06-22): sliding window recorder + concurrency tuner + continuous failure checker
 		if fpSlotRedis != nil && dbConn != nil {
 			healthTracker := routing.NewHealthTracker(
@@ -536,7 +535,7 @@ routingExec.AnthropicToOpenAIStream = func(
 			routingExec.HealthTracker = healthTracker
 			slog.Info("health_tracker initialized", "window", "1h", "max_size", 100)
 		}
-		
+
 		routingExec.Provider = providerClient
 		// Inject peak collector (after bg workers have started it).
 		if peakCollector != nil {
@@ -763,14 +762,14 @@ routingExec.AnthropicToOpenAIStream = func(
 
 	slog.Info("CHECKPOINT: before bg services init")
 	var defaultProbePicker *bg.DefaultProbePicker
-	
+
 	// Health tracking workers (2026-06-22)
 	var callHistoryAggregator *bg.CallHistoryAggregator
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
-		var modelProbe *bg.ModelProbeRunner
-		var passiveProbe *bg.PassiveProbeListener
-		var stickyCleaner *bg.StickyCleaner
+	var modelProbe *bg.ModelProbeRunner
+	var passiveProbe *bg.PassiveProbeListener
+	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
@@ -786,7 +785,9 @@ routingExec.AnthropicToOpenAIStream = func(
 		// goroutine, a client that never polls) as failed so
 		// the GET endpoint can return a terminal response.
 		// Default 10m stale / 60s interval; override via env.
+		slog.Info("CHECKPOINT: before pendingStore check", "pendingStore", pendingStore != nil)
 		if pendingStore != nil {
+			slog.Info("CHECKPOINT: inside pendingStore block")
 			pendingStaleTimeout := 10 * time.Minute
 			pendingSweepInterval := 60 * time.Second
 			if v := os.Getenv("LLM_GATEWAY_PENDING_STALE_TIMEOUT"); v != "" {
@@ -799,58 +800,91 @@ routingExec.AnthropicToOpenAIStream = func(
 					pendingSweepInterval = time.Duration(n) * time.Second
 				}
 			}
+			slog.Info("CHECKPOINT: before NewPendingSweeper")
 			pendingSweeper = bg.NewPendingSweeper(pendingStore, pendingStaleTimeout, pendingSweepInterval)
+			slog.Info("CHECKPOINT: before pendingSweeper.Start")
 			pendingSweeper.Start(context.Background())
+			slog.Info("CHECKPOINT: after pendingSweeper.Start")
 		}
+		slog.Info("CHECKPOINT: after pendingStore block")
+		slog.Info("CHECKPOINT: before credCycler check", "bgDataPlaneOnly", bgDataPlaneOnly, "fernetKey", fernetKey != nil)
 		if !bgDataPlaneOnly && fernetKey != nil {
+			slog.Info("CHECKPOINT: before NewCredentialCycler")
 			credCycler = bg.NewCredentialCycler(dbConn.Pool(), fernetKey)
 			if keyring != nil {
 				credCycler.SetKeyring(keyring)
 			}
+			slog.Info("CHECKPOINT: before credCycler.Start")
 			credCycler.Start(context.Background())
+			slog.Info("CHECKPOINT: after credCycler.Start")
 		} else if bgDataPlaneOnly {
 			slog.Info("credential cycler skipped (bg_mode=data-plane)")
 		}
 
+		slog.Info("CHECKPOINT: after credCycler block")
+
 		// 900-series: v2 mini-chat probe (spec §5) — independent of v1 cycler
+		slog.Info("CHECKPOINT: before credProbeV2 block", "bgDataPlaneOnly", bgDataPlaneOnly)
 		if !bgDataPlaneOnly {
+			slog.Info("CHECKPOINT: before NewCredentialProbeV2")
 			credProbeV2 = bg.NewCredentialProbeV2(dbConn.Pool(), fernetKey)
 			if keyring != nil {
 				credProbeV2.SetKeyring(keyring)
 			}
+			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			credProbeV2.Start(context.Background())
+			slog.Info("CHECKPOINT: after credProbeV2.Start")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
+			slog.Info("CHECKPOINT: before NewDefaultProbePicker")
 			defaultProbePicker = bg.NewDefaultProbePicker(dbConn.Pool())
+			slog.Info("CHECKPOINT: before defaultProbePicker.Start")
 			defaultProbePicker.Start(context.Background())
+			slog.Info("CHECKPOINT: after defaultProbePicker.Start")
 
 			// 2026-06-18: per-model re-probe of failing bindings.  Runs
 			// every 10 minutes; flips the binding back to routable as
 			// soon as the upstream issue clears, but never overwrites
 			// manual_disable.
+			slog.Info("CHECKPOINT: before NewModelProbeRunner")
 			modelProbe = bg.NewModelProbeRunner(dbConn.Pool(), fernetKey)
-				if keyring != nil {
-					modelProbe.SetKeyring(keyring)
-				}
-				modelProbe.Start(context.Background())
-
-				// v6 (2026-06-22): Layer 5 passive probe observer.
-				// Scans request_logs every 30s for failures, promotes to
-				// reviewing, and after the 5-min observation window resolves:
-				// still-failing → mark unreachable; recovered → clear.
-				// stateWriter lets it write availability_state='unreachable'.
-				passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credentialstate.NewWriter(dbConn.Pool()))
-				passiveProbe.Start(context.Background())
+			if keyring != nil {
+				modelProbe.SetKeyring(keyring)
 			}
+			slog.Info("CHECKPOINT: before modelProbe.Start")
+			modelProbe.Start(context.Background())
+			slog.Info("CHECKPOINT: after modelProbe.Start")
 
-		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
-		stickyCleaner.Start(context.Background())
+			// v6 (2026-06-22): Layer 5 passive probe observer.
+			// Scans request_logs every 30s for failures, promotes to
+			// reviewing, and after the 5-min observation window resolves:
+			// still-failing → mark unreachable; recovered → clear.
+			// stateWriter lets it write availability_state='unreachable'.
+			slog.Info("CHECKPOINT: before NewPassiveProbeListener")
+			passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credentialstate.NewWriter(dbConn.Pool()))
+			slog.Info("CHECKPOINT: before passiveProbe.Start")
+			passiveProbe.Start(context.Background())
+			slog.Info("CHECKPOINT: after passiveProbe.Start")
+		}
+		slog.Info("CHECKPOINT: after probe workers block")
+
+		slog.Info("CHECKPOINT: before NewStickyCleaner")
+		// TEMPORARY DEBUG: comment out stickyCleaner to bypass hang
+		// stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
+		// slog.Info("CHECKPOINT: before stickyCleaner.Start")
+		// stickyCleaner.Start(context.Background())
+		// slog.Info("CHECKPOINT: after stickyCleaner.Start")
+		slog.Info("CHECKPOINT: stickyCleaner bypassed for debugging")
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 
 		// settings-management: 7-day audit retention worker (Q6: C).
+		slog.Info("CHECKPOINT: before NewSettingsAuditCleaner")
 		settingsAuditCleaner := bg.NewSettingsAuditCleaner(dbConn.Pool())
+		slog.Info("CHECKPOINT: before settingsAuditCleaner.Start")
 		settingsAuditCleaner.Start(context.Background())
+		slog.Info("CHECKPOINT: after settingsAuditCleaner.Start")
 		envelopeCleaner.Start(context.Background())
+		slog.Info("CHECKPOINT: after envelopeCleaner.Start")
 		if !bgDataPlaneOnly {
 			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
 			taxonomySync.Start(context.Background())
@@ -862,33 +896,41 @@ routingExec.AnthropicToOpenAIStream = func(
 		// modes because it only needs read access to credentials.
 		peakCollector = bg.NewConcurrencyPeakCollector(dbConn.Pool())
 		peakCollector.Start(context.Background())
-		
+
 		// Health tracking workers (2026-06-22): sliding window aggregation,
 		// auto-scaleup, and auto-recovery. Run in both modes.
 		if fpSlotRedis != nil {
 			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
 			callHistoryAggregator.Start(context.Background())
-			
+
+			slog.Info("CHECKPOINT: before healthAutoRecover")
 			healthAutoRecover = bg.NewHealthAutoRecover(dbConn.Pool(), 1*time.Minute)
 			healthAutoRecover.Start(context.Background())
+			slog.Info("CHECKPOINT: after healthAutoRecover.Start")
 		}
-		
+
 		// Weekly rollup + auto-tune suggester require writes to
 		// credentials/audit; only run in "full" mode.
+		slog.Info("CHECKPOINT: before bgDataPlaneOnly check for weekly/auto-tune", "bgDataPlaneOnly", bgDataPlaneOnly)
 		if !bgDataPlaneOnly {
+			slog.Info("CHECKPOINT: inside auto-tune block")
 			weeklyPeakRollup = bg.NewWeeklyPeakRollup(dbConn.Pool())
 			weeklyPeakRollup.Start(context.Background())
 
+			slog.Info("CHECKPOINT: after weeklyPeakRollup.Start")
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
 			slotSuggester.Start(context.Background())
-			
+
+			slog.Info("CHECKPOINT: after slotSuggester.Start")
 			// Concurrency auto-scaleup (2026-06-22): increases limit for healthy high-load credentials
 			concurrencyAutoScaleUp = bg.NewConcurrencyAutoScaleUp(dbConn.Pool(), 1*time.Hour)
 			concurrencyAutoScaleUp.Start(context.Background())
 
+			slog.Info("CHECKPOINT: after concurrencyAutoScaleUp.Start, before NewIndex")
 			autoIdx := autoroute.NewIndex()
 			autoIdx.SetPool(dbConn.Pool())
 
+			slog.Info("CHECKPOINT: before tuningStore.Reload")
 			// v2.1: TuningStore provides dynamic keyword/threshold/weight
 			// overrides from the tuning_params table. Reloaded on a 5-min
 			// ticker aligned with auto_index_refresher. Falls back to
@@ -898,6 +940,7 @@ routingExec.AnthropicToOpenAIStream = func(
 			if err := tuningStore.Reload(context.Background()); err != nil {
 				slog.Warn("tuning_store initial reload failed, using defaults", "error", err)
 			}
+			slog.Info("CHECKPOINT: after tuningStore.Reload")
 			tuningRefresher := bg.NewTuningStoreRefresher(tuningStore, dbConn.Pool())
 			tuningRefresher.Start(context.Background())
 
@@ -1194,6 +1237,7 @@ routingExec.AnthropicToOpenAIStream = func(
 		slog.Info("Phase 3.5 session list API enabled (/api/admin/sessions)")
 	}
 
+	slog.Info("CHECKPOINT: before middleware stack build")
 	// ── Middleware stack (declarative chain) ─────────────────────────────
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
@@ -1205,9 +1249,10 @@ routingExec.AnthropicToOpenAIStream = func(
 		Build().
 		Then(mux)
 
+	slog.Info("CHECKPOINT: after middleware build, before http.Server init")
 	srv := &http.Server{
-		Addr:           cfg.Listen,
-		Handler:        handler,
+		Addr:    cfg.Listen,
+		Handler: handler,
 		// ReadHeaderTimeout: headers only. ReadTimeout covers the full request
 		// body window from connection accept (see net/http readRequest). The
 		// previous 10s total caused body_read_error when clients uploaded
@@ -1263,13 +1308,13 @@ routingExec.AnthropicToOpenAIStream = func(
 	if credCycler != nil {
 		credCycler.Stop()
 	}
-		if modelProbe != nil {
-			modelProbe.Stop()
-		}
-		if passiveProbe != nil {
-			passiveProbe.Stop()
-		}
-		if taxonomySync != nil {
+	if modelProbe != nil {
+		modelProbe.Stop()
+	}
+	if passiveProbe != nil {
+		passiveProbe.Stop()
+	}
+	if taxonomySync != nil {
 		taxonomySync.Stop()
 	}
 	if stickyCleaner != nil {
@@ -1348,7 +1393,7 @@ func (a *pendingStoreAdapter) toEntry(r *pending.Response) *sessions.PendingEntr
 		ProviderID:   r.ProviderID,
 		CredentialID: r.CredentialID,
 		IsStream:     r.IsStream,
-		CompletedAt:   r.CompletedAt,
+		CompletedAt:  r.CompletedAt,
 		ErrorMessage: r.ErrorMessage,
 	}
 }
@@ -1390,24 +1435,24 @@ func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *
 	}
 }
 
-
 // buildAutoLLMCaller returns the LLMCaller to use for the auto-route
 // fallback classifier.
 //
 // Selection logic:
-//   1. If LLMGatewayAutoLLMEndpoint env var is set:
-//        HTTPLlmCaller (OpenAI-compatible POST /chat/completions)
-//        wrapped in CircuitBreakerCaller (5-failure / 30s cooldown)
-//        wrapped in InstrumentedCaller (per-call metrics)
-//   2. Otherwise:
-//        DisabledCaller (no LLM call; decider falls back to the
-//        heuristic result at low confidence)
+//  1. If LLMGatewayAutoLLMEndpoint env var is set:
+//     HTTPLlmCaller (OpenAI-compatible POST /chat/completions)
+//     wrapped in CircuitBreakerCaller (5-failure / 30s cooldown)
+//     wrapped in InstrumentedCaller (per-call metrics)
+//  2. Otherwise:
+//     DisabledCaller (no LLM call; decider falls back to the
+//     heuristic result at low confidence)
 //
 // Environment variables consumed (all optional except Endpoint):
-//   LLMGatewayAutoLLMEndpoint  base URL (e.g. "https://llm.kxpms.cn/v1")
-//   LLMGatewayAutoLLMApiKey   bearer token
-//   LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
-//   LLMGatewayAutoLLMTimeout  seconds (default 3)
+//
+//	LLMGatewayAutoLLMEndpoint  base URL (e.g. "https://llm.kxpms.cn/v1")
+//	LLMGatewayAutoLLMApiKey   bearer token
+//	LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
+//	LLMGatewayAutoLLMTimeout  seconds (default 3)
 func buildAutoLLMCaller() autoroute.LLMCaller {
 	caller, enabled := autoroute.BuildHTTPLlmCallerFromEnv(os.Getenv)
 	if !enabled {
