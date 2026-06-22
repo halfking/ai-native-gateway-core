@@ -121,9 +121,12 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 		})
 	}
 
-	// Expect UPDATE to degraded
-	mockDB.ExpectExec("UPDATE credentials").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), credID).
+	// Expect UPDATE to credential_model_bindings (per-cred+model row),
+	// NOT the credentials table. The cmb route is what v_routable_credential_models
+	// reads; writing to credentials leaves the binding routable in production
+	// even though the credential is "degraded" in the admin UI.
+	mockDB.ExpectExec("UPDATE credential_model_bindings").
+		WithArgs(credID, model).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	err = checker.CheckAndUpdate(ctx, credID, model)
@@ -215,7 +218,15 @@ func TestRecoverExpired(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	mockDB.ExpectExec("UPDATE credentials").
+	// RecoverExpired must restore BOTH credential_model_bindings AND
+	// model_offers in a single tick. Previously it only cleared
+	// credentials.availability_state, which the router never reads —
+	// so cmb.available stayed FALSE and the binding stayed unroutable
+	// until the next 60s tick (if ever). The model_offers leg is what
+	// the /api/routing/resolve ("test route") endpoint surfaces.
+	mockDB.ExpectExec("UPDATE credential_model_bindings").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mockDB.ExpectExec("UPDATE model_offers").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 
 	ctx := context.Background()

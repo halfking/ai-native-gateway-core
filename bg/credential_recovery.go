@@ -157,6 +157,16 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		slog.Warn("mnf_cooling binding recovery failed", "error", err)
 	} else if tag.RowsAffected() > 0 {
 		slog.Info("mnf_cooling bindings recovered", "count", tag.RowsAffected())
+		// Mirror the cmb recovery onto model_offers so /api/routing/resolve
+		// ("test route") and the admin UI badges agree with the production
+		// router. Without this, mnf_cooling restores the binding on the
+		// cmb side but the offer still shows unavailable on model_offers
+		// until manual admin intervention.
+		if moTag, moErr := r.db.Exec(timeoutCtx, mnfCoolingRecoveryMirrorSQL(), mnfCoolingRecoveryMinutes()); moErr != nil {
+			slog.Warn("mnf_cooling model_offers mirror recovery failed", "error", moErr)
+		} else if moTag.RowsAffected() > 0 {
+			slog.Info("mnf_cooling model_offers mirrored", "count", moTag.RowsAffected())
+		}
 	}
 }
 
@@ -174,7 +184,8 @@ func mnfCoolingRecoverySQL() string {
 		UPDATE credential_model_bindings cmb
 		SET available = TRUE,
 		    unavailable_reason = NULL,
-		    unavailable_at = NULL
+		    unavailable_at = NULL,
+		    updated_at = now()
 		FROM credentials c, providers p
 		WHERE cmb.credential_id = c.id
 		  AND c.provider_id = p.id
@@ -187,5 +198,38 @@ func mnfCoolingRecoverySQL() string {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`
+}
+
+// mnfCoolingRecoveryMirrorSQL clears model_offers for the same (cred,
+// model) pairs that mnfCoolingRecoverySQL just restored on the cmb side.
+// /api/routing/resolve ("test route") and the admin UI read
+// model_offers.available directly, so without this mirror the cmb row
+// is restored but the offer still shows as unavailable.
+func mnfCoolingRecoveryMirrorSQL() string {
+	return `
+		UPDATE model_offers mo
+		SET available = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at = NULL,
+		    updated_at = now()
+		FROM credential_model_bindings cmb,
+		     provider_models pm,
+		     credentials c,
+		     providers p
+		WHERE cmb.provider_model_id = pm.id
+		  AND pm.raw_model_name = mo.raw_model_name
+		  AND cmb.credential_id = mo.credential_id
+		  AND cmb.credential_id = c.id
+		  AND c.provider_id = p.id
+		  AND mo.available = FALSE
+		  AND mo.unavailable_reason = 'mnf_cooling'
+		  AND mo.unavailable_at IS NOT NULL
+		  AND mo.unavailable_at <= NOW() - make_interval(mins => $1)
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
 	`
 }
