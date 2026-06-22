@@ -215,6 +215,7 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		slog.Warn("telemetry ingest begin failed", "error", err)
 		return
 	}
+	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
 	_, err = tx.Exec(ctx, `

@@ -141,12 +141,14 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 				msg = doErr.Error()
 			} else if resp != nil {
 				body, _ := io.ReadAll(resp.Body)
+				//nolint:errcheck // best-effort close
 				resp.Body.Close()
 				msg = strings.TrimSpace(string(body))
 			}
 			return resp, &Error{Kind: kind, Message: msg, Err: doErr}
 		}
 		if resp != nil {
+			//nolint:errcheck // best-effort close
 			resp.Body.Close()
 		}
 		uErr = &Error{Kind: kind, Message: "retry exhausted", Err: doErr}

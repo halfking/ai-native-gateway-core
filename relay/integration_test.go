@@ -45,12 +45,14 @@ func TestIntegration_ClientDisconnectReplaysViaPendingStore(t *testing.T) {
 				"choices": []map[string]any{{"delta": map[string]any{"content": fmt.Sprintf("token-%d ", i)}}},
 			}
 			b, _ := json.Marshal(payload)
+			//nolint:errcheck // test write, non-critical
 			fmt.Fprintf(w, "data: %s\n\n", b)
 			if flusher != nil {
 				flusher.Flush()
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprint(w, "data: [DONE]\n\n")
 		if flusher != nil {
 			flusher.Flush()
@@ -106,6 +108,7 @@ func TestIntegration_ClientDisconnectReplaysViaPendingStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read upstream body: %v", err)
 	}
+	//nolint:errcheck // best-effort close
 	resp.Body.Close()
 
 	// The full body is in our hands. Pretend we are the

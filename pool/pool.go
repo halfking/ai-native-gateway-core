@@ -308,9 +308,11 @@ func (p *Pool) probe() {
 	}
 	if resp.StatusCode >= 500 {
 		p.RecordFailure()
+		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 		return
 	}
+	//nolint:errcheck // best-effort close
 	resp.Body.Close()
 	p.RecordSuccess()
 }

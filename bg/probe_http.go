@@ -83,6 +83,7 @@ func singleGet(ctx context.Context, endpoint, apiKey string, desc providercap.De
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536)) // 64KB to capture full model list
@@ -117,6 +118,7 @@ func singleChatPing(ctx context.Context, endpoint, apiKey, modelField string, de
 			latencyMs: int(time.Since(start).Milliseconds()),
 		}
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	latencyMs := int(time.Since(start).Milliseconds())
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

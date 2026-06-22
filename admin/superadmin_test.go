@@ -133,7 +133,9 @@ func TestAdminMiddleware_AllowsTenantAdminJWT(t *testing.T) {
 
 func TestAdminMiddleware_RejectsExpiredJWT(t *testing.T) {
 	// Sign a token that expires immediately by setting expiry to 1ns
+	//nolint:errcheck // test env, non-critical
 	os.Setenv("LLM_GATEWAY_JWT_EXPIRY", "1ns")
+	//nolint:errcheck // test env, non-critical
 	defer os.Unsetenv("LLM_GATEWAY_JWT_EXPIRY")
 
 	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret")

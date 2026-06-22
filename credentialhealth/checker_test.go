@@ -19,6 +19,7 @@ func TestChecker_CheckAndUpdate_BelowThreshold(t *testing.T) {
 	defer mr.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
 	defer redisClient.Close()
 
 	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
@@ -40,6 +41,7 @@ func TestChecker_CheckAndUpdate_BelowThreshold(t *testing.T) {
 	now := time.Now()
 
 	for i := 0; i < 7; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_success",
 			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
@@ -49,6 +51,7 @@ func TestChecker_CheckAndUpdate_BelowThreshold(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_fail",
 			Timestamp: now.Add(time.Duration(7+i) * time.Minute).UnixMilli(),
@@ -77,6 +80,7 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	defer mr.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
 	defer redisClient.Close()
 
 	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
@@ -98,6 +102,7 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	now := time.Now()
 
 	for i := 0; i < 2; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_success",
 			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
@@ -107,6 +112,7 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	}
 
 	for i := 0; i < 8; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_fail",
 			Timestamp: now.Add(time.Duration(2+i) * time.Minute).UnixMilli(),
@@ -139,6 +145,7 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 	defer mr.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	//nolint:errcheck // best-effort close
 	defer redisClient.Close()
 
 	recorder := NewRecorder(redisClient, 1*time.Hour, 100)
@@ -161,6 +168,7 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 	now := time.Now()
 
 	for i := 0; i < 5; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_network",
 			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
@@ -170,6 +178,7 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_success",
 			Timestamp: now.Add(time.Duration(5+i) * time.Minute).UnixMilli(),
@@ -179,6 +188,7 @@ func TestChecker_CheckAndUpdate_ExcludeNetworkErrors(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
+		//nolint:errcheck // test append, non-critical
 		recorder.Append(ctx, credID, model, CallEntry{
 			RequestID: "req_quota",
 			Timestamp: now.Add(time.Duration(8+i) * time.Minute).UnixMilli(),

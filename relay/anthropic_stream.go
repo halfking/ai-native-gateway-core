@@ -16,6 +16,7 @@ import (
 )
 
 func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {
@@ -72,6 +73,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			return
 		}
 		line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(line))
 		if pc != nil {
 			pc.append(line)
@@ -229,6 +231,7 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		var choices []map[string]any
 		if raw, ok := chunk["choices"]; ok {
+			//nolint:errcheck // test parse, non-critical
 			json.Unmarshal(raw, &choices)
 		}
 		if len(choices) == 0 {
@@ -462,6 +465,7 @@ func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event stri
 		return
 	}
 	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write([]byte(line))
 	if pc != nil {
 		pc.append(line)
@@ -473,6 +477,7 @@ func writeSSE(w http.ResponseWriter, event string, payload any) {
 	if err != nil {
 		return
 	}
+	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write([]byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)))
 }
 

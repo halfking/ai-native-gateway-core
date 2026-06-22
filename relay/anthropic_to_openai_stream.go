@@ -59,6 +59,7 @@ func StreamAnthropicSSEToOpenAI(
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
 		if r := recover(); r != nil {

@@ -20,6 +20,7 @@ func TestRecorder_AppendAndGetRecent(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: mr.Addr(),
 	})
+	//nolint:errcheck // best-effort close
 	defer client.Close()
 
 	recorder := NewRecorder(client, 1*time.Hour, 100)
@@ -100,6 +101,7 @@ func TestRecorder_MaxSize_LTRIM(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: mr.Addr(),
 	})
+	//nolint:errcheck // best-effort close
 	defer client.Close()
 
 	// Max size = 10

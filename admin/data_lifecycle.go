@@ -236,6 +236,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(stats)
 }
 
@@ -319,5 +320,6 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(resp)
 }

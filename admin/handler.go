@@ -398,12 +398,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"error":{"detail":"json marshal failed"}}`))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write(data)
+	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write([]byte("\n"))
 }
 
@@ -417,6 +420,7 @@ func readJSON(r *http.Request, v any) error {
 	if r.Body == nil {
 		return nil
 	}
+	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }

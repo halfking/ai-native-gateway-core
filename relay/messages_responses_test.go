@@ -251,12 +251,14 @@ func TestAnthropicStreamSSE_NonStreaming(t *testing.T) {
 			},
 			"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 5},
 		}
+		//nolint:errcheck // HTTP write error non-recoverable
 		json.NewEncoder(w).Encode(resp)
 	})
 	defer upstream.Close()
 
 	capture := audit.NewStreamCapture()
 	resp := doUpstreamRequest(t, upstream.URL+"/v1/chat/completions", `{"model":"claude-3","messages":[],"stream":true}`)
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
@@ -445,6 +447,7 @@ func TestConvertChatResponseToResponses_Incomplete(t *testing.T) {
 	result := convertChatResponseToResponses(body, "gpt-4o", "req-id")
 
 	var resp map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &resp)
 	if resp["status"] != "incomplete" {
 		t.Fatalf("expected incomplete, got %v", resp["status"])
@@ -491,9 +494,13 @@ func TestConvertChatResponseToResponses_ToolCalls(t *testing.T) {
 func TestResponsesStreamSSE_Events(t *testing.T) {
 	upstream := newChatUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n")
+		//nolint:errcheck // test write, non-critical
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -502,6 +509,7 @@ func TestResponsesStreamSSE_Events(t *testing.T) {
 	defer upstream.Close()
 
 	resp := doUpstreamRequest(t, upstream.URL+"/v1/chat/completions", `{"model":"gpt-4o","messages":[],"stream":true}`)
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
@@ -544,6 +552,7 @@ func TestWriteAnthropicError(t *testing.T) {
 		t.Fatalf("expected 529, got %d", w.Code)
 	}
 	var resp map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	errObj := resp["error"].(map[string]any)
 	if errObj["type"] != "overloaded_error" {
@@ -559,6 +568,7 @@ func TestWriteResponsesError(t *testing.T) {
 		t.Fatalf("expected 429, got %d", w.Code)
 	}
 	var resp map[string]any
+	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	errObj := resp["error"].(map[string]any)
 	if errObj["code"] != "rate_limit_exceeded" {

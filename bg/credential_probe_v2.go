@@ -302,6 +302,7 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 				continue
 			}
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			//nolint:errcheck // best-effort close
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
 				step1OK = true
@@ -352,6 +353,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 	if err != nil {
 		return false, "chat unreachable: " + err.Error()
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	bodyStr := string(body)
@@ -410,6 +412,7 @@ func (c *CredentialProbeV2) miniAnthropic(ctx context.Context, httpClient *http.
 	if err != nil {
 		return false, "messages unreachable: " + err.Error()
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -595,6 +598,7 @@ func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (flo
 			"credential_id", s.ID, "url", balURL, "error", err)
 		return 0, false
 	}
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return 0, false
@@ -615,6 +619,7 @@ func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (flo
 			cur = v[p]
 		case []any:
 			idx := 0
+			//nolint:errcheck // best-effort parse, non-critical
 			fmt.Sscanf(p, "%d", &idx)
 			if idx >= len(v) {
 				return 0, false

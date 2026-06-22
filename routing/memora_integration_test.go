@@ -194,6 +194,7 @@ func TestEnqueueMemoraWriteEnqueues(t *testing.T) {
 	// Start a stub Memora server that accepts /product/add.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck // HTTP write error non-recoverable
 		w.Write([]byte(`{"results":[]}`))
 	}))
 	defer srv.Close()

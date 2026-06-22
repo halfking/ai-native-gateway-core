@@ -37,6 +37,7 @@ func WithSession(next http.Handler, manager *Manager) http.Handler {
 		session, err := manager.Get(r.Context(), sessionID)
 		if err == nil {
 			ctx := context.WithValue(r.Context(), sessionContextKey, session)
+			//nolint:errcheck // best-effort touch, non-critical
 			go manager.Touch(context.Background(), sessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

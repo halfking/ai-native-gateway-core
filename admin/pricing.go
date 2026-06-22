@@ -246,6 +246,7 @@ func (h *Handler) pricingSummary(w http.ResponseWriter, r *http.Request) {
 		TotalCanonical    int `json:"total_canonical"`
 		FreeCredentials   int `json:"free_credentials"`
 	}
+	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT
 			COUNT(DISTINCT mo.id),
@@ -256,7 +257,7 @@ func (h *Handler) pricingSummary(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'CNY'),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'USD'),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.billing_mode = 'free'),
-			COUNT(DISTINCT mo.canonical_id),
+			COUNT(DISTINCT mc.id),
 			COUNT(DISTINCT mc.id) FILTER (WHERE mc.id IS NOT NULL),
 			COUNT(DISTINCT c.id) FILTER (WHERE c.pool_group = 'free')
 		FROM model_offers mo
@@ -376,6 +377,7 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=pricing_export.csv")
 	writer := csv.NewWriter(w)
+	//nolint:errcheck // HTTP write error non-recoverable
 	writer.Write([]string{"canonical_name", "raw_model_name", "provider", "credential",
 		"unit_price_in_per_1m", "unit_price_out_per_1m",
 		"cache_read_price_per_1m", "cache_write_price_per_1m",
@@ -384,6 +386,7 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var canonName, rawName, prov, cred, currency, billingMode, pricingSource string
 		var priceIn, priceOut, cacheRead, cacheWrite *float64
+		//nolint:errcheck // best-effort
 		rows.Scan(&canonName, &rawName, &prov, &cred,
 			&priceIn, &priceOut, &cacheRead, &cacheWrite,
 			&currency, &billingMode, &pricingSource)
@@ -394,6 +397,7 @@ func (h *Handler) pricingExport(w http.ResponseWriter, r *http.Request) {
 			}
 			return strconv.FormatFloat(*v, 'f', -1, 64)
 		}
+		//nolint:errcheck // HTTP write error non-recoverable
 		writer.Write([]string{canonName, rawName, prov, cred,
 			f(priceIn), f(priceOut), f(cacheRead), f(cacheWrite),
 			currency, billingMode, pricingSource})
@@ -418,6 +422,7 @@ func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing 'file' field")
 		return
 	}
+	//nolint:errcheck // best-effort close
 	defer file.Close()
 
 	reader := csv.NewReader(file)
@@ -644,6 +649,7 @@ func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id %s`, where)
+	//nolint:errcheck // best-effort exec, non-critical
 	h.db.QueryRow(ctx, countQuery, args...).Scan(&total)
 
 	// Data
@@ -854,6 +860,7 @@ func (h *Handler) pricingAutoInherit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DryRun bool `json:"dry_run"`
 	}
+	//nolint:errcheck // best-effort
 	readJSON(r, &req)
 	if !req.DryRun {
 		req.DryRun = true // default to dry run

@@ -48,6 +48,7 @@ func NewMessagesHandler(ch *ChatHandler) *MessagesHandler {
 }
 
 func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
 
 	// ── requestAttempt safety-net: every Anthropic /v1/messages
@@ -711,6 +712,7 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
 	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck // HTTP write error non-recoverable
 	w.Write(anthropicBody)
 	return anthropicBody
 }
@@ -723,6 +725,7 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 
 	var choices []map[string]any
 	if raw, ok := chatResp["choices"]; ok {
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal(raw, &choices)
 	}
 
@@ -853,6 +856,7 @@ func mapAnthropicStopReason(finishReason string) string {
 func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
+	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"type":  "error",
 		"error": map[string]any{"type": errType, "message": message},

@@ -131,6 +131,7 @@ func (t *AuditTrimmer) run(ctx context.Context) {
 	defer close(t.done)
 
 	// Initial trim on startup (drain any pre-existing backlog)
+	//nolint:errcheck // best-effort trim, non-critical
 	t.TrimOnce(ctx)
 
 	tk := time.NewTicker(t.tick)
@@ -142,6 +143,7 @@ func (t *AuditTrimmer) run(ctx context.Context) {
 		case <-t.stop:
 			return
 		case <-tk.C:
+			//nolint:errcheck // best-effort trim, non-critical
 			t.TrimOnce(ctx)
 		}
 	}

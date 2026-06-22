@@ -80,11 +80,13 @@ func getBackgroundTask(ctx context.Context, db *pgxpool.Pool, taskID int64) (map
 	}
 	if requestJSON != nil {
 		var req any
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(*requestJSON), &req)
 		result["request"] = req
 	}
 	if resultJSON != nil {
 		var res any
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(*resultJSON), &res)
 		result["result"] = res
 	}
@@ -109,6 +111,7 @@ func getLatestDiagnoseResult(ctx context.Context, db *pgxpool.Pool, providerID i
 	result := map[string]any{"task_id": id, "finished_at": finishedAt}
 	if resultJSON != nil {
 		var res any
+		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(*resultJSON), &res)
 		result["result"] = res
 	}

@@ -366,6 +366,7 @@ func encodeSessionStateFields(st *SessionState) []any {
 func decodeSessionStateFields(fields map[string]string, st *SessionState) error {
 	parseInt := func(s string) int64 {
 		var v int64
+		//nolint:errcheck // best-effort parse, non-critical
 		fmt.Sscanf(s, "%d", &v)
 		return v
 	}

@@ -147,6 +147,7 @@ func TestDecider_SessionCacheDrift(t *testing.T) {
 	d := NewDecider(cls, nil, idx, nil)
 
 	// First call: chat
+	//nolint:errcheck // best-effort touch, non-critical
 	d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "sess-drift")
 
 	// Second call: vision override → should reclassify (cache miss)
@@ -164,6 +165,7 @@ func TestDecider_NoSessionID_AlwaysReclassify(t *testing.T) {
 	d := NewDecider(cls, nil, idx, nil)
 
 	// Two calls with empty sessionID → both should classify
+	//nolint:errcheck // best-effort touch, non-critical
 	d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	dec2, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	if dec2.Classifier == "session_cache" {
