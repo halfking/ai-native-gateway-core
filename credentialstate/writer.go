@@ -355,8 +355,15 @@ func (w *Writer) writeModelLevelFailure(
 		}
 	}
 
-	// 3. Legacy credentials.availability_state update (admin badge only;
-	//    the router does not read this column).
+	// 3. credentials.availability_state update.
+	//    This column IS routing-relevant: the SQL candidate loader
+	//    (provider/client.go loadCandidatesDB) filters on
+	//    v_routable_credential_models.is_routable, which is FALSE whenever
+	//    availability_state != 'ready'. The in-memory circuit breaker
+	//    (circuit.Manager, checked in routing/executor.go) is the second,
+	//    faster gate. Corrected 2026-06-22: the prior "admin badge only /
+	//    router does not read this" comment was wrong and hid the
+	//    fail → unreachable → recovery-restores-ready loop (defect 4).
 	if _, err := w.dbPool.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state      = $1,
