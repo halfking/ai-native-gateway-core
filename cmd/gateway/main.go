@@ -1019,14 +1019,22 @@ routingExec.AnthropicToOpenAIStream = func(
 		})
 	}
 
+	slog.Info("CHECKPOINT: before static handler init")
+
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
 	staticHandler := relay.NewStaticHandler(cfg.StaticDir)
+
+	slog.Info("CHECKPOINT: before router init")
 
 	// ── Router ────────────────────────────────────────────────────────────
 	mux := http.NewServeMux()
 
+	slog.Info("CHECKPOINT: before healthz registration")
+
 	mux.Handle("/healthz", healthHandler)
 	mux.Handle("/metrics", middleware.MetricsHandler())
+
+	slog.Info("CHECKPOINT: healthz and metrics registered")
 
 	mux.Handle("/v1/chat/completions", chatHandler)
 	mux.Handle("/v1/completions", chatHandler)
@@ -1096,10 +1104,12 @@ routingExec.AnthropicToOpenAIStream = func(
 
 	// Admin API routes
 	if adminHandler != nil {
+		slog.Info("CHECKPOINT: before admin RegisterRoutes")
 		adminHandler.RegisterRoutes(mux)
-		slog.Info("admin API enabled")
+		slog.Info("CHECKPOINT: after admin RegisterRoutes - admin API enabled")
 	}
 
+	slog.Info("CHECKPOINT: before middleware chain")
 	// wrapAdmin wraps a handler with admin JWT/API-key authentication.
 	// Used for Phase 2/3 admin endpoints registered outside RegisterRoutes.
 	var wrapAdmin func(http.HandlerFunc) http.HandlerFunc
@@ -1182,6 +1192,8 @@ routingExec.AnthropicToOpenAIStream = func(
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+
+	slog.Info("CHECKPOINT: HTTP server configured, about to start", "listen", cfg.Listen)
 
 	// ── Graceful shutdown ─────────────────────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
