@@ -32,16 +32,16 @@ type Handler struct {
 	envCleaner  *bg.EnvelopeCleaner
 	stickyClean *bg.StickyCleaner
 	taxSync     *bg.TaxonomySync
-	probeV2     *bg.CredentialProbeV2    // 900-series: mini-chat probe (spec §5)
-	probePicker *bg.DefaultProbePicker   // 900-series: default probe model (spec §4)
-	modelProbe  *bg.ModelProbeRunner     // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
+	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
+	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
 	fpSlots     *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
 	// endpoint on /v1/sessions/{id}/pending-response is
 	// unaffected (it lives in the sessions package, not here).
-	pendingStore *pending.Store
+	pendingStore  *pending.Store
 	settingsStore *settings.StoreDB // settings-management: DB-backed settings backend (Q1: B)
 	peakCollector interface {
 		Acquire(credID int64, model string)
@@ -82,18 +82,22 @@ type Handler struct {
 	// providerSettingsResolver (2026-06-20) provides provider-level setting
 	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
 	providerSettingsResolver *settings.ProviderSettingsResolver
-	refreshMu                sync.Mutex             // guards lazy init of refreshState
+	refreshMu                sync.Mutex            // guards lazy init of refreshState
 	refreshState             *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
 	// healthTracker (2026-06-22) provides access to the routing health tracker
 	// for credential monitor endpoints. Wired from cmd/gateway/main.go.
 	healthTracker interface {
 		Enabled() bool
 	}
-	redisClient interface{} // Redis client for sliding window access
+	redisClient  interface{}         // Redis client for sliding window access
+	autoTitleGen *AutoTitleGenerator // Auto session title generator (2026-06-22)
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
-	return &Handler{db: db, secret: secretKey, encKey: encKey}
+	h := &Handler{db: db, secret: secretKey, encKey: encKey}
+	// Initialize auto title generator
+	h.autoTitleGen = NewAutoTitleGenerator(h)
+	return h
 }
 
 // SetModelPolicy (Round 48, 2026-06-21) wires the tenant-scoped model
@@ -118,6 +122,11 @@ func (h *Handler) SetHealthTracker(ht interface{ Enabled() bool }) {
 // SetRedisClient (2026-06-22) wires the Redis client for sliding window access.
 func (h *Handler) SetRedisClient(rc interface{}) {
 	h.redisClient = rc
+}
+
+// GetAutoTitleGenerator (2026-06-22) returns the auto title generator for use by routing package.
+func (h *Handler) GetAutoTitleGenerator() *AutoTitleGenerator {
+	return h.autoTitleGen
 }
 
 // SetKeyring configures AES-256-GCM key rotation.  Call this at startup after
@@ -347,6 +356,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/session-messages/", h.admin(h.handleSessionMessages))
 	mux.HandleFunc("/api/system/session-context/", h.admin(h.handleSessionContextRoutes))
 	mux.HandleFunc("/api/system/no-topic-session/", h.admin(h.handleNoTopicSessionRoutes))
+	mux.HandleFunc("/api/admin/session-crosstalk", h.admin(h.handleSessionCrosstalkCheck))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))

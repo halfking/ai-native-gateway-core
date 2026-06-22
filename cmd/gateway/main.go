@@ -754,6 +754,17 @@ func main() {
 
 	slog.Info("CHECKPOINT: after admin handler init block")
 
+	// Auto session title generator (2026-06-22).
+	// Wire the admin handler's auto title generator into the chat handler
+	// so it can trigger title generation after the first successful request.
+	if adminHandler != nil {
+		autoTitleGen := adminHandler.GetAutoTitleGenerator()
+		if autoTitleGen != nil {
+			chatHandler.SetAutoTitleGenerator(autoTitleGen)
+			slog.Info("auto session title generator wired (async, fire-and-forget)")
+		}
+	}
+
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
 	var credCycler *bg.CredentialCycler

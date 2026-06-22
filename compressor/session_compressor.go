@@ -116,11 +116,19 @@ func (sc *SessionCompressor) Prepare(
 		return sc.fallbackResult(clientBody, res)
 	}
 
+	// ── Phase 0: Validate session ID to prevent cross-talk ───────────────
+	if err := ValidateSessionID(gwSessionID); err != nil {
+		slog.Warn("session_compressor: invalid session_id, treating as new session",
+			"session", gwSessionID, "tenant", tenantID, "error", err)
+		// Downgrade to sessionless mode to avoid cache pollution
+		return sc.fallbackResult(clientBody, res)
+	}
+
 	mode := sc.resolveCompressionMode()
 
 	// ── Phase 1: Load session state ──────────────────────────────────────
 	var (
-		state           *SessionState
+		state            *SessionState
 		lastOutboundBody []byte
 	)
 	if sc.deps.Cache != nil {
