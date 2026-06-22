@@ -257,7 +257,7 @@ func (h *Handler) pricingSummary(w http.ResponseWriter, r *http.Request) {
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'CNY'),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.currency = 'USD'),
 			COUNT(DISTINCT mo.id) FILTER (WHERE mo.billing_mode = 'free'),
-			COUNT(DISTINCT mc.id),
+			COUNT(DISTINCT mo.canonical_id),
 			COUNT(DISTINCT mc.id) FILTER (WHERE mc.id IS NOT NULL),
 			COUNT(DISTINCT c.id) FILTER (WHERE c.pool_group = 'free')
 		FROM model_offers mo
