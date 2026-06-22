@@ -65,35 +65,51 @@ func (w *ConcurrencyAutoScaleUp) Stop() {
 }
 
 // scaleUp finds credentials that are healthy + heavily loaded and increases their limit by 1.
+//
+// P1-5 fix (2026-06-22 audit): the original query gated scaleup on
+// AVG(avg_concurrent) >= 0.8 * limit, but the aggregator never populated
+// the avg_concurrent column (it's always NULL). NULL >= x is always FALSE
+// in SQL, so the worker matched ZERO credentials and silently did nothing
+// every hour since deployment.
+//
+// We now gate on call VOLUME instead of measured concurrency, which the
+// aggregator actually records. A credential that handled >= 60 calls in
+// the last hour (≈1/min) with ≥95% success and no 429/503 is clearly
+// carrying real load and is a safe scaleup candidate. The threshold is
+// deliberately conservative; it can be tuned via the constant below.
 func (w *ConcurrencyAutoScaleUp) scaleUp(ctx context.Context) error {
-	// Query: recent 1h stats, no 429/503, success rate >95%, avg concurrent >80% limit
+	// minCallsInLastHour is the minimum volume to consider a credential
+	// "heavily loaded". 60 ≈ 1 request/minute sustained. Below this the
+	// credential isn't busy enough to warrant a higher limit.
+	const minCallsInLastHour = 60
+
 	rows, err := w.db.Query(ctx, `
 		WITH recent_stats AS (
-			SELECT 
+			SELECT
 				credential_id,
 				raw_model,
 				COUNT(*) FILTER (WHERE error_rate_limit_count > 0 OR error_concurrent_count > 0) AS bad_windows,
 				SUM(success_calls)::float / NULLIF(SUM(total_calls), 0) AS success_rate,
-				AVG(avg_concurrent) AS avg_conc
+				SUM(total_calls) AS total_calls
 			FROM credential_model_call_history
 			WHERE window_start > now() - interval '1 hour'
 			GROUP BY credential_id, raw_model
 		)
-		SELECT 
+		SELECT
 			c.id,
 			rs.raw_model,
-			c.concurrency_limit_auto,
-			rs.avg_conc,
+			COALESCE(c.concurrency_limit_auto, c.concurrency_limit, 5) AS current_limit,
+			rs.total_calls,
 			rs.success_rate
 		FROM credentials c
 		JOIN recent_stats rs ON rs.credential_id = c.id
-		WHERE rs.bad_windows = 0                                -- no 429/503 in past hour
-		  AND rs.success_rate >= 0.95                           -- >95% success
-		  AND rs.avg_conc >= COALESCE(c.concurrency_limit_auto, 5) * 0.8  -- load >80%
-		  AND COALESCE(c.concurrency_limit_auto, 5) < 50        -- below max
-		ORDER BY rs.avg_conc DESC
+		WHERE rs.bad_windows = 0                                         -- no 429/503 in past hour
+		  AND rs.success_rate >= 0.95                                    -- ≥95% success
+		  AND rs.total_calls >= $1                                       -- sustained load
+		  AND COALESCE(c.concurrency_limit_auto, c.concurrency_limit, 5) < 50  -- below max
+		ORDER BY rs.total_calls DESC
 		LIMIT 20
-	`)
+	`, minCallsInLastHour)
 	if err != nil {
 		return err
 	}
@@ -104,9 +120,10 @@ func (w *ConcurrencyAutoScaleUp) scaleUp(ctx context.Context) error {
 		var credID int
 		var model string
 		var currentLimit int
-		var avgConc, successRate float64
+		var totalCalls int
+		var successRate float64
 
-		if err := rows.Scan(&credID, &model, &currentLimit, &avgConc, &successRate); err != nil {
+		if err := rows.Scan(&credID, &model, &currentLimit, &totalCalls, &successRate); err != nil {
 			slog.Warn("concurrency_auto_scaleup: scan failed", "error", err)
 			continue
 		}
@@ -119,6 +136,12 @@ func (w *ConcurrencyAutoScaleUp) scaleUp(ctx context.Context) error {
 			continue
 		}
 
+		slog.Info("concurrency_auto_scaleup: candidate scaled up",
+			"credential_id", credID,
+			"model", model,
+			"old_limit", currentLimit,
+			"total_calls_1h", totalCalls,
+			"success_rate", successRate)
 		count++
 	}
 
