@@ -432,7 +432,9 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.RequestBody, responseBody, nil)
+	// Phase D (2026-06-22): use InboundBody (original client body) for audit
+	// logging, not RequestBody (which may be protocol-converted for upstream).
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "messages", txResult, result.InboundBody, responseBody, nil)
 	*attemptLogged = true
 }
 

@@ -554,7 +554,7 @@ func (e *Executor) executeAnthropic(
 			}
 		}
 
-		result, tryErr := e.executeAnthropicOnce(params, cand, ae, bodyBytes, outboundModel, tTotal, fpLease)
+		result, tryErr := e.executeAnthropicOnce(params, cand, ae, sourceBody, bodyBytes, outboundModel, tTotal, fpLease)
 		if tryErr == nil {
 			// Memora persistence (fire-and-forget). Enqueue the request
 			// conversation so L1 session memory accumulates facts for
@@ -616,6 +616,7 @@ func (e *Executor) executeAnthropicOnce(
 	params *ExecParams,
 	cand provider.Candidate,
 	ae *AnthropicExecutor,
+	sourceBody []byte,
 	bodyBytes []byte,
 	outboundModel string,
 	tTotal time.Time,
@@ -822,6 +823,8 @@ func (e *Executor) executeAnthropicOnce(
 				Candidate:   cand,
 				LatencyMs:   latencyMs,
 				RequestBody: append([]byte(nil), bodyBytes...),
+				// Phase D (2026-06-22): inbound body for audit logging
+				InboundBody: sourceBody,
 			}, &streamInterruptedError{reason: outcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
 		}
 		return &ExecuteResult{
@@ -829,6 +832,8 @@ func (e *Executor) executeAnthropicOnce(
 			Candidate:   cand,
 			LatencyMs:   latencyMs,
 			RequestBody: append([]byte(nil), bodyBytes...),
+			// Phase D (2026-06-22): inbound body for audit logging
+			InboundBody: sourceBody,
 		}, nil
 	}
 
@@ -842,6 +847,8 @@ func (e *Executor) executeAnthropicOnce(
 		Candidate:   cand,
 		LatencyMs:   latencyMs,
 		RequestBody: append([]byte(nil), bodyBytes...),
+		// Phase D (2026-06-22): inbound body for audit logging
+		InboundBody: sourceBody,
 		ResponseBody: responseBody,
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
 		// Q3 (openai client -> anthropic upstream) non-stream

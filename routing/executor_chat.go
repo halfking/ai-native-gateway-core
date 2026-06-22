@@ -552,6 +552,8 @@ func (e *Executor) executeOpenAI(
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
+						// Phase D (2026-06-22): inbound body for audit logging
+						InboundBody: sourceBody,
 						// Round 47 T-NEW-4: stream success path also records
 						// pre-request trim metadata so emitTelemetry can write
 						// compression_meta for streaming requests.
@@ -601,6 +603,8 @@ func (e *Executor) executeOpenAI(
 						Candidate:   cand,
 						LatencyMs:   latencyMs,
 						RequestBody: append([]byte(nil), bodyBytes...),
+						// Phase D (2026-06-22): inbound body for audit logging
+						InboundBody: sourceBody,
 						// 2026-06-19 quality fix mode: capture any flags the
 						// stream reader observed before the interrupt fired.
 						QualityFlags: streamQualityFlags,
@@ -612,6 +616,8 @@ func (e *Executor) executeOpenAI(
 					Candidate:   cand,
 					LatencyMs:   latencyMs,
 					RequestBody: append([]byte(nil), bodyBytes...),
+					// Phase D (2026-06-22): inbound body for audit logging
+					InboundBody: sourceBody,
 					// Round 47 T-NEW-4: stream success path (ClientIsStreaming=true,
 					// StreamChat handled the write) also records pre-request trim
 					// metadata so emitTelemetry can write compression_meta.
@@ -684,6 +690,8 @@ func (e *Executor) executeOpenAI(
 				Candidate:    cand,
 				LatencyMs:    latencyMs,
 				RequestBody:  append([]byte(nil), bodyBytes...),
+				// Phase D (2026-06-22): inbound body for audit logging
+				InboundBody:  sourceBody,
 				ResponseBody: append([]byte(nil), respBody...),
 				// Round 47 compression v7 T-NEW-2: surface the compression
 				// event captured by handleContextLengthRecovery so
