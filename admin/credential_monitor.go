@@ -2,13 +2,54 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
 	"github.com/redis/go-redis/v9"
 )
+
+// monitorSummaryCache memoizes the monitor-summary response for 30s. The page
+// auto-refreshes every 10-60s and the per-model LATERAL success-rate join is
+// the heaviest part, so a short TTL keeps the UX responsive without serving
+// stale data for long.
+var monitorSummaryCache = &summaryCache{ttl: 30 * time.Second}
+
+type summaryCache struct {
+	mu      sync.RWMutex
+	ttl     time.Duration
+	entries map[string]summaryCacheEntry
+}
+
+type summaryCacheEntry struct {
+	value   map[string]any
+	expires time.Time
+}
+
+func (c *summaryCache) get(key string) (map[string]any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.entries == nil {
+		return nil, false
+	}
+	e, ok := c.entries[key]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.value, true
+}
+
+func (c *summaryCache) set(key string, value map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]summaryCacheEntry)
+	}
+	c.entries[key] = summaryCacheEntry{value: value, expires: time.Now().Add(c.ttl)}
+}
 
 // CredentialMonitorHandlers provides credential monitoring and manual promotion/demotion endpoints.
 type CredentialMonitorHandlers struct {
@@ -38,25 +79,52 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 
 // CredentialMonitorSummary represents a credential's monitoring state.
 type CredentialMonitorSummary struct {
-	ID                    int          `json:"id"`
-	ProviderID            int          `json:"provider_id"`
-	ProviderName          string       `json:"provider_name"`
-	Label                 string       `json:"label"`
-	Status                string       `json:"status"`
-	AvailabilityState     string       `json:"availability_state"`
-	HealthStatus          string       `json:"health_status"`
-	QuotaState            string       `json:"quota_state"`
-	ConcurrencyLimit      *int         `json:"concurrency_limit"`
-	ConcurrencyLimitAuto  *int         `json:"concurrency_limit_auto"`
-	EffectiveConcurrency  int          `json:"effective_concurrency"`
-	ManualDisabled        bool         `json:"manual_disabled"`
-	ConsecutiveFailures   int          `json:"consecutive_failures"`
-	AvailabilityRecoverAt *string      `json:"availability_recover_at"`
-	StateReasonCode       *string      `json:"state_reason_code"`
-	StateReasonDetail     *string      `json:"state_reason_detail"`
-	HealthCheckedAt       *string      `json:"health_checked_at"`
-	TotalRequests         int64        `json:"total_requests"`
-	RecentWindowStats     *WindowStats `json:"recent_window_stats,omitempty"`
+	ID                    int                   `json:"id"`
+	ProviderID            int                   `json:"provider_id"`
+	ProviderName          string                `json:"provider_name"`
+	Label                 string                `json:"label"`
+	Status                string                `json:"status"`
+	AvailabilityState     string                `json:"availability_state"`
+	HealthStatus          string                `json:"health_status"`
+	QuotaState            string                `json:"quota_state"`
+	ConcurrencyLimit      *int                  `json:"concurrency_limit"`
+	ConcurrencyLimitAuto  *int                  `json:"concurrency_limit_auto"`
+	EffectiveConcurrency  int                   `json:"effective_concurrency"`
+	ManualDisabled        bool                  `json:"manual_disabled"`
+	ConsecutiveFailures   int                   `json:"consecutive_failures"`
+	AvailabilityRecoverAt *string               `json:"availability_recover_at"`
+	StateReasonCode       *string               `json:"state_reason_code"`
+	StateReasonDetail     *string               `json:"state_reason_detail"`
+	HealthCheckedAt       *string               `json:"health_checked_at"`
+	TotalRequests         int64                 `json:"total_requests"`
+	// Models is the per-(credential, model) availability breakdown. Replaces the
+	// single-model recent_window_stats field (2026-06-22). Each entry carries
+	// the probe state, offer/binding availability and the live last-N success
+	// rate so the monitor page can show model-level health instead of one
+	// aggregate. nil when the credential has no model_offers rows.
+	Models                []CredentialModelStatus `json:"models,omitempty"`
+	// AggregatedSuccessRate is the min recent success rate across the
+	// credential's models (conservative — a credential is only as healthy as
+	// its worst routable model). nil when there are no samples.
+	AggregatedSuccessRate *float64                `json:"aggregated_success_rate,omitempty"`
+}
+
+// CredentialModelStatus is the per-(credential, model) availability row used
+// by the credential monitor drawer. Mirrors the columns the routing candidate
+// loader (loadCandidatesDB) consults so operators see the same view the router
+// uses to admit/exclude a binding.
+type CredentialModelStatus struct {
+	RawModelName       string   `json:"raw_model_name"`
+	OfferAvailable     bool     `json:"offer_available"`
+	OfferUnavailableReason *string `json:"offer_unavailable_reason,omitempty"`
+	BindingAvailable   bool     `json:"binding_available"`
+	BindingUnavailableReason *string `json:"binding_unavailable_reason,omitempty"`
+	// ProbeState: 'broken_confirmed' | 'healthy_confirmed' | 'recovering' | 'unknown' (no row).
+	ProbeState         string   `json:"probe_state"`
+	ProbeLastStatus    *string  `json:"probe_last_status,omitempty"`
+	ProbeLastAttemptAt *string  `json:"probe_last_attempt_at,omitempty"`
+	RecentSuccessRate  *float64 `json:"recent_success_rate,omitempty"`
+	RecentSamples      int      `json:"recent_samples"`
 }
 
 // WindowStats aggregates recent sliding window data.
@@ -70,7 +138,14 @@ type WindowStats struct {
 }
 
 // handleMonitorSummary returns all credentials with their monitoring state.
-// GET /api/credentials/monitor-summary?provider_id=X&include_window_stats=true
+// GET /api/credentials/monitor-summary?provider_id=X
+//
+// 2026-06-22: rewritten to return a per-(credential, model) breakdown in the
+// `models` array instead of the single most-common-model `recent_window_stats`.
+// One SQL query carries both the credential rows and their models[] (via
+// json_agg over a LATERAL recent_success_rate join), so there is no N+1.
+// A 30s in-memory cache (same pattern as loadCandidatesDB) keeps the page
+// refresh cheap.
 func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -81,33 +156,67 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	defer cancel()
 
 	providerID := queryInt(r, "provider_id", 0)
-	includeWindowStats := queryBool(r, "include_window_stats")
 
-	// Lazy init recorder if redis is available
-	if m.recorder == nil && m.redisClient != nil {
-		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
+	// 30s cache: the page auto-refreshes every 10-60s and the per-model
+	// LATERAL success-rate join is the heaviest part. Cache key excludes
+	// nothing but provider_id (the only variable input).
+	cacheKey := fmt.Sprintf("p%d", providerID)
+	if cached, ok := monitorSummaryCache.get(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
 	}
 
+	// Single query: one row per credential, with models[] built via a
+	// correlated LATERAL subquery that enumerates model_offers and computes
+	// each model's live success rate + probe state + binding availability.
+	// COALESCE(recent_success_rate(...)) is STABLE and uses
+	// idx_request_logs_credential_ts, so the per-model cost is a 50-row index
+	// descent.
 	query := `
-		SELECT c.id, c.provider_id, COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
-		       COALESCE(c.label, '') AS label,
-		       COALESCE(c.status, 'active') AS status,
-		       COALESCE(c.availability_state, 'ready') AS availability_state,
-		       COALESCE(c.health_status, 'unknown') AS health_status,
-		       COALESCE(c.quota_state, 'ok') AS quota_state,
-		       c.concurrency_limit,
-		       c.concurrency_limit_auto,
-		       COALESCE(c.concurrency_limit, c.concurrency_limit_auto, 5) AS effective_concurrency,
-		       COALESCE(c.manual_disabled, FALSE) AS manual_disabled,
-		       COALESCE(c.consecutive_failures, 0) AS consecutive_failures,
-		       c.availability_recover_at,
-		       c.state_reason_code,
-		       c.state_reason_detail,
-		       c.health_checked_at,
-		       COALESCE(
-		           (SELECT COUNT(*) FROM request_logs rl WHERE rl.credential_id = c.id),
-		           0
-		       ) AS total_requests
+		SELECT
+			c.id, c.provider_id,
+			COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
+			COALESCE(c.label, '') AS label,
+			COALESCE(c.status, 'active') AS status,
+			COALESCE(c.availability_state, 'ready') AS availability_state,
+			COALESCE(c.health_status, 'unknown') AS health_status,
+			COALESCE(c.quota_state, 'ok') AS quota_state,
+			c.concurrency_limit,
+			c.concurrency_limit_auto,
+			COALESCE(c.concurrency_limit, c.concurrency_limit_auto, 5) AS effective_concurrency,
+			COALESCE(c.manual_disabled, FALSE) AS manual_disabled,
+			COALESCE(c.consecutive_failures, 0) AS consecutive_failures,
+			c.availability_recover_at,
+			c.state_reason_code,
+			c.state_reason_detail,
+			c.health_checked_at,
+			COALESCE((SELECT COUNT(*) FROM request_logs rl WHERE rl.credential_id = c.id), 0) AS total_requests,
+			COALESCE((
+				SELECT json_agg(row_to_json(t))
+				FROM (
+					SELECT
+						mo.raw_model_name,
+						COALESCE(mo.available, TRUE) AS offer_available,
+						mo.unavailable_reason AS offer_unavailable_reason,
+						COALESCE(cmb.available, TRUE) AS binding_available,
+						cmb.unavailable_reason AS binding_unavailable_reason,
+						COALESCE(mps.state, 'unknown') AS probe_state,
+						mps.last_status AS probe_last_status,
+						mps.last_attempt_at AS probe_last_attempt_at,
+						rsr.rate   AS recent_success_rate,
+						COALESCE(rsr.samples, 0) AS recent_samples
+					FROM model_offers mo
+					LEFT JOIN credential_model_bindings cmb
+						ON cmb.credential_id = mo.credential_id
+					   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
+					LEFT JOIN model_probe_state mps
+						ON mps.credential_id = mo.credential_id
+					   AND mps.raw_model_name = mo.raw_model_name
+					CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+					WHERE mo.credential_id = c.id
+					ORDER BY mo.raw_model_name
+				) t
+			), '[]'::json) AS models
 		FROM credentials c
 		LEFT JOIN providers p ON c.provider_id = p.id
 		WHERE ($1 = 0 OR c.provider_id = $1)
@@ -126,13 +235,14 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	for rows.Next() {
 		var s CredentialMonitorSummary
 		var recoverAt, checkedAt *time.Time
+		var modelsJSON []byte
 		if err := rows.Scan(
 			&s.ID, &s.ProviderID, &s.ProviderName, &s.Label,
 			&s.Status, &s.AvailabilityState, &s.HealthStatus, &s.QuotaState,
 			&s.ConcurrencyLimit, &s.ConcurrencyLimitAuto, &s.EffectiveConcurrency,
 			&s.ManualDisabled, &s.ConsecutiveFailures,
 			&recoverAt, &s.StateReasonCode, &s.StateReasonDetail,
-			&checkedAt, &s.TotalRequests,
+			&checkedAt, &s.TotalRequests, &modelsJSON,
 		); err != nil {
 			continue
 		}
@@ -146,53 +256,45 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			s.HealthCheckedAt = &t
 		}
 
-		// Optionally fetch recent window stats
-		if includeWindowStats && m.recorder != nil && m.recorder.Enabled() {
-			// Get most common model for this credential
-			model := m.getMostCommonModel(ctx, s.ID)
-			if model != "" {
-				since := time.Now().Add(-1 * time.Hour)
-				entries, _ := m.recorder.GetRecent(ctx, s.ID, model, since)
-				if len(entries) > 0 {
-					stats := credentialhealth.ComputeStats(entries)
-					s.RecentWindowStats = &WindowStats{
-						Total:       stats.Total,
-						Success:     stats.Success,
-						Failed:      stats.Failed,
-						FailureRate: stats.FailureRate,
-						ErrorKinds:  stats.ErrorKinds,
-						SampleModel: model,
-					}
+		// Decode the models JSON array into typed structs and compute the
+		// aggregated (min) success rate across routable models.
+		var models []CredentialModelStatus
+		if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
+			_ = json.Unmarshal(modelsJSON, &models)
+		}
+		s.Models = models
+		var minRate *float64
+		for i := range models {
+			ms := &models[i]
+			// Parse probe timestamps back to RFC3339 strings for the API.
+			if ms.RecentSuccessRate != nil {
+				if minRate == nil || *ms.RecentSuccessRate < *minRate {
+					r := *ms.RecentSuccessRate
+					minRate = &r
 				}
 			}
+			// probe_last_attempt_at comes through as a string in the JSON; keep as-is.
 		}
+		s.AggregatedSuccessRate = minRate
 
 		summaries = append(summaries, s)
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"credentials": summaries,
 		"count":       len(summaries),
-	})
-}
-
-// getMostCommonModel returns the most frequently used model for a credential (best-effort).
-func (m *CredentialMonitorHandlers) getMostCommonModel(ctx context.Context, credentialID int) string {
-	var model string
-	_ = m.h.db.QueryRow(ctx, `
-		SELECT raw_model
-		FROM credential_model_call_history
-		WHERE credential_id = $1
-		  AND window_start > NOW() - INTERVAL '1 hour'
-		GROUP BY raw_model
-		ORDER BY SUM(total_calls) DESC
-		LIMIT 1
-	`, credentialID).Scan(&model)
-	return model
+	}
+	monitorSummaryCache.set(cacheKey, resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleSlidingWindow returns raw sliding window data for a credential.
 // GET /api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50
+//
+// 2026-06-22: Redis is not configured on every environment, so when the
+// recorder is unavailable (or returns no data) we fall back to a direct
+// request_logs query. The response carries `source` ("redis" or
+// "request_logs") so the UI can show where the data came from.
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -202,11 +304,6 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	// Lazy init recorder if redis is available
 	if m.recorder == nil && m.redisClient != nil {
 		m.recorder = credentialhealth.NewRecorder(m.redisClient, 2*time.Hour, 100)
-	}
-
-	if m.recorder == nil || !m.recorder.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "recorder unavailable")
-		return
 	}
 
 	credentialID := queryInt(r, "credential_id", 0)
@@ -230,11 +327,23 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute)
-	entries, err := m.recorder.GetRecent(ctx, credentialID, model, since)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
-		return
+	// ── Primary: Redis recorder (per-call granularity) ──────────────────
+	source := "redis"
+	var entries []credentialhealth.CallEntry
+	if m.recorder != nil && m.recorder.Enabled() {
+		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
+		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
+	}
+
+	// ── Fallback: request_logs (when Redis is down or empty) ────────────
+	if len(entries) == 0 {
+		source = "request_logs"
+		rlEntries, err := m.slidingWindowFromRequestLogs(ctx, credentialID, model, minutes, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get window: %v", err))
+			return
+		}
+		entries = rlEntries
 	}
 
 	// Limit to requested count (entries are already newest-first from Redis)
@@ -249,6 +358,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		"model":          model,
 		"window_minutes": minutes,
 		"limit":          limit,
+		"source":         source,
 		"total_returned": len(entries),
 		"entries":        entries,
 		"stats": map[string]any{
@@ -259,6 +369,43 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 			"error_kinds":  stats.ErrorKinds,
 		},
 	})
+}
+
+// slidingWindowFromRequestLogs builds CallEntry timeline data directly from
+// the request_logs table. Used when the Redis recorder is unavailable. Uses
+// idx_request_logs_credential_ts (credential_id, ts DESC) so the LIMIT scan
+// is an index descent.
+func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Context, credentialID int, model string, minutes, limit int) ([]credentialhealth.CallEntry, error) {
+	rows, err := m.h.db.Query(ctx, `
+		SELECT COALESCE(request_id, ''), EXTRACT(EPOCH FROM ts)::bigint * 1000,
+		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
+		FROM request_logs
+		WHERE credential_id = $1
+		  AND COALESCE(outbound_model, client_model) = $2
+		  AND ts > NOW() - ($3 || ' minutes')::interval
+		ORDER BY ts DESC
+		LIMIT $4
+	`, credentialID, model, fmt.Sprintf("%d", minutes), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []credentialhealth.CallEntry
+	for rows.Next() {
+		var e credentialhealth.CallEntry
+		var ok bool
+		var errKind string
+		if err := rows.Scan(&e.RequestID, &e.Timestamp, &ok, &e.LatencyMs, &errKind); err != nil {
+			continue
+		}
+		e.Success = ok
+		if !ok && errKind != "" {
+			e.ErrorKind = errKind
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // handlePromote manually promotes a credential (force recover).

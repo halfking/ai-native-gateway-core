@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, type CredentialMonitorSummary, type CallEntry } from '../api'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry } from '../api'
 import { Chart, registerables } from 'chart.js'
 
 Chart.register(...registerables)
@@ -8,13 +8,15 @@ Chart.register(...registerables)
 const loading = ref(false)
 const credentials = ref<CredentialMonitorSummary[]>([])
 const selectedCred = ref<CredentialMonitorSummary | null>(null)
+const selectedModel = ref('')
 const windowEntries = ref<CallEntry[]>([])
+const windowSource = ref<'redis' | 'request_logs'>('redis')
 const windowLoading = ref(false)
-const windowModel = ref('')
 
 const providerFilter = ref(0)
 const availStateFilter = ref('')
 const healthFilter = ref('')
+const quickFilter = ref<'none' | 'broken' | 'low-rate'>('none')
 
 const demoteDialogOpen = ref(false)
 const demoteReason = ref('')
@@ -57,6 +59,23 @@ async function load() {
   }
 }
 
+// ── Derived summary cards ──────────────────────────────────────────────
+const summary = computed(() => {
+  const all = credentials.value
+  const total = all.length
+  const ready = all.filter(c => c.availability_state === 'ready').length
+  const abnormal = all.filter(c =>
+    ['unreachable', 'cooling', 'rate_limited', 'auth_failed', 'suspended'].includes(c.availability_state)
+  ).length
+  let brokenModels = 0
+  for (const c of all) {
+    for (const m of c.models || []) {
+      if (m.probe_state === 'broken_confirmed') brokenModels++
+    }
+  }
+  return { total, ready, abnormal, brokenModels }
+})
+
 const filteredCreds = computed(() => {
   let result = credentials.value
   if (availStateFilter.value) {
@@ -64,6 +83,12 @@ const filteredCreds = computed(() => {
   }
   if (healthFilter.value) {
     result = result.filter(c => c.health_status === healthFilter.value)
+  }
+  if (quickFilter.value === 'broken') {
+    result = result.filter(c => (c.models || []).some(m => m.probe_state === 'broken_confirmed'))
+  }
+  if (quickFilter.value === 'low-rate') {
+    result = result.filter(c => c.aggregated_success_rate != null && c.aggregated_success_rate < 0.5)
   }
   return result
 })
@@ -88,11 +113,29 @@ function toggleSelect(id: number) {
   }
 }
 
+// ── Per-credential model helpers ───────────────────────────────────────
+function modelCount(c: CredentialMonitorSummary) {
+  const models = c.models || []
+  const total = models.length
+  const avail = models.filter(m => m.offer_available && m.binding_available).length
+  return { avail, total }
+}
+
+function brokenModels(c: CredentialMonitorSummary): CredentialModelStatus[] {
+  return (c.models || []).filter(m => m.probe_state === 'broken_confirmed')
+}
+
 function openDetail(cred: CredentialMonitorSummary) {
   selectedCred.value = cred
-  windowModel.value = cred.recent_window_stats?.sample_model || ''
-  if (windowModel.value) {
-    loadSlidingWindow(cred.id, windowModel.value)
+  // default the window to the first broken model, else the lowest-rate model
+  const models = cred.models || []
+  const broken = models.find(m => m.probe_state === 'broken_confirmed')
+  const pick = broken || models.slice().sort((a, b) => (a.recent_success_rate ?? 1) - (b.recent_success_rate ?? 1))[0]
+  selectedModel.value = pick?.raw_model_name || ''
+  if (selectedModel.value) {
+    loadSlidingWindow(cred.id, selectedModel.value)
+  } else {
+    windowEntries.value = []
   }
 }
 
@@ -102,13 +145,19 @@ async function loadSlidingWindow(credId: number, model: string) {
   try {
     const res = await getSlidingWindow(credId, model, 60)
     windowEntries.value = res.entries
-    // Render error pie chart
+    windowSource.value = res.source
     setTimeout(() => renderErrorPieChart(res.stats.error_kinds), 100)
   } catch (e) {
     console.error('sliding window failed', e)
   } finally {
     windowLoading.value = false
   }
+}
+
+function selectModel(model: string) {
+  if (!selectedCred.value || model === selectedModel.value) return
+  selectedModel.value = model
+  loadSlidingWindow(selectedCred.value.id, model)
 }
 
 function renderErrorPieChart(errorKinds: Record<string, number>) {
@@ -140,13 +189,8 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: {
-          position: 'right',
-        },
-        title: {
-          display: true,
-          text: '错误类型分布',
-        },
+        legend: { position: 'right' },
+        title: { display: true, text: '错误类型分布' },
       },
     },
   })
@@ -155,9 +199,7 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
 function startAutoRefresh() {
   if (refreshTimer) return
   autoRefresh.value = true
-  refreshTimer = window.setInterval(() => {
-    load()
-  }, refreshInterval.value * 1000)
+  refreshTimer = window.setInterval(() => load(), refreshInterval.value * 1000)
 }
 
 function stopAutoRefresh() {
@@ -169,11 +211,7 @@ function stopAutoRefresh() {
 }
 
 function toggleAutoRefresh() {
-  if (autoRefresh.value) {
-    stopAutoRefresh()
-  } else {
-    startAutoRefresh()
-  }
+  autoRefresh.value ? stopAutoRefresh() : startAutoRefresh()
 }
 
 function openBatchDialog(action: 'promote' | 'demote') {
@@ -189,14 +227,11 @@ function openBatchDialog(action: 'promote' | 'demote') {
 
 async function submitBatch() {
   const ids = Array.from(selectedIds.value)
-  const promises = ids.map(id => {
-    if (batchAction.value === 'promote') {
-      return promoteCredential(id, batchReason.value)
-    } else {
-      return demoteCredential(id, batchReason.value, batchHours.value)
-    }
-  })
-
+  const promises = ids.map(id =>
+    batchAction.value === 'promote'
+      ? promoteCredential(id, batchReason.value)
+      : demoteCredential(id, batchReason.value, batchHours.value)
+  )
   try {
     await Promise.all(promises)
     batchDialogOpen.value = false
@@ -259,10 +294,11 @@ async function submitConcurrency() {
   }
 }
 
+// ── Badge / color helpers ──────────────────────────────────────────────
 function statusBadge(state: string) {
   if (state === 'ready') return 'badge-green'
-  if (state === 'degraded' || state === 'cooling') return 'badge-amber'
-  if (state === 'unreachable' || state === 'auth_failed') return 'badge-red'
+  if (['degraded', 'cooling', 'rate_limited'].includes(state)) return 'badge-amber'
+  if (['unreachable', 'auth_failed', 'suspended'].includes(state)) return 'badge-red'
   return 'badge-gray'
 }
 
@@ -273,15 +309,30 @@ function healthBadge(h: string) {
   return 'badge-gray'
 }
 
-onMounted(() => {
-  load()
-})
+function probeBadge(state: string) {
+  if (state === 'broken_confirmed') return 'badge-red'
+  if (state === 'recovering') return 'badge-amber'
+  if (state === 'healthy_confirmed') return 'badge-green'
+  return 'badge-gray'
+}
+
+function rateClass(rate: number | null | undefined) {
+  if (rate == null) return 'rate-none'
+  if (rate >= 0.9) return 'rate-good'
+  if (rate >= 0.5) return 'rate-warn'
+  return 'rate-bad'
+}
+
+function rateText(rate: number | null | undefined) {
+  if (rate == null) return '—'
+  return (rate * 100).toFixed(1) + '%'
+}
+
+onMounted(() => load())
 
 onUnmounted(() => {
   stopAutoRefresh()
-  if (errorPieChart) {
-    errorPieChart.destroy()
-  }
+  if (errorPieChart) errorPieChart.destroy()
 })
 </script>
 
@@ -303,9 +354,32 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- Summary cards -->
+    <div class="summary-row">
+      <div class="summary-card">
+        <div class="summary-label">总凭据</div>
+        <div class="summary-value">{{ summary.total }}</div>
+      </div>
+      <div class="summary-card summary-good">
+        <div class="summary-label">可用 (ready)</div>
+        <div class="summary-value">{{ summary.ready }}</div>
+      </div>
+      <div class="summary-card" :class="summary.abnormal > 0 ? 'summary-warn' : ''">
+        <div class="summary-label">异常</div>
+        <div class="summary-value">{{ summary.abnormal }}</div>
+        <div class="summary-sub">unreachable/cooling/rate_limited</div>
+      </div>
+      <div class="summary-card" :class="summary.brokenModels > 0 ? 'summary-bad' : ''">
+        <div class="summary-label">broken 模型</div>
+        <div class="summary-value">{{ summary.brokenModels }}</div>
+        <div class="summary-sub">probe 确认坏掉</div>
+      </div>
+    </div>
+
+    <!-- Filters -->
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <label>可用性状态:</label>
+        <label>可用性:</label>
         <select v-model="availStateFilter" class="field-input" style="width:auto">
           <option value="">全部</option>
           <option value="ready">ready</option>
@@ -313,13 +387,18 @@ onUnmounted(() => {
           <option value="cooling">cooling</option>
           <option value="unreachable">unreachable</option>
         </select>
-        <label>健康状态:</label>
+        <label>健康:</label>
         <select v-model="healthFilter" class="field-input" style="width:auto">
           <option value="">全部</option>
           <option value="healthy">healthy</option>
           <option value="warning">warning</option>
           <option value="unreachable">unreachable</option>
         </select>
+        <div class="quick-filter-group">
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'none' ? 'qf-active' : ''" @click="quickFilter = 'none'">全部</button>
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'broken' ? 'qf-active qf-bad' : ''" @click="quickFilter = 'broken'">只看 broken</button>
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
+        </div>
         <div style="flex:1"></div>
         <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
           批量恢复 ({{ selectedIds.size }})
@@ -344,8 +423,10 @@ onUnmounted(() => {
             <th>供应商</th>
             <th>可用性</th>
             <th>健康</th>
+            <th>模型 (可用/总数)</th>
+            <th>最近成功率</th>
+            <th>broken 模型</th>
             <th>并发</th>
-            <th>失败率 (1h)</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -367,16 +448,24 @@ onUnmounted(() => {
               <span class="badge" :class="healthBadge(c.health_status)">{{ c.health_status }}</span>
             </td>
             <td>
-              <div>手动: {{ c.concurrency_limit || '—' }}</div>
-              <div class="cell-sub">自动: {{ c.concurrency_limit_auto || '—' }}</div>
-              <div class="cell-sub">生效: {{ c.effective_concurrency }}</div>
+              <span :class="modelCount(c).avail < modelCount(c).total ? 'rate-warn' : ''">
+                {{ modelCount(c).avail }}/{{ modelCount(c).total }}
+              </span>
             </td>
             <td>
-              <div v-if="c.recent_window_stats">
-                {{ (c.recent_window_stats.failure_rate * 100).toFixed(1) }}%
-                <span class="cell-sub">({{ c.recent_window_stats.failed }}/{{ c.recent_window_stats.total }})</span>
+              <span class="rate-cell" :class="rateClass(c.aggregated_success_rate)">
+                {{ rateText(c.aggregated_success_rate) }}
+              </span>
+            </td>
+            <td>
+              <span v-if="brokenModels(c).length === 0" class="cell-muted">—</span>
+              <div v-else style="display:flex;flex-wrap:wrap;gap:4px">
+                <span v-for="m in brokenModels(c)" :key="m.raw_model_name" class="badge badge-red model-badge">{{ m.raw_model_name }}</span>
               </div>
-              <div v-else class="cell-muted">—</div>
+            </td>
+            <td>
+              <div>手动: {{ c.concurrency_limit || '—' }}</div>
+              <div class="cell-sub">生效: {{ c.effective_concurrency }}</div>
             </td>
             <td>
               <button class="btn btn-sm btn-ghost" @click="openDetail(c)">详情</button>
@@ -388,7 +477,7 @@ onUnmounted(() => {
 
     <!-- Detail Drawer -->
     <div v-if="selectedCred" class="drawer-backdrop" @click="selectedCred = null">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop style="max-width:1000px">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
           <div>
             <h3 style="margin:0">{{ selectedCred.label || `凭据 #${selectedCred.id}` }}</h3>
@@ -399,21 +488,21 @@ onUnmounted(() => {
 
         <div class="drawer-body">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <!-- Left column -->
+            <!-- Left column: status + model table -->
             <div>
               <div class="drawer-section">
                 <div class="drawer-section-title">状态概览</div>
                 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
                   <div>
-                    <label class="field-label">可用性状态</label>
+                    <label class="field-label">可用性</label>
                     <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
                   </div>
                   <div>
-                    <label class="field-label">健康状态</label>
+                    <label class="field-label">健康</label>
                     <span class="badge" :class="healthBadge(selectedCred.health_status)">{{ selectedCred.health_status }}</span>
                   </div>
                   <div>
-                    <label class="field-label">配额状态</label>
+                    <label class="field-label">配额</label>
                     <span>{{ selectedCred.quota_state }}</span>
                   </div>
                   <div>
@@ -430,39 +519,72 @@ onUnmounted(() => {
                 <div class="drawer-section-title">并发限流</div>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
                   <div>
-                    <label class="field-label">手动设置</label>
+                    <label class="field-label">手动</label>
                     <div>{{ selectedCred.concurrency_limit || '未设置' }}</div>
                   </div>
                   <div>
-                    <label class="field-label">自动调整</label>
+                    <label class="field-label">自动</label>
                     <div>{{ selectedCred.concurrency_limit_auto || '未设置' }}</div>
                   </div>
                   <div>
-                    <label class="field-label">实际生效</label>
+                    <label class="field-label">生效</label>
                     <div class="badge badge-blue">{{ selectedCred.effective_concurrency }}</div>
                   </div>
                 </div>
-                <button class="btn btn-sm" style="margin-top:8px" @click="openConcurrencyDialog">手动调整自动值</button>
-              </div>
-
-              <div class="drawer-section">
-                <div class="drawer-section-title">手动升降级</div>
-                <div style="display:flex;gap:8px">
+                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+                  <button class="btn btn-sm" @click="openConcurrencyDialog">调整自动值</button>
                   <button class="btn btn-sm btn-danger" @click="openDemoteDialog">临时降级</button>
                   <button class="btn btn-sm btn-success" @click="openPromoteDialog">恢复上线</button>
                 </div>
               </div>
+
+              <!-- Model availability table -->
+              <div class="drawer-section">
+                <div class="drawer-section-title">模型可用性 ({{ (selectedCred.models || []).length }})</div>
+                <div v-if="!(selectedCred.models || []).length" class="cell-muted">无模型</div>
+                <div v-else style="overflow-x:auto">
+                  <table class="model-table">
+                    <thead>
+                      <tr>
+                        <th>模型</th>
+                        <th>probe</th>
+                        <th>成功率</th>
+                        <th>样本</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
+                          :class="{ 'model-row-selected': m.raw_model_name === selectedModel }"
+                          @click="selectModel(m.raw_model_name)">
+                        <td>
+                          <code class="mono-sm">{{ m.raw_model_name }}</code>
+                          <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
+                        </td>
+                        <td><span class="badge" :class="probeBadge(m.probe_state)">{{ m.probe_state }}</span></td>
+                        <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
+                        <td class="cell-sub">{{ m.recent_samples }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class="cell-sub" style="margin-top:4px">点击模型行查看其滑动窗口 →</div>
+                </div>
+              </div>
             </div>
 
-            <!-- Right column -->
+            <!-- Right column: sliding window + error pie -->
             <div>
               <div class="drawer-section">
-                <div class="drawer-section-title">滑动窗口 (最近 1 小时)</div>
-                <div v-if="!windowModel" class="cell-muted">无可用模型数据</div>
+                <div class="drawer-section-title">
+                  滑动窗口 (最近 1 小时)
+                  <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
+                    {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                  </span>
+                </div>
+                <div v-if="!selectedModel" class="cell-muted">点击左侧模型查看</div>
                 <div v-else>
                   <div style="margin-bottom:8px">
                     <label class="field-label">模型:</label>
-                    <code class="mono-sm">{{ windowModel }}</code>
+                    <code class="mono-sm">{{ selectedModel }}</code>
                   </div>
                   <div v-if="windowLoading">加载中...</div>
                   <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
@@ -480,7 +602,7 @@ onUnmounted(() => {
                         :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
                       ></div>
                     </div>
-                    <div style="display:flex;gap:16px;margin-top:8px;font-size:13px">
+                    <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;flex-wrap:wrap">
                       <span>总计: {{ windowEntries.length }}</span>
                       <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
                       <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
@@ -516,17 +638,14 @@ onUnmounted(() => {
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button class="btn btn-ghost" @click="batchDialogOpen = false">取消</button>
-          <button
-            :class="batchAction === 'promote' ? 'btn btn-success' : 'btn btn-danger'"
-            @click="submitBatch"
-          >
+          <button :class="batchAction === 'promote' ? 'btn btn-success' : 'btn btn-danger'" @click="submitBatch">
             确认{{ batchAction === 'promote' ? '恢复' : '降级' }}
           </button>
         </div>
       </div>
     </div>
 
-    <!-- Demote Dialog -->
+    <!-- Demote / Promote / Concurrency dialogs -->
     <div v-if="demoteDialogOpen" class="drawer-backdrop" @click="demoteDialogOpen = false">
       <div class="card" @click.stop style="max-width:500px;margin:auto;margin-top:100px;padding:24px">
         <h3 style="margin-top:0">临时降级</h3>
@@ -545,7 +664,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Promote Dialog -->
     <div v-if="promoteDialogOpen" class="drawer-backdrop" @click="promoteDialogOpen = false">
       <div class="card" @click.stop style="max-width:500px;margin:auto;margin-top:100px;padding:24px">
         <h3 style="margin-top:0">恢复上线</h3>
@@ -560,7 +678,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Concurrency Dialog -->
     <div v-if="concurrencyDialogOpen" class="drawer-backdrop" @click="concurrencyDialogOpen = false">
       <div class="card" @click.stop style="max-width:500px;margin:auto;margin-top:100px;padding:24px">
         <h3 style="margin-top:0">手动调整并发自动值</h3>
@@ -592,7 +709,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .page-header h1 {
@@ -601,7 +718,143 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+/* Summary cards */
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.summary-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.summary-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.summary-value {
+  font-size: 28px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+.summary-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.summary-good { border-color: rgba(63, 185, 80, 0.4); }
+.summary-good .summary-value { color: var(--success); }
+.summary-warn { border-color: rgba(210, 153, 34, 0.4); }
+.summary-warn .summary-value { color: var(--warning); }
+.summary-bad { border-color: rgba(248, 81, 73, 0.4); }
+.summary-bad .summary-value { color: var(--danger); }
+
+/* Quick filter pills */
+.quick-filter-group {
+  display: inline-flex;
+  gap: 4px;
+}
+.qf-active {
+  border-color: var(--accent);
+  color: var(--accent-h);
+}
+.qf-active.qf-bad { border-color: var(--danger); color: var(--danger); }
+.qf-active.qf-warn { border-color: var(--warning); color: var(--warning); }
+
+/* Rate coloring */
+.rate-cell { font-weight: 600; }
+.rate-good { color: var(--success); }
+.rate-warn { color: var(--warning); }
+.rate-bad { color: var(--danger); }
+.rate-none { color: var(--muted); }
+
+.model-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+}
+
+/* Model table in drawer */
+.model-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.model-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.model-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.model-table tbody tr {
+  cursor: pointer;
+}
+.model-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.model-row-selected {
+  background: rgba(99, 102, 241, 0.12) !important;
+}
+
+.mono-sm {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* Sliding window source tag */
+.source-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.src-redis { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+.src-rl { background: rgba(99, 102, 241, 0.15); color: var(--accent-h); }
+
+.cell-sub { font-size: 11px; color: var(--muted); }
+.cell-muted { color: var(--muted); }
+
 .drawer-panel-wide {
-  width: 90vw;
+  width: min(1000px, 95vw);
+}
+
+.drawer-section {
+  margin-bottom: 16px;
+}
+.drawer-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+@media (max-width: 900px) {
+  .summary-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>

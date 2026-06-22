@@ -21,7 +21,28 @@ export interface CredentialMonitorSummary {
   state_reason_detail: string | null
   health_checked_at: string | null
   total_requests: number
-  recent_window_stats?: WindowStats
+  // Per-(credential, model) availability breakdown (2026-06-22). Replaces the
+  // single-model recent_window_stats. Empty array when the credential has no
+  // model_offers rows.
+  models?: CredentialModelStatus[]
+  // Min recent success rate across the credential's models (conservative).
+  // null when there are no samples.
+  aggregated_success_rate?: number | null
+}
+
+// Per-(credential, model) availability row for the credential monitor drawer.
+export interface CredentialModelStatus {
+  raw_model_name: string
+  offer_available: boolean
+  offer_unavailable_reason?: string | null
+  binding_available: boolean
+  binding_unavailable_reason?: string | null
+  // 'broken_confirmed' | 'healthy_confirmed' | 'recovering' | 'unknown'
+  probe_state: string
+  probe_last_status?: string | null
+  probe_last_attempt_at?: string | null
+  recent_success_rate?: number | null
+  recent_samples: number
 }
 
 export interface WindowStats {
@@ -44,6 +65,8 @@ export interface CallEntry {
 export function getCredentialMonitorSummary(opts?: { provider_id?: number; include_window_stats?: boolean }) {
   const params = new URLSearchParams()
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
+  // include_window_stats is retained for backward-compat but the new endpoint
+  // always returns models[]; the param is a no-op now.
   if (opts?.include_window_stats) params.set('include_window_stats', 'true')
   const qs = params.toString()
   return req<{ credentials: CredentialMonitorSummary[]; count: number }>(
@@ -61,6 +84,7 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
     credential_id: number
     model: string
     window_minutes: number
+    source: 'redis' | 'request_logs'
     entries: CallEntry[]
     stats: {
       total: number
