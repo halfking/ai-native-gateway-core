@@ -289,13 +289,15 @@ func StreamAnthropicSSEToOpenAI(
 		if toolName != "" {
 			entry["type"] = "function"
 			funcMap := map[string]any{"name": toolName}
-			if len(args) > 0 {
+			// 2026-06-23 fix: Only include arguments if non-empty.
+			// Omit the field entirely for the initial chunk (ID+name only),
+			// then send arguments in subsequent deltas. This prevents
+			// clients from concatenating "{}"+"{real}" → invalid JSON.
+			if len(args) > 0 && string(args) != "{}" {
 				funcMap["arguments"] = string(args)
-			} else {
-				funcMap["arguments"] = ""
 			}
 			entry["function"] = funcMap
-		} else if len(args) > 0 {
+		} else if len(args) > 0 && string(args) != "{}" {
 			// Only arguments, no name (incremental delta)
 			entry["function"] = map[string]any{"arguments": string(args)}
 		}
@@ -434,7 +436,17 @@ func StreamAnthropicSSEToOpenAI(
 			if err := json.Unmarshal(data, &evt); err == nil && evt.ContentBlock.Type == "tool_use" {
 				// Cache the tool_use ID for subsequent delta updates
 				currentToolCallID = evt.ContentBlock.ID
-				emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.ContentBlock.InputRaw)
+				// 2026-06-23 fix: Only emit initial tool call if input is not empty.
+				// Anthropic often sends input:{} at content_block_start, then sends
+				// the actual arguments via input_json_delta. Emitting {} causes
+				// clients to concatenate "{}"+"{real_args}" → invalid JSON.
+				// Skip empty input and let input_json_delta handle it.
+				if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{}" {
+					emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.ContentBlock.InputRaw)
+				} else {
+					// Emit tool call with ID and name only, no arguments yet
+					emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, nil)
+				}
 			}
 
 		case "content_block_delta":
