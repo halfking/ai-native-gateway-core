@@ -51,6 +51,14 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureApplicationsTable(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err := db.ensureCredentialColumns(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -1024,5 +1032,124 @@ func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
 		return err
 	}
 	slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
+	return nil
+}
+
+// ensureApplicationsTable creates the applications table (used by api_keys
+// for tenant-scoped application_code references) and seeds a default
+// 'admin' application if missing. The applications table is referenced
+// by admin/auth.go's verifyAdminAuth, which requires app.code == "admin"
+// to authorize legacy admin API keys (sk-...).
+//
+// Without this, monitor-summary and other super-admin endpoints return
+// 401 because the api_keys.application_id points to a non-existent
+// applications row.
+//
+// Mirrors the schema implied by admin/keys.go (getOrCreateApplication).
+func (d *DB) ensureApplicationsTable(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS applications (
+		    id                     BIGSERIAL PRIMARY KEY,
+		    tenant_id              TEXT NOT NULL DEFAULT 'default',
+		    code                   TEXT NOT NULL,
+		    display_name           TEXT NOT NULL,
+		    owner_user             TEXT,
+		    data_sensitivity       TEXT NOT NULL DEFAULT 'internal',
+		    enabled                BOOLEAN NOT NULL DEFAULT TRUE,
+		    notes                  TEXT,
+		    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    default_client_profile TEXT,
+		    allowed_models_json    JSONB,
+		    CONSTRAINT applications_tenant_id_code_key UNIQUE (tenant_id, code),
+		    CONSTRAINT applications_data_sensitivity_check
+		        CHECK (data_sensitivity = ANY (ARRAY['public'::text, 'internal'::text, 'confidential'::text]))
+		);
+		CREATE INDEX IF NOT EXISTS idx_applications_tenant_code
+		    ON applications (tenant_id, code)
+		    WHERE enabled = TRUE;
+
+		-- Seed default 'admin' application for super-admin auth.
+		-- Explicit id=1 to match existing api_keys.application_id references
+		-- (legacy data: 8 keys reference application_id=1, which was the
+		-- admin app before the applications table was wiped). Using id=1
+		-- with ON CONFLICT (id) DO NOTHING keeps this idempotent.
+		INSERT INTO applications (id, tenant_id, code, display_name, owner_user, data_sensitivity, enabled)
+		VALUES (1, 'default', 'admin', 'Admin Console', 'admin', 'confidential', TRUE)
+		ON CONFLICT (id) DO NOTHING;
+
+		-- Seed 'applicant' application for the public /v1/keys/apply flow.
+		-- admin/keys.go handleV1KeysApply also references this code.
+		INSERT INTO applications (tenant_id, code, display_name, owner_user, data_sensitivity, enabled)
+		VALUES ('default', 'applicant', 'API Key Applicant', 'public', 'public', TRUE)
+		ON CONFLICT (tenant_id, code) DO NOTHING;
+
+		-- Reset sequence to MAX(id)+1 so future inserts don't collide.
+		-- Safe even on fresh DBs (MAX returns NULL → setval to 1).
+		SELECT setval(pg_get_serial_sequence('applications', 'id'),
+		              GREATEST(COALESCE(MAX(id), 0), 1), true)
+		FROM applications;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("applications schema ensured (table + admin + applicant seed)")
+	return nil
+}
+
+// ensureCredentialColumns adds columns from db/migrations/033-034 that
+// have not been picked up by an ensure* function yet.
+//
+// 033_credential_model_call_history.sql — call_history table (consumed
+//
+//	by bg/call_history_aggregator.go's GetRecent).
+//
+// 034_concurrency_limit_auto.sql — credentials.concurrency_limit_auto
+//
+//	(consumed by admin/credential_monitor.go's monitor-summary).
+//
+// Without these, monitor-summary returns 500 ("column does not exist")
+// and call-history aggregation silently no-ops.
+func (d *DB) ensureCredentialColumns(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		-- 034: credentials.concurrency_limit_auto
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS concurrency_limit_auto INT;
+		CREATE INDEX IF NOT EXISTS idx_credentials_auto_limit
+		    ON credentials (concurrency_limit_auto)
+		    WHERE concurrency_limit_auto IS NOT NULL;
+		UPDATE credentials
+		    SET concurrency_limit_auto = COALESCE(concurrency_limit, 5)
+		    WHERE concurrency_limit_auto IS NULL;
+
+		-- 033: credential_model_call_history (sliding window for the
+		-- credential monitor UI; consumed by CallHistoryAggregator)
+		CREATE TABLE IF NOT EXISTS credential_model_call_history (
+		    id               BIGSERIAL PRIMARY KEY,
+		    tenant_id        TEXT NOT NULL DEFAULT 'default',
+		    credential_id    BIGINT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+		    raw_model_name   TEXT NOT NULL,
+		    ts               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    success          BOOLEAN NOT NULL,
+		    latency_ms       INT,
+		    error_kind       TEXT,
+		    http_status      INT,
+		    request_id       TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_cmch_cred_model_ts
+		    ON credential_model_call_history (credential_id, raw_model_name, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_cmch_ts
+		    ON credential_model_call_history (ts DESC);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential columns ensured (concurrency_limit_auto, credential_model_call_history)")
 	return nil
 }
