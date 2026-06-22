@@ -119,6 +119,7 @@ func StreamAnthropicSSEToOpenAI(
 		bufferedText        strings.Builder
 		hasEmittedToolCalls bool            // Track whether any tool_calls were actually emitted
 		bufferedToolArgs    strings.Builder // Accumulate input_json_delta partial_json
+		currentToolCallID   string          // Cache the current tool_use block ID for delta updates
 	)
 
 	// emit a single OpenAI chat.completion.chunk; clear finishReason
@@ -275,8 +276,15 @@ func StreamAnthropicSSEToOpenAI(
 		idx := toolCallIndex
 		toolCallIndex++
 		entry := map[string]any{"index": idx}
+		// 2026-06-23 fix: Always include an ID field. If toolID is empty
+		// (which can happen when input_json_delta arrives without a
+		// content_block_start), generate a fallback ID to satisfy OpenAI
+		// clients that require "id" to be a string.
 		if toolID != "" {
 			entry["id"] = toolID
+		} else {
+			// Fallback: generate a synthetic tool call ID
+			entry["id"] = fmt.Sprintf("call_%s_%d", requestID, idx)
 		}
 		if toolName != "" {
 			entry["type"] = "function"
@@ -424,6 +432,8 @@ func StreamAnthropicSSEToOpenAI(
 				} `json:"content_block"`
 			}
 			if err := json.Unmarshal(data, &evt); err == nil && evt.ContentBlock.Type == "tool_use" {
+				// Cache the tool_use ID for subsequent delta updates
+				currentToolCallID = evt.ContentBlock.ID
 				emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.ContentBlock.InputRaw)
 			}
 
@@ -446,7 +456,7 @@ func StreamAnthropicSSEToOpenAI(
 				emit("", d.Thinking, nil)
 
 			case "input_json":
-				emitToolCall("", "", d.InputJSON)
+				emitToolCall(currentToolCallID, "", d.InputJSON)
 
 			case "input_json_delta":
 				// Accumulate partial JSON from input_json_delta events
@@ -489,9 +499,11 @@ func StreamAnthropicSSEToOpenAI(
 			}
 			// Flush accumulated tool arguments from input_json_delta events
 			if bufferedToolArgs.Len() > 0 {
-				emitToolCall("", "", json.RawMessage(bufferedToolArgs.String()))
+				emitToolCall(currentToolCallID, "", json.RawMessage(bufferedToolArgs.String()))
 				bufferedToolArgs.Reset()
 			}
+			// Clear the cached tool ID when content block ends
+			currentToolCallID = ""
 
 		case "message_delta":
 			var d sseAnthropicDelta
