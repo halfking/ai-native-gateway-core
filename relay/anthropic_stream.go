@@ -290,7 +290,10 @@ func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			}
 			lastSend = time.Now()
 			if capture != nil {
-				capture.ObservePayload(fmt.Sprintf(`{"type":"content_block_delta","text":%q}`, textDelta), "", false)
+				// StreamAnthropicSSE processes OpenAI-format SSE (see line 232-236: chunk["choices"]),
+				// so we must pass OpenAI-format payload to ObservePayload for extractDeltaText to work.
+				openaiPayload := fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, textDelta)
+				capture.ObservePayload(openaiPayload, "", false)
 			}
 		}
 
