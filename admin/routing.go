@@ -1655,7 +1655,17 @@ func (h *Handler) handleRoutingProbe(w http.ResponseWriter, r *http.Request) {
 		  AND lower(mo.raw_model_name) = lower($1)
 		  AND COALESCE(c.lifecycle_status,'active') = 'active'
 		  AND COALESCE(c.availability_state,'ready') = 'ready'
-		ORDER BY mo.manual_priority NULLS LAST LIMIT 1
+		ORDER BY mo.manual_priority NULLS LAST,
+		         CASE p.category
+		             WHEN 'official' THEN 1
+		             WHEN 'official_proxy' THEN 2
+		             WHEN 'self_host' THEN 3
+		             WHEN 'aggregator' THEN 4
+		             WHEN 'third_party_relay' THEN 5
+		             ELSE 9
+		         END,
+		         p.id, c.id
+		LIMIT 1
 	`, req.Model)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "no available provider for model "+req.Model)
