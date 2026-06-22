@@ -204,16 +204,6 @@ func toLower(s string) string {
 	return string(result)
 }
 
-// contains checks if b contains sub (case-sensitive).
-func contains(b []byte, sub string) bool {
-	for i := 0; i <= len(b)-len(sub); i++ {
-		if string(b[i:i+len(sub)]) == sub {
-			return true
-		}
-	}
-	return false
-}
-
 // containsString is case-sensitive string contains.
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && indexString(s, substr) >= 0

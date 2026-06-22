@@ -509,8 +509,12 @@ func TestIRConverter_RoundTrip_OpenAI_Anthropic_OpenAI(t *testing.T) {
 
 	// Parse both to compare structure
 	var orig, final map[string]any
-	json.Unmarshal([]byte(original), &orig)
-	json.Unmarshal(finalBody, &final)
+	if err := json.Unmarshal([]byte(original), &orig); err != nil {
+		t.Fatalf("unmarshal original: %v", err)
+	}
+	if err := json.Unmarshal(finalBody, &final); err != nil {
+		t.Fatalf("unmarshal final: %v", err)
+	}
 
 	// Model should be preserved
 	if final["model"] != orig["model"] {
