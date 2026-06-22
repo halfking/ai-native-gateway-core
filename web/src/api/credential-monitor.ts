@@ -119,3 +119,83 @@ export function setConcurrencyAuto(credentialId: number, concurrencyLimitAuto: n
     { credential_id: credentialId, concurrency_limit_auto: concurrencyLimitAuto, reason }
   )
 }
+
+// ── Manual model online/offline toggle (2026-06-23) ──────────────────────
+//
+// Operators can flip a single (credential_id, raw_model_name) binding off
+// the candidate pool or back on. Manual offline is sticky — the auto probe
+// runner will not touch it until the operator toggles it back to online.
+// See admin/credential_monitor.go handleModelToggle for the full spec.
+
+export type ModelToggleAction = 'online' | 'offline'
+
+export interface ModelToggleResponse {
+  success: boolean
+  available: boolean
+  unavailable_reason?: string | null
+  prev_available: boolean
+  prev_reason?: string | null
+  action: ModelToggleAction
+}
+
+export function toggleModelAvailability(
+  credentialId: number,
+  rawModel: string,
+  action: ModelToggleAction,
+  reason: string,
+) {
+  return req<ModelToggleResponse>('POST', '/api/credentials/model-toggle', {
+    credential_id: credentialId,
+    raw_model_name: rawModel,
+    action,
+    reason,
+  })
+}
+
+// ── State-change history (2026-06-23) ────────────────────────────────────
+//
+// Merged UNION of automatic probe consensus transitions
+// (model_probe_runs.state_change IN ('recovered','broke')) and manual
+// operator toggles (routing_audit_log.action IN
+// ('credential.model_toggle_online','credential.model_toggle_offline')),
+// ordered by timestamp DESC. The history endpoint is read-only and
+// capped at 200 events per call.
+
+export type ModelHistorySource = 'auto' | 'manual'
+
+export type ModelHistoryEventKind =
+  | 'recovered'  // auto: probe consensus flipped back to healthy_confirmed
+  | 'broke'      // auto: probe consensus flipped to broken_confirmed
+  | 'online'     // manual: operator toggled a model back into the pool
+  | 'offline'    // manual: operator toggled a model out of the pool
+
+export interface ModelHistoryEvent {
+  ts: string
+  source: ModelHistorySource
+  triggered_by?: string | null  // auto: 'scheduler' | 'manual'; manual: null
+  event: ModelHistoryEventKind
+  probe_status?: string | null  // auto only
+  http_status?: number | null   // auto only
+  error_code?: string | null    // auto only
+  error_message?: string | null // auto only
+  actor?: string | null         // manual: admin username; auto: null
+  reason?: string | null        // manual: operator-supplied reason
+}
+
+export interface ModelHistoryResponse {
+  credential_id: number
+  raw_model_name: string
+  events: ModelHistoryEvent[]
+  count: number
+}
+
+export function getModelHistory(credentialId: number, rawModel: string, limit = 50) {
+  const params = new URLSearchParams()
+  params.set('credential_id', String(credentialId))
+  params.set('raw_model_name', rawModel)
+  params.set('limit', String(limit))
+  return req<ModelHistoryResponse>(
+    'GET',
+    `/api/credentials/model-history?${params.toString()}`,
+  )
+}
