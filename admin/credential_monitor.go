@@ -329,7 +329,10 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 
 	// ── Primary: Redis recorder (per-call granularity) ──────────────────
 	source := "redis"
-	var entries []credentialhealth.CallEntry
+	// Initialize as a non-nil slice so the JSON response serializes to [] (not
+	// null) when there are no entries — otherwise the frontend's
+	// windowEntries.length throws "Cannot read properties of null".
+	entries := make([]credentialhealth.CallEntry, 0)
 	if m.recorder != nil && m.recorder.Enabled() {
 		since := time.Now().Add(-time.Duration(minutes) * time.Minute)
 		entries, _ = m.recorder.GetRecent(ctx, credentialID, model, since)
@@ -344,6 +347,13 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 			return
 		}
 		entries = rlEntries
+	}
+
+	// Guard against nil (Redis GetRecent + the fallback both return nil when
+	// empty). A nil slice serializes to JSON null, which crashes the frontend
+	// (windowEntries.length). Force a non-nil empty slice.
+	if entries == nil {
+		entries = make([]credentialhealth.CallEntry, 0)
 	}
 
 	// Limit to requested count (entries are already newest-first from Redis)
@@ -394,7 +404,8 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 	}
 	defer rows.Close()
 
-	var out []credentialhealth.CallEntry
+	// Non-nil so the caller (and the JSON response) gets [] rather than null.
+	out := make([]credentialhealth.CallEntry, 0)
 	for rows.Next() {
 		var e credentialhealth.CallEntry
 		var ok bool

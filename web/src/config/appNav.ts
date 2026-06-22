@@ -12,6 +12,11 @@ export type NavItem = {
   tenantOnly?: boolean
   /** Hidden when logged in as non-default tenant (tenant_admin) */
   hideForTenant?: boolean
+  /** Only highlight when the path matches exactly (no prefix matching).
+   *  Use for items whose path is a prefix of another item's path, e.g.
+   *  '/routing-v2' (路由全景) vs '/routing-v2/credentials' (凭据监控) —
+   *  without this both highlight at once on the credentials page. */
+  exact?: boolean
 }
 
 export type NavGroup = {
@@ -41,7 +46,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '模型与路由',
     items: [
       { path: '/models', label: '模型与目录', icon: '🏷️', platformOps: true, hideForTenant: true },
-      { path: '/routing-v2', label: '路由全景', icon: '🗺️', super: true, hideForTenant: true },
+      { path: '/routing-v2', label: '路由全景', icon: '🗺️', super: true, hideForTenant: true, exact: true },
       { path: '/routing-v2/credentials', label: '凭据监控', icon: '📊', super: true, hideForTenant: true },
       { path: '/providers', label: '供应商', icon: '🔌', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', icon: '📉', platformOps: true, hideForTenant: true },
@@ -121,8 +126,9 @@ export function visibleNavGroups(
     .filter((g) => g.items.length > 0)
 }
 
-export function isNavItemActive(path: string, currentPath: string): boolean {
+export function isNavItemActive(path: string, currentPath: string, exact?: boolean): boolean {
   if (path === '/') return currentPath === '/'
+  if (exact) return currentPath === path
   return currentPath === path || currentPath.startsWith(path + '/')
 }
 

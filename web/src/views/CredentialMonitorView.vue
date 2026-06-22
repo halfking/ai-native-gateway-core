@@ -125,6 +125,13 @@ function brokenModels(c: CredentialMonitorSummary): CredentialModelStatus[] {
   return (c.models || []).filter(m => m.probe_state === 'broken_confirmed')
 }
 
+// First 3 broken model names for the table cell (the rest are hidden behind an
+// ellipsis to keep the row readable when a credential has many broken models;
+// the drawer shows the full list).
+function brokenPreview(c: CredentialMonitorSummary): string[] {
+  return brokenModels(c).slice(0, 3).map(m => m.raw_model_name)
+}
+
 function openDetail(cred: CredentialMonitorSummary) {
   selectedCred.value = cred
   // default the window to the first broken model, else the lowest-rate model
@@ -427,12 +434,11 @@ onUnmounted(() => {
             <th>最近成功率</th>
             <th>broken 模型</th>
             <th>并发</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filteredCreds" :key="c.id">
-            <td>
+          <tr v-for="c in filteredCreds" :key="c.id" class="clickable-row" @click="openDetail(c)">
+            <td @click.stop>
               <input type="checkbox" :checked="selectedIds.has(c.id)" @change="toggleSelect(c.id)" />
             </td>
             <td>
@@ -459,16 +465,16 @@ onUnmounted(() => {
             </td>
             <td>
               <span v-if="brokenModels(c).length === 0" class="cell-muted">—</span>
-              <div v-else style="display:flex;flex-wrap:wrap;gap:4px">
-                <span v-for="m in brokenModels(c)" :key="m.raw_model_name" class="badge badge-red model-badge">{{ m.raw_model_name }}</span>
+              <div v-else style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                <span v-for="name in brokenPreview(c)" :key="name" class="badge badge-red model-badge">{{ name }}</span>
+                <span v-if="brokenModels(c).length > 3" class="badge badge-gray model-badge" :title="brokenModels(c).map(m => m.raw_model_name).join(', ')">
+                  +{{ brokenModels(c).length - 3 }}
+                </span>
               </div>
             </td>
             <td>
               <div>手动: {{ c.concurrency_limit || '—' }}</div>
               <div class="cell-sub">生效: {{ c.effective_concurrency }}</div>
-            </td>
-            <td>
-              <button class="btn btn-sm btn-ghost" @click="openDetail(c)">详情</button>
             </td>
           </tr>
         </tbody>
@@ -776,6 +782,14 @@ onUnmounted(() => {
 .model-badge {
   font-size: 10px;
   padding: 1px 6px;
+}
+
+/* Clickable table rows (click opens the detail drawer) */
+.clickable-row {
+  cursor: pointer;
+}
+.clickable-row:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
 }
 
 /* Model table in drawer */

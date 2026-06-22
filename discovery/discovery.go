@@ -776,7 +776,11 @@ func (s *Service) expireStaleModels(ctx context.Context, seen []modelOffer) {
 			  AND NOT EXISTS (
 			    SELECT 1 FROM request_logs rl
 			    WHERE rl.credential_id = $1
-			      AND rl.outbound_model = model_offers.raw_model_name
+			      -- case-insensitive: request_logs.outbound_model can differ in
+			      -- case from model_offers.raw_model_name (e.g. "MiniMax-M3" vs
+			      -- "minimax-m3"). A plain = would miss the rows and wrongly
+			      -- expire a model that's actively succeeding.
+			      AND lower(rl.outbound_model) = lower(model_offers.raw_model_name)
 			      AND rl.success = TRUE
 			      AND rl.ts > now() - interval '%d hours'
 			  )
