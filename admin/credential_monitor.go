@@ -258,7 +258,11 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 
 		// Decode the models JSON array into typed structs and compute the
 		// aggregated (min) success rate across routable models.
-		var models []CredentialModelStatus
+		// Initialize as a non-nil slice so the JSON response always serializes
+		// to "models":[] (never null). The SQL COALESCE(...,'[]'::json) already
+		// prevents null, but this is belt-and-braces in case of future schema
+		// drift.
+		models := make([]CredentialModelStatus, 0)
 		if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
 			_ = json.Unmarshal(modelsJSON, &models)
 		}
