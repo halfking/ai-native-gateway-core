@@ -207,6 +207,17 @@ func loadScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
 	if quality <= 0 {
 		quality = 0.9
 	}
+	// 2026-06-22 defect (3) soft layer: when we have a live recent-N success
+	// rate from request_logs, prefer it over the static column. Pairs in the
+	// 0.5-0.9 band survived the hard-exclude filter in loadCandidatesDB but
+	// should still sort below genuinely healthy candidates. The < 0.2 floor
+	// below already clamps the damage so a degraded credential can't drive
+	// the score to zero (it's only ever one of several P2C picks). The hard
+	// exclude at rate < 0.5 happens upstream in SQL, so anything reaching
+	// here is at worst in the soft-degraded band.
+	if c.RecentSuccessRate != nil {
+		quality = *c.RecentSuccessRate
+	}
 	if quality < 0.2 {
 		quality = 0.2
 	}

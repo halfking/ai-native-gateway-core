@@ -59,6 +59,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -1151,5 +1155,72 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential columns ensured (concurrency_limit_auto, credential_model_call_history)")
+	return nil
+}
+
+// ensureRoutingRecentSuccessRate mirrors db/migrations/035_routing_recent_success_rate.sql.
+//
+// Two parts, both idempotent:
+//  1. Backfill: any binding whose (credential, model) pair is currently
+//     model_probe_state='broken_confirmed' gets cmb.available=FALSE. This
+//     covers bindings that reached broken_confirmed before the P4 propagation
+//     code (2026-06-19) landed — e.g. cred-11/minimax-m3 from 2026-06-17 —
+//     which otherwise stay available=TRUE forever and keep re-entering the
+//     candidate pool.
+//  2. recent_success_rate(cred, model, sample_n) helper used by
+//     loadCandidatesDB so the last-N gate is a single SQL expression. The
+//     function is STABLE and uses idx_request_logs_credential_ts so the
+//     LIMIT scan is a 50-row index descent.
+//
+// Runs at startup via ensureSchema so every gateway instance converges on the
+// same function definition without a separate migration runner.
+func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		-- (1) Backfill broken_confirmed → binding available=FALSE.
+		UPDATE credential_model_bindings cmb
+		SET available          = FALSE,
+		    unavailable_reason = 'model_probe_broken',
+		    unavailable_at     = NOW()
+		FROM provider_models pm
+		WHERE cmb.provider_model_id = pm.id
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND EXISTS (
+		      SELECT 1 FROM model_probe_state mps
+		      WHERE mps.credential_id = cmb.credential_id
+		        AND mps.raw_model_name = pm.raw_model_name
+		        AND mps.state = 'broken_confirmed'
+		  );
+
+		-- (2) recent_success_rate helper. DROP+CREATE keeps the body in sync
+		--     with the source file even if a prior deploy left an older body.
+		DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
+		CREATE FUNCTION recent_success_rate(p_credential_id BIGINT,
+		                                    p_raw_model    TEXT,
+		                                    p_sample_n     INT DEFAULT 50)
+		RETURNS TABLE(rate DOUBLE PRECISION, samples INT)
+		LANGUAGE sql
+		STABLE
+		AS $$
+		    WITH recent AS (
+		        SELECT success
+		        FROM request_logs
+		        WHERE credential_id = p_credential_id
+		          AND COALESCE(outbound_model, client_model) = p_raw_model
+		        ORDER BY ts DESC
+		        LIMIT p_sample_n
+		    )
+		    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
+		           COUNT(*)::int
+		    FROM recent;
+		$$;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("routing recent success-rate schema ensured (recent_success_rate fn + broken_confirmed backfill)")
 	return nil
 }

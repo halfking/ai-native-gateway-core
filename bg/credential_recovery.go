@@ -62,6 +62,27 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  AND availability_recover_at IS NOT NULL
 		  AND availability_recover_at <= now()
 		  AND lifecycle_status = 'active'
+		  -- 2026-06-22 defect (4): do NOT auto-restore a credential to 'ready'
+		  -- while any of its (credential, model) bindings is still
+		  -- model_probe_state='broken_confirmed'. The recovery ticker used to
+		  -- flip availability_state back to 'ready' every 60s unconditionally,
+		  -- which re-admitted the credential into the candidate pool even
+		  -- though the per-model probe had proven the model was gone — producing
+		  -- the fail -> unreachable(120s) -> ready -> re-select -> fail loop seen
+		  -- on cred-11/minimax-m3. The probe worker only re-marks a binding
+		  -- healthy_confirmed via a manual nudge (TriggerManual), so guarding
+		  -- here cannot strand a credential that has actually recovered.
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM model_probe_state mps
+		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
+		      JOIN credential_model_bindings cmb
+		           ON cmb.credential_id = mps.credential_id
+		          AND cmb.provider_model_id = pm.id
+		      WHERE mps.credential_id = credentials.id
+		        AND mps.state = 'broken_confirmed'
+		        AND cmb.available = FALSE
+		  )
 	`)
 	if err != nil {
 		slog.Warn("credential availability recovery failed", "error", err)
