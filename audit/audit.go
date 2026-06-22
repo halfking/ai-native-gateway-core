@@ -306,6 +306,10 @@ func (sc *StreamCapture) ObservePayload(payload string, finishReason string, don
 		sc.appendText("\n</reasoning>\n")
 	}
 	text := extractDeltaText(payload)
+	if text == "" {
+		// Try Anthropic native format
+		text = extractAnthropicDeltaText(payload)
+	}
 	if text != "" {
 		sc.appendText(text)
 	}
@@ -813,6 +817,23 @@ func extractDeltaText(payload string) string {
 	}
 	content, _ := delta["content"].(string)
 	return content
+}
+
+// extractAnthropicDeltaText extracts text from Anthropic native SSE format.
+// Anthropic streams use {"type":"content_block_delta","text":"..."} format
+// instead of OpenAI's choices[].delta.content structure.
+func extractAnthropicDeltaText(payload string) string {
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return ""
+	}
+	// Check if this is an Anthropic content_block_delta event
+	eventType, _ := obj["type"].(string)
+	if eventType == "content_block_delta" {
+		text, _ := obj["text"].(string)
+		return text
+	}
+	return ""
 }
 
 // extractDeltaToolText returns the concatenated arguments of tool_calls in a
