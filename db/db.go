@@ -1209,7 +1209,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		        SELECT success
 		        FROM request_logs
 		        WHERE credential_id = p_credential_id
-		          AND COALESCE(outbound_model, client_model) = p_raw_model
+		          AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
 		        ORDER BY ts DESC
 		        LIMIT p_sample_n
 		    )
