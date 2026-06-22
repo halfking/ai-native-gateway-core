@@ -222,12 +222,14 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	// (cmb.unavailable_reason LIKE 'manual%' was preserved on the cmb
 	// side, so any model_offers row with reason LIKE 'manual%' is also
 	// pinned here).
+	//
+	// NOTE: model_offers is a VIEW, so it doesn't have an updated_at column.
+	// The underlying credential_model_bindings.updated_at was already set above.
 	moTag, err := db.Exec(ctx, `
 		UPDATE model_offers mo
 		SET available          = TRUE,
 		    unavailable_reason = NULL,
-		    unavailable_at     = NULL,
-		    updated_at         = now()
+		    unavailable_at     = NULL
 		WHERE mo.available = FALSE
 		  AND mo.unavailable_at IS NOT NULL
 		  AND mo.unavailable_at < now()
