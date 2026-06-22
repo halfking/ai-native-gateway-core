@@ -9,6 +9,12 @@ import (
 )
 
 func TestTuner_OnError_RateLimit(t *testing.T) {
+	// P2-7 fix (2026-06-22 audit): 429 rate-limit is now a no-op in the
+	// tuner. The executor already applies Limiter.Shrink (fast in-memory
+	// backoff) on 429; the tuner must NOT also cut concurrency_limit_auto
+	// (slow DB-backed change) or the credential gets double-penalized and
+	// takes an hour to recover. This test asserts the tuner issues NO
+	// queries and NO updates for a rate_limit error.
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatalf("failed to create mock: %v", err)
@@ -21,16 +27,7 @@ func TestTuner_OnError_RateLimit(t *testing.T) {
 	credID := 42
 	model := "minimax-m3"
 
-	// Mock current limit = 10
-	mock.ExpectQuery("SELECT COALESCE").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"limit"}).AddRow(10))
-
-	// Expect UPDATE to 8 (10 * 0.80)
-	mock.ExpectExec("UPDATE credentials").
-		WithArgs(8, credID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
+	// No mock expectations set — a 429 must not touch the DB at all.
 	ctx := context.Background()
 	err = tuner.OnError(ctx, credID, model, errorsx.KindRateLimit)
 	if err != nil {
@@ -38,7 +35,7 @@ func TestTuner_OnError_RateLimit(t *testing.T) {
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
+		t.Errorf("tuner should not query/update DB on rate_limit, unmet expectations: %v", err)
 	}
 }
 
@@ -90,7 +87,8 @@ func TestTuner_OnError_MinimumLimit(t *testing.T) {
 	credID := 99
 	model := "test"
 
-	// Current limit = 3, reduce by 20% → 2.4 → floor to 2 (min)
+	// Current limit = 3, reduce by 10% (503 factor) → 2.7 → floor to 2 (min).
+	// Uses KindConcurrent since the 429 path is now a no-op (P2-7).
 	mock.ExpectQuery("SELECT COALESCE").
 		WithArgs(credID).
 		WillReturnRows(pgxmock.NewRows([]string{"limit"}).AddRow(3))
@@ -100,7 +98,7 @@ func TestTuner_OnError_MinimumLimit(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	ctx := context.Background()
-	err = tuner.OnError(ctx, credID, model, errorsx.KindRateLimit)
+	err = tuner.OnError(ctx, credID, model, errorsx.KindConcurrent)
 	if err != nil {
 		t.Fatalf("OnError failed: %v", err)
 	}

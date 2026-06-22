@@ -65,6 +65,7 @@ func (c *ChatExecutor) BuildRequest(cand provider.Candidate, body []byte, isStre
 }
 
 func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.Response, clientModel, qualityFixMode string, qualitySignals *QualitySignals) ([]byte, error) {
+	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -191,7 +192,13 @@ func (e *Executor) executeOpenAI(
 		effectiveMaxRetries = 1
 	}
 
-	for attempt := 0; attempt <= effectiveMaxRetries; attempt++ {
+	// P3-9: mnfBonus grants exactly one extra loop iteration when an mnf
+	// retry is outstanding. It flips to 1 the moment mnfRetried is set
+	// (inside the mnf branch), and the flag stays true so the bonus never
+	// accumulates. This lets the single mnf probe happen even when policy
+	// maxRetries is 0, without forcing unrelated errors to retry.
+	mnfBonus := 0
+	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
 			// BUG-5 design note (2026-06-19): for session requests the upstream
@@ -370,6 +377,7 @@ func (e *Executor) executeOpenAI(
 			}
 
 			if resp != nil && resp.StatusCode >= 400 {
+				//nolint:errcheck // best-effort close
 				defer resp.Body.Close()
 				body := make([]byte, 4096)
 				n, _ := resp.Body.Read(body)
@@ -382,6 +390,17 @@ func (e *Executor) executeOpenAI(
 				// rather than a permanent model removal. We retry once on the same
 				// credential after a brief delay to verify if the issue persists.
 				// This reduces false-positive errors forwarded to clients.
+				//
+				// P2-8 fix (2026-06-22 audit): the pre-retry delay was a bare
+				// time.Sleep, which blocks the goroutine even after the client
+				// has disconnected. Replaced with a context-aware select so a
+				// client disconnect during the 150ms wait aborts immediately.
+				//
+				// P3-9 fix: this retry is gated by mnfRetried alone and returns
+				// retryableError; the loop exit (below) grants one extra
+				// iteration for an outstanding mnf retry even when policy
+				// maxRetries is 0, so we no longer force a global
+				// effectiveMaxRetries floor.
 				if !mnfRetried {
 					slog.Info("model_not_found retry",
 						"credential_id", cand.CredentialID,
@@ -390,10 +409,18 @@ func (e *Executor) executeOpenAI(
 						"upstream_latency_ms", upstreamLatency.Milliseconds(),
 						"body_preview", string(body[:min(n, 120)]),
 					)
-					// Brief delay before retry (150ms) to give upstream time to recover
-					time.Sleep(150 * time.Millisecond)
-					// Mark as retried and return a retryable error to trigger retry on same credential
+					// Brief delay before retry (150ms) to give upstream time to
+					// recover. Abort early if the client disconnects.
+					select {
+					case <-params.R.Context().Done():
+						return nil, params.R.Context().Err()
+					case <-time.After(150 * time.Millisecond):
+					}
+					// Mark as retried and return a retryable error to trigger
+					// retry on same credential. mnfBonus grants the extra
+					// iteration this retry needs (P3-9).
 					mnfRetried = true
+					mnfBonus = 1
 					return nil, &retryableError{err: &modelNotFoundError{
 						credentialID: cand.CredentialID,
 						rawModel:     cand.RawModel,
@@ -632,6 +659,7 @@ func (e *Executor) executeOpenAI(
 					QualityScore: streamQualityScore,
 				}, nil
 			}
+			//nolint:errcheck // best-effort close
 			defer resp.Body.Close()
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBodySize)+1))
 			if err != nil {
@@ -683,6 +711,7 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 				params.W.WriteHeader(resp.StatusCode)
+				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)
 			}
 			return &ExecuteResult{
