@@ -199,6 +199,10 @@ func StreamAnthropicSSEToOpenAI(
 		if inputTokens == 0 && outputTokens == 0 {
 			return
 		}
+		// Record usage in capture for audit trail
+		if capture != nil {
+			capture.ObserveUsage(&inputTokens, &outputTokens, nil, nil)
+		}
 		c := anthropicToOpenAIChunk{
 			ID: chatID, Object: "chat.completion.chunk",
 			Created: createdAt, Model: chunkModel,
