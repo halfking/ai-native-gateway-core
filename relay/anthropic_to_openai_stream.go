@@ -330,7 +330,10 @@ func StreamAnthropicSSEToOpenAI(
 		// the event before any emit.
 		if !isKnownAnthropicEventType(ev.Type) {
 			slog.Warn("anthropic_to_openai: dropping non-Anthropic event from upstream",
-				"event_type", eventType, "ev_type", ev.Type, "request_id", requestID)
+				"event_type", eventType,
+				"ev_type", ev.Type,
+				"request_id", requestID,
+				"data_preview", truncateForLog(string(data), 300))
 			continue
 		}
 
@@ -403,6 +406,21 @@ func StreamAnthropicSSEToOpenAI(
 
 			case "input_json":
 				emitToolCall("", "", d.InputJSON)
+
+			default:
+				// Handle unknown delta types
+				slog.Warn("unknown_delta_type_in_stream",
+					"delta_type", d.Type,
+					"has_text", d.Text != "",
+					"has_thinking", d.Thinking != "",
+					"request_id", requestID)
+
+				// Try to extract text or thinking field
+				if d.Text != "" {
+					bufferedText.WriteString(d.Text)
+				} else if d.Thinking != "" {
+					emit("", d.Thinking, nil)
+				}
 			}
 
 		case "content_block_stop":
@@ -426,7 +444,7 @@ func StreamAnthropicSSEToOpenAI(
 		case "message_delta":
 			var d sseAnthropicDelta
 			if err := json.Unmarshal(ev.Delta, &d); err == nil && d.StopReason != nil {
-				sr := mapAnthropicStopReason(*d.StopReason)  // identical function from messages.go
+				sr := mapAnthropicStopReason(*d.StopReason) // identical function from messages.go
 				finishReason = &sr
 			}
 			var u struct {
