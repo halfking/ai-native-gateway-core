@@ -263,6 +263,10 @@ func main() {
 			}
 		}
 		router := routing.NewRouter(stickyCache, lim)
+		
+		// Connect FpSlots to Router for load-aware P2C selection
+		router.FpSlots = fpSlots
+		
 		norm := relay.NewNormalizer()
 		routingExec = routing.NewExecutor(
 		router, cm, lim, pools, upClient,
@@ -520,6 +524,19 @@ routingExec.AnthropicToOpenAIStream = func(
 			routingExec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
 		}
 		routingExec.FpSlots = fpSlots
+		
+		// Health tracking (2026-06-22): sliding window recorder + concurrency tuner + continuous failure checker
+		if fpSlotRedis != nil && dbConn != nil {
+			healthTracker := routing.NewHealthTracker(
+				fpSlotRedis,
+				dbConn.Pool(),
+				2*time.Hour, // window TTL
+				100,         // max size
+			)
+			routingExec.HealthTracker = healthTracker
+			slog.Info("health_tracker initialized", "window", "1h", "max_size", 100)
+		}
+		
 		routingExec.Provider = providerClient
 		// Inject peak collector (after bg workers have started it).
 		if peakCollector != nil {
@@ -729,6 +746,11 @@ routingExec.AnthropicToOpenAIStream = func(
 	var credProbeV2 *bg.CredentialProbeV2
 	var pendingSweeper *bg.PendingSweeper
 	var defaultProbePicker *bg.DefaultProbePicker
+	
+	// Health tracking workers (2026-06-22)
+	var callHistoryAggregator *bg.CallHistoryAggregator
+	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
+	var healthAutoRecover *bg.HealthAutoRecover
 		var modelProbe *bg.ModelProbeRunner
 		var passiveProbe *bg.PassiveProbeListener
 		var stickyCleaner *bg.StickyCleaner
@@ -821,7 +843,17 @@ routingExec.AnthropicToOpenAIStream = func(
 		// modes because it only needs read access to credentials.
 		peakCollector = bg.NewConcurrencyPeakCollector(dbConn.Pool())
 		peakCollector.Start(context.Background())
-
+		
+		// Health tracking workers (2026-06-22): sliding window aggregation,
+		// auto-scaleup, and auto-recovery. Run in both modes.
+		if fpSlotRedis != nil {
+			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
+			callHistoryAggregator.Start(context.Background())
+			
+			healthAutoRecover = bg.NewHealthAutoRecover(dbConn.Pool(), 1*time.Minute)
+			healthAutoRecover.Start(context.Background())
+		}
+		
 		// Weekly rollup + auto-tune suggester require writes to
 		// credentials/audit; only run in "full" mode.
 		if !bgDataPlaneOnly {
@@ -830,6 +862,10 @@ routingExec.AnthropicToOpenAIStream = func(
 
 			slotSuggester = bg.NewSlotSuggester(dbConn.Pool())
 			slotSuggester.Start(context.Background())
+			
+			// Concurrency auto-scaleup (2026-06-22): increases limit for healthy high-load credentials
+			concurrencyAutoScaleUp = bg.NewConcurrencyAutoScaleUp(dbConn.Pool(), 1*time.Hour)
+			concurrencyAutoScaleUp.Start(context.Background())
 
 			autoIdx := autoroute.NewIndex()
 			autoIdx.SetPool(dbConn.Pool())
