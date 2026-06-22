@@ -695,15 +695,20 @@ routingExec.AnthropicToOpenAIStream = func(
 			discoverySvc.SetFernetKey(fernetKey)
 			discoverySvc.Start(context.Background())
 			slog.Info("model discovery service enabled")
+			slog.Info("CHECKPOINT: discovery.Start() returned")
 		} else {
 			slog.Info("model discovery skipped (bg_mode=data-plane)")
 		}
 	}
 
+	slog.Info("CHECKPOINT: after discovery section")
+
 	// ── Admin API ───────────────────────────────────────────────────────
 	var adminHandler *admin.Handler
 	if dbConn != nil && dbConn.Enabled() {
+		slog.Info("CHECKPOINT: before admin.NewHandler")
 		adminHandler = admin.NewHandler(dbConn.Pool(), cfg.SecretKey, fernetKey)
+		slog.Info("CHECKPOINT: after admin.NewHandler")
 		if keyring != nil {
 			adminHandler.SetKeyring(keyring)
 		}
@@ -714,6 +719,7 @@ routingExec.AnthropicToOpenAIStream = func(
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
 
+		slog.Info("CHECKPOINT: before modelPolicy check")
 		// model-policy: share the same Checker instance with the
 		// relay ChatHandler so admin writes can invalidate the
 		// per-tenant cache entry immediately (Round 48).
@@ -721,6 +727,7 @@ routingExec.AnthropicToOpenAIStream = func(
 			adminHandler.SetModelPolicy(modelPolicy)
 		}
 
+		slog.Info("CHECKPOINT: before EnsureUsersTable")
 		// Ensure users table exists for multi-tenant admin auth
 		migCtx, migCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := dbConn.EnsureUsersTable(migCtx); err != nil {
@@ -728,8 +735,11 @@ routingExec.AnthropicToOpenAIStream = func(
 		}
 		migCancel()
 
+		slog.Info("CHECKPOINT: after EnsureUsersTable")
 		// Seed initial admin user if table is empty
 		admin.EnsureSeedAdmin(dbConn.Pool())
+
+		slog.Info("CHECKPOINT: after EnsureSeedAdmin")
 
 		// Seed providers asynchronously to avoid blocking HTTP server startup (2026-06-22)
 		go func() {
@@ -985,21 +995,31 @@ routingExec.AnthropicToOpenAIStream = func(
 		}
 
 		if adminHandler != nil {
+			slog.Info("CHECKPOINT: before SetBackgroundServices")
 			adminHandler.SetBackgroundServices(credCycler, credRecovery, envelopeCleaner, stickyCleaner, taxonomySync)
+			slog.Info("CHECKPOINT: after SetBackgroundServices")
 			adminHandler.SetProbeServices(credProbeV2, defaultProbePicker)
+			slog.Info("CHECKPOINT: after SetProbeServices")
 			if modelProbe != nil {
 				adminHandler.SetModelProbeRunner(modelProbe)
 			}
+			slog.Info("CHECKPOINT: after SetModelProbeRunner")
 			adminHandler.SetFpSlots(fpSlots)
+			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
+			slog.Info("CHECKPOINT: after SetPeakCollector")
 			// Wire redis for credential monitor endpoints (2026-06-22).
 			if fpSlotRedis != nil {
 				adminHandler.SetRedisClient(fpSlotRedis)
 			}
+			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
+		slog.Info("CHECKPOINT: before memoraClient check")
 		if memoraClient != nil {
 			adminHandler.SetMemoraServices(memoraClient, memoraSink)
 		}
+
+		slog.Info("CHECKPOINT: before autoIndexRefresher check")
 
 		// v2.0.2 audit fix #6: admin auto-route refresh endpoint needs
 		// the live AutoIndexRefresher wired in. Without this, /refresh
