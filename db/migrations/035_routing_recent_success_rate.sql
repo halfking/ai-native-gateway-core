@@ -59,7 +59,9 @@ AS $$
         SELECT success
         FROM request_logs
         WHERE credential_id = p_credential_id
-          AND COALESCE(outbound_model, client_model) = p_raw_model
+          -- case-insensitive: request_logs.outbound_model can differ in case
+          -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3").
+          AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
         ORDER BY ts DESC
         LIMIT p_sample_n
     )

@@ -381,7 +381,10 @@ func (m *CredentialMonitorHandlers) slidingWindowFromRequestLogs(ctx context.Con
 		       success, COALESCE(latency_ms, 0), COALESCE(error_kind, '')
 		FROM request_logs
 		WHERE credential_id = $1
-		  AND COALESCE(outbound_model, client_model) = $2
+		  -- case-insensitive: request_logs.outbound_model can differ in case
+		  -- from model_offers.raw_model_name (e.g. "MiniMax-M3" vs "minimax-m3"),
+		  -- so a plain = misses most rows.
+		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND ts > NOW() - ($3 || ' minutes')::interval
 		ORDER BY ts DESC
 		LIMIT $4
