@@ -200,8 +200,42 @@ func (a *CallHistoryAggregator) aggregate(ctx context.Context) error {
 		a.highWatermark.Store(key, r.newestMs+1)
 	}
 
+	// GC stale watermarks (residual #2 from 2026-06-22 audit): any
+	// watermark key whose Redis counterpart no longer exists (the 2h
+	// sliding window expired, or the credential/model was deleted) is
+	// dead weight. Prune it so the sync.Map can't grow unbounded over
+	// weeks of credential churn. We do this only when the watermark has
+	// a meaningful number of entries, to avoid scanning on every tick.
+	a.pruneStaleWatermarks(keys)
+
 	slog.Info("call_history_aggregator: aggregated", "rows", len(batch))
 	return nil
+}
+
+// pruneStaleWatermarks deletes highWatermark entries whose Redis key is no
+// longer present in the current scan results. Called once per aggregate()
+// tick; cheap because it only iterates the watermark map (not Redis).
+func (a *CallHistoryAggregator) pruneStaleWatermarks(liveKeys []string) {
+	// Build a set of currently-live Redis keys for O(1) lookup.
+	live := make(map[string]struct{}, len(liveKeys))
+	for _, k := range liveKeys {
+		live[k] = struct{}{}
+	}
+
+	// Walk the watermark map and delete entries whose key is gone.
+	// sync.Map.Range visits a snapshot, so deleting during iteration is safe.
+	var pruned int
+	a.highWatermark.Range(func(key, _ any) bool {
+		if _, ok := live[key.(string)]; !ok {
+			a.highWatermark.Delete(key)
+			pruned++
+		}
+		return true
+	})
+
+	if pruned > 0 {
+		slog.Info("call_history_aggregator: pruned stale watermarks", "count", pruned)
+	}
 }
 
 // scanCallHistKeys iterates Redis using SCAN (cursor-based, non-blocking)

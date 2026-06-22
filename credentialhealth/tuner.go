@@ -19,17 +19,15 @@ type DBQuerier interface {
 
 // Tuner dynamically adjusts credential concurrency limits based on error patterns.
 type Tuner struct {
-	pg                      DBQuerier
-	decreaseFactor429       float64 // e.g., 0.80 = reduce by 20%
-	decreaseFactor503       float64 // e.g., 0.90 = reduce by 10%
-	minConcurrency          int     // minimum limit (default 1)
-	maxConcurrency          int     // maximum limit (default 50)
-	enableAutoTune          bool    // feature flag
+	pg                DBQuerier
+	decreaseFactor503 float64 // e.g., 0.90 = reduce by 10%
+	minConcurrency    int     // minimum limit (default 1)
+	maxConcurrency    int     // maximum limit (default 50)
+	enableAutoTune    bool    // feature flag
 }
 
 // TunerConfig holds tuner configuration.
 type TunerConfig struct {
-	DecreaseFactor429 float64
 	DecreaseFactor503 float64
 	MinConcurrency    int
 	MaxConcurrency    int
@@ -39,7 +37,6 @@ type TunerConfig struct {
 // DefaultTunerConfig returns sensible defaults.
 func DefaultTunerConfig() TunerConfig {
 	return TunerConfig{
-		DecreaseFactor429: 0.80, // 429 → reduce by 20%
 		DecreaseFactor503: 0.90, // 503 → reduce by 10%
 		MinConcurrency:    1,
 		MaxConcurrency:    50,
@@ -51,7 +48,6 @@ func DefaultTunerConfig() TunerConfig {
 func NewTuner(pg DBQuerier, cfg TunerConfig) *Tuner {
 	return &Tuner{
 		pg:                pg,
-		decreaseFactor429: cfg.DecreaseFactor429,
 		decreaseFactor503: cfg.DecreaseFactor503,
 		minConcurrency:    cfg.MinConcurrency,
 		maxConcurrency:    cfg.MaxConcurrency,
@@ -65,17 +61,32 @@ func (t *Tuner) Enabled() bool {
 }
 
 // OnError is called after each failed LLM call to potentially adjust concurrency.
+//
+// P2-7 fix (2026-06-22 audit): KindRateLimit (429) is intentionally NOT
+// handled here. The executor already calls e.Limiter.Shrink on 429, which
+// is a fast in-memory backoff (recovers in seconds). Having the tuner also
+// cut concurrency_limit_auto by 20% (a slow DB-backed change that only
+// recovers via the hourly scaleup worker) double-penalized 429s: a single
+// rate-limit spike could collapse the effective limit to the floor and take
+// an hour to climb back — directly prolonging the "No available provider"
+// state the health system was built to fix. 429 is a provider-side throttle,
+// not evidence that OUR concurrency ceiling is too high.
+//
+// KindConcurrent (503 overload) IS handled here because it is literally the
+// upstream telling us we're sending too much concurrent traffic, which is
+// exactly what concurrency_limit_auto governs.
 func (t *Tuner) OnError(ctx context.Context, credentialID int, model string, errKind errorsx.ErrorKind) error {
 	if !t.Enabled() {
 		return nil
 	}
 
 	switch errKind {
-	case errorsx.KindRateLimit: // 429
-		return t.decreaseConcurrency(ctx, credentialID, model, t.decreaseFactor429, "rate_limit_429")
-
-	case errorsx.KindConcurrent: // 503 engine busy
+	case errorsx.KindConcurrent: // 503 engine busy — genuinely too much concurrency
 		return t.decreaseConcurrency(ctx, credentialID, model, t.decreaseFactor503, "concurrent_503")
+
+	case errorsx.KindRateLimit:
+		// See method comment: handled by Limiter.Shrink in the executor, not here.
+		return nil
 
 	case errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent:
 		// Quota exhaustion doesn't mean concurrency is too high
