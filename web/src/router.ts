@@ -42,6 +42,7 @@ import MaaSPricingView        from './views/tenant/MaaSPricingView.vue'
 import MaaSUsageView          from './views/tenant/MaaSUsageView.vue'
 import MaaSOrderView          from './views/tenant/MaaSOrderView.vue'
 import TenantModelsView       from './views/tenant/TenantModelsView.vue'
+import CredentialMonitorView  from './views/CredentialMonitorView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -70,6 +71,7 @@ export const router = createRouter({
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
+    { path: '/routing-v2/credentials', component: CredentialMonitorView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },

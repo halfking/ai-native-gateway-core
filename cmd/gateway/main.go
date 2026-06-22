@@ -992,6 +992,10 @@ routingExec.AnthropicToOpenAIStream = func(
 			}
 			adminHandler.SetFpSlots(fpSlots)
 			adminHandler.SetPeakCollector(peakCollector)
+			// Wire redis for credential monitor endpoints (2026-06-22).
+			if fpSlotRedis != nil {
+				adminHandler.SetRedisClient(fpSlotRedis)
+			}
 		}
 		if memoraClient != nil {
 			adminHandler.SetMemoraServices(memoraClient, memoraSink)
