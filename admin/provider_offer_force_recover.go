@@ -171,12 +171,12 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var result struct {
-		ID               int
-		RawModelName     string
-		StandardizedName string
-		CanonicalID      *int
-		CanonicalName    *string
-		OutboundModelName *string
+		ID               int     `json:"id"`
+		RawModelName     string  `json:"raw_model_name"`
+		StandardizedName *string `json:"standardized_name"`
+		CanonicalID      *int    `json:"canonical_id"`
+		CanonicalName    *string `json:"canonical_name"`
+		OutboundModelName *string `json:"outbound_model_name"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
