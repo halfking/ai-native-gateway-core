@@ -59,27 +59,27 @@ type AnthropicExecutor struct {
 	// "openai-completions" selects the Q3 conversion paths above.
 	ClientProtocol string
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
-		// QualityProcessNonStream is the per-provider tool_call quality
-		// post-processor for the Q3 (openai client -> anthropic upstream)
-		// non-stream response. The Anthropic → OpenAI converter
-		// (ChatResponseConverter) produces an OpenAI-shaped body, so the
-		// same OpenAI processor as the chat executor works here. Wired
-		// from main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
-		//
-		// Q4 (anthropic passthrough) is left unprocessed for now: the
-		// Anthropic Messages schema uses `tool_use.name` directly (no
-		// nested `function.name`), and Anthropic SDK clients fail closed
-		// on empty `tool_use.name` rather than degrading to a
-		// user-friendly fallback. Adding a separate Anthropic-shape
-		// processor is tracked in the deployment notes.
-		QualityProcessNonStream QualityProcessNonStreamFunc
-		// IR is the unified protocol-conversion interface (Phase D, 2026-06-22).
-		// When set, the Q3 non-stream response path uses
-		// IR.ParseAnthropicResponse + IR.SerializeOpenAIResponse instead of
-		// the legacy ChatResponseConverter callback. Nil falls back to the
-		// callback path.
-		IR IRConverter
-	}
+	// QualityProcessNonStream is the per-provider tool_call quality
+	// post-processor for the Q3 (openai client -> anthropic upstream)
+	// non-stream response. The Anthropic → OpenAI converter
+	// (ChatResponseConverter) produces an OpenAI-shaped body, so the
+	// same OpenAI processor as the chat executor works here. Wired
+	// from main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
+	//
+	// Q4 (anthropic passthrough) is left unprocessed for now: the
+	// Anthropic Messages schema uses `tool_use.name` directly (no
+	// nested `function.name`), and Anthropic SDK clients fail closed
+	// on empty `tool_use.name` rather than degrading to a
+	// user-friendly fallback. Adding a separate Anthropic-shape
+	// processor is tracked in the deployment notes.
+	QualityProcessNonStream QualityProcessNonStreamFunc
+	// IR is the unified protocol-conversion interface (Phase D, 2026-06-22).
+	// When set, the Q3 non-stream response path uses
+	// IR.ParseAnthropicResponse + IR.SerializeOpenAIResponse instead of
+	// the legacy ChatResponseConverter callback. Nil falls back to the
+	// callback path.
+	IR IRConverter
+}
 
 var _ ProtocolHandler = (*AnthropicExecutor)(nil)
 
@@ -764,7 +764,7 @@ func (e *Executor) executeAnthropicOnce(
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 		} else if errKind == errorsx.KindConcurrent {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
-			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
+			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
 				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 		}
@@ -851,7 +851,7 @@ func (e *Executor) executeAnthropicOnce(
 		LatencyMs:   latencyMs,
 		RequestBody: append([]byte(nil), bodyBytes...),
 		// Phase D (2026-06-22): inbound body for audit logging
-		InboundBody: sourceBody,
+		InboundBody:  sourceBody,
 		ResponseBody: responseBody,
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
 		// Q3 (openai client -> anthropic upstream) non-stream

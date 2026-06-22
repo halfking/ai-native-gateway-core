@@ -351,21 +351,21 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 
-		reqStart := time.Now()
-		var resp *http.Response
-		var uErr *upstreampkg.Error
-		if e.Upstream != nil {
-			resp, uErr = e.Upstream.Do(req)
-		} else {
-			var doErr error
-			resp, doErr = httpClient.Do(req)
-			if doErr != nil {
-				uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+			reqStart := time.Now()
+			var resp *http.Response
+			var uErr *upstreampkg.Error
+			if e.Upstream != nil {
+				resp, uErr = e.Upstream.Do(req)
+			} else {
+				var doErr error
+				resp, doErr = httpClient.Do(req)
+				if doErr != nil {
+					uErr = &upstreampkg.Error{Kind: errorsx.ClassifyError(doErr, nil), Message: doErr.Error(), Err: doErr}
+				}
 			}
-		}
-		upstreamLatency := time.Since(reqStart)
+			upstreamLatency := time.Since(reqStart)
 
-		if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
+			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
 				if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
@@ -384,70 +384,70 @@ func (e *Executor) executeOpenAI(
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-			if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
-				// Internal retry for model_not_found (2026-06-20):
-				// When upstream returns model_not_found, it may be transient instability
-				// rather than a permanent model removal. We retry once on the same
-				// credential after a brief delay to verify if the issue persists.
-				// This reduces false-positive errors forwarded to clients.
-				//
-				// P2-8 fix (2026-06-22 audit): the pre-retry delay was a bare
-				// time.Sleep, which blocks the goroutine even after the client
-				// has disconnected. Replaced with a context-aware select so a
-				// client disconnect during the 150ms wait aborts immediately.
-				//
-				// P3-9 fix: this retry is gated by mnfRetried alone and returns
-				// retryableError; the loop exit (below) grants one extra
-				// iteration for an outstanding mnf retry even when policy
-				// maxRetries is 0, so we no longer force a global
-				// effectiveMaxRetries floor.
-				if !mnfRetried {
-					slog.Info("model_not_found retry",
+				if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+					// Internal retry for model_not_found (2026-06-20):
+					// When upstream returns model_not_found, it may be transient instability
+					// rather than a permanent model removal. We retry once on the same
+					// credential after a brief delay to verify if the issue persists.
+					// This reduces false-positive errors forwarded to clients.
+					//
+					// P2-8 fix (2026-06-22 audit): the pre-retry delay was a bare
+					// time.Sleep, which blocks the goroutine even after the client
+					// has disconnected. Replaced with a context-aware select so a
+					// client disconnect during the 150ms wait aborts immediately.
+					//
+					// P3-9 fix: this retry is gated by mnfRetried alone and returns
+					// retryableError; the loop exit (below) grants one extra
+					// iteration for an outstanding mnf retry even when policy
+					// maxRetries is 0, so we no longer force a global
+					// effectiveMaxRetries floor.
+					if !mnfRetried {
+						slog.Info("model_not_found retry",
+							"credential_id", cand.CredentialID,
+							"model", cand.RawModel,
+							"status", resp.StatusCode,
+							"upstream_latency_ms", upstreamLatency.Milliseconds(),
+							"body_preview", string(body[:min(n, 120)]),
+						)
+						// Brief delay before retry (150ms) to give upstream time to
+						// recover. Abort early if the client disconnects.
+						select {
+						case <-params.R.Context().Done():
+							return nil, params.R.Context().Err()
+						case <-time.After(150 * time.Millisecond):
+						}
+						// Mark as retried and return a retryable error to trigger
+						// retry on same credential. mnfBonus grants the extra
+						// iteration this retry needs (P3-9).
+						mnfRetried = true
+						mnfBonus = 1
+						return nil, &retryableError{err: &modelNotFoundError{
+							credentialID: cand.CredentialID,
+							rawModel:     cand.RawModel,
+							body:         string(body[:n]),
+						}}
+					}
+
+					// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
+					// reclassify as transient" branch. A slow 404 is still a 404;
+					// re-routing it as a retryable transient just makes the same
+					// credential re-dialed, wasting RTT and hiding the real cause
+					// from the caller. The classifier now requires a matching 4xx
+					// status (P5) and a tightened regex, so this branch is the
+					// canonical model_not_found path.
+					slog.Info("model_not_found skip offer (after retry)",
 						"credential_id", cand.CredentialID,
 						"model", cand.RawModel,
 						"status", resp.StatusCode,
 						"upstream_latency_ms", upstreamLatency.Milliseconds(),
 						"body_preview", string(body[:min(n, 120)]),
 					)
-					// Brief delay before retry (150ms) to give upstream time to
-					// recover. Abort early if the client disconnects.
-					select {
-					case <-params.R.Context().Done():
-						return nil, params.R.Context().Err()
-					case <-time.After(150 * time.Millisecond):
-					}
-					// Mark as retried and return a retryable error to trigger
-					// retry on same credential. mnfBonus grants the extra
-					// iteration this retry needs (P3-9).
-					mnfRetried = true
-					mnfBonus = 1
-					return nil, &retryableError{err: &modelNotFoundError{
+					return nil, &modelNotFoundError{
 						credentialID: cand.CredentialID,
 						rawModel:     cand.RawModel,
 						body:         string(body[:n]),
-					}}
+					}
 				}
-
-				// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
-				// reclassify as transient" branch. A slow 404 is still a 404;
-				// re-routing it as a retryable transient just makes the same
-				// credential re-dialed, wasting RTT and hiding the real cause
-				// from the caller. The classifier now requires a matching 4xx
-				// status (P5) and a tightened regex, so this branch is the
-				// canonical model_not_found path.
-				slog.Info("model_not_found skip offer (after retry)",
-					"credential_id", cand.CredentialID,
-					"model", cand.RawModel,
-					"status", resp.StatusCode,
-					"upstream_latency_ms", upstreamLatency.Milliseconds(),
-					"body_preview", string(body[:min(n, 120)]),
-				)
-				return nil, &modelNotFoundError{
-					credentialID: cand.CredentialID,
-					rawModel:     cand.RawModel,
-					body:         string(body[:n]),
-				}
-			}
 
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 					resp.StatusCode != 429 && resp.StatusCode != 401 &&
@@ -468,7 +468,7 @@ func (e *Executor) executeOpenAI(
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				} else if errKind == errorsx.KindConcurrent {
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, errorsx.KindConcurrent,
+					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
 						fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
@@ -572,35 +572,35 @@ func (e *Executor) executeOpenAI(
 						"benign_eof", isBenignEOF,
 					)
 
-				if isBenignEOF {
-					e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-					return &ExecuteResult{
-						Response:    resp,
-						Candidate:   cand,
-						LatencyMs:   latencyMs,
-						RequestBody: append([]byte(nil), bodyBytes...),
-						// Phase D (2026-06-22): inbound body for audit logging
-						InboundBody: sourceBody,
-						// Round 47 T-NEW-4: stream success path also records
-						// pre-request trim metadata so emitTelemetry can write
-						// compression_meta for streaming requests.
-						CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
-						CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-						CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
-					}, nil
+					if isBenignEOF {
+						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+						return &ExecuteResult{
+							Response:    resp,
+							Candidate:   cand,
+							LatencyMs:   latencyMs,
+							RequestBody: append([]byte(nil), bodyBytes...),
+							// Phase D (2026-06-22): inbound body for audit logging
+							InboundBody: sourceBody,
+							// Round 47 T-NEW-4: stream success path also records
+							// pre-request trim metadata so emitTelemetry can write
+							// compression_meta for streaming requests.
+							CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+							CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+							CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+						}, nil
 					} else if isResumable {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
 						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
@@ -612,7 +612,7 @@ func (e *Executor) executeOpenAI(
 					} else {
 						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, streamKind,
+							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
@@ -715,10 +715,10 @@ func (e *Executor) executeOpenAI(
 				params.W.Write(respBody)
 			}
 			return &ExecuteResult{
-				Response:     resp,
-				Candidate:    cand,
-				LatencyMs:    latencyMs,
-				RequestBody:  append([]byte(nil), bodyBytes...),
+				Response:    resp,
+				Candidate:   cand,
+				LatencyMs:   latencyMs,
+				RequestBody: append([]byte(nil), bodyBytes...),
 				// Phase D (2026-06-22): inbound body for audit logging
 				InboundBody:  sourceBody,
 				ResponseBody: append([]byte(nil), respBody...),

@@ -256,15 +256,15 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 // confirmation" step that was completely absent in v5.
 //
 // For each entry where in_reviewing=TRUE AND reviewing_until <= NOW():
-//   1. Check if the (credential, model) pair still had failures during the
-//      reviewing window (last 5 minutes). A success during the window means
-//      the credential recovered → clear reviewing, reset counters.
-//   2. If still failing → mark the credential availability_state='unreachable'
-//      via credentialstate.Writer (2-minute cooling for KindNetwork), which
-//      removes it from the routable candidate pool. credential_recovery.go
-//      will auto-restore it to 'ready' after the cooling period.
-//   3. Always clear in_reviewing=FALSE so the entry can be re-promoted if
-//      failures continue.
+//  1. Check if the (credential, model) pair still had failures during the
+//     reviewing window (last 5 minutes). A success during the window means
+//     the credential recovered → clear reviewing, reset counters.
+//  2. If still failing → mark the credential availability_state='unreachable'
+//     via credentialstate.Writer (2-minute cooling for KindNetwork), which
+//     removes it from the routable candidate pool. credential_recovery.go
+//     will auto-restore it to 'ready' after the cooling period.
+//  3. Always clear in_reviewing=FALSE so the entry can be re-promoted if
+//     failures continue.
 func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 	timeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -330,7 +330,7 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		} else if p.errCount > 0 {
 			// Still failing — mark unreachable (BUG-C/D fix).
 			if l.stateWriter != nil && l.stateWriter.Enabled() {
-				if err := l.stateWriter.WriteOnError(ctx, p.credentialID, credentialstate.Failure{
+				if err := l.stateWriter.WriteOnError(ctx, p.credentialID, p.rawModel, credentialstate.Failure{
 					Kind:   errorsx.KindNetwork,
 					Detail: fmt.Sprintf("passive_probe_review_failed: %s on %s (%d errors)", p.errorKind, p.rawModel, p.errCount),
 				}); err != nil {

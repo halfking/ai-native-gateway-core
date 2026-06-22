@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -30,7 +31,13 @@ func NewHealthTracker(
 
 	recorder := credentialhealth.NewRecorder(redisClient, windowTTL, maxSize)
 	tuner := credentialhealth.NewTuner(db, credentialhealth.DefaultTunerConfig())
-	checker := credentialhealth.NewChecker(recorder, db, credentialhealth.DefaultCheckerConfig())
+	// Wire the candidate-cache invalidator so a continuous-failure flip
+	// of (cred, model) is visible to the next request — without this, the
+	// 30s availableModelsCache would still serve the just-degraded
+	// binding until TTL expiry. (2026-06-22 audit, Fix C1.)
+	checkerCfg := credentialhealth.DefaultCheckerConfig()
+	checkerCfg.InvalidateCandidateCache = provider.InvalidateAllCandidateCache
+	checker := credentialhealth.NewChecker(recorder, db, checkerCfg)
 
 	return &HealthTracker{
 		recorder: recorder,
@@ -85,12 +92,13 @@ func (h *HealthTracker) OnSuccess(ctx context.Context, credentialID int, model s
 //
 // The three actions (record / tune / check) run in a SINGLE goroutine and
 // in that fixed order, rather than three parallel goroutines. Rationale:
-//   1. Parallel goroutines let the checker race the tuner — the checker
-//      could mark the credential degraded based on the window BEFORE the
-//      tuner lowered the limit, producing a double penalty.
-//   2. Every failed candidate spawns one of these, and under a sync-retry
-//      storm (120s loop × N candidates) three goroutines per failure
-//      floods PG. One goroutine keeps the fan-out bounded.
+//  1. Parallel goroutines let the checker race the tuner — the checker
+//     could mark the credential degraded based on the window BEFORE the
+//     tuner lowered the limit, producing a double penalty.
+//  2. Every failed candidate spawns one of these, and under a sync-retry
+//     storm (120s loop × N candidates) three goroutines per failure
+//     floods PG. One goroutine keeps the fan-out bounded.
+//
 // See P0-1 / P2-6 in the 2026-06-22 audit for details.
 //
 // The context is detached from the caller's request context for the same
