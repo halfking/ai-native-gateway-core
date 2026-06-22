@@ -666,34 +666,38 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue
 		}
 
-		// Track live peak concurrency for auto-tune.
-		if e.PeakCollector != nil {
-			e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
-		}
-
 		var execErr error
 		var result *ExecuteResult
-		switch cand.Protocol {
-		case "anthropic-messages":
-			// Q3 / Q4 path: handled by AnthropicExecutor in Phase 2.
-			// Phase 1 returns a sentinel "not yet implemented" error so
-			// the dispatcher is wired without behavior change for Q1/Q2.
-			result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
-		default:
-			// Q1 / Q2 path: openai-completions, openai-responses, "".
-			// All existing chat-style traffic goes through this branch;
-			// no behavior change from the pre-split executor.
-			result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
-		}
-		// Release peak tracking before the concurrency limiter so the
-		// next sample run sees the post-release state.
-		if e.PeakCollector != nil {
-			e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
-		}
-		release()
-		if fpLease != nil {
-			e.FpSlots.Release(params.R.Context(), fpLease)
-		}
+
+		// 2026-06-23 fix: wrap execute calls to ensure cleanup happens
+		// even if executeAnthropic/executeOpenAI returns early (e.g.
+		// executor_anthropic.go:468). Without this, resources leak.
+		func() {
+			// Track resources that must be released
+			releasePeak := e.PeakCollector != nil
+			if releasePeak {
+				e.PeakCollector.Acquire(int64(cand.CredentialID), cand.RawModel)
+			}
+
+			// Ensure cleanup via defer (executes even on early return)
+			defer func() {
+				if releasePeak {
+					e.PeakCollector.Release(int64(cand.CredentialID), cand.RawModel)
+				}
+				release()
+				if fpLease != nil {
+					e.FpSlots.Release(params.R.Context(), fpLease)
+				}
+			}()
+
+			// Execute the actual call
+			switch cand.Protocol {
+			case "anthropic-messages":
+				result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
+			default:
+				result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
+			}
+		}()
 
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
