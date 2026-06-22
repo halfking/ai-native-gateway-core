@@ -16,8 +16,13 @@ import (
 )
 
 const (
-	slotTTLSeconds       = 3600
-	sessionPinTTLSeconds = 1800
+	// slotTTLSeconds 指纹槽的 TTL（长期占用，24小时）
+	// 指纹槽是虚拟身份池，应该长期稳定，不应频繁变化
+	slotTTLSeconds = 86400 // 24 hours
+
+	// sessionPinTTLSeconds 会话绑定的 TTL（24小时）
+	// 会话倾向于复用"自己之前用过的指纹"，提高身份连续性
+	sessionPinTTLSeconds = 86400 // 24 hours
 )
 
 // Config controls slot pool behaviour.
@@ -160,14 +165,20 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	}
 	if m.client != nil {
 		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
-		released, err := releaseSlotScript.Run(ctx, m.client,
-			[]string{key},
+		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
+
+		// Refresh TTL for both slot and pin (keep them alive for 24h)
+		refreshed, err := releaseSlotScript.Run(ctx, m.client,
+			[]string{key, pinKey},
 			lease.Holder,
+			slotTTLSeconds,
+			sessionPinTTLSeconds,
+			lease.SlotIndex,
 		).Bool()
 		if err != nil {
 			slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
 		}
-		if !released {
+		if !refreshed {
 			slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
 		}
 	}
@@ -196,7 +207,11 @@ func (m *Manager) ForceUnpin(ctx context.Context, holder string, credentialID in
 
 var releaseSlotScript = redis.NewScript(`
 	local slotKey = KEYS[1]
+	local pinKey = KEYS[2]
 	local holder = ARGV[1]
+	local slotTTL = tonumber(ARGV[2])
+	local pinTTL = tonumber(ARGV[3])
+	local slotIndex = tonumber(ARGV[4])
 
 	-- Check if slot is owned by this holder
 	local current = redis.call('GET', slotKey)
@@ -204,9 +219,16 @@ var releaseSlotScript = redis.NewScript(`
 		return false
 	end
 
-	-- Delete only the slot; pin is preserved so the holder's next
-	-- request can re-acquire the same slot (or migrate if taken).
-	redis.call('DEL', slotKey)
+	-- DO NOT delete the slot key. Instead, refresh its TTL to keep
+	-- the fingerprint identity alive for 24 hours. This allows the
+	-- same holder's next request to reuse the same slot, and other
+	-- sessions to see this slot as "occupied by a stable identity".
+	redis.call('EXPIRE', slotKey, slotTTL)
+
+	-- Also refresh the pin TTL so the holder can reuse this slot
+	if pinKey ~= "" and pinTTL > 0 then
+		redis.call('SET', pinKey, tostring(slotIndex), 'EX', pinTTL)
+	end
 
 	return true
 `)
@@ -375,9 +397,17 @@ var acquireSlotScript = redis.NewScript(`
 	local pinTTL = tonumber(ARGV[3])
 	local slotIndex = tonumber(ARGV[4])
 	
-	-- Try to acquire slot lock
-	local acquired = redis.call('SET', slotKey, holder, 'NX', 'EX', slotTTL)
-	if not acquired then
+	-- Check current slot owner
+	local currentHolder = redis.call('GET', slotKey)
+	
+	if currentHolder == false then
+		-- Slot is free, acquire it
+		redis.call('SET', slotKey, holder, 'EX', slotTTL)
+	elseif currentHolder == holder then
+		-- Slot is already owned by this holder, refresh TTL
+		redis.call('EXPIRE', slotKey, slotTTL)
+	else
+		-- Slot is owned by another holder, cannot acquire
 		return false
 	end
 	
@@ -409,12 +439,21 @@ func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string
 	for slot := 0; slot < limit; slot++ {
 		key := slotKey{credentialID: credentialID, slotIndex: slot}
 		cur, exists := m.memSlots[key]
+
 		if !exists || cur.exp.Before(now) {
+			// Slot is free, acquire it
+			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
+			m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
+			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
+			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+		} else if cur.holder == holder {
+			// Slot is already owned by this holder, refresh TTL
 			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
 			m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
 			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
 			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 		}
+		// else: slot is owned by another holder, skip it
 	}
 	return nil, false
 }
@@ -422,11 +461,21 @@ func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string
 func (m *Manager) releaseMemory(credentialID, slotIndex int, holder string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
 	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
 	if cur, ok := m.memSlots[key]; ok && cur.holder == holder {
-		delete(m.memSlots, key)
-		// Pin survives release; expires naturally via TTL in
-		// purgeExpiredLocked, or is cleared explicitly by ForceUnpin.
+		// DO NOT delete the slot. Refresh its TTL to keep the fingerprint
+		// identity alive for 24 hours (same as Redis mode).
+		m.memSlots[key] = memEntry{
+			holder: holder,
+			exp:    now.Add(time.Duration(slotTTLSeconds) * time.Second),
+		}
+		// Refresh pin TTL as well
+		pinKey := pinRedisKey(holder, credentialID)
+		m.memPins[pinKey] = memPinEntry{
+			slot: slotIndex,
+			exp:  now.Add(time.Duration(sessionPinTTLSeconds) * time.Second),
+		}
 	}
 }
 
