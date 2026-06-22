@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/redis/go-redis/v9"
 )
 
 type Handler struct {
@@ -83,6 +84,12 @@ type Handler struct {
 	providerSettingsResolver *settings.ProviderSettingsResolver
 	refreshMu                sync.Mutex             // guards lazy init of refreshState
 	refreshState             *providerRefreshState // per-provider "refresh model list" tracking (see providers.go)
+	// healthTracker (2026-06-22) provides access to the routing health tracker
+	// for credential monitor endpoints. Wired from cmd/gateway/main.go.
+	healthTracker interface {
+		Enabled() bool
+	}
+	redisClient interface{} // Redis client for sliding window access
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -101,6 +108,16 @@ func (h *Handler) SetModelPolicy(mp interface{ Invalidate(string) }) {
 // resolver so admin endpoints can clear cache after updates.
 func (h *Handler) SetProviderSettingsResolver(psr *settings.ProviderSettingsResolver) {
 	h.providerSettingsResolver = psr
+}
+
+// SetHealthTracker (2026-06-22) wires the routing health tracker for credential monitor endpoints.
+func (h *Handler) SetHealthTracker(ht interface{ Enabled() bool }) {
+	h.healthTracker = ht
+}
+
+// SetRedisClient (2026-06-22) wires the Redis client for sliding window access.
+func (h *Handler) SetRedisClient(rc interface{}) {
+	h.redisClient = rc
 }
 
 // SetKeyring configures AES-256-GCM key rotation.  Call this at startup after
@@ -387,6 +404,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// Phase 1 work type config CRUD.
 		wtH := NewWorkTypeHandlers(h.db)
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
+
+		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
+		// Requires redis for sliding window access; recorder is optional.
+		if h.redisClient != nil {
+			var rc *redis.Client
+			if r, ok := h.redisClient.(*redis.Client); ok {
+				rc = r
+			}
+			monitorH := NewCredentialMonitorHandlers(h, nil, rc)
+			monitorH.RegisterMonitorRoutes(mux, h.superAdmin)
+		}
 
 		h.registerMaasRoutes(mux)
 	}
