@@ -108,14 +108,15 @@ func StreamAnthropicSSEToOpenAI(
 	}
 
 	var (
-		ctx           context.Context
-		inputTokens   int
-		outputTokens  int
-		finishReason  *string
-		toolCallIndex int
-		emittedRole   bool
-		chunkCount    int
-		bufferedText  strings.Builder
+		ctx                 context.Context
+		inputTokens         int
+		outputTokens        int
+		finishReason        *string
+		toolCallIndex       int
+		emittedRole         bool
+		chunkCount          int
+		bufferedText        strings.Builder
+		hasEmittedToolCalls bool // Track whether any tool_calls were actually emitted
 	)
 
 	// emit a single OpenAI chat.completion.chunk; clear finishReason
@@ -268,6 +269,7 @@ func StreamAnthropicSSEToOpenAI(
 		if toolID == "" && toolName == "" && len(args) == 0 {
 			return
 		}
+		hasEmittedToolCalls = true // Mark that we've emitted at least one tool call
 		idx := toolCallIndex
 		toolCallIndex++
 		entry := map[string]any{"index": idx}
@@ -276,9 +278,15 @@ func StreamAnthropicSSEToOpenAI(
 		}
 		if toolName != "" {
 			entry["type"] = "function"
-			entry["function"] = map[string]any{"name": toolName, "arguments": ""}
-		}
-		if len(args) > 0 {
+			funcMap := map[string]any{"name": toolName}
+			if len(args) > 0 {
+				funcMap["arguments"] = string(args)
+			} else {
+				funcMap["arguments"] = ""
+			}
+			entry["function"] = funcMap
+		} else if len(args) > 0 {
+			// Only arguments, no name (incremental delta)
 			entry["function"] = map[string]any{"arguments": string(args)}
 		}
 		arr, _ := json.Marshal([]map[string]any{entry})
@@ -403,14 +411,18 @@ func StreamAnthropicSSEToOpenAI(
 			emitRolePrelude()
 
 		case "content_block_start":
-			var blk struct {
-				Type     string          `json:"type"`
-				ID       string          `json:"id"`
-				Name     string          `json:"name"`
-				InputRaw json.RawMessage `json:"input"`
+			var evt struct {
+				Type         string `json:"type"`
+				Index        int    `json:"index"`
+				ContentBlock struct {
+					Type     string          `json:"type"`
+					ID       string          `json:"id"`
+					Name     string          `json:"name"`
+					InputRaw json.RawMessage `json:"input"`
+				} `json:"content_block"`
 			}
-			if err := json.Unmarshal(data, &blk); err == nil && blk.Type == "tool_use" {
-				emitToolCall(blk.ID, blk.Name, blk.InputRaw)
+			if err := json.Unmarshal(data, &evt); err == nil && evt.ContentBlock.Type == "tool_use" {
+				emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.ContentBlock.InputRaw)
 			}
 
 		case "content_block_delta":
@@ -499,6 +511,23 @@ func StreamAnthropicSSEToOpenAI(
 			if finishReason == nil {
 				def := "stop"
 				finishReason = &def
+			}
+			// 2026-06-23 fix: Detect inconsistent finish_reason when model
+			// indicates tool_calls but never emitted any tool_use blocks.
+			// This happens with some Claude models (e.g. claude-sonnet-4-6)
+			// where the model returns stop_reason:"tool_use" but sends no
+			// content_block_start(tool_use) event. Clients would wait forever
+			// for tool_calls data that never arrives. Correct to "stop" and log.
+			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
+				slog.Warn("inconsistent_tool_calls_finish_reason",
+					"request_id", requestID,
+					"model", clientModel,
+					"prompt_tokens", inputTokens,
+					"completion_tokens", outputTokens,
+					"action", "correcting_to_stop",
+					"original_finish_reason", "tool_calls")
+				stop := "stop"
+				finishReason = &stop
 			}
 			emit("", "", nil) // emit finish_reason + clear
 			emitUsage()
