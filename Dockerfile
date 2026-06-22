@@ -35,6 +35,8 @@ RUN cd /src/web && npm run build
 COPY . .
 
 # Version injection — populated by deploy scripts or manual --build-arg.
+# See scripts/bump-llm-gateway-go-version.sh for the canonical build pipeline.
+ARG GIT_TAG=""
 ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
@@ -52,6 +54,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
 # compatibility (Q2 decision: only swap runtime, keep builder).
 FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue-alpine-slim-runtime
 
+ARG GIT_TAG=""
 ARG GIT_SHA=""
 ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
@@ -75,11 +78,21 @@ USER root
 # /opt/llm-gateway-go/.deploy_seq from a single image, regardless
 # of which path the runtime / post-deploy script picks.
 # (chown -R so the appuser runtime can re-stamp these on post-deploy.)
+#
+# Version source (set by scripts/bump-llm-gateway-go-version.sh which calls
+# deploy/shared/lib/version-build-info.sh):
+#   GIT_TAG    = latest semver tag, e.g. v2.0.5
+#   GIT_SHA    = 8-char short SHA, e.g. e80322f1
+#   BUILD_DATE = YYYYMMDD, e.g. 20260622
+#   BUILD_SEQ  = monotonically-increasing per-module build counter
+# Display format: <semver>-<8char-sha>-<YYYYMMDD>-<seq>
+#   e.g. 2.0.5-e80322f1-20260622-495
 RUN chown -R appuser:appuser /opt/llm-gateway-go && \
-    echo "1.0.0-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}" > /opt/llm-gateway-go/VERSION && \
+    SEMVER="${GIT_TAG:-v0.0.0}"; SEMVER="${SEMVER#v}"; \
+    echo "${SEMVER}-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}-${BUILD_SEQ:-0}" > /opt/llm-gateway-go/VERSION && \
     echo "${BUILD_SEQ:-0}" > /opt/llm-gateway-go/.deploy_seq && \
     printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
-    printf '1.0.0-%s-%s\n' "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" > /.VERSION
+    printf '%s-%s-%s-%s\n' "${SEMVER}" "${GIT_SHA:-unknown}" "${BUILD_DATE:-$(date -u +%Y%m%d)}" "${BUILD_SEQ:-0}" > /.VERSION
 
 USER appuser
 
