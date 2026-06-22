@@ -272,7 +272,9 @@ func TestSerializeOpenAIResponse_ClientModelOverride(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	var parsed map[string]any
-	json.Unmarshal(body, &parsed)
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
 	if parsed["model"] != "client-model-v3" {
 		t.Errorf("model override: got %v", parsed["model"])
 	}
@@ -293,7 +295,9 @@ func TestSerializeAnthropicResponse_EmptyContent(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	var parsed map[string]any
-	json.Unmarshal(body, &parsed)
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("error: %v", err)
+	}
 	// Should have at least one empty text block
 	contentRaw, ok := parsed["content"].([]any)
 	if !ok || len(contentRaw) != 1 {
