@@ -130,11 +130,17 @@ type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
 // AnthropicToOpenAIStream, AnthropicToChatResponse, SanitizeAnthropicTools,
 // NormalizeOpenAITools) with a single Parse→IR→Serialize pipeline.
 //
-// Protocol coverage:
+// Protocol coverage (request direction):
 //   - ParseOpenAI: OpenAI Chat Completions → IR
 //   - ParseAnthropic: Anthropic Messages → IR
 //   - SerializeOpenAI: IR → OpenAI Chat Completions (for Q2: anthropic client → openai upstream)
 //   - SerializeAnthropic: IR → Anthropic Messages (for Q3: openai client → anthropic upstream)
+//
+// Protocol coverage (response direction, Phase D):
+//   - ParseAnthropicResponse: Anthropic Messages response → IR
+//   - ParseOpenAIResponse: OpenAI Chat Completions response → IR
+//   - SerializeOpenAIResponse: IR → OpenAI Chat Completions response (Q3 non-stream)
+//   - SerializeAnthropicResponse: IR → Anthropic Messages response (Q2 non-stream)
 //
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
@@ -143,6 +149,11 @@ type IRConverter interface {
 	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
 	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
 	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
+	// Response direction (Phase D)
+	ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error)
+	ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error)
+	SerializeOpenAIResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
+	SerializeAnthropicResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 }
 
 // RequestLogEmitter (2026-06-20) is the minimum interface needed by

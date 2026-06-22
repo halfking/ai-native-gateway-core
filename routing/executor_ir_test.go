@@ -28,6 +28,23 @@ func (a *irAdapterForTest) SerializeAnthropic(req *ir.InternalRequest) ([]byte, 
 	return ir.SerializeAnthropic(req)
 }
 
+// Phase D (2026-06-22): Response direction methods
+func (a *irAdapterForTest) ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseAnthropicResponse(body)
+}
+
+func (a *irAdapterForTest) ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseOpenAIResponse(body)
+}
+
+func (a *irAdapterForTest) SerializeOpenAIResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeOpenAIResponse(irResp, clientModel)
+}
+
+func (a *irAdapterForTest) SerializeAnthropicResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeAnthropicResponse(irResp, clientModel)
+}
+
 // TestIRConverter_Q3_OpenAI_To_Anthropic tests the Q3 path:
 // OpenAI client → irAdapter.ParseOpenAI → IR → irAdapter.SerializeAnthropic → Anthropic upstream.
 func TestIRConverter_Q3_OpenAI_To_Anthropic(t *testing.T) {

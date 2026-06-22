@@ -1358,3 +1358,20 @@ func (a *irAdapter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
 func (a *irAdapter) SerializeAnthropic(req *ir.InternalRequest) ([]byte, error) {
 	return ir.SerializeAnthropic(req)
 }
+
+// Phase D (2026-06-22): Response direction methods
+func (a *irAdapter) ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseAnthropicResponse(body)
+}
+
+func (a *irAdapter) ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error) {
+	return ir.ParseOpenAIResponse(body)
+}
+
+func (a *irAdapter) SerializeOpenAIResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeOpenAIResponse(irResp, clientModel)
+}
+
+func (a *irAdapter) SerializeAnthropicResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeAnthropicResponse(irResp, clientModel)
+}

@@ -59,21 +59,27 @@ type AnthropicExecutor struct {
 	// "openai-completions" selects the Q3 conversion paths above.
 	ClientProtocol string
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
-	// QualityProcessNonStream is the per-provider tool_call quality
-	// post-processor for the Q3 (openai client -> anthropic upstream)
-	// non-stream response. The Anthropic → OpenAI converter
-	// (ChatResponseConverter) produces an OpenAI-shaped body, so the
-	// same OpenAI processor as the chat executor works here. Wired
-	// from main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
-	//
-	// Q4 (anthropic passthrough) is left unprocessed for now: the
-	// Anthropic Messages schema uses `tool_use.name` directly (no
-	// nested `function.name`), and Anthropic SDK clients fail closed
-	// on empty `tool_use.name` rather than degrading to a
-	// user-friendly fallback. Adding a separate Anthropic-shape
-	// processor is tracked in the deployment notes.
-	QualityProcessNonStream QualityProcessNonStreamFunc
-}
+		// QualityProcessNonStream is the per-provider tool_call quality
+		// post-processor for the Q3 (openai client -> anthropic upstream)
+		// non-stream response. The Anthropic → OpenAI converter
+		// (ChatResponseConverter) produces an OpenAI-shaped body, so the
+		// same OpenAI processor as the chat executor works here. Wired
+		// from main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
+		//
+		// Q4 (anthropic passthrough) is left unprocessed for now: the
+		// Anthropic Messages schema uses `tool_use.name` directly (no
+		// nested `function.name`), and Anthropic SDK clients fail closed
+		// on empty `tool_use.name` rather than degrading to a
+		// user-friendly fallback. Adding a separate Anthropic-shape
+		// processor is tracked in the deployment notes.
+		QualityProcessNonStream QualityProcessNonStreamFunc
+		// IR is the unified protocol-conversion interface (Phase D, 2026-06-22).
+		// When set, the Q3 non-stream response path uses
+		// IR.ParseAnthropicResponse + IR.SerializeOpenAIResponse instead of
+		// the legacy ChatResponseConverter callback. Nil falls back to the
+		// callback path.
+		IR IRConverter
+	}
 
 var _ ProtocolHandler = (*AnthropicExecutor)(nil)
 
@@ -125,7 +131,24 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// JSON body (with `content[].text` and `stop_reason`) and reports
 	// "供应商错误" to the end-user.
 	if a.ClientProtocol != "anthropic-messages" {
-		if a.ChatResponseConverter != nil {
+		// Phase D (2026-06-22): Use IR when available (ParseAnthropicResponse →
+		// SerializeOpenAIResponse), falling back to the legacy callback.
+		if a.IR != nil {
+			irResp, irErr := a.IR.ParseAnthropicResponse(body)
+			if irErr == nil {
+				converted, serErr := a.IR.SerializeOpenAIResponse(irResp, clientModel)
+				if serErr == nil {
+					body = converted
+				} else {
+					slog.Warn("ir serialize openai response failed; forwarding raw body",
+						"error", serErr)
+				}
+			} else {
+				slog.Warn("ir parse anthropic response failed; forwarding raw body",
+					"error", irErr)
+			}
+		} else if a.ChatResponseConverter != nil {
+			// Legacy path: use the ChatResponseConverter callback
 			converted, convErr := a.ChatResponseConverter(body, clientModel)
 			if convErr == nil {
 				body = converted
@@ -470,6 +493,10 @@ func (e *Executor) executeAnthropic(
 		// after the Anthropic → OpenAI conversion. Wired from
 		// main.go (relay.WrapQualityProcessNonStream); nil ⇒ off mode.
 		QualityProcessNonStream: e.QualityProcessNonStream,
+		// Phase D (2026-06-22): IR response converter for Q3 non-stream.
+		// When set, WriteNonStreamResponse uses IR instead of the legacy
+		// ChatResponseConverter callback.
+		IR: e.IR,
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
