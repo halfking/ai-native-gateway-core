@@ -168,8 +168,8 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 
 	// cmb SQL when rawModel="" takes 2 args: reason, credentialID.
 	// model_offers mirror is SKIPPED (no clean JOIN key) — see
-	// writeModelLevelFailure's comment.
-	// credentials SQL takes 5 args.
+	// writeModelLevelFailureOnly's comment.
+	// ✅ NO credentials SQL expected (this is the fix for the pollution bug).
 	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
