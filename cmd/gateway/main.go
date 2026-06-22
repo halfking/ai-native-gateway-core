@@ -869,12 +869,10 @@ func main() {
 		slog.Info("CHECKPOINT: after probe workers block")
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
-		// TEMPORARY DEBUG: comment out stickyCleaner to bypass hang
-		// stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
-		// slog.Info("CHECKPOINT: before stickyCleaner.Start")
-		// stickyCleaner.Start(context.Background())
-		// slog.Info("CHECKPOINT: after stickyCleaner.Start")
-		slog.Info("CHECKPOINT: stickyCleaner bypassed for debugging")
+		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
+		slog.Info("CHECKPOINT: before stickyCleaner.Start")
+		stickyCleaner.Start(context.Background())
+		slog.Info("CHECKPOINT: after stickyCleaner.Start")
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 
 		// settings-management: 7-day audit retention worker (Q6: C).
