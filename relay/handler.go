@@ -2273,7 +2273,7 @@ func NewHealthHandler(cm *circuit.Manager, l *limiter.Limiter, proxy *upstreampk
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp := HealthResponse{
 		Status:  "ok",
-		Version: "0.2.0",
+		Version: resolveGatewayVersion(),
 	}
 
 	if r.URL.Query().Get("full") == "true" {
@@ -2766,4 +2766,26 @@ func boolToFloat(b bool) float64 {
 		return 1.0
 	}
 	return 0.0
+}
+
+// resolveGatewayVersion reads the build version from /opt/llm-gateway-go/VERSION
+// (written at image build time by the Dockerfile's RUN echo … > VERSION step).
+// Falls back to GIT_SHA env var, then to "unknown" if neither is available.
+func resolveGatewayVersion() string {
+	candidates := []string{
+		"/opt/llm-gateway-go/VERSION",
+		"/.VERSION",
+		"VERSION",
+	}
+	for _, path := range candidates {
+		if raw, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(raw)); v != "" {
+				return v
+			}
+		}
+	}
+	if sha := strings.TrimSpace(os.Getenv("GIT_SHA")); sha != "" {
+		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
+	}
+	return "0.2.0-unknown"
 }
