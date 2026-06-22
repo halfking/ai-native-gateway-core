@@ -90,7 +90,12 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 
 	for rows.Next() {
 		var cd credDiag
-		var ciphertext string
+		// secret_ciphertext is a bytea column; scanning into a string fails
+		// in pgx and the error is swallowed by the `continue` below, which
+		// makes diagnose silently report 0 credentials for a provider whose
+		// only credential has a non-null secret. Scan into []byte (the same
+		// shape routing.go uses) and convert to string for decryption.
+		var ciphertext []byte
 		if err := rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status,
 			&cd.CircuitState, &cd.AvailabilityState, &cd.HealthStatus,
 			&cd.ConsecutiveFailures, &ciphertext); err != nil {
@@ -383,7 +388,9 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		defer rows.Close()
 		for rows.Next() {
 			var cd credDiag
-			var ciphertext string
+			// secret_ciphertext is bytea — must scan into []byte, not string
+			// (see the matching note in diagnoseProvider above).
+			var ciphertext []byte
 			if rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status, &cd.CircuitState,
 				&cd.AvailabilityState, &cd.HealthStatus, &cd.ConsecutiveFailures, &ciphertext) != nil {
 				continue
