@@ -59,25 +59,27 @@ func NewCallHistoryAggregator(
 
 // Start begins the aggregation loop.
 func (a *CallHistoryAggregator) Start(ctx context.Context) {
-	ticker := time.NewTicker(a.interval)
-	defer ticker.Stop()
-
 	slog.Info("call_history_aggregator started", "interval", a.interval)
+	
+	go func() {
+		ticker := time.NewTicker(a.interval)
+		defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("call_history_aggregator stopping")
-			return
-		case <-a.stopCh:
-			slog.Info("call_history_aggregator stopped")
-			return
-		case <-ticker.C:
-			if err := a.aggregate(ctx); err != nil {
-				slog.Error("call_history_aggregator failed", "error", err)
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("call_history_aggregator stopping")
+				return
+			case <-a.stopCh:
+				slog.Info("call_history_aggregator stopped")
+				return
+			case <-ticker.C:
+				if err := a.aggregate(ctx); err != nil {
+					slog.Error("call_history_aggregator failed", "error", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // Stop gracefully stops the worker.
