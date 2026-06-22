@@ -446,7 +446,15 @@ type ExecuteResult struct {
 	Response  *http.Response
 	Candidate provider.Candidate
 	LatencyMs int
+	// RequestBody is the body sent to the upstream provider (may be
+	// protocol-converted from the inbound body). Use InboundBody for the
+	// original client request body.
 	RequestBody []byte
+	// InboundBody is the raw body received from the client, before any
+	// protocol conversion. Set once at the first ExecuteResult creation
+	// and never modified across retries. Use this for audit/日志 that
+	// need the canonical client request.
+	InboundBody []byte
 	ResponseBody []byte
 	Trace     *Trace
 	// Round 47 compression v7 T-NEW-2: optional compression event captured
