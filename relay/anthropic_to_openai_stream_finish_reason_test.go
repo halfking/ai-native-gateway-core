@@ -43,7 +43,28 @@ func TestAnthropicToOpenAIStream_FinishReasonMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Simulate Anthropic SSE stream
-			anthropicSSE := `event: message_start
+			var anthropicSSE string
+
+			// For tool_use, we need to include a content_block_start(tool_use) event
+			if tt.anthropicStopReason == "tool_use" {
+				anthropicSSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"test_tool","input":{}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"` + tt.anthropicStopReason + `"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+			} else {
+				anthropicSSE = `event: message_start
 data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":0}}}
 
 event: content_block_start
@@ -62,6 +83,7 @@ event: message_stop
 data: {"type":"message_stop"}
 
 `
+			}
 			// Create mock upstream response
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
