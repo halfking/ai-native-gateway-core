@@ -1264,7 +1264,9 @@ stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(ke
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
-	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.RequestBody, result.ResponseBody, logCtx)
+	// Phase D (2026-06-22): use InboundBody (original client body) for audit
+	// logging, not RequestBody (which may be protocol-converted for upstream).
+	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 	
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {
