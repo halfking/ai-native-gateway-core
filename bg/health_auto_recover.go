@@ -34,25 +34,27 @@ func NewHealthAutoRecover(
 
 // Start begins the recovery loop.
 func (w *HealthAutoRecover) Start(ctx context.Context) {
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
 	slog.Info("health_auto_recover started", "interval", w.interval)
 
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("health_auto_recover stopping")
-			return
-		case <-w.stopCh:
-			slog.Info("health_auto_recover stopped")
-			return
-		case <-ticker.C:
-			if err := w.recover(ctx); err != nil {
-				slog.Error("health_auto_recover failed", "error", err)
+	go func() {
+		ticker := time.NewTicker(w.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("health_auto_recover stopping")
+				return
+			case <-w.stopCh:
+				slog.Info("health_auto_recover stopped")
+				return
+			case <-ticker.C:
+				if err := w.recover(ctx); err != nil {
+					slog.Error("health_auto_recover failed", "error", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // Stop gracefully stops the worker.

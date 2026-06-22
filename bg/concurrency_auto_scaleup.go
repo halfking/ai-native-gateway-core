@@ -38,25 +38,27 @@ func NewConcurrencyAutoScaleUp(
 
 // Start begins the scaleup loop.
 func (w *ConcurrencyAutoScaleUp) Start(ctx context.Context) {
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
 	slog.Info("concurrency_auto_scaleup started", "interval", w.interval)
 
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("concurrency_auto_scaleup stopping")
-			return
-		case <-w.stopCh:
-			slog.Info("concurrency_auto_scaleup stopped")
-			return
-		case <-ticker.C:
-			if err := w.scaleUp(ctx); err != nil {
-				slog.Error("concurrency_auto_scaleup failed", "error", err)
+	go func() {
+		ticker := time.NewTicker(w.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("concurrency_auto_scaleup stopping")
+				return
+			case <-w.stopCh:
+				slog.Info("concurrency_auto_scaleup stopped")
+				return
+			case <-ticker.C:
+				if err := w.scaleUp(ctx); err != nil {
+					slog.Error("concurrency_auto_scaleup failed", "error", err)
+				}
 			}
 		}
-	}
+	}()
 }
 
 // Stop gracefully stops the worker.
