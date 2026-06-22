@@ -120,6 +120,7 @@ func StreamAnthropicSSEToOpenAI(
 		hasEmittedToolCalls bool            // Track whether any tool_calls were actually emitted
 		bufferedToolArgs    strings.Builder // Accumulate input_json_delta partial_json
 		currentToolCallID   string          // Cache the current tool_use block ID for delta updates
+		initialArgsSent     bool            // Track if we sent initial args from content_block_start
 	)
 
 	// emit a single OpenAI chat.completion.chunk; clear finishReason
@@ -443,9 +444,11 @@ func StreamAnthropicSSEToOpenAI(
 				// Skip empty input and let input_json_delta handle it.
 				if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{}" {
 					emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, evt.ContentBlock.InputRaw)
+					initialArgsSent = true // Mark that we sent initial args
 				} else {
 					// Emit tool call with ID and name only, no arguments yet
 					emitToolCall(evt.ContentBlock.ID, evt.ContentBlock.Name, nil)
+					initialArgsSent = false // Will accumulate args from input_json_delta
 				}
 			}
 
@@ -468,11 +471,16 @@ func StreamAnthropicSSEToOpenAI(
 				emit("", d.Thinking, nil)
 
 			case "input_json":
-				emitToolCall(currentToolCallID, "", d.InputJSON)
+				// 2026-06-23 safety: Only emit if we haven't sent initial args
+				if !initialArgsSent {
+					emitToolCall(currentToolCallID, "", d.InputJSON)
+				}
 
 			case "input_json_delta":
-				// Accumulate partial JSON from input_json_delta events
-				if d.PartialJSON != "" {
+				// 2026-06-23 safety: Only accumulate if we haven't sent initial args.
+				// If content_block_start had non-empty input, we already sent it,
+				// so ignore any subsequent input_json_delta to prevent duplication.
+				if !initialArgsSent && d.PartialJSON != "" {
 					bufferedToolArgs.WriteString(d.PartialJSON)
 				}
 
@@ -509,13 +517,17 @@ func StreamAnthropicSSEToOpenAI(
 				}
 				bufferedText.Reset()
 			}
-			// Flush accumulated tool arguments from input_json_delta events
-			if bufferedToolArgs.Len() > 0 {
+			// 2026-06-23 safety: Only flush accumulated tool arguments if we
+			// didn't send initial args from content_block_start. This prevents
+			// sending arguments twice if Anthropic sends both non-empty input
+			// and input_json_delta (defensive, shouldn't happen in practice).
+			if !initialArgsSent && bufferedToolArgs.Len() > 0 {
 				emitToolCall(currentToolCallID, "", json.RawMessage(bufferedToolArgs.String()))
 				bufferedToolArgs.Reset()
 			}
-			// Clear the cached tool ID when content block ends
+			// Clear the cached tool ID and reset state when content block ends
 			currentToolCallID = ""
+			initialArgsSent = false
 
 		case "message_delta":
 			var d sseAnthropicDelta
