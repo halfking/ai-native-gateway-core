@@ -38,35 +38,35 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 
 // CredentialMonitorSummary represents a credential's monitoring state.
 type CredentialMonitorSummary struct {
-	ID                     int       `json:"id"`
-	ProviderID             int       `json:"provider_id"`
-	ProviderName           string    `json:"provider_name"`
-	Label                  string    `json:"label"`
-	Status                 string    `json:"status"`
-	AvailabilityState      string    `json:"availability_state"`
-	HealthStatus           string    `json:"health_status"`
-	QuotaState             string    `json:"quota_state"`
-	ConcurrencyLimit       *int      `json:"concurrency_limit"`
-	ConcurrencyLimitAuto   *int      `json:"concurrency_limit_auto"`
-	EffectiveConcurrency   int       `json:"effective_concurrency"`
-	ManualDisabled         bool      `json:"manual_disabled"`
-	ConsecutiveFailures    int       `json:"consecutive_failures"`
-	AvailabilityRecoverAt  *string   `json:"availability_recover_at"`
-	StateReasonCode        *string   `json:"state_reason_code"`
-	StateReasonDetail      *string   `json:"state_reason_detail"`
-	HealthCheckedAt        *string   `json:"health_checked_at"`
-	TotalRequests          int64     `json:"total_requests"`
-	RecentWindowStats      *WindowStats `json:"recent_window_stats,omitempty"`
+	ID                    int          `json:"id"`
+	ProviderID            int          `json:"provider_id"`
+	ProviderName          string       `json:"provider_name"`
+	Label                 string       `json:"label"`
+	Status                string       `json:"status"`
+	AvailabilityState     string       `json:"availability_state"`
+	HealthStatus          string       `json:"health_status"`
+	QuotaState            string       `json:"quota_state"`
+	ConcurrencyLimit      *int         `json:"concurrency_limit"`
+	ConcurrencyLimitAuto  *int         `json:"concurrency_limit_auto"`
+	EffectiveConcurrency  int          `json:"effective_concurrency"`
+	ManualDisabled        bool         `json:"manual_disabled"`
+	ConsecutiveFailures   int          `json:"consecutive_failures"`
+	AvailabilityRecoverAt *string      `json:"availability_recover_at"`
+	StateReasonCode       *string      `json:"state_reason_code"`
+	StateReasonDetail     *string      `json:"state_reason_detail"`
+	HealthCheckedAt       *string      `json:"health_checked_at"`
+	TotalRequests         int64        `json:"total_requests"`
+	RecentWindowStats     *WindowStats `json:"recent_window_stats,omitempty"`
 }
 
 // WindowStats aggregates recent sliding window data.
 type WindowStats struct {
-	Total       int                `json:"total"`
-	Success     int                `json:"success"`
-	Failed      int                `json:"failed"`
-	FailureRate float64            `json:"failure_rate"`
-	ErrorKinds  map[string]int     `json:"error_kinds"`
-	SampleModel string             `json:"sample_model,omitempty"`
+	Total       int            `json:"total"`
+	Success     int            `json:"success"`
+	Failed      int            `json:"failed"`
+	FailureRate float64        `json:"failure_rate"`
+	ErrorKinds  map[string]int `json:"error_kinds"`
+	SampleModel string         `json:"sample_model,omitempty"`
 }
 
 // handleMonitorSummary returns all credentials with their monitoring state.
@@ -192,7 +192,7 @@ func (m *CredentialMonitorHandlers) getMostCommonModel(ctx context.Context, cred
 }
 
 // handleSlidingWindow returns raw sliding window data for a credential.
-// GET /api/credentials/sliding-window?credential_id=X&model=Y&minutes=60
+// GET /api/credentials/sliding-window?credential_id=X&model=Y&minutes=60&limit=50
 func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -212,6 +212,7 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	credentialID := queryInt(r, "credential_id", 0)
 	model := queryString(r, "model")
 	minutes := queryInt(r, "minutes", 60)
+	limit := queryInt(r, "limit", 50) // default 50, show most recent 50 entries
 
 	if credentialID == 0 {
 		writeError(w, http.StatusBadRequest, "credential_id required")
@@ -219,6 +220,10 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 	}
 	if model == "" {
 		writeError(w, http.StatusBadRequest, "model required")
+		return
+	}
+	if limit < 1 || limit > 500 {
+		writeError(w, http.StatusBadRequest, "limit must be 1-500")
 		return
 	}
 
@@ -232,13 +237,20 @@ func (m *CredentialMonitorHandlers) handleSlidingWindow(w http.ResponseWriter, r
 		return
 	}
 
+	// Limit to requested count (entries are already newest-first from Redis)
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
 	stats := credentialhealth.ComputeStats(entries)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"credential_id": credentialID,
-		"model":         model,
+		"credential_id":  credentialID,
+		"model":          model,
 		"window_minutes": minutes,
-		"entries":       entries,
+		"limit":          limit,
+		"total_returned": len(entries),
+		"entries":        entries,
 		"stats": map[string]any{
 			"total":        stats.Total,
 			"success":      stats.Success,
@@ -349,9 +361,9 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 	}
 
 	m.h.auditLog("admin", "credential.demote", "credential", req.CredentialID, map[string]any{
-		"reason":               req.Reason,
-		"recover_after_hours":  req.RecoverAfterHours,
-		"recover_at":           recoverAt.Format(time.RFC3339),
+		"reason":              req.Reason,
+		"recover_after_hours": req.RecoverAfterHours,
+		"recover_at":          recoverAt.Format(time.RFC3339),
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
