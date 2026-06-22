@@ -25,15 +25,10 @@ type CredentialSuccessRateRow struct {
 
 // HandleCredentialSuccessRates returns success rates for all (credential, model) pairs.
 // GET /api/admin/credential-success-rates
-func HandleCredentialSuccessRates(db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		if !verifyAdminAuth(r, db, secretKey) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 
@@ -103,15 +98,10 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool, secretKey string) http.Handl
 // old failed requests for a (credential, model) pair.
 // POST /api/admin/credential-success-rates/reset
 // Body: {"credential_id": 17, "raw_model": "claude-sonnet-4-6"}
-func HandleResetCredentialSuccessRate(db *pgxpool.Pool, secretKey string) http.HandlerFunc {
+func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		if !verifyAdminAuth(r, db, secretKey) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 

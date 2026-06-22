@@ -1246,8 +1246,8 @@ func main() {
 		slog.Info("Phase 3.5 session list API enabled (/api/admin/sessions)")
 
 		// Phase 3.6: Credential Success Rate Management (2026-06-23)
-		mux.HandleFunc("/api/admin/credential-success-rates", admin.HandleCredentialSuccessRates(dbConn.Pool(), cfg.SecretKey))
-		mux.HandleFunc("/api/admin/credential-success-rates/reset", admin.HandleResetCredentialSuccessRate(dbConn.Pool(), cfg.SecretKey))
+		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
+		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))
 		slog.Info("Phase 3.6 credential success rate management enabled (/api/admin/credential-success-rates)")
 	}
 
