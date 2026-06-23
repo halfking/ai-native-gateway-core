@@ -500,6 +500,12 @@ export function resetCredentialFpSlots(providerId: number, credId: number) {
   )
 }
 
+export function releaseCredentialFpSlot(providerId: number, credId: number, slotIndex: number) {
+  return req<{ message: string; released: boolean; slot_index: number }>(
+    'POST', `/api/providers/${providerId}/credentials/${credId}/release-fp-slot`, { slot_index: slotIndex }
+  )
+}
+
 export interface FpSlotDetail {
   index: number
   holder: string
