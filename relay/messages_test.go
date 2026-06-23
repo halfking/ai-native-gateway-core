@@ -340,8 +340,8 @@ func TestBuildRouteStickyKey_ModelNormalization(t *testing.T) {
 		}
 	}
 
-	// Verify the key contains the normalized model name
-	want := "tenant-1:100:200:cursor:ses_test123:minimax-m3"
+	// Verify the key contains the normalized model name (client-scoped, no session)
+	want := "tenant-1:100:200:cursor:minimax-m3"
 	if first != want {
 		t.Errorf("sticky key = %q, want %q", first, want)
 	}
