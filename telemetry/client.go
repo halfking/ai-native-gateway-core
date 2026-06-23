@@ -74,62 +74,62 @@ const (
 )
 
 type RequestLogEntry struct {
-	Op RequestLogOp `json:"op,omitempty"`
-	RequestID          string   `json:"request_id"`
-	TenantID           string   `json:"tenant_id"`
-	ApplicationID      *int     `json:"application_id,omitempty"`
-	APIKeyID           *int     `json:"api_key_id,omitempty"`
-	EndUserID          *string  `json:"end_user_id,omitempty"`
-	ClientModel        *string  `json:"client_model,omitempty"`
-	OutboundModel      *string  `json:"outbound_model,omitempty"`
-	CredentialID       *int     `json:"credential_id,omitempty"`
-	ProviderID         *int     `json:"provider_id,omitempty"`
-	CanonicalID        *int     `json:"canonical_id,omitempty"`
-	ClientProfile      *string  `json:"client_profile,omitempty"`
-	RequestMode        *string  `json:"request_mode,omitempty"`
-	PromptTokens       *int     `json:"prompt_tokens,omitempty"`
-	CompletionTokens   *int     `json:"completion_tokens,omitempty"`
-	CacheReadTokens    *int     `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens   *int     `json:"cache_write_tokens,omitempty"`
-	CostUSD            *float64 `json:"cost_usd,omitempty"`
-	CostDisplay        *float64 `json:"cost_display,omitempty"`
-	CostCurrency       *string  `json:"cost_currency,omitempty"`
-	LatencyMs          *int     `json:"latency_ms,omitempty"`
-	Success            bool     `json:"success"`
-	RequestStatus      *string  `json:"request_status,omitempty"`
-	ErrorKind          *string  `json:"error_kind,omitempty"`
+	Op               RequestLogOp `json:"op,omitempty"`
+	RequestID        string       `json:"request_id"`
+	TenantID         string       `json:"tenant_id"`
+	ApplicationID    *int         `json:"application_id,omitempty"`
+	APIKeyID         *int         `json:"api_key_id,omitempty"`
+	EndUserID        *string      `json:"end_user_id,omitempty"`
+	ClientModel      *string      `json:"client_model,omitempty"`
+	OutboundModel    *string      `json:"outbound_model,omitempty"`
+	CredentialID     *int         `json:"credential_id,omitempty"`
+	ProviderID       *int         `json:"provider_id,omitempty"`
+	CanonicalID      *int         `json:"canonical_id,omitempty"`
+	ClientProfile    *string      `json:"client_profile,omitempty"`
+	RequestMode      *string      `json:"request_mode,omitempty"`
+	PromptTokens     *int         `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int         `json:"completion_tokens,omitempty"`
+	CacheReadTokens  *int         `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int         `json:"cache_write_tokens,omitempty"`
+	CostUSD          *float64     `json:"cost_usd,omitempty"`
+	CostDisplay      *float64     `json:"cost_display,omitempty"`
+	CostCurrency     *string      `json:"cost_currency,omitempty"`
+	LatencyMs        *int         `json:"latency_ms,omitempty"`
+	Success          bool         `json:"success"`
+	RequestStatus    *string      `json:"request_status,omitempty"`
+	ErrorKind        *string      `json:"error_kind,omitempty"`
 	// UsageSource indicates where the token counts came from:
 	//   "llm"       — extracted from upstream response.usage block
 	//   "estimated" — computed locally from request/response text (fallback)
 	//   ""          — not available (request failed before parsing)
-	UsageSource        *string  `json:"usage_source,omitempty"`
-	IdentityHash       *string  `json:"identity_hash,omitempty"`
-	StreamFirstChunkMs *int     `json:"stream_first_chunk_ms,omitempty"`
-	StreamChunkCount   *int     `json:"stream_chunk_count,omitempty"`
-	StreamDoneReceived *bool    `json:"stream_done_received,omitempty"`
-	StreamInterrupted  *bool    `json:"stream_interrupted,omitempty"`
-	ResponseChecksum   *string  `json:"response_checksum,omitempty"`
-	FailureDetailCode  *string  `json:"failure_detail_code,omitempty"`
-	FailureStage       *string  `json:"failure_stage,omitempty"`
-	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
-	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
-	RequestPreview     *string  `json:"request_preview,omitempty"`
-	TransformSummary   *string  `json:"transform_summary,omitempty"`
-	ResponsePreview    *string  `json:"response_preview,omitempty"`
-	RequestBody        *string  `json:"request_body,omitempty"`
-	ResponseBody       *string  `json:"response_body,omitempty"`
-	GwSessionID        *string  `json:"gw_session_id,omitempty"`
-	GwTaskID           *string  `json:"gw_task_id,omitempty"`
-	APIKeyPrefix       *string  `json:"api_key_prefix,omitempty"`
-	APIKeyOwnerUser    *string  `json:"api_key_owner_user,omitempty"`
-	ApplicationCode    *string  `json:"application_code,omitempty"`
+	UsageSource        *string `json:"usage_source,omitempty"`
+	IdentityHash       *string `json:"identity_hash,omitempty"`
+	StreamFirstChunkMs *int    `json:"stream_first_chunk_ms,omitempty"`
+	StreamChunkCount   *int    `json:"stream_chunk_count,omitempty"`
+	StreamDoneReceived *bool   `json:"stream_done_received,omitempty"`
+	StreamInterrupted  *bool   `json:"stream_interrupted,omitempty"`
+	ResponseChecksum   *string `json:"response_checksum,omitempty"`
+	FailureDetailCode  *string `json:"failure_detail_code,omitempty"`
+	FailureStage       *string `json:"failure_stage,omitempty"`
+	TransformRuleID    *string `json:"transform_rule_id,omitempty"`
+	EgressProtocol     *string `json:"egress_protocol,omitempty"`
+	RequestPreview     *string `json:"request_preview,omitempty"`
+	TransformSummary   *string `json:"transform_summary,omitempty"`
+	ResponsePreview    *string `json:"response_preview,omitempty"`
+	RequestBody        *string `json:"request_body,omitempty"`
+	ResponseBody       *string `json:"response_body,omitempty"`
+	GwSessionID        *string `json:"gw_session_id,omitempty"`
+	GwTaskID           *string `json:"gw_task_id,omitempty"`
+	APIKeyPrefix       *string `json:"api_key_prefix,omitempty"`
+	APIKeyOwnerUser    *string `json:"api_key_owner_user,omitempty"`
+	ApplicationCode    *string `json:"application_code,omitempty"`
 	// v2.0 auto-route observability (requires 2026-06-15-auto-route-mode.sql)
-	IsAutoRequest      *bool    `json:"is_auto_request,omitempty"`
-	TaskType           *string  `json:"task_type,omitempty"`
-	AutoProfile        *string  `json:"auto_profile,omitempty"`
-	AutoDecision       *string  `json:"auto_decision,omitempty"`
-	AutoConfidence     *float64 `json:"auto_confidence,omitempty"`
-	WorkType           *string  `json:"work_type,omitempty"`
+	IsAutoRequest  *bool    `json:"is_auto_request,omitempty"`
+	TaskType       *string  `json:"task_type,omitempty"`
+	AutoProfile    *string  `json:"auto_profile,omitempty"`
+	AutoDecision   *string  `json:"auto_decision,omitempty"`
+	AutoConfidence *float64 `json:"auto_confidence,omitempty"`
+	WorkType       *string  `json:"work_type,omitempty"`
 
 	// P7.2: promoted from auto_decision JSONB to dedicated columns
 	// for indexable queries (see ensureRequestLogAutoDecisionColumns).
@@ -167,9 +167,9 @@ type RequestLogEntry struct {
 	// {flag: {detected, renamed, dropped}} tally of what was actually
 	// done in the response body. QualityScore is 0..1, nil when the
 	// quality processor was off for this provider.
-	QualityFlags     []string        `json:"quality_flags,omitempty"`
+	QualityFlags      []string        `json:"quality_flags,omitempty"`
 	QualityFixActions json.RawMessage `json:"quality_fix_actions,omitempty"`
-	QualityScore     *float64        `json:"quality_score,omitempty"`
+	QualityScore      *float64        `json:"quality_score,omitempty"`
 
 	// 2026-06-19 T-NEW-7: the upstream finish_reason (stop, tool_calls,
 	// length, end_turn, function_call, max_tokens, …). Stored in
@@ -178,6 +178,12 @@ type RequestLogEntry struct {
 	// reserved for actual failure / interruption codes.  Populated for
 	// BOTH success and failure rows.
 	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
+
+	// 2026-06-23: structured tool_calls array (042_tool_calls_column.sql).
+	// Populated from both streaming (audit.StreamCapture.ToolCalls) and
+	// non-streaming (extracted from response_body.choices[0].message.tool_calls).
+	// OpenAI format: [{id, type, function: {name, arguments}}].
+	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
 
 func NewClient() *Client {
@@ -454,37 +460,40 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			parent_request_id, compression_reason, compression_strategy, compression_meta,
 			-- v3 (2026-06-19) T23: session-level outbound body (4 columns).
 			outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes,
-			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-			quality_flags, quality_fix_actions, quality_score,
-			-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-			-- (db/migrations/018_upstream_finish_reason.sql). The new column is
-			-- the SOLE home for the upstream finish_reason.
-			upstream_finish_reason
-		) VALUES (
-			$1, now(), $2, $3, $4,
-			$5, $6, $7,
-			$8, $9, $10,
-			$11, $12,
-			$13, $14,
-			$15, $16, $17,
-			$18, $19, $20,
-			$21, $22, $23, $24, $25,
-			$26, $27,
-			$28, $29, $30, $31,
-			$32, $33, $34,
-			CAST($35 AS jsonb), CAST($36 AS jsonb),
-			$37, $38, $39,
-			$40,
-			$41,
-			$42, $43,
-			$44, $45, $46,
-			$47, $48, $49, CAST($50 AS jsonb), $51,
-			$52, $53,
-			$54, $55, $56, CAST($57 AS jsonb),
-			CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
-			CAST($62 AS text[]), CAST($63 AS jsonb), $64,
-			$65
-			)
+		-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
+		quality_flags, quality_fix_actions, quality_score,
+		-- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+		-- (db/migrations/018_upstream_finish_reason.sql). The new column is
+		-- the SOLE home for the upstream finish_reason.
+		upstream_finish_reason,
+		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		tool_calls
+	) VALUES (
+		$1, now(), $2, $3, $4,
+		$5, $6, $7,
+		$8, $9, $10,
+		$11, $12,
+		$13, $14,
+		$15, $16, $17,
+		$18, $19, $20,
+		$21, $22, $23, $24, $25,
+		$26, $27,
+		$28, $29, $30, $31,
+		$32, $33, $34,
+		CAST($35 AS jsonb), CAST($36 AS jsonb),
+		$37, $38, $39,
+		$40,
+		$41,
+		$42, $43,
+		$44, $45, $46,
+		$47, $48, $49, CAST($50 AS jsonb), $51,
+		$52, $53,
+		$54, $55, $56, CAST($57 AS jsonb),
+		CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
+		CAST($62 AS text[]), CAST($63 AS jsonb), $64,
+		$65,
+		CAST($66 AS jsonb)
+		)
 			ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
@@ -550,11 +559,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			outbound_msg_count = EXCLUDED.outbound_msg_count,
 			outbound_token_est = EXCLUDED.outbound_token_est,
 			outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
-			quality_flags = EXCLUDED.quality_flags,
-			quality_fix_actions = EXCLUDED.quality_fix_actions,
-			quality_score = EXCLUDED.quality_score,
-			upstream_finish_reason = EXCLUDED.upstream_finish_reason
-	`,
+		quality_flags = EXCLUDED.quality_flags,
+		quality_fix_actions = EXCLUDED.quality_fix_actions,
+		quality_score = EXCLUDED.quality_score,
+		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
+		tool_calls = EXCLUDED.tool_calls
+`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
 		entry.ApplicationID,
@@ -628,6 +638,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		// (db/migrations/018_upstream_finish_reason.sql). The new column is
 		// the SOLE home for the upstream finish_reason.
 		entry.UpstreamFinishReason,
+		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		entry.ToolCalls,
 	)
 	if err != nil {
 		return err
@@ -803,14 +815,16 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       quality_flags        = COALESCE(CAST($59 AS text[]), rl.quality_flags),
 		       quality_fix_actions  = COALESCE(CAST($60 AS jsonb), rl.quality_fix_actions),
 		       quality_score        = COALESCE($61, rl.quality_score),
-		       -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
-		       -- (db/migrations/018_upstream_finish_reason.sql). The new column is
-		       -- the SOLE home for the upstream finish_reason.
-		       upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason)
-		  FROM latest
-		 WHERE rl.id = latest.id
-		   AND rl.ts = latest.ts
-	`,
+	   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
+	   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
+	   -- the SOLE home for the upstream finish_reason.
+	   upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason),
+	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+	   tool_calls = COALESCE(CAST($63 AS jsonb), rl.tool_calls)
+	  FROM latest
+	 WHERE rl.id = latest.id
+	   AND rl.ts = latest.ts
+`,
 		entry.RequestID,
 		entry.ClientModel,
 		entry.OutboundModel,
@@ -881,6 +895,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		// (db/migrations/018_upstream_finish_reason.sql). The new column is
 		// the SOLE home for the upstream finish_reason.
 		entry.UpstreamFinishReason,
+		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
+		entry.ToolCalls,
 	)
 	if err != nil {
 		return err

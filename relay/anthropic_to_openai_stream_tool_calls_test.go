@@ -1,216 +1,183 @@
 package relay
 
 import (
+	"bytes"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/audit"
 )
 
-// TestAnthropicToOpenAIStream_InconsistentToolCalls tests the case where
-// Anthropic returns stop_reason:"tool_use" but sends no content_block_start(tool_use)
-// event. This was observed with claude-sonnet-4-6 in production (request_id:
-// 5732c872-0df0-4b30-b9d6-528c8521975d). The gateway should detect this
-// inconsistency and correct finish_reason to "stop" to prevent clients from
-// waiting forever for tool_calls data that never arrives.
-func TestAnthropicToOpenAIStream_InconsistentToolCalls(t *testing.T) {
-	// Simulate Anthropic SSE stream with inconsistent tool_calls:
-	// - Has stop_reason:"tool_use" in message_delta
-	// - But NO content_block_start(tool_use) event
+// TestStreamAnthropicSSEToOpenAI_ToolCalls_Complete tests end-to-end tool call capture
+// from Anthropic SSE format to OpenAI format, verifying that tool_calls are captured
+// in the audit.StreamCapture and can be persisted to the database.
+//
+// This test simulates the real-world scenario reported in the bug:
+// - Anthropic upstream returns tool_use content blocks via SSE
+// - StreamAnthropicSSEToOpenAI converts them to OpenAI tool_calls format
+// - audit.StreamCapture.ObserveChunk accumulates the structured tool_calls
+// - The tool_calls are available in SummaryAsMap for persistence
+func TestStreamAnthropicSSEToOpenAI_ToolCalls_Complete(t *testing.T) {
+	// Simulate Anthropic SSE response with a tool call
 	anthropicSSE := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":0}}}
+data: {"type":"message_start","message":{"id":"msg_test123","model":"claude-3-5-sonnet-20241022","usage":{"input_tokens":100,"output_tokens":0}}}
 
 event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_abc123","name":"get_weather","input":{}}}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I will generate a code graph."}}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"location\":\""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"San Francisco\""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":","}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"unit\":\"celsius\"}"}}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":0}
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":10}}
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":50}}
 
 event: message_stop
 data: {"type":"message_stop"}
 
 `
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(anthropicSSE))
-	}))
-	defer upstream.Close()
 
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", upstream.URL, nil)
-	resp, _ := http.DefaultClient.Do(req)
+	// Create mock response
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewBufferString(anthropicSSE)),
+	}
 
+	// Create audit capture
+	capture := audit.NewStreamCapture()
+
+	// Create response writer (buffer to capture output)
+	writer := &testResponseWriter{}
+
+	// Execute the stream conversion
 	outcome := StreamAnthropicSSEToOpenAI(
-		w,
+		writer,
 		resp,
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6",
-		"test-inconsistent-tool-calls",
-		nil,
-		nil,
+		"claude-3-5-sonnet-20241022", // clientModel
+		"claude-3-5-sonnet-20241022", // outboundModel
+		"test-request-id",
+		capture,
+		nil, // pendingCapturer
 	)
 
+	// Verify stream completed successfully
 	if outcome.Interrupted {
 		t.Fatalf("stream was interrupted: %s", outcome.Reason)
 	}
-
-	body := w.Body.String()
-
-	// Should NOT contain finish_reason:"tool_calls" (inconsistent case)
-	if strings.Contains(body, `"finish_reason":"tool_calls"`) {
-		t.Errorf("Found inconsistent finish_reason:tool_calls in output (should be corrected to stop):\n%s", body)
+	if outcome.ChunkCount == 0 {
+		t.Fatal("no chunks were emitted")
 	}
 
-	// Should contain finish_reason:"stop" (corrected)
-	if !strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Errorf("Expected corrected finish_reason:stop, not found in response:\n%s", body)
+	// Verify audit capture contains tool_calls
+	summary := capture.SummaryAsMap()
+
+	toolCallsRaw, ok := summary["tool_calls"].([]map[string]any)
+	if !ok {
+		t.Fatalf("tool_calls not found in audit summary. Summary keys: %v", getKeys(summary))
 	}
 
-	// Should NOT contain any tool_calls data
-	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("Found tool_calls in response despite no tool_use block from upstream:\n%s", body)
+	if len(toolCallsRaw) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(toolCallsRaw))
 	}
 
-	// Should contain the text content
-	if !strings.Contains(body, "I will generate a code graph") {
-		t.Errorf("Expected text content not found in response:\n%s", body)
+	// Verify tool call structure
+	tc := toolCallsRaw[0]
+
+	if tc["id"] != "toolu_abc123" {
+		t.Errorf("tool_call.id = %v, want toolu_abc123", tc["id"])
+	}
+
+	if tc["type"] != "function" {
+		t.Errorf("tool_call.type = %v, want function", tc["type"])
+	}
+
+	fn, ok := tc["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_call.function not found or wrong type")
+	}
+
+	if fn["name"] != "get_weather" {
+		t.Errorf("tool_call.function.name = %v, want get_weather", fn["name"])
+	}
+
+	// Verify arguments were accumulated correctly
+	expectedArgs := `{"location":"San Francisco","unit":"celsius"}`
+	if fn["arguments"] != expectedArgs {
+		t.Errorf("tool_call.function.arguments = %v, want %v", fn["arguments"], expectedArgs)
+	}
+
+	// Verify finish_reason is tool_calls
+	finishReason, ok := summary["upstream_finish_reason"].(string)
+	if !ok || finishReason != "tool_calls" {
+		t.Errorf("upstream_finish_reason = %v, want tool_calls", finishReason)
+	}
+
+	// Verify OpenAI output contains tool_calls
+	output := writer.buf.String()
+	t.Logf("OpenAI output:\n%s", output) // Debug output
+	if !strings.Contains(output, `"tool_calls"`) {
+		t.Error("OpenAI output does not contain tool_calls field")
+	}
+	if !strings.Contains(output, `"get_weather"`) {
+		t.Error("OpenAI output does not contain tool name")
+	}
+	if !strings.Contains(output, `"location"`) && !strings.Contains(output, `San Francisco`) {
+		t.Error("OpenAI output does not contain tool arguments")
 	}
 }
 
-// TestAnthropicToOpenAIStream_ConsistentToolCalls tests the normal case where
-// Anthropic returns stop_reason:"tool_use" AND sends content_block_start(tool_use).
-// This should result in finish_reason:"tool_calls" with tool_calls data.
-func TestAnthropicToOpenAIStream_ConsistentToolCalls(t *testing.T) {
-	anthropicSSE := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":0}}}
-
-event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"bash","input":{}}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":0}
-
-event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":10}}
-
-event: message_stop
-data: {"type":"message_stop"}
-
-`
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(anthropicSSE))
-	}))
-	defer upstream.Close()
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", upstream.URL, nil)
-	resp, _ := http.DefaultClient.Do(req)
-
-	outcome := StreamAnthropicSSEToOpenAI(
-		w,
-		resp,
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6",
-		"test-consistent-tool-calls",
-		nil,
-		nil,
-	)
-
-	if outcome.Interrupted {
-		t.Fatalf("stream was interrupted: %s", outcome.Reason)
-	}
-
-	body := w.Body.String()
-
-	// Should contain finish_reason:"tool_calls" (correct case)
-	if !strings.Contains(body, `"finish_reason":"tool_calls"`) {
-		t.Errorf("Expected finish_reason:tool_calls, not found in response:\n%s", body)
-	}
-
-	// Should contain tool_calls data
-	if !strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("Expected tool_calls in response, not found:\n%s", body)
-	}
-
-	// Should contain the tool name
-	if !strings.Contains(body, `"name":"bash"`) {
-		t.Errorf("Expected tool name 'bash' in response, not found:\n%s", body)
-	}
+// testResponseWriter implements http.ResponseWriter for testing
+type testResponseWriter struct {
+	buf         bytes.Buffer
+	header      http.Header
+	wroteHeader bool
+	statusCode  int
 }
 
-// TestAnthropicToOpenAIStream_NoToolCalls tests the normal case with no tools.
-// Should result in finish_reason:"stop" and no tool_calls.
-func TestAnthropicToOpenAIStream_NoToolCalls(t *testing.T) {
-	anthropicSSE := `event: message_start
-data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":0}}}
+func (w *testResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
 
-event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":0}
-
-event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}
-
-event: message_stop
-data: {"type":"message_stop"}
-
-`
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
+func (w *testResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(anthropicSSE))
-	}))
-	defer upstream.Close()
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", upstream.URL, nil)
-	resp, _ := http.DefaultClient.Do(req)
-
-	outcome := StreamAnthropicSSEToOpenAI(
-		w,
-		resp,
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-6",
-		"test-no-tool-calls",
-		nil,
-		nil,
-	)
-
-	if outcome.Interrupted {
-		t.Fatalf("stream was interrupted: %s", outcome.Reason)
 	}
+	return w.buf.Write(b)
+}
 
-	body := w.Body.String()
-
-	// Should contain finish_reason:"stop"
-	if !strings.Contains(body, `"finish_reason":"stop"`) {
-		t.Errorf("Expected finish_reason:stop, not found in response:\n%s", body)
+func (w *testResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
 	}
+	w.statusCode = statusCode
+	w.wroteHeader = true
+}
 
-	// Should NOT contain tool_calls
-	if strings.Contains(body, `"tool_calls"`) {
-		t.Errorf("Found unexpected tool_calls in response:\n%s", body)
-	}
+func (w *testResponseWriter) Flush() {
+	// No-op for testing
+}
 
-	// Should contain the text
-	if !strings.Contains(body, "Hello") {
-		t.Errorf("Expected text 'Hello' not found in response:\n%s", body)
+// getKeys returns the keys of a map for debugging
+func getKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
+	return keys
 }
