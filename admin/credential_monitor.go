@@ -245,7 +245,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 							ELSE 'no_data'
 						END AS p95_source,
 						-- DataSource: live (24h 内被调用过) / declared (从未调用)
-						CASE WHEN ch.raw_model IS NOT NULL THEN 'live' ELSE 'declared' END AS data_source,
+						CASE WHEN ch.last_called_at IS NOT NULL THEN 'live' ELSE 'declared' END AS data_source,
 						ch.last_called_at AS last_used_at,
 						COALESCE(ch.total_calls, 0) AS total_calls
 					FROM model_offers mo
@@ -273,14 +273,18 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						  AND ts > NOW() - INTERVAL '3 hours'
 						  AND latency_ms IS NOT NULL
 					) live ON true
-					-- Last used + total calls: 24h credential_model_call_history
-					LEFT JOIN (
-						SELECT raw_model, MAX(window_start) AS last_called_at, SUM(total_calls) AS total_calls
+					-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).
+					-- credential_model_call_history 是 TimescaleDB hypertable, 子查询里直接
+					-- 引用 window_start 会触发 SQLSTATE 42703 (column not found) — 详见
+					-- docs/llm-gateway-go/2026-06-23-credentials-detail-tab-redesign.md 已知遗留 #1.
+					-- 用 LATERAL + 显式 raw_model correlation 绕开.
+					LEFT JOIN LATERAL (
+						SELECT MAX(window_start) AS last_called_at, SUM(total_calls) AS total_calls
 						FROM credential_model_call_history
 						WHERE credential_id = c.id
+						  AND raw_model = mo.raw_model_name
 						  AND window_start > NOW() - INTERVAL '24 hours'
-						GROUP BY raw_model
-					) ch ON ch.raw_model = mo.raw_model_name
+					) ch ON true
 					CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 					WHERE mo.credential_id = c.id
 					ORDER BY COALESCE(rsr.samples, 0) DESC, mo.raw_model_name
