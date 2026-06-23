@@ -344,7 +344,15 @@ func defaultAnthropicPassthrough(w http.ResponseWriter, resp *http.Response) Str
 func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
 	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize for Q3
 	// (openai → anthropic) conversion instead of the legacy ChatToAnthropic callback.
-	if params.ClientProtocol != "anthropic-messages" && params.ClientProtocol != "" && e.IR != nil {
+	//
+	// FIX (2026-06-23): Only convert when BOTH client and upstream use different protocols.
+	// Before: converted whenever client != anthropic, even if upstream was also openai.
+	// After: only convert when client=openai AND upstream=anthropic.
+	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+		params.ClientProtocol != "" &&
+		cand.Protocol == "anthropic-messages"
+
+	if needsConversion && e.IR != nil {
 		// Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -392,7 +400,9 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	}
 
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
-	if params.ClientProtocol != "anthropic-messages" && params.ClientProtocol != "" {
+	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
+	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
+	if needsConversion {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
 			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
@@ -412,27 +422,32 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	if outboundModel != params.ClientModel {
 		bodyBytes = replaceModelInRequestBody(bodyBytes, outboundModel)
 	}
-	// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
-	// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
-	if e.SanitizeAnthropicTools != nil {
-		bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
-	}
 
-	// 2026-06-21: Fix empty response issue (Request ID: 92ef59e52efae25c396d0504efbfa2e6)
-	// Claude API doesn't support "tool" role and requires user/assistant alternation.
-	// Convert "tool" role to "user" + tool_result block and merge consecutive messages.
-	fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
-	if fixErr != nil {
-		return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
-	}
-	bodyBytes = fixedBytes
+	// FIX (2026-06-23): Only apply Anthropic-specific transforms when upstream is anthropic-messages.
+	// MiniMax and other openai-completions upstreams should receive OpenAI format unchanged.
+	if cand.Protocol == "anthropic-messages" {
+		// MiniMax anthropic-messages rejects tools carrying OpenAI/custom type
+		// wrappers (error 2013: invalid tool type). Always emit name/input_schema.
+		if e.SanitizeAnthropicTools != nil {
+			bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
+		}
 
-	// Validate message sequence (warning mode only, don't block requests)
-	if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
-		slog.Warn("invalid anthropic message sequence after fix",
-			"error", valErr,
-			"tenant_id", params.TenantID,
-		)
+		// 2026-06-21: Fix empty response issue (Request ID: 92ef59e52efae25c396d0504efbfa2e6)
+		// Claude API doesn't support "tool" role and requires user/assistant alternation.
+		// Convert "tool" role to "user" + tool_result block and merge consecutive messages.
+		fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
+		if fixErr != nil {
+			return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
+		}
+		bodyBytes = fixedBytes
+
+		// Validate message sequence (warning mode only, don't block requests)
+		if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
+			slog.Warn("invalid anthropic message sequence after fix",
+				"error", valErr,
+				"tenant_id", params.TenantID,
+			)
+		}
 	}
 
 	return bodyBytes, nil
