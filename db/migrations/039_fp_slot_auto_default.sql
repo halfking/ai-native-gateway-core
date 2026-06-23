@@ -36,7 +36,7 @@ BEGIN
         IF NEW.concurrency_limit IS NOT NULL AND NEW.concurrency_limit > 0 THEN
             NEW.fp_slot_limit := GREATEST(1, NEW.concurrency_limit / 4);
         ELSE
-            NEW.fp_slot_limit := 5;  -- safe fallback for NULL concurrency
+            NEW.fp_slot_limit := 20;  -- 2026-06-24: 5→20, matches DefaultDefaultLimit
         END IF;
     END IF;
     RETURN NEW;
