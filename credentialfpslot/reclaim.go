@@ -74,10 +74,14 @@ var reclaimSlotScript = redis.NewScript(`
 
 // reclaimConfig holds the parameters for the background reclaim goroutine.
 type reclaimConfig struct {
-	// idleAfter is how long a slot can have been silent before it
-	// gets reclaimed. Matches the active gate by default — same
-	// notion of "active". Per user spec (2026-06-24) "5分钟内的
-	// 会话不允许抢的" so 5 min is the natural threshold.
+	// idleAfter is the idle threshold above which a slot is
+	// reclaimed. 2026-06-24: this is DECOUPLED from the active
+	// gate. The active gate (default 5 min) governs in-line
+	// Acquire-time preemption; the reclaim idle (default 30 min)
+	// governs the background sweep. 30 min matches the slot TTL,
+	// so reclaim is effectively a Redis-persistence safety net.
+	// Per operator spec (2026-06-24): "自动清除无活动的时长，放到
+	// 30分钟，这个可以作成常量，由系统设置中来设置".
 	idleAfter time.Duration
 
 	// scanInterval is how often the goroutine wakes up. Default 30s.
@@ -94,24 +98,26 @@ type reclaimConfig struct {
 
 func defaultReclaimConfig() reclaimConfig {
 	return reclaimConfig{
-		// 5 min — same as DefaultActiveGateSeconds. A slot that
-		// has been silent for at least 5 min is reclaimed so
-		// the next arrival from a new client can take it.
-		idleAfter:    5 * time.Minute,
+		// 30 min — same as the slot TTL itself. Reclaim is now a
+		// safety net for slots that would otherwise outlive the
+		// documented 30 min due to Redis persistence edge cases
+		// (AOF rewrite stalls, RDB snapshot pauses).
+		idleAfter:    30 * time.Minute,
 		scanInterval: 30 * time.Second,
 		totalTTL:     24 * time.Hour,
 		clientTTL:    30 * 24 * time.Hour,
 	}
 }
 
-// reclaimConfigFromManager builds a reclaim config from the active
-// gate configured on the Manager, so the two knobs (acquire-time
-// gate and reclaim-time gate) cannot drift apart. Operators tune
-// Config.ActiveGateSeconds; reclaim picks it up automatically.
+// reclaimConfigFromManager builds a reclaim config from the
+// Manager's ReclaimIdleSeconds, leaving the other knobs at their
+// defaults. Operators tune Config.ReclaimIdleSeconds; the other
+// knobs (scanInterval, totalTTL, clientTTL) are operational
+// tuning that lives in reclaimConfig directly.
 func (m *Manager) reclaimConfigFromManager() reclaimConfig {
 	cfg := defaultReclaimConfig()
-	if m != nil && m.cfg.ActiveGateSeconds > 0 {
-		cfg.idleAfter = time.Duration(m.cfg.ActiveGateSeconds) * time.Second
+	if m != nil && m.cfg.ReclaimIdleSeconds > 0 {
+		cfg.idleAfter = time.Duration(m.cfg.ReclaimIdleSeconds) * time.Second
 	}
 	return cfg
 }

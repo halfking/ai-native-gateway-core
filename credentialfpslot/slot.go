@@ -39,11 +39,25 @@ type Config struct {
 	// holder has been silent for at least ActiveGateSeconds is
 	// eligible for preemption (LRU eviction or in-line steal).
 	//
-	// Per operator spec (2026-06-24): "5分钟内有消息视为活跃"。
-	// The constant lives in Config so operators can tune it from
-	// the central config (e.g. .env / configs/deployment/*.yaml)
-	// without redeploying. 0 means "use DefaultActiveGateSeconds".
+	// Per operator spec (2026-06-24): "5分钟内的会话不允许抢的".
+	// Set to 0 to fall back to DefaultActiveGateSeconds (300).
 	ActiveGateSeconds int
+
+	// ReclaimIdleSeconds is the idle threshold for the BACKGROUND
+	// reclaim goroutine. Different from ActiveGateSeconds: the
+	// active gate is the in-line Acquire-time hard limit (active
+	// vs idle), while reclaim is the asynchronous "this slot has
+	// been silent for too long, just delete it" sweep.
+	//
+	// Per operator spec (2026-06-24): "自动清除无活动的时长，放到
+	// 30分钟，这个可以作成常量，由系统设置中来设置". 30 min is the
+	// default; in practice the goroutine only matters for slots
+	// that are silently idle past the active gate AND have no
+	// incoming traffic to trigger an in-line preempt. The slot
+	// is otherwise "wasted" until Redis auto-expires it at 30 min
+	// anyway, so reclaim is mostly a Redis-persistence safety net.
+	// Set to 0 to fall back to DefaultReclaimIdleSeconds (1800).
+	ReclaimIdleSeconds int
 }
 
 // DefaultActiveGateSeconds is the fallback when Config.ActiveGateSeconds
@@ -59,6 +73,18 @@ type Config struct {
 // absolute terms, the slot becomes preemptable. In practice the
 // reclaim goroutine + Acquire path both gate on this.
 const DefaultActiveGateSeconds = 300 // 5 minutes
+
+// DefaultReclaimIdleSeconds is the fallback when
+// Config.ReclaimIdleSeconds is unset. 30 minutes matches the slot
+// TTL itself — reclaim is effectively a safety net for the case
+// where the slot TTL is held alive by Redis persistence edge cases
+// (AOF rewrite stalls, RDB snapshot pauses) and would otherwise
+// outlive the documented 30 min.
+//
+// Per operator spec (2026-06-24): "自动清除无活动的时长，放到30
+// 分钟，这个可以作成常量，由系统设置中来设置". The constant is
+// here; the env var is in config.go.
+const DefaultReclaimIdleSeconds = 1800 // 30 minutes
 
 // Lease is one acquired fingerprint slot.
 type Lease struct {
@@ -76,6 +102,16 @@ func (c Config) resolveActiveGateSeconds() int {
 		return DefaultActiveGateSeconds
 	}
 	return c.ActiveGateSeconds
+}
+
+// resolveReclaimIdleSeconds returns the configured reclaim idle
+// threshold, falling back to DefaultReclaimIdleSeconds for
+// uninitialised / zero values.
+func (c Config) resolveReclaimIdleSeconds() int {
+	if c.ReclaimIdleSeconds <= 0 {
+		return DefaultReclaimIdleSeconds
+	}
+	return c.ReclaimIdleSeconds
 }
 
 // Manager owns slot acquisition against Redis (or in-memory fallback).
@@ -114,6 +150,9 @@ func New(cfg Config, client *redis.Client) *Manager {
 	}
 	if cfg.ActiveGateSeconds <= 0 {
 		cfg.ActiveGateSeconds = DefaultActiveGateSeconds
+	}
+	if cfg.ReclaimIdleSeconds <= 0 {
+		cfg.ReclaimIdleSeconds = DefaultReclaimIdleSeconds
 	}
 	return &Manager{
 		cfg:      cfg,
@@ -591,29 +630,41 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 		}
 	}
 
-	// Phase 2: linear scan for a free slot. The Lua script also
-	// preempts idle slots here (active gate handles the "5 min
-	// active = no preempt" rule).
-	for slot := 0; slot < limit; slot++ {
-		acquired, err := acquireSlotScript.Run(ctx, m.client,
-			[]string{slotRedisKey(credentialID, slot), pinKey},
-			holder, slotTTLSeconds, sessionPinTTLSeconds, slot, gate,
-		).Bool()
-		if err != nil {
-			slog.Debug("cred_fp_slot redis acquire failed", "cred", credentialID, "slot", slot, "error", err)
-			continue
-		}
-		if acquired {
-			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-		}
+	// Phase 2: LRU preempt — single atomic Lua call. Scans the
+	// pool once and either grabs a free slot (free wins over LRU
+	// preempt) or preempts the slot whose holder has been silent
+	// the LONGEST (and is past the active gate). Per operator spec
+	// (2026-06-24): "长时间占用的 slot 在 slot 满时，优先被抢占".
+	res, err := acquireLRUScript.Run(ctx, m.client,
+		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		limit, holder, slotTTLSeconds, sessionPinTTLSeconds, gate, pinKey, credentialID,
+	).Result()
+	if err != nil {
+		slog.Debug("cred_fp_slot redis LRU acquire failed", "cred", credentialID, "error", err)
+		return nil, false
 	}
-
-	// Phase 3: all slots occupied by ACTIVE holders — later
-	// arrivals wait (sync_retry in routing layer). The
-	// reclaim goroutine handles the case where slots are
-	// silently idling past ActiveGateSeconds.
-	return nil, false
+	arr, ok := res.([]interface{})
+	if !ok || len(arr) < 3 {
+		return nil, false
+	}
+	acquired, _ := arr[0].(int64)
+	if acquired != 1 {
+		// No preemptable slot — all active. Later arrivals wait
+		// (sync_retry in routing layer).
+		return nil, false
+	}
+	slot, _ := arr[1].(int64)
+	oldHolder, _ := arr[2].(string)
+	if oldHolder != "" {
+		slog.Info("cred_fp_slot LRU preempt",
+			"cred", credentialID,
+			"new_holder", holder,
+			"old_holder", oldHolder,
+			"slot", slot,
+		)
+	}
+	eg := identity.BuildEgressIdentity(credentialID, int(slot), tenantID)
+	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 }
 
 func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool {
@@ -699,6 +750,97 @@ var acquireSlotScript = redis.NewScript(`
 	return 1
 `)
 
+// acquireLRUScript is the LRU-aware preempt path used when the
+// per-slot scan in acquireRedis finds no free slot and no pin
+// match. It scans the pool ONCE atomically and preempts the slot
+// whose holder has been silent the LONGEST (but only if that
+// holder is past the active gate).
+//
+// Per operator spec (2026-06-24): "长时间占用的 slot 在 slot 满
+// 时，优先被抢占". The "longest idle first" order is the LRU
+// implementation of that rule. Without this, the in-line scan
+// would preempt the first idle slot it found in index order
+// (slot 0 before slot 1), which can starve a heavily-used
+// (re-acquired often) credential pool.
+//
+// KEYS[1] = slot key prefix (e.g. "llmgw:cred_fp_slot:42")
+// ARGV[1] = limit
+// ARGV[2] = holder
+// ARGV[3] = slotTTL
+// ARGV[4] = pinTTL
+// ARGV[5] = activeGateSeconds
+// ARGV[6] = pinKey (caller's pin)
+// ARGV[7] = credentialID (for wiping the old holder's pin)
+// Returns: {1, slotIndex, oldHolder} on preempt, {0, "", ""} on
+// no preemptable slot.
+var acquireLRUScript = redis.NewScript(`
+	local prefix = KEYS[1]
+	local limit  = tonumber(ARGV[1])
+	local holder = ARGV[2]
+	local slotTTL = tonumber(ARGV[3])
+	local pinTTL  = tonumber(ARGV[4])
+	local gate    = tonumber(ARGV[5])
+	local pinKey  = ARGV[6]
+	local credID  = tonumber(ARGV[7])
+
+	local bestSlot = -1
+	local bestIdle = -1
+	local bestOldHolder = nil
+
+	for slot = 0, limit - 1 do
+		local key = prefix .. ':' .. tostring(slot)
+		local current = redis.call('GET', key)
+		if current == false then
+			-- Free slot — take it (no LRU bookkeeping needed)
+			redis.call('SET', key, holder, 'EX', slotTTL)
+			if pinKey ~= '' and pinTTL > 0 then
+				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
+			end
+			return {1, slot, ''}
+		end
+		local remaining = redis.call('TTL', key)
+		if remaining == -1 or remaining == -2 then
+			-- No TTL: take it.
+			redis.call('SET', key, holder, 'EX', slotTTL)
+			if pinKey ~= '' and pinTTL > 0 then
+				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
+			end
+			return {1, slot, ''}
+		end
+		local idle = slotTTL - remaining
+		if idle < gate then
+			-- Active holder: skip.
+		elseif idle > bestIdle then
+			bestSlot = slot
+			bestIdle = idle
+			bestOldHolder = current
+		end
+	end
+
+	if bestSlot == -1 then
+		-- No free slot and no idle slot; later arrivals wait.
+		return {0, '', ''}
+	end
+
+	-- Preempt the LRU-most-idle slot.
+	local bestKey = prefix .. ':' .. tostring(bestSlot)
+	redis.call('SET', bestKey, holder, 'EX', slotTTL)
+	if pinKey ~= '' and pinTTL > 0 then
+		redis.call('SET', pinKey, tostring(bestSlot), 'EX', pinTTL)
+	end
+	-- Wipe the old holder's pin if it still points at the
+	-- preempted slot. Without this the old holder's next
+	-- Acquire would either re-take the slot (racing the new
+	-- holder) or fail spuriously.
+	if bestOldHolder then
+		local oldPinKey = 'llmgw:sess_cred_fp:' .. bestOldHolder .. ':' .. tostring(credID)
+		if redis.call('GET', oldPinKey) == tostring(bestSlot) then
+			redis.call('DEL', oldPinKey)
+		end
+	end
+	return {1, bestSlot, bestOldHolder or ''}
+`)
+
 func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string) (*Lease, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -748,18 +890,6 @@ func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string
 		// → same slot" Acquire that races against the new
 		// holder and either overwrites it or fails.
 		oldHolder := cur.holder
-		for pk, pv := range m.memPins {
-			if pv.slot == pin.slot && pk != pinKey {
-				// pin keys are private to a (holder, cred) pair;
-				// we don't have a direct cred↔pin index, but the
-				// pin is stored under
-				//   pinRedisKey(holder, credentialID)
-				// so we can construct it. The credentialID is
-				// captured in the loop's closure.
-				_ = pk
-				_ = pv
-			}
-		}
 		oldPinKey := pinRedisKey(oldHolder, credentialID)
 		delete(m.memPins, oldPinKey)
 		m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
@@ -768,13 +898,28 @@ func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string
 		return &Lease{SlotIndex: pin.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 	}
 
-	// Phase 2: linear scan for a free slot. Preempt idle ones.
+	// Phase 2 + 3: find the best slot to take.
+	//  2a. First free slot wins (cost = 0).
+	//  2b. Otherwise: LRU preempt — pick the slot whose holder has
+	//       been silent the LONGEST, but only if its remaining TTL
+	//       has dropped below the active-gate bound (i.e. idle ≥
+	//       gate). Per operator spec (2026-06-24): "长时间占用的
+	//       slot 在 slot 满时，优先被抢占". The "longest idle
+	//       first" order is the LRU implementation of that rule.
+	type candidate struct {
+		slot int
+		idle time.Duration
+		old  string
+		exp  time.Time
+	}
+	var best *candidate
 	for slot := 0; slot < limit; slot++ {
 		key := slotKey{credentialID: credentialID, slotIndex: slot}
 		cur, exists := m.memSlots[key]
 
 		if !exists || cur.exp.Before(now) {
-			// Slot is free (or expired) — take it.
+			// Free slot — take it immediately. No LRU bookkeeping
+			// needed; free is cheaper than preempt.
 			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
 			m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
 			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
@@ -787,22 +932,37 @@ func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string
 			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
 			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 		}
-		// Occupied by a different holder. Active gate?
-		if cur.exp.Sub(now) >= activeRemaining {
-			// Active: don't preempt.
+		// Occupied by a different holder. Eligible for preempt
+		// only if idle ≥ gate. Track the LRU-most-idle one.
+		idle := time.Duration(slotTTLSeconds)*time.Second - cur.exp.Sub(now)
+		if idle < gate {
+			// Active: skip.
 			continue
 		}
-		// Idle: preempt. Wipe the old holder's pin so it doesn't
-		// race against the new one on its next Acquire.
-		oldHolder := cur.holder
-		oldPinKey := pinRedisKey(oldHolder, credentialID)
-		delete(m.memPins, oldPinKey)
-		m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-		m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
-		eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-		return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+		if best == nil || idle > best.idle {
+			best = &candidate{slot: slot, idle: idle, old: cur.holder, exp: cur.exp}
+		}
 	}
-	return nil, false
+	if best == nil {
+		// All slots active (or all slots owned by us, which would
+		// have been caught above). No preempt possible; later
+		// arrivals wait (sync_retry in routing layer).
+		return nil, false
+	}
+	// LRU preempt. Wipe the old holder's pin so it doesn't race
+	// against the new one on its next Acquire.
+	oldPinKey := pinRedisKey(best.old, credentialID)
+	delete(m.memPins, oldPinKey)
+	m.memSlots[slotKey{credentialID: credentialID, slotIndex: best.slot}] = memEntry{
+		holder: holder,
+		exp:    now.Add(time.Duration(slotTTLSeconds) * time.Second),
+	}
+	m.memPins[pinKey] = memPinEntry{
+		slot: best.slot,
+		exp:  now.Add(time.Duration(sessionPinTTLSeconds) * time.Second),
+	}
+	eg := identity.BuildEgressIdentity(credentialID, best.slot, tenantID)
+	return &Lease{SlotIndex: best.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 }
 
 func (m *Manager) releaseMemory(credentialID, slotIndex int, holder string) {

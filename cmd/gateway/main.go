@@ -219,16 +219,17 @@ func main() {
 	}
 
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{
-		DefaultLimit:      cfg.DefaultCredentialConcurrency,
-		Enabled:           cfg.EnableCredentialFpSlots,
-		ActiveGateSeconds: cfg.CredentialFpSlotActiveGateSeconds,
+		DefaultLimit:       cfg.DefaultCredentialConcurrency,
+		Enabled:            cfg.EnableCredentialFpSlots,
+		ActiveGateSeconds:  cfg.CredentialFpSlotActiveGateSeconds,
+		ReclaimIdleSeconds: cfg.CredentialFpSlotReclaimIdleSeconds,
 	}, fpSlotRedis)
 
-	// 2026-06-23: enable background idle-slot reclaim (15 min idle, 30 s scan).
-	// 2026-06-24: reclaim config is now derived from Config.ActiveGateSeconds
-	// so the in-line Acquire-time gate and the reclaim-time gate cannot drift
-	// apart. Without reclaim, slots that have been silent for ActiveGateSeconds
-	// but have no incoming traffic would stick around for the full 30-min
+	// 2026-06-23: enable background idle-slot reclaim.
+	// 2026-06-24: reclaim config is now derived from Config.ReclaimIdleSeconds
+	// (independent from the in-line Acquire-time active gate). Without
+	// reclaim, slots that have been silent past ReclaimIdleSeconds but
+	// have no incoming traffic would stick around for the full 30-min
 	// Redis TTL, blocking later arrivals that would otherwise be eligible
 	// for an in-line Acquire-time preempt.
 	fpSlots.StartReclaim(context.Background())
