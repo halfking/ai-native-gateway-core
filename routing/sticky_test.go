@@ -10,13 +10,13 @@ import (
 func TestBuildClientStickyKey(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	got := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor", "minimax-m3")
-	want := "tenant-a:2:10:cursor:minimax-m3"
+	got := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor")
+	want := "tenant-a:2:10:cursor"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	// Same client, same model — same key regardless of session
-	got2 := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor", "minimax-m3")
+	// Same client → same key, every call
+	got2 := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor")
 	if got2 != want {
 		t.Fatalf("client-sticky key must be deterministic, got %q", got2)
 	}
@@ -25,66 +25,68 @@ func TestBuildClientStickyKey(t *testing.T) {
 func TestBuildClientStickyKey_EmptyProfileDefault(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	got := BuildClientStickyKey("t", &appID, &apiKeyID, "", "gpt-4")
-	want := "t:2:10:default:gpt-4"
+	got := BuildClientStickyKey("t", &appID, &apiKeyID, "")
+	want := "t:2:10:default"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
-func TestBuildClientStickyKey_EmptyModelAsterisk(t *testing.T) {
+func TestBuildClientStickyKey_ProfileCaseInsensitive(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	got := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "")
-	want := "t:2:10:cursor:*"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	a := BuildClientStickyKey("t", &appID, &apiKeyID, "Cursor")
+	b := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor")
+	if a != b {
+		t.Fatalf("profile must be normalised: got %q vs %q", a, b)
 	}
 }
 
-func TestBuildClientStickyKey_DifferentModelDifferentKey(t *testing.T) {
+func TestBuildClientStickyKey_DifferentClientDifferentKey(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	a := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
-	b := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "claude-3")
+	// Two different clients (different API keys) produce different keys.
+	a := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor")
+	otherKey := 99
+	b := BuildClientStickyKey("t", &appID, &otherKey, "cursor")
 	if a == b {
-		t.Fatal("different models should produce different sticky keys")
+		t.Fatal("different api keys must produce different sticky keys")
 	}
 }
 
-func TestBuildClientStickyKey_SameClientAcrossSessions(t *testing.T) {
+// 2026-06-24: model is intentionally not in the key. The old
+// TestBuildClientStickyKey_DifferentModelDifferentKey was testing
+// the now-removed model dimension; the new invariant is the
+// opposite — model drift MUST NOT change the key.
+func TestBuildClientStickyKey_ModelDoesNotAffectKey(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	// Two different "sessions" (we don't pass sessionID at all) produce
-	// the same key — which is the whole point.
-	k1 := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
-	k2 := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
-	if k1 != k2 {
-		t.Fatal("same client+model must produce identical keys across calls")
+	// The helper now has no model parameter; same input → same key.
+	a := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor")
+	b := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor")
+	if a != b {
+		t.Fatal("key must be stable: model is intentionally not part of the fingerprint")
+	}
+	if a != "t:2:10:cursor" {
+		t.Fatalf("key format changed unexpectedly: %q", a)
 	}
 }
 
-// Regression test for the fpHash fragmentation bug:
-// before the client-scoped refactor, a request without a sessionID
-// would build a holder that included SHA256(fpSeed)[:8]. Different
-// device headers → different fpHash → different holder → different
-// fingerprint slot. Now fpSeed is no longer part of the holder, so
-// the same client always lands on the same slot.
+// Regression: fpHash was removed from the holder in commit 96832f01
+// (unify holder to client-scoped). Verify it stays out.
 func TestBuildClientStickyKey_StableAcrossFpHashVariations(t *testing.T) {
 	appID := 4
 	apiKeyID := 10
-	// Simulate three requests from the same client with three different
-	// device fingerprints (e.g. X-Device-Seed rotates, or no X-Device-Seed
-	// at all and the gateway falls back to IP+UA hash).
+	// Three "different device fingerprints" — must still produce the
+	// same key because the holder is client-scoped, not device-scoped.
 	fpHashes := []string{
 		"2c149caf6cfb1f21",
 		"2ff3c8ab1fe705cb",
 		"69a7e61accbda555",
 	}
 	var keys []string
-	for _, fp := range fpHashes {
-		_ = fp // not used in BuildClientStickyKey anymore
-		k := BuildClientStickyKey("default", &appID, &apiKeyID, "default", "minimax-m3")
+	for range fpHashes {
+		k := BuildClientStickyKey("default", &appID, &apiKeyID, "default")
 		keys = append(keys, k)
 	}
 	for i := 1; i < len(keys); i++ {

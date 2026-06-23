@@ -1091,7 +1091,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel)
+	stickyKey := buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile)
 
 	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
 	// protocol conversion now lives in the executor (IR path). The

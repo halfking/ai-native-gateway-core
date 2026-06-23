@@ -1,16 +1,22 @@
 package credentialfpslot
 
 // reclaim.go — background goroutine that proactively deletes idle slots
-// before their Redis TTL expires. NOT WIRED: as of commit 96832f01 the
-// slot TTL is 30 min and Redis auto-expiry is sufficient for the
-// "30 min no request → free" requirement. The reclaim loop is kept as
-// an opt-in escape hatch for tighter reclaim policies (e.g. < 30 min)
-// that may come in the future.
+// before their Redis TTL expires.
 //
-// All functions in this file are dead code in production. They are
-// exercised by reclaim_test.go to keep the reclaim logic verified.
-// To enable: call Manager.reclaimLoopStart(ctx, reclaimConfig{...}) in
-// cmd/gateway/main.go after constructing the fpSlots Manager.
+// 2026-06-24: ENABLED by default. The previous comment ("NOT WIRED")
+// was correct in 2026-06-18 but the operator rule "5分钟内的会话
+// 不允许抢的" + "5min idle → reclaim" makes the reclaim goroutine
+// load-bearing: in-line Acquire-time preemption is fine for one
+// stealing event, but slots that have been idle past the active
+// gate but have no incoming traffic (i.e. nobody tries to steal)
+// would otherwise stick around for the full 30-min Redis TTL.
+// The reclaim goroutine sweeps them every scanInterval.
+//
+// Tuning knobs live in reclaimConfig (defaults via
+// defaultReclaimConfig). The active gate is shared with the
+// Manager.Config.ActiveGateSeconds (single source of truth) — see
+// reclaimConfigFromManager. To enable from a custom call site,
+// invoke Manager.reclaimLoopStart(ctx, cfg) directly.
 
 import (
 	"context"
@@ -24,26 +30,42 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// reclaimSlotScript atomically deletes a slot + its pin when the slot
-// TTL is at or below the idle threshold.
+// reclaimSlotScript atomically deletes a slot when the holder has
+// been idle for at least idle_after seconds.
 //
 // KEYS[1] = slot key
-// ARGV[1] = idle_after_seconds
+// ARGV[1] = idle_after_seconds  (active gate)
+// ARGV[2] = slot_ttl_seconds   (used to compute "real" idle time
+//
+//	from remaining TTL; we want to
+//	reclaim when remaining TTL has
+//	dropped by at least idle_after)
+//
 // Returns: 1 if deleted, 0 if still fresh or absent.
 //
-// Implementation note: we DON'T track the holder name on the slot side —
-// the slot key only has the holder as a value. The pin key (holder -> slot)
-// will expire naturally on its own TTL (pin TTL == idle threshold). So
-// reclaiming the slot is sufficient; the pin will follow on its own.
+// 2026-06-24: behaviour was "remaining TTL < idle → reclaim" which
+// is wrong (it would reclaim a fresh slot whose remaining TTL
+// happens to be < idle). The correct condition is "real idle
+// since last refresh ≥ active gate", i.e. slotTTL - remaining
+// ≥ idle_after.
+//
+// We do NOT track the holder name on the slot side — the slot
+// key only has the holder as a value. The pin key (holder -> slot)
+// expires on its own TTL (pin TTL = 24h). So reclaiming the slot
+// is sufficient; the pin will follow naturally. If a stale pin
+// still points at this slot index, the new holder's acquire
+// path treats it as a stale pin and either re-pins or evicts.
 var reclaimSlotScript = redis.NewScript(`
-    local slotKey = KEYS[1]
-    local idle    = tonumber(ARGV[1])
+    local slotKey    = KEYS[1]
+    local idle_after = tonumber(ARGV[1])
+    local slot_ttl   = tonumber(ARGV[2])
 
-    local slotTTL = redis.call('TTL', slotKey)
-    if slotTTL == -1 or slotTTL == -2 then
+    local remaining = redis.call('TTL', slotKey)
+    if remaining == -1 or remaining == -2 then
         return 0
     end
-    if slotTTL > idle then
+    local idle = slot_ttl - remaining
+    if idle < idle_after then
         return 0
     end
     redis.call('DEL', slotKey)
@@ -52,8 +74,10 @@ var reclaimSlotScript = redis.NewScript(`
 
 // reclaimConfig holds the parameters for the background reclaim goroutine.
 type reclaimConfig struct {
-	// idleAfter is how long a slot can have its TTL below the threshold
-	// before it gets reclaimed. Per user spec, default 15 min.
+	// idleAfter is how long a slot can have been silent before it
+	// gets reclaimed. Matches the active gate by default — same
+	// notion of "active". Per user spec (2026-06-24) "5分钟内的
+	// 会话不允许抢的" so 5 min is the natural threshold.
 	idleAfter time.Duration
 
 	// scanInterval is how often the goroutine wakes up. Default 30s.
@@ -70,11 +94,26 @@ type reclaimConfig struct {
 
 func defaultReclaimConfig() reclaimConfig {
 	return reclaimConfig{
-		idleAfter:    15 * time.Minute,
+		// 5 min — same as DefaultActiveGateSeconds. A slot that
+		// has been silent for at least 5 min is reclaimed so
+		// the next arrival from a new client can take it.
+		idleAfter:    5 * time.Minute,
 		scanInterval: 30 * time.Second,
 		totalTTL:     24 * time.Hour,
 		clientTTL:    30 * 24 * time.Hour,
 	}
+}
+
+// reclaimConfigFromManager builds a reclaim config from the active
+// gate configured on the Manager, so the two knobs (acquire-time
+// gate and reclaim-time gate) cannot drift apart. Operators tune
+// Config.ActiveGateSeconds; reclaim picks it up automatically.
+func (m *Manager) reclaimConfigFromManager() reclaimConfig {
+	cfg := defaultReclaimConfig()
+	if m != nil && m.cfg.ActiveGateSeconds > 0 {
+		cfg.idleAfter = time.Duration(m.cfg.ActiveGateSeconds) * time.Second
+	}
+	return cfg
 }
 
 // reclaimLoop is the background goroutine that periodically scans Redis
@@ -151,8 +190,8 @@ func (m *Manager) reclaimLoopRun(ctx context.Context, cfg reclaimConfig) {
 	}
 }
 
-// reclaimIdleSlots walks all slot keys via SCAN and reclaims those whose
-// TTL is at or below idleAfter.
+// reclaimIdleSlots walks all slot keys via SCAN and reclaims those
+// whose holder has been silent for at least idleAfter.
 func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int, error) {
 	if m.client == nil {
 		return m.reclaimIdleSlotsMemory(ctx, cfg)
@@ -166,6 +205,7 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 		res, err := reclaimSlotScript.Run(ctx, m.client,
 			[]string{slotKey},
 			int(cfg.idleAfter.Seconds()),
+			slotTTLSeconds,
 		).Int()
 		if err != nil {
 			return totalReclaimed, fmt.Errorf("reclaim slot %s: %w", slotKey, err)
