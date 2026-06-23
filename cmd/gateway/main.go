@@ -779,6 +779,7 @@ func main() {
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
 	var pendingSweeper *bg.PendingSweeper
+	var candidateFailureMonitor *bg.CandidateFailureMonitor
 
 	slog.Info("CHECKPOINT: before bg services init")
 	var defaultProbePicker *bg.DefaultProbePicker
@@ -914,6 +915,15 @@ func main() {
 		// modes because it only needs read access to credentials.
 		peakCollector = bg.NewConcurrencyPeakCollector(dbConn.Pool())
 		peakCollector.Start(context.Background())
+
+		// 2026-06-23 Phase 3 (P2): candidate_failure_monitor. Reads
+		// candidate_failure_logs every minute, fires debounced alerts on
+		// sustained failure patterns, and auto-cools credentials whose
+		// recent failure ratio exceeds the configured threshold. Background
+		// best-effort; failures here never affect request hot path.
+		candidateFailureMonitor = bg.NewCandidateFailureMonitor(dbConn.Pool())
+		candidateFailureMonitor.Start(context.Background())
+		slog.Info("candidate_failure_monitor wired into main")
 
 		// Health tracking workers (2026-06-22): sliding window aggregation,
 		// auto-scaleup, and auto-recovery. Run in both modes.
@@ -1193,6 +1203,10 @@ func main() {
 	if adminHandler != nil {
 		slog.Info("CHECKPOINT: before admin RegisterRoutes")
 		adminHandler.RegisterRoutes(mux)
+		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.
+		if candidateFailureMonitor != nil {
+			adminHandler.SetCandidateFailureHandlers(candidateFailureMonitor.RecentAlerts)
+		}
 		slog.Info("CHECKPOINT: after admin RegisterRoutes - admin API enabled")
 	}
 
