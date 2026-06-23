@@ -594,7 +594,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
-			COALESCE(c.fp_slot_limit, 5) AS fp_slot_limit,
+			COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 			c.balance_usd::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
