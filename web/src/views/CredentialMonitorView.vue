@@ -48,6 +48,24 @@ const autoRefresh = ref(false)
 const refreshInterval = ref(30) // seconds
 let refreshTimer: number | null = null
 
+// Fingerprint slot visualization (2026-06-23)
+const fpSlotStats = ref<FpSlotStats | null>(null)
+const fpSlotStatsLoading = ref(false)
+async function loadFpSlotStats() {
+  if (!selectedCred.value) return
+  fpSlotStatsLoading.value = true
+  try {
+    fpSlotStats.value = await getCredentialFpSlotStats(
+      selectedCred.value.provider_id,
+      selectedCred.value.id,
+    )
+  } catch (e) {
+    console.error('fp slot stats load failed', e)
+  } finally {
+    fpSlotStatsLoading.value = false
+  }
+}
+
 // Batch operations
 const selectedIds = ref<Set<number>>(new Set())
 const batchDialogOpen = ref(false)
