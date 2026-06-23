@@ -37,9 +37,21 @@ func TestAcquireReleaseMemory(t *testing.T) {
 		t.Fatal("expected saturated")
 	}
 	m.Release(ctx, l1)
-	l3, ok := m.Acquire(ctx, 9, nil, "sess-c", "default")
+	// In the long-term-occupancy design, sess-a's slot is STILL held by sess-a
+	// after Release (only TTL is refreshed). So sess-c cannot acquire it —
+	// both slots remain owned by sess-a and sess-b. This is the correct
+	// behavior: long-term occupancy ensures stable identity for repeat visitors.
+	_, ok = m.Acquire(ctx, 9, nil, "sess-c", "default")
+	if ok {
+		t.Fatal("sess-c should still fail after release (long-term occupancy)")
+	}
+	// sess-a can re-acquire its own slot
+	l3, ok := m.Acquire(ctx, 9, nil, "sess-a", "default")
 	if !ok || l3 == nil {
-		t.Fatal("expected lease after release")
+		t.Fatal("sess-a should reacquire its own slot")
+	}
+	if l3.SlotIndex != l1.SlotIndex {
+		t.Errorf("sess-a should get same slot %d, got %d", l1.SlotIndex, l3.SlotIndex)
 	}
 	m.Release(ctx, l2)
 	m.Release(ctx, l3)
@@ -105,13 +117,16 @@ func TestRelease_KeepsPin_ForNextAcquire(t *testing.T) {
 	m.Release(ctx, second)
 }
 
-// TestRelease_AllowsMigration_WhenContended: if another holder has taken the
-// pinned slot, the original holder migrates to a new free slot and its pin
-// is updated to the new index. This protects against permanently dead slots.
-func TestRelease_AllowsMigration_WhenContended(t *testing.T) {
-	m := New(Config{DefaultLimit: 5, Enabled: true}, nil)
+// TestRelease_LongTermOccupancy_PreventsSteal verifies the design contract:
+// after Release, the slot is STILL owned by the original holder. A different
+// session cannot "steal" that slot because the holder check in acquireLua
+// rejects non-matching writers. This is the foundation of stable fingerprint
+// identity (anti-steal / anti-rate-limit-evasion).
+func TestRelease_LongTermOccupancy_PreventsSteal(t *testing.T) {
+	m := New(Config{DefaultLimit: 1, Enabled: true}, nil)
 	ctx := context.Background()
 
+	// Pool size 1: only one fingerprint identity per credential.
 	first, ok := m.Acquire(ctx, 7, nil, "sess-a", "default")
 	if !ok || first == nil {
 		t.Fatal("expected first lease")
@@ -119,35 +134,24 @@ func TestRelease_AllowsMigration_WhenContended(t *testing.T) {
 	originalSlot := first.SlotIndex
 	m.Release(ctx, first)
 
-	// sess-b takes the slot sess-a had pinned.
-	steal, ok := m.Acquire(ctx, 7, nil, "sess-b", "default")
-	if !ok || steal == nil {
-		t.Fatal("expected steal lease")
+	// sess-b tries to acquire the only slot — sess-a still owns it.
+	// This MUST fail so the fingerprint stays attached to sess-a.
+	_, ok = m.Acquire(ctx, 7, nil, "sess-b", "default")
+	if ok {
+		t.Fatal("sess-b must NOT be able to acquire sess-a's long-term-occupied slot")
 	}
-	if steal.SlotIndex != originalSlot {
-		t.Fatalf("sess-b should take sess-a's freed slot: got %d, want %d",
-			steal.SlotIndex, originalSlot)
-	}
+	t.Logf("sess-b correctly rejected (slot %d still held by sess-a) ✓", originalSlot)
 
-	// sess-a re-acquires: pinned slot is taken, must migrate to a new slot.
+	// sess-a re-acquires — gets SAME slot back (pin reuse).
 	migrated, ok := m.Acquire(ctx, 7, nil, "sess-a", "default")
 	if !ok || migrated == nil {
-		t.Fatal("expected migrated lease")
+		t.Fatal("sess-a should reacquire its own slot")
 	}
-	if migrated.SlotIndex == originalSlot {
-		t.Fatalf("sess-a should NOT take the stolen slot back: got %d", migrated.SlotIndex)
+	if migrated.SlotIndex != originalSlot {
+		t.Fatalf("sess-a should reuse slot %d, got %d", originalSlot, migrated.SlotIndex)
 	}
-	if migrated.SlotIndex == steal.SlotIndex {
-		// Same as stealer (only 2 free + 1 taken = conflict). This is
-		// allowed only if the limit was 1; with limit=5 it shouldn't happen.
-		t.Fatalf("sess-a migrated onto sess-b's slot %d, expected new slot", migrated.SlotIndex)
-	}
-	// Pin should now point to the new slot.
-	if !m.hasPin(ctx, "sess-a", 7) {
-		t.Fatal("pin should be updated to migrated slot")
-	}
+	t.Logf("sess-a re-acquired same slot %d ✓ (long-term occupancy preserved)", migrated.SlotIndex)
 
-	m.Release(ctx, steal)
 	m.Release(ctx, migrated)
 }
 

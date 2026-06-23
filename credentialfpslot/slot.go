@@ -89,7 +89,50 @@ func (m *Manager) DefaultLimit() int {
 	return m.cfg.DefaultLimit
 }
 
-// EffectiveLimit maps DB concurrency_limit to slot pool size.
+// EffectiveFpSlotLimit maps DB credentials.fp_slot_limit (the fingerprint
+// slot pool size — how many distinct virtual identities this credential
+// can simulate) to the value used at runtime.
+//
+// Returns:
+//   - nil when the credential has no fingerprint slot limit (unlimited pool).
+//     Callers should treat a nil return as "no upper bound; pick a free slot
+//     or allocate a new one without rejection".
+//   - *int when there is a finite pool. The pointer points to a copy of the
+//     limit value (1..N); callers should not retain the pointer.
+//
+// IMPORTANT — distinct from concurrency_limit:
+//   - concurrency_limit = max in-flight REQUESTS (managed by Limiter pkg)
+//   - fp_slot_limit    = max distinct USER IDENTITIES (managed here)
+//
+// The two must NEVER be conflated. The previous EffectiveLimit() took
+// the wrong argument (concurrency_limit) and is preserved below only
+// for callers that have not migrated yet; new code MUST call
+// EffectiveFpSlotLimit with the fp_slot_limit value from the DB.
+//
+// Mapping rules (per-credential):
+//   - nil input         → defaultLimit  (fallback when DB row was added
+//     before this column existed or
+//     caller did not load the column)
+//   - *limit == 0       → nil (unlimited pool)
+//   - *limit  > 0       → &*limit
+func EffectiveFpSlotLimit(fpSlotLimit *int, defaultLimit int) *int {
+	if fpSlotLimit == nil {
+		v := defaultLimit
+		return &v
+	}
+	if *fpSlotLimit <= 0 {
+		return nil
+	}
+	v := *fpSlotLimit
+	return &v
+}
+
+// EffectiveLimit is the legacy mapping from concurrency_limit to slot
+// pool size. RETAINED for backward compatibility only — the previous
+// implementation incorrectly conflated the two concepts.
+//
+// New code must call EffectiveFpSlotLimit with the credentials.fp_slot_limit
+// value from the DB. Callers of EffectiveLimit should migrate.
 func EffectiveLimit(limit *int, defaultLimit int) *int {
 	if limit == nil {
 		v := defaultLimit

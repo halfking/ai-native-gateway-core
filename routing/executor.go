@@ -586,7 +586,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if e.FpSlots != nil && e.FpSlots.Enabled() {
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for _, cand := range candidates {
-			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder) {
+			if e.FpSlots.RoutingEligible(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder) {
 				filtered = append(filtered, cand)
 			} else {
 				slog.Info("cred_fp_slot prefilter skip",
@@ -623,7 +623,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 		var fpLease *credentialfpslot.Lease
 		if e.FpSlots != nil && e.FpSlots.Enabled() {
-			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.ConcurrencyLimit, holder, "default")
+			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, "default")
 			if !ok {
 				slog.Info("cred_fp_slot saturated",
 					"credential_id", cand.CredentialID,

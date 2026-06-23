@@ -59,11 +59,13 @@ func TestAcquireReleaseMemory_Concurrent(t *testing.T) {
 		}
 	}
 
-	lease, ok := m.Acquire(ctx, credentialID, nil, "new-sess", "default")
-	if !ok || lease == nil {
-		t.Error("expected successful acquire after release")
+	// After long-term occupancy, "new-sess" cannot acquire any slot — all 5 are
+	// still owned by their original holders. The contract: Release refreshes TTL
+	// but does NOT free the slot for a different holder to take over.
+	_, ok := m.Acquire(ctx, credentialID, nil, "new-sess", "default")
+	if ok {
+		t.Error("new-sess should NOT acquire a slot (long-term occupancy preserves ownership)")
 	}
-	m.Release(ctx, lease)
 }
 
 func TestRoutingEligible_Concurrent(t *testing.T) {
@@ -120,20 +122,35 @@ func TestAcquireReleaseRedis_Mock(t *testing.T) {
 		t.Fatal("expected lease 3")
 	}
 
+	// Saturated: 4th acquirer cannot get a slot.
 	_, ok4 := m.Acquire(ctx, credentialID, nil, "holder-4", "default")
 	if ok4 {
-		t.Error("expected saturated")
+		t.Error("expected saturated (4th holder over limit 3)")
 	}
 
+	// Long-term occupancy: Release refreshes TTL but does NOT free the slot.
 	m.Release(ctx, lease1)
 	m.Release(ctx, lease2)
 	m.Release(ctx, lease3)
 
-	lease5, ok5 := m.Acquire(ctx, credentialID, nil, "holder-5", "default")
-	if !ok5 || lease5 == nil {
-		t.Fatal("expected lease after release")
+	// All three slots remain owned — holder-5 still cannot get one.
+	_, ok5 := m.Acquire(ctx, credentialID, nil, "holder-5", "default")
+	if ok5 {
+		t.Fatal("expected holder-5 to be rejected after release (long-term occupancy)")
 	}
-	m.Release(ctx, lease5)
+
+	// Original holders can re-acquire their OWN slots.
+	reacq1, ok6 := m.Acquire(ctx, credentialID, nil, "holder-1", "default")
+	if !ok6 || reacq1 == nil {
+		t.Fatal("holder-1 should reacquire its own slot")
+	}
+	if reacq1.SlotIndex != lease1.SlotIndex {
+		t.Errorf("holder-1 should reuse slot %d, got %d", lease1.SlotIndex, reacq1.SlotIndex)
+	}
+	m.Release(ctx, reacq1)
+	m.Release(ctx, lease1)
+	m.Release(ctx, lease2)
+	m.Release(ctx, lease3)
 }
 
 func TestEffectiveLimit_EdgeCases(t *testing.T) {

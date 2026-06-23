@@ -91,6 +91,16 @@ type Handler struct {
 	}
 	redisClient  interface{}         // Redis client for sliding window access
 	autoTitleGen *AutoTitleGenerator // Auto session title generator (2026-06-22)
+
+	// identityPool is the Layer 0 cap on total distinct end-user fingerprints
+	// (see identitypool package). nil when the global cap feature is disabled.
+	// Wired from cmd/gateway/main.go.
+	// Defined as an interface here to avoid an import cycle (admin -> identitypool
+	// would be a problem if identitypool imports admin in the future).
+	identityPool interface {
+		Stats(ctx context.Context) interface{}
+		SetMaxIdentities(n int)
+	}
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -312,6 +322,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)
+
+	// Identity pool (Layer 0 cap) — admin can inspect live stats and
+	// update the global max-identities setting. superAdmin-only because
+	// raising the cap affects upstream rate-limit exposure.
+	mux.HandleFunc("/api/admin/identity-pool/stats", h.superAdmin(h.getIdentityPoolStats))
+	mux.HandleFunc("/api/admin/identity-pool/max", h.superAdmin(h.setIdentityPoolMax))
 	mux.HandleFunc("/api/routing/model-tree", admin(h.handleRoutingModelTree))
 	mux.HandleFunc("/api/routing/policy", h.superAdmin(h.handleRoutingPolicy))
 	mux.HandleFunc("/api/routing/featured", h.superAdmin(h.handleRoutingFeatured))
