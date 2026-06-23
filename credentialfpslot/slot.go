@@ -47,7 +47,11 @@ type Manager struct {
 	mu       sync.Mutex
 	memSlots map[slotKey]memEntry
 	memPins  map[string]memPinEntry
-	reclaimState *reclaimState
+
+	// reclaimLoop / reclaimLoopMu track the background goroutine that
+	// reclaims idle slots. See reclaim.go for the implementation.
+	reclaimLoopMu sync.Mutex
+	reclaimLoop   reclaimLoop
 }
 
 type slotKey struct {
@@ -88,6 +92,13 @@ func (m *Manager) DefaultLimit() int {
 		return 5
 	}
 	return m.cfg.DefaultLimit
+}
+
+// slotTTLSeconds returns the slot TTL. Hard-coded to 24h; production
+// uses Redis-side TTL so the Go value is only relevant for the
+// in-memory fallback path.
+func (m *Manager) slotTTLSeconds() int {
+	return slotTTLSeconds
 }
 
 // EffectiveFpSlotLimit maps DB credentials.fp_slot_limit (the fingerprint

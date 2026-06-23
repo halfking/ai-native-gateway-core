@@ -1596,6 +1596,27 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 				}
 			}
 		}
+
+		// 2026-06-23: Detect empty responses
+		// An empty response is one that:
+		//   1. Has very few chunks (<= 3)
+		//   2. Has zero completion tokens
+		//   3. Has no content preview
+		//   4. Has no upstream finish_reason
+		// This pattern indicates the upstream returned no actual content,
+		// despite sending [DONE]. Mark as failure to prevent billing
+		// and alert monitoring.
+		if reqLog.Success { // Only check if currently marked as success
+			isEmpty := detectEmptyStreamResponse(m, reqLog)
+			if isEmpty {
+				reqLog.Success = false
+				reqLog.RequestStatus = strPtr(telemetry.RequestStatusFailure)
+				reqLog.ErrorKind = strPtr("empty_response")
+				reqLog.FailureStage = strPtr("upstream_empty_response")
+				reqLog.FailureDetailCode = strPtr("zero_tokens_few_chunks")
+			}
+		}
+
 		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 		// audit/audit.go::SummaryAsMap now publishes the upstream finish_reason
 		// under the new "upstream_finish_reason" key (for BOTH success and
@@ -2862,4 +2883,51 @@ func resolveGatewayVersion() string {
 		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
 	}
 	return "0.2.0-unknown"
+}
+
+// detectEmptyStreamResponse checks if a streaming response is effectively empty.
+// Returns true if all of the following are true:
+//   - Very few chunks (<= 3)
+//   - Zero completion tokens
+//   - No response preview content
+//   - No upstream finish_reason (normal finish would have "length" or "stop")
+//
+// This pattern indicates the upstream returned no actual content despite sending [DONE].
+// Seen with Provider 18 (NVIDIA NIM) on large inputs (160k+ tokens).
+func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEntry) bool {
+	// Check 1: Few chunks (<= 3, tightened threshold)
+	chunkCount, ok := m["stream_chunk_count"].(int)
+	if !ok || chunkCount > 3 {
+		return false // More than 3 chunks likely has content
+	}
+	if chunkCount > 3 {
+		return false // More than 3 chunks likely has content
+	}
+
+	// Check 2: Zero completion tokens
+	hasTokens := reqLog.CompletionTokens != nil && *reqLog.CompletionTokens > 0
+	if hasTokens {
+		return false // Has tokens means not empty
+	}
+
+	// Check 3: No content preview (check both reqLog and capture)
+	hasPreview := reqLog.ResponsePreview != nil && *reqLog.ResponsePreview != ""
+	if hasPreview {
+		return false // Has content means not empty
+	}
+
+	// Check stream_text_content from capture as backup
+	if v, ok := m["stream_text_content"].(string); ok && strings.TrimSpace(v) != "" {
+		return false // Has text content means not empty
+	}
+
+	// Check 4: No upstream finish_reason
+	// Normal successful completion should have "stop" or "length"
+	hasFinishReason := reqLog.UpstreamFinishReason != nil && *reqLog.UpstreamFinishReason != ""
+	if hasFinishReason {
+		return false // Normal finish means not empty
+	}
+
+	// All empty indicators present - this is truly an empty response
+	return true
 }

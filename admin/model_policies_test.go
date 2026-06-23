@@ -179,6 +179,53 @@ func TestHandleTenantModelPolicies_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+// ── handleTenants routing regression (incident 2026-06-23) ─────────────
+//
+// The bug: handleTenants split the path with SplitN(path, "/", 2), so for
+// "/tenants/hansi/model-policies/audit" the sub-resource was the full tail
+// "model-policies/audit", which never matched the bare `sub == "model-policies"`
+// check. The request then fell through to the generic switch and returned:
+//
+//   GET  .../model-policies/audit  → 404 "unknown sub-resource: model-policies/audit"
+//   POST .../model-policies/check  → 405 "method not allowed" (POST ≠ GET)
+//
+// handleTenants has a `h.db == nil → 503` guard at the very top, so a
+// black-box HTTP test cannot distinguish correct routing from the broken
+// routing (both surface as 503 when db is nil). The routing rule itself
+// is therefore extracted into isModelPoliciesSubResource and tested as a
+// pure function here — this is the test that actually catches the regression.
+func TestIsModelPoliciesSubResource(t *testing.T) {
+	cases := []struct {
+		sub  string
+		want bool
+		why  string
+	}{
+		{"model-policies", true, "bare list/create endpoint"},
+		{"model-policies/audit", true, "REGRESSION: was false → 'unknown sub-resource: model-policies/audit'"},
+		{"model-policies/check", true, "REGRESSION: was false → 'method not allowed' on POST /check"},
+		{"model-policies/42", true, "PATCH/DELETE by id"},
+		{"model-policies/42/undelete", true, "POST undelete by id"},
+		{"model-policies/a/b/c", true, "arbitrary deeper path still belongs to the sub-tree"},
+
+		// Neighbours must NOT be swallowed by an over-broad match.
+		{"users", false, "sibling GET /users"},
+		{"keys", false, "sibling GET /keys"},
+		{"stats", false, "sibling GET /stats"},
+		{"", false, "empty sub = tenant root, not model-policies"},
+		{"nonexistent-sub", false, "unknown sub-resource must 404"},
+		{"model", false, "guard against over-broad prefix (HasPrefix('model'))"},
+		{"model-policies-x", false, "sibling sharing the 'model-policies' prefix but not the path segment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sub, func(t *testing.T) {
+			if got := isModelPoliciesSubResource(tc.sub); got != tc.want {
+				t.Errorf("isModelPoliciesSubResource(%q) = %v, want %v (%s)",
+					tc.sub, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
 // ── context helpers (defensive: ensure the auth plumbing works) ─────────
 
 func TestAuthContextRoundTrip(t *testing.T) {

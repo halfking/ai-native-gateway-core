@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -20,6 +21,73 @@ func (h *Handler) registerSettingsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/settings", h.admin(h.settingsList))
 	mux.HandleFunc("/api/admin/settings/", h.admin(h.settingsRouter))
 	mux.HandleFunc("/api/admin/tenant-settings/", h.admin(h.tenantSettingsRouter))
+
+	// Convenience: the fingerprint-slot policy is read from 5 separate
+	// settings_kv keys (migration 041). Admin UI prefers a single
+	// object that joins all of them, so we expose the policy view directly.
+	mux.HandleFunc("/api/admin/fp-slot-policy", h.admin(h.getFpSlotPolicy))
+	mux.HandleFunc("/api/admin/fp-slot-policy/", h.admin(h.fpSlotPolicyRouter))
+}
+
+// getFpSlotPolicy returns the unified policy view as a single JSON
+// object — easier for the admin UI to render than 5 separate keys.
+//
+// GET /api/admin/fp-slot-policy
+func (h *Handler) getFpSlotPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	var enabled bool
+	var maxPerCred int
+	var defaultRatio float64
+	var clientTTLDays int
+	var maxTotalClients int
+	row := h.db.QueryRow(ctx, `SELECT enabled, max_per_credential, default_ratio, client_ttl_days, max_total_clients FROM v_fp_slot_policy`)
+	if err := row.Scan(&enabled, &maxPerCred, &defaultRatio, &clientTTLDays, &maxTotalClients); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load fp_slot policy: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":            enabled,
+		"max_per_credential": maxPerCred,
+		"default_ratio":      defaultRatio,
+		"client_ttl_days":    clientTTLDays,
+		"max_total_clients":  maxTotalClients,
+		// Convenience: derived values the UI typically shows.
+		"derived": map[string]any{
+			"max_per_credential_human": fmt.Sprintf("%d distinct virtual users per credential", maxPerCred),
+			"default_ratio_human":      fmt.Sprintf("fp_slot_limit = concurrency_limit × %.2f", defaultRatio),
+			"client_ttl_human":         fmt.Sprintf("client fingerprint retained for %d days after last contact", clientTTLDays),
+			"max_total_clients_human":  fmt.Sprintf("global cap of %d distinct client fingerprints (LRU recycle)", maxTotalClients),
+		},
+	})
+}
+
+// fpSlotPolicyRouter dispatches /api/admin/fp-slot-policy/{key}.
+//
+// PUT /api/admin/fp-slot-policy/{key}  — update one setting, value in body.
+// GET /api/admin/fp-slot-policy/{key}  — read one setting (delegated to
+//
+//	the existing settingsList / settingsGet path).
+func (h *Handler) fpSlotPolicyRouter(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/fp-slot-policy/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "unknown fp-slot-policy endpoint")
+		return
+	}
+	key := "llmgw_" + parts[0] // normalize: UI sends "fp_slot_enabled" → "llmgw_fp_slot_enabled"
+	switch r.Method {
+	case http.MethodGet:
+		h.settingsGet(w, r, key, false, "")
+	case http.MethodPut:
+		h.settingsPut(w, r, key, false, "")
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // settingsRouter dispatches /api/admin/settings/{key}[/history|/rollback].
@@ -46,7 +114,8 @@ func (h *Handler) settingsRouter(w http.ResponseWriter, r *http.Request) {
 }
 
 // tenantSettingsRouter handles
-//   /api/admin/tenant-settings/{tid}/{key}[/history|/rollback]
+//
+//	/api/admin/tenant-settings/{tid}/{key}[/history|/rollback]
 func (h *Handler) tenantSettingsRouter(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/tenant-settings/")
 	parts := strings.Split(rest, "/")
@@ -103,21 +172,21 @@ func (h *Handler) settingsList(w http.ResponseWriter, r *http.Request) {
 			src = s
 		}
 		items = append(items, map[string]any{
-			"key":            sp.Key,
-			"env_name":       sp.EnvName,
-			"type":           sp.Type,
-			"scope":          sp.Scope,
-			"category":       sp.Category,
-			"default":        sp.Default,
-			"value":          v,
-			"source":         src,
-			"options":        sp.Options,
-			"min":            sp.Min,
-			"max":            sp.Max,
-			"description":    sp.Description,
-			"danger_level":   sp.DangerLevel,
-			"hot_reload":     sp.HotReload,
-			"observability":  sp.Observability,
+			"key":           sp.Key,
+			"env_name":      sp.EnvName,
+			"type":          sp.Type,
+			"scope":         sp.Scope,
+			"category":      sp.Category,
+			"default":       sp.Default,
+			"value":         v,
+			"source":        src,
+			"options":       sp.Options,
+			"min":           sp.Min,
+			"max":           sp.Max,
+			"description":   sp.Description,
+			"danger_level":  sp.DangerLevel,
+			"hot_reload":    sp.HotReload,
+			"observability": sp.Observability,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -292,8 +361,8 @@ func (h *Handler) settingsRollback(w http.ResponseWriter, r *http.Request, key s
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ok",
-		"rolled_back_to":  newVal,
+		"status":         "ok",
+		"rolled_back_to": newVal,
 	})
 }
 
