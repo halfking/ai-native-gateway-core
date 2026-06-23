@@ -243,16 +243,14 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	// The underlying credential_model_bindings.updated_at was already set above.
 	moTag, err := db.Exec(ctx, `
 		UPDATE model_offers mo
-		SET available              = TRUE,
-		    unavailable_reason     = NULL,
-		    unavailable_at         = NULL,
-		    unavailable_recover_at = NULL
+		SET available          = TRUE,
+		    unavailable_reason = NULL,
+		    unavailable_at     = NULL
 		WHERE mo.available = FALSE
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND mo.unavailable_reason <> 'model_probe_broken'
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		  AND COALESCE(mo.unavailable_recover_at,
-		               mo.unavailable_at + INTERVAL '30 seconds') < now()
+		  AND COALESCE(mo.unavailable_at + INTERVAL '30 seconds', now() + INTERVAL '1 hour') < now()
 	`)
 	if err != nil {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)
