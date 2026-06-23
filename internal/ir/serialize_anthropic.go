@@ -151,6 +151,29 @@ func serializeAnthropicMessages(req *InternalRequest) []map[string]any {
 
 // serializeAnthropicMessage converts a single IR Message to Anthropic format.
 func serializeAnthropicMessage(msg Message) map[string]any {
+	// Tool role messages: convert to user+tool_result format (Anthropic convention)
+	if msg.Role == "tool" {
+		out := map[string]any{
+			"role": "user",
+		}
+		toolResult := map[string]any{
+			"type": "tool_result",
+		}
+		if msg.ToolCallID != "" {
+			toolResult["tool_use_id"] = msg.ToolCallID
+		}
+		// Extract content from text blocks
+		var textParts []string
+		for _, block := range msg.Content {
+			if block.Type == "text" {
+				textParts = append(textParts, block.Text)
+			}
+		}
+		toolResult["content"] = joinTextPartsAnthropic(textParts)
+		out["content"] = []map[string]any{toolResult}
+		return out
+	}
+
 	out := map[string]any{
 		"role": msg.Role,
 	}
@@ -168,17 +191,25 @@ func serializeAnthropicMessage(msg Message) map[string]any {
 		out["content"] = content
 	}
 
-	// Tool role fields
-	if msg.Role == "tool" {
-		if msg.ToolCallID != "" {
-			out["tool_use_id"] = msg.ToolCallID
-		}
-		if msg.Name != "" {
-			out["name"] = msg.Name
-		}
-	}
-
 	return out
+}
+
+// joinTextPartsAnthropic joins text parts with newlines.
+func joinTextPartsAnthropic(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += "\n"
+		}
+		result += p
+	}
+	return result
 }
 
 // serializeAnthropicMessageContent converts IR message content to Anthropic content blocks.

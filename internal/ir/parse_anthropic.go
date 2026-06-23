@@ -8,21 +8,21 @@ import (
 // ParseAnthropic parses an Anthropic Messages API request body into InternalRequest.
 func ParseAnthropic(body []byte) (*InternalRequest, error) {
 	var src struct {
-		Model         string          `json:"model"`
-		Messages      json.RawMessage `json:"messages"`
-		MaxTokens     int             `json:"max_tokens"`
-		System        json.RawMessage `json:"system,omitempty"`
-		Stream        *bool           `json:"stream,omitempty"`
-		Temperature   *float64        `json:"temperature,omitempty"`
-		TopP          *float64        `json:"top_p,omitempty"`
-		TopK          *int            `json:"top_k,omitempty"`
-		StopSequences json.RawMessage `json:"stop_sequences,omitempty"`
-		Tools         json.RawMessage `json:"tools,omitempty"`
-		ToolChoice    json.RawMessage `json:"tool_choice,omitempty"`
-		Metadata      *anthropicMeta   `json:"metadata,omitempty"`
+		Model         string             `json:"model"`
+		Messages      json.RawMessage    `json:"messages"`
+		MaxTokens     int                `json:"max_tokens"`
+		System        json.RawMessage    `json:"system,omitempty"`
+		Stream        *bool              `json:"stream,omitempty"`
+		Temperature   *float64           `json:"temperature,omitempty"`
+		TopP          *float64           `json:"top_p,omitempty"`
+		TopK          *int               `json:"top_k,omitempty"`
+		StopSequences json.RawMessage    `json:"stop_sequences,omitempty"`
+		Tools         json.RawMessage    `json:"tools,omitempty"`
+		ToolChoice    json.RawMessage    `json:"tool_choice,omitempty"`
+		Metadata      *anthropicMeta     `json:"metadata,omitempty"`
 		Thinking      *anthropicThinking `json:"thinking,omitempty"`
-		CacheControl  json.RawMessage `json:"cache_control,omitempty"`
-		Documents     json.RawMessage `json:"documents,omitempty"`
+		CacheControl  json.RawMessage    `json:"cache_control,omitempty"`
+		Documents     json.RawMessage    `json:"documents,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -30,9 +30,9 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 	}
 
 	ir := &InternalRequest{
-		Model:           src.Model,
-		MaxTokens:       src.MaxTokens,
-		SourceProtocol:  ProtocolAnthropicMessages,
+		Model:          src.Model,
+		MaxTokens:      src.MaxTokens,
+		SourceProtocol: ProtocolAnthropicMessages,
 	}
 
 	if src.Temperature != nil {
@@ -209,6 +209,23 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 			return nil, fmt.Errorf("parse content blocks: %w", err)
 		}
 		irMsg.Content = blocks
+
+		// P0 fix (2026-06-23): Extract tool_use blocks into ToolCalls
+		// (OpenAI convention). Without this, SerializeOpenAI produces
+		// `content: []` for assistant messages containing only tool_use
+		// blocks. Mirrors the `role: tool` handling in serialize_openai.go.
+		for _, block := range blocks {
+			if block.Type == "tool_use" && block.ToolUse != nil {
+				tc := ToolCall{
+					ID:   block.ToolUse.ID,
+					Type: "function",
+				}
+				tc.Function.Name = block.ToolUse.Name
+				// ToolUse.Input is a pre-serialized JSON object
+				tc.Function.Arguments = string(block.ToolUse.Input)
+				irMsg.ToolCalls = append(irMsg.ToolCalls, tc)
+			}
+		}
 	}
 
 	// Handle name (usually for tool role)
