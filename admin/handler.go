@@ -317,9 +317,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/resolve", admin(h.handleRoutingResolve))
 	mux.HandleFunc("/api/routing/overview", admin(h.handleRoutingOverview))
 	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
-	// 2026-06-24: credential monitor summary (per-credential model breakdown)
-	monitorH := NewCredentialMonitorHandlers(h, nil, nil)
-	mux.HandleFunc("/api/credentials/monitor-summary", admin(monitorH.handleMonitorSummary))
+	// NOTE: /api/credentials/monitor-summary is registered later in
+	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.
+	// Do NOT register it here to avoid mux.HandleFunc panic.
 	mux.HandleFunc("/api/admin/compression/stats", admin(h.handleCompressionStats))
 	mux.HandleFunc("/api/admin/compression/sessions", admin(h.handleCompressionSessions))
 	mux.HandleFunc("/api/admin/data-lifecycle/stats", admin(h.handleDataLifecycleStats))
