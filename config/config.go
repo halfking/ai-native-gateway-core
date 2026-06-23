@@ -41,11 +41,11 @@ type Config struct {
 	DefaultCred     int    `yaml:"default_credential" env:"LLM_GATEWAY_DEFAULT_CREDENTIAL"`
 
 	// Timeouts (seconds)
-	UpstreamTimeout     int `yaml:"upstream_timeout_seconds" env:"LLM_GATEWAY_UPSTREAM_TIMEOUT"`
-	StreamTimeout       int `yaml:"stream_timeout_seconds" env:"LLM_GATEWAY_STREAM_TIMEOUT"`
-	StreamChunkTimeout  int `yaml:"stream_chunk_timeout_seconds" env:"LLM_GATEWAY_STREAM_CHUNK_TIMEOUT"`
-	FirstByteTimeout    int `yaml:"first_byte_timeout_seconds" env:"LLM_GATEWAY_FIRST_BYTE_TIMEOUT"`
-	KeepaliveInterval   int `yaml:"keepalive_interval_seconds" env:"LLM_GATEWAY_KEEPALIVE_INTERVAL"`
+	UpstreamTimeout    int `yaml:"upstream_timeout_seconds" env:"LLM_GATEWAY_UPSTREAM_TIMEOUT"`
+	StreamTimeout      int `yaml:"stream_timeout_seconds" env:"LLM_GATEWAY_STREAM_TIMEOUT"`
+	StreamChunkTimeout int `yaml:"stream_chunk_timeout_seconds" env:"LLM_GATEWAY_STREAM_CHUNK_TIMEOUT"`
+	FirstByteTimeout   int `yaml:"first_byte_timeout_seconds" env:"LLM_GATEWAY_FIRST_BYTE_TIMEOUT"`
+	KeepaliveInterval  int `yaml:"keepalive_interval_seconds" env:"LLM_GATEWAY_KEEPALIVE_INTERVAL"`
 
 	// Stream failover
 	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
@@ -62,6 +62,14 @@ type Config struct {
 	// Per-credential virtual fingerprint slot pool (NULL DB limit → default).
 	DefaultCredentialConcurrency int  `yaml:"default_credential_concurrency" env:"LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY"`
 	EnableCredentialFpSlots      bool `yaml:"enable_credential_fp_slots" env:"LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS"`
+
+	// CredentialFpSlotActiveGateSeconds is the "active holder"
+	// threshold (in seconds) for fp_slot preemption. 2026-06-24:
+	// same knob drives both the in-line Acquire-time gate and the
+	// background reclaim goroutine. Per operator spec "5分钟内的
+	// 会话不允许抢的" — default 300. Set to 0 to fall back to the
+	// package default (also 300).
+	CredentialFpSlotActiveGateSeconds int `yaml:"credential_fp_slot_active_gate_seconds" env:"LLM_GATEWAY_CREDENTIAL_FP_SLOT_ACTIVE_GATE_SECONDS"`
 
 	// EnableDisguise rotates User-Agent, Accept-Language, and (optionally)
 	// TLS ClientHello fingerprints. See docs/legal/disguise-compliance.md
@@ -91,32 +99,33 @@ func envOrDefault(key, def string) string {
 // Load loads configuration from environment variables (and optionally a file).
 func Load() *Config {
 	cfg := &Config{
-		DatabaseURL:             firstNonEmpty(os.Getenv("LLM_GATEWAY_DATABASE_URL"), os.Getenv("DATABASE_URL")),
-		SecretKey:               firstNonEmpty(os.Getenv("LLM_GATEWAY_SECRET_KEY"), os.Getenv("SECRET_KEY")),
-		CredentialEncryptionKey: firstNonEmpty(os.Getenv("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"), os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
-		RedisAddr:               os.Getenv("LLM_GATEWAY_REDIS_ADDR"),
-		RedisPassword:           os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"),
-		Listen:                  envOrDefault("LLM_GATEWAY_LISTEN", ":8781"),
-		LogLevel:                envOrDefault("LLM_GATEWAY_LOG_LEVEL", "info"),
-		APIKey:                  os.Getenv("LLM_GATEWAY_API_KEY"),
-		CORSOrigins:             os.Getenv("LLM_GATEWAY_CORS_ORIGINS"),
-		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", "web/dist"),
-		PythonEndpoint:          os.Getenv("LLM_GATEWAY_PYTHON_ENDPOINT"),
-		AdminAPIKey:             os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
-		UpstreamURL:             envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),
-		IdentitySalt:            os.Getenv("LLM_GATEWAY_IDENTITY_SALT"),
-		BGMode:                  envOrDefault("LLM_GATEWAY_BG_MODE", "full"),
-		UpstreamTimeout:         120,
-		StreamTimeout:           900,
-		StreamChunkTimeout:      300,
-		FirstByteTimeout:        30,
-		KeepaliveInterval:       15,
-		SessionTTLHours:         168,
-		StreamRetryThreshold:    5, // Default: allow stream failover if < 5 chunks sent
-		PoolGracePeriod:              180, // Default: 3 minutes grace period before marking pool as dead
-		DefaultCredentialConcurrency: 5,
-		EnableCredentialFpSlots:      true,
-		EnableDisguise:               false, // off by default; opt-in
+		DatabaseURL:                       firstNonEmpty(os.Getenv("LLM_GATEWAY_DATABASE_URL"), os.Getenv("DATABASE_URL")),
+		SecretKey:                         firstNonEmpty(os.Getenv("LLM_GATEWAY_SECRET_KEY"), os.Getenv("SECRET_KEY")),
+		CredentialEncryptionKey:           firstNonEmpty(os.Getenv("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"), os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
+		RedisAddr:                         os.Getenv("LLM_GATEWAY_REDIS_ADDR"),
+		RedisPassword:                     os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"),
+		Listen:                            envOrDefault("LLM_GATEWAY_LISTEN", ":8781"),
+		LogLevel:                          envOrDefault("LLM_GATEWAY_LOG_LEVEL", "info"),
+		APIKey:                            os.Getenv("LLM_GATEWAY_API_KEY"),
+		CORSOrigins:                       os.Getenv("LLM_GATEWAY_CORS_ORIGINS"),
+		StaticDir:                         envOrDefault("LLM_GATEWAY_STATIC_DIR", "web/dist"),
+		PythonEndpoint:                    os.Getenv("LLM_GATEWAY_PYTHON_ENDPOINT"),
+		AdminAPIKey:                       os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
+		UpstreamURL:                       envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),
+		IdentitySalt:                      os.Getenv("LLM_GATEWAY_IDENTITY_SALT"),
+		BGMode:                            envOrDefault("LLM_GATEWAY_BG_MODE", "full"),
+		UpstreamTimeout:                   120,
+		StreamTimeout:                     900,
+		StreamChunkTimeout:                300,
+		FirstByteTimeout:                  30,
+		KeepaliveInterval:                 15,
+		SessionTTLHours:                   168,
+		StreamRetryThreshold:              5,   // Default: allow stream failover if < 5 chunks sent
+		PoolGracePeriod:                   180, // Default: 3 minutes grace period before marking pool as dead
+		DefaultCredentialConcurrency:      5,
+		EnableCredentialFpSlots:           true,
+		CredentialFpSlotActiveGateSeconds: 300,   // 5 min — same as the operator's "5 分钟活跃门" rule
+		EnableDisguise:                    false, // off by default; opt-in
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {
@@ -158,6 +167,11 @@ func Load() *Config {
 	if v := os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.DefaultCredentialConcurrency = n
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_CREDENTIAL_FP_SLOT_ACTIVE_GATE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.CredentialFpSlotActiveGateSeconds = n
 		}
 	}
 
