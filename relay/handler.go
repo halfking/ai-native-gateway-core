@@ -1260,7 +1260,34 @@ func (h *ChatHandler) serveWithExecutor(
 			return
 		}
 		logCtx.SetOutboundModel(explicitOutbound)
-		logCtx.failAndMark("provider_error", execErr.Error(), providerID, credentialID)
+		// 2026-06-23 P0 audit: capture upstream response body so transient
+		// errors have a diagnostic message in request_logs.response_preview.
+		// Without this, "error_kind=transient" rows are diagnostically
+		// useless — operators can't see why upstream failed.
+		enrichedErrMsg := execErr.Error()
+		if ue, ok := extractUpstreamError(execErr); ok {
+			if len(ue.Body) > 0 {
+				logCtx.SetResponseBody(ue.Body)
+				preview := string(ue.Body)
+				if len(preview) > 320 {
+					preview = preview[:320] + "..."
+				}
+				if ue.StatusCode > 0 {
+					enrichedErrMsg = fmt.Sprintf("upstream HTTP %d: %s | kind=%s", ue.StatusCode, preview, ue.Kind)
+				} else {
+					enrichedErrMsg = fmt.Sprintf("network error: %s | body: %s", ue.Message, preview)
+				}
+				slog.Warn("upstream failed with body",
+					"request_id", requestID,
+					"credential_id", credentialID,
+					"provider_id", providerID,
+					"status_code", ue.StatusCode,
+					"kind", string(ue.Kind),
+					"body_preview", preview,
+				)
+			}
+		}
+		logCtx.failAndMark("provider_error", enrichedErrMsg, providerID, credentialID)
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, errCode, failTrace, int(time.Since(startTime).Milliseconds()))
 		markLogged()
 		debugInfo := map[string]any{
@@ -2638,6 +2665,27 @@ func errorKindOrFallback(kind string) string {
 		return "model_not_found"
 	}
 	return kind
+}
+
+// extractUpstreamError (2026-06-23 P0) walks an error chain looking for
+// an *upstream.Error. Used by the relay handler to surface the vendor's
+// actual response body (and HTTP status) into request_logs so that
+// transient/5xx failures become diagnostically useful. Walks Unwrap
+// because the routing layer wraps upstream errors with fmt.Errorf("%w",
+// ...) for retry/exhaustion tracking.
+//
+// Returns (error, true) on the first *upstream.Error found, else
+// (nil, false) — callers MUST handle the false case gracefully.
+func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
+	if err == nil {
+		return nil, false
+	}
+	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
+		if ue, ok := cur.(*upstreampkg.Error); ok {
+			return ue, true
+		}
+	}
+	return nil, false
 }
 
 // captureAttemptBody reads the request body (capped at 1MB) into bodyOut
