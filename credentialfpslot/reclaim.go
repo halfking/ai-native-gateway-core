@@ -1,5 +1,17 @@
 package credentialfpslot
 
+// reclaim.go — background goroutine that proactively deletes idle slots
+// before their Redis TTL expires. NOT WIRED: as of commit 96832f01 the
+// slot TTL is 30 min and Redis auto-expiry is sufficient for the
+// "30 min no request → free" requirement. The reclaim loop is kept as
+// an opt-in escape hatch for tighter reclaim policies (e.g. < 30 min)
+// that may come in the future.
+//
+// All functions in this file are dead code in production. They are
+// exercised by reclaim_test.go to keep the reclaim logic verified.
+// To enable: call Manager.reclaimLoopStart(ctx, reclaimConfig{...}) in
+// cmd/gateway/main.go after constructing the fpSlots Manager.
+
 import (
 	"context"
 	"fmt"
