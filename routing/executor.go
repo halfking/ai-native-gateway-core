@@ -1156,10 +1156,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				break syncRetryLoop
 			}
 
-			// 重新推导候选（去粘性），让路由层基于最新状态做选择
+			// 重新推导候选（保留粘性）。一次失败不应该把同一会话切到
+			// 不同上游凭据——本会话的 sticky 已经在主循环里被 recordStickyFailure
+			// 评估过（model_not_found 是 client-bug kind，不解 sticky），所以
+			// 这里 PlanCandidates 仍然偏好同一 credential。
+			//
+			// 2026-06-24: 之前这里传 nil（去粘性），导致 sync_retry 反复切到其他
+			// 凭据，破坏会话连续性，且在 mnfStreak=3 时叠加 mnfStreakStickyBroken
+			// 形成 "一个正常一个失败" 交替模式。改为保留 sticky 偏好。
 			subCandidates := e.Router.PlanCandidates(
 				params.Candidates,
-				nil, // 无粘性偏好
+				e.stickyCredentialID(params.StickyKey),
 				params.Policy,
 				egressPref(params.Transform),
 			)
@@ -1276,10 +1283,33 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 }
 
 // recordMnfStreak (Step 6, 2026-06-18) increments the per-credential
-// model_not_found counter for the current sticky session. When the
-// counter reaches MnfStickyBreakThreshold, the sticky binding is
-// deleted so the next request re-picks a credential instead of being
-// pinned to this broken one for the full 30-min sticky TTL.
+// model_not_found counter for the current sticky session. The counter
+// is used for observability and alerting only; it does NOT break the
+// sticky binding.
+//
+// Why no sticky-break (2026-06-24):
+//   - model_not_found is classified as a client-bug kind by errorsx
+//     (errorsx.IsClientBug → true). It is the upstream telling us the
+//     caller asked for a model it does not serve — not the credential
+//     being broken.
+//   - recordStickyFailure already exempts client-bug kinds from
+//     unpinning, so the sticky TTL is preserved across intermittent
+//     model_not_found. mnfStreak must agree, otherwise the two paths
+//     disagree and a 3-streak silently re-picks a credential on the
+//     very next request.
+//   - Operators see "one normal / one failure" alternating in
+//     request_logs when this rule fires: sticky re-pick changes the
+//     egress identity (UA/TLS fingerprint slot), the new credential
+//     succeeds once, then model_not_found again, then re-pick again.
+//   - The circuit breaker (e.Circuit.Allow) and credential_availability
+//     worker (probe + cooling) are the correct mechanisms for removing a
+//     truly broken credential from routing — neither requires destroying
+//     the sticky binding of an unrelated session.
+//
+// Counters are still incremented so /api/candidate-failures/stats and
+// the alert ring can surface "this credential is returning model_not_found
+// frequently" without affecting routing. Threshold is now informational
+// (logs the streak) rather than destructive.
 //
 // All guards are nil/disabled-aware:
 //   - MnfStreakEnabled is false → no-op (feature flag)
@@ -1300,15 +1330,19 @@ func (e *Executor) recordMnfStreak(params *ExecParams, credentialID int) {
 	key := BuildMnfStreakKey(params.StickyKey, credentialID)
 	count := e.MnfStreak.Increment(key)
 	if count >= threshold {
-		if e.Router != nil && e.Router.Sticky != nil {
-			e.Router.Sticky.Delete(params.StickyKey)
-		}
-		e.MnfStreak.Reset(key)
-		slog.Warn("mnf_streak_sticky_broken",
+		// Informational only: surface the streak so operators see
+		// "this session has hit model_not_found N times on this
+		// credential" without breaking the sticky binding. The
+		// sticky TTL continues to hold for the duration of the
+		// session; routing stays on the pinned credential until
+		// either the credential's circuit opens or the session's
+		// natural sticky TTL expires.
+		slog.Warn("mnf_streak_threshold_reached",
 			"sticky_key", params.StickyKey,
 			"credential_id", credentialID,
 			"streak", count,
 			"threshold", threshold,
+			"sticky_kept", true,
 		)
 	}
 }
