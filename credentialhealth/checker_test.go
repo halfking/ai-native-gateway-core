@@ -218,16 +218,21 @@ func TestRecoverExpired(t *testing.T) {
 	}
 	defer mockDB.Close()
 
-	// RecoverExpired must restore BOTH credential_model_bindings AND
-	// model_offers in a single tick. Previously it only cleared
-	// credentials.availability_state, which the router never reads —
-	// so cmb.available stayed FALSE and the binding stayed unroutable
-	// until the next 60s tick (if ever). The model_offers leg is what
-	// the /api/routing/resolve ("test route") endpoint surfaces.
+	// RecoverExpired must restore THREE state surfaces in a single tick:
+	//  1. credential_model_bindings  (production router's source of truth)
+	//  2. model_offers               (/api/routing/resolve "test route")
+	//  3. credentials.availability_state  (candidate loader's v_routable filter)
+	//
+	// PR-3 T3 (2026-06-23): added the credentials.availability_state UPDATE
+	// here to close the "cmb=TRUE but availability=cooling" false-negative
+	// window. The third SQL mirrors the recovery in bg/credential_recovery.go
+	// for defence-in-depth.
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 	mockDB.ExpectExec("UPDATE model_offers").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
+	mockDB.ExpectExec("UPDATE credentials").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 2))
 
 	ctx := context.Background()
 	count, err := RecoverExpired(ctx, mockDB)

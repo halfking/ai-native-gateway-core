@@ -192,12 +192,24 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 // RecoverExpired checks for expired degraded credentials and restores them.
 // This is called by the background health_auto_recover worker.
 //
-// It restores BOTH credential_model_bindings AND model_offers in the same
-// call, so the production router (cmb) and the /api/routing/resolve "test
-// route" (model_offers) agree on which bindings are live. Previously this
-// only cleared credentials.availability_state — which the router never
-// reads — so cmb.available stayed FALSE until the next 60s tick, and
-// model_offers.available stayed FALSE until manual admin intervention.
+// It restores THREE state surfaces in the same call:
+//  1. credential_model_bindings  (production router's source of truth)
+//  2. model_offers               (/api/routing/resolve "test route" + admin UI)
+//  3. credentials.availability_state  (the candidate loader's v_routable filter)
+//
+// 2026-06-23 (PR-3 T3): also clear credentials.availability_state in the same
+// tick. Without this, a credential whose availability_recover_at has passed
+// would still show is_routable=FALSE in the candidate loader for up to 60s
+// (until the next bg/credential_recovery.go tick), producing the
+// "cmb=TRUE but availability=cooling" false negative that hid the cred-11/
+// minimax-m3 incident. Mirrors the SQL in bg/credential_recovery.go:recover()
+// for defence-in-depth: if either worker tick is delayed, the other still
+// covers the recovery.
+//
+// Historical note: the previous version of this function deliberately did
+// NOT touch availability_state, on the assumption that the router reads
+// only cmb. That assumption was wrong — v_routable_credential_models.is_routable
+// also requires availability_state='ready' (see 2026-06-22 defect 4).
 func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	cmbTag, err := db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
@@ -240,11 +252,43 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)
 	}
 
+	// ALSO clear credentials.availability_state when its recover_at has
+	// passed. Same broken_confirmed guard as bg/credential_recovery.go:
+	// do not auto-restore a credential that the probe worker has marked
+	// permanently broken — the probe worker only un-marks a binding via
+	// a manual nudge (TriggerManual), so guarding here cannot strand a
+	// credential that has actually recovered.
+	credTag, err := db.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state      = 'ready',
+		    availability_recover_at = NULL,
+		    state_updated_at        = now()
+		WHERE availability_state IN ('cooling','rate_limited','unreachable')
+		  AND availability_recover_at IS NOT NULL
+		  AND availability_recover_at <= now()
+		  AND lifecycle_status = 'active'
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM model_probe_state mps
+		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
+		      JOIN credential_model_bindings cmb
+		           ON cmb.credential_id = mps.credential_id
+		          AND cmb.provider_model_id = pm.id
+		      WHERE mps.credential_id = credentials.id
+		        AND mps.state = 'broken_confirmed'
+		        AND cmb.available = FALSE
+		  )
+	`)
+	if err != nil {
+		slog.Warn("availability_state recovery in RecoverExpired failed", "error", err)
+	}
+
 	rowsAffected := int(cmbTag.RowsAffected())
 	if rowsAffected > 0 {
 		slog.Info("auto recovered expired bindings",
 			"cmb_count", cmbTag.RowsAffected(),
 			"model_offers_count", moTag.RowsAffected(),
+			"credentials_availability_count", credTag.RowsAffected(),
 		)
 	}
 
