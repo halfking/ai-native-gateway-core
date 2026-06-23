@@ -310,7 +310,17 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 			return chunk, nil
 		}
 
-		// Text or thinking block start (no content yet)
+		// PR-2 (2026-06-24): thinking-block start. Emit a Delta with
+		// Role pre-filled so downstream consumers can mark HasThinking
+		// without scanning the raw payload. The actual thinking text
+		// arrives in the following thinking_delta(s).
+		if evt.ContentBlock.Type == "thinking" {
+			chunk.Type = ChunkTypeDelta
+			chunk.Delta = &StreamDelta{}
+			return chunk, nil
+		}
+
+		// Text block start (no content yet)
 		chunk.Type = ChunkTypeDelta
 		chunk.Delta = &StreamDelta{}
 		return chunk, nil
@@ -323,6 +333,12 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
 				PartialJSON string `json:"partial_json"`
+				// PR-2 (2026-06-24): signature_delta closes a thinking
+				// block. OpenAI has no equivalent, so the IR chunk stays
+				// empty — but we must NOT fall through to the default
+				// branch and drop the chunk entirely (that was the
+				// root cause of the "tool_use lost on opus-4-8" symptom).
+				Signature string `json:"signature"`
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal(data, &evt); err != nil {
@@ -342,6 +358,15 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 				Index:     evt.Index,
 				Arguments: evt.Delta.PartialJSON,
 			}}
+		case "signature_delta":
+			// PR-2 (2026-06-24): closed-loop support for Anthropic
+			// thinking blocks. The signature has no OpenAI-protocol
+			// equivalent, so we emit a no-op Delta and rely on
+			// stream-side state to correlate the signature with its
+			// preceding thinking block. Crucially we do NOT return an
+			// error, which is what the old default branch did and
+			// which previously broke the downstream tool_use chunk.
+			_ = evt.Delta.Signature
 		}
 
 		return chunk, nil

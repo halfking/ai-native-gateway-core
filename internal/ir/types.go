@@ -21,7 +21,7 @@ import "encoding/json"
 
 // Protocol constants for SourceProtocol field.
 const (
-	ProtocolOpenAIChat      = "openai-chat"
+	ProtocolOpenAIChat        = "openai-chat"
 	ProtocolAnthropicMessages = "anthropic-messages"
 )
 
@@ -50,9 +50,9 @@ type InternalRequest struct {
 	// Sampling parameters (shared)
 	MaxTokens   int      // OpenAI: max_tokens; Anthropic: max_tokens
 	Temperature *float64 // OpenAI: temperature; Anthropic: temperature
-	TopP        *float64  // OpenAI: top_p; Anthropic: top_p
-	TopK        *int      // Anthropic-only (OpenAI has no equivalent)
-	Stop        []string  // OpenAI: stop[]; Anthropic: stop_sequences[]
+	TopP        *float64 // OpenAI: top_p; Anthropic: top_p
+	TopK        *int     // Anthropic-only (OpenAI has no equivalent)
+	Stop        []string // OpenAI: stop[]; Anthropic: stop_sequences[]
 
 	Stream bool // Streaming flag (passthrough both directions)
 
@@ -96,18 +96,18 @@ type InternalRequest struct {
 
 // SystemPrompt represents a normalized system prompt.
 type SystemPrompt struct {
-	Content   string           // Plain text content
-	Parts     []ContentBlock   // Anthropic-style content blocks (for mixed content)
-	PDFs      []PDFDocument   // Anthropic PDF documents
-	Priority  *int            // Priority for system prompt (Anthropic)
-	CacheCtrl *CacheControl   // Cache control for system prompt
+	Content   string         // Plain text content
+	Parts     []ContentBlock // Anthropic-style content blocks (for mixed content)
+	PDFs      []PDFDocument  // Anthropic PDF documents
+	Priority  *int           // Priority for system prompt (Anthropic)
+	CacheCtrl *CacheControl  // Cache control for system prompt
 }
 
 // PDFDocument represents a PDF document in Anthropic system prompt.
 type PDFDocument struct {
 	Type      string // "document"
 	Source    PDFSource
-	Title     string `json:"title,omitempty"`
+	Title     string        `json:"title,omitempty"`
 	CacheCtrl *CacheControl `json:"cache_control,omitempty"`
 }
 
@@ -168,10 +168,10 @@ type ContentBlock struct {
 
 // ImageSource represents an image in a message.
 type ImageSource struct {
-	Type     string `json:"type"` // "url" | "base64"
+	Type      string `json:"type"`                 // "url" | "base64"
 	MediaType string `json:"media_type,omitempty"` // "image/png" etc.
-	URL      string `json:"url,omitempty"`
-	Data     string `json:"data,omitempty"` // base64 without prefix
+	URL       string `json:"url,omitempty"`
+	Data      string `json:"data,omitempty"` // base64 without prefix
 }
 
 // ToolUse is an assistant's tool call request.
@@ -183,8 +183,8 @@ type ToolUse struct {
 
 // ToolCall is OpenAI's representation of a tool call.
 type ToolCall struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"` // Always "function"
+	ID       string `json:"id"`
+	Type     string `json:"type"` // Always "function"
 	Function struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"` // JSON string
@@ -193,9 +193,9 @@ type ToolCall struct {
 
 // ToolResult is the result of a tool execution.
 type ToolResult struct {
-	ToolUseID string          `json:"tool_use_id"`
-	Content   []ContentBlock  `json:"content"` // Can be multi-modal
-	IsError   bool            `json:"is_error,omitempty"`
+	ToolUseID string         `json:"tool_use_id"`
+	Content   []ContentBlock `json:"content"` // Can be multi-modal
+	IsError   bool           `json:"is_error,omitempty"`
 }
 
 // ToolDefinition is a callable tool schema.
@@ -218,8 +218,16 @@ type ThinkingConfig struct {
 }
 
 // ThinkingBlock is the actual thinking content from Claude.
+//
+// PR-2 (2026-06-24): Signature added so claude-opus-4-8 round-trips
+// work end-to-end. Without it the next-turn request is rejected by
+// Anthropic with HTTP 400 "signature: Input should be a valid string"
+// and the assistant loses its prior tool_use context — the symptom
+// that triggered this fix. Use `omitempty` so legacy callers that
+// only set Thinking still serialise cleanly.
 type ThinkingBlock struct {
-	Thinking string `json:"thinking"` // The actual thinking text
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // CacheControl represents Anthropic's semantic cache control.
@@ -229,26 +237,26 @@ type CacheControl struct {
 
 // Document represents Anthropic's document prompt injection.
 type Document struct {
-	Type      string        `json:"type"` // "document"
+	Type      string         `json:"type"` // "document"
 	Source    DocumentSource `json:"source"`
-	Title     string        `json:"title,omitempty"`
-	Context   string        `json:"context,omitempty"`
-	CacheCtrl *CacheControl `json:"cache_control,omitempty"`
+	Title     string         `json:"title,omitempty"`
+	Context   string         `json:"context,omitempty"`
+	CacheCtrl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 // DocumentSource is the source of a document.
 type DocumentSource struct {
-	Type     string `json:"type"` // "text" | "csv"
+	Type      string `json:"type"` // "text" | "csv"
 	MediaType string `json:"media_type,omitempty"`
-	Data     string `json:"data,omitempty"` // Raw text or base64
-	URL      string `json:"url,omitempty"`
+	Data      string `json:"data,omitempty"` // Raw text or base64
+	URL       string `json:"url,omitempty"`
 }
 
 // Metadata is generic key-value metadata.
 type Metadata struct {
-	UserID     string            `json:"user_id,omitempty"`
-	RequestID  string            `json:"request_id,omitempty"`
-	Other      map[string]string `json:"other,omitempty"`
+	UserID    string            `json:"user_id,omitempty"`
+	RequestID string            `json:"request_id,omitempty"`
+	Other     map[string]string `json:"other,omitempty"`
 }
 
 // ResponseFormat specifies the expected response format (OpenAI).

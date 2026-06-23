@@ -310,6 +310,15 @@ func serializeAnthropicContentBlock(block ContentBlock) map[string]any {
 	case "thinking":
 		if block.Thinking != nil {
 			out["thinking"] = block.Thinking.Thinking
+			// PR-2 (2026-06-24): emit signature so the next Anthropic
+			// turn can verify the chain-of-thought. Without this
+			// opus-4-8 rejects the request with HTTP 400 and the
+			// prior tool_use is lost. Use omitempty-style gating:
+			// only attach the field when populated, to keep the
+			// wire format identical for callers that never set it.
+			if block.Thinking.Signature != "" {
+				out["signature"] = block.Thinking.Signature
+			}
 		}
 
 	case "redacted_thinking":
