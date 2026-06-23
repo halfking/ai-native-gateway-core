@@ -116,7 +116,76 @@ func serializeOpenAIMessage(msg Message) map[string]any {
 		"role": msg.Role,
 	}
 
-	// Handle content
+	// Special handling for tool role messages
+	// Anthropic sends tool results as user messages with tool_result content blocks
+	// OpenAI expects tool role messages with tool_call_id and content
+	if msg.Role == "user" && len(msg.Content) > 0 {
+		// Check if this is actually a tool result (Anthropic format)
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && block.ToolResult != nil {
+				// Convert to OpenAI tool message
+				out["role"] = "tool"
+				out["tool_call_id"] = block.ToolResult.ToolUseID
+
+				// Extract text content from tool result
+				var textParts []string
+				for _, cb := range block.ToolResult.Content {
+					if cb.Type == "text" {
+						textParts = append(textParts, cb.Text)
+					}
+				}
+
+				if len(textParts) > 0 {
+					out["content"] = joinTextParts(textParts)
+				} else {
+					out["content"] = ""
+				}
+
+				// Optional name field
+				if msg.Name != "" {
+					out["name"] = msg.Name
+				}
+
+				return out
+			}
+		}
+	}
+
+	// Handle tool role with explicit ToolCallID
+	if msg.Role == "tool" {
+		if msg.ToolCallID != "" {
+			out["tool_call_id"] = msg.ToolCallID
+		}
+		if msg.Name != "" {
+			out["name"] = msg.Name
+		}
+
+		// Extract content from blocks
+		if len(msg.Content) > 0 {
+			if len(msg.Content) == 1 && msg.Content[0].Type == "text" {
+				out["content"] = msg.Content[0].Text
+			} else {
+				// Multiple blocks or tool_result - extract text
+				var textParts []string
+				for _, block := range msg.Content {
+					if block.Type == "text" {
+						textParts = append(textParts, block.Text)
+					} else if block.Type == "tool_result" && block.ToolResult != nil {
+						for _, cb := range block.ToolResult.Content {
+							if cb.Type == "text" {
+								textParts = append(textParts, cb.Text)
+							}
+						}
+					}
+				}
+				out["content"] = joinTextParts(textParts)
+			}
+		}
+
+		return out
+	}
+
+	// Handle content for non-tool roles
 	if len(msg.Content) == 0 {
 		// Empty content - may need tool_calls
 	} else if len(msg.Content) == 1 && msg.Content[0].Type == "text" && msg.ToolCalls == nil {
@@ -133,22 +202,30 @@ func serializeOpenAIMessage(msg Message) map[string]any {
 		}
 	}
 
-	// Handle tool role
-	if msg.Role == "tool" {
-		if msg.ToolCallID != "" {
-			out["tool_call_id"] = msg.ToolCallID
-		}
-		if msg.Name != "" {
-			out["name"] = msg.Name
-		}
-	}
-
 	// Handle name for other roles
 	if msg.Name != "" && msg.Role != "tool" {
 		out["name"] = msg.Name
 	}
 
 	return out
+}
+
+// joinTextParts joins text parts with newlines.
+func joinTextParts(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	result := ""
+	for i, p := range parts {
+		if i > 0 {
+			result += "\n"
+		}
+		result += p
+	}
+	return result
 }
 
 // serializeOpenAIMessageContent converts IR content blocks to OpenAI content array.
@@ -207,8 +284,8 @@ func serializeOpenAIToolCalls(calls []ToolCall) []map[string]any {
 			"id":   call.ID,
 			"type": "function",
 			"function": map[string]any{
-				"name":       call.Function.Name,
-				"arguments":  call.Function.Arguments,
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
 			},
 		})
 	}
