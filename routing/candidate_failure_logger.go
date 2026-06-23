@@ -36,7 +36,7 @@ import (
 )
 
 // candidateFailureLog is the row shape for candidate_failure_logs. Mirrors
-// the migration 037 schema; keep in sync.
+// the migration 037 + 300 schema; keep in sync.
 type candidateFailureLog struct {
 	RequestID               string
 	TenantID                string
@@ -50,6 +50,7 @@ type candidateFailureLog struct {
 	UpstreamResponseBody    string
 	UpstreamResponsePreview string
 	LatencyMs               *int
+	PerAttemptLatencyMs     *int
 	Retryable               *bool
 	Context                 map[string]any
 }
@@ -88,13 +89,14 @@ func (w *CandidateFailureWriter) LogFailure(
 	attemptIndex int,
 	execErr error,
 	latencyMs *int,
+	perAttemptLatencyMs *int,
 	extraContext map[string]any,
 ) {
 	if w == nil || w.pool == nil || execErr == nil {
 		return
 	}
 
-	row := w.buildRow(requestID, tenantID, credentialID, providerID, rawModelName, attemptIndex, execErr, latencyMs, extraContext)
+	row := w.buildRow(requestID, tenantID, credentialID, providerID, rawModelName, attemptIndex, execErr, latencyMs, perAttemptLatencyMs, extraContext)
 
 	// Independent context: never block the request hot path on a slow DB.
 	// 3s matches the other telemetry writers in this codebase.
@@ -107,18 +109,18 @@ func (w *CandidateFailureWriter) LogFailure(
 			request_id, tenant_id, credential_id, provider_id, raw_model_name,
 			attempt_index, error_kind, error_message,
 			upstream_status_code, upstream_response_body, upstream_response_preview,
-			latency_ms, retryable, context
+			latency_ms, per_attempt_latency_ms, retryable, context
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8,
 			$9, NULLIF($10, ''), NULLIF($11, ''),
-			$12, $13, $14
+			$12, $13, $14, $15
 		)
 	`,
 		row.RequestID, row.TenantID, row.CredentialID, row.ProviderID, row.RawModelName,
 		row.AttemptIndex, row.ErrorKind, row.ErrorMessage,
 		row.UpstreamStatusCode, row.UpstreamResponseBody, row.UpstreamResponsePreview,
-		row.LatencyMs, row.Retryable, marshalContext(row.Context),
+		row.LatencyMs, row.PerAttemptLatencyMs, row.Retryable, marshalContext(row.Context),
 	)
 	if err != nil {
 		slog.Warn("candidate_failure_logger: insert failed",
@@ -140,17 +142,19 @@ func (w *CandidateFailureWriter) buildRow(
 	attemptIndex int,
 	execErr error,
 	latencyMs *int,
+	perAttemptLatencyMs *int,
 	extraContext map[string]any,
 ) candidateFailureLog {
 	row := candidateFailureLog{
-		RequestID:    requestID,
-		TenantID:     tenantID,
-		CredentialID: credentialID,
-		ProviderID:   providerID,
-		RawModelName: rawModelName,
-		AttemptIndex: attemptIndex,
-		ErrorMessage: execErr.Error(),
-		LatencyMs:    latencyMs,
+		RequestID:           requestID,
+		TenantID:            tenantID,
+		CredentialID:        credentialID,
+		ProviderID:          providerID,
+		RawModelName:        rawModelName,
+		AttemptIndex:        attemptIndex,
+		ErrorMessage:        execErr.Error(),
+		LatencyMs:           latencyMs,
+		PerAttemptLatencyMs: perAttemptLatencyMs,
 	}
 
 	// Walk the chain to find the typed upstream error and the
