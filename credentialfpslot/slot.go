@@ -143,10 +143,16 @@ type memPinEntry struct {
 	exp  time.Time
 }
 
+// DefaultDefaultLimit is the fallback slot-pool size when neither
+// the per-credential DB value nor the Config.DefaultLimit is set.
+// 2026-06-24: bumped 5 → 20 per operator spec — wider pool avoids
+// the "fp_slot contention" class of issues observed in production.
+const DefaultDefaultLimit = 20
+
 // New creates a slot manager. client may be nil (memory fallback).
 func New(cfg Config, client *redis.Client) *Manager {
 	if cfg.DefaultLimit <= 0 {
-		cfg.DefaultLimit = 5
+		cfg.DefaultLimit = DefaultDefaultLimit
 	}
 	if cfg.ActiveGateSeconds <= 0 {
 		cfg.ActiveGateSeconds = DefaultActiveGateSeconds
