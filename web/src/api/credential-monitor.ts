@@ -199,3 +199,50 @@ export function getModelHistory(credentialId: number, rawModel: string, limit = 
     `/api/credentials/model-history?${params.toString()}`,
   )
 }
+
+// ── Credential routing decisions (2026-06-23) ────────────────────────────
+//
+// Get recent routing decisions for a specific credential. This is a
+// filtered view of routing_decision_log scoped to chosen_credential_id.
+
+export interface CredentialRoutingDecision {
+  ts: string
+  request_id: string
+  model: string
+  tier: number | null
+  success: boolean
+  latency_ms: number | null
+  error_class: string | null
+  chosen_provider_id: number | null
+  client_model: string | null
+  outbound_model: string | null
+  sticky_hit: boolean | null
+}
+
+export interface CredentialDecisionsResponse {
+  credential_id: number
+  decisions: CredentialRoutingDecision[]
+  total: number
+}
+
+export function getCredentialDecisions(credentialId: number, limit = 50) {
+  const params = new URLSearchParams()
+  params.set('credential_id', String(credentialId))
+  params.set('limit', String(limit))
+  return req<CredentialDecisionsResponse>(
+    'GET',
+    `/api/credentials/decisions?${params.toString()}`,
+  )
+}
+
+// ── Clear manual_disabled (2026-06-23) ───────────────────────────────────
+//
+// Force-clear manual_disabled flag to restore credential to normal routing pool.
+
+export function clearManualDisabled(credentialId: number, reason: string) {
+  return req<{ success: boolean; message: string }>(
+    'POST',
+    '/api/credentials/clear-manual-disabled',
+    { credential_id: credentialId, reason }
+  )
+}

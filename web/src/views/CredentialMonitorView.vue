@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, onUnmounted } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats } from '../api'
+import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
 
@@ -43,10 +43,31 @@ const toggleReason = ref('')
 const historyLoading = ref(false)
 const historyEvents = ref<ModelHistoryEvent[]>([])
 
-// Auto refresh
+// Auto refresh (main list)
 const autoRefresh = ref(false)
 const refreshInterval = ref(30) // seconds
 let refreshTimer: number | null = null
+
+// Detail drawer auto-refresh (2026-06-23)
+const detailAutoRefresh = ref(false)
+const detailRefreshInterval = ref(5) // seconds
+let detailRefreshTimer: number | null = null
+
+// Routing decisions for credential (2026-06-23)
+const credentialDecisions = ref<CredentialRoutingDecision[]>([])
+const credentialDecisionsLoading = ref(false)
+async function loadCredentialDecisions() {
+  if (!selectedCred.value) return
+  credentialDecisionsLoading.value = true
+  try {
+    const res = await getCredentialDecisions(selectedCred.value.id, 50)
+    credentialDecisions.value = res.decisions
+  } catch (e) {
+    console.error('credential decisions load failed', e)
+  } finally {
+    credentialDecisionsLoading.value = false
+  }
+}
 
 // Fingerprint slot visualization (2026-06-23)
 const fpSlotStats = ref<FpSlotStats | null>(null)
@@ -65,6 +86,74 @@ async function loadFpSlotStats() {
     fpSlotStatsLoading.value = false
   }
 }
+
+// Clear manual_disabled (2026-06-23)
+const clearDisabledDialogOpen = ref(false)
+const clearDisabledReason = ref('')
+function openClearDisabledDialog() {
+  clearDisabledDialogOpen.value = true
+  clearDisabledReason.value = ''
+}
+async function submitClearDisabled() {
+  if (!selectedCred.value) return
+  try {
+    await clearManualDisabled(selectedCred.value.id, clearDisabledReason.value)
+    clearDisabledDialogOpen.value = false
+    await refreshDetailDrawer()
+  } catch (e) {
+    alert('清除失败: ' + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+// Refresh detail drawer content (2026-06-23)
+async function refreshDetailDrawer() {
+  if (!selectedCred.value) return
+  // Reload summary to update selectedCred
+  await load()
+  const updatedCred = credentials.value.find(c => c.id === selectedCred.value?.id)
+  if (updatedCred) {
+    selectedCred.value = updatedCred
+  }
+  // Reload all drawer sections
+  if (selectedModel.value) {
+    await Promise.all([
+      loadSlidingWindow(selectedCred.value.id, selectedModel.value),
+      loadHistory(),
+      loadCredentialDecisions(),
+      loadFpSlotStats(),
+    ])
+  } else {
+    await Promise.all([
+      loadCredentialDecisions(),
+      loadFpSlotStats(),
+    ])
+  }
+}
+
+function startDetailAutoRefresh() {
+  if (detailRefreshTimer) return
+  detailAutoRefresh.value = true
+  detailRefreshTimer = window.setInterval(() => refreshDetailDrawer(), detailRefreshInterval.value * 1000)
+}
+
+function stopDetailAutoRefresh() {
+  if (detailRefreshTimer) {
+    clearInterval(detailRefreshTimer)
+    detailRefreshTimer = null
+  }
+  detailAutoRefresh.value = false
+}
+
+function toggleDetailAutoRefresh() {
+  detailAutoRefresh.value ? stopDetailAutoRefresh() : startDetailAutoRefresh()
+}
+
+// Watch selectedCred changes to stop auto-refresh when drawer closes
+watch(selectedCred, (newVal) => {
+  if (!newVal) {
+    stopDetailAutoRefresh()
+  }
+})
 
 // Batch operations
 const selectedIds = ref<Set<number>>(new Set())
@@ -178,6 +267,9 @@ function openDetail(cred: CredentialMonitorSummary) {
     windowEntries.value = []
     historyEvents.value = []
   }
+  // Load additional drawer data (2026-06-23)
+  loadCredentialDecisions()
+  loadFpSlotStats()
 }
 
 async function loadSlidingWindow(credId: number, model: string) {
@@ -432,6 +524,7 @@ onMounted(() => load())
 
 onUnmounted(() => {
   stopAutoRefresh()
+  stopDetailAutoRefresh()
   if (errorPieChart) errorPieChart.destroy()
 })
 </script>
@@ -582,7 +675,21 @@ onUnmounted(() => {
             <h3 style="margin:0">{{ selectedCred.label || `凭据 #${selectedCred.id}` }}</h3>
             <div class="drawer-sub">{{ selectedCred.provider_name }}</div>
           </div>
-          <button class="btn btn-ghost btn-sm" @click="selectedCred = null">关闭</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
+              <input type="checkbox" :checked="detailAutoRefresh" @change="toggleDetailAutoRefresh" />
+              自动刷新
+            </label>
+            <select v-model.number="detailRefreshInterval" class="field-input" style="width:auto;font-size:13px;padding:2px 6px">
+              <option :value="5">5秒</option>
+              <option :value="10">10秒</option>
+              <option :value="30">30秒</option>
+            </select>
+            <button class="btn btn-sm btn-ghost" @click="refreshDetailDrawer" title="刷新详情">
+              <span style="font-size:16px">↻</span>
+            </button>
+            <button class="btn btn-ghost btn-sm" @click="selectedCred = null">关闭</button>
+          </div>
         </div>
 
         <div class="drawer-body">
@@ -608,9 +715,20 @@ onUnmounted(() => {
                     <label class="field-label">连续失败</label>
                     <span>{{ selectedCred.consecutive_failures }}</span>
                   </div>
+                  <div>
+                    <label class="field-label">manual_disabled</label>
+                    <span :class="selectedCred.manual_disabled ? 'badge badge-red' : 'badge badge-gray'">
+                      {{ selectedCred.manual_disabled ? 'YES' : 'NO' }}
+                    </span>
+                  </div>
                 </div>
                 <div v-if="selectedCred.state_reason_detail" class="cell-sub" style="margin-top:8px">
                   {{ selectedCred.state_reason_detail }}
+                </div>
+                <div v-if="selectedCred.manual_disabled" style="margin-top:8px">
+                  <button class="btn btn-xs btn-warning" @click="openClearDisabledDialog">
+                    🔓 清除 manual_disabled
+                  </button>
                 </div>
               </div>
 
@@ -795,9 +913,9 @@ onUnmounted(() => {
             <!-- Fingerprint slot visualization (2026-06-23) -->
             <div class="drawer-section" style="grid-column:1 / -1">
               <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                <span>指纹槽位图</span>
+                <span>并发槽位与指纹分配</span>
                 <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
-                  {{ fpSlotStatsLoading ? '加载中…' : '刷新' }}
+                  {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
                 </button>
               </div>
               <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
@@ -809,6 +927,55 @@ onUnmounted(() => {
                 :slot-limit="fpSlotStats.slot_limit"
               />
               <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
+            </div>
+
+            <!-- Routing decisions for this credential (2026-06-23) -->
+            <div class="drawer-section" style="grid-column:1 / -1">
+              <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
+                <span>最近路由决策 (50条)</span>
+                <button
+                  class="btn btn-xs btn-ghost"
+                  :disabled="credentialDecisionsLoading"
+                  @click="loadCredentialDecisions"
+                >↻ 刷新</button>
+              </div>
+              <div v-if="credentialDecisionsLoading">加载中...</div>
+              <div v-else-if="!credentialDecisions.length" class="cell-muted">无路由决策记录</div>
+              <div v-else style="overflow-x:auto">
+                <table class="decision-table">
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>请求ID</th>
+                      <th>模型</th>
+                      <th>Tier</th>
+                      <th>结果</th>
+                      <th>延迟</th>
+                      <th>错误</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(d, i) in credentialDecisions" :key="i" :class="d.success ? 'decision-success' : 'decision-fail'">
+                      <td class="mono-sm">{{ formatTs(d.ts) }}</td>
+                      <td class="mono-sm" style="font-size:10px">{{ d.request_id.substring(0, 8) }}</td>
+                      <td>
+                        <div class="mono-sm" style="font-size:11px">{{ d.client_model || d.model }}</div>
+                        <div v-if="d.outbound_model && d.outbound_model !== d.client_model" class="cell-sub" style="font-size:10px">
+                          → {{ d.outbound_model }}
+                        </div>
+                      </td>
+                      <td class="mono-sm">{{ d.tier ?? '—' }}</td>
+                      <td>
+                        <span v-if="d.success" class="badge badge-green">✓</span>
+                        <span v-else class="badge badge-red">✗</span>
+                        <span v-if="d.sticky_hit" class="badge badge-blue" style="margin-left:4px;font-size:9px">sticky</span>
+                      </td>
+                      <td class="mono-sm">{{ d.latency_ms != null ? d.latency_ms + 'ms' : '—' }}</td>
+                      <td class="cell-sub" style="font-size:10px">{{ d.error_class || '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -916,6 +1083,34 @@ onUnmounted(() => {
             :disabled="!toggleReason.trim()"
             @click="submitToggle"
           >确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clear manual_disabled dialog (2026-06-23) -->
+    <div v-if="clearDisabledDialogOpen" class="drawer-backdrop" @click="clearDisabledDialogOpen = false">
+      <div class="card" @click.stop style="max-width:480px;margin:auto;margin-top:120px;padding:20px">
+        <h3 style="margin-top:0">清除 manual_disabled</h3>
+        <div class="cell-sub" style="margin-bottom:12px">
+          凭据 #{{ selectedCred?.id }} - {{ selectedCred?.label || '无标签' }}
+        </div>
+        <div style="margin-bottom:12px;padding:12px;background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.3);border-radius:6px;font-size:13px">
+          ⚠️ 此操作将立即恢复凭据到正常路由池，manual_disabled 标志将被清除。请确认此凭据已经可以正常使用。
+        </div>
+        <label class="field-label">操作原因（必填）</label>
+        <input
+          v-model="clearDisabledReason"
+          class="field-input"
+          placeholder="例如: 供应商恢复正常 / 误操作修正 / 灰度验证完成"
+          @keyup.enter="submitClearDisabled"
+        />
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-ghost" @click="clearDisabledDialogOpen = false">取消</button>
+          <button
+            class="btn btn-warning"
+            :disabled="!clearDisabledReason.trim()"
+            @click="submitClearDisabled"
+          >确认清除</button>
         </div>
       </div>
     </div>
@@ -1121,5 +1316,35 @@ onUnmounted(() => {
 .btn-xs {
   padding: 2px 6px;
   font-size: 11px;
+}
+
+/* Decision table (2026-06-23) */
+.decision-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+.decision-table th {
+  text-align: left;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.decision-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.decision-table tbody tr.decision-success {
+  background: rgba(16, 185, 129, 0.03);
+}
+.decision-table tbody tr.decision-fail {
+  background: rgba(239, 68, 68, 0.03);
+}
+.decision-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05) !important;
 }
 </style>

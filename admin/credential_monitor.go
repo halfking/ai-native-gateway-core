@@ -80,38 +80,41 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 	// 2026-06-23: per-(credential, model) manual online/offline + state-change history.
 	mux.HandleFunc("/api/credentials/model-toggle", wrap(m.handleModelToggle))
 	mux.HandleFunc("/api/credentials/model-history", wrap(m.handleModelHistory))
+	// 2026-06-23: credential routing decisions + clear manual_disabled
+	mux.HandleFunc("/api/credentials/decisions", wrap(m.handleCredentialDecisions))
+	mux.HandleFunc("/api/credentials/clear-manual-disabled", wrap(m.handleClearManualDisabled))
 }
 
 // CredentialMonitorSummary represents a credential's monitoring state.
 type CredentialMonitorSummary struct {
-	ID                    int                   `json:"id"`
-	ProviderID            int                   `json:"provider_id"`
-	ProviderName          string                `json:"provider_name"`
-	Label                 string                `json:"label"`
-	Status                string                `json:"status"`
-	AvailabilityState     string                `json:"availability_state"`
-	HealthStatus          string                `json:"health_status"`
-	QuotaState            string                `json:"quota_state"`
-	ConcurrencyLimit      *int                  `json:"concurrency_limit"`
-	ConcurrencyLimitAuto  *int                  `json:"concurrency_limit_auto"`
-	EffectiveConcurrency  int                   `json:"effective_concurrency"`
-	ManualDisabled        bool                  `json:"manual_disabled"`
-	ConsecutiveFailures   int                   `json:"consecutive_failures"`
-	AvailabilityRecoverAt *string               `json:"availability_recover_at"`
-	StateReasonCode       *string               `json:"state_reason_code"`
-	StateReasonDetail     *string               `json:"state_reason_detail"`
-	HealthCheckedAt       *string               `json:"health_checked_at"`
-	TotalRequests         int64                 `json:"total_requests"`
+	ID                    int     `json:"id"`
+	ProviderID            int     `json:"provider_id"`
+	ProviderName          string  `json:"provider_name"`
+	Label                 string  `json:"label"`
+	Status                string  `json:"status"`
+	AvailabilityState     string  `json:"availability_state"`
+	HealthStatus          string  `json:"health_status"`
+	QuotaState            string  `json:"quota_state"`
+	ConcurrencyLimit      *int    `json:"concurrency_limit"`
+	ConcurrencyLimitAuto  *int    `json:"concurrency_limit_auto"`
+	EffectiveConcurrency  int     `json:"effective_concurrency"`
+	ManualDisabled        bool    `json:"manual_disabled"`
+	ConsecutiveFailures   int     `json:"consecutive_failures"`
+	AvailabilityRecoverAt *string `json:"availability_recover_at"`
+	StateReasonCode       *string `json:"state_reason_code"`
+	StateReasonDetail     *string `json:"state_reason_detail"`
+	HealthCheckedAt       *string `json:"health_checked_at"`
+	TotalRequests         int64   `json:"total_requests"`
 	// Models is the per-(credential, model) availability breakdown. Replaces the
 	// single-model recent_window_stats field (2026-06-22). Each entry carries
 	// the probe state, offer/binding availability and the live last-N success
 	// rate so the monitor page can show model-level health instead of one
 	// aggregate. nil when the credential has no model_offers rows.
-	Models                []CredentialModelStatus `json:"models,omitempty"`
+	Models []CredentialModelStatus `json:"models,omitempty"`
 	// AggregatedSuccessRate is the min recent success rate across the
 	// credential's models (conservative — a credential is only as healthy as
 	// its worst routable model). nil when there are no samples.
-	AggregatedSuccessRate *float64                `json:"aggregated_success_rate,omitempty"`
+	AggregatedSuccessRate *float64 `json:"aggregated_success_rate,omitempty"`
 }
 
 // CredentialModelStatus is the per-(credential, model) availability row used
@@ -119,10 +122,10 @@ type CredentialMonitorSummary struct {
 // loader (loadCandidatesDB) consults so operators see the same view the router
 // uses to admit/exclude a binding.
 type CredentialModelStatus struct {
-	RawModelName       string   `json:"raw_model_name"`
-	OfferAvailable     bool     `json:"offer_available"`
-	OfferUnavailableReason *string `json:"offer_unavailable_reason,omitempty"`
-	BindingAvailable   bool     `json:"binding_available"`
+	RawModelName             string  `json:"raw_model_name"`
+	OfferAvailable           bool    `json:"offer_available"`
+	OfferUnavailableReason   *string `json:"offer_unavailable_reason,omitempty"`
+	BindingAvailable         bool    `json:"binding_available"`
 	BindingUnavailableReason *string `json:"binding_unavailable_reason,omitempty"`
 	// ProbeState: 'broken_confirmed' | 'healthy_confirmed' | 'recovering' | 'unknown' (no row).
 	ProbeState         string   `json:"probe_state"`
@@ -219,7 +222,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 					   AND mps.raw_model_name = mo.raw_model_name
 					CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 					WHERE mo.credential_id = c.id
-					ORDER BY mo.raw_model_name
+					ORDER BY COALESCE(rsr.samples, 0) DESC, mo.raw_model_name
 				) t
 			), '[]'::json) AS models
 		FROM credentials c
@@ -982,5 +985,187 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 		"raw_model_name": rawModel,
 		"events":         events,
 		"count":          len(events),
+	})
+}
+
+// handleCredentialDecisions returns recent routing decisions for a specific credential (2026-06-23).
+// GET /api/credentials/decisions?credential_id=123&limit=50
+//
+// Returns routing_decision_log entries where chosen_credential_id matches.
+// Useful for the credential detail drawer to show "what traffic is this credential handling".
+func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	credentialID := queryInt(r, "credential_id", 0)
+	if credentialID == 0 {
+		writeError(w, http.StatusBadRequest, "credential_id required")
+		return
+	}
+
+	limit := queryInt(r, "limit", 50)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// tenant_admin callers can only see decisions for their own tenant
+	var tenantClause string
+	var args []any
+	if IsTenantAdmin(r) {
+		tenantClause = "AND rdl.tenant_id = $2"
+		args = []any{credentialID, GetTenantID(r), limit}
+	} else {
+		args = []any{credentialID, limit}
+	}
+
+	q := fmt.Sprintf(`
+		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
+		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
+		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
+		FROM routing_decision_log rdl
+		WHERE rdl.chosen_credential_id = $1 %s
+		ORDER BY rdl.ts DESC
+		LIMIT $%d
+	`, tenantClause, len(args))
+
+	rows, err := m.h.db.Query(ctx, q, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	type Decision struct {
+		TS               string  `json:"ts"`
+		RequestID        string  `json:"request_id"`
+		Model            string  `json:"model"`
+		Tier             *int    `json:"tier"`
+		Success          bool    `json:"success"`
+		LatencyMs        *int    `json:"latency_ms"`
+		ErrorClass       *string `json:"error_class"`
+		ChosenProviderID *int    `json:"chosen_provider_id"`
+		ClientModel      *string `json:"client_model"`
+		OutboundModel    *string `json:"outbound_model"`
+		StickyHit        *bool   `json:"sticky_hit"`
+	}
+
+	decisions := make([]Decision, 0)
+	for rows.Next() {
+		var d Decision
+		var ts time.Time
+		if err := rows.Scan(&ts, &d.RequestID, &d.Model, &d.Tier, &d.Success,
+			&d.LatencyMs, &d.ErrorClass, &d.ChosenProviderID,
+			&d.ClientModel, &d.OutboundModel, &d.StickyHit); err != nil {
+			continue
+		}
+		d.TS = ts.UTC().Format(time.RFC3339)
+		decisions = append(decisions, d)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"credential_id": credentialID,
+		"decisions":     decisions,
+		"total":         len(decisions),
+	})
+}
+
+// handleClearManualDisabled clears manual_disabled flag on a credential (2026-06-23).
+// POST /api/credentials/clear-manual-disabled
+// Body: {"credential_id": 123, "reason": "supplier restored"}
+//
+// Sets manual_disabled = false and writes audit log. This is a quick "restore to pool" action
+// for operators who need to undo a manual disable without going through the full promote flow.
+func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		CredentialID int    `json:"credential_id"`
+		Reason       string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.CredentialID == 0 {
+		writeError(w, http.StatusBadRequest, "credential_id required")
+		return
+	}
+	if req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "reason required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// tenant_admin can only clear credentials in their tenant
+	var tenantCheck string
+	var checkArgs []any
+	if IsTenantAdmin(r) {
+		tenantCheck = "AND tenant_id = $2"
+		checkArgs = []any{req.CredentialID, GetTenantID(r)}
+	} else {
+		checkArgs = []any{req.CredentialID}
+	}
+
+	// Check credential exists and get current state
+	var exists bool
+	var currentDisabled bool
+	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "credential not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "check failed: "+err.Error())
+		}
+		return
+	}
+
+	// Clear manual_disabled
+	var updateArgs []any
+	if IsTenantAdmin(r) {
+		updateArgs = []any{req.CredentialID, GetTenantID(r)}
+	} else {
+		updateArgs = []any{req.CredentialID}
+	}
+	updateQ := fmt.Sprintf("UPDATE credentials SET manual_disabled = false WHERE id = $1 %s", tenantCheck)
+	if _, err := m.h.db.Exec(ctx, updateQ, updateArgs...); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
+
+	// Write audit log
+	actor := r.RemoteAddr
+	if actor == "" {
+		actor = "unknown"
+	}
+	auditDetails := map[string]any{
+		"credential_id":     req.CredentialID,
+		"reason":            req.Reason,
+		"previous_disabled": currentDisabled,
+	}
+	detailsJSON, _ := json.Marshal(auditDetails)
+	//nolint:errcheck
+	m.h.db.Exec(ctx, `
+		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
+		VALUES ($1, $2, $3, $4, $5)
+	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, detailsJSON)
+
+	// Invalidate cache
+	monitorSummaryCache.mu.Lock()
+	monitorSummaryCache.entries = nil
+	monitorSummaryCache.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("manual_disabled cleared for credential %d", req.CredentialID),
 	})
 }
