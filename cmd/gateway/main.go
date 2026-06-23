@@ -127,6 +127,7 @@ func main() {
 	dbConn, err := db.Open(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		slog.Warn("postgres disabled", "error", err)
+		dbConn = nil // Prevent using closed connection pool
 	}
 	defer func() {
 		if dbConn != nil {
