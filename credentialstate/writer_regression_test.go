@@ -78,6 +78,7 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 	//   model_offers:  $1=reason, $2=credentialID, $3=rawModel (3 args)
 	//   credentials:   $1=availability, $2=recoverAt, $3=reason,
 	//                  $4=detail, $5=credentialID (5 args)
+	any3 := []interface{}{pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,10 +86,10 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 			defer mockDB.Close()
 
 			mockDB.ExpectExec(`UPDATE credential_model_bindings`).
-				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WithArgs(any3...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			mockDB.ExpectExec(`UPDATE model_offers`).
-				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WithArgs(any3...).
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 			w := &Writer{dbPool: mockDB}
@@ -170,7 +171,7 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	// writeModelLevelFailureOnly's comment.
 	// ✅ NO credentials SQL expected (this is the fix for the pollution bug).
 	mockDB.ExpectExec(`UPDATE credential_model_bindings`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 
 	w := &Writer{dbPool: mockDB}
