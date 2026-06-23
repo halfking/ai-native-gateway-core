@@ -261,10 +261,12 @@ func (h *Handler) createTenantModelPolicy(w http.ResponseWriter, r *http.Request
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// SET LOCAL does not support placeholders; manually escape single quotes
-	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
+	// Set BOTH GUCs: app.current_admin (audit trigger actor) AND
+	// app.current_tenant (RLS tenant_isolation_tmp USING clause).
+	// Without current_tenant the INSERT/UPDATE is rejected by RLS
+	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
+	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
+		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
 		return
 	}
 
@@ -343,10 +345,12 @@ func (h *Handler) patchTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
-	// SET LOCAL does not support placeholders; manually escape single quotes
-	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
+	// Set BOTH GUCs: app.current_admin (audit trigger actor) AND
+	// app.current_tenant (RLS tenant_isolation_tmp USING clause).
+	// Without current_tenant the INSERT/UPDATE is rejected by RLS
+	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
+	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
+		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
 		return
 	}
 
@@ -411,10 +415,12 @@ func (h *Handler) deleteTenantModelPolicy(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
-	// SET LOCAL does not support placeholders; manually escape single quotes
-	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
+	// Set BOTH GUCs: app.current_admin (audit trigger actor) AND
+	// app.current_tenant (RLS tenant_isolation_tmp USING clause).
+	// Without current_tenant the INSERT/UPDATE is rejected by RLS
+	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
+	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
+		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
 		return
 	}
 
@@ -477,10 +483,12 @@ func (h *Handler) undeleteTenantModelPolicy(w http.ResponseWriter, r *http.Reque
 	}
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
-	// SET LOCAL does not support placeholders; manually escape single quotes
-	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeError(w, http.StatusInternalServerError, "set actor failed: "+err.Error())
+	// Set BOTH GUCs: app.current_admin (audit trigger actor) AND
+	// app.current_tenant (RLS tenant_isolation_tmp USING clause).
+	// Without current_tenant the INSERT/UPDATE is rejected by RLS
+	// (FORCE ROW LEVEL SECURITY + rolbypassrls=false).
+	if err := setPolicyTxGUCs(ctx, tx, tenantCode, createdBy); err != nil {
+		writeError(w, http.StatusInternalServerError, "set tx GUCs failed: "+err.Error())
 		return
 	}
 
@@ -642,6 +650,39 @@ func (h *Handler) canAdministerTenant(r *http.Request, tenantCode string) bool {
 	default:
 		return false
 	}
+}
+
+// setPolicyTxGUCs sets the two session GUCs every policy write must
+// establish inside its transaction:
+//
+//   - app.current_admin → captured by tenant_model_policies_audit_fn()
+//     trigger as the audit "actor".
+//   - app.current_tenant → required by the tenant_isolation_tmp RLS policy.
+//
+// tenant_model_policies has ENABLE + FORCE ROW LEVEL SECURITY and the
+// application role llm_gateway has rolbypassrls=false, so RLS applies
+// even to the table owner. The policy (polcmd = *, no explicit WITH
+// CHECK) makes the USING clause act as an implicit WITH CHECK on
+// INSERT/UPDATE/DELETE. Without setting app.current_tenant to the row's
+// tenant_id, get_current_tenant() falls back to 'default' and the
+// INSERT is rejected with SQLSTATE 42501
+// (incident 2026-06-23: "new row violates row-level security policy").
+//
+// SET LOCAL does not accept placeholders, so values are single-quote
+// escaped to prevent GUC injection. The setting is transaction-scoped
+// and auto-clears on commit/rollback.
+//
+// Mirrors the read-path convention in tenant_ctx.go::withTenantTx.
+func setPolicyTxGUCs(ctx context.Context, tx pgx.Tx, tenantCode, actor string) error {
+	escapedTenant := strings.ReplaceAll(tenantCode, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_tenant = '"+escapedTenant+"'"); err != nil {
+		return fmt.Errorf("set tenant GUC: %w", err)
+	}
+	escapedActor := strings.ReplaceAll(actor, "'", "''")
+	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
+		return fmt.Errorf("set admin GUC: %w", err)
+	}
+	return nil
 }
 
 // auditDetails marshals a map to a compact JSON string for the

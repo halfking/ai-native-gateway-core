@@ -159,8 +159,13 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// /api/admin/tenants/{code}/users|keys|stats|model-policies
-	if sub == "model-policies" {
+	// /api/admin/tenants/{code}/users|keys|stats|model-policies[/{check|audit|{id}...}]
+	// sub is the SplitN tail, so for "/tenants/{code}/model-policies/audit"
+	// sub == "model-policies/audit". We must match the prefix, not the bare
+	// string, otherwise /check and /audit fall through to the unknown-sub-resource
+	// branch (incident 2026-06-23: "unknown sub-resource: model-policies/audit"
+	// on page load + "method not allowed" on /check).
+	if isModelPoliciesSubResource(sub) {
 		h.handleTenantModelPolicies(w, r, code)
 		return
 	}
@@ -178,6 +183,18 @@ func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "unknown sub-resource: "+sub)
 	}
+}
+
+// isModelPoliciesSubResource reports whether the SplitN tail names the
+// model-policies sub-tree (with or without a deeper path like /audit,
+// /check, /{id}/undelete). Extracted as a pure helper so the routing rule
+// is unit-testable without a DB pool (the handleTenants db guard otherwise
+// short-circuits to 503 before routing is observable in tests).
+//
+// Pre-fix this matched only `sub == "model-policies"`, which silently
+// dropped every /model-policies/{deeper} request.
+func isModelPoliciesSubResource(sub string) bool {
+	return sub == "model-policies" || strings.HasPrefix(sub, "model-policies/")
 }
 
 // ── listTenants: GET /api/admin/tenants ──────────────────────────
