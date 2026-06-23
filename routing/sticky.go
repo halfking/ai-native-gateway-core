@@ -154,20 +154,29 @@ func (s *StickyCache) Len() int {
 }
 
 // BuildClientStickyKey builds a stable client-scoped sticky key.
-// The format is {tenant}:{app}:{key}:{profile}:{model}.
+//
+// Format: {tenant}:{app}:{key}:{profile}
+//
+// The key describes the CLIENT (not "client + model"). 2026-06-24:
+// removed the model component per operator spec — adding model to
+// the fingerprint means "client A using minimax-m3" and "client A
+// using glm-4-flash" would each consume a separate fp_slot, which
+// is not what we want.  One client = one fingerprint = one slot,
+// regardless of which model the request asks for.  Model-specific
+// routing still happens later in PlanCandidates via credential_model
+// bindings and the alias table; the sticky key only needs to identify
+// the client for the purpose of fp_slot allocation.
+//
 // Session ID and device fingerprint (fpSeed) are intentionally excluded:
-// same client + same model = same fingerprint slot, regardless of which
-// session the request belongs to or which device the request came from.
-// This eliminates the per-session and per-fpHash fragmentation that
-// used to consume one slot per chat session.
-func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, model string) string {
+// same client (same tenant+app+key+profile) → same fingerprint slot,
+// regardless of which session the request belongs to or which device
+// the request came from.  This eliminates the per-session and
+// per-fpHash fragmentation that used to consume one slot per chat
+// session.
+func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile string) string {
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 	if profile == "" {
 		profile = "default"
-	}
-	m := strings.TrimSpace(model)
-	if m == "" {
-		m = "*"
 	}
 	var app, key int
 	if appID != nil {
@@ -176,5 +185,5 @@ func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, 
 	if apiKeyID != nil {
 		key = *apiKeyID
 	}
-	return fmt.Sprintf("%s:%d:%d:%s:%s", tenantID, app, key, profile, m)
+	return fmt.Sprintf("%s:%d:%d:%s", tenantID, app, key, profile)
 }

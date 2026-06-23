@@ -19,14 +19,14 @@ import (
 )
 
 type responsesRequestBody struct {
-	Model          string          `json:"model"`
-	Input          json.RawMessage `json:"input"`
-	Instructions   string          `json:"instructions,omitempty"`
-	MaxOutputTokens *int           `json:"max_output_tokens,omitempty"`
-	Stream         bool            `json:"stream"`
-	Temperature    *float64        `json:"temperature,omitempty"`
-	TopP           *float64        `json:"top_p,omitempty"`
-	Extra          map[string]json.RawMessage `json:"-"`
+	Model           string                     `json:"model"`
+	Input           json.RawMessage            `json:"input"`
+	Instructions    string                     `json:"instructions,omitempty"`
+	MaxOutputTokens *int                       `json:"max_output_tokens,omitempty"`
+	Stream          bool                       `json:"stream"`
+	Temperature     *float64                   `json:"temperature,omitempty"`
+	TopP            *float64                   `json:"top_p,omitempty"`
+	Extra           map[string]json.RawMessage `json:"-"`
 }
 
 func (r *responsesRequestBody) UnmarshalJSON(data []byte) error {
@@ -68,13 +68,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//    ChatHandler.ServeHTTP for the full rationale.
 	var (
 		attemptLoggedFlag   bool
-		attemptKeyInfo     *auth.KeyInfo
-		attemptClientModel string
-		attemptErrCode     string
-		attemptErrMsg      string
-		attemptProviderID  *int
+		attemptKeyInfo      *auth.KeyInfo
+		attemptClientModel  string
+		attemptErrCode      string
+		attemptErrMsg       string
+		attemptProviderID   *int
 		attemptCredentialID *int
-		attemptRequestBody []byte
+		attemptRequestBody  []byte
 	)
 	attemptLogged := &attemptLoggedFlag
 	requestID := r.Header.Get("X-Request-Id")
@@ -346,25 +346,35 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
-		W:              w,
-		R:              r,
-		BodyBytes:      chatBodyBytes,
-		IsStream:       isStream,
+		W:                    w,
+		R:                    r,
+		BodyBytes:            chatBodyBytes,
+		IsStream:             isStream,
 		SuppressSuccessWrite: !isStream,
-		ClientModel:    clientModel,
-		OutboundModel:  outboundForLog,
-		ClientID:       clientID,
-		Transform:      txResult,
-		Resolution:     modelResolution,
-		Candidates:     candidates,
-		Policy:         policy,
-		AuditBuilder:   auditBuilder,
-		Capture:        streamCapture,
-		ToolsRequested: false,
-		StreamWrapper: responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel),
-		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
-		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
+		ClientModel:          clientModel,
+		OutboundModel:        outboundForLog,
+		ClientID:             clientID,
+		Transform:            txResult,
+		Resolution:           modelResolution,
+		Candidates:           candidates,
+		Policy:               policy,
+		AuditBuilder:         auditBuilder,
+		Capture:              streamCapture,
+		ToolsRequested:       false,
+		StreamWrapper:        responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		KeyID: func() int {
+			if keyInfo != nil {
+				return keyInfo.ID
+			}
+			return 0
+		}(),
+		KeyConcurrentLimit: func() int {
+			if keyInfo != nil {
+				return keyInfo.EffectiveConcurrent()
+			}
+			return 0
+		}(),
 	})
 
 	if execErr != nil {

@@ -400,7 +400,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Capture:              streamCapture,
 		ToolsRequested:       false,
 		StreamWrapper:        anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel),
+		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
 				return keyInfo.ID
@@ -911,43 +911,20 @@ func apiKeyIDPtr(ki *auth.KeyInfo) *int {
 	return nil
 }
 
-// normalizeModelForStickyKey 标准化模型名用于 sticky key 构建。
-// 问题：客户端可能在同一会话中发送模型名的不同变体（大小写、版本后缀），
-// 导致生成不同的 sticky key，破坏会话级 credential 绑定。
-// 修复：统一小写 + 去除常见版本后缀，使模型名变体映射到同一个 sticky key。
-// 示例：minimax-m3、MiniMax-M3、minimax-m3-v2 → 统一为 minimax-m3
-func normalizeModelForStickyKey(clientModel string) string {
-	model := strings.TrimSpace(strings.ToLower(clientModel))
-	if model == "" {
-		return "default"
-	}
-
-	// 去除常见的版本后缀，避免 minimax-m3-v2 与 minimax-m3 产生不同的 sticky key
-	suffixes := []string{"-v2", "-v1", "-preview", "-latest", "-stable", "-turbo"}
-	for _, suffix := range suffixes {
-		if strings.HasSuffix(model, suffix) {
-			model = strings.TrimSuffix(model, suffix)
-			break
-		}
-	}
-
-	// 去除后缀后可能变成空字符串（如输入是 "v2" 或 "-preview"），返回 default
-	if model == "" {
-		return "default"
-	}
-
-	return model
-}
-
-func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID, endUser, fpSeed, clientModel string) string {
-	// Use client identity (tenant+app+key+profile) + model as sticky key.
-	// Session ID and device fingerprint (fpSeed) are intentionally excluded:
-	// same client + same model = same fingerprint slot, regardless of which
-	// session the request belongs to or which device the request came from.
-	// 2026-06-23: 使用 normalizeModelForStickyKey 标准化模型名，
-	// 避免客户端发送的模型名变体（如大小写、版本后缀）导致生成不同的 sticky key。
-	// 根因：会话 ses_10bf0d6e4ffeKTnHBNBwN0CnTx 出现一次成功、一次 transient 交替，
-	// 因为客户端交替发送了不同的模型名变体，导致 sticky 绑定失效。
-	model := normalizeModelForStickyKey(clientModel)
-	return routing.BuildClientStickyKey(tenantID, appID, apiKeyID, clientProfile, model)
+// buildRouteStickyKey produces the client-scoped sticky key consumed
+// by the executor (StickyKey on ExecParams) and the credentialfpslot
+// Manager (holder = "the fingerprint owning this slot").
+//
+// 2026-06-24: signature tightened. The previous version took
+// sessionID, endUser, fpSeed, clientModel, normalised the model,
+// then passed it through. None of those are part of the fingerprint
+// (see BuildClientStickyKey comment for the rationale); keeping them
+// out of the signature prevents accidental re-introduction.
+//
+// Same client (tenant+app+key+profile) → same fingerprint slot,
+// across sessions, devices, and model variants. Model-name drift
+// (casing, -v2 / -preview suffixes) is no longer a problem because
+// model is not in the key at all.
+func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile string) string {
+	return routing.BuildClientStickyKey(tenantID, appID, apiKeyID, clientProfile)
 }

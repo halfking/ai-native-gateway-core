@@ -253,117 +253,37 @@ func TestConvertChatResponseToAnthropic_ReasoningContentWinsOverEmbedded(t *test
 	}
 }
 
-// TestNormalizeModelForStickyKey verifies that model name variants
-// (case differences, version suffixes) are normalized to the same
-// sticky key, preventing session binding breakage.
-// Root cause: session ses_10bf0d6e4ffeKTnHBNBwN0CnTx exhibited
-// alternating success/transient failures because the client sent
-// different model name variants, generating different sticky keys.
-func TestNormalizeModelForStickyKey(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		// Basic normalization
-		{"minimax-m3", "minimax-m3"},
-		{"MiniMax-M3", "minimax-m3"},     // case insensitive
-		{"  minimax-m3  ", "minimax-m3"}, // trim spaces
-		{"", "default"},                  // empty → default
-		{"  ", "default"},                // blank → default
+// 2026-06-24: normalizeModelForStickyKey was removed along with
+// the model component of the sticky key (see routing.BuildClientStickyKey
+// rationale). Model-name drift can no longer affect the key, so
+// there is nothing left to normalise. The two tests that exercised
+// the removed helper and the model-in-key invariant are intentionally
+// deleted:
+//
+//   - TestNormalizeModelForStickyKey
+//   - TestBuildRouteStickyKey_ModelNormalization
+//   - TestBuildRouteStickyKey_DifferentModels
+//
+// See relay/sticky_key_test.go for the new "model is not in the key"
+// tests that replace them.
 
-		// Version suffix removal
-		{"minimax-m3-v2", "minimax-m3"},
-		{"minimax-m3-v1", "minimax-m3"},
-		{"gpt-4-turbo-preview", "gpt-4-turbo"},
-		{"claude-3-opus-latest", "claude-3-opus"},
-		{"qwen-plus-stable", "qwen-plus"},
-
-		// Mixed case + version suffix
-		{"MiniMax-M3-V2", "minimax-m3"},
-		{"GPT-4-Turbo-Preview", "gpt-4-turbo"},
-
-		// No suffix (should not change)
-		{"gpt-4", "gpt-4"},
-		{"claude-3-sonnet", "claude-3-sonnet"},
-
-		// Edge cases
-		{"v2", "v2"},            // "v2" alone is a valid model name, keep as-is
-		{"-preview", "default"}, // pure suffix → empty → default
-	}
-
-	for _, tt := range tests {
-		got := normalizeModelForStickyKey(tt.input)
-		// Special handling for edge cases that become empty
-		if tt.want == "" {
-			tt.want = "default"
-		}
-		if got != tt.want {
-			t.Errorf("normalizeModelForStickyKey(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-// TestBuildRouteStickyKey_ModelNormalization verifies that
-// buildRouteStickyKey produces the same sticky key for model
-// name variants within the same session.
-func TestBuildRouteStickyKey_ModelNormalization(t *testing.T) {
+// TestBuildRouteStickyKey_StableAcrossInputs verifies the 4-arg
+// helper is now session-, endUser-, fpSeed-, and model-free. The
+// caller (relay/handler.go) deliberately drops those parameters
+// from the wire; the helper signature is the only place the
+// boundary is enforced.
+func TestBuildRouteStickyKey_StableAcrossInputs(t *testing.T) {
 	tenantID := "tenant-1"
 	appID := intPtr(100)
 	apiKeyID := intPtr(200)
 	profile := "Cursor"
-	sessionID := "ses_test123"
-	endUser := "user-abc"
-	fpSeed := "fp-seed-xyz"
 
-	// These model variants should all produce the SAME sticky key
-	variants := []string{
-		"minimax-m3",
-		"MiniMax-M3",
-		"MINIMAX-M3",
-		"minimax-m3-v2",
-		"MiniMax-M3-V1",
-		"  minimax-m3  ",
-	}
-
-	var keys []string
-	for _, model := range variants {
-		key := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, model)
-		keys = append(keys, key)
-	}
-
-	// All keys should be identical
-	first := keys[0]
-	for i, key := range keys {
-		if key != first {
-			t.Errorf("variant[%d] (%q) produced different key:\n  got:  %s\n  want: %s",
-				i, variants[i], key, first)
-		}
-	}
-
-	// Verify the key contains the normalized model name (client-scoped, no session)
-	want := "tenant-1:100:200:cursor:minimax-m3"
-	if first != want {
-		t.Errorf("sticky key = %q, want %q", first, want)
-	}
-}
-
-// TestBuildRouteStickyKey_DifferentModels verifies that
-// genuinely different models (not just variants) produce
-// different sticky keys, preserving the original design intent.
-func TestBuildRouteStickyKey_DifferentModels(t *testing.T) {
-	tenantID := "tenant-1"
-	appID := intPtr(100)
-	apiKeyID := intPtr(200)
-	profile := "Cursor"
-	sessionID := "ses_test123"
-	endUser := "user-abc"
-	fpSeed := "fp-seed-xyz"
-
-	key1 := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, "minimax-m3")
-	key2 := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, "gpt-4")
-
-	if key1 == key2 {
-		t.Errorf("different models should produce different sticky keys:\n  minimax-m3: %s\n  gpt-4:      %s",
-			key1, key2)
+	// The 4-arg helper has no inputs that could vary; this test
+	// exists as a regression guard so a future refactor that
+	// adds a parameter back must update this test.
+	got := buildRouteStickyKey(tenantID, appID, apiKeyID, profile)
+	want := "tenant-1:100:200:cursor"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
