@@ -223,6 +223,11 @@ func main() {
 		Enabled:      cfg.EnableCredentialFpSlots,
 	}, fpSlotRedis)
 
+	// 2026-06-23: enable background idle-slot reclaim (15 min idle, 30 s scan).
+	// Without this, only Redis auto-expiry cleans up slots — AOF rewrite stalls
+	// or RDB snapshot pauses can hold the key longer than the advertised 30 min.
+	fpSlots.StartReclaim(context.Background())
+
 	// ── Settings registry (Q1: B, Q2: A) ───────────────────────────────
 	// Initialise the unified runtime-config registry. Specs registered here
 	// become readable via settings.Global.EffectiveValue(scope, key, tenantID).

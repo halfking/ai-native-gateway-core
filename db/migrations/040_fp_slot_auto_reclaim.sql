@@ -22,9 +22,11 @@
 --        slot index — minor fingerprint churn is acceptable after long
 --        idle periods; this matches "forget me after I leave" semantics).
 --
---   3. The slot TTL (24h) is the hard upper bound — even if the client
---      keeps pinging at > 15 min intervals, after 24h the slot expires.
---      The pin TTL (15 min) is the soft "forget me" window.
+--   3. The slot TTL (30 min) is the hard upper bound — even if the client
+--      keeps pinging at > 15 min intervals, after 30 min the slot expires.
+--      The pin TTL (24 h) is the long-lived stable-identity window that
+--      outlasts the slot so the same holder re-binds to the same slot on
+--      return.
 --
 -- Implementation: a background goroutine (added in credentialfpslot package)
 -- scans for idle holders every 30 seconds and reclaims their slots.
