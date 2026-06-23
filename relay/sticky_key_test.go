@@ -15,13 +15,32 @@ func TestBuildRouteStickyKeyIncludesClientModel(t *testing.T) {
 	}
 }
 
-func TestBuildRouteStickyKeyNoSessionFallsBackToEndUser(t *testing.T) {
+// TestBuildRouteStickyKey_StableWithoutSession verifies that
+// without a session ID, the sticky key is still client-scoped
+// (tenant+app+key+profile+model) and identical across calls —
+// endUser and fpSeed no longer influence the key. This is the
+// post-refactor behavior; the previous fallback to endUser/fpHash
+// was removed to prevent slot fragmentation.
+func TestBuildRouteStickyKey_StableWithoutSession(t *testing.T) {
+	appID := 1
+	keyID := 2
+	k1 := buildRouteStickyKey("tenant-a", &appID, &keyID, "cursor", "", "user-1", "fp-seed-1", "glm-4-flash")
+	k2 := buildRouteStickyKey("tenant-a", &appID, &keyID, "cursor", "", "user-2", "fp-seed-2", "glm-4-flash")
+	if k1 != k2 {
+		t.Fatalf("without session id, sticky key must be stable across endUser/fpSeed changes: %q vs %q", k1, k2)
+	}
+}
+
+// TestBuildRouteStickyKey_ModelVariesWithoutSession verifies that
+// even without a session ID, different client models still produce
+// different sticky keys (so each model gets its own fingerprint slot).
+func TestBuildRouteStickyKey_ModelVariesWithoutSession(t *testing.T) {
 	appID := 1
 	keyID := 2
 	k1 := buildRouteStickyKey("tenant-a", &appID, &keyID, "cursor", "", "user-1", "fp-seed", "glm-4-flash")
 	k2 := buildRouteStickyKey("tenant-a", &appID, &keyID, "cursor", "", "user-1", "fp-seed", "gpt-4o")
-	if k1 != k2 {
-		t.Fatalf("without session id, sticky should not vary by model: %q vs %q", k1, k2)
+	if k1 == k2 {
+		t.Fatalf("different client models must produce different sticky keys even without session: %q", k1)
 	}
 }
 

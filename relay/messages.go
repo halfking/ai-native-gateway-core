@@ -941,8 +941,9 @@ func normalizeModelForStickyKey(clientModel string) string {
 
 func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID, endUser, fpSeed, clientModel string) string {
 	// Use client identity (tenant+app+key+profile) + model as sticky key.
-	// Session ID is intentionally excluded: same client + same model = same
-	// fingerprint slot, regardless of which session the request belongs to.
+	// Session ID and device fingerprint (fpSeed) are intentionally excluded:
+	// same client + same model = same fingerprint slot, regardless of which
+	// session the request belongs to or which device the request came from.
 	// 2026-06-23: 使用 normalizeModelForStickyKey 标准化模型名，
 	// 避免客户端发送的模型名变体（如大小写、版本后缀）导致生成不同的 sticky key。
 	// 根因：会话 ses_10bf0d6e4ffeKTnHBNBwN0CnTx 出现一次成功、一次 transient 交替，

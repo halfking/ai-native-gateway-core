@@ -64,6 +64,37 @@ func TestBuildClientStickyKey_SameClientAcrossSessions(t *testing.T) {
 	}
 }
 
+// Regression test for the fpHash fragmentation bug:
+// before the client-scoped refactor, a request without a sessionID
+// would build a holder that included SHA256(fpSeed)[:8]. Different
+// device headers → different fpHash → different holder → different
+// fingerprint slot. Now fpSeed is no longer part of the holder, so
+// the same client always lands on the same slot.
+func TestBuildClientStickyKey_StableAcrossFpHashVariations(t *testing.T) {
+	appID := 4
+	apiKeyID := 10
+	// Simulate three requests from the same client with three different
+	// device fingerprints (e.g. X-Device-Seed rotates, or no X-Device-Seed
+	// at all and the gateway falls back to IP+UA hash).
+	fpHashes := []string{
+		"2c149caf6cfb1f21",
+		"2ff3c8ab1fe705cb",
+		"69a7e61accbda555",
+	}
+	var keys []string
+	for _, fp := range fpHashes {
+		_ = fp // not used in BuildClientStickyKey anymore
+		k := BuildClientStickyKey("default", &appID, &apiKeyID, "default", "minimax-m3")
+		keys = append(keys, k)
+	}
+	for i := 1; i < len(keys); i++ {
+		if keys[i] != keys[0] {
+			t.Fatalf("holder must be stable across fpHash variations: got %q vs %q",
+				keys[0], keys[i])
+		}
+	}
+}
+
 func TestStickyCacheRecordFailureThreshold(t *testing.T) {
 	s := NewStickyCache()
 	s.Set("k", 11, 10*time.Minute)

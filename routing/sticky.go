@@ -2,7 +2,6 @@ package routing
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -154,36 +153,13 @@ func (s *StickyCache) Len() int {
 	return len(s.items)
 }
 
-func BuildStickyKey(tenantID string, appID, apiKeyID *int, endUser, fpSeed string) string {
-	user := endUser
-	if user == "" {
-		user = "anonymous"
-	}
-	if len(user) > 256 {
-		user = user[:256]
-	}
-	fpPart := ""
-	if fpSeed != "" {
-		h := sha256.Sum256([]byte(fpSeed))
-		fpPart = fmt.Sprintf("%x", h[:8])
-	}
-	var app, key int
-	if appID != nil {
-		app = *appID
-	}
-	if apiKeyID != nil {
-		key = *apiKeyID
-	}
-	if fpPart != "" {
-		return fmt.Sprintf("%s:%d:%d:%s:%s", tenantID, app, key, fpPart, user)
-	}
-	return fmt.Sprintf("%s:%d:%d:%s", tenantID, app, key, user)
-}
-
 // BuildClientStickyKey builds a stable client-scoped sticky key.
 // The format is {tenant}:{app}:{key}:{profile}:{model}.
-// Session ID is intentionally excluded: same client + same model = same
-// fingerprint slot, regardless of which session the request belongs to.
+// Session ID and device fingerprint (fpSeed) are intentionally excluded:
+// same client + same model = same fingerprint slot, regardless of which
+// session the request belongs to or which device the request came from.
+// This eliminates the per-session and per-fpHash fragmentation that
+// used to consume one slot per chat session.
 func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, model string) string {
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 	if profile == "" {
@@ -201,25 +177,4 @@ func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, 
 		key = *apiKeyID
 	}
 	return fmt.Sprintf("%s:%d:%d:%s:%s", tenantID, app, key, profile, m)
-}
-
-// BuildSessionStickyKey builds a session-scoped sticky key including sessionID.
-// Deprecated: Use BuildClientStickyKey instead (session-less identity).
-func BuildSessionStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID string) string {
-	profile := strings.TrimSpace(strings.ToLower(clientProfile))
-	if profile == "" {
-		profile = "default"
-	}
-	session := strings.TrimSpace(sessionID)
-	if session == "" {
-		session = "anonymous"
-	}
-	var app, key int
-	if appID != nil {
-		app = *appID
-	}
-	if apiKeyID != nil {
-		key = *apiKeyID
-	}
-	return fmt.Sprintf("%s:%d:%d:%s:%s", tenantID, app, key, profile, session)
 }
