@@ -67,10 +67,6 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
-	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
-		pool.Close()
-		return nil, err
-	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -1336,49 +1332,5 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		return err
 	}
 	slog.Info("routing recent success-rate schema ensured (recent_success_rate fn + broken_confirmed backfill)")
-	return nil
-}
-
-// ensureUnavailableRecoverAtSchema mirrors db/migrations/292_unavailable_recover_at.sql.
-func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE credential_model_bindings ADD COLUMN IF NOT EXISTS unavailable_recover_at TIMESTAMPTZ;
-		ALTER TABLE model_offers ADD COLUMN IF NOT EXISTS unavailable_recover_at TIMESTAMPTZ;
-		UPDATE credential_model_bindings SET unavailable_recover_at = unavailable_at + (
-		    CASE unavailable_reason
-		        WHEN 'auto_concurrent' THEN INTERVAL '5 minutes'
-		        WHEN 'auto_rate_limit' THEN INTERVAL '15 minutes'
-		        WHEN 'auto_network' THEN INTERVAL '2 minutes'
-		        WHEN 'auto_timeout' THEN INTERVAL '30 seconds'
-		        WHEN 'auto_stream_timeout' THEN INTERVAL '30 seconds'
-		        WHEN 'auto_upstream_down' THEN INTERVAL '1 minute'
-		        WHEN 'continuous_failure' THEN INTERVAL '2 hours'
-		        ELSE INTERVAL '30 seconds'
-		    END)
-		WHERE available = FALSE AND unavailable_recover_at IS NULL AND unavailable_at IS NOT NULL
-		  AND (unavailable_reason LIKE 'auto\_%' OR unavailable_reason = 'continuous_failure');
-		UPDATE model_offers SET unavailable_recover_at = unavailable_at + (
-		    CASE unavailable_reason
-		        WHEN 'auto_concurrent' THEN INTERVAL '5 minutes'
-		        WHEN 'auto_rate_limit' THEN INTERVAL '15 minutes'
-		        WHEN 'auto_network' THEN INTERVAL '2 minutes'
-		        WHEN 'auto_timeout' THEN INTERVAL '30 seconds'
-		        WHEN 'auto_stream_timeout' THEN INTERVAL '30 seconds'
-		        WHEN 'auto_upstream_down' THEN INTERVAL '1 minute'
-		        WHEN 'continuous_failure' THEN INTERVAL '2 hours'
-		        ELSE INTERVAL '30 seconds'
-		    END)
-		WHERE available = FALSE AND unavailable_recover_at IS NULL AND unavailable_at IS NOT NULL
-		  AND (unavailable_reason LIKE 'auto\_%' OR unavailable_reason = 'continuous_failure');
-		CREATE INDEX IF NOT EXISTS idx_cmb_unavailable_recover_at
-		    ON credential_model_bindings (unavailable_recover_at) WHERE available = FALSE;
-	`)
-	if err != nil {
-		return err
-	}
-	slog.Info("unavailable_recover_at schema ensured")
 	return nil
 }
