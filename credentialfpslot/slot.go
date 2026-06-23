@@ -47,6 +47,7 @@ type Manager struct {
 	mu       sync.Mutex
 	memSlots map[slotKey]memEntry
 	memPins  map[string]memPinEntry
+	reclaimState *reclaimState
 }
 
 type slotKey struct {
