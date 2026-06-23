@@ -249,15 +249,18 @@ func TestRecoverExpired(t *testing.T) {
 	}
 }
 
-
 func TestRecoverExpired_HonoursRecoverAt(t *testing.T) {
 	mockDB, _ := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	defer mockDB.Close()
 	mockDB.ExpectExec(`UPDATE credential_model_bindings[\s\S]*unavailable_recover_at`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*unavailable_recover_at`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*unavailable_at`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mockDB.ExpectExec(`UPDATE credentials`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-	if _, err := RecoverExpired(context.Background(), mockDB); err != nil { t.Fatalf("RecoverExpired: %v", err) }
-	if err := mockDB.ExpectationsWereMet(); err != nil { t.Errorf("P0-A regression: %v", err) }
+	if _, err := RecoverExpired(context.Background(), mockDB); err != nil {
+		t.Fatalf("RecoverExpired: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("P0-A regression: %v", err)
+	}
 }
 
 func TestRecoverExpired_SkipsModelProbeBroken(t *testing.T) {
@@ -266,6 +269,10 @@ func TestRecoverExpired_SkipsModelProbeBroken(t *testing.T) {
 	mockDB.ExpectExec(`UPDATE credential_model_bindings[\s\S]*model_probe_broken`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*model_probe_broken`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mockDB.ExpectExec(`UPDATE credentials`).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
-	if _, err := RecoverExpired(context.Background(), mockDB); err != nil { t.Fatalf("RecoverExpired: %v", err) }
-	if err := mockDB.ExpectationsWereMet(); err != nil { t.Errorf("model_probe_broken not excluded: %v", err) }
+	if _, err := RecoverExpired(context.Background(), mockDB); err != nil {
+		t.Fatalf("RecoverExpired: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("model_probe_broken not excluded: %v", err)
+	}
 }
