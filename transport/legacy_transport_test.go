@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -156,30 +158,111 @@ func TestIRProtocolDetector_Detect(t *testing.T) {
 
 func TestIRExtensionExtractor_Extract(t *testing.T) {
 	e := &IRExtensionExtractor{}
-	bag, err := e.Extract([]byte(openaiBody), nil)
+	// 含非标准字段 custom_field + cache
+	body := []byte(`{"model":"gpt-4o","messages":[],"custom_field":"value123","cache":true}`)
+	bag, err := e.Extract(body, nil)
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 	if bag == nil {
 		t.Fatal("Extract: nil bag")
 	}
-	if len(bag.ClientRaw) == 0 {
-		t.Fatal("ClientRaw should be populated")
+	// 非标准字段应被提取
+	if _, ok := bag.ClientRaw["custom_field"]; !ok {
+		t.Fatal("ClientRaw should contain custom_field")
 	}
-	if _, ok := bag.ClientRaw["model"]; !ok {
-		t.Fatal("ClientRaw should contain model")
+	if _, ok := bag.ClientRaw["cache"]; !ok {
+		t.Fatal("ClientRaw should contain cache")
+	}
+	// 标准字段不应被提取
+	if _, ok := bag.ClientRaw["model"]; ok {
+		t.Fatal("ClientRaw should NOT contain standard field model")
+	}
+	if _, ok := bag.ClientRaw["messages"]; ok {
+		t.Fatal("ClientRaw should NOT contain standard field messages")
 	}
 }
 
-func TestIRExtensionRestorer_Restore_NoOp(t *testing.T) {
+func TestIRExtensionExtractor_Headers(t *testing.T) {
+	e := &IRExtensionExtractor{}
+	h := http.Header{}
+	h.Set("anthropic-beta", "beta-2023-06-01")
+	bag, err := e.Extract(nil, h)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if bag.Headers["anthropic-beta"] != "beta-2023-06-01" {
+		t.Fatalf("Headers anthropic-beta = %q, want beta-2023-06-01", bag.Headers["anthropic-beta"])
+	}
+}
+
+func TestIRExtensionRestorer_Restore_MergesMissing(t *testing.T) {
 	r := &IRExtensionRestorer{}
-	// Phase 0.6 MVP：Restore 是 no-op
+	body := []byte(`{"id":"x","model":"gpt-4o"}`)
+	bag := &domain.ExtensionsBag{
+		ClientRaw: map[string]json.RawMessage{
+			"custom_field": json.RawMessage(`"value123"`),
+			"cache":        json.RawMessage(`true`),
+		},
+	}
+	out, err := r.Restore(body, bag)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output invalid JSON: %v\n%s", err, out)
+	}
+	if string(m["custom_field"]) != `"value123"` {
+		t.Errorf("custom_field = %s, want \"value123\"", m["custom_field"])
+	}
+	if string(m["cache"]) != `true` {
+		t.Errorf("cache = %s, want true", m["cache"])
+	}
+}
+
+func TestIRExtensionRestorer_Restore_DoesNotOverwrite(t *testing.T) {
+	r := &IRExtensionRestorer{}
+	// 目标已有 model 字段，ExtensionsBag 也带 model —— 不应覆盖
+	body := []byte(`{"model":"gpt-4o"}`)
+	bag := &domain.ExtensionsBag{
+		ClientRaw: map[string]json.RawMessage{
+			"model": json.RawMessage(`"claude"`),
+		},
+	}
+	out, err := r.Restore(body, bag)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if strings.Contains(string(out), "claude") {
+		t.Fatalf("Restore should not overwrite existing fields: %s", out)
+	}
+}
+
+func TestIRExtensionRestorer_Restore_NilBag(t *testing.T) {
+	r := &IRExtensionRestorer{}
 	body := []byte(`{"id":"x"}`)
-	out, err := r.Restore(body, &domain.ExtensionsBag{Headers: map[string]string{"k": "v"}})
+	out, err := r.Restore(body, nil)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	if string(out) != string(body) {
-		t.Fatalf("Restore MVP should be no-op, got %s", out)
+		t.Fatalf("Restore nil bag should be no-op: %s", out)
+	}
+}
+
+func TestIRExtensionRestorer_Restore_InvalidJSON(t *testing.T) {
+	r := &IRExtensionRestorer{}
+	body := []byte(`not json`)
+	bag := &domain.ExtensionsBag{
+		ClientRaw: map[string]json.RawMessage{"k": json.RawMessage(`"v"`)},
+	}
+	out, err := r.Restore(body, bag)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	// 无效 JSON 时原样返回
+	if string(out) != string(body) {
+		t.Fatalf("Restore invalid JSON should return as-is: %s", out)
 	}
 }
