@@ -271,10 +271,13 @@ const TASK_LABELS: Record<string, string> = {
 .flow-node.layer-0 { fill: color-mix(in srgb, var(--accent) 25%, var(--bg-subtle)); }
 .flow-node.layer-1 { fill: color-mix(in srgb, var(--success) 20%, var(--bg-subtle)); }
 .flow-node.layer-2 { fill: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle)); }
-/* "specified model" task node: gray fill, dashed border, italic label */
+/* "specified model" task node: muted gray tint, dashed border to distinguish
+   from the colored task-type nodes in the same column. Uses theme tokens so
+   it adapts to both light and dark themes (the previous hardcoded #f3f4f6
+   read as a stark near-white slab against the dark background). */
 .flow-node.node-specified {
-  fill: #f3f4f6;
-  stroke: #6b7280;
+  fill: color-mix(in srgb, var(--muted) 32%, var(--bg-subtle));
+  stroke: var(--muted);
   stroke-dasharray: 4 2;
 }
 .node-label {
