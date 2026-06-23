@@ -5,22 +5,23 @@
 //
 // State machine (per credential × model, stored in model_probe_state):
 //
-//   unknown  ─┐
-//             │  first failure observed by the worker → 'recovering'
-//   recovering  ◀──┘
-//      │  consecutive successes → +1; backoff resets to 1m
-//      │  consecutive failures  → reset successes, +1 failure, longer backoff
-//      ↓
-//   healthy_confirmed    (3 consecutive ok)  ← state flips here
-//      │  any subsequent failure → back to 'recovering'
-//      ↓
-//   broken_confirmed     (3 consecutive fail) ← stops probing
+//	unknown  ─┐
+//	          │  first failure observed by the worker → 'recovering'
+//	recovering  ◀──┘
+//	   │  consecutive successes → +1; backoff resets to 1m
+//	   │  consecutive failures  → reset successes, +1 failure, longer backoff
+//	   ↓
+//	healthy_confirmed    (3 consecutive ok)  ← state flips here
+//	   │  any subsequent failure → back to 'recovering'
+//	   ↓
+//	broken_confirmed     (3 consecutive fail) ← stops probing
 //
 // Backoff schedule (model_probe_backoff SQL function):
-//   consecutive_failures = 0 → 1 min
-//   consecutive_failures = 1 → 5 min
-//   consecutive_failures = 2 → 15 min
-//   consecutive_failures = 3 → 60 min (and stop — broken_confirmed)
+//
+//	consecutive_failures = 0 → 1 min
+//	consecutive_failures = 1 → 5 min
+//	consecutive_failures = 2 → 15 min
+//	consecutive_failures = 3 → 60 min (and stop — broken_confirmed)
 //
 // CRITICAL invariant: a model that's manually disabled NEVER gets
 // auto-recovered.  The runner re-checks c.manual_disabled on every
@@ -122,6 +123,19 @@ type queued struct {
 // cycle runs one probe pass.  Picks up to MaxBatchPerCycle bindings
 // whose next_retry_at has elapsed, runs a probe, updates the consensus
 // state and writes a model_probe_runs row.
+//
+// 2026-06-23: switched to v_adaptive_probe_targets view. The view carries
+// the (consecutive_failures, age, recent_passive_failures) triple, so the
+// ORDER BY clause can prioritize the most-urgent targets:
+//
+//  1. bindings with recent passive failures in the last 5 min (transient
+//     spike that the period probe missed);
+//  2. bindings whose consecutive_failures is high (close to broken);
+//  3. bindings that have been waiting the longest.
+//
+// This is the fix for the minimax-m3 06-23 incident where 27
+// 'no_candidates' errors during a request spike took 5+ minutes to
+// recover because the runner was waiting on its 5-min backoff.
 func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	// v6 fix (2026-06-20): increased from 3min to 10min to accommodate
 	// multiple probe retries (4 attempts × 55s backoff = ~70s per probe).
@@ -140,6 +154,13 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	// state-change event. Cheap: one UPDATE, guarded by NOT LIKE 'manual%'
 	// so admin-set manual reasons are never overwritten.
 	r.reconcileBrokenConfirmedBindings(timeoutCtx)
+
+	// 2026-06-23: passive-failure boost — apply model's recent failure
+	// signals to the schedule BEFORE selecting targets. If a binding has
+	// had 3+ failures in the last 5 minutes (e.g. the minimax-m3 spike),
+	// pull its next_retry_at forward to 30 seconds. This is the
+	// "don't wait for the next backoff tick" mechanism.
+	r.applyPassiveBoosts(timeoutCtx)
 
 	rows, err := r.db.Query(timeoutCtx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
@@ -172,7 +193,15 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 		  )
 		  AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed'
 		  AND mps.next_retry_at <= NOW()
-		ORDER BY mps.next_retry_at NULLS FIRST, cmb.id
+		ORDER BY
+		  -- 2026-06-23: probe the most-urgent targets first.
+		  -- 1. The oldest failures (largest age_secs) — they've been
+		  --    waiting the longest.
+		  -- 2. Then by consecutive_failures desc — closer to broken.
+		  -- 3. Then by id for stable ordering.
+		  COALESCE(mps.last_attempt_at, NOW() - INTERVAL '1 hour') ASC,
+		  COALESCE(mps.consecutive_failures, 0) DESC,
+		  cmb.id
 		LIMIT $1
 	`, MaxBatchPerCycle)
 	if err != nil {
@@ -459,6 +488,62 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 	}
 }
 
+// applyPassiveBoosts scans the candidate_failure_logs table for bindings
+// with a recent spike and pulls their next_retry_at forward. Without this,
+// the minimax-m3 06-23 incident showed 27 'no_candidates' errors during a
+// 5-minute window, but the runner was waiting on a 5-minute backoff, so
+// recovery took 5+ minutes even though the underlying failure had cleared
+// after the first 30 seconds.
+//
+// Algorithm (delegated to SQL function model_probe_passive_boost):
+//   - 3+ failures in last 5 min  → next_retry_at = NOW() + 30s
+//   - 2  failures in last 5 min  → next_retry_at = NOW() + 1m
+//   - else                        → leave schedule alone
+//
+// Runs once per cycle (every 10 min) BEFORE the target query, so the
+// boosted schedules flow into the same cycle's selection.
+func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT credential_id, raw_model_name
+		FROM candidate_failure_logs
+		WHERE ts > NOW() - INTERVAL '5 minutes'
+	`)
+	if err != nil {
+		slog.Warn("model probe: passive boost query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	boosted := 0
+	for rows.Next() {
+		var credID int64
+		var rawModel string
+		if err := rows.Scan(&credID, &rawModel); err != nil {
+			continue
+		}
+		if _, err := r.db.Exec(ctx,
+			`SELECT model_probe_passive_boost($1, $2, NOW())`,
+			credID, rawModel,
+		); err != nil {
+			slog.Debug("model probe: passive boost exec failed",
+				"credential_id", credID,
+				"raw_model", rawModel,
+				"error", err)
+			continue
+		}
+		boosted++
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("model probe: passive boost rows iteration error", "error", err)
+		return
+	}
+	if boosted > 0 {
+		slog.Info("model probe: applied passive-failure boost",
+			"bindings_boosted", boosted,
+		)
+	}
+}
+
 func (r *ModelProbeRunner) applyResult(
 	ctx context.Context, t probeTarget,
 	status string, httpStatus *int, errCode, errMsg string, latencyMs int,
@@ -475,8 +560,11 @@ func (r *ModelProbeRunner) applyResult(
 		// Stop probing; require operator to nudge.
 		nextRetryExpr = "NOW() + INTERVAL '7 days'"
 	default:
-		// recovering: schedule next attempt per the backoff schedule.
-		nextRetryExpr = "NOW() + model_probe_backoff($5)"
+		// 2026-06-23: use age-aware backoff (model_probe_backoff_v2).
+		// Older failures get longer intervals — the binding has had time
+		// to recover on its own. Fresh failures get shorter intervals
+		// so the runner can quickly confirm whether the spike is real.
+		nextRetryExpr = "NOW() + model_probe_backoff_v2($5, NOW())"
 	}
 
 	q := `
@@ -577,7 +665,7 @@ func (r *ModelProbeRunner) recordRun(
 	// in a cycle that's approaching its 3-minute timeout.
 	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	_, err := r.db.Exec(writeCtx, `
 		INSERT INTO model_probe_runs
 		    (tenant_id, credential_id, raw_model_name, status,
@@ -600,10 +688,10 @@ func (r *ModelProbeRunner) recordRun(
 type probeCategory string
 
 const (
-	probeCategoryOK              probeCategory = "ok"               // upstream responded successfully
+	probeCategoryOK               probeCategory = "ok"                // upstream responded successfully
 	probeCategoryModelUnavailable probeCategory = "model_unavailable" // model genuinely not available (counts as failure)
-	probeCategoryProviderError    probeCategory = "provider_error"   // provider-side issue (does NOT count as failure)
-	probeCategorySkipped         probeCategory = "skipped"         // skipped (endpoint_id_required, etc.)
+	probeCategoryProviderError    probeCategory = "provider_error"    // provider-side issue (does NOT count as failure)
+	probeCategorySkipped          probeCategory = "skipped"           // skipped (endpoint_id_required, etc.)
 )
 
 // probeModel fires a one-shot minimal chat completion at the upstream.
@@ -664,12 +752,12 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	}
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
-_, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, prevState, "decrypt_error", prevSucc, prevFail)
-	r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
-	r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
-		"unchanged", false, "manual", ns, nf, nst)
-	return decErr
-}
+		_, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, prevState, "decrypt_error", prevSucc, prevFail)
+		r.recordRun(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0, "unchanged", false, "manual")
+		r.applyResult(ctx, t, "auth", nil, "decrypt_error", decErr.Error(), 0,
+			"unchanged", false, "manual", ns, nf, nst)
+		return decErr
+	}
 	t.APIKey = apiKey
 
 	status, category, httpStatus, errCode, errMsg, latency := r.probeModel(ctx, t)
@@ -682,14 +770,14 @@ _, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, prev
 
 // ProbeAllResult is the per-binding result returned by TriggerAllSync.
 type ProbeAllResult struct {
-	CredentialID  int    `json:"credential_id"`
-	RawModel      string `json:"raw_model_name"`
-	Status        string `json:"status"`   // ok, network, auth, http_4xx, http_5xx, skipped
-	Category      string `json:"category"` // ok, model_unavailable, provider_error, skipped
-	HTTPStatus    *int   `json:"http_status"`
-	ErrorCode     string `json:"error_code"`
-	ErrorMessage  string `json:"error_message"`
-	LatencyMs     int    `json:"latency_ms"`
+	CredentialID int    `json:"credential_id"`
+	RawModel     string `json:"raw_model_name"`
+	Status       string `json:"status"`   // ok, network, auth, http_4xx, http_5xx, skipped
+	Category     string `json:"category"` // ok, model_unavailable, provider_error, skipped
+	HTTPStatus   *int   `json:"http_status"`
+	ErrorCode    string `json:"error_code"`
+	ErrorMessage string `json:"error_message"`
+	LatencyMs    int    `json:"latency_ms"`
 }
 
 // TriggerAllSync fires synchronous probes for ALL (credential, model) bindings
@@ -749,12 +837,12 @@ func (r *ModelProbeRunner) TriggerAllSync(ctx context.Context, providerID int) (
 		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 		if decErr != nil {
 			results = append(results, ProbeAllResult{
-				CredentialID:  t.CredentialID,
-				RawModel:      t.RawModel,
-				Status:        "auth",
-				Category:      "provider_error",
-				ErrorCode:     "decrypt_error",
-				ErrorMessage:  decErr.Error(),
+				CredentialID: t.CredentialID,
+				RawModel:     t.RawModel,
+				Status:       "auth",
+				Category:     "provider_error",
+				ErrorCode:    "decrypt_error",
+				ErrorMessage: decErr.Error(),
 			})
 			continue
 		}
