@@ -17,10 +17,10 @@ import (
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
 type InternalResponse struct {
-	ID        string
-	Model     string
-	Created   int64  // Unix timestamp (OpenAI style); 0 if not available
-	Role      string // "assistant" (Anthropic uses top-level role field)
+	ID             string
+	Model          string
+	Created        int64  // Unix timestamp (OpenAI style); 0 if not available
+	Role           string // "assistant" (Anthropic uses top-level role field)
 	SourceProtocol string // "openai-chat" | "anthropic-messages" — which upstream we parsed
 
 	// Content is the normalized message content. Both OpenAI messages[] and
@@ -60,6 +60,13 @@ type ResponseContentBlock struct {
 
 	// type=thinking / redacted_thinking
 	Thinking string
+
+	// Signature is the Anthropic chain-of-thought verification token
+	// returned with thinking blocks. Populated only for type=thinking.
+	// PR-2 (2026-06-24): required for opus-4-8 multi-turn round-trip —
+	// without it the next turn is rejected with HTTP 400 and the
+	// model loses the prior tool_use context.
+	Signature string
 }
 
 // ResponseToolCall represents a tool call from the assistant.
@@ -85,20 +92,21 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 		return nil, fmt.Errorf("empty response body")
 	}
 	var src struct {
-		ID     string `json:"id"`
-		Type   string `json:"type"`
-		Role   string `json:"role"`
-		Model  string `json:"model"`
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Model   string `json:"model"`
 		Content []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			ID       string `json:"id"`
-			Name     string `json:"name"`
-			Input    json.RawMessage `json:"input"`
-			Thinking string `json:"thinking"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
-		Usage struct {
+		Usage      struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
@@ -138,8 +146,17 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 		case "thinking":
 			if c.Thinking != "" {
 				ir.ReasoningContent += c.Thinking
-				ir.Content = append(ir.Content, ResponseContentBlock{Type: "thinking", Thinking: c.Thinking})
 			}
+			// PR-2 (2026-06-24): always append the thinking block, even
+			// when Thinking text is empty, so the signature survives
+			// the parse → serialize round-trip. Some upstream responses
+			// ship a redacted_thinking with only a signature; dropping
+			// it here would break the next-turn request.
+			ir.Content = append(ir.Content, ResponseContentBlock{
+				Type:      "thinking",
+				Thinking:  c.Thinking,
+				Signature: c.Signature,
+			})
 		}
 	}
 
@@ -158,11 +175,11 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role              string `json:"role"`
-				Content           any    `json:"content"`
-				ToolCalls         []struct {
-					ID      string `json:"id"`
-					Type    string `json:"type"`
+				Role      string `json:"role"`
+				Content   any    `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
 					Function struct {
 						Name      string `json:"name"`
 						Arguments string `json:"arguments"`
@@ -301,14 +318,14 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 		"created": created,
 		"model":   model,
 		"choices": []map[string]any{{
-			"index": 0,
-			"message": msg,
+			"index":         0,
+			"message":       msg,
 			"finish_reason": finishReason,
 		}},
 		"usage": map[string]any{
 			"prompt_tokens":     ir.Usage.PromptTokens,
 			"completion_tokens": ir.Usage.CompletionTokens,
-			"total_tokens":     ir.Usage.TotalTokens,
+			"total_tokens":      ir.Usage.TotalTokens,
 		},
 	}
 
@@ -377,12 +394,12 @@ func SerializeAnthropicResponse(ir *InternalResponse, clientModel string) ([]byt
 	stopReason := mapFinishReasonToAnthropic(ir.FinishReason)
 
 	out := map[string]any{
-		"id":          ir.ID,
-		"type":        "message",
-		"role":         ir.Role,
-		"model":        model,
-		"content":      content,
-		"stop_reason":  stopReason,
+		"id":            ir.ID,
+		"type":          "message",
+		"role":          ir.Role,
+		"model":         model,
+		"content":       content,
+		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"usage": map[string]any{
 			"input_tokens":  ir.Usage.PromptTokens,
@@ -413,10 +430,17 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 				"input": input,
 			})
 		case "thinking":
-			content = append(content, map[string]any{
+			thinking := map[string]any{
 				"type":     "thinking",
 				"thinking": c.Thinking,
-			})
+			}
+			// PR-2 (2026-06-24): emit signature on serialize so the
+			// next Anthropic turn can verify the chain-of-thought.
+			// Anthropic rejects requests missing the field.
+			if c.Signature != "" {
+				thinking["signature"] = c.Signature
+			}
+			content = append(content, thinking)
 		}
 	}
 

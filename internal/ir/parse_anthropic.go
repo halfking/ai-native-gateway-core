@@ -310,7 +310,8 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 
 		case "thinking":
 			thinking, _ := blockMap["thinking"].(string)
-			irBlock.Thinking = &ThinkingBlock{Thinking: thinking}
+			sig, _ := blockMap["signature"].(string)
+			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 
 		case "redacted_thinking":
 			if rt, ok := blockMap["thinking"].(string); ok {
@@ -384,7 +385,8 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 		irBlock.Image = parseAnthropicImageBlock(blockMap)
 	case "thinking":
 		if thinking, ok := blockMap["thinking"].(string); ok {
-			irBlock.Thinking = &ThinkingBlock{Thinking: thinking}
+			sig, _ := blockMap["signature"].(string)
+			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 		}
 	case "redacted_thinking":
 		if rt, ok := blockMap["thinking"].(string); ok {
