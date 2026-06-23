@@ -97,6 +97,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
 			    unavailable_at     = NULL,
+			    unavailable_recover_at = NULL,
 			    updated_at         = now()
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
@@ -112,6 +113,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
 			    unavailable_at     = NULL,
+			    unavailable_recover_at = NULL,
 			    updated_at         = now()
 			WHERE mo.credential_id = $1
 			  AND mo.available = FALSE
@@ -126,6 +128,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
 			    unavailable_at     = NULL,
+			    unavailable_recover_at = NULL,
 			    updated_at         = now()
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
@@ -142,6 +145,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
 			    unavailable_at     = NULL,
+			    unavailable_recover_at = NULL,
 			    updated_at         = now()
 			FROM provider_models pm
 			WHERE pm.raw_model_name = mo.raw_model_name
@@ -319,7 +323,7 @@ func (w *Writer) writeModelLevelFailureOnly(
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		`, reason, credentialID); err != nil {
+		`, reason, recoverAt, credentialID); err != nil {
 			return err
 		}
 	} else {
@@ -328,15 +332,16 @@ func (w *Writer) writeModelLevelFailureOnly(
 			SET available          = FALSE,
 			    unavailable_reason = $1,
 			    unavailable_at     = now(),
+			    unavailable_recover_at = $2,
 			    updated_at         = now()
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
-			  AND cmb.credential_id = $2
-			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $3
+			  AND cmb.credential_id = $3
+			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $4
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		`, reason, credentialID, rawModel); err != nil {
+		`, reason, recoverAt, credentialID, rawModel); err != nil {
 			return err
 		}
 	}
@@ -348,12 +353,13 @@ func (w *Writer) writeModelLevelFailureOnly(
 			UPDATE model_offers mo
 			SET available          = FALSE,
 			    unavailable_reason = $1,
-			    unavailable_at     = now()
-			WHERE mo.credential_id = $2
-			  AND mo.raw_model_name = $3
+			    unavailable_at     = now(),
+			    unavailable_recover_at = $2
+			WHERE mo.credential_id = $3
+			  AND mo.raw_model_name = $4
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, reason, credentialID, rawModel); err != nil {
+		`, reason, recoverAt, credentialID, rawModel); err != nil {
 			return err
 		}
 	}

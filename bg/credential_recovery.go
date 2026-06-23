@@ -206,6 +206,7 @@ func mnfCoolingRecoverySQL() string {
 		SET available = TRUE,
 		    unavailable_reason = NULL,
 		    unavailable_at = NULL,
+		    unavailable_recover_at = NULL,
 		    updated_at = now()
 		FROM credentials c, providers p
 		WHERE cmb.credential_id = c.id
@@ -233,6 +234,7 @@ func mnfCoolingRecoveryMirrorSQL() string {
 		SET available = TRUE,
 		    unavailable_reason = NULL,
 		    unavailable_at = NULL,
+		    unavailable_recover_at = NULL,
 		    updated_at = now()
 		FROM credential_model_bindings cmb,
 		     provider_models pm,
