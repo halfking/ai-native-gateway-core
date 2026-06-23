@@ -31,6 +31,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -171,11 +172,11 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var result struct {
-		ID               int     `json:"id"`
-		RawModelName     string  `json:"raw_model_name"`
-		StandardizedName *string `json:"standardized_name"`
-		CanonicalID      *int    `json:"canonical_id"`
-		CanonicalName    *string `json:"canonical_name"`
+		ID                int     `json:"id"`
+		RawModelName      string  `json:"raw_model_name"`
+		StandardizedName  *string `json:"standardized_name"`
+		CanonicalID       *int    `json:"canonical_id"`
+		CanonicalName     *string `json:"canonical_name"`
 		OutboundModelName *string `json:"outbound_model_name"`
 	}
 	//nolint:errcheck // scan error non-critical
@@ -380,6 +381,15 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// 2026-06-23: reason is required (matches handleSetManualDisabled).
+	// The legacy 900-series endpoint previously accepted empty reasons
+	// and produced audit rows like reason_detail="admin: " with no
+	// business context, which made the minimax-prod-1 06-23 incident
+	// root-cause work much harder. Validation runs before any DB work.
+	if strings.TrimSpace(req.Reason) == "" {
+		writeError(w, http.StatusBadRequest, "reason is required")
+		return
+	}
 	actor := r.Header.Get("X-Admin-User")
 	if actor == "" {
 		actor = "admin"
@@ -426,7 +436,7 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 }
 
 // setCredentialManualDisabled toggles credentials.manual_disabled
-// Audit: writes a model_offer_events row per affected binding (raw_model_name='' is
+// Audit: writes a model_offer_events row per affected binding (raw_model_name=” is
 // treated as "applies to all models under this credential")
 func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	var req struct {
@@ -435,6 +445,15 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	// 2026-06-23: reason is required (matches handleSetManualDisabled).
+	// The legacy 900-series endpoint previously accepted empty reasons
+	// and produced audit rows like reason_detail="admin: " with no
+	// business context, which made the minimax-prod-1 06-23 incident
+	// root-cause work much harder. Validation runs before any DB work.
+	if strings.TrimSpace(req.Reason) == "" {
+		writeError(w, http.StatusBadRequest, "reason is required")
 		return
 	}
 	actor := r.Header.Get("X-Admin-User")
@@ -640,12 +659,11 @@ func (h *Handler) getRoutableSummary(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id":            providerID,
-		"total_bindings":         total,
-		"routable_bindings":      routable,
-		"unavailable_bindings":   total - routable,
-		"unavailable_breakdown":  breakdown,
-		"routable_ratio":         float64(routable) / float64(maxInt(total, 1)),
+		"provider_id":           providerID,
+		"total_bindings":        total,
+		"routable_bindings":     routable,
+		"unavailable_bindings":  total - routable,
+		"unavailable_breakdown": breakdown,
+		"routable_ratio":        float64(routable) / float64(maxInt(total, 1)),
 	})
 }
-
