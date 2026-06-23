@@ -16,7 +16,7 @@ func TestEventBuilder_Basic(t *testing.T) {
 		Provider(1).
 		Credential(5).
 		Success(true).
-		Latency(150 * time.Millisecond).
+		Latency(150*time.Millisecond).
 		Tokens(100, 50).
 		Build()
 
@@ -502,7 +502,8 @@ func TestStreamCapture_LongStreamContent(t *testing.T) {
 func TestStreamCapture_CapEnforced(t *testing.T) {
 	sc := NewStreamCapture()
 	chunk := strings.Repeat("x", 1000)
-	for i := 0; i < 1000; i++ {
+	// Send 3000 chunks of 1000 bytes = 3MB total, which exceeds the 2MB cap
+	for i := 0; i < 3000; i++ {
 		sc.ObservePayload(
 			`{"choices":[{"index":0,"delta":{"content":"`+chunk+`"}}]}`,
 			"", false)
