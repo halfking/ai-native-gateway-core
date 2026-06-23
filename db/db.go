@@ -29,10 +29,18 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Defer pool cleanup - only close if we're returning an error
+	var success bool
+	defer func() {
+		if !success && pool != nil {
+			pool.Close()
+		}
+	}()
+
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
 		return nil, err
 	}
 	slog.Info("postgres connected")
@@ -44,55 +52,54 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	migCtx, migCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer migCancel()
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
-		pool.Close()
 		return nil, err
 	}
 	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureCredentialColumns(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureFpSlotLimit(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureTuningSignalsStrategyColumn(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureSessionMemoraExtractionLog(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureSessionTitles(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureTuningSignalsViews(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	// Ensure get_current_tenant() function exists before MaaS schema
@@ -108,33 +115,34 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		STABLE
 		AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
 	`); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.EnsureMaasSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureRoutingOverridesTable(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureRoutingOverridesAudit(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensurePassiveProbeStateSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
 	if err := db.ensureSupplementalRLS(migCtx); err != nil {
-		pool.Close()
+		// pool.Close() removed - handled by defer
 		return nil, err
 	}
+	success = true // Mark success to prevent defer from closing pool
 	return db, nil
 }
 
