@@ -1190,7 +1190,7 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 
 // ensureFpSlotLimit mirrors db/migrations/036_fp_slot_limit.sql.
 //
-// Adds credentials.fp_slot_limit (INT NOT NULL DEFAULT 5) and the
+// Adds credentials.fp_slot_limit (INT NOT NULL DEFAULT 20) and the
 // credentials_fp_slot_limit_check CHECK constraint, plus the
 // system_identity_pool singleton for the global end-user cap.
 //
@@ -1230,7 +1230,7 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 		    IF EXISTS (
 		        SELECT 1 FROM credentials WHERE fp_slot_limit IS NULL
 		    ) THEN
-		        UPDATE credentials SET fp_slot_limit = 5 WHERE fp_slot_limit IS NULL;
+		        UPDATE credentials SET fp_slot_limit = 20 WHERE fp_slot_limit IS NULL;  -- 2026-06-24: 5→20
 		    END IF;
 		END $$;
 

@@ -63,7 +63,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.ConcurrencyLimit != nil {
 		concurrencyLimit = *req.ConcurrencyLimit
 	}
-	fpSlotLimit := 5
+	fpSlotLimit := 20 // 2026-06-24: 5 → 20, matches DefaultDefaultLimit
 	if req.FpSlotLimit != nil {
 		fpSlotLimit = *req.FpSlotLimit
 	}
@@ -106,7 +106,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, COALESCE(c.label,''), COALESCE(c.status,'active'),
 		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
-		       COALESCE(c.fp_slot_limit, 5) AS fp_slot_limit,
+		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
