@@ -42,7 +42,7 @@ ARG BUILD_DATE=""
 ARG BUILD_SEQ="0"
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
-    go build -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
+    go build -a -ldflags="-s -w" -o /llm-gateway-go ./cmd/gateway
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
 # 2026-06-22 T14: switched from kx-base:go-vue-amd64 (1.09GB Debian) to
