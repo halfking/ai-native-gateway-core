@@ -239,6 +239,12 @@ type Executor struct {
 	DB             *db.DB
 	HeaderProfiles *HeaderProfileCache
 	FpSlots        *credentialfpslot.Manager
+	// IdentityPool is the Layer 0 global cap on distinct end-user fingerprints.
+	// Wired from cmd/gateway/main.go. Nil disables the feature (unlimited identities).
+	IdentityPool interface {
+		Acquire(ctx context.Context, ident interface{}) (interface{}, bool, error)
+		Enabled() bool
+	}
 	// PeakCollector records per-credential-model concurrency for the
 	// auto-tune background worker. Nil disables the feature.
 	PeakCollector interface {
@@ -537,6 +543,41 @@ func (e *ExecuteError) Error() string {
 }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
+	// Layer 0: Global identity pool cap (if enabled).
+	// Acquire a stable identity for this end-user. If the cap is reached,
+	// the pool LRU-recycles an existing identity, so the request appears
+	// to the upstream as a returning user (anti-rate-limit evasion).
+	var globalIdentity interface{}
+	if e.IdentityPool != nil && e.IdentityPool.Enabled() {
+		// Use the request fingerprint as the identity key. The identity
+		// package extracts a stable hash from X-Device-Seed / User-Agent / IP.
+		fpString := params.ClientID.IdentityHash
+		if fpString == "" {
+			// Fallback: if no fingerprint headers, use the sticky key (session ID).
+			fpString = params.StickyKey
+		}
+		acquired, recycled, err := e.IdentityPool.Acquire(params.R.Context(), fpString)
+		if err != nil {
+			slog.Warn("identity_pool acquire failed, continuing without cap", "error", err)
+		} else {
+			globalIdentity = acquired
+			if recycled {
+				slog.Debug("identity_pool recycled LRU slot",
+					"original", fpString,
+					"recycled_to", acquired,
+				)
+			}
+			// No explicit Release needed — the pool uses TTL-based LRU eviction.
+		}
+	}
+	// If globalIdentity is non-nil, downstream providers see this user as
+	// the recycled identity. We do NOT modify params.ClientID.IdentityHash
+	// (that's the raw fingerprint for audit), but the egress identity builder
+	// (identity.BuildEgressIdentity) should consult globalIdentity when
+	// constructing the virtual IP/MAC. TODO: wire globalIdentity into
+	// credentialfpslot.Lease so BuildEgressIdentity can read it.
+	_ = globalIdentity // suppress unused warning until wired into credentialfpslot
+
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
 		e.stickyCredentialID(params.StickyKey),
