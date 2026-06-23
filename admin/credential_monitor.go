@@ -156,7 +156,7 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 2
+const monitorSummarySchemaVersion = 3
 
 // WindowStats aggregates recent sliding window data.
 type WindowStats struct {
@@ -274,16 +274,19 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						  AND latency_ms IS NOT NULL
 					) live ON true
 					-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).
-					-- credential_model_call_history 是 TimescaleDB hypertable, 子查询里直接
-					-- 引用 window_start 会触发 SQLSTATE 42703 (column not found) — 详见
-					-- docs/llm-gateway-go/2026-06-23-credentials-detail-tab-redesign.md 已知遗留 #1.
-					-- 用 LATERAL + 显式 raw_model correlation 绕开.
+					-- 真实表 schema (2026-06-23 184 host system postgres 验证):
+					--   id, tenant_id, credential_id, raw_model_name, ts, success, latency_ms,
+					--   error_kind, http_status, request_id, raw_model
+					-- 注意: **没有 window_start / total_calls 列** (用 ts + per-call 设计,
+					-- 早期 migration 033 设想的 hypertable 1-min bucket 表没有真正建出来,
+					-- 实际是 call_history_aggregator 后台程序 1min 聚合写入 credential_model_index).
+					-- 所以这里用 ts (TIMESTAMPTZ) + COUNT(*) 而非 window_start + SUM(total_calls).
 					LEFT JOIN LATERAL (
-						SELECT MAX(window_start) AS last_called_at, SUM(total_calls) AS total_calls
+						SELECT MAX(ts) AS last_called_at, COUNT(*) AS total_calls
 						FROM credential_model_call_history
 						WHERE credential_id = c.id
-						  AND raw_model = mo.raw_model_name
-						  AND window_start > NOW() - INTERVAL '24 hours'
+						  AND raw_model_name = mo.raw_model_name
+						  AND ts > NOW() - INTERVAL '24 hours'
 					) ch ON true
 					CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 					WHERE mo.credential_id = c.id
