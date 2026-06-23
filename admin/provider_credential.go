@@ -394,9 +394,10 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 //
 // GET /api/providers/{provider_id}/credentials/{cred_id}/fp-slot-stats
 //
-// Returns per-slot details including holder identifier and remaining TTL.
-// Used to diagnose issues like the "minimax-m3 alternating success/failure"
-// pattern where a session repeatedly bounces between credentials.
+// Returns per-slot details including holder identifier, remaining TTL, and
+// the session title (if known) for human-readable display. Used to diagnose
+// issues like the "minimax-m3 alternating success/failure" pattern where
+// a session repeatedly bounces between credentials.
 func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -413,8 +414,8 @@ func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Reques
 
 	var concurrencyLimit *int
 	err := h.db.QueryRow(ctx, `
-		SELECT concurrency_limit 
-		FROM credentials 
+		SELECT concurrency_limit
+		FROM credentials
 		WHERE id = $1 AND provider_id = $2
 	`, credID, providerID).Scan(&concurrencyLimit)
 	if err != nil {
@@ -433,6 +434,28 @@ func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Look up session titles for each holder (best-effort; missing title
+	// means the session has not generated one yet — show the holder ID).
+	titleMap := h.lookupSessionTitles(ctx, holders)
+
+	// Enrich details with session titles so the UI can render readable tooltips.
+	type enrichedDetail struct {
+		credentialfpslot.SlotDetail
+		SessionTitle string `json:"session_title,omitempty"`
+		SessionID    string `json:"session_id,omitempty"`
+	}
+	enrichedDetails := make([]enrichedDetail, len(details))
+	for i, d := range details {
+		ed := enrichedDetail{SlotDetail: d}
+		if d.Holder != "" {
+			ed.SessionID = d.Holder
+			if title, ok := titleMap[d.Holder]; ok && title != "" {
+				ed.SessionTitle = title
+			}
+		}
+		enrichedDetails[i] = ed
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"credential_id":  credID,
 		"slot_limit":     *limit,
@@ -440,6 +463,34 @@ func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Reques
 		"occupied_slots": len(holders),
 		"free_slots":     *limit - healthySlots,
 		"holders":        holders,
-		"details":        details,
+		"details":        enrichedDetails,
 	})
+}
+
+// lookupSessionTitles queries session_titles in bulk for the given holders
+// (typically 1-5 entries per credential) so the UI can render readable
+// tooltips. Returns holder -> title mapping; missing entries are simply
+// absent from the map.
+func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map[string]string {
+	result := make(map[string]string, len(holders))
+	if len(holders) == 0 || h.db == nil {
+		return result
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT session_id, title
+		FROM session_titles
+		WHERE session_id = ANY($1)
+	`, holders)
+	if err != nil {
+		slog.Debug("lookupSessionTitles query failed", "error", err)
+		return result
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sid, title string
+		if err := rows.Scan(&sid, &title); err == nil {
+			result[sid] = title
+		}
+	}
+	return result
 }
