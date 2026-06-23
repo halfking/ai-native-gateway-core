@@ -49,7 +49,7 @@ func TestFingerprintReuseMemory(t *testing.T) {
 }
 
 // TestLongTermOccupancy verifies that slots remain occupied after release
-// for the duration of slotTTLSeconds (24h).
+// for the duration of slotTTLSeconds (30 min).
 func TestLongTermOccupancy(t *testing.T) {
 	m := New(Config{DefaultLimit: 3, Enabled: true}, nil)
 	ctx := context.Background()
@@ -73,7 +73,7 @@ func TestLongTermOccupancy(t *testing.T) {
 		t.Errorf("expected 0 available, got %d", avail)
 	}
 
-	// All release (but slots remain occupied for 24h)
+	// All release (but slots remain occupied for 30 min — long-term occupancy)
 	m.Release(ctx, l1)
 	m.Release(ctx, l2)
 	m.Release(ctx, l3)

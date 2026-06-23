@@ -88,6 +88,24 @@ func (m *Manager) Enabled() bool {
 	return m != nil && m.cfg.Enabled
 }
 
+// StartReclaim launches the background goroutine that proactively reclaims
+// idle fingerprint slots before their Redis TTL expires. Idempotent: a
+// second call is a no-op. See reclaim.go for the implementation details.
+//
+// Exported wrapper around the unexported reclaimLoopStart — the underlying
+// reclaim logic in reclaim.go is still considered opt-in internal, but
+// main.go needs a stable entry point to wire it up. The default config
+// (15 min idle threshold, 30 s scan interval) matches the "forget me after
+// I leave" semantics described in the audit (2026-06-23).
+//
+// Pinned to the 2026-06-23 audit P0 fix: enabling reclaim is required so
+// "30 min no request → free" holds even under Redis persistence edge cases
+// (e.g. AOF rewrite stalls, RDB snapshot pause). Without it, only Redis
+// auto-expiry cleans up — which can be delayed indefinitely in those cases.
+func (m *Manager) StartReclaim(parent context.Context) {
+	m.reclaimLoopStart(parent, defaultReclaimConfig())
+}
+
 // DefaultLimit returns configured default slot count.
 func (m *Manager) DefaultLimit() int {
 	if m == nil || m.cfg.DefaultLimit <= 0 {
@@ -96,7 +114,7 @@ func (m *Manager) DefaultLimit() int {
 	return m.cfg.DefaultLimit
 }
 
-// slotTTLSeconds returns the slot TTL. Hard-coded to 24h; production
+// slotTTLSeconds returns the slot TTL. Hard-coded to 30 min; production
 // uses Redis-side TTL so the Go value is only relevant for the
 // in-memory fallback path.
 func (m *Manager) slotTTLSeconds() int {
@@ -206,7 +224,7 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 // Release frees a previously acquired slot while preserving the session pin.
 //
 // The pin survives release so the same holder's next request re-uses the same
-// slot within sessionPinTTLSeconds (30 min). If the slot was taken by another
+// slot within sessionPinTTLSeconds (24 h). If the slot was taken by another
 // holder meanwhile, acquireRedis's pin path migrates to a new free slot and
 // updates the pin atomically (see acquireSlotScript). This gives us:
 //   - stability for the common case (low contention, no credential death)
@@ -224,7 +242,8 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
 		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
 
-		// Refresh TTL for both slot and pin (keep them alive for 24h)
+		// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
+		// (stable identity across the longer session).
 		refreshed, err := releaseSlotScript.Run(ctx, m.client,
 			[]string{key, pinKey},
 			lease.Holder,
@@ -496,8 +515,19 @@ func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) b
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.memPins[pinRedisKey(holder, credentialID)]
-	return ok
+	now := time.Now()
+	pinKey := pinRedisKey(holder, credentialID)
+	pin, ok := m.memPins[pinKey]
+	if !ok {
+		return false
+	}
+	if !pin.exp.After(now) {
+		// Pin has expired (sessionPinTTLSeconds elapsed with no activity).
+		// Drop the stale entry and report absence so the caller re-acquires.
+		delete(m.memPins, pinKey)
+		return false
+	}
+	return true
 }
 
 func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
