@@ -13,19 +13,17 @@
 -- the two concepts. Adding this column gives each credential an
 -- independent fingerprint pool size.
 --
--- Default value 5 matches the previous EffectiveLimit() default for
--- credentials without explicit fp_slot_limit. Credentials that already
--- had concurrency_limit set keep their existing behavior untouched —
+-- Default value 20 (bumped from 5 on 2026-06-24) matches the Go
+-- credentialfpslot.DefaultDefaultLimit. Credentials that already had
+-- concurrency_limit set keep their existing behavior untouched —
 -- we only ADD a new column with its own default.
 ALTER TABLE credentials
 ADD COLUMN IF NOT EXISTS fp_slot_limit INT;
 
--- Backfill: for existing credentials, default fp_slot_limit to 5
--- (matches the previous EffectiveLimit() default when concurrency_limit
--- was nil/0). This preserves the existing behavior for users who haven't
--- explicitly configured fp_slot_limit yet.
+-- Backfill: for existing credentials, default fp_slot_limit to 20
+-- (bumped from 5 on 2026-06-24; matches Go DefaultDefaultLimit).
 UPDATE credentials
-SET fp_slot_limit = 5
+SET fp_slot_limit = 20
 WHERE fp_slot_limit IS NULL;
 
 -- Make it NOT NULL after backfill so future inserts must specify it
