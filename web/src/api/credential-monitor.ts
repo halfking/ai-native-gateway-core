@@ -246,3 +246,15 @@ export function clearManualDisabled(credentialId: number, reason: string) {
     { credential_id: credentialId, reason }
   )
 }
+
+// ── Set manual_disabled (2026-06-23) ─────────────────────────────────────
+//
+// Set manual_disabled flag (true/false) to control credential routing availability.
+
+export function setManualDisabled(credentialId: number, disabled: boolean, reason: string) {
+  return req<{ success: boolean; message: string }>(
+    'POST',
+    '/api/credentials/set-manual-disabled',
+    { credential_id: credentialId, manual_disabled: disabled, reason }
+  )
+}

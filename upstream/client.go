@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	maxRetries       = 2
-	retryBaseDelay   = 500 * time.Millisecond
-	defaultTimeout   = 120 * time.Second
-	connectTimeout   = 10 * time.Second
-	headerTimeout    = 60 * time.Second
+	maxRetries     = 2
+	retryBaseDelay = 500 * time.Millisecond
+	defaultTimeout = 120 * time.Second
+	connectTimeout = 10 * time.Second
+	headerTimeout  = 60 * time.Second
 )
 
 type ErrorKind = errorsx.ErrorKind
@@ -41,6 +41,16 @@ type Error struct {
 	Kind    ErrorKind
 	Message string
 	Err     error
+	// 2026-06-23 P0 audit: capture upstream response body (capped at 4KB)
+	// so transient/5xx errors include the vendor's actual error message
+	// in request_logs.response_preview instead of being recorded as an
+	// empty preview. Without this, "error_kind=transient" rows are
+	// diagnostically useless — operators cannot tell whether the cause
+	// is vendor-side rate limiting, auth, or a network blip.
+	Body []byte
+	// StatusCode is the upstream HTTP status code when the response
+	// was readable (0 for pure network errors like connection reset).
+	StatusCode int
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("[%s] %s: %v", e.Kind, e.Message, e.Err) }
@@ -48,10 +58,10 @@ func (e *Error) Unwrap() error { return e.Err }
 
 // Client wraps http.Client with upstream-specific configuration.
 type Client struct {
-	hc          *http.Client
-	maxRetries  int
-	baseDelay   time.Duration
-	proxy       *ProxyResolver
+	hc         *http.Client
+	maxRetries int
+	baseDelay  time.Duration
+	proxy      *ProxyResolver
 }
 
 // New creates a new upstream client with sensible defaults. The proxy
@@ -63,8 +73,8 @@ func New() *Client {
 		hc: &http.Client{
 			Timeout: defaultTimeout,
 			Transport: &http.Transport{
-				Proxy:               proxy.ProxyFunc(),
-				IdleConnTimeout:     90 * time.Second,
+				Proxy:                 proxy.ProxyFunc(),
+				IdleConnTimeout:       90 * time.Second,
 				ResponseHeaderTimeout: headerTimeout,
 				DialContext: (&net.Dialer{
 					Timeout:   connectTimeout,
@@ -137,21 +147,47 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		kind := errorsx.ClassifyError(doErr, resp)
 		if !errorsx.IsRetryable(kind) {
 			msg := ""
+			var bodyBytes []byte
+			statusCode := 0
 			if doErr != nil {
 				msg = doErr.Error()
 			} else if resp != nil {
-				body, _ := io.ReadAll(resp.Body)
+				statusCode = resp.StatusCode
+				// 2026-06-23 P0: capture upstream body (4KB cap) so transient
+				// errors have a diagnostic message in request_logs.
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				//nolint:errcheck // best-effort close
 				resp.Body.Close()
+				bodyBytes = body
 				msg = strings.TrimSpace(string(body))
+				if msg == "" {
+					msg = fmt.Sprintf("HTTP %d (empty body)", resp.StatusCode)
+				}
 			}
-			return resp, &Error{Kind: kind, Message: msg, Err: doErr}
+			return resp, &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode}
 		}
+		// Retryable error — capture body from this attempt too so the
+		// final "retry exhausted" Error carries the diagnostic message.
+		var bodyBytes []byte
+		statusCode := 0
 		if resp != nil {
+			statusCode = resp.StatusCode
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			//nolint:errcheck // best-effort close
 			resp.Body.Close()
+			bodyBytes = body
 		}
-		uErr = &Error{Kind: kind, Message: "retry exhausted", Err: doErr}
+		if doErr != nil {
+			uErr = &Error{Kind: kind, Message: doErr.Error(), Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+		} else if len(bodyBytes) > 0 {
+			msg := strings.TrimSpace(string(bodyBytes))
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d (empty body)", statusCode)
+			}
+			uErr = &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+		} else {
+			uErr = &Error{Kind: kind, Message: "retry exhausted", Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+		}
 	}
 	return resp, uErr
 }

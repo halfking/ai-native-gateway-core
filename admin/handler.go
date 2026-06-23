@@ -348,6 +348,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/providers/", h.superAdmin(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
+
+	// 2026-06-23 Phase 2 (P1): candidate_failure_logs query endpoints.
+	// Read-only views for the per-credential/per-model failure log.
+	// JWT-auth required (same as /api/routing/*).
+	cfHandlers := &candidateFailureHandlers{db: h.db}
+	mux.HandleFunc("/api/candidate-failures", admin(cfHandlers.listCandidateFailures))
+	mux.HandleFunc("/api/candidate-failures/stats", admin(cfHandlers.getCandidateFailureStats))
+	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(cfHandlers.getCandidateFailuresByCredential))
 	mux.HandleFunc("/api/keys", admin(h.handleKeysRoot))
 	mux.HandleFunc("/api/keys/", admin(h.handleKeys))
 	mux.HandleFunc("/api/key-applications", admin(h.handleKeyApplicationsList))

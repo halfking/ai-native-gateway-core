@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
 
@@ -90,10 +90,17 @@ async function loadFpSlotStats() {
 // Clear manual_disabled (2026-06-23)
 const clearDisabledDialogOpen = ref(false)
 const clearDisabledReason = ref('')
+
+// Set manual_disabled (2026-06-23)
+const setManualDisabledDialogOpen = ref(false)
+const setManualDisabledTargetValue = ref(false)
+const setManualDisabledReason = ref('')
+
 function openClearDisabledDialog() {
   clearDisabledDialogOpen.value = true
   clearDisabledReason.value = ''
 }
+
 async function submitClearDisabled() {
   if (!selectedCred.value) return
   try {
@@ -102,6 +109,24 @@ async function submitClearDisabled() {
     await refreshDetailDrawer()
   } catch (e) {
     alert('清除失败: ' + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+// Set manual_disabled (2026-06-23)
+function openSetManualDisabledDialog(targetValue: boolean) {
+  setManualDisabledTargetValue.value = targetValue
+  setManualDisabledReason.value = ''
+  setManualDisabledDialogOpen.value = true
+}
+
+async function submitSetManualDisabled() {
+  if (!selectedCred.value || !setManualDisabledReason.value.trim()) return
+  try {
+    await setManualDisabled(selectedCred.value.id, setManualDisabledTargetValue.value, setManualDisabledReason.value)
+    setManualDisabledDialogOpen.value = false
+    await refreshDetailDrawer()
+  } catch (e) {
+    alert('操作失败: ' + (e instanceof Error ? e.message : String(e)))
   }
 }
 
@@ -1088,6 +1113,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Clear manual_disabled dialog (2026-06-23) -->
+    <!-- Clear manual_disabled dialog (2026-06-23) -->
     <div v-if="clearDisabledDialogOpen" class="drawer-backdrop" @click="clearDisabledDialogOpen = false">
       <div class="card" @click.stop style="max-width:480px;margin:auto;margin-top:120px;padding:20px">
         <h3 style="margin-top:0">清除 manual_disabled</h3>
@@ -1111,6 +1137,37 @@ onUnmounted(() => {
             :disabled="!clearDisabledReason.trim()"
             @click="submitClearDisabled"
           >确认清除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Set manual_disabled dialog (2026-06-23) -->
+    <div v-if="setManualDisabledDialogOpen" class="drawer-backdrop" @click="setManualDisabledDialogOpen = false">
+      <div class="card" @click.stop style="max-width:480px;margin:auto;margin-top:120px;padding:20px">
+        <h3 style="margin-top:0">{{ setManualDisabledTargetValue ? '禁用凭据' : '启用凭据' }}</h3>
+        <div class="cell-sub" style="margin-bottom:12px">
+          凭据 #{{ selectedCred?.id }} - {{ selectedCred?.label || '无标签' }}
+        </div>
+        <div v-if="setManualDisabledTargetValue" style="margin-bottom:12px;padding:12px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:6px;font-size:13px">
+          ⚠️ 此操作将设置 manual_disabled = true，凭据将从路由池移除，不再处理任何流量，直到手动恢复。
+        </div>
+        <div v-else style="margin-bottom:12px;padding:12px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:6px;font-size:13px">
+          ✓ 此操作将设置 manual_disabled = false，凭据将恢复到正常路由池。
+        </div>
+        <label class="field-label">操作原因（必填）</label>
+        <input
+          v-model="setManualDisabledReason"
+          class="field-input"
+          :placeholder="setManualDisabledTargetValue ? '例如: 供应商维护 / 配额耗尽 / 临时下线' : '例如: 供应商恢复 / 维护完成 / 测试通过'"
+          @keyup.enter="submitSetManualDisabled"
+        />
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-ghost" @click="setManualDisabledDialogOpen = false">取消</button>
+          <button
+            :class="setManualDisabledTargetValue ? 'btn btn-danger' : 'btn btn-success'"
+            :disabled="!setManualDisabledReason.trim()"
+            @click="submitSetManualDisabled"
+          >确认{{ setManualDisabledTargetValue ? '禁用' : '启用' }}</button>
         </div>
       </div>
     </div>
