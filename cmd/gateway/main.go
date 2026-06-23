@@ -536,6 +536,15 @@ func main() {
 			slog.Info("health_tracker initialized", "window", "1h", "max_size", 100)
 		}
 
+		// 2026-06-23 Phase 2 (P1): per-candidate failure logger. Writes one
+		// row to candidate_failure_logs per failed (request, credential,
+		// model, attempt) tuple so operators can see WHICH credentials
+		// failed in a sequence (request_logs only records the LAST one).
+		if dbConn != nil {
+			routingExec.FailureLogger = routing.NewCandidateFailureWriter(dbConn.Pool())
+			slog.Info("candidate_failure_logger initialized")
+		}
+
 		routingExec.Provider = providerClient
 		// Inject peak collector (after bg workers have started it).
 		if peakCollector != nil {
