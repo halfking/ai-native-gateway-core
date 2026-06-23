@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction } from '../api'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats } from '../api'
 import { Chart, registerables } from 'chart.js'
+import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
 
 Chart.register(...registerables)
 
@@ -771,6 +772,25 @@ onUnmounted(() => {
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            <!-- Fingerprint slot visualization (2026-06-23) -->
+            <div class="drawer-section" style="grid-column:1 / -1">
+              <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
+                <span>指纹槽位图</span>
+                <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
+                  {{ fpSlotStatsLoading ? '加载中…' : '刷新' }}
+                </button>
+              </div>
+              <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
+                点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
+              </div>
+              <FpSlotVisualizer
+                v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
+                :details="fpSlotStats.details"
+                :slot-limit="fpSlotStats.slot_limit"
+              />
+              <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
             </div>
           </div>
         </div>

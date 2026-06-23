@@ -506,6 +506,8 @@ export interface FpSlotDetail {
   ttl_seconds: number
   expired: boolean
   memory_mode?: boolean
+  session_title?: string
+  session_id?: string
 }
 
 export interface FpSlotStats {
