@@ -252,3 +252,118 @@ func TestConvertChatResponseToAnthropic_ReasoningContentWinsOverEmbedded(t *test
 		t.Errorf("expected second block to keep raw content (no split); got %+v", got.Content[1])
 	}
 }
+
+// TestNormalizeModelForStickyKey verifies that model name variants
+// (case differences, version suffixes) are normalized to the same
+// sticky key, preventing session binding breakage.
+// Root cause: session ses_10bf0d6e4ffeKTnHBNBwN0CnTx exhibited
+// alternating success/transient failures because the client sent
+// different model name variants, generating different sticky keys.
+func TestNormalizeModelForStickyKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Basic normalization
+		{"minimax-m3", "minimax-m3"},
+		{"MiniMax-M3", "minimax-m3"},     // case insensitive
+		{"  minimax-m3  ", "minimax-m3"}, // trim spaces
+		{"", "default"},                  // empty → default
+		{"  ", "default"},                // blank → default
+
+		// Version suffix removal
+		{"minimax-m3-v2", "minimax-m3"},
+		{"minimax-m3-v1", "minimax-m3"},
+		{"gpt-4-turbo-preview", "gpt-4-turbo"},
+		{"claude-3-opus-latest", "claude-3-opus"},
+		{"qwen-plus-stable", "qwen-plus"},
+
+		// Mixed case + version suffix
+		{"MiniMax-M3-V2", "minimax-m3"},
+		{"GPT-4-Turbo-Preview", "gpt-4-turbo"},
+
+		// No suffix (should not change)
+		{"gpt-4", "gpt-4"},
+		{"claude-3-sonnet", "claude-3-sonnet"},
+
+		// Edge cases
+		{"v2", "v2"},            // "v2" alone is a valid model name, keep as-is
+		{"-preview", "default"}, // pure suffix → empty → default
+	}
+
+	for _, tt := range tests {
+		got := normalizeModelForStickyKey(tt.input)
+		// Special handling for edge cases that become empty
+		if tt.want == "" {
+			tt.want = "default"
+		}
+		if got != tt.want {
+			t.Errorf("normalizeModelForStickyKey(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestBuildRouteStickyKey_ModelNormalization verifies that
+// buildRouteStickyKey produces the same sticky key for model
+// name variants within the same session.
+func TestBuildRouteStickyKey_ModelNormalization(t *testing.T) {
+	tenantID := "tenant-1"
+	appID := intPtr(100)
+	apiKeyID := intPtr(200)
+	profile := "Cursor"
+	sessionID := "ses_test123"
+	endUser := "user-abc"
+	fpSeed := "fp-seed-xyz"
+
+	// These model variants should all produce the SAME sticky key
+	variants := []string{
+		"minimax-m3",
+		"MiniMax-M3",
+		"MINIMAX-M3",
+		"minimax-m3-v2",
+		"MiniMax-M3-V1",
+		"  minimax-m3  ",
+	}
+
+	var keys []string
+	for _, model := range variants {
+		key := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, model)
+		keys = append(keys, key)
+	}
+
+	// All keys should be identical
+	first := keys[0]
+	for i, key := range keys {
+		if key != first {
+			t.Errorf("variant[%d] (%q) produced different key:\n  got:  %s\n  want: %s",
+				i, variants[i], key, first)
+		}
+	}
+
+	// Verify the key contains the normalized model name
+	want := "tenant-1:100:200:cursor:ses_test123:minimax-m3"
+	if first != want {
+		t.Errorf("sticky key = %q, want %q", first, want)
+	}
+}
+
+// TestBuildRouteStickyKey_DifferentModels verifies that
+// genuinely different models (not just variants) produce
+// different sticky keys, preserving the original design intent.
+func TestBuildRouteStickyKey_DifferentModels(t *testing.T) {
+	tenantID := "tenant-1"
+	appID := intPtr(100)
+	apiKeyID := intPtr(200)
+	profile := "Cursor"
+	sessionID := "ses_test123"
+	endUser := "user-abc"
+	fpSeed := "fp-seed-xyz"
+
+	key1 := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, "minimax-m3")
+	key2 := buildRouteStickyKey(tenantID, appID, apiKeyID, profile, sessionID, endUser, fpSeed, "gpt-4")
+
+	if key1 == key2 {
+		t.Errorf("different models should produce different sticky keys:\n  minimax-m3: %s\n  gpt-4:      %s",
+			key1, key2)
+	}
+}
