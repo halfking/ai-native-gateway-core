@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
 const (
@@ -246,11 +247,9 @@ func StreamChatWithPendingCapture(
 
 		payload := extractPayload(firstLine)
 		if payload != "" && capture != nil {
-			finishReason := ExtractFinishReason(payload)
-			usage := ExtractUsageFromChunk(payload)
-			capture.ObservePayload(payload, finishReason, false)
-			if usage.PromptTokens != nil || usage.CompletionTokens != nil {
-				capture.ObserveUsage(usage.PromptTokens, usage.CompletionTokens, usage.CacheReadTokens, usage.CacheWriteTokens)
+			// IR-based audit: parse to chunk and observe
+			if chunk, err := ir.ParseOpenAIStreamChunk(firstLine); err == nil {
+				capture.ObserveChunk(chunk)
 			}
 		}
 
@@ -308,7 +307,10 @@ func StreamChatWithPendingCapture(
 				safeWriteSSE(w, "data: [DONE]\n\n")
 				safeFlush(flusher)
 				if capture != nil && upstreamDoneReceived {
-					capture.ObservePayload("[DONE]", "", true)
+					capture.ObserveChunk(&ir.StreamChunk{
+						Type:           ir.ChunkTypeDone,
+						SourceProtocol: ir.ProtocolOpenAIChat,
+					})
 				}
 				outcome.ChunkCount = chunkCount
 			case streamReadCanceled:
@@ -378,15 +380,12 @@ func StreamChatWithPendingCapture(
 
 		payload := extractPayload(line)
 		if payload != "" && capture != nil {
-			finishReason := ExtractFinishReason(payload)
-			usage := ExtractUsageFromChunk(payload)
-			isDone := payload == "[DONE]"
-			if isDone {
+			if payload == "[DONE]" {
 				upstreamDoneReceived = true
 			}
-			capture.ObservePayload(payload, finishReason, isDone)
-			if usage.PromptTokens != nil || usage.CompletionTokens != nil {
-				capture.ObserveUsage(usage.PromptTokens, usage.CompletionTokens, usage.CacheReadTokens, usage.CacheWriteTokens)
+			// IR-based audit: parse to chunk and observe
+			if chunk, err := ir.ParseOpenAIStreamChunk(line); err == nil {
+				capture.ObserveChunk(chunk)
 			}
 		}
 
