@@ -279,18 +279,42 @@ func TestActiveGate_DefaultConfig_5Min(t *testing.T) {
 	}
 }
 
-// TestReclaimConfigFromManager_PropagatesActiveGate ensures the
-// reclaim goroutine reads the same active gate as the Acquire
-// path, so the two cannot drift apart via a configuration mistake.
-func TestReclaimConfigFromManager_PropagatesActiveGate(t *testing.T) {
+// TestReclaimConfigFromManager_UsesReclaimIdleSeconds ensures the
+// reclaim goroutine reads Config.ReclaimIdleSeconds (not the
+// active gate) so the two knobs can be tuned independently. Per
+// operator spec (2026-06-24) "自动清除无活动的时长，放到30分钟，
+// 这个可以作成常量，由系统设置中来设置".
+func TestReclaimConfigFromManager_UsesReclaimIdleSeconds(t *testing.T) {
 	m := New(Config{
-		DefaultLimit:      5,
-		Enabled:           true,
-		ActiveGateSeconds: 180, // 3 min, custom
+		DefaultLimit:       5,
+		Enabled:            true,
+		ActiveGateSeconds:  300,  // 5 min — hard in-line gate
+		ReclaimIdleSeconds: 1800, // 30 min — background reclaim
 	}, nil)
 	cfg := m.reclaimConfigFromManager()
-	if cfg.idleAfter != 3*time.Minute {
-		t.Fatalf("reclaim idleAfter = %v, want 3m", cfg.idleAfter)
+	if cfg.idleAfter != 30*time.Minute {
+		t.Fatalf("reclaim idleAfter = %v, want 30m (ReclaimIdleSeconds)", cfg.idleAfter)
+	}
+}
+
+// TestReclaimConfigFromManager_DefaultsTo30Min verifies the
+// 30-min default (same as slot TTL) when the operator leaves
+// the field at 0.
+func TestReclaimConfigFromManager_DefaultsTo30Min(t *testing.T) {
+	m := New(Config{
+		DefaultLimit:       5,
+		Enabled:            true,
+		ActiveGateSeconds:  300,
+		ReclaimIdleSeconds: 0, // fall back to default
+	}, nil)
+	cfg := m.reclaimConfigFromManager()
+	want := time.Duration(DefaultReclaimIdleSeconds) * time.Second
+	if cfg.idleAfter != want {
+		t.Fatalf("reclaim idleAfter = %v, want default %v (%d s)",
+			cfg.idleAfter, want, DefaultReclaimIdleSeconds)
+	}
+	if DefaultReclaimIdleSeconds != 1800 {
+		t.Fatalf("DefaultReclaimIdleSeconds = %d, want 1800 (30 min)", DefaultReclaimIdleSeconds)
 	}
 }
 
@@ -302,5 +326,139 @@ func TestNewManager_AppliesActiveGateDefault(t *testing.T) {
 	if m.cfg.ActiveGateSeconds != DefaultActiveGateSeconds {
 		t.Fatalf("ActiveGateSeconds = %d, want default %d",
 			m.cfg.ActiveGateSeconds, DefaultActiveGateSeconds)
+	}
+}
+
+// TestLRU_PreemptOldestIdleFirst is the core "long-idle
+// preempts first" rule. Three holders take three slots, then
+// we backdate their TTLs to different idle times. The new
+// arrival should preempt the slot with the LONGEST idle, not
+// the first idle slot the scan encounters in index order.
+//
+// Per operator spec (2026-06-24): "长时间占用的 slot 在 slot 满
+// 时，优先被抢占".
+func TestLRU_PreemptOldestIdleFirst(t *testing.T) {
+	m := New(Config{
+		DefaultLimit:      3,
+		Enabled:           true,
+		ActiveGateSeconds: 5, // 5 s
+	}, nil)
+	ctx := context.Background()
+
+	// alice, bob, carol take slots 0, 1, 2.
+	alice, _ := m.Acquire(ctx, 1, nil, "alice", "default")
+	bob, _ := m.Acquire(ctx, 1, nil, "bob", "default")
+	carol, _ := m.Acquire(ctx, 1, nil, "carol", "default")
+	if alice == nil || bob == nil || carol == nil {
+		t.Fatal("all three must take slots")
+	}
+	m.Release(ctx, alice)
+	m.Release(ctx, bob)
+	m.Release(ctx, carol)
+
+	// Backdate each slot to a different idle time:
+	//   alice: 30 min idle (very stale — should be picked)
+	//   bob:   10 min idle
+	//   carol: 6 min idle (just past the 5s gate — eligible, but
+	//         least-stale of the three)
+	m.mu.Lock()
+	now := time.Now()
+	m.memSlots[slotKey{credentialID: 1, slotIndex: alice.SlotIndex}] = memEntry{
+		holder: "alice", exp: now.Add(0 * time.Minute), // exp = now → remaining = 0 → idle ≈ 30 min
+	}
+	m.memSlots[slotKey{credentialID: 1, slotIndex: bob.SlotIndex}] = memEntry{
+		holder: "bob", exp: now.Add(20 * time.Minute), // idle ≈ 10 min
+	}
+	m.memSlots[slotKey{credentialID: 1, slotIndex: carol.SlotIndex}] = memEntry{
+		holder: "carol", exp: now.Add(24 * time.Minute), // idle ≈ 6 min
+	}
+	m.mu.Unlock()
+
+	// dave arrives — should preempt alice (oldest idle), not
+	// slot 0 in index order (which would also be alice here, but
+	// the next test makes the index order disagree with idle).
+	dave, ok := m.Acquire(ctx, 1, nil, "dave", "default")
+	if !ok {
+		t.Fatal("dave must preempt an idle slot")
+	}
+	if dave.SlotIndex != alice.SlotIndex {
+		t.Fatalf("dave should preempt the LONGEST-idle slot (alice=%d), got %d",
+			alice.SlotIndex, dave.SlotIndex)
+	}
+	m.Release(ctx, dave)
+}
+
+// TestLRU_IndexOrderDisagreesFromOldestIdle: when the LRU
+// order disagrees with the index order, the LRU order wins.
+// This is the failure mode the new Lua script fixes — the
+// old per-slot loop would have preempted whatever index it
+// found first.
+func TestLRU_IndexOrderDisagreesFromOldestIdle(t *testing.T) {
+	m := New(Config{
+		DefaultLimit:      3,
+		Enabled:           true,
+		ActiveGateSeconds: 5,
+	}, nil)
+	ctx := context.Background()
+
+	a, _ := m.Acquire(ctx, 1, nil, "alpha", "default")
+	b, _ := m.Acquire(ctx, 1, nil, "bravo", "default")
+	c, _ := m.Acquire(ctx, 1, nil, "charlie", "default")
+	if a == nil || b == nil || c == nil {
+		t.Fatal("all three must take slots")
+	}
+	m.Release(ctx, a)
+	m.Release(ctx, b)
+	m.Release(ctx, c)
+
+	// Set up the "wrong" scenario: slot at index 0 is the
+	// YOUNGEST idle, but the slot at index 2 is the OLDEST idle.
+	// Index-order scan would have taken slot 0 (wrong).
+	m.mu.Lock()
+	now := time.Now()
+	m.memSlots[slotKey{credentialID: 1, slotIndex: a.SlotIndex}] = memEntry{
+		holder: "alpha", exp: now.Add(25 * time.Minute), // idle ≈ 5 min
+	}
+	m.memSlots[slotKey{credentialID: 1, slotIndex: b.SlotIndex}] = memEntry{
+		holder: "bravo", exp: now.Add(20 * time.Minute), // idle ≈ 10 min
+	}
+	m.memSlots[slotKey{credentialID: 1, slotIndex: c.SlotIndex}] = memEntry{
+		holder: "charlie", exp: now.Add(0 * time.Minute), // idle ≈ 30 min (very stale)
+	}
+	m.mu.Unlock()
+
+	delta, ok := m.Acquire(ctx, 1, nil, "delta", "default")
+	if !ok {
+		t.Fatal("delta must preempt the longest-idle slot")
+	}
+	if delta.SlotIndex != c.SlotIndex {
+		t.Fatalf("LRU should pick charlie (slot %d, longest idle), got slot %d",
+			c.SlotIndex, delta.SlotIndex)
+	}
+	m.Release(ctx, delta)
+}
+
+// TestLRU_ActiveHoldersNeverPreempted: even when ALL slots
+// are past the active gate in the long-idle sense, a single
+// freshly-refreshed slot must be left alone. The LRU loop
+// skips it because (slotTTL - remaining) < gate.
+func TestLRU_ActiveHoldersNeverPreempted(t *testing.T) {
+	m := New(Config{
+		DefaultLimit:      2,
+		Enabled:           true,
+		ActiveGateSeconds: 5,
+	}, nil)
+	ctx := context.Background()
+
+	// Two active holders.
+	a, _ := m.Acquire(ctx, 1, nil, "alpha", "default")
+	b, _ := m.Acquire(ctx, 1, nil, "bravo", "default")
+	m.Release(ctx, a)
+	m.Release(ctx, b)
+
+	// delta tries to preempt — both are active, no slot available.
+	delta, ok := m.Acquire(ctx, 1, nil, "delta", "default")
+	if ok {
+		t.Fatalf("delta must NOT acquire any slot — both are active; got slot %d", delta.SlotIndex)
 	}
 }
