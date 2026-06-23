@@ -132,6 +132,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		SET available          = FALSE,
 		    unavailable_reason = 'continuous_failure',
 		    unavailable_at     = now(),
+		    unavailable_recover_at = $3,
 		    updated_at         = now()
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
@@ -140,7 +141,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-	`, credentialID, model)
+	`, credentialID, model, recoverAt)
 	if err != nil {
 		return fmt.Errorf("update credential_model_bindings: %w", err)
 	}
@@ -151,9 +152,10 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		// routing must stay in lock-step.
 		if _, moErr := c.db.Exec(ctx, `
 			UPDATE model_offers mo
-			SET available          = FALSE,
-			    unavailable_reason = 'continuous_failure',
-			    unavailable_at     = now()
+			SET available              = FALSE,
+			    unavailable_reason     = 'continuous_failure',
+			    unavailable_at         = now(),
+			    unavailable_recover_at = $3
 			FROM provider_models pm
 			WHERE pm.raw_model_name = mo.raw_model_name
 			  AND pm.id IN (
@@ -166,7 +168,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 			  AND mo.credential_id = $1
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, recoverAt); moErr != nil {
+		`, credentialID, recoverAt, recoverAt); moErr != nil {
 			slog.Warn("checker: model_offers mirror write failed",
 				"credential_id", credentialID, "model", model, "error", moErr)
 		}
@@ -213,17 +215,19 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	cmbTag, err := db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
-		SET available          = TRUE,
-		    unavailable_reason = NULL,
-		    unavailable_at     = NULL,
-		    updated_at         = now()
+		SET available              = TRUE,
+		    unavailable_reason     = NULL,
+		    unavailable_at         = NULL,
+		    unavailable_recover_at = NULL,
+		    updated_at             = now()
 		FROM provider_models pm
 		WHERE pm.id = cmb.provider_model_id
 		  AND cmb.available = FALSE
-		  AND cmb.unavailable_at IS NOT NULL
-		  AND cmb.unavailable_at < now()
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND cmb.unavailable_reason <> 'model_probe_broken'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(cmb.unavailable_recover_at,
+		               cmb.unavailable_at + INTERVAL '30 seconds') < now()
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("recover expired credential_model_bindings: %w", err)
@@ -239,14 +243,16 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	// The underlying credential_model_bindings.updated_at was already set above.
 	moTag, err := db.Exec(ctx, `
 		UPDATE model_offers mo
-		SET available          = TRUE,
-		    unavailable_reason = NULL,
-		    unavailable_at     = NULL
+		SET available              = TRUE,
+		    unavailable_reason     = NULL,
+		    unavailable_at         = NULL,
+		    unavailable_recover_at = NULL
 		WHERE mo.available = FALSE
-		  AND mo.unavailable_at IS NOT NULL
-		  AND mo.unavailable_at < now()
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND mo.unavailable_reason <> 'model_probe_broken'
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+		  AND COALESCE(mo.unavailable_recover_at,
+		               mo.unavailable_at + INTERVAL '30 seconds') < now()
 	`)
 	if err != nil {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)
