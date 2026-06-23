@@ -756,78 +756,7 @@ function onTagsInput(ev: Event) {
   border-top: 1px dashed var(--border);
 }
 .fp-slot-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.fp-slot-stat {
-  background: var(--bg-subtle, #161b22);
-  padding: 10px;
-  border-radius: 6px;
-  text-align: center;
-}
-.fp-slot-stat-label {
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 4px;
-}
-.fp-slot-stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text);
-}
-.fp-slot-stat-value--danger {
-  color: var(--danger, #ef4444);
-}
-.fp-slot-list {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  font-size: 12px;
-}
-.fp-slot-list-header {
-  display: grid;
-  grid-template-columns: 50px 1fr 80px;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--bg-subtle, #161b22);
-  font-weight: 500;
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.fp-slot-list-row {
-  display: grid;
-  grid-template-columns: 50px 1fr 80px;
-  gap: 8px;
-  padding: 6px 10px;
-  border-top: 1px solid var(--border);
-  align-items: center;
-}
-.fp-slot-list-row--empty {
-  opacity: 0.5;
-}
-.fp-slot-list-index {
-  font-family: ui-monospace, monospace;
-  color: var(--muted);
-}
-.fp-slot-list-holder code {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-  background: var(--bg-subtle, #161b22);
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-.fp-slot-list-ttl {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-  color: var(--muted);
-}
-.fp-slot-holders-hint {
-  margin-top: 8px;
-  font-size: 11px;
+  display: none; /* Moved to FpSlotVisualizer */
 }
 .probe-status {
   display: inline-flex;
