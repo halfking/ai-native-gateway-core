@@ -176,10 +176,50 @@ func StreamAnthropicSSEToOpenAI(
 
 	runtimeCfg := currentStreamRuntimeConfig()
 	reader := bufio.NewReaderSize(resp.Body, streamBufSize)
+
+	type readResult struct {
+		eventType string
+		data      []byte
+		err       error
+	}
+
 	for {
-		eventType, data, err := readSSEEvent(ctx, reader, runtimeCfg)
+		readCtx, readCancel := context.WithTimeout(ctx, runtimeCfg.streamChunkTimeout)
+		resultCh := make(chan readResult, 1)
+		go func() {
+			et, d, e := readSSEEvent(readCtx, reader, runtimeCfg)
+			resultCh <- readResult{et, d, e}
+		}()
+
+		var eventType string
+		var data []byte
+		var err error
+		select {
+		case res := <-resultCh:
+			eventType, data, err = res.eventType, res.data, res.err
+			readCancel()
+		case <-readCtx.Done():
+			readCancel()
+			slog.Warn("anthropic_to_openai: chunk timeout",
+				"timeout_seconds", runtimeCfg.streamChunkTimeout.Seconds(),
+				"chunks_received", chunkCount,
+				"request_id", requestID)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_chunk_timeout")
+			}
+			emitErrorChunk(w, "stream_chunk_timeout",
+				fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+			outcome.Interrupted = true
+			outcome.Reason = "chunk_timeout"
+			outcome.ChunkCount = chunkCount
+			if pc != nil {
+				pc.markInterrupted("chunk_timeout")
+			}
+			return outcome
+		}
+
 		if err != nil {
-			if err == io.EOF || ctx.Err() != nil {
+			if err == io.EOF || readCtx.Err() != nil {
 				flushBufferedText()
 				// Emit usage if we have it
 				if inputTokens > 0 || outputTokens > 0 {
@@ -467,13 +507,18 @@ func emitErrorChunk(w http.ResponseWriter, code, message string, flusher http.Fl
 }
 
 // readSSEEvent reads one SSE event.
-func readSSEEvent(_ context.Context, reader io.Reader, _ streamRuntimeConfig) (eventType string, data []byte, err error) {
+func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) (eventType string, data []byte, err error) {
 	br, ok := reader.(*bufio.Reader)
 	if !ok {
 		br = bufio.NewReader(reader)
 	}
 	var dataLines []string
 	for {
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		default:
+		}
 		line, rerr := br.ReadString('\n')
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
