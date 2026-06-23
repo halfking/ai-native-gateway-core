@@ -5,19 +5,32 @@ import (
 	"time"
 )
 
-// TestMnfStreak_BreaksStickyAfter3 (Step 6, 2026-06-18) verifies the
-// client hot-path breaker: 3 consecutive model_not_found on the same
-// (stickyKey, credentialID) deletes the sticky binding so the next
-// request re-picks a credential. This complements the original
-// recordStickyFailure guard (which deliberately does NOT count
-// client-bug kinds like model_not_found) by adding a separate
-// client-facing escape hatch.
-func TestMnfStreak_BreaksStickyAfter3(t *testing.T) {
+// TestMnfStreak_KeepsStickyAtThreshold (2026-06-24) verifies that
+// hitting the MnfStreak threshold does NOT break the sticky binding.
+//
+// Why: model_not_found is a client-bug kind (errorsx.IsClientBug=true).
+// The sticky-session rule is "same client + same model = same credential",
+// and that rule is the operator-stated invariant for single-terminal
+// sessions — switching credentials on transient client-bug kinds breaks
+// the per-session identity (UA, TLS fingerprint slot, KV cache prefix).
+//
+// recordStickyFailure already exempts client-bug kinds from unpinning;
+// recordMnfStreak must agree, otherwise the two paths disagree and a
+// 3-streak silently re-picks a credential on the very next request —
+// producing the "one normal / one failure" alternating pattern observed
+// in production (2026-06-23 minimax-m3 incident, request
+// 2cba16052f8b5d68175482e9383a0f0d).
+//
+// The counter is still incremented so observability (counters,
+// /api/candidate-failures/stats, alert ring) can surface "this
+// credential is returning model_not_found frequently" — that signal
+// is now informational only and does NOT mutate routing state.
+func TestMnfStreak_KeepsStickyAtThreshold(t *testing.T) {
 	e := &Executor{
-		Router:                   &Router{Sticky: NewStickyCache()},
-		MnfStreak:                NewMnfStreak(100),
-		MnfStickyBreakThreshold:  3,
-		MnfStreakEnabled:         true,
+		Router:                  &Router{Sticky: NewStickyCache()},
+		MnfStreak:               NewMnfStreak(100),
+		MnfStickyBreakThreshold: 3,
+		MnfStreakEnabled:        true,
 	}
 	const stickyKey = "tenant:1:1:default:sess-mnf"
 	const credID = 42
@@ -25,12 +38,41 @@ func TestMnfStreak_BreaksStickyAfter3(t *testing.T) {
 	e.Router.Sticky.Set(stickyKey, credID, 10*time.Minute)
 	params := &ExecParams{StickyKey: stickyKey}
 
-	// 3 consecutive mnf on the same credential → sticky broken.
+	// 3 consecutive mnf on the same credential → sticky MUST survive.
 	for i := 0; i < 3; i++ {
 		e.recordMnfStreak(params, credID)
 	}
-	if _, _, ok := e.Router.Sticky.GetEntry(stickyKey); ok {
-		t.Fatal("sticky binding should be deleted after 3 consecutive mnf")
+	if _, _, ok := e.Router.Sticky.GetEntry(stickyKey); !ok {
+		t.Fatal("sticky binding must survive 3 consecutive mnf (2026-06-24: do NOT break)")
+	}
+}
+
+// TestMnfStreak_HighStreakStillKeepsSticky (2026-06-24) verifies the
+// keep-sticky invariant holds even at very high streaks — there is no
+// upper bound that silently re-picks. The counter keeps climbing so
+// observability remains accurate.
+func TestMnfStreak_HighStreakStillKeepsSticky(t *testing.T) {
+	e := &Executor{
+		Router:                  &Router{Sticky: NewStickyCache()},
+		MnfStreak:               NewMnfStreak(100),
+		MnfStickyBreakThreshold: 3,
+		MnfStreakEnabled:        true,
+	}
+	const stickyKey = "tenant:1:1:default:sess-high"
+	const credID = 42
+
+	e.Router.Sticky.Set(stickyKey, credID, 10*time.Minute)
+	params := &ExecParams{StickyKey: stickyKey}
+
+	for i := 0; i < 50; i++ {
+		e.recordMnfStreak(params, credID)
+	}
+	if _, _, ok := e.Router.Sticky.GetEntry(stickyKey); !ok {
+		t.Fatal("sticky binding must survive any number of consecutive mnf")
+	}
+	want := 50
+	if got := e.MnfStreak.Get(BuildMnfStreakKey(stickyKey, credID)); got != want {
+		t.Errorf("counter should keep climbing for observability: got %d, want %d", got, want)
 	}
 }
 
@@ -135,7 +177,8 @@ func TestMnfStreak_NilStickyKeyNoOp(t *testing.T) {
 }
 
 // TestMnfStreak_DefaultThreshold verifies that threshold <= 0 falls
-// back to 3 (the documented default).
+// back to 3 (the documented default). At default threshold, sticky
+// must STILL survive (counter is informational only as of 2026-06-24).
 func TestMnfStreak_DefaultThreshold(t *testing.T) {
 	e := &Executor{
 		Router:                  &Router{Sticky: NewStickyCache()},
@@ -151,7 +194,10 @@ func TestMnfStreak_DefaultThreshold(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		e.recordMnfStreak(params, credID)
 	}
-	if _, _, ok := e.Router.Sticky.GetEntry(stickyKey); ok {
-		t.Fatal("default threshold (3) should still break the binding")
+	if _, _, ok := e.Router.Sticky.GetEntry(stickyKey); !ok {
+		t.Fatal("default threshold (3) must keep sticky intact (2026-06-24)")
+	}
+	if got := e.MnfStreak.Get(BuildMnfStreakKey(stickyKey, credID)); got != 3 {
+		t.Errorf("counter should still hit 3 at default threshold: got %d", got)
 	}
 }
