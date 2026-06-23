@@ -44,7 +44,7 @@ The IR (Internal Representation) architecture in `llm-gateway-go` implements a *
 
 ## Detailed Findings
 
-### 1. Tool Definition Conversion ✅ **GOOD**
+### 1. Tool Definition Conversion ⚠️ **GOOD (after 2026-06-24 fix)**
 
 #### Request Direction (Client → Upstream)
 
@@ -757,10 +757,39 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 The IR architecture is **well-designed** with minor gaps in tool handling:
 
 - ✅ **Schema completeness**: 95% (comprehensive superset)
-- ⚠️ **Tool definition conversion**: 100% (excellent)
+- ✅ **Tool definition conversion**: 100% (fixed 2026-06-24, P0 regression test added)
 - ⚠️ **Tool call conversion (non-stream)**: 95% (missing logging only)
-- ❌ **Tool result handling**: 60% (critical gap in response serialization)
+- ✅ **Tool result handling**: 100% (fixed 2026-06-23 21:00, commit 9147dae9)
 - ⚠️ **Streaming tool calls**: 80% (incremental args gap)
+
+### ⚠️ 2026-06-24 follow-up (post-audit bug found)
+
+The original audit's "Tool definition conversion: 100% (excellent)" was
+**overly optimistic**. The IR parsers (parseOpenAITools,
+parseAnthropicTools, parseOpenAIResponseFormat) used a `.(json.RawMessage)`
+type assertion on values extracted from a `map[string]any`. The assertion
+silently failed because `json.Unmarshal` into `interface{}` produces
+nested `map[string]any`, not `json.RawMessage`. Result:
+
+- `ir.Tools[i].Parameters` was always nil after `ParseOpenAI` /
+  `ParseAnthropic`
+- `SerializeAnthropic` therefore skipped `input_schema` on the outbound
+  payload, leaving upstream Anthropic-compatible vendors (MiniMax,
+  Anthropic) with `tools[]` containing only `name` + `description` —
+  **no schema, no callable tools**
+- Same bug dropped `response_format.json_schema`
+
+Fix: introduced `marshalAnyToRaw(any) json.RawMessage` in
+`parse_openai.go` (shared helper) and replaced all 5 broken assertions
+(3 in `parseOpenAITools`, 2 in `parseAnthropicTools`, 1 in
+`parseOpenAIResponseFormat`). Regression coverage: 4 new tests
+(`TestParseOpenAI_Tools_ParametersRoundTrip`,
+`TestParseOpenAI_Tools_FlatFormat` (2 subtests),
+`TestParseOpenAI_ResponseFormat_SchemaRoundTrip`,
+`TestParseAnthropic_Tools_InputSchemaRoundTrip`). The IR path is still
+opt-in via `LLM_GATEWAY_IR_CONVERTER=true` (not enabled in current
+prod 184 k3s yaml), so the bug was dormant in production; the legacy
+`relay/chat_to_anthropic.go` path is unaffected.
 
 **Total estimated fix time**: **3.5 hours** (P0-P2)
 

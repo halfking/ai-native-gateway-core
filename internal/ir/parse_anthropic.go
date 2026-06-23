@@ -433,10 +433,12 @@ func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
 		if desc, ok := tool["description"].(string); ok {
 			td.Description = desc
 		}
-		if schema, ok := tool["input_schema"].(json.RawMessage); ok {
-			td.Parameters = schema
-		} else if schema, ok := tool["parameters"].(json.RawMessage); ok {
-			td.Parameters = schema
+		// P0 fix (2026-06-24): use marshalAnyToRaw, not `.(json.RawMessage)`
+		// (see helper comment in parse_openai.go).
+		if s := marshalAnyToRaw(tool["input_schema"]); s != nil {
+			td.Parameters = s
+		} else {
+			td.Parameters = marshalAnyToRaw(tool["parameters"])
 		}
 
 		result = append(result, td)
