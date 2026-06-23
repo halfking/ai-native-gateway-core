@@ -760,6 +760,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		var execErr error
 		var result *ExecuteResult
 
+		// PR-4 (T4 P0, 2026-06-23): stamp the per-attempt start so the
+		// failure log (and OnError telemetry) can record how long this
+		// single upstream call took, excluding the cost of candidate
+		// selection and switching. Internal retry of the SAME credential
+		// is included — that work belongs to the candidate, not routing.
+		// See db/migrations/300_candidate_failure_logs_per_attempt_latency.sql
+		// for the column semantic.
+		attemptStart := time.Now()
+
 		// 2026-06-23 fix: wrap execute calls to ensure cleanup happens
 		// even if executeAnthropic/executeOpenAI returns early (e.g.
 		// executor_anthropic.go:468). Without this, resources leak.
@@ -801,7 +810,16 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// Record successful call for health tracking
 			if e.HealthTracker != nil {
-				requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
+				// PR-4 (T4 P0, 2026-06-23): use the real X-Request-Id
+				// header so Redis callhist entries join back to
+				// request_logs.request_id. The previous synthetic
+				// "req_{cred}_{ns}" made correlation impossible. Fall
+				// back to a labelled async id when the header is absent
+				// (e.g. internal / synthetic calls with no HTTP request).
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
 				e.HealthTracker.OnSuccess(
 					params.R.Context(),
 					cand.CredentialID,
@@ -1027,6 +1045,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// (visible in ExecuteError.Error) which is useless when a
 		// 3-credential chain all fail differently.
 		if e.FailureLogger != nil {
+			// PR-4 (T4 P0, 2026-06-23): populate per_attempt_latency_ms
+			// from the attemptStart stamped just before the upstream
+			// call. This is the single-attempt latency (excludes
+			// candidate-switching overhead). See migration 300.
+			perAttemptMs := int(time.Since(attemptStart).Milliseconds())
 			e.FailureLogger.LogFailure(
 				params.R.Header.Get("X-Request-Id"),
 				tenantFromCtx(params.R),
@@ -1035,7 +1058,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				cand.RawModel,
 				tried,
 				execErr,
-				nil, // latency_ms: per-attempt latency isn't tracked here
+				nil, // latency_ms: end-to-end candidate latency, not yet tracked here
+				&perAttemptMs,
 				map[string]any{
 					"client_model": params.ClientModel,
 					"attempt_kind": string(kind),
@@ -1046,7 +1070,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 		// Record failed call for health tracking
 		if e.HealthTracker != nil {
-			requestID := fmt.Sprintf("req_%d_%d", cand.CredentialID, time.Now().UnixNano())
+			// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
+			// callhist entries join back to request_logs.request_id.
+			// See OnSuccess path for the rationale on the async-*
+			// fallback.
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			}
 			e.HealthTracker.OnError(
 				params.R.Context(),
 				cand.CredentialID,
