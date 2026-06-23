@@ -57,6 +57,12 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			if err != nil {
 				// Skip this tool_use block; partial conversion is safer
 				// than aborting the entire response.
+				slog.Warn("tool_use_marshal_failed",
+					"error", err,
+					"tool_use_id", c.ID,
+					"tool_name", c.Name,
+					"model", src.Model,
+					"message_id", src.ID)
 				continue
 			}
 			toolCalls = append(toolCalls, map[string]any{
