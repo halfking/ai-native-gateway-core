@@ -240,6 +240,7 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   label: string
   status: CredentialStatus
   concurrency_limit: number | null
+  fp_slot_limit: number | null
   effective_at: string | null
   expires_at: string | null
   balance_usd: number | null

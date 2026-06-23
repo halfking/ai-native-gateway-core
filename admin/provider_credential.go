@@ -22,8 +22,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -319,6 +321,61 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	if req.ConcurrencyLimit != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
+	}
+	if req.FpSlotLimit != nil {
+		newLimit := *req.FpSlotLimit
+		// Constraint: 1 <= fp_slot_limit <= concurrency_limit (or 100 if unlimited)
+		var currentConcurrency sql.NullInt32
+		err := h.db.QueryRow(ctx, `SELECT concurrency_limit FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&currentConcurrency)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to fetch credential: "+err.Error())
+			return
+		}
+		// System max from settings_kv
+		var sysMax sql.NullInt32
+		_ = h.db.QueryRow(ctx, `SELECT (value #>> '{}')::int4 FROM settings_kv WHERE key = 'llmgw_fp_slot_max_per_credential'`).Scan(&sysMax)
+		maxAllowed := 100
+		if sysMax.Valid {
+			maxAllowed = int(sysMax.Int32)
+		}
+		if currentConcurrency.Valid && newLimit > int(currentConcurrency.Int32) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) cannot exceed concurrency_limit (%d)", newLimit, currentConcurrency.Int32))
+			return
+		}
+		if newLimit > maxAllowed {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) exceeds system max (%d)", newLimit, maxAllowed))
+			return
+		}
+		if newLimit < 1 {
+			writeError(w, http.StatusBadRequest, "fp_slot_limit must be >= 1")
+			return
+		}
+		// Fetch old value for audit
+		var oldLimit sql.NullInt32
+		_ = h.db.QueryRow(ctx, `SELECT fp_slot_limit FROM credentials WHERE id = $1`, credID).Scan(&oldLimit)
+		//nolint:errcheck // best-effort exec, non-critical
+		_, err = h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, newLimit, credID, providerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+		// Audit log (best-effort, no PII)
+		actor := "admin"
+		if v := r.Header.Get("X-Admin-User"); v != "" {
+			actor = v
+		}
+		oldVal := "null"
+		if oldLimit.Valid {
+			oldVal = strconv.Itoa(int(oldLimit.Int32))
+		}
+		//nolint:errcheck // audit log is best-effort
+		h.db.Exec(ctx, `
+			INSERT INTO settings_history (key, old_value, new_value, changed_by, source)
+			VALUES ($1, $2, $3, $4, 'api')`,
+			fmt.Sprintf("credential:%d:fp_slot_limit", credID),
+			oldVal,
+			strconv.Itoa(newLimit),
+			actor)
 	}
 	if req.FpSlotLimit != nil {
 		//nolint:errcheck // best-effort exec, non-critical

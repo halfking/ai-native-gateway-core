@@ -163,6 +163,7 @@ async function saveSelected() {
       label: c.label,
       status: c.status,
       concurrency_limit: c.concurrency_limit || null,
+      fp_slot_limit: c.fp_slot_limit,
       effective_at: c.effective_at,
       expires_at: c.expires_at,
       tags: c.tags,
@@ -541,13 +542,22 @@ function onTagsInput(ev: Event) {
               </div>
               <div>
                 <label class="field-label">指纹槽</label>
-                <div class="cell-muted">
+                <div class="cell-muted" style="margin-bottom:4px">
                   <template v-if="selected.fp_slot_limit != null">
                     {{ selected.fp_slots_used ?? 0 }}/{{ selected.fp_slot_limit }}
                     <span v-if="(selected.fp_slots_free ?? 0) === 0" class="cell-sub--danger">已满</span>
                   </template>
                   <template v-else>无限</template>
                 </div>
+                <input
+                  v-model.number="selected.fp_slot_limit"
+                  type="number"
+                  min="1"
+                  :max="selected.concurrency_limit || 100"
+                  class="field-input"
+                  placeholder="例如: 25"
+                  :title="`范围 1 ~ ${selected.concurrency_limit || 100}`"
+                />
                 <div v-if="selected.fp_slot_limit != null" class="btn-row" style="margin-top:4px">
                   <button class="btn btn-sm btn-warning-outline" @click="resetFpSlots" title="清空所有占用的指纹槽">
                     复位槽位
@@ -556,6 +566,7 @@ function onTagsInput(ev: Event) {
                     {{ fpSlotStatsLoading ? '加载中…' : '查看详情' }}
                   </button>
                 </div>
+                <div v-if="saveMsg && saveMsg.includes('fp_slot_limit')" class="cell-sub cell-sub--danger">{{ saveMsg }}</div>
               </div>
             </div>
             <div class="field-grid" style="margin-top:8px">
