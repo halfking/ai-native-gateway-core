@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
@@ -301,10 +302,16 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 			}
 			lastSend = time.Now()
 			if capture != nil {
-				// StreamAnthropicSSE processes OpenAI-format SSE (see line 232-236: chunk["choices"]),
-				// so we must pass OpenAI-format payload to ObservePayload for extractDeltaText to work.
-				openaiPayload := fmt.Sprintf(`{"choices":[{"delta":{"content":%q}}]}`, textDelta)
-				capture.ObservePayload(openaiPayload, "", false)
+				// IR-based audit: pass structured chunk to ObserveChunk
+				// This replaces the previous string-based ObservePayload hack
+				// that manually constructed an OpenAI-format JSON string.
+				capture.ObserveChunk(&ir.StreamChunk{
+					Type: ir.ChunkTypeDelta,
+					Delta: &ir.StreamDelta{
+						Content: textDelta,
+					},
+					SourceProtocol: ir.ProtocolOpenAIChat,
+				})
 			}
 		}
 
@@ -441,7 +448,11 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 	// ObservePayload with done=true here would clobber the failure reason
 	// and produce contradictory flags (interrupted=true && done=true).
 	if capture != nil && !outcome.Interrupted {
-		capture.ObservePayload(`{"type":"message_stop"}`, finalFinishReason, true)
+		capture.ObserveChunk(&ir.StreamChunk{
+			Type:           ir.ChunkTypeDone,
+			FinishReason:   finalFinishReason,
+			SourceProtocol: ir.ProtocolAnthropicMessages,
+		})
 	}
 	return outcome
 }
@@ -449,9 +460,17 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 func writeAnthropicTail(w http.ResponseWriter, flusher http.Flusher, pc *pendingCapturer, msgID, clientModel, finishReason string, outputTokens int, inputTokens int, capture *audit.StreamCapture) {
 	stopReason := mapAnthropicStopReason(finishReason)
 
-	// Record usage in capture for audit trail
+	// Record usage in capture for audit trail (IR-based)
 	if capture != nil && (inputTokens > 0 || outputTokens > 0) {
-		capture.ObserveUsage(&inputTokens, &outputTokens, nil, nil)
+		capture.ObserveChunk(&ir.StreamChunk{
+			Type: ir.ChunkTypeUsage,
+			Usage: &ir.StreamUsage{
+				PromptTokens:     inputTokens,
+				CompletionTokens: outputTokens,
+				TotalTokens:      inputTokens + outputTokens,
+			},
+			SourceProtocol: ir.ProtocolAnthropicMessages,
+		})
 	}
 
 	// Note: the trailing content_block_stop is intentionally omitted. Phase 4's
