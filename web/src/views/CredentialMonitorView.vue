@@ -590,55 +590,53 @@ onUnmounted(() => {
 
 <template>
   <div class="page-container">
-    <!-- Unified top bar: title + auto-refresh + filters + batch actions.
-         Mirrors /routing-v2's .top-bar pattern (one card instead of three
-         stacked rows), saving ~50px of vertical real estate and aligning
-         with the reference page's visual rhythm. -->
+    <!-- Unified top bar: title + auto-refresh + filters + batch actions,
+         ALL in a single horizontal row (per 2026-06-24 request).
+         No max-width / auto-margin on .page-container so the whole content
+         area is top-left aligned and stretches across the full available
+         width instead of being centered with a 1200px cap. -->
     <div class="top-bar">
-      <div class="top-bar-head">
-        <h1>凭据监控</h1>
-        <div class="refresh-group">
-          <label>
-            <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
-            自动刷新
-          </label>
-          <select v-model.number="refreshInterval" class="field-input">
-            <option :value="10">10秒</option>
-            <option :value="30">30秒</option>
-            <option :value="60">60秒</option>
-          </select>
-          <button class="btn btn-primary btn-sm" @click="load">手动刷新</button>
-        </div>
-      </div>
-      <div class="filter-toolbar">
-        <span class="label">可用性:</span>
-        <select v-model="availStateFilter" class="field-input">
-          <option value="">全部</option>
-          <option value="ready">ready</option>
-          <option value="degraded">degraded</option>
-          <option value="cooling">cooling</option>
-          <option value="unreachable">unreachable</option>
+      <h1>凭据监控</h1>
+      <div class="refresh-group">
+        <label>
+          <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
+          自动刷新
+        </label>
+        <select v-model.number="refreshInterval" class="field-input">
+          <option :value="10">10秒</option>
+          <option :value="30">30秒</option>
+          <option :value="60">60秒</option>
         </select>
-        <span class="label">健康:</span>
-        <select v-model="healthFilter" class="field-input">
-          <option value="">全部</option>
-          <option value="healthy">healthy</option>
-          <option value="warning">warning</option>
-          <option value="unreachable">unreachable</option>
-        </select>
-        <div class="quick-filter-group">
-          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'none' ? 'qf-active' : ''" @click="quickFilter = 'none'">全部</button>
-          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'broken' ? 'qf-active qf-bad' : ''" @click="quickFilter = 'broken'">只看 broken</button>
-          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
-        </div>
-        <span class="spacer"></span>
-        <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
-          批量恢复 ({{ selectedIds.size }})
-        </button>
-        <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
-          批量降级 ({{ selectedIds.size }})
-        </button>
+        <button class="btn btn-primary btn-sm" @click="load">手动刷新</button>
       </div>
+      <span class="tb-sep" aria-hidden="true"></span>
+      <span class="label">可用性</span>
+      <select v-model="availStateFilter" class="field-input">
+        <option value="">全部</option>
+        <option value="ready">ready</option>
+        <option value="degraded">degraded</option>
+        <option value="cooling">cooling</option>
+        <option value="unreachable">unreachable</option>
+      </select>
+      <span class="label">健康</span>
+      <select v-model="healthFilter" class="field-input">
+        <option value="">全部</option>
+        <option value="healthy">healthy</option>
+        <option value="warning">warning</option>
+        <option value="unreachable">unreachable</option>
+      </select>
+      <div class="quick-filter-group">
+        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'none' ? 'qf-active' : ''" @click="quickFilter = 'none'">全部</button>
+        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'broken' ? 'qf-active qf-bad' : ''" @click="quickFilter = 'broken'">只看 broken</button>
+        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
+        批量恢复 ({{ selectedIds.size }})
+      </button>
+      <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
+        批量降级 ({{ selectedIds.size }})
+      </button>
     </div>
 
     <!-- Summary cards -->
@@ -1261,78 +1259,74 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* Outer layout — matches /routing-v2 (RoutingDashboardView): rely on the
-   global .main-body padding (24px) and only cap the content width. The
-   previous `padding: 24px; max-width: 1400px` was double-padding the
-   content area, which is what made the right edge feel far from the
-   sidebar/header. */
+/* Outer layout — top-left aligned, stretches across the full available
+   width (per 2026-06-24 request). The global .main-body already supplies
+   24px padding, so we don't add our own, and we don't cap the width with
+   max-width + auto margins (which used to center the content and leave
+   big gutters on wide screens). */
 .page-container {
-  max-width: 1200px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
-/* Unified top bar — mirrors the .top-bar pattern in RoutingDashboardView:
-   card background, tight padding, and the title / refresh / filter
-   controls share one horizontal row to reduce vertical real estate. */
+/* Unified top bar — title + refresh + ALL filters + batch actions in a
+   single horizontal row (per 2026-06-24 request). Previously split into
+   two stacked rows (.top-bar-head + .filter-toolbar); now everything
+   shares one row with a vertical separator between the "page-level"
+   controls (title/refresh) and the "data-level" controls (filters/batch). */
 .top-bar {
-  padding: 8px 10px;
+  padding: 6px 10px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.top-bar-head {
-  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
 }
-.top-bar-head h1 {
+.top-bar h1 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
   flex-shrink: 0;
+  color: var(--text);
 }
-.top-bar-head .refresh-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  flex-wrap: wrap;
-}
-.top-bar-head .refresh-group label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.top-bar-head .refresh-group .field-input {
-  width: auto;
-  font-size: 12px;
-  padding: 2px 6px;
-}
-
-/* Filter row inside the top bar — uses toolbar pattern from reference */
-.filter-toolbar {
+.top-bar .refresh-group {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+.top-bar .refresh-group label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: var(--muted);
 }
-.filter-toolbar > .label {
+.top-bar .refresh-group .field-input {
+  width: auto;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.top-bar .tb-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+.top-bar > .label {
   font-size: 11px;
 }
-.filter-toolbar .field-input { font-size: 11px; padding: 2px 6px; }
-.filter-toolbar .spacer { flex: 1; }
-.filter-toolbar .btn-sm { font-size: 11px; padding: 2px 8px; }
+.top-bar .field-input { font-size: 11px; padding: 2px 6px; }
+.top-bar .spacer { flex: 1; }
+.top-bar .btn-sm { font-size: 11px; padding: 2px 8px; }
+.top-bar .quick-filter-group { display: inline-flex; gap: 4px; }
 
 /* Page header kept for backward compat in case anything still references it */
 .page-header {
