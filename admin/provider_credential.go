@@ -406,6 +406,47 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 	})
 }
 
+// releaseCredentialFpSlot releases a single fingerprint slot (and its pin)
+// for a credential. Used by the admin UI "释放槽位" button to free up a
+// specific occupied slot without affecting other slots.
+//
+// POST /api/providers/{provider_id}/credentials/{cred_id}/release-fp-slot
+func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if h.fpSlots == nil || !h.fpSlots.Enabled() {
+		writeError(w, http.StatusBadRequest, "fingerprint slots not enabled")
+		return
+	}
+
+	var body struct {
+		SlotIndex int `json:"slot_index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	released, err := h.fpSlots.ReleaseSlot(ctx, credID, body.SlotIndex)
+	if err != nil {
+		slog.Error("release fp slot failed", "credential_id", credID, "slot_index", body.SlotIndex, "error", err)
+		writeError(w, http.StatusInternalServerError, "release failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":    "slot released",
+		"released":   released,
+		"slot_index": body.SlotIndex,
+	})
+}
+
 // getCredentialFpSlotStats returns detailed fingerprint slot statistics for
 // monitoring and diagnostics.
 //
