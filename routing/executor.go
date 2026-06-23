@@ -299,6 +299,14 @@ type Executor struct {
 	// Nil disables the feature.
 	HealthTracker *HealthTracker
 
+	// 2026-06-23 Phase 2 (P1): per-candidate failure logger. Writes one
+	// row to candidate_failure_logs per failed (request_id, credential,
+	// model, attempt_index) tuple so operators can see WHICH credentials
+	// are failing in a sequence (the request_logs row only carries the
+	// LAST candidate's error, leaving the others invisible). Nil disables
+	// the feature — the executor's failure log calls become no-ops.
+	FailureLogger *CandidateFailureWriter
+
 	// Memora is the optional context-compression oracle. When non-nil
 	// and enabled, the executor (a) enqueues per-request writes to
 	// Memora for later retrieval, and (b) on context-length overflow,
@@ -624,6 +632,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	if holder == "" {
 		holder = params.R.Header.Get("X-Request-Id")
 	}
+	// fpSlotDegraded is set when the pre-filter found every candidate's slot
+	// pool saturated. In that mode the Acquire loop below tolerates a failed
+	// Acquire and runs the request without a fingerprint slot rather than
+	// rejecting it. See the 2026-06-23 minimax-m3 outage post-mortem.
+	fpSlotDegraded := false
 	if e.FpSlots != nil && e.FpSlots.Enabled() {
 		filtered := make([]provider.Candidate, 0, len(candidates))
 		for _, cand := range candidates {
@@ -636,9 +649,32 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 		}
-		candidates = filtered
-		if len(candidates) == 0 {
-			return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
+		// Degradation (added 2026-06-23): if every candidate's fingerprint
+		// slot pool is saturated, fall back to the full pre-filter set
+		// rather than rejecting the request outright. The fp_slot layer is
+		// a fingerprint-isolation optimisation (spread distinct identities
+		// across slots); when it cannot serve, routing availability takes
+		// priority. This was the direct cause of the 2026-06-23 minimax-m3
+		// outage: only one candidate was reachable (see the standardized_name
+		// fix in provider/client.go), its 5 slots were held by long-lived
+		// sessions, and every new session got "cred_fp_slot: all saturated"
+		// instead of being routed. With a larger candidate pool (post
+		// standardized_name fix) this fallback is rarely hit, but it
+		// prevents a single saturated credential from taking down a whole
+		// model.
+		if len(filtered) == 0 && len(candidates) > 0 {
+			slog.Warn("cred_fp_slot all saturated, degrading to full candidate set",
+				"candidate_count", len(candidates),
+				"client_model", params.ClientModel,
+			)
+			fpSlotDegraded = true
+			// Keep the original candidates slice (do NOT replace with the
+			// empty filtered set).
+		} else {
+			candidates = filtered
+			if len(candidates) == 0 {
+				return nil, &ExecuteError{LastErr: fmt.Errorf("cred_fp_slot: all saturated"), Tried: 0, Exhausted: true}
+			}
 		}
 	}
 
@@ -666,14 +702,28 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if e.FpSlots != nil && e.FpSlots.Enabled() {
 			lease, ok := e.FpSlots.Acquire(params.R.Context(), cand.CredentialID, cand.FpSlotLimit, holder, "default")
 			if !ok {
-				slog.Info("cred_fp_slot saturated",
-					"credential_id", cand.CredentialID,
-					"provider_id", cand.ProviderID,
-				)
-				lastErr = fmt.Errorf("cred_fp_slot saturated for credential %d", cand.CredentialID)
-				continue
+				if fpSlotDegraded {
+					// Degradation path: all slot pools were saturated at the
+					// pre-filter. Rather than rejecting the request, run it
+					// without a fingerprint slot. The egress identity will
+					// fall back to a default slot (identity.BuildEgressIdentity
+					// with slot 0) or the identity-pool recycled identity.
+					slog.Warn("cred_fp_slot acquire failed in degraded mode, running without slot",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+					)
+					fpLease = nil
+				} else {
+					slog.Info("cred_fp_slot saturated",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+					)
+					lastErr = fmt.Errorf("cred_fp_slot saturated for credential %d", cand.CredentialID)
+					continue
+				}
+			} else {
+				fpLease = lease
 			}
-			fpLease = lease
 		}
 
 		if !e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
@@ -969,6 +1019,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			kind = errorsx.ClassifyError(execErr, nil)
 		}
 		lastKind = kind
+
+		// 2026-06-23 Phase 2 (P1): log the per-candidate failure to
+		// candidate_failure_logs so operators can see WHICH credentials
+		// were tried, in what order, and what the vendor actually
+		// returned. request_logs only carries the LAST candidate's error
+		// (visible in ExecuteError.Error) which is useless when a
+		// 3-credential chain all fail differently.
+		if e.FailureLogger != nil {
+			e.FailureLogger.LogFailure(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				tried,
+				execErr,
+				nil, // latency_ms: per-attempt latency isn't tracked here
+				map[string]any{
+					"client_model": params.ClientModel,
+					"attempt_kind": string(kind),
+					"err_msg":      execErr.Error(),
+				},
+			)
+		}
 
 		// Record failed call for health tracking
 		if e.HealthTracker != nil {

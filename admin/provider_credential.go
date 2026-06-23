@@ -133,6 +133,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.tags,
 		       COALESCE(c.notes,''),
 		       c.secret_ciphertext,
+		       COALESCE(c.manual_disabled, false),
 		       c.created_at,
 		       c.updated_at
 		FROM credentials c
@@ -185,6 +186,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		FpSlotsUsed            *int       `json:"fp_slots_used"`
 		FpSlotsFree            *int       `json:"fp_slots_free"`
 		EffectiveFpSlotLimit   *int       `json:"effective_fp_slot_limit"`
+		ManualDisabled         bool       `json:"manual_disabled"`
 		CreatedAt              *time.Time `json:"created_at"`
 		UpdatedAt              *time.Time `json:"updated_at"`
 	}
@@ -228,6 +230,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&tagsStr,
 			&c.Notes,
 			&ciphertext,
+			&c.ManualDisabled,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		); err != nil {

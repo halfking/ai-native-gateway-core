@@ -80,9 +80,10 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 	// 2026-06-23: per-(credential, model) manual online/offline + state-change history.
 	mux.HandleFunc("/api/credentials/model-toggle", wrap(m.handleModelToggle))
 	mux.HandleFunc("/api/credentials/model-history", wrap(m.handleModelHistory))
-	// 2026-06-23: credential routing decisions + clear manual_disabled
+	// 2026-06-23: credential routing decisions + set/clear manual_disabled
 	mux.HandleFunc("/api/credentials/decisions", wrap(m.handleCredentialDecisions))
 	mux.HandleFunc("/api/credentials/clear-manual-disabled", wrap(m.handleClearManualDisabled))
+	mux.HandleFunc("/api/credentials/set-manual-disabled", wrap(m.handleSetManualDisabled))
 }
 
 // CredentialMonitorSummary represents a credential's monitoring state.
@@ -1167,5 +1168,112 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": fmt.Sprintf("manual_disabled cleared for credential %d", req.CredentialID),
+	})
+}
+
+// handleSetManualDisabled sets manual_disabled flag on a credential (2026-06-23).
+// POST /api/credentials/set-manual-disabled
+// Body: {"credential_id": 123, "manual_disabled": true, "reason": "supplier maintenance"}
+//
+// Sets manual_disabled = true/false and writes audit log. This provides a unified
+// interface to enable/disable credentials from the routing pool.
+func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		CredentialID   int    `json:"credential_id"`
+		ManualDisabled bool   `json:"manual_disabled"`
+		Reason         string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.CredentialID == 0 {
+		writeError(w, http.StatusBadRequest, "credential_id required")
+		return
+	}
+	if req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "reason required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// tenant_admin can only set credentials in their tenant
+	var tenantCheck string
+	var checkArgs []any
+	if IsTenantAdmin(r) {
+		tenantCheck = "AND tenant_id = $2"
+		checkArgs = []any{req.CredentialID, GetTenantID(r)}
+	} else {
+		checkArgs = []any{req.CredentialID}
+	}
+
+	// Check credential exists and get current state
+	var exists bool
+	var currentDisabled bool
+	checkQ := fmt.Sprintf("SELECT true, COALESCE(manual_disabled, false) FROM credentials WHERE id = $1 %s", tenantCheck)
+	if err := m.h.db.QueryRow(ctx, checkQ, checkArgs...).Scan(&exists, &currentDisabled); err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "credential not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "check failed: "+err.Error())
+		}
+		return
+	}
+
+	// Set manual_disabled
+	var updateArgs []any
+	if IsTenantAdmin(r) {
+		updateArgs = []any{req.ManualDisabled, req.CredentialID, GetTenantID(r)}
+	} else {
+		updateArgs = []any{req.ManualDisabled, req.CredentialID}
+	}
+	updateQ := fmt.Sprintf("UPDATE credentials SET manual_disabled = $1 WHERE id = $2 %s", tenantCheck)
+	if _, err := m.h.db.Exec(ctx, updateQ, updateArgs...); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
+
+	// Write audit log
+	actor := r.RemoteAddr
+	if actor == "" {
+		actor = "unknown"
+	}
+	action := "credential.set_manual_disabled_true"
+	if !req.ManualDisabled {
+		action = "credential.set_manual_disabled_false"
+	}
+	auditDetails := map[string]any{
+		"credential_id":     req.CredentialID,
+		"manual_disabled":   req.ManualDisabled,
+		"reason":            req.Reason,
+		"previous_disabled": currentDisabled,
+	}
+	detailsJSON, _ := json.Marshal(auditDetails)
+	//nolint:errcheck
+	m.h.db.Exec(ctx, `
+		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
+		VALUES ($1, $2, $3, $4, $5)
+	`, actor, action, "credential", req.CredentialID, detailsJSON)
+
+	// Invalidate cache
+	monitorSummaryCache.mu.Lock()
+	monitorSummaryCache.entries = nil
+	monitorSummaryCache.mu.Unlock()
+
+	statusText := "disabled"
+	if !req.ManualDisabled {
+		statusText = "enabled"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("manual_disabled %s for credential %d", statusText, req.CredentialID),
 	})
 }

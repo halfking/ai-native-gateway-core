@@ -548,7 +548,21 @@ func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile s
 // Matching is done in SQL (P3 of 2026-06-18-model-match-and-404-plan.md):
 //
 //	lower(mo.raw_model_name) = $1              -- case-insensitive exact
+//	OR lower(mo.standardized_name) = $1        -- provider-prefix-stripped exact
 //	OR EXISTS alias match (ma.canonical_id = mo.canonical_id)
+//
+// The standardized_name path was added on 2026-06-23 to fix a class of
+// "no available provider" outages: some providers register their model
+// offers with a provider-namespaced raw_model_name (e.g.
+// "minimaxai/minimax-m3" on NVIDIA NIM builds) while the standardized_name
+// column already holds the prefix-stripped form ("minimax-m3"). Without
+// this clause, offers whose raw_model_name carries a provider prefix are
+// unreachable whenever the alias table is empty — which happens when the
+// taxonomy YAML is absent (the TaxonomySync background worker logs
+// "aliases:0") or the alias_sync ON CONFLICT clause errors out. The alias
+// table remains the canonical source of cross-form name mapping, but
+// standardized_name is a reliable, always-populated fallback that closes
+// the gap.
 //
 // This removes the previous Go-side modelname.MatchModelOffer fuzzy filter
 // which had family-specific heuristics (dot↔dash rewrites, feature overlap)
@@ -667,7 +681,16 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 		  AND (
 		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
 		      lower(mo.raw_model_name) = $1
-		      -- (2) alias match: client_model points to a canonical that this offer belongs to
+		      -- (2) standardized-name match: the offer's standardized_name column
+		      -- already holds the provider-prefix-stripped form (set at upsert
+		      -- time via discovery.NormalizeModelName). This closes the gap
+		      -- when raw_model_name carries a provider namespace (e.g.
+		      -- "minimaxai/minimax-m3") that never equals the client-requested
+		      -- "minimax-m3", AND the alias table is empty/stale. Added
+		      -- 2026-06-23 to stop single-candidate outages caused by the
+		      -- taxonomy YAML / alias_sync path being offline.
+		      OR lower(mo.standardized_name) = $1
+		      -- (3) alias match: client_model points to a canonical that this offer belongs to
 		      OR EXISTS (
 		          SELECT 1 FROM model_aliases ma2
 		          WHERE lower(ma2.raw_name) = $1
