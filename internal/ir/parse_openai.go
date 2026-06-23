@@ -262,7 +262,9 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 
 		td := ToolDefinition{}
 
-		// Handle nested function object (OpenAI standard format)
+		// Handle nested function object (OpenAI standard format).
+		// P0 fix (2026-06-24): marshalAnyToRaw is required here, not a
+		// `.(json.RawMessage)` type assertion — see helper comment.
 		if fn, ok := tool["function"].(map[string]any); ok {
 			if name, ok := fn["name"].(string); ok {
 				td.Name = name
@@ -270,22 +272,20 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 			if desc, ok := fn["description"].(string); ok {
 				td.Description = desc
 			}
-			if params, ok := fn["parameters"].(json.RawMessage); ok {
-				td.Parameters = params
-			}
+			td.Parameters = marshalAnyToRaw(fn["parameters"])
 		} else {
-			// Flat format or Anthropic-style
+			// Flat format or Anthropic-style tool def.
 			if name, ok := tool["name"].(string); ok {
 				td.Name = name
 			}
 			if desc, ok := tool["description"].(string); ok {
 				td.Description = desc
 			}
-			// Try input_schema (Anthropic style) or parameters
-			if params, ok := tool["input_schema"].(json.RawMessage); ok {
-				td.Parameters = params
-			} else if params, ok := tool["parameters"].(json.RawMessage); ok {
-				td.Parameters = params
+			// Try input_schema (Anthropic style) or parameters.
+			if p := marshalAnyToRaw(tool["input_schema"]); p != nil {
+				td.Parameters = p
+			} else {
+				td.Parameters = marshalAnyToRaw(tool["parameters"])
 			}
 		}
 
@@ -332,9 +332,9 @@ func parseOpenAIResponseFormat(raw json.RawMessage) (*ResponseFormat, error) {
 	if t, ok := rf["type"].(string); ok {
 		result.Type = t
 	}
-	if schema, ok := rf["json_schema"].(json.RawMessage); ok {
-		result.Schema = schema
-	}
+	// P0 fix (2026-06-24): use marshalAnyToRaw, not `.(json.RawMessage)`
+	// (see helper comment).
+	result.Schema = marshalAnyToRaw(rf["json_schema"])
 
 	return result, nil
 }
@@ -384,6 +384,33 @@ func parseStringArray(raw json.RawMessage) []string {
 	}
 
 	return result
+}
+
+// marshalAnyToRaw converts a value extracted from a generic-decoded JSON
+// object (map[string]any / []any) back into json.RawMessage. Returns nil
+// when v is absent or un-marshalable.
+//
+// Why this helper exists: when json.Unmarshal decodes into a `map[string]any`
+// (or `any`), nested objects/arrays become nested `map[string]any` / `[]any`
+// — NOT json.RawMessage. A naked `.(json.RawMessage)` assertion on such a
+// value silently fails and the field is dropped (see 2026-06-24 P0 fix:
+// OpenAI tool parameters / Anthropic input_schema were lost end-to-end,
+// causing `tools[]` to be sent to upstream providers without `input_schema`).
+//
+// Used by parse_openai.go (tools.parameters, response_format.json_schema)
+// and parse_anthropic.go (tools.input_schema).
+func marshalAnyToRaw(v any) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	if raw, ok := v.(json.RawMessage); ok && len(raw) > 0 && string(raw) != "null" {
+		return raw
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // derefInt safely dereferences an int pointer.
