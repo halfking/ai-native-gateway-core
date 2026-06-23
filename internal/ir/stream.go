@@ -493,12 +493,18 @@ func (c *StreamChunk) SerializeOpenAI(chatID string, model string, created int64
 					if tc.Type != "" {
 						tcMap["type"] = tc.Type
 					}
+					// OpenAI streaming spec requires the function.arguments field
+					// to be present (even as empty string) when function.name is
+					// set. Without it, clients throw "Expected 'function.name' to
+					// be a string" validation errors.
 					if tc.Name != "" || tc.Arguments != "" {
 						fn := map[string]any{}
 						if tc.Name != "" {
 							fn["name"] = tc.Name
-						}
-						if tc.Arguments != "" {
+							// When name is present, arguments MUST be present too
+							// (even if empty string).
+							fn["arguments"] = tc.Arguments
+						} else if tc.Arguments != "" {
 							fn["arguments"] = tc.Arguments
 						}
 						tcMap["function"] = fn
