@@ -1151,22 +1151,35 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 
 		-- 033: credential_model_call_history (sliding window for the
 		-- credential monitor UI; consumed by CallHistoryAggregator)
+		-- 🆕 2026-06-23 真实表 schema (从 71 llm-pg-71 docker 内 psql 远程验证):
+		--   credential_id, raw_model, window_start, total_calls, success_calls,
+		--   failed_calls, avg_latency_ms, p95_latency_ms, p99_latency_ms, ...
+		-- 老 schema (raw_model_name + ts per-call) 是 design 错位, 已不创建
 		CREATE TABLE IF NOT EXISTS credential_model_call_history (
-		    id               BIGSERIAL PRIMARY KEY,
-		    tenant_id        TEXT NOT NULL DEFAULT 'default',
-		    credential_id    BIGINT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
-		    raw_model_name   TEXT NOT NULL,
-		    ts               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		    success          BOOLEAN NOT NULL,
-		    latency_ms       INT,
-		    error_kind       TEXT,
-		    http_status      INT,
-		    request_id       TEXT
+		    credential_id          BIGINT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+		    raw_model              TEXT NOT NULL,
+		    window_start           TIMESTAMPTZ NOT NULL,
+		    total_calls            INT NOT NULL DEFAULT 0,
+		    success_calls          INT NOT NULL DEFAULT 0,
+		    failed_calls           INT NOT NULL DEFAULT 0,
+		    avg_latency_ms         NUMERIC(8,2),
+		    p95_latency_ms         INT,
+		    p99_latency_ms         INT,
+		    error_rate_limit_count INT NOT NULL DEFAULT 0,
+		    error_quota_count      INT NOT NULL DEFAULT 0,
+		    error_concurrent_count INT NOT NULL DEFAULT 0,
+		    error_network_count    INT NOT NULL DEFAULT 0,
+		    error_auth_count       INT NOT NULL DEFAULT 0,
+		    error_other_count      INT NOT NULL DEFAULT 0,
+		    avg_concurrent         NUMERIC(5,2),
+		    peak_concurrent        INT,
+		    created_at             TIMESTAMPTZ DEFAULT now(),
+		    PRIMARY KEY (credential_id, raw_model, window_start)
 		);
-		CREATE INDEX IF NOT EXISTS idx_cmch_cred_model_ts
-		    ON credential_model_call_history (credential_id, raw_model_name, ts DESC);
-		CREATE INDEX IF NOT EXISTS idx_cmch_ts
-		    ON credential_model_call_history (ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_call_history_cred_time
+		    ON credential_model_call_history (credential_id, window_start DESC);
+		CREATE INDEX IF NOT EXISTS idx_call_history_model_time
+		    ON credential_model_call_history (raw_model, window_start DESC);
 	`)
 	if err != nil {
 		return err
