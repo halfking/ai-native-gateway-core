@@ -59,13 +59,13 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//    / strings so writes propagate back).
 	var (
 		attemptLoggedFlag   bool
-		attemptKeyInfo     *auth.KeyInfo
-		attemptClientModel string
-		attemptErrCode     string
-		attemptErrMsg      string
-		attemptProviderID  *int
+		attemptKeyInfo      *auth.KeyInfo
+		attemptClientModel  string
+		attemptErrCode      string
+		attemptErrMsg       string
+		attemptProviderID   *int
 		attemptCredentialID *int
-		attemptRequestBody []byte
+		attemptRequestBody  []byte
 	)
 	attemptLogged := &attemptLoggedFlag
 	requestID := r.Header.Get("X-Request-Id")
@@ -315,7 +315,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.auditor.Emit(r.Context(), auditBuilder.Build())
 	}()
 
-candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if candErr != nil || len(candidates) == 0 {
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
@@ -383,26 +383,36 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(),
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
-		W:              w,
-		R:              r,
-		BodyBytes:      upstreamBody,
-		IsStream:       isStream,
+		W:                    w,
+		R:                    r,
+		BodyBytes:            upstreamBody,
+		IsStream:             isStream,
 		SuppressSuccessWrite: !isStream,
-		ClientProtocol: "anthropic-messages",
-		ClientModel:    clientModel,
-		OutboundModel:  outboundForLog,
-		ClientID:       clientID,
-		Transform:      txResult,
-		Resolution:     modelResolution,
-		Candidates:    candidates,
-		Policy:         policy,
-		AuditBuilder:   auditBuilder,
-		Capture:        streamCapture,
-		ToolsRequested: false,
-		StreamWrapper: anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel),
-		KeyID:            func() int { if keyInfo != nil { return keyInfo.ID }; return 0 }(),
-		KeyConcurrentLimit: func() int { if keyInfo != nil { return keyInfo.EffectiveConcurrent() }; return 0 }(),
+		ClientProtocol:       "anthropic-messages",
+		ClientModel:          clientModel,
+		OutboundModel:        outboundForLog,
+		ClientID:             clientID,
+		Transform:            txResult,
+		Resolution:           modelResolution,
+		Candidates:           candidates,
+		Policy:               policy,
+		AuditBuilder:         auditBuilder,
+		Capture:              streamCapture,
+		ToolsRequested:       false,
+		StreamWrapper:        anthropicStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile, sessionID, endUser, clientID.Fingerprint.PrimarySeed(), clientModel),
+		KeyID: func() int {
+			if keyInfo != nil {
+				return keyInfo.ID
+			}
+			return 0
+		}(),
+		KeyConcurrentLimit: func() int {
+			if keyInfo != nil {
+				return keyInfo.EffectiveConcurrent()
+			}
+			return 0
+		}(),
 	})
 
 	if execErr != nil {
@@ -869,7 +879,7 @@ func anthropicStreamWrapper(requestID, clientModel, outboundModel string, captur
 		if c == nil {
 			c = capture
 		}
-		return StreamAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c, nil)
+		return StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, c, nil)
 	}
 }
 
@@ -880,7 +890,8 @@ func extractEndUser(r *http.Request) string {
 	return "anonymous"
 }
 
-func tenant(ki *auth.KeyInfo) string {	if ki != nil {
+func tenant(ki *auth.KeyInfo) string {
+	if ki != nil {
 		return ki.TenantID
 	}
 	return "default"
