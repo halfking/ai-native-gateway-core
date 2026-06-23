@@ -65,8 +65,9 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 				sc.appendText(chunk.Delta.Content)
 			}
 
-			// Capture tool calls
+			// Capture tool calls (both textContent for preview AND structured ToolCalls)
 			for _, tc := range chunk.Delta.ToolCalls {
+				// Legacy text preview (for backward compatibility)
 				if tc.Name != "" {
 					sc.appendText("\n[Tool Call: ")
 					sc.appendText(tc.Name)
@@ -75,6 +76,15 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 				if tc.Arguments != "" {
 					sc.appendText(tc.Arguments)
 				}
+
+				// 2026-06-23: Structured tool_calls accumulation (migration 042).
+				// Merge incremental tool call deltas into the ToolCalls array.
+				// OpenAI streaming sends tool calls as:
+				//   1. First chunk: {index: 0, id: "call_abc", type: "function", function: {name: "get_weather", arguments: ""}}
+				//   2. Delta chunks: {index: 0, function: {arguments: "{\"loc\""}}
+				//   3. More deltas: {index: 0, function: {arguments: "ation\":\""}}
+				// We accumulate arguments across deltas for the same index.
+				sc.mergeToolCall(tc)
 			}
 		}
 
@@ -110,6 +120,71 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 		sc.interrupted = true
 		if chunk.Error != nil {
 			sc.finalFinish = chunk.Error.Type
+		}
+	}
+}
+
+// mergeToolCall merges an incremental tool call delta into the accumulated ToolCalls array.
+// Assumes sc.mu is already locked by the caller (ObserveChunk).
+//
+// OpenAI streaming protocol sends tool calls incrementally:
+//   - First chunk: {index: 0, id: "call_abc", type: "function", function: {name: "foo", arguments: ""}}
+//   - Delta chunks: {index: 0, function: {arguments: "{\"bar\""}} ... {index: 0, function: {arguments: "\":123}"}}
+//
+// We accumulate arguments for the same index across chunks.
+func (sc *StreamCapture) mergeToolCall(tc ir.StreamToolCallDelta) {
+	// Ensure ToolCalls array is large enough
+	for len(sc.ToolCalls) <= tc.Index {
+		sc.ToolCalls = append(sc.ToolCalls, nil)
+	}
+
+	existing := sc.ToolCalls[tc.Index]
+	if existing == nil {
+		// First chunk for this index: initialize with id, type, name
+		existing = map[string]any{
+			"index": tc.Index,
+		}
+		if tc.ID != "" {
+			existing["id"] = tc.ID
+		}
+		if tc.Type != "" {
+			existing["type"] = tc.Type
+		}
+		if tc.Name != "" {
+			// Nested function object
+			existing["function"] = map[string]any{
+				"name":      tc.Name,
+				"arguments": tc.Arguments,
+			}
+		} else if tc.Arguments != "" {
+			// Delta chunk (no name): append arguments
+			existing["function"] = map[string]any{
+				"arguments": tc.Arguments,
+			}
+		}
+		sc.ToolCalls[tc.Index] = existing
+	} else {
+		// Subsequent chunk: merge fields
+		if tc.ID != "" {
+			existing["id"] = tc.ID
+		}
+		if tc.Type != "" {
+			existing["type"] = tc.Type
+		}
+		if tc.Name != "" || tc.Arguments != "" {
+			fn, ok := existing["function"].(map[string]any)
+			if !ok {
+				fn = map[string]any{}
+				existing["function"] = fn
+			}
+			if tc.Name != "" {
+				fn["name"] = tc.Name
+			}
+			if tc.Arguments != "" {
+				// Append arguments (incremental JSON string)
+				prevArgs, _ := fn["arguments"].(string)
+				fn["arguments"] = prevArgs + tc.Arguments
+			}
 		}
 	}
 }

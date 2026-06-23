@@ -1606,6 +1606,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		// This pattern indicates the upstream returned no actual content,
 		// despite sending [DONE]. Mark as failure to prevent billing
 		// and alert monitoring.
+		//
+		// Provider 18 (NVIDIA NIM) has ~13% empty response rate across credentials.
 		if reqLog.Success { // Only check if currently marked as success
 			isEmpty := detectEmptyStreamResponse(m, reqLog)
 			if isEmpty {
@@ -1659,6 +1661,15 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		}
 		if v, ok := m["quality_score"].(float64); ok {
 			reqLog.QualityScore = &v
+		}
+		// 2026-06-23: structured tool_calls from streaming (042_tool_calls_column.sql).
+		// The audit.StreamCapture.ToolCalls array is marshaled into SummaryAsMap
+		// as "tool_calls" ([]map[string]any). Convert it to json.RawMessage
+		// for the RequestLogEntry.
+		if v, ok := m["tool_calls"].([]map[string]any); ok && len(v) > 0 {
+			if b, err := json.Marshal(v); err == nil {
+				reqLog.ToolCalls = b
+			}
 		}
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
 		// the post-processed quality signals into the request_log row.

@@ -155,6 +155,12 @@ type StreamCapture struct {
 	// extraction pass.
 	InputTokens  *int
 	OutputTokens *int
+	// ToolCalls accumulates structured tool calls from the stream.
+	// 2026-06-23: Fix tool_calls data loss after IR refactor (migration 042).
+	// Each entry has shape: {id, type, function: {name, arguments}}.
+	// This is OpenAI Chat Completions format, compatible with both
+	// OpenAI and Anthropic upstream protocols (IR layer normalizes them).
+	ToolCalls []map[string]any
 }
 
 func NewStreamCapture() *StreamCapture {
@@ -518,6 +524,11 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.QualityScore != nil {
 		m["quality_score"] = *sc.QualityScore
+	}
+	// 2026-06-23: structured tool_calls from streaming (migration 042).
+	// Emit as JSONB-compatible array for persistence in request_logs.tool_calls.
+	if len(sc.ToolCalls) > 0 {
+		m["tool_calls"] = sc.ToolCalls
 	}
 	return m
 }
