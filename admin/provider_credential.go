@@ -36,6 +36,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		Label            *string `json:"label"`
 		APIKey           string  `json:"api_key"`
 		ConcurrencyLimit *int    `json:"concurrency_limit"`
+		FpSlotLimit      *int    `json:"fp_slot_limit"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -60,16 +61,20 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.ConcurrencyLimit != nil {
 		concurrencyLimit = *req.ConcurrencyLimit
 	}
+	fpSlotLimit := 5
+	if req.FpSlotLimit != nil {
+		fpSlotLimit = *req.FpSlotLimit
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, balance_usd)
-		VALUES ($1, $2, $3, 'active', $4, 1000.0)
+		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd)
+		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0)
 		RETURNING id
-	`, providerID, label, encrypted, concurrencyLimit).Scan(&id)
+	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
@@ -99,6 +104,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, COALESCE(c.label,''), COALESCE(c.status,'active'),
 		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
+		       COALESCE(c.fp_slot_limit, 5) AS fp_slot_limit,
 		       c.balance_usd::float8,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
@@ -193,6 +199,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		if err := rows.Scan(
 			&c.ID, &c.ProviderID, &c.Label, &c.Status,
 			&c.TrustLevel, &c.ConcurrencyLimit,
+			&c.FpSlotLimit,
 			&balanceUSD,
 			&c.CircuitState,
 			&c.CircuitOpenedAt,
@@ -243,8 +250,8 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			}
 		}
 		if h.fpSlots != nil {
-			c.FpSlotLimit, c.FpSlotsUsed, c.FpSlotsFree = h.fpSlots.Stats(ctx, c.ID, c.ConcurrencyLimit)
-			c.EffectiveFpSlotLimit = credentialfpslot.EffectiveLimit(c.ConcurrencyLimit, h.fpSlotsDefaultLimit())
+			c.FpSlotLimit, c.FpSlotsUsed, c.FpSlotsFree = h.fpSlots.Stats(ctx, c.ID, c.FpSlotLimit)
+			c.EffectiveFpSlotLimit = credentialfpslot.EffectiveFpSlotLimit(c.FpSlotLimit, h.fpSlotsDefaultLimit())
 		}
 		creds = append(creds, c)
 	}
@@ -284,6 +291,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		Label            *string  `json:"label"`
 		Status           *string  `json:"status"`
 		ConcurrencyLimit *int     `json:"concurrency_limit"`
+		FpSlotLimit      *int     `json:"fp_slot_limit"`
 		EffectiveAt      *string  `json:"effective_at"`
 		ExpiresAt        *string  `json:"expires_at"`
 		Tags             []string `json:"tags"`
@@ -308,6 +316,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	if req.ConcurrencyLimit != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
+	}
+	if req.FpSlotLimit != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.FpSlotLimit, credID, providerID)
 	}
 	if req.EffectiveAt != nil {
 		//nolint:errcheck // best-effort exec, non-critical
@@ -362,20 +374,22 @@ func (h *Handler) resetCredentialFpSlots(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Fetch credential to get concurrency_limit
-	var concurrencyLimit *int
+	// Fetch credential to get fp_slot_limit (the fingerprint pool size).
+	// This is conceptually independent from concurrency_limit — see
+	// EffectiveFpSlotLimit for the distinction.
+	var fpSlotLimit *int
 	err := h.db.QueryRow(ctx, `
-		SELECT concurrency_limit 
-		FROM credentials 
+		SELECT fp_slot_limit
+		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-	`, credID, providerID).Scan(&concurrencyLimit)
+	`, credID, providerID).Scan(&fpSlotLimit)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
 	// Reset all slots
-	deletedSlots, deletedPins, err := h.fpSlots.ResetSlots(ctx, credID, concurrencyLimit)
+	deletedSlots, deletedPins, err := h.fpSlots.ResetSlots(ctx, credID, fpSlotLimit)
 	if err != nil {
 		slog.Error("reset fp slots failed", "credential_id", credID, "error", err)
 		writeError(w, http.StatusInternalServerError, "reset failed: "+err.Error())
@@ -412,18 +426,18 @@ func (h *Handler) getCredentialFpSlotStats(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var concurrencyLimit *int
+	var fpSlotLimit *int
 	err := h.db.QueryRow(ctx, `
-		SELECT concurrency_limit
+		SELECT fp_slot_limit
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-	`, credID, providerID).Scan(&concurrencyLimit)
+	`, credID, providerID).Scan(&fpSlotLimit)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
-	limit, holders, details, healthySlots := h.fpSlots.DetailedStats(ctx, credID, concurrencyLimit)
+	limit, holders, details, healthySlots := h.fpSlots.DetailedStats(ctx, credID, fpSlotLimit)
 
 	if limit == nil {
 		writeJSON(w, http.StatusOK, map[string]any{

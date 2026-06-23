@@ -17,19 +17,25 @@ import (
 )
 
 type Candidate struct {
-	CredentialID         int      `json:"credential_id"`
-	ProviderID           int      `json:"provider_id"`
-	BaseURL              string   `json:"base_url"`
-	Protocol             string   `json:"protocol"`
-	CatalogCode          string   `json:"catalog_code"`
-	Tier                 int      `json:"tier"`
-	Weight               int      `json:"weight"`
-	RawModel             string   `json:"model_name"`               // upstream name: COALESCE(outbound_model_name, raw_model_name)
-	OfferRawModel        string   `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
-	StandardizedName     string   `json:"standardized_name"`
-	SuccessRate          float64  `json:"success_rate"`
-	P95LatencyMs         int      `json:"p95_latency_ms"`
-	ConcurrencyLimit     *int     `json:"concurrency_limit"`
+	CredentialID     int     `json:"credential_id"`
+	ProviderID       int     `json:"provider_id"`
+	BaseURL          string  `json:"base_url"`
+	Protocol         string  `json:"protocol"`
+	CatalogCode      string  `json:"catalog_code"`
+	Tier             int     `json:"tier"`
+	Weight           int     `json:"weight"`
+	RawModel         string  `json:"model_name"`               // upstream name: COALESCE(outbound_model_name, raw_model_name)
+	OfferRawModel    string  `json:"raw_model_name,omitempty"` // mo.raw_model_name for transform templates
+	StandardizedName string  `json:"standardized_name"`
+	SuccessRate      float64 `json:"success_rate"`
+	P95LatencyMs     int     `json:"p95_latency_ms"`
+	ConcurrencyLimit *int    `json:"concurrency_limit"`
+	// FpSlotLimit is the fingerprint slot pool size — how many distinct
+	// virtual user identities this credential can simulate. Conceptually
+	// INDEPENDENT from ConcurrencyLimit (which controls in-flight request
+	// count). 0 = unlimited fingerprint pool. Used by credentialfpslot
+	// Manager.Acquire as the pool size when picking a stable identity.
+	FpSlotLimit          *int     `json:"fp_slot_limit,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
@@ -574,6 +580,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
+			COALESCE(c.fp_slot_limit, 5) AS fp_slot_limit,
 			c.balance_usd::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
@@ -710,6 +717,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			&cand.SuccessRate,
 			&cand.P95LatencyMs,
 			&cand.ConcurrencyLimit,
+			&cand.FpSlotLimit,
 			&cand.BalanceUSD,
 			&cand.CircuitState,
 			&cand.AvailabilityState,
