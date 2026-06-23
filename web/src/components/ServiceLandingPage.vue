@@ -4,11 +4,17 @@ import { computed } from 'vue';
 export interface LandingFeature {
   title: string;
   description: string;
+  /** Emoji or short glyph shown as a leading icon (optional, purely decorative). */
+  icon?: string;
+  /** Optional badge tag, e.g. "即将上线" / "beta". Renders as a small pill top-right. */
+  badge?: string;
 }
 
 export interface LandingAdvantage {
   title: string;
   description: string;
+  /** Optional emoji glyph prefix. */
+  icon?: string;
 }
 
 const props = withDefaults(
@@ -67,7 +73,11 @@ const accentStyle = computed(() =>
       </header>
       <div class="kx-landing__feature-grid">
         <article v-for="item in features" :key="item.title" class="kx-landing__card">
-          <h3>{{ item.title }}</h3>
+          <span v-if="item.icon" class="kx-landing__card-icon" aria-hidden="true">{{ item.icon }}</span>
+          <div class="kx-landing__card-head">
+            <h3>{{ item.title }}</h3>
+            <span v-if="item.badge" class="kx-landing__badge">{{ item.badge }}</span>
+          </div>
           <p>{{ item.description }}</p>
         </article>
       </div>
@@ -80,7 +90,7 @@ const accentStyle = computed(() =>
       </header>
       <ol class="kx-landing__adv-flow">
         <li v-for="item in advantages" :key="item.title">
-          <strong>{{ item.title }}</strong>
+          <strong><span v-if="item.icon" class="kx-landing__adv-icon" aria-hidden="true">{{ item.icon }}</span>{{ item.title }}</strong>
           <span>{{ item.description }}</span>
         </li>
       </ol>
@@ -203,16 +213,69 @@ const accentStyle = computed(() =>
 }
 
 .kx-landing__card {
-  padding: 16px;
+  position: relative;
+  padding: 18px 16px 16px;
   border: 1px solid var(--kx-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--kx-bg-card);
+  overflow: hidden;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.kx-landing__card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--landing-accent), transparent);
+  opacity: 0.7;
+}
+
+.kx-landing__card:hover {
+  transform: translateY(-3px);
+  border-color: var(--landing-accent);
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+}
+
+.kx-landing__card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0 0 10px;
+  border-radius: 8px;
+  font-size: 17px;
+  line-height: 1;
+  background: color-mix(in srgb, var(--landing-accent) 14%, transparent);
+}
+
+.kx-landing__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
 }
 
 .kx-landing__card h3 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+.kx-landing__badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--landing-accent);
+  background: color-mix(in srgb, var(--landing-accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--landing-accent) 30%, transparent);
 }
 
 .kx-landing__card p {
@@ -234,15 +297,29 @@ const accentStyle = computed(() =>
 .kx-landing__adv-flow li {
   display: grid;
   gap: 4px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--kx-border);
   border-radius: 10px;
   background: var(--kx-bg-card);
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.kx-landing__adv-flow li:hover {
+  border-color: color-mix(in srgb, var(--landing-accent) 50%, var(--kx-border));
+  transform: translateY(-2px);
 }
 
 .kx-landing__adv-flow strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 14px;
   color: var(--landing-accent);
+}
+
+.kx-landing__adv-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .kx-landing__adv-flow span {
