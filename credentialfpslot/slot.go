@@ -16,12 +16,14 @@ import (
 )
 
 const (
-	// slotTTLSeconds 指纹槽的 TTL（长期占用，24小时）
-	// 指纹槽是虚拟身份池，应该长期稳定，不应频繁变化
-	slotTTLSeconds = 86400 // 24 hours
+	// slotTTLSeconds 指纹槽的 TTL（30分钟无请求自动释放）
+	// 最后一次请求后 30 分钟 Redis 自动过期 slot key，
+	// 新客户端可以立即获取该槽位。
+	slotTTLSeconds = 1800 // 30 minutes
 
-	// sessionPinTTLSeconds 会话绑定的 TTL（24小时）
-	// 会话倾向于复用"自己之前用过的指纹"，提高身份连续性
+	// sessionPinTTLSeconds pin 绑定的 TTL（24小时）
+	// pin 记录该 holder 上次使用哪个槽位，即使 slot 已过期，
+	// holder 回来后仍可快速重获同一槽位。
 	sessionPinTTLSeconds = 86400 // 24 hours
 )
 
@@ -708,6 +710,77 @@ func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) 
 	}
 	return deletedSlots, deletedPins, nil
 }
+
+// ReleaseSlot frees a single fingerprint slot (and its pin) for a credential.
+// Returns true if the slot was actually occupied and released.
+func (m *Manager) ReleaseSlot(ctx context.Context, credentialID, slotIndex int) (bool, error) {
+	if !m.Enabled() {
+		return false, nil
+	}
+
+	if m.client != nil {
+		result, err := releaseFpSlotScript.Run(ctx, m.client,
+			[]string{
+				slotRedisKey(credentialID, slotIndex),
+			},
+			credentialID,
+		).Result()
+		if err != nil {
+			return false, fmt.Errorf("redis release slot failed: %w", err)
+		}
+		released := result.(int64) == 1
+		if released {
+			slog.Info("fp_slot released",
+				"credential_id", credentialID,
+				"slot_index", slotIndex,
+			)
+		}
+		return released, nil
+	}
+
+	// Memory fallback
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
+	entry, exists := m.memSlots[key]
+	if !exists {
+		return false, nil
+	}
+	delete(m.memSlots, key)
+	// Also remove associated pin
+	pinSuffix := fmt.Sprintf(":%d", credentialID)
+	for k := range m.memPins {
+		if strings.HasSuffix(k, pinSuffix) {
+			delete(m.memPins, k)
+			break
+		}
+	}
+	slog.Info("fp_slot released (memory)",
+		"credential_id", credentialID,
+		"slot_index", slotIndex,
+		"holder", entry.holder,
+	)
+	return true, nil
+}
+
+// releaseFpSlotScript Lua: GET slot key → DEL it + DEL its pin.
+var releaseFpSlotScript = redis.NewScript(`
+	local slotKey = KEYS[1]
+	local credentialID = tonumber(ARGV[1])
+	
+	local holder = redis.call('GET', slotKey)
+	if not holder then
+		return 0  -- slot was already free
+	end
+	
+	redis.call('DEL', slotKey)
+	
+	-- Also delete the associated pin key
+	local pinKey = 'llmgw:sess_cred_fp:' .. holder .. ':' .. tostring(credentialID)
+	redis.call('DEL', pinKey)
+	
+	return 1
+`)
 
 var resetSlotsScript = redis.NewScript(`
 	local prefix = KEYS[1]

@@ -7,13 +7,60 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-func TestBuildSessionStickyKey(t *testing.T) {
+func TestBuildClientStickyKey(t *testing.T) {
 	appID := 2
 	apiKeyID := 10
-	got := BuildSessionStickyKey("tenant-a", &appID, &apiKeyID, "Cursor", "sess-123")
-	want := "tenant-a:2:10:cursor:sess-123"
+	got := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor", "minimax-m3")
+	want := "tenant-a:2:10:cursor:minimax-m3"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+	// Same client, same model — same key regardless of session
+	got2 := BuildClientStickyKey("tenant-a", &appID, &apiKeyID, "Cursor", "minimax-m3")
+	if got2 != want {
+		t.Fatalf("client-sticky key must be deterministic, got %q", got2)
+	}
+}
+
+func TestBuildClientStickyKey_EmptyProfileDefault(t *testing.T) {
+	appID := 2
+	apiKeyID := 10
+	got := BuildClientStickyKey("t", &appID, &apiKeyID, "", "gpt-4")
+	want := "t:2:10:default:gpt-4"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClientStickyKey_EmptyModelAsterisk(t *testing.T) {
+	appID := 2
+	apiKeyID := 10
+	got := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "")
+	want := "t:2:10:cursor:*"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBuildClientStickyKey_DifferentModelDifferentKey(t *testing.T) {
+	appID := 2
+	apiKeyID := 10
+	a := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
+	b := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "claude-3")
+	if a == b {
+		t.Fatal("different models should produce different sticky keys")
+	}
+}
+
+func TestBuildClientStickyKey_SameClientAcrossSessions(t *testing.T) {
+	appID := 2
+	apiKeyID := 10
+	// Two different "sessions" (we don't pass sessionID at all) produce
+	// the same key — which is the whole point.
+	k1 := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
+	k2 := BuildClientStickyKey("t", &appID, &apiKeyID, "cursor", "gpt-4")
+	if k1 != k2 {
+		t.Fatal("same client+model must produce identical keys across calls")
 	}
 }
 

@@ -16,6 +16,9 @@ interface Props {
 }
 
 const props = defineProps<Props>()
+const emit = defineEmits<{
+  release: [slotIndex: number]
+}>()
 
 const grid = computed(() => {
   // Pad to slotLimit so the grid always shows slotLimit cells.
@@ -87,6 +90,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
           <div class="fp-cell-num">#{{ d.index }}</div>
           <div class="fp-cell-icon">●</div>
           <div class="fp-cell-ttl">{{ ttlLabel(d) }}</div>
+          <button class="fp-cell-close" @click.stop="emit('release', d.index)" title="释放此槽位">×</button>
           <div class="fp-tooltip">
             <div class="fp-tooltip-title">{{ holderLabel(d) }}</div>
             <div class="fp-tooltip-meta">
@@ -211,6 +215,31 @@ function isLongHeld(d: SlotDetail | null): boolean {
   font-family: ui-monospace, monospace;
   font-size: 10px;
   opacity: 0.85;
+}
+.fp-cell-close {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.3);
+  color: #fff;
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 0;
+  z-index: 10;
+}
+.fp-cell:hover .fp-cell-close {
+  opacity: 1;
+}
+.fp-cell-close:hover {
+  background: rgba(239, 68, 68, 0.7);
 }
 
 .fp-tooltip {

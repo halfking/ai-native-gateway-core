@@ -6,6 +6,7 @@ import {
   setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
   resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
   updateCredentialLifecycle, resetCredentialFpSlots,
+  releaseCredentialFpSlot,
   getCredentialFpSlotStats, type FpSlotStats,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
@@ -325,6 +326,20 @@ async function resetFpSlots() {
   }
 }
 
+async function releaseFpSlot(slotIndex: number) {
+  const c = selected.value
+  if (!c) return
+  try {
+    const r = await releaseCredentialFpSlot(props.provider.id, c.id, slotIndex)
+    if (r.released) {
+      // Reload the stats so the UI reflects the freed slot
+      fpSlotStats.value = await getCredentialFpSlotStats(props.provider.id, c.id)
+    }
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : '释放槽位失败')
+  }
+}
+
 async function loadFpSlotStats() {
   const c = selected.value
   if (!c) return
@@ -588,6 +603,7 @@ function onTagsInput(ev: Event) {
               v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
               :details="fpSlotStats.details"
               :slot-limit="fpSlotStats.slot_limit"
+              @release="releaseFpSlot"
             />
             <div v-else-if="fpSlotStats.details" class="cell-muted">无槽位数据</div>
           </div>

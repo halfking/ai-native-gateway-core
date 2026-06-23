@@ -180,6 +180,31 @@ func BuildStickyKey(tenantID string, appID, apiKeyID *int, endUser, fpSeed strin
 	return fmt.Sprintf("%s:%d:%d:%s", tenantID, app, key, user)
 }
 
+// BuildClientStickyKey builds a stable client-scoped sticky key.
+// The format is {tenant}:{app}:{key}:{profile}:{model}.
+// Session ID is intentionally excluded: same client + same model = same
+// fingerprint slot, regardless of which session the request belongs to.
+func BuildClientStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, model string) string {
+	profile := strings.TrimSpace(strings.ToLower(clientProfile))
+	if profile == "" {
+		profile = "default"
+	}
+	m := strings.TrimSpace(model)
+	if m == "" {
+		m = "*"
+	}
+	var app, key int
+	if appID != nil {
+		app = *appID
+	}
+	if apiKeyID != nil {
+		key = *apiKeyID
+	}
+	return fmt.Sprintf("%s:%d:%d:%s:%s", tenantID, app, key, profile, m)
+}
+
+// BuildSessionStickyKey builds a session-scoped sticky key including sessionID.
+// Deprecated: Use BuildClientStickyKey instead (session-less identity).
 func BuildSessionStickyKey(tenantID string, appID, apiKeyID *int, clientProfile, sessionID string) string {
 	profile := strings.TrimSpace(strings.ToLower(clientProfile))
 	if profile == "" {

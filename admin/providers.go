@@ -1134,6 +1134,12 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "release-fp-slot":
+		if r.Method == http.MethodPost {
+			h.releaseCredentialFpSlot(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "fp-slot-stats":
 		if r.Method == http.MethodGet {
 			h.getCredentialFpSlotStats(w, r, providerID, credID)
