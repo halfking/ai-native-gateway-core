@@ -15,7 +15,18 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
-func StreamAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
+// StreamOpenAIToAnthropicSSE converts OpenAI-format SSE (from upstream)
+// into Anthropic-format SSE (for client). Processes chunk["choices"][0]["delta"]
+// and emits Anthropic events (message_start, content_block_delta, etc.).
+//
+// IMPORTANT: Despite the legacy naming confusion, this function has ALWAYS
+// processed OpenAI format. The confusion stems from the Q4 Anthropic passthrough
+// path (executor_anthropic.go) which calls this function after receiving
+// OpenAI-shaped upstream responses.
+//
+// Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
+// Anthropic uses content[] blocks, not choices[].
+func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {

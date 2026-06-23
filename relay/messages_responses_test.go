@@ -229,7 +229,7 @@ func TestMessagesToChatBody_System(t *testing.T) {
 		Model:     "claude-3",
 		MaxTokens: 1024,
 		System:    "You are helpful",
-		Messages: json.RawMessage(`[{"role":"user","content":"Hi"}]`),
+		Messages:  json.RawMessage(`[{"role":"user","content":"Hi"}]`),
 	}
 	chatBody := convertToChatBody(req)
 	msgs, ok := chatBody["messages"].([]any)
@@ -262,7 +262,7 @@ func TestAnthropicStreamSSE_NonStreaming(t *testing.T) {
 	defer resp.Body.Close()
 
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "claude-3", "claude-3-opus", "test-req-id", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "claude-3", "claude-3-opus", "test-req-id", capture, nil)
 
 	body := rec.Body.String()
 	if !strings.Contains(body, "event: message_start") {
@@ -314,8 +314,8 @@ func TestResponsesHandler_InvalidJSON(t *testing.T) {
 
 func TestConvertResponsesToChatBody_String(t *testing.T) {
 	req := &responsesRequestBody{
-		Model:  "gpt-4o",
-		Input:  json.RawMessage(`"hello"`),
+		Model: "gpt-4o",
+		Input: json.RawMessage(`"hello"`),
 	}
 	result := convertResponsesToChatBody(req)
 	msgs := result["messages"].([]any)
@@ -330,9 +330,9 @@ func TestConvertResponsesToChatBody_String(t *testing.T) {
 
 func TestConvertResponsesToChatBody_Array(t *testing.T) {
 	req := &responsesRequestBody{
-		Model:        "gpt-4o",
-		Instructions: "Be helpful",
-		Input:        json.RawMessage(`[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]`),
+		Model:           "gpt-4o",
+		Instructions:    "Be helpful",
+		Input:           json.RawMessage(`[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}]`),
 		MaxOutputTokens: intPtr(500),
 	}
 	result := convertResponsesToChatBody(req)
