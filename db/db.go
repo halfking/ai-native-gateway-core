@@ -59,6 +59,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := db.ensureFpSlotLimit(migCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
 		pool.Close()
 		return nil, err
@@ -1155,6 +1159,99 @@ func (d *DB) ensureCredentialColumns(ctx context.Context) error {
 		return err
 	}
 	slog.Info("credential columns ensured (concurrency_limit_auto, credential_model_call_history)")
+	return nil
+}
+
+// ensureFpSlotLimit mirrors db/migrations/036_fp_slot_limit.sql.
+//
+// Adds credentials.fp_slot_limit (INT NOT NULL DEFAULT 5) and the
+// credentials_fp_slot_limit_check CHECK constraint, plus the
+// system_identity_pool singleton for the global end-user cap.
+//
+// Why this matters: admin/provider_credential.go (listCredentials,
+// addCredential, updateCredential, resetCredentialFpSlots,
+// getCredentialFpSlotStats) and provider/client.go (loadCandidatesDB)
+// all reference c.fp_slot_limit. Without this column, every SELECT /
+// INSERT / UPDATE on those paths returns SQLSTATE 42703
+// ("column does not exist") and surfaces to the API as 500 — most
+// visibly on GET /api/providers/{id}/credentials and on every
+// /v1/chat/completions request that needs to load candidates.
+//
+// Mirrors the SQL in db/migrations/036_fp_slot_limit.sql so the
+// in-process migration runner covers this even if the .sql file was
+// never applied by an external tool. Idempotent (ADD COLUMN IF NOT
+// EXISTS, UPDATE guarded by IS NULL, NOT NULL via information_schema
+// check, CHECK via pg_constraint check).
+//
+// Runs at startup via ensureSchema so every gateway instance
+// (184 k3s + 71 host docker) converges on the same schema without
+// needing a separate migration runner.
+func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		-- 036: credentials.fp_slot_limit (fingerprint slot pool size,
+		-- distinct from concurrency_limit which is in-flight requests).
+		ALTER TABLE credentials
+		    ADD COLUMN IF NOT EXISTS fp_slot_limit INT;
+
+		-- Backfill existing rows that have NULL fp_slot_limit. The
+		-- UPDATE is wrapped in a DO block guarded by IS NULL so it's
+		-- a no-op once the column has been backfilled on a prior boot.
+		DO $$
+		BEGIN
+		    IF EXISTS (
+		        SELECT 1 FROM credentials WHERE fp_slot_limit IS NULL
+		    ) THEN
+		        UPDATE credentials SET fp_slot_limit = 5 WHERE fp_slot_limit IS NULL;
+		    END IF;
+		END $$;
+
+		-- Apply NOT NULL if not already enforced. Postgres has no
+		-- ADD NOT NULL IF NOT EXISTS, so check information_schema.
+		DO $$
+		BEGIN
+		    IF EXISTS (
+		        SELECT 1
+		        FROM information_schema.columns
+		        WHERE table_name = 'credentials'
+		          AND column_name = 'fp_slot_limit'
+		          AND is_nullable = 'YES'
+		    ) THEN
+		        ALTER TABLE credentials ALTER COLUMN fp_slot_limit SET NOT NULL;
+		    END IF;
+		END $$;
+
+		-- CHECK constraint: 0=unlimited, >0=explicit pool size, max 10000.
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'credentials_fp_slot_limit_check'
+		          AND conrelid = 'credentials'::regclass
+		    ) THEN
+		        ALTER TABLE credentials
+		            ADD CONSTRAINT credentials_fp_slot_limit_check
+		            CHECK (fp_slot_limit >= 0 AND fp_slot_limit <= 10000);
+		    END IF;
+		END $$;
+
+		-- 036 also creates system_identity_pool (global end-user cap).
+		CREATE TABLE IF NOT EXISTS system_identity_pool (
+		    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+		    max_identities INT NOT NULL DEFAULT 10000,
+		    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_by TEXT
+		);
+		INSERT INTO system_identity_pool (id, max_identities)
+		VALUES (1, 10000)
+		ON CONFLICT (id) DO NOTHING;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("fp_slot_limit schema ensured (credentials.fp_slot_limit + system_identity_pool)")
 	return nil
 }
 
