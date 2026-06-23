@@ -326,6 +326,18 @@ func StreamAnthropicSSEToOpenAI(
 							initialArgsSent = false
 						}
 						hasEmittedToolCalls = true
+					} else if err == nil && evt.ContentBlock.Type == "thinking" {
+						// PR-2 (2026-06-24): mark HasThinking on the audit
+						// capture when a thinking block opens. The other
+						// passthrough paths (anthropic_passthrough_stream.go
+						// and the <think> split in anthropic_stream.go)
+						// already do this; Q3 mode was missing the hook,
+						// which is why opus-4-8 streams were reported as
+						// "no thinking" in audit logs even when the
+						// upstream shipped a real thinking block.
+						if capture != nil {
+							capture.HasThinking = true
+						}
 					}
 
 				case "content_block_delta":
@@ -359,6 +371,18 @@ func StreamAnthropicSSEToOpenAI(
 							if !initialArgsSent && evt.Delta.PartialJSON != "" {
 								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
 							}
+
+						case "signature_delta":
+							// PR-2 (2026-06-24): Anthropic closes a
+							// thinking block with signature_delta. The
+							// payload is opaque to OpenAI clients, so
+							// we just drop it on the wire. The crucial
+							// change is that we no longer fall through
+							// to the unknown default below and warn —
+							// that branch used to corrupt the chunk
+							// index for the *following* tool_use block
+							// on opus-4-8 streams.
+							_ = evt.Delta
 
 						default:
 							slog.Warn("unknown_delta_type_in_stream",

@@ -78,6 +78,12 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 			if c.Thinking != "" {
 				thinkingParts = append(thinkingParts, c.Thinking)
 			}
+			// PR-2 (2026-06-24): OpenAI Chat Completions has no
+			// signature field, so we drop c.Signature here. The
+			// capture is intentional — clients that need the
+			// signature to round-trip back to Anthropic must use
+			// the IR layer (see internal/ir.serialize_anthropic.go).
+			_ = c.Signature
 		default:
 			// Handle unknown content types by attempting to extract text or thinking fields
 			slog.Warn("unknown_content_type_in_anthropic_response",
