@@ -336,8 +336,7 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
 .compact-filter-bar .cf-input {
   width: auto;
   min-width: 0;
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 4px 8px;  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -433,4 +432,150 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   flex: 1 1 100%;
   min-width: 200px;
   max-width: none;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ *  Compact design tokens (shared by /routing-v2 + credentials)
+ *  Reference: RoutingDashboardView.vue scoped styles
+ * ════════════════════════════════════════════════════════════════ */
+
+/* Compact card — replaces big .card for content-heavy views */
+.compact-card { padding: 8px 10px; }
+.flat-card    { box-shadow: none; }
+
+/* Card toolbar (filter chips row at top of a card) */
+.card-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.toolbar-left   { display: flex; align-items: center; gap: 6px; }
+.toolbar-title  { font-size: 12px; font-weight: 600; }
+.toolbar-filters{ display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.toolbar-divider{ width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
+
+/* Section heading */
+.section-head       { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.section-head.tight { margin-bottom: 4px; }
+.section-head h3    { margin: 0; font-size: 12px; font-weight: 600; }
+.section-head.sm    { margin-bottom: 4px; font-size: 11px; }
+.section-hint       { font-size: 9px; color: var(--muted); font-weight: 400; margin-left: auto; }
+
+/* Dense table — half the padding of global table */
+.table-wrap  { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.dense-table { font-size: 11px; width: 100%; }
+.dense-table thead th { padding: 3px 6px; font-size: 9px; white-space: nowrap; }
+.dense-table tbody td { padding: 4px 6px; }
+
+/* Chip (inline stat / pill) */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chip strong { color: var(--text); font-weight: 600; }
+.chip-good  strong { color: var(--success); }
+.chip-warn  strong { color: var(--warning); }
+.chip-bad   strong { color: var(--danger); }
+
+/* Profile / task pill (filter toggle) */
+.profile-pill {
+  padding: 1px 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: color .12s, border-color .12s, background .12s;
+}
+.profile-pill:hover { color: var(--text); }
+.profile-pill.active {
+  border-color: var(--accent);
+  color: var(--accent-h);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.profile-pill.active.qf-bad  { border-color: var(--danger);  color: var(--danger);  background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.profile-pill.active.qf-warn { border-color: var(--warning); color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+
+/* Top bar — slim page header bar */
+.top-bar {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.top-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.top-bar-head h2 { font-size: 15px; margin: 0; flex-shrink: 0; font-weight: 600; }
+.top-bar-head .refresh-btn { margin-left: auto; }
+.hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Modal — centered overlay (replaces .drawer-backdrop + margin-top hack) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modal-panel {
+  width: min(480px, 100%);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+}
+.modal-panel-wide { width: min(560px, 100%); }
+.modal-panel h3   { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.modal-actions    { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal-form-row   { margin-bottom: 12px; }
+.modal-alert {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.modal-alert-warn    { background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3); }
+.modal-alert-danger  { background: rgba(239,68,68,.1);  border: 1px solid rgba(239,68,68,.3); }
+.modal-alert-success { background: rgba(16,185,129,.1); border: 1px solid rgba(16,185,129,.3); }
+.modal-target {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.modal-target code { font-size: 11px; }
+
+/* Drawer section refinement — tighter than existing .drawer-section */
+.drawer-section { margin-bottom: 12px; }
+.drawer-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
