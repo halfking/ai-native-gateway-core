@@ -781,6 +781,7 @@ func main() {
 
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
+	var brokenProbeReviver *bg.BrokenProbeReviver
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
 	var pendingSweeper *bg.PendingSweeper
@@ -806,6 +807,9 @@ func main() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
 		slog.Info("CHECKPOINT: credRecovery started")
+		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
+		brokenProbeReviver.Start(context.Background())
+		slog.Info("CHECKPOINT: brokenProbeReviver started")
 		// Track C C6 (2026-06-18): pending entry sweeper. Marks
 		// abandoned in_progress entries (e.g. a crashed async
 		// goroutine, a client that never polls) as failed so
@@ -1343,6 +1347,9 @@ func main() {
 	}
 	if credRecovery != nil {
 		credRecovery.Stop()
+	}
+	if brokenProbeReviver != nil {
+		brokenProbeReviver.Stop()
 	}
 	if pendingSweeper != nil {
 		pendingSweeper.Stop()
