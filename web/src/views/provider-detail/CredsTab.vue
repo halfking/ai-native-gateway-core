@@ -9,6 +9,7 @@ import {
   getCredentialFpSlotStats, type FpSlotStats,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
+import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 
 const props = defineProps<{
   provider: any
@@ -568,51 +569,14 @@ function onTagsInput(ev: Event) {
           </div>
 
           <div v-if="fpSlotStats" class="drawer-section">
-            <div class="drawer-section-title">指纹槽详细状态</div>
+            <div class="drawer-section-title">指纹槽位图</div>
             <div v-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
-            <div v-else>
-              <div class="fp-slot-summary">
-                <div class="fp-slot-stat">
-                  <div class="fp-slot-stat-label">总槽位数</div>
-                  <div class="fp-slot-stat-value">{{ fpSlotStats.slot_limit }}</div>
-                </div>
-                <div class="fp-slot-stat">
-                  <div class="fp-slot-stat-label">已占用</div>
-                  <div class="fp-slot-stat-value">{{ fpSlotStats.occupied_slots }}</div>
-                </div>
-                <div class="fp-slot-stat">
-                  <div class="fp-slot-stat-label">空闲</div>
-                  <div class="fp-slot-stat-value" :class="{ 'fp-slot-stat-value--danger': (fpSlotStats.free_slots ?? 0) === 0 }">
-                    {{ fpSlotStats.free_slots }}
-                  </div>
-                </div>
-              </div>
-              <div v-if="fpSlotStats.details && fpSlotStats.details.length" class="fp-slot-list">
-                <div class="fp-slot-list-header">
-                  <span>槽位</span>
-                  <span>Holder</span>
-                  <span>剩余 TTL</span>
-                </div>
-                <div
-                  v-for="d in fpSlotStats.details"
-                  :key="d.index"
-                  class="fp-slot-list-row"
-                  :class="{ 'fp-slot-list-row--empty': d.expired && !d.holder }"
-                >
-                  <span class="fp-slot-list-index">#{{ d.index }}</span>
-                  <span class="fp-slot-list-holder">
-                    <code v-if="d.holder">{{ holderShort(d.holder) }}</code>
-                    <span v-else class="cell-muted">空闲</span>
-                  </span>
-                  <span class="fp-slot-list-ttl" :class="{ 'cell-sub--danger': d.expired }">
-                    {{ d.expired && !d.holder ? '—' : fmtTtl(d.ttl_seconds) }}
-                  </span>
-                </div>
-              </div>
-              <div v-if="fpSlotStats.holders && fpSlotStats.holders.length" class="cell-sub fp-slot-holders-hint">
-                共 {{ fpSlotStats.holders.length }} 个会话占用此凭据的指纹池
-              </div>
-            </div>
+            <FpSlotVisualizer
+              v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
+              :details="fpSlotStats.details"
+              :slot-limit="fpSlotStats.slot_limit"
+            />
+            <div v-else-if="fpSlotStats.details" class="cell-muted">无槽位数据</div>
           </div>
 
           <div class="drawer-section drawer-section--danger">
