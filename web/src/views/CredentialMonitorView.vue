@@ -3,6 +3,8 @@ import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+import SegTabs, { type SegTab } from '../components/SegTabs.vue'
+import StatusBadge from '../components/StatusBadge.vue'
 
 Chart.register(...registerables)
 
@@ -13,6 +15,28 @@ const selectedModel = ref('')
 const windowEntries = ref<CallEntry[]>([])
 const windowSource = ref<'redis' | 'request_logs'>('redis')
 const windowLoading = ref(false)
+
+// ── 2026-06-23: 详情页 4-tab 化重构 ────────────────────────────────────
+// 4 tab = 概览 / 模型 / 监控 / 历史. 抽到 view-local const 不入 store,
+// 因为只有 drawer 内需要,生命周期 = drawer open.
+type DetailTab = 'overview' | 'models' | 'monitoring' | 'history'
+const detailActiveTab = ref<DetailTab>('overview')
+const detailTabs: SegTab[] = [
+  { value: 'overview',   label: '概览' },
+  { value: 'models',     label: '模型可用性' },
+  { value: 'monitoring', label: '监控' },
+  { value: 'history',    label: '历史' },
+]
+// 切 tab 时也把 selectedModel 重置 (历史 tab 仍可看),避免混乱.
+watch(detailActiveTab, (newTab) => {
+  if (newTab !== 'monitoring' && newTab !== 'history') {
+    // keep selectedModel — 监控/历史 tab 仍依赖
+  }
+})
+// 打开 detail 时默认到第一个 tab
+watch(selectedCred, (newVal) => {
+  if (newVal) detailActiveTab.value = 'overview'
+})
 
 const providerFilter = ref(0)
 const availStateFilter = ref('')
@@ -545,6 +569,16 @@ function rateText(rate: number | null | undefined) {
   return (rate * 100).toFixed(1) + '%'
 }
 
+// 🆕 2026-06-23: 延迟 P95 色阶 (用于模型可用性表).
+//   <500ms 绿 / 500-1500ms 琥珀 / >1500ms 红 / null 不染色.
+// 阈值参考 credentialhealth 默认配置和 llm-gateway-go 实测分布.
+function p95Class(ms: number | null | undefined) {
+  if (ms == null) return ''
+  if (ms < 500) return 'p95-good'
+  if (ms < 1500) return 'p95-warn'
+  return 'p95-bad'
+}
+
 onMounted(() => load())
 
 onUnmounted(() => {
@@ -703,6 +737,20 @@ onUnmounted(() => {
             <div class="drawer-sub">{{ selectedCred.provider_name }}</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
+            <!-- 🆕 2026-06-23: 整凭据 manual_disabled drawer 入口 (一键禁用/解除).
+                 之前必须切到 Provider 详情页 / CredsTab 才能改, 现在抽屉内直接可点. -->
+            <button
+              v-if="selectedCred.manual_disabled"
+              class="btn btn-xs btn-warning"
+              title="解除整凭据禁用"
+              @click="openClearDisabledDialog"
+            >🔓 解除禁用</button>
+            <button
+              v-else
+              class="btn btn-xs btn-danger"
+              title="手动禁用此凭据 (路由时将不被选中)"
+              @click="openSetManualDisabledDialog(true)"
+            >⛔ 手动禁用</button>
             <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
               <input type="checkbox" :checked="detailAutoRefresh" @change="toggleDetailAutoRefresh" />
               自动刷新
@@ -719,225 +767,208 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- 🆕 2026-06-23: 4-tab segmented tabs 容器 (复用 RoutingDashboardView 的 .seg-tabs 风格) -->
+        <div style="padding:8px 16px 0;display:flex;align-items:center;gap:8px">
+          <SegTabs v-model="detailActiveTab" :tabs="detailTabs" />
+          <span class="cell-sub" style="margin-left:auto">
+            凭据 ID: <code class="mono-sm">{{ selectedCred.id }}</code>
+          </span>
+        </div>
+
         <div class="drawer-body">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <!-- Left column: status + model table -->
-            <div>
-              <div class="drawer-section">
-                <div class="drawer-section-title">状态概览</div>
-                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
-                  <div>
-                    <label class="field-label">可用性</label>
-                    <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
-                  </div>
-                  <div>
-                    <label class="field-label">健康</label>
-                    <span class="badge" :class="healthBadge(selectedCred.health_status)">{{ selectedCred.health_status }}</span>
-                  </div>
-                  <div>
-                    <label class="field-label">配额</label>
-                    <span>{{ selectedCred.quota_state }}</span>
-                  </div>
-                  <div>
-                    <label class="field-label">连续失败</label>
-                    <span>{{ selectedCred.consecutive_failures }}</span>
-                  </div>
-                  <div>
-                    <label class="field-label">manual_disabled</label>
-                    <span :class="selectedCred.manual_disabled ? 'badge badge-red' : 'badge badge-gray'">
-                      {{ selectedCred.manual_disabled ? 'YES' : 'NO' }}
-                    </span>
-                  </div>
+          <!-- ════════════ Tab 1: 概览 (Overview) ════════════ -->
+          <div v-if="detailActiveTab === 'overview'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="drawer-section">
+              <div class="drawer-section-title">状态概览</div>
+              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+                <div>
+                  <label class="field-label">可用性</label>
+                  <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
                 </div>
-                <div v-if="selectedCred.state_reason_detail" class="cell-sub" style="margin-top:8px">
-                  {{ selectedCred.state_reason_detail }}
+                <div>
+                  <label class="field-label">健康</label>
+                  <span class="badge" :class="healthBadge(selectedCred.health_status)">{{ selectedCred.health_status }}</span>
                 </div>
-                <div v-if="selectedCred.manual_disabled" style="margin-top:8px">
-                  <button class="btn btn-xs btn-warning" @click="openClearDisabledDialog">
-                    🔓 清除 manual_disabled
-                  </button>
+                <div>
+                  <label class="field-label">配额</label>
+                  <span>{{ selectedCred.quota_state }}</span>
+                </div>
+                <div>
+                  <label class="field-label">连续失败</label>
+                  <span>{{ selectedCred.consecutive_failures }}</span>
+                </div>
+                <div>
+                  <label class="field-label">manual_disabled</label>
+                  <span :class="selectedCred.manual_disabled ? 'badge badge-red' : 'badge badge-gray'">
+                    {{ selectedCred.manual_disabled ? 'YES' : 'NO' }}
+                  </span>
+                </div>
+                <div>
+                  <label class="field-label">总请求数</label>
+                  <span class="mono-sm">{{ selectedCred.total_requests }}</span>
                 </div>
               </div>
-
-              <div class="drawer-section">
-                <div class="drawer-section-title">并发限流</div>
-                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-                  <div>
-                    <label class="field-label">手动</label>
-                    <div>{{ selectedCred.concurrency_limit || '未设置' }}</div>
-                  </div>
-                  <div>
-                    <label class="field-label">自动</label>
-                    <div>{{ selectedCred.concurrency_limit_auto || '未设置' }}</div>
-                  </div>
-                  <div>
-                    <label class="field-label">生效</label>
-                    <div class="badge badge-blue">{{ selectedCred.effective_concurrency }}</div>
-                  </div>
-                </div>
-                <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-                  <button class="btn btn-sm" @click="openConcurrencyDialog">调整自动值</button>
-                  <button class="btn btn-sm btn-danger" @click="openDemoteDialog">临时降级</button>
-                  <button class="btn btn-sm btn-success" @click="openPromoteDialog">恢复上线</button>
-                </div>
-              </div>
-
-              <!-- Model availability table -->
-              <div class="drawer-section">
-                <div class="drawer-section-title">模型可用性 ({{ (selectedCred.models || []).length }})</div>
-                <div v-if="!(selectedCred.models || []).length" class="cell-muted">无模型</div>
-                <div v-else style="overflow-x:auto">
-                  <table class="model-table">
-                    <thead>
-                      <tr>
-                        <th>模型</th>
-                        <th>probe</th>
-                        <th>成功率</th>
-                        <th>样本</th>
-                        <th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
-                          :class="{ 'model-row-selected': m.raw_model_name === selectedModel }"
-                          @click="selectModel(m.raw_model_name)">
-                        <td>
-                          <code class="mono-sm">{{ m.raw_model_name }}</code>
-                          <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
-                        </td>
-                        <td><span class="badge" :class="probeBadge(m.probe_state)">{{ m.probe_state }}</span></td>
-                        <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
-                        <td class="cell-sub">{{ m.recent_samples }}</td>
-                        <td @click.stop>
-                          <button
-                            v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
-                            class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                            :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
-                            @click="openToggleDialog(m, 'offline')"
-                          >🔴 下线</button>
-                          <button
-                            v-else-if="m.binding_unavailable_reason === 'manual_offline'"
-                            class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                            title="恢复后下一轮自动探测（~10 min）会重新评估"
-                            @click="openToggleDialog(m, 'online')"
-                          >🟢 上线</button>
-                          <span
-                            v-else
-                            class="cell-muted"
-                            :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
-                          >auto</span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div class="cell-sub" style="margin-top:4px">点击模型行查看其滑动窗口 →</div>
-                </div>
+              <div v-if="selectedCred.state_reason_detail" class="cell-sub" style="margin-top:8px">
+                {{ selectedCred.state_reason_detail }}
               </div>
             </div>
 
-            <!-- Right column: sliding window + error pie -->
-            <div>
-              <div class="drawer-section">
-                <div class="drawer-section-title">
-                  滑动窗口 (最近 1 小时)
-                  <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
-                    {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
-                  </span>
+            <div class="drawer-section">
+              <div class="drawer-section-title">并发限流</div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+                <div>
+                  <label class="field-label">手动</label>
+                  <div>{{ selectedCred.concurrency_limit || '未设置' }}</div>
                 </div>
-                <div v-if="!selectedModel" class="cell-muted">点击左侧模型查看</div>
-                <div v-else>
-                  <div style="margin-bottom:8px">
-                    <label class="field-label">模型:</label>
-                    <code class="mono-sm">{{ selectedModel }}</code>
-                  </div>
-                  <div v-if="windowLoading">加载中...</div>
-                  <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
-                  <div v-else>
-                    <div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0">
-                      <div
-                        v-for="(e, i) in windowEntries.slice(0, 100)"
-                        :key="i"
-                        :style="{
-                          width: '4px',
-                          height: '40px',
-                          background: e.ok ? '#10b981' : '#ef4444',
-                          opacity: 0.8,
-                        }"
-                        :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
-                      ></div>
-                    </div>
-                    <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;flex-wrap:wrap">
-                      <span>总计: {{ windowEntries.length }}</span>
-                      <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
-                      <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
-                      <span>失败率: {{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</span>
-                    </div>
-                  </div>
+                <div>
+                  <label class="field-label">自动</label>
+                  <div>{{ selectedCred.concurrency_limit_auto || '未设置' }}</div>
+                </div>
+                <div>
+                  <label class="field-label">生效</label>
+                  <div class="badge badge-blue">{{ selectedCred.effective_concurrency }}</div>
                 </div>
               </div>
-
-              <div class="drawer-section">
-                <div class="drawer-section-title">错误分布</div>
-                <div style="height:200px;position:relative">
-                  <canvas id="errorPieChart"></canvas>
-                </div>
+              <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+                <button class="btn btn-sm" @click="openConcurrencyDialog">调整自动值</button>
+                <button class="btn btn-sm btn-danger" @click="openDemoteDialog">临时降级</button>
+                <button class="btn btn-sm btn-success" @click="openPromoteDialog">恢复上线</button>
               </div>
+            </div>
+          </div>
 
-              <div class="drawer-section">
-                <div class="drawer-section-title" style="display:flex;align-items:center;gap:8px">
-                  状态变化历史
-                  <span v-if="historyEvents.length" class="cell-sub">({{ historyEvents.length }})</span>
-                  <button
-                    class="btn btn-xs btn-ghost"
-                    :disabled="historyLoading || !selectedModel"
-                    style="margin-left:auto"
-                    @click="loadHistory"
-                  >↻ 刷新</button>
-                </div>
-                <div v-if="!selectedModel" class="cell-muted">点击模型查看</div>
-                <div v-else-if="historyLoading">加载中...</div>
-                <div v-else-if="!historyEvents.length" class="cell-muted">无状态变化记录</div>
-                <table v-else class="history-table">
+          <!-- ════════════ Tab 2: 模型可用性 (Models) ════════════ -->
+          <div v-else-if="detailActiveTab === 'models'">
+            <div class="drawer-section">
+              <div class="drawer-section-title">
+                模型可用性 ({{ (selectedCred.models || []).length }})
+                <span class="cell-sub" style="margin-left:8px">点击行联动查看滑动窗口</span>
+              </div>
+              <div v-if="!(selectedCred.models || []).length" class="cell-muted">无模型</div>
+              <div v-else style="overflow-x:auto">
+                <table class="model-table">
                   <thead>
                     <tr>
-                      <th>时间</th>
+                      <th>模型</th>
+                      <th>总状态</th>
+                      <th>可用</th>
                       <th>来源</th>
-                      <th>事件</th>
-                      <th>详情</th>
+                      <th>延迟 P95</th>
+                      <th>成功率</th>
+                      <th>样本</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(ev, i) in historyEvents" :key="i" :class="`hist-${ev.event}`">
-                      <td class="mono-sm">{{ formatTs(ev.ts) }}</td>
+                    <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
+                        :class="{
+                          'model-row-selected': m.raw_model_name === selectedModel,
+                          'model-row-declared': m.data_source === 'declared',
+                        }"
+                        :title="m.model_disabled_reason || ''"
+                        @click="selectModel(m.raw_model_name)">
                       <td>
-                        <span
-                          v-if="ev.source === 'auto'"
-                          class="badge"
-                          :class="ev.event === 'broke' ? 'badge-red' : 'badge-green'"
-                        >自动 · {{ ev.triggered_by || 'scheduler' }}</span>
+                        <code class="mono-sm">{{ m.raw_model_name }}</code>
+                        <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
+                      </td>
+                      <td>
+                        <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
+                      </td>
+                      <td>
+                        <span v-if="m.offer_available && m.binding_available" style="color:var(--success)">✓</span>
+                        <span v-else style="color:var(--danger)">✗</span>
+                      </td>
+                      <td>
+                        <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
+                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
+                          {{ m.total_calls }}次
+                        </span>
+                      </td>
+                      <td>
+                        <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
+                        <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
+                          {{ m.p95_latency_ms }}ms
+                          <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
+                        </span>
+                      </td>
+                      <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
+                      <td class="cell-sub">{{ m.recent_samples }}</td>
+                      <td @click.stop>
+                        <button
+                          v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
+                          class="btn btn-xs btn-ghost"
+                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                          :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
+                          @click="openToggleDialog(m, 'offline')"
+                        >🔴 下线</button>
+                        <button
+                          v-else-if="m.binding_unavailable_reason === 'manual_offline'"
+                          class="btn btn-xs btn-ghost"
+                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                          title="恢复后下一轮自动探测（~10 min）会重新评估"
+                          @click="openToggleDialog(m, 'online')"
+                        >🟢 上线</button>
                         <span
                           v-else
-                          class="badge"
-                          :class="ev.event === 'offline' ? 'badge-red' : 'badge-green'"
-                        >手动 · {{ ev.actor || 'admin' }}</span>
-                      </td>
-                      <td><code class="mono-sm">{{ ev.event }}</code></td>
-                      <td class="cell-sub">
-                        <template v-if="ev.source === 'auto' && ev.error_code">
-                          {{ ev.error_code }}{{ ev.http_status ? ' (' + ev.http_status + ')' : '' }}
-                        </template>
-                        <template v-else-if="ev.reason">{{ ev.reason }}</template>
-                        <template v-else>—</template>
+                          class="cell-muted"
+                          :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
+                        >auto</span>
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </div>
+          </div>
 
-            <!-- Fingerprint slot visualization (2026-06-23) -->
+          <!-- ════════════ Tab 3: 监控 (Monitoring) ════════════ -->
+          <div v-else-if="detailActiveTab === 'monitoring'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="drawer-section">
+              <div class="drawer-section-title">
+                滑动窗口 (最近 1 小时)
+                <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
+                  {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                </span>
+              </div>
+              <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
+              <div v-else>
+                <div style="margin-bottom:8px">
+                  <label class="field-label">模型:</label>
+                  <code class="mono-sm">{{ selectedModel }}</code>
+                </div>
+                <div v-if="windowLoading">加载中...</div>
+                <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
+                <div v-else>
+                  <div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0">
+                    <div
+                      v-for="(e, i) in windowEntries.slice(0, 100)"
+                      :key="i"
+                      :style="{
+                        width: '4px',
+                        height: '40px',
+                        background: e.ok ? '#10b981' : '#ef4444',
+                        opacity: 0.8,
+                      }"
+                      :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
+                    ></div>
+                  </div>
+                  <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;flex-wrap:wrap">
+                    <span>总计: {{ windowEntries.length }}</span>
+                    <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
+                    <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
+                    <span>失败率: {{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-section">
+              <div class="drawer-section-title">错误分布</div>
+              <div style="height:200px;position:relative">
+                <canvas id="errorPieChart"></canvas>
+              </div>
+            </div>
+
             <div class="drawer-section" style="grid-column:1 / -1">
               <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
                 <span>并发槽位与指纹分配</span>
@@ -955,8 +986,61 @@ onUnmounted(() => {
               />
               <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
             </div>
+          </div>
 
-            <!-- Routing decisions for this credential (2026-06-23) -->
+          <!-- ════════════ Tab 4: 历史 (History) ════════════ -->
+          <div v-else-if="detailActiveTab === 'history'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="drawer-section">
+              <div class="drawer-section-title" style="display:flex;align-items:center;gap:8px">
+                状态变化历史
+                <span v-if="historyEvents.length" class="cell-sub">({{ historyEvents.length }})</span>
+                <button
+                  class="btn btn-xs btn-ghost"
+                  :disabled="historyLoading || !selectedModel"
+                  style="margin-left:auto"
+                  @click="loadHistory"
+                >↻ 刷新</button>
+              </div>
+              <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
+              <div v-else-if="historyLoading">加载中...</div>
+              <div v-else-if="!historyEvents.length" class="cell-muted">无状态变化记录</div>
+              <table v-else class="history-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>来源</th>
+                    <th>事件</th>
+                    <th>详情</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(ev, i) in historyEvents" :key="i" :class="`hist-${ev.event}`">
+                    <td class="mono-sm">{{ formatTs(ev.ts) }}</td>
+                    <td>
+                      <span
+                        v-if="ev.source === 'auto'"
+                        class="badge"
+                        :class="ev.event === 'broke' ? 'badge-red' : 'badge-green'"
+                      >自动 · {{ ev.triggered_by || 'scheduler' }}</span>
+                      <span
+                        v-else
+                        class="badge"
+                        :class="ev.event === 'offline' ? 'badge-red' : 'badge-green'"
+                      >手动 · {{ ev.actor || 'admin' }}</span>
+                    </td>
+                    <td><code class="mono-sm">{{ ev.event }}</code></td>
+                    <td class="cell-sub">
+                      <template v-if="ev.source === 'auto' && ev.error_code">
+                        {{ ev.error_code }}{{ ev.http_status ? ' (' + ev.http_status + ')' : '' }}
+                      </template>
+                      <template v-else-if="ev.reason">{{ ev.reason }}</template>
+                      <template v-else>—</template>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
             <div class="drawer-section" style="grid-column:1 / -1">
               <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
                 <span>最近路由决策 (50条)</span>
@@ -1380,6 +1464,38 @@ onUnmounted(() => {
 }
 .model-row-selected {
   background: rgba(99, 102, 241, 0.12) !important;
+}
+
+/* 🆕 2026-06-23: declared 模型行置灰 (从未被路由实际调用) */
+.model-row-declared {
+  opacity: 0.55;
+}
+.model-row-declared:hover {
+  opacity: 0.85;
+}
+
+/* 🆕 2026-06-23: 延迟 P95 色阶 (基于 ms 阈值) */
+.p95-good { color: var(--success); font-weight: 600; }
+.p95-warn { color: var(--warning); font-weight: 600; }
+.p95-bad  { color: var(--danger); font-weight: 600; }
+
+/* 🆕 2026-06-23: 数据来源 chip (live / declared) */
+.source-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.source-live {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--success);
+}
+.source-declared {
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--muted);
 }
 
 .mono-sm {

@@ -129,12 +129,34 @@ type CredentialModelStatus struct {
 	BindingAvailable         bool    `json:"binding_available"`
 	BindingUnavailableReason *string `json:"binding_unavailable_reason,omitempty"`
 	// ProbeState: 'broken_confirmed' | 'healthy_confirmed' | 'recovering' | 'unknown' (no row).
-	ProbeState         string   `json:"probe_state"`
-	ProbeLastStatus    *string  `json:"probe_last_status,omitempty"`
-	ProbeLastAttemptAt *string  `json:"probe_last_attempt_at,omitempty"`
+	ProbeState         string  `json:"probe_state"`
+	ProbeLastStatus    *string `json:"probe_last_status,omitempty"`
+	ProbeLastAttemptAt *string `json:"probe_last_attempt_at,omitempty"`
 	RecentSuccessRate  *float64 `json:"recent_success_rate,omitempty"`
-	RecentSamples      int      `json:"recent_samples"`
+	RecentSamples      int     `json:"recent_samples"`
+	// 🆕 2026-06-23 credentials 详情页 4-tab 重构。
+	// P95LatencyMs: 优先 bg_rollup (5min), live_recent (3h) 兜底; no_data 时为 nil.
+	// P95Source: 标注 P95 计算来源,前端据此显示 "bg / live / N/A".
+	// DataSource: "live" (24h 内实际被调用过) 或 "declared" (从未调用).
+	// LastUsedAt: 最近一次调用时间 (24h 窗口).
+	// TotalCalls: 24h 内调用次数.
+	// EffectiveState: 派生 5 状态,优先级 manual_disabled > probe_broken > offer_missing > binding_missing > available.
+	// ModelDisabledReason: 人类可读的禁用原因 (manual / probe / offer / binding).
+	P95LatencyMs   *int   `json:"p95_latency_ms,omitempty"`
+	AvgLatencyMs   *int   `json:"avg_latency_ms,omitempty"`
+	P95Source      string `json:"p95_source"`
+	DataSource     string `json:"data_source"`
+	LastUsedAt     *string `json:"last_used_at,omitempty"`
+	TotalCalls     int64  `json:"total_calls"`
+	EffectiveState string `json:"effective_state"`
+	ModelDisabledReason string `json:"model_disabled_reason,omitempty"`
 }
+
+// monitorSummarySchemaVersion is bumped whenever the monitor-summary response
+// shape changes. The in-memory cache uses the version as part of the key, so
+// older cached responses (with the previous schema) are automatically
+// ignored after a redeploy — no manual flush needed.
+const monitorSummarySchemaVersion = 2
 
 // WindowStats aggregates recent sliding window data.
 type WindowStats struct {
@@ -169,7 +191,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
 	// LATERAL success-rate join is the heaviest part. Cache key excludes
 	// nothing but provider_id (the only variable input).
-	cacheKey := fmt.Sprintf("p%d", providerID)
+	cacheKey := fmt.Sprintf("p%d:v%d", providerID, monitorSummarySchemaVersion)
 	if cached, ok := monitorSummaryCache.get(cacheKey); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
@@ -213,7 +235,19 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						mps.last_status AS probe_last_status,
 						mps.last_attempt_at AS probe_last_attempt_at,
 						rsr.rate   AS recent_success_rate,
-						COALESCE(rsr.samples, 0) AS recent_samples
+						COALESCE(rsr.samples, 0) AS recent_samples,
+						-- 🆕 2026-06-23: P95 (bg_rollup 优先, live_recent 兜底)
+						COALESCE(cmi.p95_latency_ms, live.p95_live) AS p95_latency_ms,
+						live.avg_live AS avg_latency_ms,
+						CASE
+							WHEN cmi.p95_latency_ms IS NOT NULL THEN 'bg_rollup'
+							WHEN live.p95_live IS NOT NULL THEN 'live_recent'
+							ELSE 'no_data'
+						END AS p95_source,
+						-- DataSource: live (24h 内被调用过) / declared (从未调用)
+						CASE WHEN ch.raw_model IS NOT NULL THEN 'live' ELSE 'declared' END AS data_source,
+						ch.last_called_at AS last_used_at,
+						COALESCE(ch.total_calls, 0) AS total_calls
 					FROM model_offers mo
 					LEFT JOIN credential_model_bindings cmb
 						ON cmb.credential_id = mo.credential_id
@@ -221,6 +255,32 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 					LEFT JOIN model_probe_state mps
 						ON mps.credential_id = mo.credential_id
 					   AND mps.raw_model_name = mo.raw_model_name
+					-- P95: bg rollup (5min bucket, latest 1) - main hot path
+					LEFT JOIN LATERAL (
+						SELECT p95_latency_ms, bucket
+						FROM credential_model_index
+						WHERE credential_id = c.id AND raw_model = mo.raw_model_name
+						ORDER BY bucket DESC LIMIT 1
+					) cmi ON true
+					-- P95 live: percentile_cont 3h window fallback
+					LEFT JOIN LATERAL (
+						SELECT
+							percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
+							AVG(latency_ms)::int AS avg_live
+						FROM request_logs
+						WHERE credential_id = c.id
+						  AND lower(COALESCE(outbound_model, client_model)) = lower(mo.raw_model_name)
+						  AND ts > NOW() - INTERVAL '3 hours'
+						  AND latency_ms IS NOT NULL
+					) live ON true
+					-- Last used + total calls: 24h credential_model_call_history
+					LEFT JOIN (
+						SELECT raw_model, MAX(window_start) AS last_called_at, SUM(total_calls) AS total_calls
+						FROM credential_model_call_history
+						WHERE credential_id = c.id
+						  AND window_start > NOW() - INTERVAL '24 hours'
+						GROUP BY raw_model
+					) ch ON ch.raw_model = mo.raw_model_name
 					CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
 					WHERE mo.credential_id = c.id
 					ORDER BY COALESCE(rsr.samples, 0) DESC, mo.raw_model_name
@@ -287,6 +347,13 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 				}
 			}
 			// probe_last_attempt_at comes through as a string in the JSON; keep as-is.
+			// 🆕 2026-06-23: 派生 effective_state (5 状态) + model_disabled_reason.
+			ms.EffectiveState = deriveModelEffectiveState(ms, s.ManualDisabled)
+			ms.ModelDisabledReason = humanizeDisabledReason(ms)
+			// 把 last_used_at 标准化成 RFC3339 字符串 (PG TIMESTAMPTZ 进来是 string, 但要稳).
+			if ms.LastUsedAt != nil && *ms.LastUsedAt != "" {
+				// pgx 已经把 timestamptz scan 成 RFC3339Nano, 直接保留.
+			}
 		}
 		s.AggregatedSuccessRate = minRate
 
@@ -1276,4 +1343,66 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		"success": true,
 		"message": fmt.Sprintf("manual_disabled %s for credential %d", statusText, req.CredentialID),
 	})
+}
+
+// deriveModelEffectiveState computes the 5-state effective_state for a model
+// row in monitor-summary. Priority (first match wins):
+//   1. credentialManualDisabled || (binding_unavailable_reason == 'manual_offline')
+//      → "manual_disabled"
+//   2. probe_state == "broken_confirmed"
+//      → "probe_broken"
+//   3. offer_available == false
+//      → "offer_missing"
+//   4. binding_available == false
+//      → "binding_missing"
+//   5. default
+//      → "available"
+//
+// 🆕 2026-06-23 credentials 详情页 4-tab 重构: 详情页模型可用性表用此值显示
+// 统一 status badge,避免前端重复拼装状态机。
+func deriveModelEffectiveState(ms *CredentialModelStatus, credentialManualDisabled bool) string {
+	if credentialManualDisabled {
+		return "manual_disabled"
+	}
+	if ms.BindingUnavailableReason != nil && *ms.BindingUnavailableReason == "manual_offline" {
+		return "manual_disabled"
+	}
+	if ms.ProbeState == "broken_confirmed" {
+		return "probe_broken"
+	}
+	if !ms.OfferAvailable {
+		return "offer_missing"
+	}
+	if !ms.BindingAvailable {
+		return "binding_missing"
+	}
+	return "available"
+}
+
+// humanizeDisabledReason converts the model state into a Chinese operator-readable
+// reason string. Returns "" when the model is fully available (no need to explain).
+//
+// 优先级与 deriveModelEffectiveState 一致 — 前端 hover tooltip 用。
+func humanizeDisabledReason(ms *CredentialModelStatus) string {
+	if ms.BindingUnavailableReason != nil && *ms.BindingUnavailableReason == "manual_offline" {
+		return "管理员手动下线"
+	}
+	switch ms.EffectiveState {
+	case "manual_disabled":
+		return "整凭据被禁用"
+	case "probe_broken":
+		return "探测失败 (broken_confirmed)"
+	case "offer_missing":
+		if ms.OfferUnavailableReason != nil && *ms.OfferUnavailableReason != "" {
+			return "Offer 不可用: " + *ms.OfferUnavailableReason
+		}
+		return "Offer 缺失"
+	case "binding_missing":
+		if ms.BindingUnavailableReason != nil && *ms.BindingUnavailableReason != "" {
+			return "Binding 不可用: " + *ms.BindingUnavailableReason
+		}
+		return "Binding 缺失"
+	default:
+		return ""
+	}
 }

@@ -43,7 +43,32 @@ export interface CredentialModelStatus {
   probe_last_attempt_at?: string | null
   recent_success_rate?: number | null
   recent_samples: number
+  // ── 2026-06-23 credentials 详情页 4-tab 重构 ─────────────────────────
+  // 延迟 P95 (ms) — 来源 bg_rollup (5min) > live_recent (3h percentile_cont)
+  p95_latency_ms?: number | null
+  // 平均延迟 (ms) — 3h live AVG
+  avg_latency_ms?: number | null
+  // P95 计算来源 — 'bg_rollup' | 'live_recent' | 'no_data'
+  p95_source: string
+  // 数据来源 — 'live' (24h 内被实际调用过) | 'declared' (从未调用)
+  data_source: 'live' | 'declared'
+  // 最近一次调用时间 (RFC3339, 24h 窗口)
+  last_used_at?: string | null
+  // 24h 内调用次数
+  total_calls: number
+  // 派生 5 状态 — 详情页模型可用性表的核心显示字段
+  // 'available' | 'manual_disabled' | 'probe_broken' | 'offer_missing' | 'binding_missing'
+  effective_state: ModelEffectiveState
+  // 人类可读的禁用原因 (中文),前端 hover tooltip 用
+  model_disabled_reason?: string
 }
+
+export type ModelEffectiveState =
+  | 'available'
+  | 'manual_disabled'
+  | 'probe_broken'
+  | 'offer_missing'
+  | 'binding_missing'
 
 export interface WindowStats {
   total: number
