@@ -37,14 +37,14 @@ func streamSourceServer(t *testing.T, chunks []string) string {
 	return upstream.URL
 }
 
-// TestStreamAnthropicSSE_SplitsEmbeddedThink covers the realistic
+// TestStreamOpenAIToAnthropicSSE_SplitsEmbeddedThink covers the realistic
 // minimax upstream shape: the OpenAI `delta.content` field contains
 // `<think>...</think>` followed by the visible answer. After
 // processing, the forwarded Anthropic SSE stream MUST contain an
 // independent thinking content_block (start+delta+stop at index 0)
 // AND an independent text content_block (start+delta+stop at index 1)
 // with the post-thinking text.
-func TestStreamAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
+func TestStreamOpenAIToAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"<think>"}}]}`,
 		`{"choices":[{"index":0,"delta":{"content":"plan step by step"}}]}`,
@@ -62,7 +62,7 @@ func TestStreamAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
 
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "minimax-m3", "MiniMax-M3", "req-split", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "minimax-m3", "MiniMax-M3", "req-split", capture, nil)
 
 	body := rec.Body.String()
 	type block struct {
@@ -129,8 +129,8 @@ func TestStreamAnthropicSSE_SplitsEmbeddedThink(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_NoThinkForwardsVerbatim covers no-<think> case.
-func TestStreamAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
+// TestStreamOpenAIToAnthropicSSE_NoThinkForwardsVerbatim covers no-<think> case.
+func TestStreamOpenAIToAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"HI"}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
@@ -144,7 +144,7 @@ func TestStreamAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-no", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-no", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"text":"HI"`) {
 		t.Errorf("expected text_delta carrying HI; got:\n%s", body)
@@ -157,9 +157,9 @@ func TestStreamAnthropicSSE_NoThinkForwardsVerbatim(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_ThinkAcrossChunks covers a <think> split
+// TestStreamOpenAIToAnthropicSSE_ThinkAcrossChunks covers a <think> split
 // across multiple upstream chunks.
-func TestStreamAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
+func TestStreamOpenAIToAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"<th"}}]}`,
 		`{"choices":[{"index":0,"delta":{"content":"ink>step 1\nstep 2"}}]}`,
@@ -175,7 +175,7 @@ func TestStreamAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-cross", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-cross", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"thinking":"step 1\nstep 2"`) {
 		t.Errorf("expected thinking_delta with full multi-chunk content; got:\n%s", body)
@@ -188,9 +188,9 @@ func TestStreamAnthropicSSE_ThinkAcrossChunks(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_ThinkOnlyEmptyAfter covers a <think> that
+// TestStreamOpenAIToAnthropicSSE_ThinkOnlyEmptyAfter covers a <think> that
 // captures everything (no visible text after). No trailing empty text block.
-func TestStreamAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
+func TestStreamOpenAIToAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"<think>only thinking</think>"}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`,
@@ -204,7 +204,7 @@ func TestStreamAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-empty", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-empty", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"thinking":"only thinking"`) {
 		t.Errorf("expected thinking_delta; got:\n%s", body)
@@ -217,8 +217,8 @@ func TestStreamAnthropicSSE_ThinkOnlyEmptyAfter(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_EmptyContent covers a stream where no text was emitted.
-func TestStreamAnthropicSSE_EmptyContent(t *testing.T) {
+// TestStreamOpenAIToAnthropicSSE_EmptyContent covers a stream where no text was emitted.
+func TestStreamOpenAIToAnthropicSSE_EmptyContent(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":0}}`,
@@ -232,7 +232,7 @@ func TestStreamAnthropicSSE_EmptyContent(t *testing.T) {
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-nocontent", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-nocontent", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"index":0,"type":"content_block_stop"`) {
 		t.Errorf("expected content_block_stop at index 0; got:\n%s", body)
@@ -242,8 +242,8 @@ func TestStreamAnthropicSSE_EmptyContent(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_UsageAndMessageStop covers message_tail emission.
-func TestStreamAnthropicSSE_UsageAndMessageStop(t *testing.T) {
+// TestStreamOpenAIToAnthropicSSE_UsageAndMessageStop covers message_tail emission.
+func TestStreamOpenAIToAnthropicSSE_UsageAndMessageStop(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"plain answer"}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"end_turn"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`,
@@ -257,7 +257,7 @@ func TestStreamAnthropicSSE_UsageAndMessageStop(t *testing.T) {
 	defer resp.Body.Close()
 	capture := audit.NewStreamCapture()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-tail", capture, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-tail", capture, nil)
 	body := rec.Body.String()
 	if !strings.Contains(body, `"output_tokens":3`) {
 		t.Errorf("message_delta should carry output_tokens; got:\n%s", body)
@@ -270,9 +270,9 @@ func TestStreamAnthropicSSE_UsageAndMessageStop(t *testing.T) {
 	}
 }
 
-// TestStreamAnthropicSSE_PreservesAnthropicEnvelope ensures the
+// TestStreamOpenAIToAnthropicSSE_PreservesAnthropicEnvelope ensures the
 // envelope events are present regardless of split.
-func TestStreamAnthropicSSE_PreservesAnthropicEnvelope(t *testing.T) {
+func TestStreamOpenAIToAnthropicSSE_PreservesAnthropicEnvelope(t *testing.T) {
 	chunks := []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"<think>p</think>\nOK"}}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"end_turn"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`,
@@ -285,7 +285,7 @@ func TestStreamAnthropicSSE_PreservesAnthropicEnvelope(t *testing.T) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	rec := httptest.NewRecorder()
-	StreamAnthropicSSE(rec, resp, "m", "m", "req-env", nil, nil)
+	StreamOpenAIToAnthropicSSE(rec, resp, "m", "m", "req-env", nil, nil)
 	body := rec.Body.String()
 	for _, evt := range []string{
 		"event: message_start",
