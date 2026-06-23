@@ -133,7 +133,7 @@ func Load() *Config {
 		SessionTTLHours:                    168,
 		StreamRetryThreshold:               5,   // Default: allow stream failover if < 5 chunks sent
 		PoolGracePeriod:                    180, // Default: 3 minutes grace period before marking pool as dead
-		DefaultCredentialConcurrency:       5,
+		DefaultCredentialConcurrency:       20,  // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
 		EnableCredentialFpSlots:            true,
 		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — "5 min 内不允许抢的"
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
