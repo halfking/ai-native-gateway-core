@@ -35,7 +35,11 @@ type Handler struct {
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
-	fpSlots     *credentialfpslot.Manager
+	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
+	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
+	// /alerts can read live data from the CandidateFailureMonitor.
+	cfHandlers *candidateFailureHandlers
+	fpSlots    *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -349,13 +353,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
 
-	// 2026-06-23 Phase 2 (P1): candidate_failure_logs query endpoints.
-	// Read-only views for the per-credential/per-model failure log.
+	// 2026-06-23 Phase 2 (P1) + Phase 3 (P2): candidate_failure_logs query
+	// endpoints + alert ring view from the CandidateFailureMonitor.
 	// JWT-auth required (same as /api/routing/*).
-	cfHandlers := &candidateFailureHandlers{db: h.db}
-	mux.HandleFunc("/api/candidate-failures", admin(cfHandlers.listCandidateFailures))
-	mux.HandleFunc("/api/candidate-failures/stats", admin(cfHandlers.getCandidateFailureStats))
-	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(cfHandlers.getCandidateFailuresByCredential))
+	if h.cfHandlers == nil {
+		h.cfHandlers = &candidateFailureHandlers{db: h.db}
+	}
+	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
+	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
+	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))
+	mux.HandleFunc("/api/candidate-failures/alerts", admin(h.cfHandlers.listRecentAlerts))
 	mux.HandleFunc("/api/keys", admin(h.handleKeysRoot))
 	mux.HandleFunc("/api/keys/", admin(h.handleKeys))
 	mux.HandleFunc("/api/key-applications", admin(h.handleKeyApplicationsList))
@@ -600,4 +607,15 @@ func (h *Handler) setDefaultLimits(w http.ResponseWriter, r *http.Request) {
 		"rate_limit_concurrent": req.RateLimitConcurrent,
 		"rate_limit_tpm":        req.RateLimitTPM,
 	})
+}
+
+// SetCandidateFailureHandlers (2026-06-23 Phase 3) wires the alert ring
+// getter onto the handler. Called by main.go right after starting the
+// CandidateFailureMonitor so the /api/candidate-failures/alerts endpoint
+// returns live data.
+func (h *Handler) SetCandidateFailureHandlers(getter func() []bg.CandidateFailureAlert) {
+	if h.cfHandlers == nil {
+		h.cfHandlers = &candidateFailureHandlers{db: h.db}
+	}
+	h.cfHandlers.SetRecentAlerts(getter)
 }
