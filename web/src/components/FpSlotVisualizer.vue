@@ -81,8 +81,7 @@ function isLongHeld(d: SlotDetail | null): boolean {
       <div
         v-for="(d, idx) in grid"
         :key="idx"
-        :class="slotClass(d)"
-        :class="{ 'fp-cell--long': isLongHeld(d) }"
+        :class="[slotClass(d), { 'fp-cell--long': isLongHeld(d) }]"
       >
         <template v-if="d && d.holder">
           <div class="fp-cell-num">#{{ d.index }}</div>
