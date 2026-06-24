@@ -58,6 +58,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
 	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/transport"
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/redis/go-redis/v9"
 )
@@ -359,6 +360,23 @@ func main() {
 		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
+
+			// Path-C wiring (2026-06-24): wrap the IR converter with the
+			// transport layer to enable ExtensionsBag lossless round-trip
+			// (non-standard fields survive OpenAI↔Anthropic conversion) and
+			// circuit-breaker fast-fail. Layered on top of irAdapter so the
+			// inner Parse/Serialize pipeline is unchanged.
+			//
+			// Two-stage rollout:
+			//   - LLM_GATEWAY_IR_CONVERTER=true            → enables IR pipeline
+			//   - LLM_GATEWAY_TRANSPORT_IR=true (additive) → wraps IR with transport
+			//
+			// Both must be true for transport to take effect. Turning off
+			// either reverts to plain irAdapter — no code change needed.
+			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
+				routingExec.IR = transport.NewTransportIRConverter(&irAdapter{})
+				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
+			}
 		}
 
 		// Q3 streaming: openai client -> anthropic upstream. Translates

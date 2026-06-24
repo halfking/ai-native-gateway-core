@@ -43,6 +43,11 @@ type InternalResponse struct {
 
 	// Usage statistics (both protocols have compatible usage fields)
 	Usage ResponseUsage
+
+	// Extensions carries non-standard top-level fields extracted by the
+	// transport layer for lossless round-trip conversion (same semantics as
+	// InternalRequest.Extensions).
+	Extensions map[string]json.RawMessage
 }
 
 // ResponseContentBlock represents a single content element in a response.
