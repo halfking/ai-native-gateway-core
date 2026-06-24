@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sort"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -22,6 +23,10 @@ type Router struct {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
 	}
+	// rrCounter is a round-robin counter for load balancing when multiple
+	// candidates have equal routing scores. Prevents all requests from
+	// always selecting the first candidate in a sorted list.
+	rrCounter atomic.Uint64
 }
 
 func NewRouter(sticky *StickyCache, lim *limiter.Limiter) *Router {
@@ -107,7 +112,18 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		if len(bucket) == 0 {
 			continue
 		}
-		ordered = append(ordered, p2cOrder(bucket, r)...)
+
+		// P2C sort candidates by load
+		sorted := p2cOrder(bucket, r)
+
+		// Apply round-robin rotation when multiple candidates exist
+		// This prevents always selecting the first candidate when scores are equal
+		if len(sorted) > 1 {
+			offset := int(r.rrCounter.Add(1) % uint64(len(sorted)))
+			sorted = rotateCandidates(sorted, offset)
+		}
+
+		ordered = append(ordered, sorted...)
 		tiersUsed++
 		if tiersUsed >= policy.TierFallbackMax {
 			break
@@ -119,6 +135,20 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		ordered = ordered[:maxTotal]
 	}
 	return ordered
+}
+
+// rotateCandidates circularly shifts the candidate slice by offset positions.
+// This ensures fair load distribution when multiple candidates have equal scores.
+func rotateCandidates(cands []provider.Candidate, offset int) []provider.Candidate {
+	if offset == 0 || len(cands) <= 1 {
+		return cands
+	}
+	offset = offset % len(cands)
+	out := make([]provider.Candidate, len(cands))
+	for i := range cands {
+		out[i] = cands[(i+offset)%len(cands)]
+	}
+	return out
 }
 
 func filterAvailable(cands []provider.Candidate) []provider.Candidate {
