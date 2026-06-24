@@ -67,23 +67,37 @@ const (
 // SessionState is the per-session state persisted in L1/L2/L3.
 type SessionState struct {
 	SchemaVersion        int    `json:"v"`
-	LastOutboundHash     string `json:"loh"`  // sha256 hex of last outbound body
-	LastCompressedAt     int64  `json:"lcat"` // unix seconds of last LLM summary
-	MsgCount             int    `json:"mc"`   // outbound message count
-	TokenEstimate        int    `json:"te"`   // outbound token estimate
-	SummaryMarker        string `json:"smm"`  // "smm_v1:<sha256>" or ""
-	RecentlyCompressedAt int64  `json:"rcat"` // unix seconds (60s mutual-exclusion)
+	LastOutboundHash     string `json:"loh"`           // sha256 hex of last outbound body
+	LastCompressedAt     int64  `json:"lcat"`          // unix seconds of last LLM summary
+	MsgCount             int    `json:"mc"`            // outbound message count
+	TokenEstimate        int    `json:"te"`            // outbound token estimate
+	SummaryMarker        string `json:"smm"`           // "smm_v1:<sha256>" or ""
+	RecentlyCompressedAt int64  `json:"rcat"`          // unix seconds (60s mutual-exclusion)
 	ToolsHash            string `json:"th,omitempty"`  // sha256 hex of tools array (Phase 1 optimization)
 	SystemPrompt         string `json:"sys,omitempty"` // cached system prompt (Phase 1 optimization)
 
 	// v4: Full session tracking
-	FullSessionHash      string `json:"fsh,omitempty"` // sha256 of the complete (uncompressed) session body
-	LastStripAt          int64  `json:"lsat,omitempty"` // unix seconds of last tool/thinking strip
-	StripsApplied        int    `json:"sa,omitempty"`   // count of strip operations applied
-	CompletedTasks       int    `json:"ct,omitempty"`   // count of completed tasks detected
-	CompressionMode      string `json:"cm,omitempty"`   // current v4 compression mode: "off"|"delta"|"smart"|"aggressive"
-	MessagesAfterStrip   int    `json:"mas,omitempty"`  // message count after last strip
-	TokensAfterStrip     int    `json:"tas,omitempty"`  // token estimate after last strip
+	FullSessionHash    string `json:"fsh,omitempty"`  // sha256 of the complete (uncompressed) session body
+	LastStripAt        int64  `json:"lsat,omitempty"` // unix seconds of last tool/thinking strip
+	StripsApplied      int    `json:"sa,omitempty"`   // count of strip operations applied
+	CompletedTasks     int    `json:"ct,omitempty"`   // count of completed tasks detected
+	CompressionMode    string `json:"cm,omitempty"`   // current v4 compression mode: "off"|"delta"|"smart"|"aggressive"
+	MessagesAfterStrip int    `json:"mas,omitempty"`  // message count after last strip
+	TokensAfterStrip   int    `json:"tas,omitempty"`  // token estimate after last strip
+
+	// v5: Smart compression cut tracking. When a context_length_exceeded
+	// 4xx triggers smart compression, the CutMarker records WHERE the cut
+	// happened so the next request for the same session can use
+	// [summary + messages_after_cut + new_messages] without re-compressing.
+	// The SummaryText is stored in L1 only (not Redis) to avoid large blobs.
+	HasCutMarker   bool   `json:"hcm,omitempty"` // true when CutMarker fields below are valid
+	CutCreatedAt   int64  `json:"cm_ts,omitempty"`
+	CutSourceMsgs  int    `json:"cm_src,omitempty"`
+	CutSystemMsgs  int    `json:"cm_sys,omitempty"`
+	CutIndex       int    `json:"cm_ci,omitempty"`
+	CutStrategy    string `json:"cm_strat,omitempty"`
+	CutBytesBefore int    `json:"cm_bb,omitempty"`
+	CutBytesAfter  int    `json:"cm_ba,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -360,6 +374,31 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if st.MessagesAfterStrip > 0 {
 		fields = append(fields, "mas", fmt.Sprintf("%d", st.MessagesAfterStrip))
 	}
+	// v5: Smart compression cut marker
+	if st.HasCutMarker {
+		fields = append(fields, "hcm", "1")
+		if st.CutCreatedAt > 0 {
+			fields = append(fields, "cm_ts", fmt.Sprintf("%d", st.CutCreatedAt))
+		}
+		if st.CutSourceMsgs > 0 {
+			fields = append(fields, "cm_src", fmt.Sprintf("%d", st.CutSourceMsgs))
+		}
+		if st.CutSystemMsgs > 0 {
+			fields = append(fields, "cm_sys", fmt.Sprintf("%d", st.CutSystemMsgs))
+		}
+		if st.CutIndex >= 0 {
+			fields = append(fields, "cm_ci", fmt.Sprintf("%d", st.CutIndex))
+		}
+		if st.CutStrategy != "" {
+			fields = append(fields, "cm_strat", st.CutStrategy)
+		}
+		if st.CutBytesBefore > 0 {
+			fields = append(fields, "cm_bb", fmt.Sprintf("%d", st.CutBytesBefore))
+		}
+		if st.CutBytesAfter > 0 {
+			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
+		}
+	}
 	return fields
 }
 
@@ -387,6 +426,15 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CompressionMode = fields["cm"]
 	st.CompletedTasks = int(parseInt(fields["ct"]))
 	st.MessagesAfterStrip = int(parseInt(fields["mas"]))
+	// v5: Smart compression cut marker
+	st.HasCutMarker = fields["hcm"] == "1" || fields["hcm"] == "true"
+	st.CutCreatedAt = parseInt(fields["cm_ts"])
+	st.CutSourceMsgs = int(parseInt(fields["cm_src"]))
+	st.CutSystemMsgs = int(parseInt(fields["cm_sys"]))
+	st.CutIndex = int(parseInt(fields["cm_ci"]))
+	st.CutStrategy = fields["cm_strat"]
+	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
+	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
 	return nil
 }
 
@@ -409,4 +457,52 @@ func BuildSummaryMarker(summaryContent string) string {
 	}
 	h := sha256.Sum256([]byte(prefix))
 	return fmt.Sprintf("%s%x]", CompactionMarkerPrefix, h[:8])
+}
+
+// SetCutMarker stores a CutMarker into the SessionState fields.
+// The SummaryText is preserved for L1 but NOT serialised to Redis
+// (it's too large). Callers should retrieve SummaryText from L1 only.
+func (s *SessionState) SetCutMarker(cm CutMarker) {
+	s.HasCutMarker = true
+	s.CutCreatedAt = cm.CreatedAt
+	s.CutSourceMsgs = cm.SourceMsgCount
+	s.CutSystemMsgs = cm.SystemMsgCount
+	s.CutIndex = cm.CutIndex
+	s.CutStrategy = cm.Strategy
+	s.CutBytesBefore = cm.BytesBefore
+	s.CutBytesAfter = cm.BytesAfter
+	s.SummaryMarker = cm.SummaryMarker
+}
+
+// ToCutMarker reconstructs a CutMarker from SessionState fields.
+// SummaryText is NOT available from Redis (only L1) — callers that need
+// the actual summary text should use the L1-cached body instead.
+func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
+	if s == nil || !s.HasCutMarker {
+		return nil
+	}
+	return &CutMarker{
+		Version:        cutMarkerSchemaVersion,
+		CreatedAt:      s.CutCreatedAt,
+		SourceMsgCount: s.CutSourceMsgs,
+		SystemMsgCount: s.CutSystemMsgs,
+		CutIndex:       s.CutIndex,
+		SummaryMarker:  s.SummaryMarker,
+		Strategy:       s.CutStrategy,
+		BytesBefore:    s.CutBytesBefore,
+		BytesAfter:     s.CutBytesAfter,
+		SummaryText:    summaryText,
+	}
+}
+
+// ClearCutMarker removes any cached cut marker state.
+func (s *SessionState) ClearCutMarker() {
+	s.HasCutMarker = false
+	s.CutCreatedAt = 0
+	s.CutSourceMsgs = 0
+	s.CutSystemMsgs = 0
+	s.CutIndex = 0
+	s.CutStrategy = ""
+	s.CutBytesBefore = 0
+	s.CutBytesAfter = 0
 }

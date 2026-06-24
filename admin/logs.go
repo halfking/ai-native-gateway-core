@@ -161,13 +161,6 @@ const requestLogsDetailCols = requestLogsListCols + `,
 	rl.compression_meta
 `
 
-// requestLogsSelectCols is the historical name kept as a deprecated alias
-// of requestLogsDetailCols so that any out-of-tree caller still compiles.
-// Prefer requestLogsListCols (list) or requestLogsDetailCols (detail).
-//
-// Deprecated: use requestLogsListCols or requestLogsDetailCols explicitly.
-const requestLogsSelectCols = requestLogsDetailCols
-
 const requestLogsJoins = `
 	LEFT JOIN providers p ON p.id = rl.provider_id
 	LEFT JOIN credentials c ON c.id = rl.credential_id
@@ -279,53 +272,14 @@ func scanRequestListRow(rows interface {
 	return l, err
 }
 
-// scanRequestDetailRow scans a row whose SELECT columns match
-// requestLogsDetailCols (the list columns PLUS outbound_body /
-// outbound_msg_hashes / compression_meta). Used by getLog.
-func scanRequestDetailRow(rows interface {
-	Scan(dest ...any) error
-}, withTraceSeq bool) (requestLogRow, error) {
-	var l requestLogRow
-	dest := []any{
-		&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
-		&l.ClientModel, &l.OutboundModel,
-		&l.CredentialID, &l.CredentialLabel,
-		&l.ProviderID, &l.ProviderName, &l.ProviderCode,
-		&l.ClientProfile, &l.RequestMode,
-		&l.PromptTokens, &l.CompletionTokens,
-		&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
-		&l.CostUSD, &l.CostDisplay, &l.CostCurrency, &l.LatencyMs, &l.Success, &l.RequestStatus, &l.ErrorKind, &l.SearchText,
-		&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
-		&l.AffinityHit, &l.RequestChecksum, &l.ResponseChecksum,
-		&l.TransformRuleID, &l.EgressProtocol, &l.FailureStage, &l.FailureDetailCode,
-		&l.UpstreamFinishReason,
-		&l.RequestPreview, &l.TransformSummary, &l.ResponsePreview,
-		&l.StreamFirstChunkMs, &l.StreamChunkCount,
-		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
-		&l.UsageSource,
-		&l.GwSessionID, &l.GwTaskID,
-		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
-		&l.CanonicalName, &l.ProviderModel, &l.CreditsCharged,
-		// v3 session-level outbound body fields (full set incl. JSONB blobs).
-		&l.OutboundBody, &l.OutboundMsgCount, &l.OutboundTokenEst, &l.OutboundMsgHashes,
-		&l.CompressionStrategy, &l.CompressionReason, &l.CompressionMeta, &l.ParentRequestID,
-	}
-	if withTraceSeq {
-		dest = append(dest, &l.TraceSeq)
-	}
-	err := rows.Scan(dest...)
-	return l, err
-}
-
-// scanRequestLogRow is the historical name kept as a deprecated alias of
-// scanRequestDetailRow so that any out-of-tree caller still compiles.
-//
-// Deprecated: use scanRequestListRow (list) or scanRequestDetailRow (detail).
-func scanRequestLogRow(rows interface {
-	Scan(dest ...any) error
-}, withTraceSeq bool) (requestLogRow, error) {
-	return scanRequestDetailRow(rows, withTraceSeq)
-}
+// (scanRequestLogRow / scanRequestDetailRow / requestLogsSelectCols
+// historical aliases removed 2026-06-25: they were unused after the
+// list/detail split and tripped golangci-lint's unused check.
+//   - List path:  scanRequestListRow  + requestLogsListCols
+//   - Detail path: inline Scan in getLog + requestLogsDetailCols
+// The detail path inlines its Scan because it pulls two extra text columns
+// (request_body / response_body) that are not part of requestLogRow.
+// See docs/llm-gateway-go/perf/2026-06-24-request-logs-rollout.md.)
 
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -599,15 +553,17 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CanonicalName,
 		&detail.ProviderModel,
 		&detail.CreditsCharged,
-		// v3 session-level outbound body fields.
-		&detail.OutboundBody,
+		// v3 session-level outbound body summary fields (must mirror
+		// requestLogsDetailCols order: list summary fields FIRST, then the
+		// three JSONB blobs that only the detail drawer needs).
 		&detail.OutboundMsgCount,
 		&detail.OutboundTokenEst,
-		&detail.OutboundMsgHashes,
 		&detail.CompressionStrategy,
 		&detail.CompressionReason,
-		&detail.CompressionMeta,
 		&detail.ParentRequestID,
+		&detail.OutboundBody,
+		&detail.OutboundMsgHashes,
+		&detail.CompressionMeta,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

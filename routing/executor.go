@@ -382,6 +382,12 @@ type Executor struct {
 		GetBool(ctx context.Context, providerID int, key string) (bool, bool)
 		GetInt64(ctx context.Context, providerID int, key string) (int64, bool)
 	}
+
+	// RecoveryCoord (v5, 2026-06-25): session-aware smart recovery coordinator.
+	// When non-nil, context_length_exceeded 4xx recovery uses the smart sliding
+	// window analyzer + session cache integration (incremental compression).
+	// When nil, falls back to the legacy 3-tier recovery (mechanical → memora → llm).
+	RecoveryCoord *compressor.RecoveryCoordinator
 }
 
 func NewExecutor(
@@ -447,6 +453,12 @@ type ExecParams struct {
 	ClientProtocol string
 	SessionKey     string
 	StickyKey      string
+	// SessionID is the X-Gw-Session-Id from the request (may be empty for non-session requests).
+	// 2026-06-25: Used by multi-level sticky routing (L1: session+model).
+	SessionID string
+	// Model is the client-requested model name (after alias resolution).
+	// 2026-06-25: Used by multi-level sticky routing (L2: client+model).
+	Model string
 	// KeyID is the API key ID from keyInfo.ID. Used for per-key concurrent limiting.
 	KeyID int
 	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.EffectiveConcurrent().
