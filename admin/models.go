@@ -169,7 +169,11 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		       mc.updated_at,
 		       COALESCE(NULLIF(TRIM(mf.vendor), ''), ''),
 		       COALESCE(alias_counts.cnt, 0),
-		       COALESCE(offer_counts.cnt, 0)
+		       COALESCE(offer_counts.cnt, 0),
+		       mc.released_at,
+		       mc.strengths,
+		       mc.version_rank,
+		       mc.cost_tier
 		FROM models_canonical mc
 		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN LATERAL (
@@ -192,45 +196,54 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type model struct {
-		ID             int        `json:"id"`
-		CanonicalName  string     `json:"canonical_name"`
-		DisplayName    string     `json:"display_name"`
-		Family         *string    `json:"family"`
-		Vendor         string     `json:"vendor"`
-		Modality       string     `json:"modality"`
-		ContextWindow  *int       `json:"context_window"`
-		ParametersB    *float64   `json:"parameters_b"`
-		Notes          *string    `json:"notes"`
-		Status         string     `json:"status"`
-		DisabledReason *string    `json:"disabled_reason"`
-		Source         *string    `json:"source"`
-		Tags           []string   `json:"tags"`
-		TagsLocked     bool       `json:"tags_locked"`
-		TagsUpdatedAt  *time.Time `json:"tags_updated_at"`
-		UpdatedAt      *time.Time `json:"updated_at"`
-		AliasCount     int        `json:"alias_count"`
-		OfferCount     int        `json:"offer_count"`
-	}
+		type model struct {
+			ID             int        `json:"id"`
+			CanonicalName  string     `json:"canonical_name"`
+			DisplayName    string     `json:"display_name"`
+			Family         *string    `json:"family"`
+			Vendor         string     `json:"vendor"`
+			Modality       string     `json:"modality"`
+			ContextWindow  *int       `json:"context_window"`
+			ParametersB    *float64   `json:"parameters_b"`
+			Notes          *string    `json:"notes"`
+			Status         string     `json:"status"`
+			DisabledReason *string    `json:"disabled_reason"`
+			Source         *string    `json:"source"`
+			Tags           []string   `json:"tags"`
+			TagsLocked     bool       `json:"tags_locked"`
+			TagsUpdatedAt  *time.Time `json:"tags_updated_at"`
+			UpdatedAt      *time.Time `json:"updated_at"`
+			AliasCount     int        `json:"alias_count"`
+			OfferCount     int        `json:"offer_count"`
+			// 新增（需求 #3/#4）：8 维评分相关字段
+			ReleasedAt   *time.Time `json:"released_at"`
+			Strengths    []string   `json:"strengths"`
+			VersionRank  *int       `json:"version_rank"`
+			CostTier     *string    `json:"cost_tier"`
+		}
 	models := make([]model, 0)
 	for rows.Next() {
 		var m model
 		var family *string
 		var dbVendor string
-		if err := rows.Scan(
-			&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
-			&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
-			&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
-			&dbVendor, &m.AliasCount, &m.OfferCount,
-		); err != nil {
+			if err := rows.Scan(
+				&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
+				&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
+				&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
+				&dbVendor, &m.AliasCount, &m.OfferCount,
+				&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
+			); err != nil {
 			slog.Error("listModels scan failed", "error", err)
 			continue
 		}
-		m.Family = family
-		if m.Tags == nil {
-			m.Tags = []string{}
-		}
-		familyID := ""
+			m.Family = family
+			if m.Tags == nil {
+				m.Tags = []string{}
+			}
+			if m.Strengths == nil {
+				m.Strengths = []string{}
+			}
+			familyID := ""
 		if family != nil {
 			familyID = *family
 		}
@@ -317,6 +330,11 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		UpdatedAt      *time.Time      `json:"updated_at"`
 		InputPriceCNY  float64         `json:"input_price_cny"`
 		OutputPriceCNY float64         `json:"output_price_cny"`
+		// 新增（需求 #3/#4）：8 维评分相关字段
+		ReleasedAt  *time.Time      `json:"released_at"`
+		Strengths   json.RawMessage `json:"strengths"`
+		VersionRank *int            `json:"version_rank"`
+		CostTier    *string         `json:"cost_tier"`
 	}
 	m := modelRow{}
 	err := h.db.QueryRow(ctx, `
@@ -325,12 +343,15 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		       notes, COALESCE(status,'active'), disabled_reason, source,
 		       COALESCE(array_to_json(tags)::jsonb, '[]'::jsonb), tags_locked, tags_updated_at,
 		       created_at, updated_at,
-		       COALESCE(input_price_cny,0), COALESCE(output_price_cny,0)
+		       COALESCE(input_price_cny,0), COALESCE(output_price_cny,0),
+		       released_at, COALESCE(array_to_json(strengths)::jsonb, '[]'::jsonb),
+		       version_rank, cost_tier
 		FROM models_canonical WHERE id = $1
 	`, id).Scan(&m.ID, &m.CanonicalName, &m.DisplayName, &m.Family, &m.Modality,
 		&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason,
 		&m.Source, &m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.CreatedAt,
-		&m.UpdatedAt, &m.InputPriceCNY, &m.OutputPriceCNY)
+		&m.UpdatedAt, &m.InputPriceCNY, &m.OutputPriceCNY,
+		&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "model not found")
 		return
@@ -454,16 +475,26 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 		"updated_at":      m.UpdatedAt,
 		"input_price_cny": m.InputPriceCNY,
 		"output_price_cny": m.OutputPriceCNY,
-		"aliases":         aliases,
-		"offers":          offers,
+		// 新增（需求 #3/#4）：8 维评分相关字段
+		"released_at":   m.ReleasedAt,
+		"strengths":     m.Strengths,
+		"version_rank":  m.VersionRank,
+		"cost_tier":     m.CostTier,
+		"aliases":       aliases,
+		"offers":        offers,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName *string `json:"display_name"`
-		Status      *string `json:"status"`
+		DisplayName *string    `json:"display_name"`
+		Status      *string    `json:"status"`
+		// 新增（需求 #3/#4）：8 维评分相关字段更新
+		ReleasedAt  *time.Time `json:"released_at"`
+		Strengths   *[]string  `json:"strengths"`
+		VersionRank *int       `json:"version_rank"`
+		CostTier    *string    `json:"cost_tier"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -475,6 +506,27 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	if req.DisplayName != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
+	}
+	if req.Status != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
+	}
+	// 新增字段更新（需求 #3/#4）
+	if req.ReleasedAt != nil {
+		//nolint:errcheck
+		h.db.Exec(ctx, `UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id)
+	}
+	if req.Strengths != nil {
+		//nolint:errcheck
+		h.db.Exec(ctx, `UPDATE models_canonical SET strengths = $1 WHERE id = $2`, *req.Strengths, id)
+	}
+	if req.VersionRank != nil {
+		//nolint:errcheck
+		h.db.Exec(ctx, `UPDATE models_canonical SET version_rank = $1 WHERE id = $2`, *req.VersionRank, id)
+	}
+	if req.CostTier != nil {
+		//nolint:errcheck
+		h.db.Exec(ctx, `UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id)
 	}
 	if req.Status != nil {
 		//nolint:errcheck // best-effort exec, non-critical
