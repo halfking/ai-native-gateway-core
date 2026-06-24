@@ -652,6 +652,17 @@ func main() {
 		}
 		chatHandler.SetSessionCompressor(compressor.NewSessionCompressor(scDeps))
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
+
+		// v5 (2026-06-25) session-aware smart recovery coordinator.
+		// Uses the same SessionCache for CutMarker persistence so that
+		// context_length_exceeded recovery results are cached for 30 minutes
+		// (Redis TTL), enabling incremental compression on the next request.
+		rcDeps := compressor.RecoveryDeps{
+			Cache:      scCache,
+			MaxRetries: 2,
+		}
+		routingExec.RecoveryCoord = compressor.NewRecoveryCoordinator(rcDeps)
+		slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 	} else {
 		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
 	}
