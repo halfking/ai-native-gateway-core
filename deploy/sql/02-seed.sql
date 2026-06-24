@@ -706,9 +706,9 @@ INSERT INTO public.settings_kv VALUES ('llmgw_fp_slot_max_total_clients', '10000
 -- Data for Name: sticky_sessions; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.sticky_sessions VALUES ('default:4:4:default', 17, '2026-06-24 10:05:53.320692+00', '2026-06-24 10:35:53.32066+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.sticky_sessions VALUES ('default:4:10:default', 6, '2026-06-24 10:07:31.5502+00', '2026-06-24 10:37:31.550168+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.sticky_sessions VALUES ('default:3:2:default', 6, '2026-06-24 10:07:47.046925+00', '2026-06-24 10:37:47.046911+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.sticky_sessions VALUES ('default:4:4:default', 17, '2026-06-24 10:20:09.74534+00', '2026-06-24 10:50:09.745322+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.sticky_sessions VALUES ('default:4:10:default', 6, '2026-06-24 10:22:16.85745+00', '2026-06-24 10:52:16.857435+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.sticky_sessions VALUES ('default:3:2:default', 6, '2026-06-24 10:22:23.215333+00', '2026-06-24 10:52:23.215327+00', NULL, NULL) ON CONFLICT DO NOTHING;
 
 
 --

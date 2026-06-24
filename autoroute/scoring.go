@@ -44,6 +44,11 @@ type Candidate struct {
 	// Tags intersect with the task type's required tags. Pre-computed
 	// by Index.Recommend to avoid recomputing per profile.
 	TaskMatchScore float64
+
+	// 新增（需求 #6）：三级路由字段
+	Tier            string  // primary/secondary/fallback（热门/次选/兜底）
+	PopularityScore float64 // 热门度评分（基于请求量、成功率等）
+	UnavailableReason string // 不可路由原因（为空则可路由）
 }
 
 // ScoringBreakdown is the per-dimension score output (each 0-100)
