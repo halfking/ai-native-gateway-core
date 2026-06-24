@@ -104,12 +104,15 @@ type autoRouteCandidate struct {
 //
 // Token estimation: ~4 chars per token (English / mixed), CJK chars
 // count as ~1.5 tokens each (more efficient packing).
+//
+// 新增（需求 #1）：IDE 客户端指纹提取（ClientType）
 func extractSignalsForAuto(reqBody *chatRequestBody, rawBody []byte) autoroute.ClassificationSignals {
 	sigs := autoroute.ClassificationSignals{
-		ToolCount:      countToolsInBody(rawBody),
-		HasImages:      false,
-		HasCodeBlock:   bytes.Contains(rawBody, []byte("```")),
+		ToolCount:       countToolsInBody(rawBody),
+		HasImages:       false,
+		HasCodeBlock:    bytes.Contains(rawBody, []byte("```")),
 		EstimatedTokens: estimateTokens(rawBody),
+		ClientType:      "", // 新增字段，稍后从 HTTP 头提取
 	}
 
 	if len(reqBody.Messages) > 0 {
@@ -278,6 +281,9 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	}
 
 	sigs := extractSignalsForAuto(reqBody, rawBody)
+	// 新增（需求 #1）：从 HTTP 头提取 IDE 客户端指纹
+	sigs.ClientType = extractClientType(r)
+	
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 

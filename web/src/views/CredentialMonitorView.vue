@@ -16,27 +16,60 @@ const windowEntries = ref<CallEntry[]>([])
 const windowSource = ref<'redis' | 'request_logs'>('redis')
 const windowLoading = ref(false)
 
-// ── 2026-06-23: 详情页 4-tab 化重构 ────────────────────────────────────
-// 4 tab = 概览 / 模型 / 监控 / 历史. 抽到 view-local const 不入 store,
-// 因为只有 drawer 内需要,生命周期 = drawer open.
-type DetailTab = 'overview' | 'models' | 'monitoring' | 'history'
+// ── 2026-06-24: models+monitoring 合并 → 三态布局 (split / list-full / monitor-full) ────
+// 3 tab = 概览 / 模型 / 历史. 模型 tab 内做左列模型表 / 右列监控的连动,中间按钮切换.
+type DetailTab = 'overview' | 'models' | 'history'
 const detailActiveTab = ref<DetailTab>('overview')
 const detailTabs: SegTab[] = [
-  { value: 'overview',   label: '概览' },
-  { value: 'models',     label: '模型可用性' },
-  { value: 'monitoring', label: '监控' },
-  { value: 'history',    label: '历史' },
+  { value: 'overview', label: '概览' },
+  { value: 'models',   label: '模型可用性 + 监控' },
+  { value: 'history',  label: '历史' },
 ]
-// 切 tab 时也把 selectedModel 重置 (历史 tab 仍可看),避免混乱.
-watch(detailActiveTab, (newTab) => {
-  if (newTab !== 'monitoring' && newTab !== 'history') {
-    // keep selectedModel — 监控/历史 tab 仍依赖
-  }
-})
 // 打开 detail 时默认到第一个 tab
 watch(selectedCred, (newVal) => {
   if (newVal) detailActiveTab.value = 'overview'
 })
+
+// ── 2026-06-24: models tab 三态布局 + localStorage 持久化 + 切换动画 ────
+type LayoutMode = 'split' | 'list-full' | 'monitor-full'
+const LAYOUT_STORAGE_KEY = 'cmc_models_layout'
+function loadStoredLayout(): LayoutMode {
+  if (typeof window === 'undefined') return 'split'
+  try {
+    const v = window.localStorage.getItem(LAYOUT_STORAGE_KEY)
+    if (v === 'split' || v === 'list-full' || v === 'monitor-full') return v
+  } catch { /* localStorage 不可用时静默回退 */ }
+  return 'split'
+}
+const modelsLayout = ref<LayoutMode>(loadStoredLayout())
+const layoutAnimating = ref(false)
+let layoutAnimTimer: number | null = null
+
+function setLayout(mode: LayoutMode) {
+  if (modelsLayout.value === mode) return
+  modelsLayout.value = mode
+  // 持久化 (split / monitor-full 都要保留;用户切换即写入)
+  if (typeof window !== 'undefined') {
+    try { window.localStorage.setItem(LAYOUT_STORAGE_KEY, mode) } catch { /* ignore */ }
+  }
+  // 200ms 反馈动画
+  layoutAnimating.value = true
+  if (layoutAnimTimer) clearTimeout(layoutAnimTimer)
+  layoutAnimTimer = window.setTimeout(() => {
+    layoutAnimating.value = false
+    layoutAnimTimer = null
+  }, 220)
+  // Chart.js canvas resize (饼图在 split → monitor-full 时需要重排)
+  if (errorPieChart) {
+    window.setTimeout(() => errorPieChart?.resize(), 240)
+  }
+}
+
+// split ⇄ monitor-full 一键切换 (◀/▶ 折叠按钮)
+function toggleLeftPane() {
+  if (modelsLayout.value === 'monitor-full') setLayout('split')
+  else setLayout('monitor-full')
+}
 
 const providerFilter = ref(0)
 const availStateFilter = ref('')
@@ -584,6 +617,10 @@ onMounted(() => load())
 onUnmounted(() => {
   stopAutoRefresh()
   stopDetailAutoRefresh()
+  if (layoutAnimTimer) {
+    clearTimeout(layoutAnimTimer)
+    layoutAnimTimer = null
+  }
   if (errorPieChart) errorPieChart.destroy()
 })
 </script>
@@ -835,158 +872,235 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- ════════════ Tab 2: 模型可用性 (Models) ════════════ -->
-          <div v-else-if="detailActiveTab === 'models'">
-            <div class="drawer-section">
-              <div class="drawer-section-title">
-                模型可用性 ({{ (selectedCred.models || []).length }})
-                <span class="cell-sub" style="margin-left:8px">点击行联动查看滑动窗口</span>
-              </div>
-              <div v-if="!(selectedCred.models || []).length" class="cell-muted">无模型</div>
-              <div v-else style="overflow-x:auto">
-                <table class="model-table">
-                  <thead>
-                    <tr>
-                      <th>模型</th>
-                      <th>总状态</th>
-                      <th>可用</th>
-                      <th>来源</th>
-                      <th>延迟 P95</th>
-                      <th>成功率</th>
-                      <th>样本</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
-                        :class="{
-                          'model-row-selected': m.raw_model_name === selectedModel,
-                          'model-row-declared': m.data_source === 'declared',
-                        }"
-                        :title="m.model_disabled_reason || ''"
-                        @click="selectModel(m.raw_model_name)">
-                      <td>
-                        <code class="mono-sm">{{ m.raw_model_name }}</code>
-                        <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
-                      </td>
-                      <td>
-                        <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
-                      </td>
-                      <td>
-                        <span v-if="m.offer_available && m.binding_available" style="color:var(--success)">✓</span>
-                        <span v-else style="color:var(--danger)">✗</span>
-                      </td>
-                      <td>
-                        <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
-                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
-                          {{ m.total_calls }}次
-                        </span>
-                      </td>
-                      <td>
-                        <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
-                        <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
-                          {{ m.p95_latency_ms }}ms
-                          <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
-                        </span>
-                      </td>
-                      <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
-                      <td class="cell-sub">{{ m.recent_samples }}</td>
-                      <td @click.stop>
-                        <button
-                          v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
-                          class="btn btn-xs btn-ghost"
-                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                          :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
-                          @click="openToggleDialog(m, 'offline')"
-                        >🔴 下线</button>
-                        <button
-                          v-else-if="m.binding_unavailable_reason === 'manual_offline'"
-                          class="btn btn-xs btn-ghost"
-                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                          title="恢复后下一轮自动探测（~10 min）会重新评估"
-                          @click="openToggleDialog(m, 'online')"
-                        >🟢 上线</button>
-                        <span
-                          v-else
-                          class="cell-muted"
-                          :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
-                        >auto</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <!-- ════════════ Tab 3: 监控 (Monitoring) ════════════ -->
-          <div v-else-if="detailActiveTab === 'monitoring'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div class="drawer-section">
-              <div class="drawer-section-title">
-                滑动窗口 (最近 1 小时)
-                <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
-                  {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+          <!-- ════════════ Tab 2: 模型可用性 + 监控 (Models + Monitoring, 三态布局) ════════════ -->
+          <!--
+            三态: split (默认,左右连动) / list-full (左 8 列全宽,右窄条) / monitor-full (右 3 section 全宽,左窄条).
+            中间 layout picker 切换;右列顶部有 ◀/▶ 折叠按钮.
+            切换时给外层加 .pane-anim 触发 200ms 渐入.
+          -->
+          <div v-else-if="detailActiveTab === 'models'"
+               class="models-tab"
+               :class="[
+                 `models-grid-${modelsLayout}`,
+                 { 'pane-anim': layoutAnimating },
+               ]">
+            <!-- 工具栏: 模型总数 + 三态切换 + 折叠按钮 -->
+            <div class="models-toolbar">
+              <div class="models-toolbar-left">
+                <span class="drawer-section-title models-title">
+                  模型可用性 <span class="cell-muted">({{ (selectedCred.models || []).length }})</span>
                 </span>
+                <span class="cell-sub" v-if="modelsLayout !== 'monitor-full'">点击行联动查看右侧监控</span>
               </div>
-              <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
-              <div v-else>
-                <div style="margin-bottom:8px">
-                  <label class="field-label">模型:</label>
-                  <code class="mono-sm">{{ selectedModel }}</code>
+              <div class="models-toolbar-right">
+                <!-- 三态分段控件 -->
+                <div class="layout-picker" role="group" aria-label="布局切换">
+                  <button
+                    class="layout-btn"
+                    :class="{ active: modelsLayout === 'list-full' }"
+                    title="列表全宽 (重点排查模型列表)"
+                    @click="setLayout('list-full')"
+                  >▮ 列表</button>
+                  <button
+                    class="layout-btn"
+                    :class="{ active: modelsLayout === 'split' }"
+                    title="左右分屏 (默认)"
+                    @click="setLayout('split')"
+                  >▣ 分屏</button>
+                  <button
+                    class="layout-btn"
+                    :class="{ active: modelsLayout === 'monitor-full' }"
+                    title="监控全宽 (深度分析某个模型)"
+                    @click="setLayout('monitor-full')"
+                  >▯ 监控</button>
                 </div>
-                <div v-if="windowLoading">加载中...</div>
-                <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
-                <div v-else>
-                  <div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0">
-                    <div
-                      v-for="(e, i) in windowEntries.slice(0, 100)"
-                      :key="i"
-                      :style="{
-                        width: '4px',
-                        height: '40px',
-                        background: e.ok ? '#10b981' : '#ef4444',
-                        opacity: 0.8,
-                      }"
-                      :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
-                    ></div>
-                  </div>
-                  <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;flex-wrap:wrap">
-                    <span>总计: {{ windowEntries.length }}</span>
-                    <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
-                    <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
-                    <span>失败率: {{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</span>
-                  </div>
-                </div>
+                <!-- 折叠按钮 (双入口:split ⇄ monitor-full 一键切换) -->
+                <button
+                  v-if="modelsLayout !== 'list-full'"
+                  class="btn btn-xs btn-ghost fold-btn"
+                  :title="modelsLayout === 'monitor-full' ? '展开左列 (回到分屏)' : '折叠左列 (监控全宽)'"
+                  @click="toggleLeftPane"
+                >{{ modelsLayout === 'monitor-full' ? '▶' : '◀' }}</button>
+                <button
+                  v-else
+                  class="btn btn-xs btn-ghost fold-btn"
+                  title="展开右列 (回到分屏)"
+                  @click="setLayout('split')"
+                >▶</button>
               </div>
             </div>
 
-            <div class="drawer-section">
-              <div class="drawer-section-title">错误分布</div>
-              <div style="height:200px;position:relative">
-                <canvas id="errorPieChart"></canvas>
-              </div>
-            </div>
-
-            <div class="drawer-section" style="grid-column:1 / -1">
-              <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                <span>并发槽位与指纹分配</span>
-                <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
-                  {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
+            <!-- ═══ 左列: 模型表 (split 全表 / list-full 全宽 / monitor-full 折叠窄条) ═══ -->
+            <div class="pane pane-left">
+              <div v-if="modelsLayout === 'monitor-full'" class="pane-collapsed">
+                <div class="pane-collapsed-label">当前选中</div>
+                <div class="pane-collapsed-value">
+                  <code class="mono-sm">{{ selectedModel || '—' }}</code>
+                </div>
+                <button class="btn btn-xs btn-ghost" @click="setLayout('split')" title="回到分屏">
+                  ▶ 展开
                 </button>
               </div>
-              <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
-                点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
+              <div v-else>
+                <div v-if="!(selectedCred.models || []).length" class="cell-muted" style="padding:8px">无模型</div>
+                <div v-else style="overflow-x:auto">
+                  <table class="model-table">
+                    <thead>
+                      <tr>
+                        <th>模型</th>
+                        <th>总状态</th>
+                        <th>可用</th>
+                        <th>来源</th>
+                        <th>延迟 P95</th>
+                        <th>成功率</th>
+                        <th>样本</th>
+                        <th>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
+                          :class="{
+                            'model-row-selected': m.raw_model_name === selectedModel,
+                            'model-row-declared': m.data_source === 'declared',
+                          }"
+                          :title="m.model_disabled_reason || ''"
+                          @click="selectModel(m.raw_model_name)">
+                        <td>
+                          <code class="mono-sm">{{ m.raw_model_name }}</code>
+                          <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
+                        </td>
+                        <td>
+                          <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
+                        </td>
+                        <td>
+                          <span v-if="m.offer_available && m.binding_available" style="color:var(--success)">✓</span>
+                          <span v-else style="color:var(--danger)">✗</span>
+                        </td>
+                        <td>
+                          <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
+                          <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
+                            {{ m.total_calls }}次
+                          </span>
+                        </td>
+                        <td>
+                          <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
+                          <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
+                            {{ m.p95_latency_ms }}ms
+                            <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
+                          </span>
+                        </td>
+                        <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
+                        <td class="cell-sub">{{ m.recent_samples }}</td>
+                        <td @click.stop>
+                          <button
+                            v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
+                            class="btn btn-xs btn-ghost"
+                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
+                            @click="openToggleDialog(m, 'offline')"
+                          >🔴 下线</button>
+                          <button
+                            v-else-if="m.binding_unavailable_reason === 'manual_offline'"
+                            class="btn btn-xs btn-ghost"
+                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            title="恢复后下一轮自动探测（~10 min）会重新评估"
+                            @click="openToggleDialog(m, 'online')"
+                          >🟢 上线</button>
+                          <span
+                            v-else
+                            class="cell-muted"
+                            :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
+                          >auto</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
-              <FpSlotVisualizer
-                v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
-                :details="fpSlotStats.details"
-                :slot-limit="fpSlotStats.slot_limit"
-              />
-              <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
+            </div>
+
+            <!-- ═══ 右列: 监控 (split 与 monitor-full 显示 / list-full 折叠窄条) ═══ -->
+            <div class="pane pane-right">
+              <div v-if="modelsLayout === 'list-full'" class="pane-collapsed">
+                <div class="pane-collapsed-label">当前选中</div>
+                <div class="pane-collapsed-value">
+                  <code class="mono-sm">{{ selectedModel || '—' }}</code>
+                </div>
+                <button class="btn btn-xs btn-ghost" @click="setLayout('split')" title="回到分屏">
+                  ◀ 展开
+                </button>
+              </div>
+              <div v-else class="monitor-stack">
+                <!-- 滑动窗口 -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title">
+                    滑动窗口 (最近 1 小时)
+                    <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
+                      {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                    </span>
+                  </div>
+                  <div v-if="!selectedModel" class="cell-muted">点击左侧模型行查看</div>
+                  <div v-else>
+                    <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                      <label class="field-label">模型:</label>
+                      <code class="mono-sm">{{ selectedModel }}</code>
+                    </div>
+                    <div v-if="windowLoading">加载中...</div>
+                    <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
+                    <div v-else>
+                      <div class="window-strip">
+                        <div
+                          v-for="(e, i) in windowEntries.slice(0, 100)"
+                          :key="i"
+                          class="window-cell"
+                          :style="{
+                            background: e.ok ? '#10b981' : '#ef4444',
+                            opacity: 0.85,
+                          }"
+                          :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
+                        ></div>
+                      </div>
+                      <div class="window-stats">
+                        <span>总计: <b>{{ windowEntries.length }}</b></span>
+                        <span style="color:#10b981">成功: <b>{{ windowEntries.filter(e => e.ok).length }}</b></span>
+                        <span style="color:#ef4444">失败: <b>{{ windowEntries.filter(e => !e.ok).length }}</b></span>
+                        <span>失败率: <b>{{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</b></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 错误分布 -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title">错误分布</div>
+                  <div class="pie-wrap">
+                    <canvas id="errorPieChart"></canvas>
+                  </div>
+                </div>
+
+                <!-- 并发槽位与指纹分配 (跨整列) -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>并发槽位与指纹分配</span>
+                    <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
+                      {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
+                    </button>
+                  </div>
+                  <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
+                    点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
+                  </div>
+                  <FpSlotVisualizer
+                    v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
+                    :details="fpSlotStats.details"
+                    :slot-limit="fpSlotStats.slot_limit"
+                  />
+                  <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <!-- ════════════ Tab 4: 历史 (History) ════════════ -->
+          <!-- ════════════ Tab 3: 历史 (History) ════════════ -->
           <div v-else-if="detailActiveTab === 'history'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div class="drawer-section">
               <div class="drawer-section-title" style="display:flex;align-items:center;gap:8px">
@@ -1605,5 +1719,222 @@ onUnmounted(() => {
 }
 .decision-table tbody tr:hover {
   background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   🆕 2026-06-24: models + monitoring 合并 tab 的三态布局 CSS
+   - .models-grid-split       左右连动 (默认)
+   - .models-grid-list-full   左 8 列全宽
+   - .models-grid-monitor-full 右 3 section 全宽
+   - .pane-anim               切换 200ms 微动画
+   - .pane-collapsed          折叠后窄条样式
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* models tab 外层 */
+.models-tab {
+  display: grid;
+  gap: 10px;
+  /* 默认 split 模板,具体模板由 modifier class 覆盖 */
+  grid-template-columns: minmax(280px, 320px) 1fr;
+  grid-template-areas:
+    "toolbar  toolbar"
+    "left     right";
+}
+
+/* 工具栏 (跨两列) */
+.models-tab > .models-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.models-toolbar-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.models-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.models-title {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 13px;
+}
+
+/* 三态分段控件 */
+.layout-picker {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-subtle);
+}
+.layout-btn {
+  background: transparent;
+  border: 0;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  transition: background 120ms ease-out, color 120ms ease-out;
+  font-family: inherit;
+  line-height: 1.4;
+}
+.layout-btn:last-child { border-right: 0; }
+.layout-btn:hover { background: rgba(255, 255, 255, 0.04); color: var(--text); }
+.layout-btn.active {
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--accent-h);
+  font-weight: 600;
+}
+
+/* 折叠按钮 (在右列顶部) */
+.fold-btn {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 左右两列容器 */
+.pane {
+  min-width: 0;
+  min-height: 0;
+}
+.pane-left  { grid-area: left;  }
+.pane-right { grid-area: right; }
+
+/* 三态 grid 模板 */
+.models-grid-split {
+  grid-template-columns: minmax(280px, 320px) 1fr;
+  grid-template-areas:
+    "toolbar  toolbar"
+    "left     right";
+}
+.models-grid-list-full {
+  grid-template-columns: 1fr 80px;
+  grid-template-areas:
+    "toolbar  toolbar"
+    "left     right";
+}
+.models-grid-monitor-full {
+  grid-template-columns: 200px 1fr;
+  grid-template-areas:
+    "toolbar  toolbar"
+    "left     right";
+}
+
+/* 折叠窄条 */
+.pane-collapsed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 120px;
+  text-align: center;
+}
+.pane-collapsed-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.pane-collapsed-value {
+  word-break: break-all;
+  font-size: 11px;
+  max-width: 100%;
+}
+
+/* 右列监控 stack */
+.monitor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 滑动窗口条带 (从原 inline 样式抽出) */
+.window-strip {
+  display: flex;
+  gap: 3px;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+.window-cell {
+  width: 5px;
+  height: 40px;
+  border-radius: 1px;
+  flex-shrink: 0;
+  transition: opacity 120ms ease-out;
+}
+.window-cell:hover { opacity: 1; }
+.window-stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.window-stats b { font-weight: 700; }
+
+/* 错误分布饼图容器 (抽出原 inline 200px) */
+.pie-wrap {
+  height: 220px;
+  position: relative;
+}
+.models-grid-monitor-full .pie-wrap {
+  height: 280px;
+}
+
+/* ═══ 切换动画 (200ms 渐入) ═══ */
+.pane-anim .pane-left,
+.pane-anim .pane-right {
+  animation: pane-fade-in 200ms ease-out;
+}
+@keyframes pane-fade-in {
+  0%   { opacity: 0.65; }
+  100% { opacity: 1.0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pane-anim .pane-left,
+  .pane-anim .pane-right { animation: none; }
+}
+
+/* ═══ 响应式: 屏幕窄于 700px 强制 list-full (老板视觉验收点) ═══ */
+@media (max-width: 700px) {
+  .models-grid-split,
+  .models-grid-monitor-full {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "toolbar"
+      "left"
+      "right";
+  }
+  .pane-collapsed { display: none; }
+}
+
+/* 右列内 section 间距 (避免与监控内的 gap 重复) */
+.models-tab .drawer-section {
+  margin-bottom: 0;
 }
 </style>

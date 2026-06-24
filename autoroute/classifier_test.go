@@ -256,3 +256,110 @@ func TestHeuristicClassifier_CodeFoundInLargePrompt(t *testing.T) {
 		t.Fatalf("expected TaskCode, got %s", res.Primary)
 	}
 }
+
+// ── 新增测试（需求 #1：编程任务不被长上下文截胡）──────────────────────
+
+func TestHeuristicClassifier_LongContextCodingTask_ShouldBeCode(t *testing.T) {
+	// RED: 当前实现会因为 tokens>50000 直接返回 long_context，
+	// 根本不检查 code 关键词。修复后应该先检查 code。
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt:  "请帮我重构这段 Python 代码，并添加单元测试",
+		EstimatedTokens: 60_000, // 超过 long_context threshold (50000)
+		HasCodeBlock:    true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for long coding request, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+	if res.Confidence < 0.85 {
+		t.Errorf("expected high confidence for strong code signal, got %.2f", res.Confidence)
+	}
+}
+
+func TestHeuristicClassifier_PlanModeCoding_ShouldBeCode(t *testing.T) {
+	// RED: 计划模式 prompt 通常很长，容易被 long_context 截胡
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		SystemPrompt: "You are a coding assistant. Use plan mode: first create an implementation plan, then write code step by step.",
+		LastUserPrompt: "实现一个完整的用户认证系统，包括注册、登录、JWT、权限管理。" +
+			"先制定详细的实现计划，列出所有模块和接口，然后逐步实现每个模块。",
+		EstimatedTokens: 8_000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for plan mode coding, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_IDEClientFingerprint_Cursor(t *testing.T) {
+	// RED: 当前没有 ClientType 字段，需要先加到 ClassificationSignals
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt:  "帮我分析这个函数的时间复杂度", // 没有明确 code 关键词
+		EstimatedTokens: 3_000,
+		ClientType:      "cursor", // IDE 指纹
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for Cursor IDE client, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_IDEClientFingerprint_ClaudeCode(t *testing.T) {
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "review my implementation and suggest improvements",
+		ClientType:     "claude-code",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for claude-code IDE client, got %s", res.Primary)
+	}
+}
+
+func TestHeuristicClassifier_StackTraceError_ShouldBeCode(t *testing.T) {
+	// 用户粘贴错误堆栈，应该被识别为编程任务（新 pattern + code 关键词）
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: `遇到了这个错误：
+Traceback (most recent call last):
+  File "app.py", line 42, in process_data
+    result = compute(x, y)
+TypeError: unsupported operand type(s) for +: 'int' and 'str'
+
+帮我修复这段代码`,
+		EstimatedTokens: 1_200,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for stack trace error, got %s (reason: %s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_PureDocumentSummary_ShouldBeLongContext(t *testing.T) {
+	// GREEN: 纯文档总结，没有编程信号，应该仍然是 long_context
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt:  "请总结这份会议纪要的要点",
+		EstimatedTokens: 80_000,
+		HasCodeBlock:    false,
+		ClientType:      "", // 非 IDE
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskLongContext {
+		t.Errorf("expected TaskLongContext for pure document summary, got %s", res.Primary)
+	}
+}
