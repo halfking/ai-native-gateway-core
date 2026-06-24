@@ -325,6 +325,9 @@ type modelRoute struct {
 	Weight        float64 `json:"weight"`
 	MinScore      float64 `json:"min_score"`
 	Enabled       bool    `json:"enabled"`
+	// 新增（需求 #6）：三级路由字段
+	Tier              string  `json:"tier"`                // primary/secondary/fallback
+	TaskQualityScore  float64 `json:"task_quality_score"`  // 任务质量评分 0-1
 }
 
 func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request) {
@@ -616,23 +619,32 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		return
 	}
 
-	for _, rt := range routes {
-		if strings.TrimSpace(rt.CanonicalName) == "" {
-			continue
+		for _, rt := range routes {
+			if strings.TrimSpace(rt.CanonicalName) == "" {
+				continue
+			}
+			wt := rt.Weight
+			if wt <= 0 {
+				wt = 1
+			}
+			// 新增（需求 #6）：支持 tier 和 task_quality_score
+			tier := rt.Tier
+			if tier == "" {
+				tier = "secondary" // 默认 secondary
+			}
+			taskQuality := rt.TaskQualityScore
+			if taskQuality <= 0 {
+				taskQuality = 0.5 // 默认中等质量
+			}
+			_, err := tx.Exec(ctx, `
+				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, task_quality_score)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, taskQuality)
+			if err != nil {
+				writeInternalErr(w, err)
+				return
+			}
 		}
-		wt := rt.Weight
-		if wt <= 0 {
-			wt = 1
-		}
-		_, err := tx.Exec(ctx, `
-			INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled)
-			VALUES ($1, $2, $3, $4, $5)
-		`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled)
-		if err != nil {
-			writeInternalErr(w, err)
-			return
-		}
-	}
 
 	if err := tx.Commit(ctx); err != nil {
 		writeInternalErr(w, err)
@@ -659,7 +671,8 @@ func (h *WorkTypeHandlers) fetchWorkType(ctx context.Context, key string) (workT
 
 func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]modelRoute, error) {
 	rows, err := h.db.Query(ctx, `
-		SELECT id, canonical_name, weight, min_score, enabled
+		SELECT id, canonical_name, weight, min_score, enabled,
+		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0.5)
 		FROM work_type_model_route
 		WHERE work_type_key = $1
 		ORDER BY weight DESC, canonical_name
@@ -674,7 +687,8 @@ func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]model
 	for rows.Next() {
 		var rt modelRoute
 		var weight, minScore float64
-		if err := rows.Scan(&rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled); err != nil {
+		if err := rows.Scan(&rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled,
+			&rt.Tier, &rt.TaskQualityScore); err != nil {
 			continue
 		}
 		rt.Weight = weight
@@ -690,7 +704,8 @@ func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string
 		return out, nil
 	}
 	rows, err := h.db.Query(ctx, `
-		SELECT work_type_key, id, canonical_name, weight, min_score, enabled
+		SELECT work_type_key, id, canonical_name, weight, min_score, enabled,
+		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0.5)
 		FROM work_type_model_route
 		WHERE work_type_key = ANY($1)
 		ORDER BY work_type_key, weight DESC, canonical_name
@@ -703,7 +718,8 @@ func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string
 		var key string
 		var rt modelRoute
 		var weight, minScore float64
-		if err := rows.Scan(&key, &rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled); err != nil {
+		if err := rows.Scan(&key, &rt.ID, &rt.CanonicalName, &weight, &minScore, &rt.Enabled,
+			&rt.Tier, &rt.TaskQualityScore); err != nil {
 			continue
 		}
 		rt.Weight = weight
