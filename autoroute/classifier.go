@@ -131,6 +131,11 @@ type ClassificationSignals struct {
 	// HasToolResults is true when any message has role "tool".
 	// Combined with high ToolCount → agent task.
 	HasToolResults bool
+
+	// ClientType identifies the IDE/client origin (e.g. "cursor", "claude-code",
+	// "roocode", "vscode", "copilot", "windsurf"). Extracted from User-Agent
+	// or X-Gw-Client-Type header. Non-empty value is a strong coding signal.
+	ClientType string
 }
 
 // Classification is the structured output of a classifier. The decider
@@ -245,9 +250,22 @@ func DefaultKeywords() KeywordSet {
 			"function", "class", "method", "algorithm", "implement",
 			"code", "program", "script", "debug", "refactor",
 			"compile", "syntax", "variable", "function",
-			// 中文
+			// 新增（需求 #1）：编程任务扩充关键词
+			"write a function", "write a class", "help me write",
+			"fix this bug", "fix the bug", "review my code", "code review",
+			"unit test", "test case", "pull request", "deploy",
+			"compile error", "stack trace", "traceback", "error at line",
+			"implement a", "implement the", "complete this", "finish the code",
+			"plan mode", "step by step implement", "create a plan then implement",
+			// 中文（保守添加，避免与 reasoning/creative 冲突）
 			"代码", "函数", "方法", "实现", "编写", "写代码",
 			"算法", "重构", "调试", "bug", "编程",
+			// 新增中文（需求 #1）—— 注意避免通用词如"分析"
+			"实现一个", "实现以下", "写一个函数", "写一个类", "写一段代码",
+			"帮我写代码", "完成这个功能", "完成代码",
+			"修复这个bug", "修复bug", "单元测试", "测试用例",
+			"计划模式", "先制定计划", "先列出步骤", "然后实现", "逐步实现",
+			"代码审查", "review代码", "部署", "编译错误", "错误堆栈",
 			// Code-fence marker (boosted separately by HasCodeBlock)
 			"```",
 		},
@@ -323,8 +341,9 @@ func (c *HeuristicClassifier) effectiveLongContextTokens() int {
 // Algorithm (deterministic, pure function of inputs):
 //
 //  1. Hard overrides (highest priority):
-//     - HasImages                → TaskVision
-//     - EstimatedTokens > thresh → TaskLongContext
+//     - HasImages                                  → TaskVision
+//     - **Coding strong signal (keywords/pattern/IDE)** → TaskCode (NEW, before long_context)
+//     - EstimatedTokens > thresh && !coding signal → TaskLongContext
 //
 //  2. Tool-based dispatch:
 //     - ToolCount >= AgentToolThreshold && HasToolResults → TaskAgent
@@ -333,7 +352,7 @@ func (c *HeuristicClassifier) effectiveLongContextTokens() int {
 //  3. Pattern-based scoring (regex layer):
 //     - Compiled patterns (see patterns.go) match structural
 //       cues like "每分钟...多少" (math word-problem) or "def foo"
-//       (function definition). Each match assigns a weight 0.55-0.65.
+//       (function definition). Each match assigns a weight 0.55-0.70.
 //     - This layer catches requests that express a task type via
 //       *structure* rather than vocabulary (the "水池问题" gap).
 //
@@ -353,7 +372,8 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 	// produce a valid (chat) classification without panicking.
 	scores := make(map[TaskType]float64, len(AllTaskTypes))
 
-	// Channel 1: hard overrides — confidence 0.95 (very high)
+	// Channel 1: hard overrides — confidence 0.90-0.95 (very high)
+	// 1.1 Vision (最高优先级，不可覆盖)
 	if sigs.HasImages {
 		return &Classification{
 			Primary:    TaskVision,
@@ -364,8 +384,52 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 			Reason:     "request contains image parts (hard override)",
 		}, nil
 	}
-	if sigs.EstimatedTokens > c.effectiveLongContextTokens() {
+
+	// 1.2 编程强信号检测（NEW：优先于 long_context，解决需求 #1 的核心问题）
+	// 预扫描关键词和 IDE 指纹，决定是否跳过 long_context 判定
+	text := normaliseForKeyword(sigs.LastUserPrompt, sigs.SystemPrompt)
+	kw := c.effectiveKeywords()
+	codeHits := countKeywordHits(text, kw.Code)
+
+	// 编程强信号来源：关键词 OR code block OR IDE 指纹 OR 计划模式 pattern
+	hasCodingKeywords := codeHits > 0
+	hasCodeBlock := sigs.HasCodeBlock
+	hasIDEFingerprint := sigs.ClientType != "" && isIDEClient(sigs.ClientType)
+	hasPlanModePattern := containsFold(text, "先制定计划") || containsFold(text, "plan mode") ||
+		containsFold(text, "step by step implement") || containsFold(text, "先列出步骤") ||
+		containsFold(text, "然后实现") || containsFold(text, "then implement")
+
+	strongCodingSignal := hasCodingKeywords || hasCodeBlock || hasIDEFingerprint || hasPlanModePattern
+
+	if strongCodingSignal {
 		conf := 0.90
+		reason := "coding strong signal: "
+		reasons := []string{}
+		if hasCodingKeywords {
+			reasons = append(reasons, fmt.Sprintf("code_keywords=%d", codeHits))
+		}
+		if hasCodeBlock {
+			reasons = append(reasons, "has_code_block=true")
+		}
+		if hasIDEFingerprint {
+			reasons = append(reasons, fmt.Sprintf("ide_client=%s", sigs.ClientType))
+		}
+		if hasPlanModePattern {
+			reasons = append(reasons, "plan_mode_pattern")
+		}
+		return &Classification{
+			Primary:    TaskCode,
+			Confidence: conf,
+			Secondary:  []TaskScore{{Task: TaskCode, Score: conf}},
+			Signals:    sigs,
+			Classifier: "heuristic",
+			Reason:     reason + strings.Join(reasons, ", "),
+		}, nil
+	}
+
+	// 1.3 长上下文（现在只有在 !strongCodingSignal 时才触发）
+	if sigs.EstimatedTokens > c.effectiveLongContextTokens() {
+		conf := 0.85 // 略降 conf（从 0.90），因为可能存在误判边缘案例
 		return &Classification{
 			Primary:    TaskLongContext,
 			Confidence: conf,
@@ -394,10 +458,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 		scores[TaskFunctionCall] = conf
 	}
 
-	// Channel 3: keyword scoring
-	text := normaliseForKeyword(sigs.LastUserPrompt, sigs.SystemPrompt)
-	kw := c.effectiveKeywords()
-
+	// Channel 3: keyword scoring (text 和 kw 已在 Channel 1.2 提取，这里复用)
 	// Channel 3a: regex pattern matching (structural cues).
 	// Runs on the same normalised text as keyword scanning. Each matched
 	// pattern seeds a score entry that keyword hits can only *raise*
@@ -406,7 +467,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 	patternHits := matchPatterns(text)
 	patternReason := ""
 	for task, pm := range patternHits {
-		// Pattern weight (0.55-0.65) is a *floor*, not a ceiling —
+		// Pattern weight (0.55-0.70) is a *floor*, not a ceiling —
 		// if a later keyword hit scores higher, the max wins.
 		if cur, ok := scores[task]; !ok || pm.Weight > cur {
 			scores[task] = pm.Weight
@@ -415,32 +476,32 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 
 	// Channel 3b: keyword scoring (vocabulary cues).
 	reasoningHits := countKeywordHits(text, kw.Reasoning)
-	codeHits := countKeywordHits(text, kw.Code)
+	codeHitsChannel3 := countKeywordHits(text, kw.Code) // 重命名避免与 Channel 1.2 的 codeHits 冲突
 	creativeHits := countKeywordHits(text, kw.Creative)
 
 	// Per-keyword-hit weight bumped to 0.4 so a single strong hit
 	// (e.g. "prove", "算法") decisively beats the chat baseline.
 	const perHitWeight = 0.4
 	if reasoningHits > 0 {
-		kw := min(1.0, float64(reasoningHits)*perHitWeight)
-		if kw > scores[TaskReasoning] { // max-merge with pattern layer
-			scores[TaskReasoning] = kw
+		kwScore := min(1.0, float64(reasoningHits)*perHitWeight)
+		if kwScore > scores[TaskReasoning] { // max-merge with pattern layer
+			scores[TaskReasoning] = kwScore
 		}
 	}
-	if codeHits > 0 || sigs.HasCodeBlock {
-		boost := float64(codeHits) * perHitWeight
+	if codeHitsChannel3 > 0 || sigs.HasCodeBlock {
+		boost := float64(codeHitsChannel3) * perHitWeight
 		if sigs.HasCodeBlock {
 			boost += 0.3
 		}
-		kw := min(1.0, boost)
-		if kw > scores[TaskCode] { // max-merge with pattern layer
-			scores[TaskCode] = kw
+		kwScore := min(1.0, boost)
+		if kwScore > scores[TaskCode] { // max-merge with pattern layer
+			scores[TaskCode] = kwScore
 		}
 	}
 	if creativeHits > 0 {
-		kw := min(1.0, float64(creativeHits)*perHitWeight)
-		if kw > scores[TaskCreative] { // max-merge with pattern layer
-			scores[TaskCreative] = kw
+		kwScore := min(1.0, float64(creativeHits)*perHitWeight)
+		if kwScore > scores[TaskCreative] { // max-merge with pattern layer
+			scores[TaskCreative] = kwScore
 		}
 	}
 
