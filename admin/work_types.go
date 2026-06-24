@@ -104,13 +104,21 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	out := map[string]interface{}{
-		"window_hours": 24,
-		"by_work_type": map[string]interface{}{},
-		"by_l1_task":   map[string]int{},
-		"total_auto":   0,
+		"window_hours":    24,
+		"by_work_type":    map[string]interface{}{},
+		"by_l1_task":      map[string]int{},
+		"total_auto":      0,
+		"total_specified": 0,
 	}
 
 	// Direct work_type column (future)
+	//
+	// 2026-06-24 fix: the explicit-model branch used `is_auto_request = FALSE`,
+	// which is NULL for historical request_logs rows (the writer only learned
+	// to set TRUE/FALSE later). PostgreSQL three-valued logic excluded every
+	// NULL row, so explicit-model requests never appeared in by_work_type /
+	// by_l1_task / top_models. Use `is_auto_request IS NOT TRUE` so NULL
+	// rows are admitted alongside TRUE auto requests.
 	wtDirect := map[string]int{}
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(work_type, 'unknown'), COUNT(*)
@@ -119,7 +127,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND work_type IS NOT NULL AND work_type <> ''
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY work_type
 	`)
@@ -136,7 +144,14 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// L1 task_type distribution (mapped to work types). Includes
 	// __specified__ for explicit-model requests so the L1-task view
-	// is also complete.
+	// is also complete. 2026-06-24 NULL-safe filter.
+	//
+	// 2026-06-24 GROUP BY fix: the original query used `GROUP BY task_type`
+	// while the SELECT expression reads `is_auto_request` inside the CASE
+	// branch. PostgreSQL rejects this with "column ... must appear in the
+	// GROUP BY clause", and the handler swallowed the rows err so by_l1_task
+	// silently came back empty. Use `GROUP BY (expr)` so PG accepts the
+	// composite key. Same fix as the audit handler task_distribution.
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
 	rows, err = h.db.Query(ctx, fmt.Sprintf(`
@@ -145,10 +160,10 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		WHERE ts >= NOW() - INTERVAL '24 hours'
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
-		GROUP BY task_type
-	`, taskExpr))
+		GROUP BY (%s)
+	`, taskExpr, taskExpr))
 	if err == nil {
 		for rows.Next() {
 			var k string
@@ -161,11 +176,17 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	out["by_l1_task"] = l1Dist
 
+	// Total counters — `NOT is_auto_request` is NULL when the bool
+	// column is NULL, and SUM ignores NULL, so total_specified was
+	// always 0 even when by_l1_task / top_models showed thousands of
+	// explicit-model requests. Wrap with COALESCE so NULL rows are
+	// counted as non-auto. Same fix applied in admin/auto_route.go
+	// handleAudit (2026-06-24).
 	var totalAuto, totalSpec int
 	_ = h.db.QueryRow(ctx, `
 		SELECT
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN NOT is_auto_request AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
+		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
 		FROM request_logs
 		WHERE ts >= NOW() - INTERVAL '24 hours'
 	`).Scan(&totalAuto, &totalSpec)
@@ -218,7 +239,8 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	out["by_work_type"] = byWT
 
-	// Top models 24h (union auto + specified, with client_model fallback)
+	// Top models 24h (union auto + specified, with client_model fallback).
+	// 2026-06-24: same NULL-safe filter as the other two queries above.
 	topModels := make([]map[string]interface{}, 0)
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
@@ -227,7 +249,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY m
 		ORDER BY c DESC
