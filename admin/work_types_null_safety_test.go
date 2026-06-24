@@ -74,6 +74,46 @@ func TestHandleStats_NullSafeIsAutoFilter(t *testing.T) {
 	}
 }
 
+// TestHandleStats_L1TaskGroupByExpression guards the 2026-06-24 bug
+// where `by_l1_task` silently came back as `{}` even though the
+// request_logs table had hundreds of rows. Root cause: the SELECT
+// expression references `is_auto_request` inside a CASE branch (via
+// the effectiveTaskExpr) but the GROUP BY referenced only the raw
+// `task_type` column. PostgreSQL rejects that combination with
+// "column request_logs.is_auto_request must appear in the GROUP BY
+// clause or be used in an aggregate function", and the handler
+// swallowed the rows error so the response shape looked valid with
+// an empty distribution. The fix is `GROUP BY (expr)` so PG accepts
+// the composite key.
+func TestHandleStats_L1TaskGroupByExpression(t *testing.T) {
+	src := readWorkTypesSource(t)
+
+	idx := strings.Index(src, "func (h *WorkTypeHandlers) handleStats(")
+	if idx < 0 {
+		t.Fatal("could not locate WorkTypeHandlers.handleStats")
+	}
+	endIdx := strings.Index(src[idx:], "\nfunc ")
+	if endIdx < 0 {
+		endIdx = len(src)
+	} else {
+		endIdx += idx
+	}
+	body := stripLineComments(src[idx:endIdx])
+
+	// Find the l1Dist query by its distinctive WHERE 24h clause and
+	// assert that its GROUP BY uses the wrapped expression form.
+	// We anchor on the only query that uses `GROUP BY task_type` (or
+	// `GROUP BY (task_type_eff)` after the fix). Any future
+	// regression to bare `task_type` GROUP BY is the regression we
+	// want to catch.
+	if strings.Contains(body, "GROUP BY task_type\n") {
+		t.Fatalf("handleStats l1Dist query uses bare `GROUP BY task_type` while SELECT references is_auto_request inside a CASE branch. PG rejects this with `column must appear in GROUP BY` and the handler swallows rows err, so by_l1_task silently comes back as {}. Replace with `GROUP BY (%s)` where the wrapped expression is the same one used in SELECT:\n%s", "COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END)", body)
+	}
+	if !strings.Contains(body, "GROUP BY (") {
+		t.Fatalf("handleStats l1Dist query must GROUP BY (expr) (the wrapped COALESCE/CASE expression). Found no `GROUP BY (` in handleStats body:\n%s", body)
+	}
+}
+
 // TestHandleStats_NullSafeTotalSpecified guards the total_specified
 // SUM counter. Just like the audit handler, the original code used
 // `NOT is_auto_request` inside a SUM(CASE ...) — which is NULL when

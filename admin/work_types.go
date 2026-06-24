@@ -144,7 +144,14 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// L1 task_type distribution (mapped to work types). Includes
 	// __specified__ for explicit-model requests so the L1-task view
-	// is also complete. 2026-06-24: same NULL-safe filter.
+	// is also complete. 2026-06-24 NULL-safe filter.
+	//
+	// 2026-06-24 GROUP BY fix: the original query used `GROUP BY task_type`
+	// while the SELECT expression reads `is_auto_request` inside the CASE
+	// branch. PostgreSQL rejects this with "column ... must appear in the
+	// GROUP BY clause", and the handler swallowed the rows err so by_l1_task
+	// silently came back empty. Use `GROUP BY (expr)` so PG accepts the
+	// composite key. Same fix as the audit handler task_distribution.
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
 	rows, err = h.db.Query(ctx, fmt.Sprintf(`
@@ -155,8 +162,8 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
-		GROUP BY task_type
-	`, taskExpr))
+		GROUP BY (%s)
+	`, taskExpr, taskExpr))
 	if err == nil {
 		for rows.Next() {
 			var k string
