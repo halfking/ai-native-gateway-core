@@ -438,13 +438,20 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 
 	// Total + success rate — over BOTH auto and specified-model requests
 	// so the headline KPI reflects actual gateway volume.
+	//
+	// 2026-06-24 NULL-safe counters: `NOT is_auto_request` is NULL when the
+	// bool column is NULL, which silently zeroes the SUM (PG aggregates
+	// ignore NULL). Historical rows have is_auto_request IS NULL — they
+	// are explicit-model requests, so they belong in totalSpecified and
+	// in total. Use `COALESCE(is_auto_request, FALSE)` so the arithmetic
+	// reads the NULL as FALSE instead of dropping it.
 	var total, successes, totalAuto, totalSpecified int
 	err := h.db.QueryRow(ctx, `
 		SELECT
 		  COUNT(*),
 		  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN NOT is_auto_request THEN 1 ELSE 0 END), 0)
+		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
 		FROM request_logs
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
