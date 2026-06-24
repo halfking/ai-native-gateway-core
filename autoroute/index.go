@@ -120,7 +120,7 @@ if len(filtered) == 0 {
 	// Score all
 	scored := make([]ScoredCandidate, 0, len(filtered))
 	for _, c := range filtered {
-		bd := Score(c, sigs, profile, costCtx)
+		bd := Score(c, sigs, task, profile, costCtx)
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}
 
