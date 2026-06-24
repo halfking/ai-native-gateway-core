@@ -101,7 +101,19 @@ const requestLogStatusExpr = `COALESCE(
 	END
 )`
 
-const requestLogsSelectCols = `
+// requestLogsListCols is the slimmed column list for the /api/logs list
+// endpoint. It intentionally omits the three JSONB blobs that dominate the
+// payload size (50 rows went 444 kB -> 43 kB, -90%, measured 2026-06-24;
+// see docs/llm-gateway-go/perf/2026-06-24-request-logs-baseline.md):
+//   - outbound_body       (~11.6 kB/row avg, up to 592 kB/row)
+//   - outbound_msg_hashes (~0.6 kB/row)
+//   - compression_meta    (~0.17 kB/row)
+// Those three are only needed in the detail drawer and are therefore only
+// SELECTed by requestLogsDetailCols (used by getLog). The small siblings
+// (outbound_msg_count / outbound_token_est / compression_strategy /
+// compression_reason) are kept here because the list UI's compressionLabel
+// helper renders badges from them.
+const requestLogsListCols = `
 	rl.ts, rl.request_id, rl.api_key_id, rl.end_user_id,
 	rl.client_model, rl.outbound_model,
 	rl.credential_id, c.label AS credential_label,
@@ -130,16 +142,31 @@ const requestLogsSelectCols = `
 	mc.canonical_name,
 	mo_pick.provider_model,
 	rl.credits_charged,
-	-- v3 (2026-06-19) session-level outbound body fields.
-	rl.outbound_body,
+	-- v3 (2026-06-19) session-level outbound body summary fields (small,
+	-- kept for the list UI's compression badge). The full JSONB bodies are
+	-- only loaded by requestLogsDetailCols for the detail drawer.
 	rl.outbound_msg_count,
 	rl.outbound_token_est,
-	rl.outbound_msg_hashes,
 	rl.compression_strategy,
 	rl.compression_reason,
-	rl.compression_meta,
 	rl.parent_request_id
 `
+
+// requestLogsDetailCols extends the list columns with the three JSONB blobs
+// needed by the detail drawer (outbound_body / outbound_msg_hashes /
+// compression_meta). Used only by getLog (/api/logs/:id).
+const requestLogsDetailCols = requestLogsListCols + `,
+	rl.outbound_body,
+	rl.outbound_msg_hashes,
+	rl.compression_meta
+`
+
+// requestLogsSelectCols is the historical name kept as a deprecated alias
+// of requestLogsDetailCols so that any out-of-tree caller still compiles.
+// Prefer requestLogsListCols (list) or requestLogsDetailCols (detail).
+//
+// Deprecated: use requestLogsListCols or requestLogsDetailCols explicitly.
+const requestLogsSelectCols = requestLogsDetailCols
 
 const requestLogsJoins = `
 	LEFT JOIN providers p ON p.id = rl.provider_id
@@ -210,7 +237,12 @@ func (h *Handler) handleLogsRoot(w http.ResponseWriter, r *http.Request) {
 	h.listLogs(w, r)
 }
 
-func scanRequestLogRow(rows interface {
+// scanRequestListRow scans a row whose SELECT columns match requestLogsListCols
+// (i.e. WITHOUT the outbound_body / outbound_msg_hashes / compression_meta
+// JSONB blobs). Used by listLogs to keep the list payload small. The three
+// omitted fields stay nil on the returned requestLogRow and, thanks to the
+// `omitempty` JSON tags, never reach the client.
+func scanRequestListRow(rows interface {
 	Scan(dest ...any) error
 }, withTraceSeq bool) (requestLogRow, error) {
 	var l requestLogRow
@@ -234,7 +266,47 @@ func scanRequestLogRow(rows interface {
 		&l.GwSessionID, &l.GwTaskID,
 		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
 		&l.CanonicalName, &l.ProviderModel, &l.CreditsCharged,
-		// v3 session-level outbound body fields.
+		// v3 session-level outbound body SUMMARY fields (small, kept for
+		// the list UI's compression badge; the full JSONB bodies are only
+		// loaded by scanRequestDetailRow for the detail drawer).
+		&l.OutboundMsgCount, &l.OutboundTokenEst,
+		&l.CompressionStrategy, &l.CompressionReason, &l.ParentRequestID,
+	}
+	if withTraceSeq {
+		dest = append(dest, &l.TraceSeq)
+	}
+	err := rows.Scan(dest...)
+	return l, err
+}
+
+// scanRequestDetailRow scans a row whose SELECT columns match
+// requestLogsDetailCols (the list columns PLUS outbound_body /
+// outbound_msg_hashes / compression_meta). Used by getLog.
+func scanRequestDetailRow(rows interface {
+	Scan(dest ...any) error
+}, withTraceSeq bool) (requestLogRow, error) {
+	var l requestLogRow
+	dest := []any{
+		&l.Ts, &l.RequestID, &l.APIKeyID, &l.EndUserID,
+		&l.ClientModel, &l.OutboundModel,
+		&l.CredentialID, &l.CredentialLabel,
+		&l.ProviderID, &l.ProviderName, &l.ProviderCode,
+		&l.ClientProfile, &l.RequestMode,
+		&l.PromptTokens, &l.CompletionTokens,
+		&l.CacheReadTokens, &l.CacheWriteTokens, &l.TotalTokens,
+		&l.CostUSD, &l.CostDisplay, &l.CostCurrency, &l.LatencyMs, &l.Success, &l.RequestStatus, &l.ErrorKind, &l.SearchText,
+		&l.IdentityHash, &l.VirtualClientID, &l.VirtualIP, &l.VirtualMAC,
+		&l.AffinityHit, &l.RequestChecksum, &l.ResponseChecksum,
+		&l.TransformRuleID, &l.EgressProtocol, &l.FailureStage, &l.FailureDetailCode,
+		&l.UpstreamFinishReason,
+		&l.RequestPreview, &l.TransformSummary, &l.ResponsePreview,
+		&l.StreamFirstChunkMs, &l.StreamChunkCount,
+		&l.StreamDoneReceived, &l.StreamInterrupted, &l.StreamDoneSent,
+		&l.UsageSource,
+		&l.GwSessionID, &l.GwTaskID,
+		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
+		&l.CanonicalName, &l.ProviderModel, &l.CreditsCharged,
+		// v3 session-level outbound body fields (full set incl. JSONB blobs).
 		&l.OutboundBody, &l.OutboundMsgCount, &l.OutboundTokenEst, &l.OutboundMsgHashes,
 		&l.CompressionStrategy, &l.CompressionReason, &l.CompressionMeta, &l.ParentRequestID,
 	}
@@ -243,6 +315,16 @@ func scanRequestLogRow(rows interface {
 	}
 	err := rows.Scan(dest...)
 	return l, err
+}
+
+// scanRequestLogRow is the historical name kept as a deprecated alias of
+// scanRequestDetailRow so that any out-of-tree caller still compiles.
+//
+// Deprecated: use scanRequestListRow (list) or scanRequestDetailRow (detail).
+func scanRequestLogRow(rows interface {
+	Scan(dest ...any) error
+}, withTraceSeq bool) (requestLogRow, error) {
+	return scanRequestDetailRow(rows, withTraceSeq)
 }
 
 func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +481,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	limitIdx := argIdx
 	offsetIdx := argIdx + 1
 
+	// Use the slimmed column list (requestLogsListCols) for the list
+	// endpoint: omit outbound_body / outbound_msg_hashes / compression_meta
+	// JSONB blobs. Those are only loaded by the detail drawer via getLog.
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s%s
 		FROM request_logs rl
@@ -406,7 +491,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, requestLogsSelectCols, traceSeqCol, requestLogsJoins, where, orderBy, limitIdx, offsetIdx), listArgs...)
+	`, requestLogsListCols, traceSeqCol, requestLogsJoins, where, orderBy, limitIdx, offsetIdx), listArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -415,7 +500,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]requestLogRow, 0)
 	for rows.Next() {
-		l, err := scanRequestLogRow(rows, chrono)
+		l, err := scanRequestListRow(rows, chrono)
 		if err != nil {
 			continue
 		}
@@ -447,6 +532,9 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	var requestBodyRaw []byte
 	var responseBodyRaw []byte
 
+	// Detail drawer needs the full payload including outbound_body /
+	// outbound_msg_hashes / compression_meta, so use requestLogsDetailCols
+	// (NOT the slimmed requestLogsListCols used by the list endpoint).
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s, rl.request_body::text, rl.response_body::text
 		  FROM request_logs rl
@@ -455,7 +543,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		   AND ($2 OR ak.tenant_id = $3)
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
-	`, requestLogsSelectCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
+	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
