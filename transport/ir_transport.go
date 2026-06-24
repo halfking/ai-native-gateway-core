@@ -17,6 +17,7 @@ type IRTransport struct {
 	detector  ProtocolDetector
 	extractor ExtensionExtractor
 	restorer  ExtensionRestorer
+	cb        *StreamCircuitBreaker // 流式降级熔断器
 }
 
 // NewIRTransport 构造默认配置的 IRTransport。
@@ -25,8 +26,19 @@ func NewIRTransport() *IRTransport {
 		detector:  &IRProtocolDetector{},
 		extractor: &IRExtensionExtractor{},
 		restorer:  &IRExtensionRestorer{},
+		cb:        NewStreamCircuitBreaker(),
 	}
 }
+
+// SetCircuitBreaker 替换流式熔断器（测试/注入用）。
+func (t *IRTransport) SetCircuitBreaker(cb *StreamCircuitBreaker) {
+	if cb != nil {
+		t.cb = cb
+	}
+}
+
+// CircuitBreaker 返回流式熔断器（监控用）。
+func (t *IRTransport) CircuitBreaker() *StreamCircuitBreaker { return t.cb }
 
 // Implementation 返回 "ir"。
 func (t *IRTransport) Implementation() string { return "ir" }
@@ -103,12 +115,26 @@ func (t *IRTransport) ConvertResponse(ctx context.Context, envelope *domain.Requ
 	return clientBody, nil
 }
 
+// ErrStreamCircuitOpen 报告 IR 流式路径已被熔断，应降级到 Legacy。
+var ErrStreamCircuitOpen = errors.New("ir_transport: stream circuit open, fallback to legacy")
+
 // ConvertStream 实现流式 SSE 转换。
+//
+// 行为：
+//   - 入口检查 CircuitBreaker；若已 Open 返回 ErrStreamCircuitOpen（Factory 应降级 Legacy）
+//   - 维护 pendingEvent 状态以正确配对 Anthropic SSE 的 `event:` + `data:` 双行
+//   - 单个 chunk 解析错误：记录到熔断器 + slog.Warn，继续处理后续事件
+//   - 流结束：记录成功到熔断器
 func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.RequestEnvelope, upstreamResp *http.Response) error {
 	if envelope == nil || envelope.Transport == nil || upstreamResp == nil {
 		return errors.New("ir_transport: nil envelope/transport/upstream")
 	}
 	tc := envelope.Transport
+
+	// 入口熔断检查
+	if t.cb != nil && t.cb.ShouldFallback() {
+		return ErrStreamCircuitOpen
+	}
 
 	// 设置 SSE headers
 	if tc.W != nil {
@@ -125,85 +151,151 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	br := bufioReader(upstreamResp.Body)
 	defer upstreamResp.Body.Close()
 
+	// pendingEvent 跟踪 Anthropic SSE 的 event: 行类型，等待对应的 data: 行
+	pendingEvent := ""
+
 	for {
 		line, err := br.ReadBytes('\n')
+
 		if len(line) > 0 {
-			if err := t.convertStreamLine(tc, envelope, line); err != nil {
-				slog.Warn("ir_transport: convert stream line failed", "err", err)
+			if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
+				// 关键写入错误 → 立即终止
+				if t.cb != nil {
+					t.cb.RecordError()
+				}
+				return writeErr
 			}
 		}
+
 		if err != nil {
 			break
 		}
 	}
 
-	// 发送 [DONE]
-	if tc.UpstreamProtocol == "openai-chat" {
+	// 发送 [DONE]（仅 OpenAI 客户端需要）
+	if tc.ClientProtocol == "openai-chat" {
 		fmt.Fprintf(tc.W, "data: [DONE]\n\n")
 		flusher.Flush()
 	}
 
+	// 流成功完成
+	if t.cb != nil {
+		t.cb.RecordSuccess()
+	}
 	conversionTotal.WithLabelValues("ir", "stream").Inc()
 	return nil
 }
 
-func (t *IRTransport) convertStreamLine(tc *domain.TransportContext, env *domain.RequestEnvelope, line []byte) error {
-	// OpenAI SSE: 直接是 `data: {...}\n`
-	// Anthropic SSE: `event: <type>\ndata: {...}\n\n`
-	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) == 0 {
+// processStreamLine 处理单行 SSE 输入并写入客户端。
+//
+// 维护 pendingEvent 状态以正确配对 Anthropic SSE：
+//   - `event: <type>` 行：写入 pendingEvent
+//   - `data: <json>` 行：用 pendingEvent 解析（若上游是 Anthropic）
+//   - 空行（事件分隔）：清空 pendingEvent
+//
+// 解析错误时：slog.Warn + 记录到熔断器，但继续处理（不让单错杀全流）。
+func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain.RequestEnvelope, line []byte, pendingEvent *string) error {
+	trimmed := bytes.TrimRight(line, "\r\n")
+	trimmedSpace := bytes.TrimSpace(trimmed)
+
+	// 空行（事件分隔）→ 清空 pendingEvent
+	if len(trimmedSpace) == 0 {
+		*pendingEvent = ""
 		return nil
 	}
 
-	var chunk *ir.StreamChunk
-	var err error
-
-	switch tc.UpstreamProtocol {
-	case "openai-chat":
-		// 提取 data: 后面的 JSON
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
-			return nil
-		}
-		payload := bytes.TrimSpace(trimmed[5:])
-		if bytes.Equal(payload, []byte("[DONE]")) {
-			return nil
-		}
-		chunk, err = ir.ParseOpenAIStreamChunk(string(payload))
-	case "anthropic-messages":
-		// 简化处理：忽略 event 行，只处理 data 行
-		if !bytes.HasPrefix(trimmed, []byte("data:")) {
-			return nil
-		}
-		payload := bytes.TrimSpace(trimmed[5:])
-		// Anthropic event type 默认是 message_start
-		chunk, err = ir.ParseAnthropicStreamEvent("", payload)
-	default:
-		return fmt.Errorf("ir_transport: unsupported upstream protocol %s", tc.UpstreamProtocol)
-	}
-
-	if err != nil || chunk == nil {
+	// event: 行（Anthropic 协议）
+	if bytes.HasPrefix(trimmedSpace, []byte("event:")) {
+		*pendingEvent = string(bytes.TrimSpace(trimmedSpace[6:]))
 		return nil
 	}
 
-	var clientData string
-	switch tc.ClientProtocol {
-	case "openai-chat":
-		clientData = chunk.SerializeOpenAI(env.RequestID, tc.ClientModel, env.CreatedAt.Unix())
-	case "anthropic-messages":
-		clientData = chunk.SerializeAnthropic(env.RequestID, tc.ClientModel)
-	default:
-		return fmt.Errorf("ir_transport: unsupported client protocol %s", tc.ClientProtocol)
+	// data: 行（事件负载）
+	if !bytes.HasPrefix(trimmedSpace, []byte("data:")) {
+		// 其他行（如 OpenAI 的注释行 `:xxx`）跳过
+		return nil
 	}
+
+	payload := bytes.TrimSpace(trimmedSpace[5:])
+	if len(payload) == 0 {
+		return nil
+	}
+
+	// 解析上游 chunk
+	chunk, parseErr := t.parseUpstreamChunk(tc.UpstreamProtocol, trimmedSpace, *pendingEvent)
+	if parseErr != nil {
+		slog.Warn("ir_transport: parse stream chunk failed",
+			"upstream", tc.UpstreamProtocol,
+			"pending_event", *pendingEvent,
+			"err", parseErr)
+		// 解析错误：记录到熔断器但继续
+		if t.cb != nil {
+			t.cb.RecordError()
+		}
+		*pendingEvent = ""
+		return nil
+	}
+	if chunk == nil {
+		// sentinel 帧（如 [DONE]）或空事件
+		*pendingEvent = ""
+		return nil
+	}
+
+	// 序列化为客户端协议
+	clientData := t.serializeClientChunk(tc, env, chunk)
+	*pendingEvent = ""
 
 	if clientData == "" {
 		return nil
 	}
 
-	fmt.Fprintf(tc.W, "data: %s\n\n", clientData)
+	// 写入客户端 + flush
+	if _, err := fmt.Fprintf(tc.W, "data: %s\n\n", clientData); err != nil {
+		return err
+	}
 	if f, ok := tc.W.(http.Flusher); ok {
 		f.Flush()
 	}
 	return nil
+}
+
+// parseUpstreamChunk 解析上游 SSE 数据行为 IR StreamChunk。
+//
+// line 应是已剥除 \r\n 但保留 `data: ` 前缀的完整行（让 IR 函数自己剥前缀）。
+// 对于 Anthropic：使用 pendingEvent 作为 eventType（来自上一行 `event:`）。
+// 对于 OpenAI：pendingEvent 被忽略（OpenAI 没有 event 行）。
+func (t *IRTransport) parseUpstreamChunk(protocol string, line []byte, eventType string) (*ir.StreamChunk, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		// IR 函数期望带 "data: " 前缀的输入
+		return ir.ParseOpenAIStreamChunk(string(line))
+	case "anthropic-messages", "anthropic":
+		// Anthropic: data 行 payload 是纯 JSON（不需 "data: " 前缀）
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload := bytes.TrimSpace(line[5:])
+			if bytes.Equal(payload, []byte("[DONE]")) {
+				return nil, nil
+			}
+			return ir.ParseAnthropicStreamEvent(eventType, payload)
+		}
+		// 非 data 行（已被外层处理，不应到这里）
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("ir_transport: unsupported upstream protocol %s", protocol)
+	}
+}
+
+// serializeClientChunk 将 IR StreamChunk 序列化为客户端协议 SSE 数据。
+func (t *IRTransport) serializeClientChunk(tc *domain.TransportContext, env *domain.RequestEnvelope, chunk *ir.StreamChunk) string {
+	switch tc.ClientProtocol {
+	case "openai-chat", "openai":
+		return chunk.SerializeOpenAI(env.RequestID, tc.ClientModel, env.CreatedAt.Unix())
+	case "anthropic-messages", "anthropic":
+		return chunk.SerializeAnthropic(env.RequestID, tc.ClientModel)
+	default:
+		slog.Warn("ir_transport: unsupported client protocol", "protocol", tc.ClientProtocol)
+		return ""
+	}
 }
 
 // parseRequest 解析客户端请求到 IR。

@@ -74,21 +74,29 @@ func (f *TransportFactory) shouldUseIR(envelope *domain.RequestEnvelope) bool {
 		return false
 	}
 
-	// 2. 租户白名单
+	// 2. 流式降级熔断（仅对流式请求生效）
+	// 如果 IR 流式路径熔断，强制走 Legacy 以避免对生产造成持续影响
+	if envelope != nil && envelope.Transport != nil && envelope.Transport.IsStream {
+		if f.irTransport != nil && f.irTransport.cb != nil && f.irTransport.cb.ShouldFallback() {
+			return false
+		}
+	}
+
+	// 3. 租户白名单
 	if len(f.tenantWhitelist) > 0 && envelope != nil && envelope.Tenant != nil {
 		if _, ok := f.tenantWhitelist[envelope.Tenant.ID]; ok {
 			return true
 		}
 	}
 
-	// 3. 模型白名单
+	// 4. 模型白名单
 	if len(f.modelWhitelist) > 0 && envelope != nil && envelope.Transport != nil {
 		if _, ok := f.modelWhitelist[envelope.Transport.ClientModel]; ok {
 			return true
 		}
 	}
 
-	// 4. 按百分比灰度
+	// 5. 按百分比灰度
 	if f.rolloutPercent == 0 {
 		return false
 	}
