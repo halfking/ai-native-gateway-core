@@ -92,6 +92,16 @@ type InternalRequest struct {
 
 	// ─── Source protocol (used by Serializer to determine output format) ───
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
+
+	// Extensions carries non-standard top-level fields extracted by the
+	// transport layer (transport.IRExtensionExtractor) for lossless round-trip
+	// conversion. Populated during Parse, consumed during Serialize by
+	// transport.IRExtensionRestorer. Not touched by ir serializers.
+	//
+	// Why: OpenAI↔Anthropic conversion via IR drops unknown fields (e.g.
+	// provider-private params, future API additions). Extensions preserves
+	// them so a round-trip is lossless.
+	Extensions map[string]json.RawMessage
 }
 
 // SystemPrompt represents a normalized system prompt.
