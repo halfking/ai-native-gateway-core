@@ -416,6 +416,16 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 // Task distribution spans both L1-classified task_types (auto) and the
 // synthetic __specified__ key (explicit-model requests), giving a single
 // uniform view of routing volume.
+//
+// 2026-06-24 fix: every per-row filter that previously used
+// `is_auto_request = FALSE` was NULL-unsafe (PostgreSQL three-valued
+// logic excludes rows where the bool column is NULL). Historical
+// request_logs rows have is_auto_request IS NULL because the writer
+// learned to set TRUE/FALSE only later. The query now uses
+// `is_auto_request IS NOT TRUE` so NULL rows are admitted alongside
+// TRUE auto requests and counted as specified_model_requests. Without
+// this fix, the analytics tab rendered "暂无数据" / empty heatmap even
+// though hundreds of explicit-model rows sat in the table.
 func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -439,7 +449,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 	`).Scan(&total, &successes, &totalAuto, &totalSpecified)
 	if err != nil {
@@ -466,7 +476,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s)
 		ORDER BY COUNT(*) DESC
@@ -516,7 +526,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY m
 		ORDER BY c DESC

@@ -48,8 +48,15 @@ func TestBuildMatrixQuery_IncludesSpecifiedModel(t *testing.T) {
 	if !strings.Contains(q, "is_auto_request = TRUE") {
 		t.Fatalf("matrix query must keep the auto-request branch:\n%s", q)
 	}
-	if !strings.Contains(q, "is_auto_request = FALSE") {
-		t.Fatalf("matrix query must include the explicit-model branch:\n%s", q)
+	// 2026-06-24 fix: the explicit-model branch used to be `is_auto_request = FALSE`,
+	// which is NULL-unsafe and silently dropped historical rows. Accept either
+	// the legacy `= FALSE` form (rejected by TestBuildMatrixQuery_AdmitsNullIsAutoRequest)
+	// or the NULL-safe `IS NOT TRUE` / `COALESCE(..., FALSE) = FALSE` form.
+	admitsExplicit := strings.Contains(q, "is_auto_request = FALSE") ||
+		strings.Contains(q, "is_auto_request IS NOT TRUE") ||
+		strings.Contains(q, "COALESCE(is_auto_request, FALSE) = FALSE")
+	if !admitsExplicit {
+		t.Fatalf("matrix query must include the explicit-model branch (`is_auto_request = FALSE` / `IS NOT TRUE` / `COALESCE(...)=FALSE`):\n%s", q)
 	}
 	// No lingering is_auto_request = TRUE as a top-level WHERE — we
 	// want it only inside the OR clause.
@@ -92,8 +99,12 @@ func TestBuildMatrixQuery_WorkTypeRowDim(t *testing.T) {
 	}
 	// But the broader WHERE clause (auto OR explicit) must still be
 	// present so work_type stats include explicit-model requests.
-	if !strings.Contains(q, "is_auto_request = FALSE") {
-		t.Fatalf("work_type query must still admit explicit-model requests:\n%s", q)
+	// 2026-06-24: accept the NULL-safe form too.
+	admitsExplicit := strings.Contains(q, "is_auto_request = FALSE") ||
+		strings.Contains(q, "is_auto_request IS NOT TRUE") ||
+		strings.Contains(q, "COALESCE(is_auto_request, FALSE) = FALSE")
+	if !admitsExplicit {
+		t.Fatalf("work_type query must still admit explicit-model requests (`is_auto_request = FALSE` / `IS NOT TRUE` / `COALESCE(...)=FALSE`):\n%s", q)
 	}
 }
 
@@ -140,8 +151,8 @@ func TestBuildMatrixQuery_RowIsModel(t *testing.T) {
 	if selectIdx < 0 {
 		t.Fatalf("query missing SELECT:\n%s", q)
 	}
-	rowExpr := strings.TrimSpace(q[selectIdx+len("SELECT "):rowIdx])
-	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key "):colIdx])
+	rowExpr := strings.TrimSpace(q[selectIdx+len("SELECT ") : rowIdx])
+	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key ") : colIdx])
 
 	// Row expression must reference outbound_model or client_model
 	// (the model axis), NOT task_type.
@@ -174,12 +185,12 @@ func TestBuildMatrixQuery_WorkTypeRowDim_ColIsWorkType(t *testing.T) {
 	if rowIdx < 0 || colIdx < 0 {
 		t.Fatalf("query missing aliases:\n%s", q)
 	}
-	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key "):colIdx])
+	colExpr := strings.TrimSpace(q[rowIdx+len(" AS row_key ") : colIdx])
 	if !strings.Contains(colExpr, "work_type") {
 		t.Fatalf("work_type mode: col expression must reference work_type, got:\n%s", colExpr)
 	}
 	// And the row must STILL be the model (independent of rowDim).
-	rowExpr := strings.TrimSpace(q[strings.Index(q, "SELECT ")+len("SELECT "):rowIdx])
+	rowExpr := strings.TrimSpace(q[strings.Index(q, "SELECT ")+len("SELECT ") : rowIdx])
 	if !strings.Contains(rowExpr, "outbound_model") {
 		t.Fatalf("work_type mode: row must still be the model axis, got:\n%s", rowExpr)
 	}
@@ -227,8 +238,12 @@ func TestBuildFlowL12Query_AdmitsExplicitModel(t *testing.T) {
 	if !strings.Contains(q, SpecifiedModelTaskKey) {
 		t.Fatalf("L12 query missing %s: %s", SpecifiedModelTaskKey, q)
 	}
-	if !strings.Contains(q, "is_auto_request = FALSE") {
-		t.Fatalf("L12 query must admit explicit-model branch: %s", q)
+	// 2026-06-24: accept NULL-safe form too.
+	admitsExplicit := strings.Contains(q, "is_auto_request = FALSE") ||
+		strings.Contains(q, "is_auto_request IS NOT TRUE") ||
+		strings.Contains(q, "COALESCE(is_auto_request, FALSE) = FALSE")
+	if !admitsExplicit {
+		t.Fatalf("L12 query must admit explicit-model branch (`is_auto_request = FALSE` / `IS NOT TRUE` / `COALESCE(...)=FALSE`): %s", q)
 	}
 	if !strings.Contains(q, "client_model") {
 		t.Fatalf("L12 query must use client_model fallback: %s", q)
@@ -252,8 +267,12 @@ func TestBuildFlowL23Query_AdmitsExplicitModel(t *testing.T) {
 	if !strings.Contains(q, "display_name") {
 		t.Fatalf("L23 query must reference providers.display_name: %s", q)
 	}
-	if !strings.Contains(q, "is_auto_request = FALSE") {
-		t.Fatalf("L23 query must admit explicit-model branch: %s", q)
+	// 2026-06-24: accept NULL-safe form too.
+	admitsExplicit := strings.Contains(q, "rl.is_auto_request = FALSE") ||
+		strings.Contains(q, "rl.is_auto_request IS NOT TRUE") ||
+		strings.Contains(q, "COALESCE(rl.is_auto_request, FALSE) = FALSE")
+	if !admitsExplicit {
+		t.Fatalf("L23 query must admit explicit-model branch (`rl.is_auto_request = FALSE` / `IS NOT TRUE` / `COALESCE(...)=FALSE`): %s", q)
 	}
 }
 
@@ -284,7 +303,9 @@ func TestHandleAudit_PreservesFieldSet(t *testing.T) {
 // This test pins the contract that the audit's task_distribution query
 // uses GROUP BY (expr), not GROUP BY task_type.
 func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
-	// Rebuild the SQL the same way handleAudit builds it.
+	// Rebuild the SQL the same way handleAudit builds it (2026-06-24
+	// NULL-safe form: `is_auto_request IS NOT TRUE` instead of the
+	// NULL-unsafe `= FALSE`).
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	q := fmt.Sprintf(`
 		SELECT %s AS task_type, COUNT(*)
@@ -292,7 +313,7 @@ func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
 		WHERE ts >= NOW() - INTERVAL '7 days'
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s)
 		ORDER BY COUNT(*) DESC
@@ -307,5 +328,85 @@ func TestBuildAuditTaskDistributionQuery_GroupByExpression(t *testing.T) {
 	// And the raw column alone must not appear in GROUP BY (that was the bug).
 	if strings.Contains(q, "GROUP BY task_type\n") {
 		t.Fatalf("audit task_distribution query must NOT use bare 'GROUP BY task_type' (breaks because SELECT references is_auto_request):\n%s", q)
+	}
+}
+
+// TestBuildMatrixQuery_AdmitsNullIsAutoRequest guards against the
+// 2026-06-24 bug where the analytics tab showed "暂无数据" even though
+// request_logs had hundreds of rows. Root cause: the explicit-model
+// branch used `is_auto_request = FALSE`, which is NULL for rows where
+// the bool column was never written (the writer sets TRUE/FALSE today
+// but historical rows are NULL). PostgreSQL three-valued logic excluded
+// every NULL row, so the heatmap / Sankey / audit all reported empty.
+//
+// The fix is to express the explicit-model branch as
+// `is_auto_request IS NOT TRUE` (or equivalent) so NULL rows count as
+// non-auto and pass the explicit-model filter. This test pins the
+// contract for the matrix query.
+func TestBuildMatrixQuery_AdmitsNullIsAutoRequest(t *testing.T) {
+	q, err := buildMatrixQuery("task_type", "count")
+	if err != nil {
+		t.Fatalf("buildMatrixQuery: %v", err)
+	}
+	// Must NOT use `is_auto_request = FALSE` (the broken form).
+	if strings.Contains(q, "is_auto_request = FALSE") {
+		t.Fatalf("matrix query still uses NULL-unsafe `is_auto_request = FALSE`; historical request_logs rows have is_auto_request IS NULL and would be silently filtered out by PostgreSQL three-valued logic. Replace with `is_auto_request IS NOT TRUE`:\n%s", q)
+	}
+	// Must use NULL-safe form. Accept either of the two patterns:
+	//   `is_auto_request IS NOT TRUE` (preferred), or
+	//   `COALESCE(is_auto_request, FALSE) = FALSE`.
+	if !strings.Contains(q, "is_auto_request IS NOT TRUE") &&
+		!strings.Contains(q, "COALESCE(is_auto_request, FALSE) = FALSE") {
+		t.Fatalf("matrix query must use NULL-safe explicit-model branch; expected `is_auto_request IS NOT TRUE` or `COALESCE(is_auto_request, FALSE) = FALSE`:\n%s", q)
+	}
+}
+
+// TestBuildFlowL12Query_AdmitsNullIsAutoRequest — same guard for the
+// L1→L2 Sankey query.
+func TestBuildFlowL12Query_AdmitsNullIsAutoRequest(t *testing.T) {
+	q := buildFlowL12Query()
+	if strings.Contains(q, "is_auto_request = FALSE") {
+		t.Fatalf("L12 query still uses NULL-unsafe `is_auto_request = FALSE`:\n%s", q)
+	}
+	if !strings.Contains(q, "is_auto_request IS NOT TRUE") &&
+		!strings.Contains(q, "COALESCE(is_auto_request, FALSE) = FALSE") {
+		t.Fatalf("L12 query must use NULL-safe explicit-model branch:\n%s", q)
+	}
+}
+
+// TestBuildFlowL23Query_AdmitsNullIsAutoRequest — same guard for the
+// L2→L3 (model × task → provider) Sankey query.
+func TestBuildFlowL23Query_AdmitsNullIsAutoRequest(t *testing.T) {
+	q := buildFlowL23Query()
+	if strings.Contains(q, "rl.is_auto_request = FALSE") {
+		t.Fatalf("L23 query still uses NULL-unsafe `rl.is_auto_request = FALSE`:\n%s", q)
+	}
+	if !strings.Contains(q, "rl.is_auto_request IS NOT TRUE") &&
+		!strings.Contains(q, "COALESCE(rl.is_auto_request, FALSE) = FALSE") {
+		t.Fatalf("L23 query must use NULL-safe explicit-model branch:\n%s", q)
+	}
+}
+
+// TestBuildAuditTaskDistributionQuery_AdmitsNullIsAutoRequest — same
+// guard for the audit task_distribution query.
+func TestBuildAuditTaskDistributionQuery_AdmitsNullIsAutoRequest(t *testing.T) {
+	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+	q := fmt.Sprintf(`
+		SELECT %s AS task_type, COUNT(*)
+		FROM request_logs
+		WHERE ts >= NOW() - INTERVAL '7 days'
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s)
+		ORDER BY COUNT(*) DESC
+		LIMIT 20
+	`, taskExpr, taskExpr)
+	if strings.Contains(q, "is_auto_request = FALSE") {
+		t.Fatalf("audit task_distribution query still uses NULL-unsafe filter:\n%s", q)
+	}
+	if !strings.Contains(q, "is_auto_request IS NOT TRUE") {
+		t.Fatalf("audit task_distribution query must use NULL-safe explicit-model branch `is_auto_request IS NOT TRUE`:\n%s", q)
 	}
 }
