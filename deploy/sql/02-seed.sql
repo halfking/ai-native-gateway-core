@@ -60,17 +60,6 @@
 -- Data for Name: applications; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.applications VALUES (1, 'default', 'admin', 'System Admin', 'admin', 'confidential', true, 'Bootstrap admin application for gateway', '2026-06-11 16:38:22.38882+00', '2026-06-11 16:38:22.38882+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (3, 'default', 'hermes', 'Hermes Agent', NULL, 'internal', true, NULL, '2026-06-11 17:29:01.053784+00', '2026-06-11 17:29:01.053784+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (4, 'default', 'ide', 'IDE Workspace', NULL, 'internal', true, NULL, '2026-06-11 17:29:01.053784+00', '2026-06-11 17:29:01.053784+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (5, 'default', 'applicant', '自助申请', 'admin', 'internal', true, NULL, '2026-06-12 04:39:25.566262+00', '2026-06-12 04:39:25.566262+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (6, 'default', 'brandmind', 'brandmind', 'admin', 'internal', true, NULL, '2026-06-13 05:41:55.960755+00', '2026-06-13 05:41:55.960755+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (7, 'default', 'user', 'user', 'admin', 'internal', true, NULL, '2026-06-14 18:39:49.881815+00', '2026-06-14 18:39:49.881815+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (8, 'default', 'e2e-app', 'e2e-app', 'admin', 'internal', true, NULL, '2026-06-15 11:39:03.410375+00', '2026-06-15 11:39:03.410375+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (9, 'default', 'default', 'default', 'kevinuser1', 'internal', true, NULL, '2026-06-15 16:03:59.471571+00', '2026-06-15 16:03:59.471571+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (10, 'default', 'wbing', 'wbing', 'admin', 'internal', true, NULL, '2026-06-18 07:11:36.682434+00', '2026-06-18 07:11:36.682434+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (11, 'default', 'caiyc', 'caiyc', 'admin', 'internal', true, NULL, '2026-06-18 07:20:00.819343+00', '2026-06-18 07:20:00.819343+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.applications VALUES (12, 'default', 'default-app', 'default-app', 'applicant', 'internal', true, NULL, '2026-06-19 16:17:21.976265+00', '2026-06-19 16:17:21.976265+00', NULL, NULL) ON CONFLICT DO NOTHING;
 
 
 --
@@ -83,8 +72,6 @@ INSERT INTO public.applications VALUES (12, 'default', 'default-app', 'default-a
 -- Data for Name: key_applications; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.key_applications VALUES ('6c795908-9d7b-418e-8b2b-6103feada5d3', '111.0.232.226', 'c3004ee0bfe5e36653f8c184fd5a76ed4ca455ad18d5a58341645b96dddf3e5d', 'test@kxpms.cn', '', 'approved', 6, 'auto-approved for test', 'admin', '2026-06-12 04:39:25.5682+00', '2026-06-13 04:38:44.818957+00', '2026-06-12 04:38:44.818957+00', '2026-06-12 04:39:25.5682+00') ON CONFLICT DO NOTHING;
-INSERT INTO public.key_applications VALUES ('58cef7c8-db04-4625-b02b-abcecb28a331', '60.176.167.110', '1f21ade5ee98c0415f2174f30321dfe0eb0c4a39117df64c2ec2d5258b7b5808', 'admin@test.com', 'e2e-test', 'pending', NULL, NULL, NULL, NULL, '2026-06-24 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00') ON CONFLICT DO NOTHING;
 
 
 --
@@ -109,13 +96,391 @@ INSERT INTO public.key_applications VALUES ('58cef7c8-db04-4625-b02b-abcecb28a33
 -- Data for Name: maas_settings; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.maas_settings VALUES (1, 0.0100, 600, 'CNY', '2026-06-19 09:13:05.694408+00', '', '', '', '', 1500, 50, 80, 0.8200) ON CONFLICT DO NOTHING;
 
 
 --
 -- Data for Name: model_aliases; Type: TABLE DATA; Schema: public; Owner: -
 --
 
+
+
+--
+-- Data for Name: model_credit_rates; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: model_families; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: model_fingerprints; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: model_lifecycle_jobs; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: model_offers_legacy; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: model_reconcile_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: ops_model_offers_backup; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: pricing_plans; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: pricing_refresh_log; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: provider_catalog; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: provider_header_profiles; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: provider_quality_rollup; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: provider_scores; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: provider_settings; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: providers; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: request_envelope; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: route_decisions; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: routing_overrides; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: routing_policy; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: schema_migrations; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: settings_kv; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: sticky_sessions; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: subscription_plans; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: system_identity_pool; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tenant_settings_kv; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tool_categories; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tool_registry; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: topup_packages; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tuning_params; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tuning_proposals; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: tuning_signals; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: work_type_config; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Data for Name: work_type_model_route; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+
+
+--
+-- Name: applications_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.applications_id_seq', 12, true);
+
+
+--
+-- Name: local_models_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.local_models_id_seq', 1, false);
+
+
+--
+-- Name: local_runtimes_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.local_runtimes_id_seq', 1, false);
+
+
+--
+-- Name: model_aliases_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.model_aliases_id_seq', 249, true);
+
+
+--
+-- Name: model_fingerprints_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.model_fingerprints_id_seq', 1, false);
+
+
+--
+-- Name: model_lifecycle_jobs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.model_lifecycle_jobs_id_seq', 1, false);
+
+
+--
+-- Name: model_offers_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.model_offers_id_seq', 1, false);
+
+
+--
+-- Name: model_reconcile_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.model_reconcile_log_id_seq', 1, false);
+
+
+--
+-- Name: ops_model_offers_backup_backup_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.ops_model_offers_backup_backup_id_seq', 1, false);
+
+
+--
+-- Name: pricing_plans_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.pricing_plans_id_seq', 208, true);
+
+
+--
+-- Name: pricing_refresh_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.pricing_refresh_log_id_seq', 1, false);
+
+
+--
+-- Name: provider_header_profiles_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.provider_header_profiles_id_seq', 1, false);
+
+
+--
+-- Name: provider_scores_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.provider_scores_id_seq', 1, false);
+
+
+--
+-- Name: provider_settings_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.provider_settings_id_seq', 7, true);
+
+
+--
+-- Name: providers_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.providers_id_seq', 2451, true);
+
+
+--
+-- Name: route_decisions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.route_decisions_id_seq', 1, false);
+
+
+--
+-- Name: routing_overrides_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.routing_overrides_id_seq', 1, false);
+
+
+--
+-- Name: subscription_plans_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.subscription_plans_id_seq', 363, true);
+
+
+--
+-- Name: tool_registry_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.tool_registry_id_seq', 7, true);
+
+
+--
+-- Name: topup_packages_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.topup_packages_id_seq', 363, true);
+
+
+--
+-- Name: tuning_proposals_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.tuning_proposals_id_seq', 1, false);
+
+
+--
+-- Name: tuning_signals_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.tuning_signals_id_seq', 1, false);
+
+
+--
+-- Name: work_type_model_route_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.work_type_model_route_id_seq', 4545, true);
+
+
+--
+--
+
+
+INSERT INTO public.applications VALUES (1, 'default', 'admin', 'System Admin', 'admin', 'confidential', true, 'Bootstrap admin application for gateway', '2026-06-11 16:38:22.38882+00', '2026-06-11 16:38:22.38882+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (3, 'default', 'hermes', 'Hermes Agent', NULL, 'internal', true, NULL, '2026-06-11 17:29:01.053784+00', '2026-06-11 17:29:01.053784+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (4, 'default', 'ide', 'IDE Workspace', NULL, 'internal', true, NULL, '2026-06-11 17:29:01.053784+00', '2026-06-11 17:29:01.053784+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (5, 'default', 'applicant', '自助申请', 'admin', 'internal', true, NULL, '2026-06-12 04:39:25.566262+00', '2026-06-12 04:39:25.566262+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (6, 'default', 'brandmind', 'brandmind', 'admin', 'internal', true, NULL, '2026-06-13 05:41:55.960755+00', '2026-06-13 05:41:55.960755+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (7, 'default', 'user', 'user', 'admin', 'internal', true, NULL, '2026-06-14 18:39:49.881815+00', '2026-06-14 18:39:49.881815+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (8, 'default', 'e2e-app', 'e2e-app', 'admin', 'internal', true, NULL, '2026-06-15 11:39:03.410375+00', '2026-06-15 11:39:03.410375+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (9, 'default', 'default', 'default', 'kevinuser1', 'internal', true, NULL, '2026-06-15 16:03:59.471571+00', '2026-06-15 16:03:59.471571+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (10, 'default', 'wbing', 'wbing', 'admin', 'internal', true, NULL, '2026-06-18 07:11:36.682434+00', '2026-06-18 07:11:36.682434+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (11, 'default', 'caiyc', 'caiyc', 'admin', 'internal', true, NULL, '2026-06-18 07:20:00.819343+00', '2026-06-18 07:20:00.819343+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.applications VALUES (12, 'default', 'default-app', 'default-app', 'applicant', 'internal', true, NULL, '2026-06-19 16:17:21.976265+00', '2026-06-19 16:17:21.976265+00', NULL, NULL) ON CONFLICT DO NOTHING;
+INSERT INTO public.key_applications VALUES ('6c795908-9d7b-418e-8b2b-6103feada5d3', '111.0.232.226', 'c3004ee0bfe5e36653f8c184fd5a76ed4ca455ad18d5a58341645b96dddf3e5d', 'test@kxpms.cn', '', 'approved', 6, 'auto-approved for test', 'admin', '2026-06-12 04:39:25.5682+00', '2026-06-13 04:38:44.818957+00', '2026-06-12 04:38:44.818957+00', '2026-06-12 04:39:25.5682+00') ON CONFLICT DO NOTHING;
+INSERT INTO public.key_applications VALUES ('58cef7c8-db04-4625-b02b-abcecb28a331', '60.176.167.110', '1f21ade5ee98c0415f2174f30321dfe0eb0c4a39117df64c2ec2d5258b7b5808', 'admin@test.com', 'e2e-test', 'pending', NULL, NULL, NULL, NULL, '2026-06-24 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00') ON CONFLICT DO NOTHING;
+INSERT INTO public.maas_settings VALUES (1, 0.0100, 600, 'CNY', '2026-06-19 09:13:05.694408+00', '', '', '', '', 1500, 50, 80, 0.8200) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (1, 1, 'gpt-4o', NULL, NULL, 'active', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (2, 1, 'gpt-4o-2024-08-06', NULL, NULL, 'active', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (3, 1, 'gpt-4o-2024-11-20', NULL, NULL, 'active', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00', NULL) ON CONFLICT DO NOTHING;
@@ -364,18 +729,6 @@ INSERT INTO public.model_aliases VALUES (245, 106, 'deepseek/deepseek-chat', NUL
 INSERT INTO public.model_aliases VALUES (246, 354, 'claude-opus-4.8', NULL, NULL, 'active', NULL, '2026-06-20 06:35:04.63467+00', '2026-06-20 06:35:04.63467+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (248, 5704, 'MiniMax-M3', NULL, NULL, 'active', NULL, '2026-06-23 09:17:39.926948+00', '2026-06-23 09:17:39.926948+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (249, 5704, 'minimax-m3', NULL, NULL, 'active', NULL, '2026-06-23 09:17:52.50636+00', '2026-06-23 09:17:52.50636+00', NULL) ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: model_credit_rates; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: model_families; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.model_families VALUES ('xiaomi-mimo', 'Xiaomi Mimo', NULL, 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('xai', 'Xai', NULL, 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('openai-gpt', 'Openai Gpt', 'OpenAI', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00') ON CONFLICT DO NOTHING;
@@ -416,42 +769,6 @@ INSERT INTO public.model_families VALUES ('yi', 'Yi', '01.AI', 'active', 'derive
 INSERT INTO public.model_families VALUES ('perplexity', 'Perplexity', 'Perplexity', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-18 20:09:53.754228+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('sensenova', 'Sensenova', '商汤', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-18 20:09:53.754228+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.model_families VALUES ('cohere', 'Cohere', 'Cohere', 'active', 'derived', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-18 20:09:53.754228+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: model_fingerprints; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: model_lifecycle_jobs; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: model_offers_legacy; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: model_reconcile_log; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: ops_model_offers_backup; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: pricing_plans; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.pricing_plans VALUES (204, 'credential', 1, 9, NULL, 3, 'token_plan', 'USD', '{"tier": "Standard", "currency": "USD", "tier_meta": "Standard xiaomi token-plan rate", "input_per_1m": "10.0", "output_per_1m": "30.0"}', '2026-06-12 10:31:32.797764+00', NULL, 'scraped', 0.950, 'https://platform.xiaomi.com/docs/xiaomi-mimo-tokenplan', DEFAULT, '2026-06-12 10:31:32.797764+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.pricing_plans VALUES (205, 'credential', 1, 9, NULL, 5, 'token_plan', 'USD', '{"tier": "Standard", "currency": "USD", "tier_meta": "Standard xiaomi token-plan rate", "input_per_1m": "15.0", "output_per_1m": "60.0"}', '2026-06-12 10:31:32.797764+00', NULL, 'scraped', 0.950, 'https://platform.xiaomi.com/docs/xiaomi-mimo-tokenplan', DEFAULT, '2026-06-12 10:31:32.797764+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.pricing_plans VALUES (206, 'credential', 1, 9, NULL, 7, 'token_plan', 'USD', '{"tier": "Standard", "currency": "USD", "tier_meta": "Standard xiaomi token-plan rate", "input_per_1m": "2.0", "output_per_1m": "8.0"}', '2026-06-12 10:31:32.797764+00', NULL, 'scraped', 0.950, 'https://platform.xiaomi.com/docs/xiaomi-mimo-tokenplan', DEFAULT, '2026-06-12 10:31:32.797764+00') ON CONFLICT DO NOTHING;
@@ -523,18 +840,6 @@ INSERT INTO public.pricing_plans VALUES (200, 'credential', 36, 13, NULL, NULL, 
 INSERT INTO public.pricing_plans VALUES (201, 'credential', 36, 13, NULL, NULL, 'token', 'USD', '{}', '2026-06-12 10:15:25.592298+00', NULL, 'scraped', 0.900, 'https://platform.MiniMax.io/docs/pricing-paygo', DEFAULT, '2026-06-12 10:15:25.592298+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.pricing_plans VALUES (202, 'credential', 37, 14, NULL, NULL, 'token', 'USD', '{}', '2026-06-12 10:15:25.592298+00', '2026-06-12 10:15:25.592298+00', 'scraped', 0.900, 'https://platform.MiniMax.io/docs/pricing-paygo', DEFAULT, '2026-06-12 10:15:25.592298+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.pricing_plans VALUES (203, 'credential', 37, 14, NULL, NULL, 'token', 'CNY', '{}', '2026-06-12 10:15:25.592298+00', NULL, 'scraped', 0.900, 'https://platform.MiniMax.io/docs/pricing-paygo', DEFAULT, '2026-06-12 10:15:25.592298+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: pricing_refresh_log; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: provider_catalog; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.provider_catalog VALUES ('vapeur', 'tier1', 'Vapeur AI', NULL, 'official', 'cloud', 'openai-completions', 'https://api.vapeur.ai/v1', NULL, 'direct', true, 1.0000, '[]', 'auto', '/models', '[]', '{}', false, 'registered 2026-06-11 by llm-gateway-go; base_url ends in /v1, append /models', 1, '2026-06-11 19:02:44.216748+00', '2026-06-11 19:02:44.216748+00', NULL, '{}', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_catalog VALUES ('scnet', 'tier1', 'SCNet', NULL, 'official', 'cloud', 'openai-completions', 'https://api.scnet.cn/api/llm/v1', NULL, 'direct', true, 1.0000, '[]', 'auto', '/models', '[]', '{}', false, 'registered 2026-06-11 by llm-gateway-go; base_url ends in /v1, append /models', 1, '2026-06-11 19:02:44.216748+00', '2026-06-11 19:02:44.216748+00', NULL, '{}', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_catalog VALUES ('volcano-normal', 'tier1', 'Volcano Ark (OpenAI)', NULL, 'official', 'cloud', 'openai-completions', 'https://ark.cn-beijing.volces.com/api/v3', NULL, 'direct', true, 1.0000, '[]', 'manifest', '/models', '[]', '{}', false, 'registered 2026-06-11 by llm-gateway-go; OpenAI-compat path uses native /v3/models', 1, '2026-06-11 19:02:44.216748+00', '2026-06-11 19:02:44.216748+00', NULL, '{}', NULL) ON CONFLICT DO NOTHING;
@@ -572,42 +877,12 @@ INSERT INTO public.provider_catalog VALUES ('github-copilot', 'restricted', 'Git
 INSERT INTO public.provider_catalog VALUES ('xiaomi', 'tier2', '小米大模型', 'Xiaomi MiMo', 'official', 'cloud', 'openai-completions', 'https://token-plan-cn.xiaomimimo.com/v1', 'https://token-plan-cn.xiaomimimo.com', 'direct', true, 1.0000, '[{"id": "MiMo-V2.5-Pro", "ctx_k": 128, "display_name": "MiMo V2.5 Pro"}]', 'auto', '/models', '[]', '{}', false, '小米大模型（MiMo），OpenAI 兼容协议，支持模型自动发现', 1, '2026-06-11 16:22:38.601959+00', '2026-06-11 16:22:38.601959+00', 'openai_official', '{}', 'xiaomi') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_catalog VALUES ('evol', 'tier2', 'EvolAI 聚合代理', 'EvolAI Aggregator', 'aggregator', 'cloud', 'openai-completions', 'https://mg-new.evolai.cn/openclaw-proxy/v1', 'https://mg-new.evolai.cn', 'direct', true, 1.0000, '[]', 'auto', '/models', '[]', '{}', false, 'EvolAI 多模型聚合代理，统一接入 Anthropic/OpenAI/Google/DeepSeek/Zhipu 等，OpenAI 兼容协议', 1, '2026-06-11 16:41:03.347756+00', '2026-06-11 16:41:03.347756+00', NULL, '{}', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_catalog VALUES ('volcengine-coding', 'tier1', '火山方舟 Coding', 'Volcengine Coding', 'aggregator', 'cloud', 'openai-completions', 'https://ark.cn-beijing.volces.com/api/coding/v3', 'https://www.volcengine.com/docs/82379', 'direct', true, 1.0000, '[{"id": "glm-4-7-251222", "ctx_k": 128, "display_name": "GLM-4.7 (Volcengine)"}, {"id": "glm-4-5-air-20250728", "ctx_k": 128, "display_name": "GLM-4.5 Air (Volcengine)"}, {"id": "doubao-seed-2-0-pro-260215", "ctx_k": 128, "display_name": "豆包 Seed 2.0 Pro"}, {"id": "doubao-seed-2-0-lite-260215", "ctx_k": 128, "display_name": "豆包 Seed 2.0 Lite"}, {"id": "doubao-seed-2-0-mini-260215", "ctx_k": 128, "display_name": "豆包 Seed 2.0 Mini"}, {"id": "deepseek-v3-2-251201", "ctx_k": 64, "display_name": "DeepSeek V3 (Volcengine)"}, {"id": "doubao-embedding-vision-241215", "ctx_k": 32, "display_name": "豆包嵌入视觉"}, {"id": "doubao-seed-code", "ctx_k": 128, "display_name": "Doubao Seed Code"}, {"id": "doubao-seed-2.0-code", "ctx_k": 128, "display_name": "Doubao Seed 2.0 Code"}, {"id": "doubao-seed-2.0-pro", "ctx_k": 128, "display_name": "Doubao Seed 2.0 Pro"}, {"id": "doubao-seed-2.0-lite", "ctx_k": 128, "display_name": "Doubao Seed 2.0 Lite"}, {"id": "minimax-m2.7", "ctx_k": 128, "display_name": "MiniMax M2.7"}, {"id": "glm-5.1", "ctx_k": 128, "display_name": "GLM-5.1"}, {"id": "kimi-k2.6", "ctx_k": 128, "display_name": "Kimi K2.6"}, {"id": "deepseek-v4-pro", "ctx_k": 64, "display_name": "DeepSeek V4 Pro"}, {"id": "deepseek-v4-flash", "ctx_k": 64, "display_name": "DeepSeek V4 Flash"}, {"id": "minimax-m3", "ctx_k": 128, "display_name": "MiniMax M3"}]', 'manifest', '/models', '[]', '{}', false, '火山方舟 Coding Plan，聚合 GLM/Doubao/DeepSeek 等模型，含嵌入模型', 1, '2026-06-11 16:22:38.603179+00', '2026-06-11 16:22:38.603179+00', 'openai_relay', '{}', 'volcengine-coding') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: provider_header_profiles; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: provider_quality_rollup; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: provider_scores; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: provider_settings; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.provider_settings VALUES (1, 581, 'compression.mode', '"off"', true, 'admin', '2026-06-20 21:48:58.049531+00', '2026-06-20 21:48:58.049531+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_settings VALUES (2, 581, 'format_conversion.enabled', 'true', true, 'admin', '2026-06-20 21:49:30.403988+00', '2026-06-20 21:49:30.403988+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_settings VALUES (3, 581, 'cache.enabled', 'false', true, 'admin', '2026-06-20 21:49:33.655731+00', '2026-06-20 21:49:35.596238+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_settings VALUES (5, 587, 'compression.mode', '"off"', true, 'admin', '2026-06-20 21:49:59.473334+00', '2026-06-20 21:49:59.473334+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_settings VALUES (6, 587, 'cache.enabled', 'false', true, 'admin', '2026-06-20 21:50:04.463605+00', '2026-06-20 21:50:04.463605+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.provider_settings VALUES (7, 14, 'compression.mode', '"off"', true, 'admin', '2026-06-20 21:50:17.866341+00', '2026-06-20 21:50:17.866341+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: providers; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.providers VALUES (1, 'default', 'xiaomi', '小米大模型', 'xiaomi', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://token-plan-cn.xiaomimimo.com/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:22:58.041562+00', '2026-06-11 16:22:58.041562+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (2, 'default', 'anthropic', 'Anthropic', 'anthropic', false, NULL, '[]', 'cloud', 'official', 'anthropic-messages', 'https://api.anthropic.com', 'proxy', false, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (3, 'default', 'azure-openai', 'Azure OpenAI', 'azure-openai', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://{resource}.openai.azure.com/openai/deployments/{deployment}', 'proxy', false, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', false, 'off') ON CONFLICT DO NOTHING;
@@ -640,59 +915,24 @@ INSERT INTO public.providers VALUES (30, 'default', 'xai', 'xAI (Grok)', 'xai', 
 INSERT INTO public.providers VALUES (31, 'default', 'yi', '零一万物', 'yi', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.lingyiwanwu.com/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (32, 'default', 'zhipu', '智谱AI', 'zhipu', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://open.bigmodel.cn/api/coding/paas/v4', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (37, 'default', 'scnet', '国家超算中心 (scnet)', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.scnet.cn/api/llm/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 17:32:51.87869+00', '2026-06-11 17:32:51.87869+00', false, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.providers VALUES (14, 'default', 'minimax', 'MiniMax', 'minimax', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.minimaxi.com/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', false, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.providers VALUES (847, 'default', 'glm-5.2-oneday', 'glm-5.2一天用', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.supxh.xin/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-21 07:50:11.21947+00', '2026-06-21 14:54:37.665197+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (33, 'default', 'evol', 'EvolAI 聚合代理', 'evol', false, NULL, '[]', 'cloud', 'aggregator', 'openai-completions', 'https://mg-new.evolai.cn/openclaw-proxy/v1', 'direct', true, 1.0000, false, 1.000, NULL, NULL, '2026-06-11 16:41:03.347756+00', '2026-06-20 06:52:41.199199+00', true, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (34, 'default', 'volcano-tokenplan', '火山方舟 TokenPlan', 'volcengine-coding', true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://ark.cn-beijing.volces.com/api/coding/v3', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 17:32:51.450125+00', '2026-06-11 17:32:51.450125+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (35, 'default', 'volcano-normal', '火山方舟 普通版', 'volcengine-coding', true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://ark.cn-beijing.volces.com/api/v3', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 17:32:51.587743+00', '2026-06-11 17:32:51.587743+00', false, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.providers VALUES (581, 'default', 'glm-xianyu', 'glm-xianyu', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.tokenhub.market/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-19 18:57:15.425102+00', '2026-06-19 18:57:15.425102+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (36, 'default', 'vapeur', 'Vapeur AI (OpenAI兼容)', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.vapeur.ai/v1', 'direct', true, 1.0000, false, 1.000, NULL, NULL, '2026-06-11 17:32:51.740006+00', '2026-06-13 02:49:18.382372+00', true, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (587, 'default', 'apiclaude', 'apiclaude', NULL, true, NULL, '[]', 'cloud', 'third_party_relay', 'anthropic-messages', 'https://apiclaude.cc', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-20 06:13:12.800436+00', '2026-06-20 21:22:12.066955+00', false, 'off') ON CONFLICT DO NOTHING;
+INSERT INTO public.providers VALUES (2433, 'default', 'mock-openai', 'Mock OpenAI (8901)', NULL, true, NULL, '[]', 'local', 'self_host', 'openai', 'http://127.0.0.1:8901', 'direct', true, 0.0100, true, 1.000, NULL, NULL, '2026-06-24 09:53:59.912737+00', '2026-06-24 09:53:59.912737+00', false, 'off') ON CONFLICT DO NOTHING;
+INSERT INTO public.providers VALUES (2434, 'default', 'mock-anthropic', 'Mock Anthropic (8902)', NULL, true, NULL, '[]', 'local', 'self_host', 'anthropic', 'http://127.0.0.1:8902', 'direct', true, 0.0100, true, 1.000, NULL, NULL, '2026-06-24 09:53:59.914573+00', '2026-06-24 09:53:59.914573+00', false, 'off') ON CONFLICT DO NOTHING;
+INSERT INTO public.providers VALUES (14, 'default', 'minimax', 'MiniMax', 'minimax', false, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.minimaxi.com/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-11 16:23:17.508435+00', '2026-06-11 16:23:17.508435+00', true, 'off') ON CONFLICT DO NOTHING;
+INSERT INTO public.providers VALUES (847, 'default', 'glm-5.2-oneday', 'glm-5.2一天用', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.supxh.xin/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-21 07:50:11.21947+00', '2026-06-21 14:54:37.665197+00', true, 'off') ON CONFLICT DO NOTHING;
+INSERT INTO public.providers VALUES (581, 'default', 'glm-xianyu', 'glm-xianyu', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.tokenhub.market/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-19 18:57:15.425102+00', '2026-06-19 18:57:15.425102+00', true, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (67, 'default', 'minimax-anthropic', 'MiniMax (Anthropic)', 'minimax', false, NULL, '[]', 'cloud', 'official', 'anthropic-messages', 'https://api.minimaxi.com/anthropic', 'direct', true, 1.0000, false, 1.000, NULL, 'auto-created for anthropic passthrough (2026-06-12)', '2026-06-12 14:34:13.538285+00', '2026-06-22 18:05:47.4362+00', true, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.providers VALUES (2433, 'default', 'mock-openai', 'Mock OpenAI (8901)', NULL, true, NULL, '[]', 'local', 'self_host', 'openai', 'http://127.0.0.1:8901', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-24 09:53:59.912737+00', '2026-06-24 09:53:59.912737+00', false, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.providers VALUES (2434, 'default', 'mock-anthropic', 'Mock Anthropic (8902)', NULL, true, NULL, '[]', 'local', 'self_host', 'anthropic', 'http://127.0.0.1:8902', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-24 09:53:59.914573+00', '2026-06-24 09:53:59.914573+00', false, 'off') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: request_envelope; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: route_decisions; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: routing_overrides; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: routing_policy; Type: TABLE DATA; Schema: public; Owner: -
---
-
+INSERT INTO public.providers VALUES (2451, 'default', 'apigpt', 'apigpt', NULL, true, NULL, '[]', 'cloud', 'third_party_relay', 'openai-completions', 'https://apiclaude.cc/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-24 10:56:08.632177+00', '2026-06-24 11:00:04.429059+00', false, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.routing_policy VALUES (1, 'default', '{"price": 0.20, "speed": 0.15, "credibility": 0.25, "discount_bonus": 0.05, "domestic_bonus": 0.10, "remaining_quota": 0.15, "concurrency_used": 0.10}', 1800, 0.000, 'v14 default; tune via admin UI', '2026-06-11 16:22:39.910792+00', 2, 1, 4, 1.00, 1.50, 200, 300, 5, 1800, '{claude-opus-4-8,claude-sonnet-4-6,deepseek-v4-pro,doubao-1-5-pro-32k,gemini-3-flash-preview,gemini-3.5-flash,glm-4-7,glm-5.1,glm-5.2,gpt-5.4,gpt-5.4-pro,gpt-5.5,mimo-v2.5,mimo-v2.5-pro,minimax-2.7,minimax-m2.5,minimax-m2.7,minimax-m2.7-highspeed,minimax-m3}', 2, 10, 60, '{"price": 10, "session_load": 5, "failure_penalty": 20, "default_price_cny": 5.0, "default_price_usd": 5.0}') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: schema_migrations; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.schema_migrations VALUES ('100', 'credential_state_machine', '2026-06-11 16:22:52.998711+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('230', 'transient_fail_threshold', '2026-06-11 16:41:02.120338+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('231', 'model_offer_unavailable_reason', '2026-06-11 16:41:03.999395+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('290', 'api_key_remark', '2026-06-11 16:41:10.192269+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('025', 'Tool registry enhancements: version mgmt, usage stats, permissions', '2026-06-20 19:29:04.263399+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: settings_kv; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.settings_kv VALUES ('handoff.enabled', 'true', 'bool', 'platform', 'compression', '2026-06-21 14:27:13.696276+00', NULL, 'false', '2026-06-21 14:13:03.875672+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.settings_kv VALUES ('compression.enabled', 'true', 'bool', 'platform', 'compression', '2026-06-21 14:27:20.54267+00', NULL, 'false', '2026-06-21 14:13:12.433025+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.settings_kv VALUES ('llmgw_fp_slot_enabled', 'true', 'boolean', 'platform', 'fingerprint_slots', '2026-06-23 10:07:51.651258+00', NULL, NULL, NULL) ON CONFLICT DO NOTHING;
@@ -700,43 +940,11 @@ INSERT INTO public.settings_kv VALUES ('llmgw_fp_slot_max_per_credential', '100'
 INSERT INTO public.settings_kv VALUES ('llmgw_fp_slot_default_ratio', '0.25', 'number', 'platform', 'fingerprint_slots', '2026-06-23 10:07:51.651258+00', NULL, NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.settings_kv VALUES ('llmgw_client_fingerprint_ttl_days', '30', 'integer', 'platform', 'fingerprint_slots', '2026-06-23 10:07:51.651258+00', NULL, NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.settings_kv VALUES ('llmgw_fp_slot_max_total_clients', '10000', 'integer', 'platform', 'fingerprint_slots', '2026-06-23 10:07:51.651258+00', NULL, NULL, NULL) ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: sticky_sessions; Type: TABLE DATA; Schema: public; Owner: -
---
-
-INSERT INTO public.sticky_sessions VALUES ('default:4:4:default', 17, '2026-06-24 10:20:09.74534+00', '2026-06-24 10:50:09.745322+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.sticky_sessions VALUES ('default:4:10:default', 6, '2026-06-24 10:22:16.85745+00', '2026-06-24 10:52:16.857435+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.sticky_sessions VALUES ('default:3:2:default', 6, '2026-06-24 10:22:23.215333+00', '2026-06-24 10:52:23.215327+00', NULL, NULL) ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: subscription_plans; Type: TABLE DATA; Schema: public; Owner: -
---
-
+INSERT INTO public.sticky_sessions VALUES ('default:4:4:default', 17, '2026-06-24 12:27:14.032598+00', '2026-06-24 12:57:14.03255+00', NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.subscription_plans VALUES (1, 'basic-monthly', 'basic', '基础版', 2900, 100000, true, 1, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.subscription_plans VALUES (2, 'pro-monthly', 'pro', '高级版', 9900, 500000, true, 2, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.subscription_plans VALUES (3, 'max-monthly', 'max', '最大版', 29900, 2000000, true, 3, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: system_identity_pool; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.system_identity_pool VALUES (1, 10000, '2026-06-23 09:30:10.290885+00', NULL) ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: tenant_settings_kv; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: tool_categories; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.tool_categories VALUES ('filesystem', 'File System Operations', 'Read, write, search files and directories', true, 1, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_categories VALUES ('web_search', 'Web Search & Scraping', 'Search the web, fetch URLs, extract content', true, 2, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_categories VALUES ('database', 'Database Operations', 'Query and manipulate databases (PostgreSQL, MySQL, Redis)', true, 3, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
@@ -744,12 +952,6 @@ INSERT INTO public.tool_categories VALUES ('code_execution', 'Code Execution', '
 INSERT INTO public.tool_categories VALUES ('network', 'Network Operations', 'HTTP requests, websockets, SSH', true, 5, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_categories VALUES ('data_processing', 'Data Processing', 'Transform, analyze, and visualize data', true, 6, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_categories VALUES ('ai_ml', 'AI & Machine Learning', 'Run ML models, embeddings, classification', true, 7, '2026-06-20 15:34:55.371825+00', '2026-06-20 15:34:55.371825+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: tool_registry; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.tool_registry VALUES (1, 'filesystem', 'read_file', '{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "File path to read"}}}, "description": "Read contents of a file"}}', true, 100, '2026-06-20 15:34:55.372539+00', '2026-06-20 15:34:55.372539+00', 'filesystem.read_file', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_registry VALUES (2, 'filesystem', 'write_file', '{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object", "required": ["path", "content"], "properties": {"path": {"type": "string", "description": "File path to write"}, "content": {"type": "string", "description": "Content to write"}}}, "description": "Write content to a file"}}', true, 90, '2026-06-20 15:34:55.372539+00', '2026-06-20 15:34:55.372539+00', 'filesystem.write_file', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_registry VALUES (3, 'filesystem', 'list_directory', '{"type": "function", "function": {"name": "list_directory", "parameters": {"type": "object", "required": ["path"], "properties": {"path": {"type": "string", "description": "Directory path"}}}, "description": "List files and directories"}}', true, 80, '2026-06-20 15:34:55.372539+00', '2026-06-20 15:34:55.372539+00', 'filesystem.list_directory', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
@@ -757,21 +959,9 @@ INSERT INTO public.tool_registry VALUES (4, 'network', 'http_get', '{"type": "fu
 INSERT INTO public.tool_registry VALUES (5, 'network', 'http_post', '{"type": "function", "function": {"name": "http_post", "parameters": {"type": "object", "required": ["url", "body"], "properties": {"url": {"type": "string"}, "body": {"type": "string"}}}, "description": "Send HTTP POST request"}}', true, 50, '2026-06-20 18:19:54.431681+00', '2026-06-20 18:19:54.431681+00', 'network.http_post', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_registry VALUES (6, 'database', 'query', '{"type": "function", "function": {"name": "database_query", "parameters": {"type": "object", "required": ["sql"], "properties": {"sql": {"type": "string"}}}, "description": "Execute a database query"}}', true, 50, '2026-06-20 18:19:54.431681+00', '2026-06-20 18:19:54.431681+00', 'database.query', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.tool_registry VALUES (7, 'database', 'insert', '{"type": "function", "function": {"name": "database_insert", "parameters": {"type": "object", "required": ["table", "data"], "properties": {"data": {"type": "object"}, "table": {"type": "string"}}}, "description": "Insert data into database"}}', true, 50, '2026-06-20 18:19:54.431681+00', '2026-06-20 18:19:54.431681+00', 'database.insert', 'default', 1, NULL, NULL, '[]', NULL) ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: topup_packages; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.topup_packages VALUES (1, 'topup-small', 'small', '加油包 · 小', 1000, 10000, true, 1, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.topup_packages VALUES (2, 'topup-medium', 'medium', '加油包 · 中', 5000, 55000, true, 2, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.topup_packages VALUES (3, 'topup-large', 'large', '加油包 · 大', 10000, 120000, true, 3, '2026-06-15 16:39:09.586244+00', '2026-06-15 16:39:09.586244+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: tuning_params; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.tuning_params VALUES ('keywords.reasoning', '["solve", "prove", "derive", "calculate", "compute", "reason", "reasoning", "logic", "theorem", "proof", "step by step", "explain why", "analyze", "证明", "推导", "求解", "计算", "推理", "逻辑", "分析", "证明题", "推导过程", "步骤"]', 'keywords', 'default', 1.000, true, 'Reasoning keyword list', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tuning_params VALUES ('keywords.code', '["function", "class", "method", "algorithm", "implement", "code", "program", "script", "debug", "refactor", "compile", "syntax", "variable", "代码", "函数", "方法", "实现", "编写", "写代码", "算法", "重构", "调试", "bug", "编程"]', 'keywords', 'default', 1.000, true, 'Code keyword list', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tuning_params VALUES ('keywords.creative', '["write a", "write an", "compose", "draft", "story", "blog post", "essay", "poem", "creative", "translate", "summarize", "summary", "写一篇", "撰写", "创作", "故事", "小说", "诗歌", "翻译", "总结", "摘要", "文案"]', 'keywords', 'default', 1.000, true, 'Creative keyword list', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
@@ -780,24 +970,6 @@ INSERT INTO public.tuning_params VALUES ('thresholds.long_context_tokens', '5000
 INSERT INTO public.tuning_params VALUES ('weights.smart', '{"match": 25, "price": 25, "speed": 25, "pressure": 10, "stability": 20, "context_fit": 15}', 'weights', 'default', 1.000, true, 'Smart profile weights', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tuning_params VALUES ('weights.speed_first', '{"match": 15, "price": 10, "speed": 50, "pressure": 5, "stability": 20, "context_fit": 10}', 'weights', 'default', 1.000, true, 'Speed-first profile weights', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.tuning_params VALUES ('weights.cost_first', '{"match": 20, "price": 50, "speed": 10, "pressure": 5, "stability": 15, "context_fit": 10}', 'weights', 'default', 1.000, true, 'Cost-first profile weights', NULL, '2026-06-15 07:49:04.601572+00', '2026-06-15 07:49:04.601572+00') ON CONFLICT DO NOTHING;
-
-
---
--- Data for Name: tuning_proposals; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: tuning_signals; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: work_type_config; Type: TABLE DATA; Schema: public; Owner: -
---
-
 INSERT INTO public.work_type_config VALUES ('general_chat', '通用对话', '通用', 'chat', 'smart', '{chat,general}', '{对话,聊天,问答}', NULL, true, 1, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('reasoning', '逻辑推理', '通用', 'reasoning', 'smart', '{reasoning,logic}', '{推理,逻辑,数学,证明}', NULL, true, 2, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('long_doc', '长文档处理', '通用', 'long_context', 'smart', '{long_context,document}', '{长文档,全文,摘要,PDF}', NULL, true, 3, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
@@ -821,19 +993,13 @@ INSERT INTO public.work_type_config VALUES ('doc_translate', '文档翻译', '�
 INSERT INTO public.work_type_config VALUES ('meeting_summary', '会议纪要', '企业', 'creative', 'speed_first', '{meeting,summary}', '{会议,纪要,总结,行动项}', NULL, true, 21, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('compliance_audit', '合规审计', '企业', 'reasoning', 'smart', '{compliance,audit}', '{合规,审计,风控,政策}', NULL, true, 22, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('session_title', '会话标题生成', '企业', 'creative', 'cost_first', '{session,title,admin,gateway}', '{标题,会话,总结,主题}', NULL, true, 23, NULL, '2026-06-18 18:23:51.006312+00', '你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。') ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_config VALUES ('session_summary', '会话日志总结', '企业', 'creative', 'cost_first', '{session,summary,admin,gateway}', '{总结,摘要,会话,日志}', NULL, true, 24, NULL, '2026-06-18 18:23:51.006312+00', '你是会话日志分析助手。请严格输出 JSON，格式如下： ON CONFLICT DO NOTHING;
+INSERT INTO public.work_type_config VALUES ('session_summary', '会话日志总结', '企业', 'creative', 'cost_first', '{session,summary,admin,gateway}', '{总结,摘要,会话,日志}', NULL, true, 24, NULL, '2026-06-18 18:23:51.006312+00', '你是会话日志分析助手。请严格输出 JSON，格式如下：
 {"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
 要求：
 - summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
 - key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
 - 不要输出 JSON 以外的任何文本
-- 如果语料中包含错误信息，务必在总结中提及');
-
-
---
--- Data for Name: work_type_model_route; Type: TABLE DATA; Schema: public; Owner: -
---
-
+- 如果语料中包含错误信息，务必在总结中提及') ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (1, 'session_title', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (2, 'session_title', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
@@ -842,168 +1008,3 @@ INSERT INTO public.work_type_model_route VALUES (5, 'session_summary', 'minimax-
 INSERT INTO public.work_type_model_route VALUES (6, 'session_summary', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (8, 'session_summary', 'deepseek-chat', 0.85, 0.0000, true) ON CONFLICT DO NOTHING;
-
-
---
--- Name: applications_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.applications_id_seq', 12, true);
-
-
---
--- Name: local_models_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.local_models_id_seq', 1, false);
-
-
---
--- Name: local_runtimes_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.local_runtimes_id_seq', 1, false);
-
-
---
--- Name: model_aliases_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.model_aliases_id_seq', 249, true);
-
-
---
--- Name: model_fingerprints_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.model_fingerprints_id_seq', 1, false);
-
-
---
--- Name: model_lifecycle_jobs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.model_lifecycle_jobs_id_seq', 1, false);
-
-
---
--- Name: model_offers_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.model_offers_id_seq', 1, false);
-
-
---
--- Name: model_reconcile_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.model_reconcile_log_id_seq', 1, false);
-
-
---
--- Name: ops_model_offers_backup_backup_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.ops_model_offers_backup_backup_id_seq', 1, false);
-
-
---
--- Name: pricing_plans_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.pricing_plans_id_seq', 208, true);
-
-
---
--- Name: pricing_refresh_log_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.pricing_refresh_log_id_seq', 1, false);
-
-
---
--- Name: provider_header_profiles_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.provider_header_profiles_id_seq', 1, false);
-
-
---
--- Name: provider_scores_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.provider_scores_id_seq', 1, false);
-
-
---
--- Name: provider_settings_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.provider_settings_id_seq', 7, true);
-
-
---
--- Name: providers_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.providers_id_seq', 2434, true);
-
-
---
--- Name: route_decisions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.route_decisions_id_seq', 1, false);
-
-
---
--- Name: routing_overrides_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.routing_overrides_id_seq', 1, false);
-
-
---
--- Name: subscription_plans_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.subscription_plans_id_seq', 363, true);
-
-
---
--- Name: tool_registry_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.tool_registry_id_seq', 7, true);
-
-
---
--- Name: topup_packages_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.topup_packages_id_seq', 363, true);
-
-
---
--- Name: tuning_proposals_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.tuning_proposals_id_seq', 1, false);
-
-
---
--- Name: tuning_signals_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.tuning_signals_id_seq', 1, false);
-
-
---
--- Name: work_type_model_route_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.work_type_model_route_id_seq', 4513, true);
-
-
---
---

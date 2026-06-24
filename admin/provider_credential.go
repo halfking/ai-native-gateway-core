@@ -59,7 +59,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.Label != nil && *req.Label != "" {
 		label = *req.Label
 	}
-	concurrencyLimit := 10
+	concurrencyLimit := 20
 	if req.ConcurrencyLimit != nil {
 		concurrencyLimit = *req.ConcurrencyLimit
 	}
