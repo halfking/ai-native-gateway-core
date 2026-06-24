@@ -24,7 +24,7 @@ func TestScore_Balanced(t *testing.T) {
 	}
 	cost := CostContext{PriceP75: 18.0, SpeedP95: 1500}
 
-	bd := Score(c, sigs, ProfileSmart, cost)
+	bd := Score(c, sigs, TaskReasoning, ProfileSmart, cost)
 
 	// Smart is balanced — composite should be in [40, 80]
 	if bd.Composite < 40 || bd.Composite > 80 {
@@ -47,7 +47,7 @@ func TestScore_FreeModel(t *testing.T) {
 		UnitPriceOutPer1M: 0,
 		SuccessRate:       0.9,
 	}
-	bd := Score(c, ClassificationSignals{}, ProfileSmart, CostContext{PriceP75: 10})
+	bd := Score(c, ClassificationSignals{}, TaskChat, ProfileSmart, CostContext{PriceP75: 10})
 	if bd.PriceScore != 100 {
 		t.Fatalf("free model should score 100 on price, got %.2f", bd.PriceScore)
 	}
@@ -77,8 +77,8 @@ func TestScore_CostFirst_WeightsPrice(t *testing.T) {
 	sigs := ClassificationSignals{}
 	cost := CostContext{PriceP75: 20, SpeedP95: 1200}
 
-	cheapCost := Score(cheapFast, sigs, ProfileCostFirst, cost)
-	expensCost := Score(expensiveFast, sigs, ProfileCostFirst, cost)
+	cheapCost := Score(cheapFast, sigs, TaskChat, ProfileCostFirst, cost)
+	expensCost := Score(expensiveFast, sigs, TaskChat, ProfileCostFirst, cost)
 
 	// cost-first: cheap should win
 	if cheapCost.Composite <= expensCost.Composite {
@@ -86,8 +86,8 @@ func TestScore_CostFirst_WeightsPrice(t *testing.T) {
 			cheapCost.Composite, expensCost.Composite)
 	}
 
-	cheapSpeed := Score(cheapFast, sigs, ProfileSpeedFirst, cost)
-	expensSpeed := Score(expensiveFast, sigs, ProfileSpeedFirst, cost)
+	cheapSpeed := Score(cheapFast, sigs, TaskChat, ProfileSpeedFirst, cost)
+	expensSpeed := Score(expensiveFast, sigs, TaskChat, ProfileSpeedFirst, cost)
 
 	// speed-first: expensive-fast (lower latency) should win
 	if expensSpeed.Composite <= cheapSpeed.Composite {

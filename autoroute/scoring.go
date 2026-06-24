@@ -1,5 +1,7 @@
 package autoroute
 
+import "time"
+
 // Candidate is the per-credential × per-model snapshot consumed by Score().
 //
 // Populated from credential_model_index (5min rolled-up) plus the
@@ -21,6 +23,11 @@ type Candidate struct {
 	UnitPriceOutPer1M  float64
 	ContextWindow      int
 	Tags               []string // e.g. ["reasoning", "code", "agent"]
+	// 新增（需求 #4）：标准模型能力字段
+	ReleasedAt    *time.Time // 发布日期，用于 version_recency 评分
+	Strengths     []string   // 优势方向，用于 strength_match 评分
+	VersionRank   int        // 版本级次：1=最新, 2=次新, ...
+	CostTier      string     // 成本粗评：free/low/medium/high/premium
 
 	// Dynamic (from credential_model_index last 5min bucket)
 	SuccessRate      float64 // 0.0 - 1.0
@@ -49,6 +56,9 @@ type ScoringBreakdown struct {
 	MatchScore     float64 `json:"match_score"`
 	PressureScore  float64 `json:"pressure_score"`
 	ContextFit     float64 `json:"context_fit"`
+	// 新增（需求 #3）：8 维评分扩展
+	VersionRecency float64 `json:"version_recency"` // 模型新旧度 0-100（高难度偏最新，普通偏次新）
+	StrengthMatch  float64 `json:"strength_match"`  // 优势方向匹配度 0-100（strengths 与 task 交集）
 	Composite      float64 `json:"composite"`
 }
 
@@ -80,7 +90,7 @@ type CostContext struct {
 	HasMixedPrices bool
 }
 
-// Score computes the 6-dimension composite score for a candidate.
+// Score computes the 8-dimension composite score for a candidate.
 //
 // All per-dimension scores are 0-100 (higher = better):
 //
@@ -90,6 +100,8 @@ type CostContext struct {
 //   MatchScore     : passed-through from candidate.TaskMatchScore × 100
 //   PressureScore  : (1 - pressure_ratio) × 100 (less load → higher)
 //   ContextFit     : context_window / max(estimated_tokens, 4096), capped 1.0
+//   VersionRecency : 模型新旧度（高难度偏最新，普通偏次新）
+//   StrengthMatch  : 优势方向匹配度（strengths 与 task 交集占比）
 //
 // Composite is the weighted sum (weights × score / Sum(weights)).
 //
@@ -97,12 +109,13 @@ type CostContext struct {
 //
 //   c              : the candidate to score
 //   sigs           : the request classification signals (for context fit)
+//   task           : the classified task type (for strength_match + version_recency)
 //   profile        : determines which weights to apply
 //   costCtx        : cohort-level baselines for normalisation
 //
 // Returns the ScoringBreakdown (all 0-100 fields plus Composite).
-func Score(c Candidate, sigs ClassificationSignals, profile Profile, costCtx CostContext) ScoringBreakdown {
-	w := WeightsForDynamic(profile)
+func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profile, costCtx CostContext) ScoringBreakdown {
+	w := WeightsForTask(profile, task)
 	wsum := w.Sum()
 	if wsum <= 0 {
 		wsum = 100
@@ -114,13 +127,18 @@ func Score(c Candidate, sigs ClassificationSignals, profile Profile, costCtx Cos
 	match := scoreMatch(c) * 100
 	pressure := scorePressure(c)
 	ctx := scoreContextFit(c, sigs.EstimatedTokens)
+	// 新增（需求 #3）：8 维评分
+	versionRecency := scoreVersionRecency(c, task)
+	strengthMatch := scoreStrengthMatch(c, task)
 
 	composite := (price*w.Price +
 		speed*w.Speed +
 		stability*w.Stability +
 		match*w.Match +
 		pressure*w.Pressure +
-		ctx*w.ContextFit) / wsum
+		ctx*w.ContextFit +
+		versionRecency*w.VersionRecency +
+		strengthMatch*w.StrengthMatch) / wsum
 
 	return ScoringBreakdown{
 		PriceScore:     price,
@@ -129,6 +147,8 @@ func Score(c Candidate, sigs ClassificationSignals, profile Profile, costCtx Cos
 		MatchScore:     match,
 		PressureScore:  pressure,
 		ContextFit:     ctx,
+		VersionRecency: versionRecency,
+		StrengthMatch:  strengthMatch,
 		Composite:      composite,
 	}
 }
