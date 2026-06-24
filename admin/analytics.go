@@ -91,6 +91,13 @@ func parseAnalyticsMetric(raw string) (string, error) {
 // Why swap: with 50+ models and only 7-8 task types, putting models on
 // rows makes the table tall and narrow — easy to scan each model's full
 // task distribution without horizontal scroll.
+//
+// 2026-06-24 fix: the explicit-model branch used `is_auto_request = FALSE`,
+// which excludes rows where is_auto_request IS NULL (PG three-valued
+// logic). Historical request_logs rows have is_auto_request IS NULL because
+// the writer only learned to set TRUE/FALSE later. The query now uses
+// `is_auto_request IS NOT TRUE` so NULL rows are admitted alongside TRUE
+// auto requests.
 func buildMatrixQuery(rowDim, metric string) (string, error) {
 	if rowDim != "task_type" && rowDim != "work_type" {
 		return "", fmt.Errorf("row must be task_type or work_type")
@@ -137,7 +144,7 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		  AND %s IS NOT NULL
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
 	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, rowExpr, colExpr), nil
@@ -164,6 +171,9 @@ func effectiveModelExpr() string {
 // buildFlowL12Query assembles the L1→L2 (task → model) Sankey SELECT.
 // It is a pure helper kept separate from the handler so the SQL can be
 // unit-tested without standing up a database.
+//
+// 2026-06-24 fix: see buildMatrixQuery — uses `is_auto_request IS NOT TRUE`
+// so historical rows with NULL is_auto_request are not silently dropped.
 func buildFlowL12Query() string {
 	taskExpr := effectiveTaskExpr()
 	modelExpr := effectiveModelExpr()
@@ -176,7 +186,7 @@ func buildFlowL12Query() string {
 		  AND %s IS NOT NULL
 		  AND (
 		    is_auto_request = TRUE
-		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
 	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
@@ -186,6 +196,10 @@ func buildFlowL12Query() string {
 // Sankey SELECT. The task column still carries the synthetic
 // __specified__ key for explicit-model requests so the Sankey link
 // color matches the heatmap row.
+//
+// 2026-06-24 fix: see buildMatrixQuery — uses
+// `rl.is_auto_request IS NOT TRUE` so historical rows with NULL
+// is_auto_request are not silently dropped.
 func buildFlowL23Query() string {
 	taskExpr := effectiveTaskExpr()
 	modelExpr := effectiveModelExpr()
@@ -202,7 +216,7 @@ func buildFlowL23Query() string {
 		  AND %s IS NOT NULL
 		  AND (
 		    rl.is_auto_request = TRUE
-		    OR (rl.is_auto_request = FALSE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
+		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
 		  )
 		GROUP BY (%s), (%s), p.display_name
 	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
