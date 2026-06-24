@@ -20,9 +20,10 @@ const windowLoading = ref(false)
 // 3 tab = 概览 / 模型 / 历史. 模型 tab 内做左列模型表 / 右列监控的连动,中间按钮切换.
 type DetailTab = 'overview' | 'models' | 'history'
 const detailActiveTab = ref<DetailTab>('overview')
+// ── 2026-06-25: 模型 tab 名称精简 ("模型可用性 + 监控" → "模型") ────
 const detailTabs: SegTab[] = [
   { value: 'overview', label: '概览' },
-  { value: 'models',   label: '模型可用性 + 监控' },
+  { value: 'models',   label: '模型' },
   { value: 'history',  label: '历史' },
 ]
 // 打开 detail 时默认到第一个 tab
@@ -376,18 +377,114 @@ function selectModel(model: string) {
   loadHistory()
 }
 
+// 🆕 2026-06-25: 当前选中模型对象 + 手工控制状态派生
+// 详情页右列的模型名右侧要展示一组状态图标,其中"手工控制"图标 3 态可点击循环.
+// 3 态 = 手工禁用 (binding_unavailable_reason='manual_offline') /
+//       手工启动 (binding_available=true,reason 非 manual_offline) /
+//       自动     (binding_available=false,reason 非 manual_offline,被探测系统下线)
+const selectedModelObj = computed<CredentialModelStatus | null>(() => {
+  if (!selectedCred.value || !selectedModel.value) return null
+  return (selectedCred.value.models || []).find(m => m.raw_model_name === selectedModel.value) ?? null
+})
+
+type ManualControlState = 'manual_disabled' | 'manual_enabled' | 'auto_disabled'
+const manualControlState = computed<ManualControlState | null>(() => {
+  const m = selectedModelObj.value
+  if (!m) return null
+  if (m.binding_unavailable_reason === 'manual_offline') return 'manual_disabled'
+  if (m.binding_available) return 'manual_enabled'
+  return 'auto_disabled'
+})
+
+interface ManualControlMeta {
+  label: string
+  emoji: string
+  bg: string
+  border: string
+  color: string
+  tooltip: string
+}
+function manualControlMeta(state: ManualControlState): ManualControlMeta {
+  if (state === 'manual_disabled') {
+    return {
+      label: '手工禁用',
+      emoji: '🔴',
+      bg: 'rgba(239, 68, 68, 0.12)',
+      border: 'rgba(239, 68, 68, 0.4)',
+      color: '#ef4444',
+      tooltip: '已通过手工方式禁用,自动探测不会触碰. 点击 → 手工启动',
+    }
+  }
+  if (state === 'manual_enabled') {
+    return {
+      label: '手工启动',
+      emoji: '🟢',
+      bg: 'rgba(16, 185, 129, 0.12)',
+      border: 'rgba(16, 185, 129, 0.4)',
+      color: '#10b981',
+      tooltip: '当前可用,可点击 → 手工禁用',
+    }
+  }
+  return {
+    label: '自动',
+    emoji: '⚙️',
+    bg: 'rgba(139, 148, 158, 0.12)',
+    border: 'rgba(139, 148, 158, 0.4)',
+    color: '#8b949e',
+    tooltip: '由自动探测控制 (broken_confirmed 等). 点击 → 手工禁用 (强制下线)',
+  }
+}
+
+function onClickManualControl() {
+  const m = selectedModelObj.value
+  if (!m) return
+  const state = manualControlState.value
+  if (state === 'manual_disabled') {
+    // 手工禁用 → 手工启动: 后端 toggle online (清掉 manual_offline 锁)
+    openToggleDialog(m, 'online')
+  } else if (state === 'manual_enabled' || state === 'auto_disabled') {
+    // 手工启动 / 自动 → 手工禁用: 后端 toggle offline (置 manual_offline)
+    openToggleDialog(m, 'offline')
+  }
+}
+
 function renderErrorPieChart(errorKinds: Record<string, number>) {
   const canvas = document.getElementById('errorPieChart') as HTMLCanvasElement
   if (!canvas) return
 
   if (errorPieChart) {
     errorPieChart.destroy()
+    errorPieChart = null
   }
 
   const labels = Object.keys(errorKinds)
   const data = Object.values(errorKinds)
 
-  if (labels.length === 0) return
+  // 🆕 2026-06-25: 无错误时显示绿色"全绿"饼图 (单段 100%),
+  // 而不是返回空白;保留图例/标题,让用户明确看到"目前没有错误".
+  if (labels.length === 0) {
+    errorPieChart = new Chart(canvas, {
+      type: 'pie',
+      data: {
+        labels: ['无错误'],
+        datasets: [{
+          data: [1],
+          backgroundColor: ['#10b981'],  // green-500
+          borderColor: ['#059669'],
+          borderWidth: 2,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right' },
+          title: { display: true, text: '错误类型分布 (当前无错误)' },
+        },
+      },
+    })
+    return
+  }
 
   errorPieChart = new Chart(canvas, {
     type: 'pie',
@@ -1044,6 +1141,46 @@ onUnmounted(() => {
                     <div style="margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                       <label class="field-label">模型:</label>
                       <code class="mono-sm">{{ selectedModel }}</code>
+                      <!-- 🆕 2026-06-25: 模型名称右侧状态图标组
+                           - 手工控制 (3 态可点击循环): 手工禁用 / 手工启动 / 自动
+                           - 总状态 badge (来自 StatusBadge): available / probe_broken / offer_missing / binding_missing
+                           多个图标横向排列,鼠标悬停显示详情;只有"手工控制"可点击切换 -->
+                      <div v-if="selectedModelObj" class="model-status-icons">
+                        <!-- 手工控制按钮 (3 态) -->
+                        <button
+                          v-if="manualControlState"
+                          type="button"
+                          class="status-icon-btn"
+                          :class="`status-icon-${manualControlState}`"
+                          :style="{
+                            background: manualControlMeta(manualControlState).bg,
+                            borderColor: manualControlMeta(manualControlState).border,
+                            color: manualControlMeta(manualControlState).color,
+                          }"
+                          :title="manualControlMeta(manualControlState).tooltip"
+                          :disabled="toggleBusy[selectedCred.id + '|' + selectedModel]"
+                          @click="onClickManualControl"
+                        >
+                          <span class="status-icon-emoji">{{ manualControlMeta(manualControlState).emoji }}</span>
+                          <span class="status-icon-label">{{ manualControlMeta(manualControlState).label }}</span>
+                        </button>
+                        <!-- 总状态只读 badge (其他原因: probe / offer / binding) -->
+                        <span
+                          v-if="selectedModelObj.effective_state !== 'available' && selectedModelObj.effective_state !== 'manual_disabled'"
+                          class="status-icon-info"
+                          :title="selectedModelObj.model_disabled_reason || ''"
+                        >
+                          <StatusBadge :state="selectedModelObj.effective_state" :reason="selectedModelObj.model_disabled_reason" />
+                        </span>
+                        <!-- available 但无手工标记 = 纯自动 + 健康 -->
+                        <span
+                          v-else-if="manualControlState === 'manual_enabled'"
+                          class="status-icon-info"
+                          title="自动控制下当前可用,探测未标记 broken"
+                        >
+                          <StatusBadge state="available" reason="自动控制可用" />
+                        </span>
+                      </div>
                     </div>
                     <div v-if="windowLoading">加载中...</div>
                     <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
@@ -1609,6 +1746,55 @@ onUnmounted(() => {
 .mono-sm {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
+}
+
+/* 🆕 2026-06-25: 模型名称右侧状态图标组 (详情页右列)
+   - .model-status-icons: 横向排列,允许换行
+   - .status-icon-btn: 手工控制可点击按钮 (3 态)
+   - .status-icon-info: 只读 badge (总状态来自 StatusBadge) */
+.model-status-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: 4px;
+}
+.status-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  border: 1px solid;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.05s ease;
+  background: transparent;
+  user-select: none;
+}
+.status-icon-btn:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.status-icon-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.status-icon-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.status-icon-emoji {
+  font-size: 11px;
+  line-height: 1;
+}
+.status-icon-label {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.status-icon-info {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Sliding window source tag */
