@@ -104,28 +104,50 @@ func buildDefaultPatterns() []PatternMatch {
 			weight: 0.60,
 			reason: "pattern: optimization problem phrasing",
 		},
-		// ── Code patterns ───────────────────────────────────────────
-		// Function/class/method definition syntax (multi-language)
-		{
-			expr:   `(?:def|func|fn|function|class|interface|struct|enum)\s+\w+`,
-			task:   TaskCode,
-			weight: 0.65,
-			reason: "pattern: function/class/method definition syntax",
-		},
-		// Import statements (Python/JS/Go/Java)
-		{
-			expr:   `(?:import|from|require|include)\s+[\w."'/{ ]+`,
-			task:   TaskCode,
-			weight: 0.55,
-			reason: "pattern: import/include statement",
-		},
-		// Variable declaration with type annotation
-		{
-			expr:   `(?:var|let|const|public|private|protected)\s+\w+\s*[:=]`,
-			task:   TaskCode,
-			weight: 0.55,
-			reason: "pattern: typed variable declaration",
-		},
+			// ── Code patterns ───────────────────────────────────────────
+			// 新增（需求 #1）：计划模式 pattern（编程任务的强子类型）
+			{
+				expr:   `(?:先|请).{0,10}(?:制定|给出|列出).{0,10}(?:计划|方案|步骤).{0,20}(?:再|然后|之后).{0,10}(?:实现|编码|写代码)`,
+				task:   TaskCode,
+				weight: 0.70, // 高权重，因为这是明确的编程计划模式
+				reason: "pattern: plan-mode coding (create plan then implement)",
+			},
+			// 新增（需求 #1）：错误堆栈粘贴（IDE 场景常见）
+			// Pattern 修正：匹配 Python/Java/JS 堆栈的多种形式
+			{
+				expr:   `(?i)(?:traceback|error|exception).{0,30}(?:file|at)\s+["\']?\w+\.\w+["\']?,?\s+line\s+\d+`,
+				task:   TaskCode,
+				weight: 0.65,
+				reason: "pattern: stack trace / error at line N (IDE paste)",
+			},
+			// 新增（需求 #1）：代码审查请求
+			{
+				expr:   `(?:review|审查|检查).{0,10}(?:my|这段|这个).{0,5}(?:code|代码|pr|pull request|implementation|实现)`,
+				task:   TaskCode,
+				weight: 0.65,
+				reason: "pattern: code review request",
+			},
+			// Function/class/method definition syntax (multi-language)
+			{
+				expr:   `(?:def|func|fn|function|class|interface|struct|enum)\s+\w+`,
+				task:   TaskCode,
+				weight: 0.65,
+				reason: "pattern: function/class/method definition syntax",
+			},
+			// Import statements (Python/JS/Go/Java)
+			{
+				expr:   `(?:import|from|require|include)\s+[\w."'/{ ]+`,
+				task:   TaskCode,
+				weight: 0.55,
+				reason: "pattern: import/include statement",
+			},
+			// Variable declaration with type annotation
+			{
+				expr:   `(?:var|let|const|public|private|protected)\s+\w+\s*[:=]`,
+				task:   TaskCode,
+				weight: 0.55,
+				reason: "pattern: typed variable declaration",
+			},
 		// ── Creative patterns ───────────────────────────────────────
 		// "写一个/写一段/写首" without an explicit code/algorithm target
 		// (the code keyword "写代码" already covers the code case)
