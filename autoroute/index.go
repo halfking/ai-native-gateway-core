@@ -71,14 +71,20 @@ func (idx *Index) Snapshot() []Candidate {
 }
 
 // Recommend returns the top-N candidates for the given task type, scored
-// against the given profile. Cohort-level baselines (price P75, speed P95)
-// are computed from the candidate set so per-candidate scoring is
-// apples-to-apples.
+// against the given profile. Uses a 3-tier funnel (需求 #6):
+//
+// L1: Hot pool (tier=primary) + popularity sort → top 20
+// L2: 8-dim scoring + composite sort → top N (default 3)
+// L3: Fallback (tier=secondary/fallback) if L1 < 3 →补充到 3 个
+//
+// Cohort-level baselines (price P75, speed P95) are computed from the
+// L1 hot pool so per-candidate scoring is apples-to-apples.
 //
 // Filtering:
 //   - Only routable candidates (unavailable_reason == "")
-//   - Only candidates whose TaskMatchScore > 0 (some tag overlap)
-//   - Top-N by composite score (descending)
+//   - L1: only tier=primary, sorted by popularity_score desc, top 20
+//   - L2: 8-dim scoring on L1 results
+//   - L3: if L2 results < 3, add tier=secondary/fallback to reach 3
 //
 // If the cohort is empty after filtering, returns nil (caller should
 // fall back to the default model).
@@ -87,51 +93,110 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 	all := idx.entries
 	idx.mu.RUnlock()
 
-// Pre-filter: routable + has some tag match.
-// Fallback: if NO candidate has any tag match for this task type,
-// return all candidates (chat-style fallback) rather than 0 candidates.
-// This handles the common case where models_canonical.tags is empty
-// (which is the default for newly-discovered models) — without this
-// fallback, every task_type other than chat would always 503.
-filtered := make([]Candidate, 0, len(all))
-for i := range all {
-	c := all[i]
-	// Compute TaskMatchScore inline so admins can change the
-	// required-tag map without a code redeploy.
-	c.TaskMatchScore = TaskMatchScore(task, c.Tags)
-	filtered = append(filtered, c)
-}
+	if topN <= 0 {
+		topN = 3 // 默认返回 top-3
+	}
 
-// Sort: candidates with non-zero TaskMatchScore first, then all others.
-// We don't strictly filter (which would 503 every task type when tags
-// are empty); instead we keep all and let the MatchScore (0-100)
-// contribute to the weighted composite.
-sort.SliceStable(filtered, func(i, j int) bool {
-	return filtered[i].TaskMatchScore > filtered[j].TaskMatchScore
-})
+	// L1: 热门池过滤（tier=primary）
+	primaryPool := make([]Candidate, 0, len(all))
+	secondaryPool := make([]Candidate, 0, len(all))
+	fallbackPool := make([]Candidate, 0, len(all))
 
-if len(filtered) == 0 {
-	return nil
-}
+	for i := range all {
+		c := all[i]
+		// 跳过不可路由的候选
+		if c.UnavailableReason != "" {
+			continue
+		}
 
-	// Compute cohort baselines
-	costCtx := computeCostContext(filtered)
+		// 计算 TaskMatchScore（用于后续评分）
+		c.TaskMatchScore = TaskMatchScore(task, c.Tags)
 
-	// Score all
-	scored := make([]ScoredCandidate, 0, len(filtered))
-	for _, c := range filtered {
+		// 按 tier 分池（需求 #6：三级路由）
+		switch c.Tier {
+		case "primary":
+			primaryPool = append(primaryPool, c)
+		case "secondary":
+			secondaryPool = append(secondaryPool, c)
+		case "fallback":
+			fallbackPool = append(fallbackPool, c)
+		default:
+			// 未设置 tier → 默认归入 secondary
+			secondaryPool = append(secondaryPool, c)
+		}
+	}
+
+	// L1: 热门池按 popularity_score 排序，取 top 20
+	sort.SliceStable(primaryPool, func(i, j int) bool {
+		return primaryPool[i].PopularityScore > primaryPool[j].PopularityScore
+	})
+	hotPoolSize := 20
+	if len(primaryPool) > hotPoolSize {
+		primaryPool = primaryPool[:hotPoolSize]
+	}
+
+	// 如果热门池为空，降级到 secondary + fallback 全量
+	if len(primaryPool) == 0 {
+		primaryPool = append(secondaryPool, fallbackPool...)
+	}
+
+	if len(primaryPool) == 0 {
+		return nil // 无候选可路由
+	}
+
+	// L2: 8 维评分（在热门池上计算）
+	costCtx := computeCostContext(primaryPool)
+	scored := make([]ScoredCandidate, 0, len(primaryPool))
+	for _, c := range primaryPool {
 		bd := Score(c, sigs, task, profile, costCtx)
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}
 
-	// Sort by composite desc
+	// 按 composite 降序排序
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].Breakdown.Composite > scored[j].Breakdown.Composite
 	})
 
-	if topN > 0 && len(scored) > topN {
+	// 取 top-N
+	if len(scored) > topN {
 		scored = scored[:topN]
 	}
+
+	// L3: 兜底机制 - 如果 L2 结果 < 3，从 secondary/fallback 补充
+	if len(scored) < 3 {
+		fallbackCands := append(secondaryPool, fallbackPool...)
+		// 过滤掉已在 scored 中的候选（避免重复）
+		existingIDs := make(map[int64]bool)
+		for _, sc := range scored {
+			existingIDs[sc.Candidate.CredentialID] = true
+		}
+
+		fallbackFiltered := make([]Candidate, 0, len(fallbackCands))
+		for _, c := range fallbackCands {
+			if !existingIDs[c.CredentialID] {
+				c.TaskMatchScore = TaskMatchScore(task, c.Tags)
+				fallbackFiltered = append(fallbackFiltered, c)
+			}
+		}
+
+		// 评分 fallback 候选
+		if len(fallbackFiltered) > 0 {
+			fbCostCtx := computeCostContext(fallbackFiltered)
+			for _, c := range fallbackFiltered {
+				bd := Score(c, sigs, task, profile, fbCostCtx)
+				scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
+			}
+			// 重新排序（包含 fallback）
+			sort.SliceStable(scored, func(i, j int) bool {
+				return scored[i].Breakdown.Composite > scored[j].Breakdown.Composite
+			})
+			// 保留 top-3
+			if len(scored) > 3 {
+				scored = scored[:3]
+			}
+		}
+	}
+
 	return scored
 }
 
