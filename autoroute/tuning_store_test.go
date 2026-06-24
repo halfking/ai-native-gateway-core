@@ -24,8 +24,8 @@ func TestTuningStore_Defaults(t *testing.T) {
 	}
 
 	w := store.WeightsFor(ProfileSmart)
-	if w.Price != 25 || w.Speed != 25 {
-		t.Errorf("smart weights Price=%f Speed=%f, want 25/25", w.Price, w.Speed)
+	if w.Price != 20 || w.Speed != 20 {
+		t.Errorf("smart weights Price=%f Speed=%f, want 20/20 (8-dim adjusted)", w.Price, w.Speed)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestTuningStore_WeightsForDynamic(t *testing.T) {
 
 	// Without store → compiled defaults
 	w := WeightsForDynamic(ProfileSmart)
-	if w.Price != 25 {
-		t.Fatalf("default Price = %f, want 25", w.Price)
+	if w.Price != 20 {
+		t.Fatalf("default Price = %f, want 20 (8-dim adjusted)", w.Price)
 	}
 
 	// With store → override
