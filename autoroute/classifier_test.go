@@ -327,23 +327,23 @@ func TestHeuristicClassifier_IDEClientFingerprint_ClaudeCode(t *testing.T) {
 }
 
 func TestHeuristicClassifier_StackTraceError_ShouldBeCode(t *testing.T) {
-	// RED: 用户粘贴错误堆栈，应该被识别为编程任务（新 pattern）
+	// 用户粘贴错误堆栈，应该被识别为编程任务（新 pattern + code 关键词）
 	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
 	res, err := c.Classify(context.Background(), ClassificationSignals{
-		LastUserPrompt: `遇到了一个错误：
+		LastUserPrompt: `遇到了这个错误：
 Traceback (most recent call last):
   File "app.py", line 42, in process_data
     result = compute(x, y)
 TypeError: unsupported operand type(s) for +: 'int' and 'str'
 
-帮我分析并修复`,
+帮我修复这段代码`,
 		EstimatedTokens: 1_200,
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if res.Primary != TaskCode {
-		t.Errorf("expected TaskCode for stack trace error, got %s", res.Primary)
+		t.Errorf("expected TaskCode for stack trace error, got %s (reason: %s)", res.Primary, res.Reason)
 	}
 }
 

@@ -386,28 +386,28 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 	}
 
 	// 1.2 编程强信号检测（NEW：优先于 long_context，解决需求 #1 的核心问题）
-	// 预扫描关键词和 IDE 指纹，决定是否跳过 long_context 判定
+	// 只在"非常强"的信号时触发 hard override，普通 code 关键词回到 Channel 3 评分
 	text := normaliseForKeyword(sigs.LastUserPrompt, sigs.SystemPrompt)
 	kw := c.effectiveKeywords()
-	codeHits := countKeywordHits(text, kw.Code)
 
-	// 编程强信号来源：关键词 OR code block OR IDE 指纹 OR 计划模式 pattern
-	hasCodingKeywords := codeHits > 0
+	// 编程强信号来源（只保留高置信度信号）：
+	// - code block（triple-backtick fence）
+	// - IDE 指纹（来自 IDE 的请求，极大概率是编程）
+	// - 计划模式 pattern（"先制定计划然后实现"明确表达编程意图）
+	// 注意：普通 code 关键词命中（如"函数"/"algorithm"）不在这里触发，
+	// 而是在 Channel 3 与 reasoning/creative 公平竞争
 	hasCodeBlock := sigs.HasCodeBlock
 	hasIDEFingerprint := sigs.ClientType != "" && isIDEClient(sigs.ClientType)
 	hasPlanModePattern := containsFold(text, "先制定计划") || containsFold(text, "plan mode") ||
 		containsFold(text, "step by step implement") || containsFold(text, "先列出步骤") ||
 		containsFold(text, "然后实现") || containsFold(text, "then implement")
 
-	strongCodingSignal := hasCodingKeywords || hasCodeBlock || hasIDEFingerprint || hasPlanModePattern
+	strongCodingSignal := hasCodeBlock || hasIDEFingerprint || hasPlanModePattern
 
 	if strongCodingSignal {
 		conf := 0.90
 		reason := "coding strong signal: "
 		reasons := []string{}
-		if hasCodingKeywords {
-			reasons = append(reasons, fmt.Sprintf("code_keywords=%d", codeHits))
-		}
 		if hasCodeBlock {
 			reasons = append(reasons, "has_code_block=true")
 		}
@@ -525,7 +525,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 	if pm, ok := patternHits[winner]; ok {
 		patternReason = pm.Reason
 	}
-	reason := buildReasonEx(winner, reasoningHits, codeHits, creativeHits, sigs.HasCodeBlock, patternReason)
+	reason := buildReasonEx(winner, reasoningHits, codeHitsChannel3, creativeHits, sigs.HasCodeBlock, patternReason)
 
 	return &Classification{
 		Primary:    winner,

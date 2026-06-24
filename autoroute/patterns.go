@@ -113,8 +113,9 @@ func buildDefaultPatterns() []PatternMatch {
 				reason: "pattern: plan-mode coding (create plan then implement)",
 			},
 			// 新增（需求 #1）：错误堆栈粘贴（IDE 场景常见）
+			// Pattern 修正：匹配 Python/Java/JS 堆栈的多种形式
 			{
-				expr:   `(?:error|exception|traceback|stacktrace|stack trace).{0,10}(?:at|on|in)\s+(?:line|file)\s+\d+`,
+				expr:   `(?i)(?:traceback|error|exception).{0,30}(?:file|at)\s+["\']?\w+\.\w+["\']?,?\s+line\s+\d+`,
 				task:   TaskCode,
 				weight: 0.65,
 				reason: "pattern: stack trace / error at line N (IDE paste)",
