@@ -90,6 +90,13 @@ BEGIN
             'CREATE INDEX idx_%s_search_trgm ON %I USING gin (search_text gin_trgm_ops)',
             part_name, part_name
         );
+        -- 2026-06-24 (migration 043): GIN trgm on client_model so the
+        -- /api/logs ?model= ILIKE filter can use a bitmap index scan
+        -- instead of a partition Seq Scan once volume grows.
+        EXECUTE format(
+            'CREATE INDEX idx_%s_client_model_trgm ON %I USING gin (client_model gin_trgm_ops)',
+            part_name, part_name
+        );
     END IF;
 END;
 $$;
