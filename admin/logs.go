@@ -553,15 +553,17 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CanonicalName,
 		&detail.ProviderModel,
 		&detail.CreditsCharged,
-		// v3 session-level outbound body fields.
-		&detail.OutboundBody,
+		// v3 session-level outbound body summary fields (must mirror
+		// requestLogsDetailCols order: list summary fields FIRST, then the
+		// three JSONB blobs that only the detail drawer needs).
 		&detail.OutboundMsgCount,
 		&detail.OutboundTokenEst,
-		&detail.OutboundMsgHashes,
 		&detail.CompressionStrategy,
 		&detail.CompressionReason,
-		&detail.CompressionMeta,
 		&detail.ParentRequestID,
+		&detail.OutboundBody,
+		&detail.OutboundMsgHashes,
+		&detail.CompressionMeta,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)
