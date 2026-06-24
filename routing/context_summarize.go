@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	defaultCompactionMinWindow = 800_000
+	defaultCompactionMinWindow        = 800_000
 	defaultCompactionSummaryMaxTokens = 4096
-	compactionSummaryPrefix            = "[Gateway compacted conversation summary — prior turns collapsed to fit context]\n"
+	compactionSummaryPrefix           = "[Gateway compacted conversation summary — prior turns collapsed to fit context]\n"
 	// heuristicCompactBytePerToken approximates chars-per-token for the
 	// body-size heuristic. Same ratio used by transform.estimateMessageTokens.
 	heuristicCompactBytePerToken = 3.5
@@ -80,8 +80,8 @@ Drop: pleasantries, repeated stack traces, duplicate tool dumps.
 Write a dense factual summary only — no preamble, no markdown fences.`
 
 var defaultCompactionModels = []string{
-	"minimax-text-01",   // same vendor, 1M ctx
-	"gemini-2.5-flash",  // cross-vendor, 1M ctx, cost-effective
+	"minimax-text-01",  // same vendor, 1M ctx
+	"gemini-2.5-flash", // cross-vendor, 1M ctx, cost-effective
 }
 
 // compactionModelsFromEnv returns ordered compaction model IDs. Lower index = preferred (cost/affinity).
@@ -952,6 +952,70 @@ func (e *Executor) handleContextLengthRecovery(
 	st.lastMeta = nil
 	st.lastReason = "mode_2_on_4xx"
 	st.lastStrategy = "noop"
+
+	// ── v5 Smart recovery path (2026-06-25) ──────────────────────────────
+	// When RecoveryCoordinator is wired (from main.go), use the smart sliding
+	// window + session cache integration path. This replaces the legacy
+	// 3-tier flow (mechanical → memora → llm) with:
+	//   1. Check session cache for prior compression (incremental)
+	//   2. Smart window analysis (conversation-aware cut point)
+	//   3. LLM summary or mechanical fallback
+	//   4. Persist CutMarker to session cache for next request
+	if e.RecoveryCoord != nil && !st.llmAttempted {
+		st.llmAttempted = true // mark as attempted to prevent infinite loop
+
+		contextWindow := 0
+		if targetCand.ContextWindow != nil {
+			contextWindow = *targetCand.ContextWindow
+		}
+
+		// Determine attempt number from state flags.
+		attempt := 0
+		if st.mechanicalAttempted {
+			attempt = 1
+		}
+
+		gwSessionID := ""
+		if params.R != nil {
+			gwSessionID = params.R.Header.Get("X-Gw-Session-Id")
+		}
+
+		res := e.RecoveryCoord.Recover(
+			ctx,
+			*sourceBody,
+			params.ClientProtocol,
+			contextWindow,
+			params.TenantID,
+			gwSessionID,
+			attempt,
+		)
+
+		if res.ShouldRetry && res.NewBody != nil && len(res.NewBody) < len(*sourceBody) {
+			before := len(*sourceBody)
+			*sourceBody = res.NewBody
+			slog.Info("context_length 4xx → smart window recovery retry",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"status", status,
+				"strategy", res.Strategy,
+				"reason", res.Reason,
+				"source_bytes", before,
+				"after_bytes", len(*sourceBody),
+				"session", gwSessionID,
+			)
+			st.lastStrategy = res.Strategy
+			if res.CutMarker != nil {
+				metaBytes, _ := res.CutMarker.MarshalJSON()
+				st.lastMeta = metaBytes
+			} else {
+				st.lastMeta = buildCompressionMeta(targetCand.ContextWindow, before, len(*sourceBody))
+			}
+			return ctxLenRetry
+		}
+		// Smart recovery failed → fall through to legacy path below.
+	}
+
+	// ── Legacy 3-tier recovery (fallback when RecoveryCoord is nil) ──────
 
 	// Phase 1: mechanical trim. Only possible when we know the target
 	// model's context window (needed to compute the soft limit). When
