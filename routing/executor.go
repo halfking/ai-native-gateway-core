@@ -382,6 +382,12 @@ type Executor struct {
 		GetBool(ctx context.Context, providerID int, key string) (bool, bool)
 		GetInt64(ctx context.Context, providerID int, key string) (int64, bool)
 	}
+
+	// RecoveryCoord (v5, 2026-06-25): session-aware smart recovery coordinator.
+	// When non-nil, context_length_exceeded 4xx recovery uses the smart sliding
+	// window analyzer + session cache integration (incremental compression).
+	// When nil, falls back to the legacy 3-tier recovery (mechanical → memora → llm).
+	RecoveryCoord *compressor.RecoveryCoordinator
 }
 
 func NewExecutor(
