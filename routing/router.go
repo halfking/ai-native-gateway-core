@@ -192,9 +192,21 @@ func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 		}
 
 		a, b := randomPair(samplePool)
+		scoreA := loadScore(a, r, ctx)
+		scoreB := loadScore(b, r, ctx)
 		chosen := a
-		if loadScore(b, r, ctx) < loadScore(a, r, ctx) {
+		if scoreB < scoreA {
 			chosen = b
+		} else if scoreB == scoreA {
+			// 2026-06-25: When load scores are equal (e.g., both free local
+			// mocks with same routing_score), P2C previously always picked 'a'
+			// (the first random sample). This biased load distribution toward
+			// whichever candidate happened to be drawn first, causing 83/17
+			// splits instead of 50/50. Fix: randomize on equal scores to
+			// match the round-robin rotation done at the planByTier level.
+			if rand.Intn(2) == 0 {
+				chosen = b
+			}
 		}
 
 		out = append(out, chosen)
