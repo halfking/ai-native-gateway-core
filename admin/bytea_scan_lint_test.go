@@ -10,7 +10,7 @@ package admin
 //      "cannot scan jsonb (OID 3802) into *string"
 //
 // Background (2026-06-26):
-//   admin/routing.go:3194 (mirrorExistingKeys) — bytea→string bug
+//   admin/routing.go:3266 (mirrorExistingKeys) — bytea→string bug
 //   admin/provider_credential.go:135, admin/provider_refresh.go:273/313,
 //   admin/provider_vendor.go:61/199, discovery/discovery.go:302/320,
 //   admin/session_compare.go:120/493 — jsonb→string bugs (missing ::text)
@@ -32,9 +32,14 @@ package admin
 //   connection, and runs in <1s. It is intentionally conservative:
 //   it only flags clear mismatches where the scan target is
 //   unambiguously a string-typed var.
+//
+//   Limitations: this lint only catches SQL strings written as raw
+//   literals inline (the common case in this codebase). If the SQL
+//   is assigned to a variable first (`q := "...SELECT..."`, then
+//   `db.Query(ctx, q, ...)`), the lint conservatively skips — those
+//   cases must be verified by manual code review.
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -103,16 +108,18 @@ func TestScanPGColumnsIntoCompatibleType(t *testing.T) {
 	}
 
 	if len(violations) > 0 {
-		t.Fatalf("found %d bytea-into-string violation(s):\n  %s\n\n"+
+		t.Fatalf("found %d pg-column scan violation(s):\n  %s\n\n"+
 			"PostgreSQL bytea columns MUST be scanned into []byte, not string. "+
-			"pgx returns: \"cannot scan bytea (OID 17) in binary format into *string\". "+
-			"See commit c278ff84 (mirrorExistingKeys) for context.",
+			"PostgreSQL jsonb columns MUST be cast to ::text when scanned into "+
+			"*string / sql.NullString. "+
+			"See commit c278ff84 (mirrorExistingKeys) and the 2026-06-26 jsonb "+
+			"audit for context.",
 			len(violations), strings.Join(violations, "\n  "))
 	}
 }
 
 // scanFile walks one Go file and returns a list of "file:line: ..." strings
-// describing every bytea-into-string violation.
+// describing every bytea-into-string / jsonb-without-cast violation.
 func scanFile(fset *token.FileSet, file *ast.File) []string {
 	var violations []string
 
@@ -162,7 +169,7 @@ func collectStringDecls(decls []ast.Decl) map[string]string {
 
 // scanFunc finds every Scan(&...) call inside fn whose receiving call
 // is `db.Query(...)` or `db.QueryRow(...)` whose SQL projects at least
-// one bytea column, and verifies each destination type.
+// one bytea/jsonb column, and verifies each destination type.
 func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]string) []string {
 	var violations []string
 
@@ -174,9 +181,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			return true
 		}
 		typeText := exprText(vs.Type)
-		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "mirrorExistingKeys" && typeText == "string" {
-			fmt.Printf("DEBUG: mirrorExistingKeys ValueSpec Names=%v Type=%s\n", vs.Names, typeText)
-		}
 		if typeText == "string" || strings.HasSuffix(typeText, ".string") {
 			for _, name := range vs.Names {
 				if name != nil {
@@ -220,10 +224,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			}
 			dest := call.Args[colIdx]
 			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
-				if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "mirrorExistingKeys" {
-					fmt.Printf("DEBUG: mirrorExistingKeys col=%s idx=%d dest=%s not_string=true localDecls=%v\n",
-						col, colIdx, exprText(dest), localStringDecls)
-				}
 				continue
 			}
 			pos := fset.Position(call.Pos())
@@ -289,15 +289,8 @@ func findSQLForScanCall(call *ast.CallExpr) string {
 		return sqlFromCallExpr(recv)
 	}
 	// Pattern 2: Scan is invoked on an Ident (rows variable). We need
-	// to find the AssignmentStmt that bound it.
-	_, ok = sel.X.(*ast.Ident)
-	if !ok {
-		return ""
-	}
-	// Pattern 2 requires the enclosing function. We don't have it here,
-	// so scanFunc should pre-compute this and pass via a context. For
-	// simplicity (and to avoid threading state through the AST walk),
-	// we leave Pattern 2 to a separate scan pass that uses fn.Body.
+	// to find the AssignmentStmt that bound it. The caller (scanFunc)
+	// handles this — we return "".
 	return ""
 }
 
@@ -335,16 +328,10 @@ func sqlFromCallExpr(call *ast.CallExpr) string {
 //	rows, err := db.Query(...)      // Lhs=2, Rhs=1 (Rhs[0] is the call)
 //	row := db.QueryRow(...)         // Lhs=1, Rhs=1
 //
-// When Lhs and Rhs have the same length, each Lhs[i] is bound to
-// Rhs[i]. When Lhs has more entries than Rhs (multi-return), Rhs[0]
-// is the single call that yields multiple values, so we look at
-// Rhs[0] for any matching Lhs.
-//
 // Note: this function only resolves SQL when the Query call passes a
 // string LITERAL as its SQL arg. If the SQL is in a variable, we
 // conservatively return "" — such cases must be verified by manual
-// code review. This is acceptable for our codebase because almost all
-// SELECT statements are written inline as raw strings.
+// code review.
 func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 	var found string
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -436,9 +423,6 @@ func findColumnIndexWithCast(sql string, col string) (int, bool, bool) {
 		}
 		// Match. Check if the column expression ends with `::text` cast.
 		casted := false
-		// Walk to the end of the column expression (skipping any
-		// trailing whitespace). If the next non-space token is `::text`,
-		// the column is cast.
 		tail := stripped[strings.LastIndex(strippedLower, colLower)+len(colLower):]
 		tailTrimmed := strings.TrimSpace(tail)
 		if strings.HasPrefix(tailTrimmed, "::") && strings.Contains(tailTrimmed, "text") {

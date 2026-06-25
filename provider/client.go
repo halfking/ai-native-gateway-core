@@ -698,16 +698,13 @@ func (c *Client) loadCandidatesDBWithThreshold(ctx context.Context, clientModel 
 		        AND mps.state = 'broken_confirmed'
 		  )
 		  -- 2026-06-22 defect (3) hard gate: exclude pairs whose real recent
-		  -- success rate is below 0.5 once we have at least 20 samples. The
+		  -- success rate is below threshold once we have at least 20 samples. The
 		  -- min-sample threshold avoids cold-start false positives (a brand-new
 		  -- credential with 1 unlucky failure). Pairs in the 0.5-0.9 band are
 		  -- kept but soft-de-prioritized via RecentSuccessRate in the router.
-		  -- 2026-06-23 TEMPORARY: lower threshold to 0.3 to allow recovery after
-		  -- resource leak fix. The leak caused 54% failure rate; with the fix
-		  -- deployed, new requests will succeed and gradually push the rolling
-		  -- 50-request window above 0.5. This gate will be restored to 0.5 once
-		  -- the success rate recovers (expected within 50-100 requests).
-		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.3)
+		  -- 2026-06-26: Parameterized threshold for multi-tier fallback strategy.
+		  -- First try 0.3, then 0.0 if no candidates found.
+		  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < $2)
 		  AND (
 		      -- (1) exact (case-insensitive) match on the offer's raw_model_name
 		      lower(mo.raw_model_name) = $1
@@ -747,7 +744,7 @@ func (c *Client) loadCandidatesDBWithThreshold(ctx context.Context, clientModel 
 			-- (often default 0.9) column. This makes healthy credentials sort
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
-	`, clientModelLower)
+	`, clientModelLower, successRateThreshold)
 	if err != nil {
 		return nil, err
 	}
