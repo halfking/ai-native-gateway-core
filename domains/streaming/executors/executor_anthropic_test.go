@@ -308,7 +308,7 @@ func TestAnthropicExecutor_Q3QualityFix_RenamesEmptyToolName(t *testing.T) {
 	// Inline minimal stand-in for relay.ProcessNonStreamBody in fix
 	// mode. We re-implement the rewrite here instead of importing
 	// relay (routing cannot import relay) so the test stays in
-	// package routing. The behaviour we care about is: empty
+	// package streaming. The behaviour we care about is: empty
 	// function.name becomes __unknown_tool_<i>__.
 	hook := func(body []byte, mode string) ([]byte, []string, []byte, *float64) {
 		if mode == "" {

@@ -1,4 +1,4 @@
-// redis_sliding.go — Redis-backed sliding window rate limiter.
+// redis_sliding.go — Redis-backed sliding window rate credential.
 //
 // Uses a single Lua script executed atomically via EVALSHA so that
 // "check + record" is a single Redis round-trip with no race conditions.
@@ -91,7 +91,7 @@ return 1
 // RedisLimiter
 // ----------------------------------------------------------------------------
 
-// RedisLimiter wraps a Redis client and a fallback in-memory limiter.
+// RedisLimiter wraps a Redis client and a fallback in-memory credential.
 // It also caches the loaded Lua SHA to avoid re-loading on every call.
 type RedisLimiter struct {
 	client    *redis.Client

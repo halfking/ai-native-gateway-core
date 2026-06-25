@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 )
 
 // handleMemoraStatus returns the current Memora connectivity status and

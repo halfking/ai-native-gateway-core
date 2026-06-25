@@ -405,7 +405,7 @@ func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
 		t.Fatalf("expected half_open for probe, got %s", b.State())
 	}
 
-	// Probe success closes the circuit.
+	// Probe success closes the credential.
 	b.RecordSuccess()
 	if b.State() != StateClosed {
 		t.Fatalf("expected closed after probe success, got %s", b.State())

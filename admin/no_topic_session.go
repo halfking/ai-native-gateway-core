@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"

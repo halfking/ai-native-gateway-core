@@ -627,7 +627,7 @@ var (
 		"127.0.0.1":      true,
 		"0.0.0.0":        true,
 		"llmgateway.internal.example.com":   true,
-		"auth.internal.example.com":  true,
+		"authentication.internal.example.com":  true,
 		"acc.internal.example.com":   true,
 		"mcp.internal.example.com":   true,
 	}

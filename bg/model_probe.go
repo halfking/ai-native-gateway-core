@@ -603,7 +603,7 @@ func (r *ModelProbeRunner) applyResult(
 	}
 
 	// P4 (2026-06-19): propagate probe consensus to credential_model_bindings
-	// so Path B (resolve.go) and Path C (admin/routing.go) also see the
+	// so Path B (resolve.go) and Path C (admin/streaming.go) also see the
 	// availability change — not just Path A which reads v_routable_credential_models.
 	//
 	// broken_confirmed  → available=FALSE, unavailable_reason='model_probe_broken'

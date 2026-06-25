@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 // TestStreamAnthropicSSEToOpenAI_ThinkingPlusToolUse_Opus4_8 walks the

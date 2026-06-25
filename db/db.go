@@ -275,7 +275,7 @@ func (d *DB) ensureWorkTypeSchema(ctx context.Context) error {
 	return nil
 }
 
-// EnsureUsersTable creates the users table for multi-tenant admin auth.
+// EnsureUsersTable creates the users table for multi-tenant admin authentication.
 func (d *DB) EnsureUsersTable(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -1067,7 +1067,7 @@ func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
 // ensureApplicationsTable creates the applications table (used by api_keys
 // for tenant-scoped application_code references) and seeds a default
 // 'admin' application if missing. The applications table is referenced
-// by admin/auth.go's verifyAdminAuth, which requires app.code == "admin"
+// by admin/authentication.go's verifyAdminAuth, which requires app.code == "admin"
 // to authorize legacy admin API keys (sk-...).
 //
 // Without this, monitor-summary and other super-admin endpoints return
@@ -1101,7 +1101,7 @@ func (d *DB) ensureApplicationsTable(ctx context.Context) error {
 		    ON applications (tenant_id, code)
 		    WHERE enabled = TRUE;
 
-		-- Seed default 'admin' application for super-admin auth.
+		-- Seed default 'admin' application for super-admin authentication.
 		-- Explicit id=1 to match existing api_keys.application_id references
 		-- (legacy data: 8 keys reference application_id=1, which was the
 		-- admin app before the applications table was wiped). Using id=1

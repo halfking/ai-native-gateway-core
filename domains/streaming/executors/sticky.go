@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// StickyLevel defines the priority hierarchy for sticky session routing.
+// StickyLevel defines the priority hierarchy for sticky session streaming.
 //
 // 2026-06-25: Multi-level sticky strategy to handle the following scenarios:
 //   - Same client, same session, same model → L1 (session-model sticky)
@@ -342,7 +342,7 @@ func (s *StickyCache) Len() int {
 // buildStickyKeys builds all three levels of sticky keys.
 // Returns (L1, L2, L3). L1 and L2 may be empty if session_id or model are not provided.
 //
-// 2026-06-25: Internal helper for multi-level sticky routing.
+// 2026-06-25: Internal helper for multi-level sticky streaming.
 func buildStickyKeys(
 	tenantID string,
 	appID, apiKeyID *int,

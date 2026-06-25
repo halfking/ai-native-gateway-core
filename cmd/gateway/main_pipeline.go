@@ -99,7 +99,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/relay"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 )
 
 // v2DispatchConfig holds the feature-flag-driven configuration for the

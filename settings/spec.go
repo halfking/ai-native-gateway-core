@@ -19,8 +19,8 @@
 //	    _ = settings.Global.RegisterSpec(sp)
 //	}
 //
-//	// In code (compressor.go):
-//	mode := compressor.LoadMode()  // reads via settings.Global
+//	// In code (compression.go):
+//	mode := compression.LoadMode()  // reads via settings.Global
 package settings
 
 import (

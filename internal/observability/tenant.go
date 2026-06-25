@@ -25,7 +25,7 @@
 //
 // Where:
 //   - span: OTel span (from trace.SpanFromContext)
-//   - keyInfo.TenantID: string from auth.KeyInfo (Pattern A)
+//   - keyInfo.TenantID: string from authentication.KeyInfo (Pattern A)
 //   - authMethod: "api_key" | "jwt" | "session" | "service_account"
 //   - userID: API key owner or user ID
 package observability

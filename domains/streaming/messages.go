@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/audit"
-	"github.com/kaixuan/llm-gateway-go/auth"
-	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/routing"
-	"github.com/kaixuan/llm-gateway-go/sessions"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 type messagesRequestBody struct {
@@ -59,7 +59,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//    / strings so writes propagate back).
 	var (
 		attemptLoggedFlag   bool
-		attemptKeyInfo      *auth.KeyInfo
+		attemptKeyInfo      *authentication.KeyInfo
 		attemptClientModel  string
 		attemptErrCode      string
 		attemptErrMsg       string
@@ -124,7 +124,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	_ = ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel)
 
-	var keyInfo *auth.KeyInfo
+	var keyInfo *authentication.KeyInfo
 	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
@@ -136,7 +136,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
-			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				attemptErrCode = "invalid_key"
 				attemptErrMsg = "invalid or expired api key"
 				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
@@ -343,8 +343,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		modelResolution = h.chatHandler.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	}
 
-	var txResult *transform.TransformResult
-	tCtx := &transform.TransformContext{
+	var txResult *transformation.TransformResult
+	tCtx := &transformation.TransformContext{
 		RequestMode:   "chat",
 		ClientProfile: clientID.Fingerprint.ClientProfile,
 		ClientModel:   clientModel,
@@ -368,7 +368,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
-	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, session.SessionFromContext(r.Context()))
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
@@ -382,7 +382,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		nil,
 	)
 
-	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
+	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
 		W:                    w,
 		R:                    r,
 		BodyBytes:            upstreamBody,
@@ -418,7 +418,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if execErr != nil {
 		errCode := "provider_error"
 		errMsg := execErr.Error()
-		if ee, ok := execErr.(*routing.ExecuteError); ok && ee.Exhausted {
+		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
 			errCode = "model_not_found"
 			errMsg = "all providers unavailable"
 		}
@@ -428,7 +428,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, upstreamBody, keyInfo, r)
 		*attemptLogged = true
-		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
+		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "All providers unavailable")
 			return
 		}
@@ -873,8 +873,8 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message
 	})
 }
 
-func anthropicStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) routing.StreamWrapperFunc {
-	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) routing.StreamOutcome {
+func anthropicStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) executors.StreamWrapperFunc {
+	return func(w http.ResponseWriter, resp *http.Response, norm executors.NormalizerFunc, cap *audit.StreamCapture) executors.StreamOutcome {
 		c := cap
 		if c == nil {
 			c = capture
@@ -890,21 +890,21 @@ func extractEndUser(r *http.Request) string {
 	return "anonymous"
 }
 
-func tenant(ki *auth.KeyInfo) string {
+func tenant(ki *authentication.KeyInfo) string {
 	if ki != nil {
 		return ki.TenantID
 	}
 	return "default"
 }
 
-func appID(ki *auth.KeyInfo) *int {
+func appID(ki *authentication.KeyInfo) *int {
 	if ki != nil {
 		return &ki.ApplicationID
 	}
 	return nil
 }
 
-func apiKeyIDPtr(ki *auth.KeyInfo) *int {
+func apiKeyIDPtr(ki *authentication.KeyInfo) *int {
 	if ki != nil {
 		return &ki.ID
 	}
@@ -926,5 +926,5 @@ func apiKeyIDPtr(ki *auth.KeyInfo) *int {
 // (casing, -v2 / -preview suffixes) is no longer a problem because
 // model is not in the key at all.
 func buildRouteStickyKey(tenantID string, appID, apiKeyID *int, clientProfile string) string {
-	return routing.BuildClientStickyKey(tenantID, appID, apiKeyID, clientProfile)
+	return executors.BuildClientStickyKey(tenantID, appID, apiKeyID, clientProfile)
 }

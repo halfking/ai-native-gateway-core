@@ -11,24 +11,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
-	"github.com/kaixuan/llm-gateway-go/circuit"
-	"github.com/kaixuan/llm-gateway-go/compressor"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/limiter"
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/sessions"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -169,8 +167,8 @@ type RequestLogEmitter interface {
 
 type Executor struct {
 	Router     *Router
-	Circuit    *circuit.Manager
-	Limiter    *limiter.Limiter
+	Circuit    *credential.Manager
+	Limiter    *credential.Limiter
 	Pools      *pool.PoolManager
 	Upstream   *upstreampkg.Client
 	Normalize  NormalizerFunc
@@ -229,7 +227,7 @@ type Executor struct {
 	// Wired from main.go (relay.StripMinimaxFieldsBody).
 	StripMinimaxFields StripMinimaxFieldsFunc
 	Auditor            audit.Sink
-	State              *credentialstate.Writer
+	State              *credential.Writer
 	// Provider is the credential/candidate resolver. Typed as an interface
 	// (defined in routing) so the compaction fallback tests can inject a
 	// stub without standing up a real pgx pool. The concrete
@@ -292,7 +290,7 @@ type Executor struct {
 	// LLM_GATEWAY_COMPRESSION_MODE + LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION
 	// env. Nil is allowed (treated as ModeOff) for tests and unconfigured
 	// single-tenant installs.
-	Compressor *compressor.Compressor
+	Compressor *compression.Compressor
 
 	// HealthTracker records call history for intelligent availability
 	// tracking, continuous failure detection, and concurrency auto-tuning.
@@ -387,13 +385,13 @@ type Executor struct {
 	// When non-nil, context_length_exceeded 4xx recovery uses the smart sliding
 	// window analyzer + session cache integration (incremental compression).
 	// When nil, falls back to the legacy 3-tier recovery (mechanical → memora → llm).
-	RecoveryCoord *compressor.RecoveryCoordinator
+	RecoveryCoord *compression.RecoveryCoordinator
 }
 
 func NewExecutor(
 	router *Router,
-	cm *circuit.Manager,
-	lim *limiter.Limiter,
+	cm *credential.Manager,
+	lim *credential.Limiter,
 	pools *pool.PoolManager,
 	upstream *upstreampkg.Client,
 	normalize NormalizerFunc,
@@ -430,7 +428,7 @@ type ExecParams struct {
 	ClientModel          string
 	OutboundModel        string
 	ClientID             identity.ClientIdentity
-	Transform            *transform.TransformResult
+	Transform            *transformation.TransformResult
 	Resolution           *resolve.Resolution
 	Candidates           []provider.Candidate
 	Policy               *provider.Policy
@@ -776,7 +774,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// failure log (and OnError telemetry) can record how long this
 		// single upstream call took, excluding the cost of candidate
 		// selection and switching. Internal retry of the SAME credential
-		// is included — that work belongs to the candidate, not routing.
+		// is included — that work belongs to the candidate, not streaming.
 		// See db/migrations/300_candidate_failure_logs_per_attempt_latency.sql
 		// for the column semantic.
 		attemptStart := time.Now()
@@ -1320,7 +1318,7 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 //
 // Counters are still incremented so /api/candidate-failures/stats and
 // the alert ring can surface "this credential is returning model_not_found
-// frequently" without affecting routing. Threshold is now informational
+// frequently" without affecting streaming. Threshold is now informational
 // (logs the streak) rather than destructive.
 //
 // All guards are nil/disabled-aware:
@@ -1584,7 +1582,7 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	if !shouldWriteCredentialState(kind) {
 		return
 	}
-	failure := credentialstate.Failure{Kind: kind}
+	failure := credential.Failure{Kind: kind}
 	if err != nil {
 		failure.Detail = err.Error()
 	}
@@ -2194,12 +2192,12 @@ func strPtr(s string) *string {
 
 // tenantFromCtx pulls the tenant id from request context, falling
 // back to the literal "default" if unset. Uses the exported
-// sessions.GetTenantIDFromContext (Track C C4 audit fix #5).
+// session.GetTenantIDFromContext (Track C C4 audit fix #5).
 func tenantFromCtx(r *http.Request) string {
 	if r == nil {
 		return "default"
 	}
-	return sessions.GetTenantIDFromContext(r.Context())
+	return session.GetTenantIDFromContext(r.Context())
 }
 
 // contentTypeFor picks the canonical content type for a replay.
@@ -2308,7 +2306,7 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	}
 	b := e.Circuit.GetOrCreate(providerID, credentialID)
 	state := b.State()
-	if state == circuit.StateOpen || state == circuit.StateQuarantined {
+	if state == credential.StateOpen || state == credential.StateQuarantined {
 		return true
 	}
 	slog.Warn("credential state write pending failure confirmation",
@@ -2320,7 +2318,7 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	return false
 }
 
-func egressPref(tx *transform.TransformResult) []string {
+func egressPref(tx *transformation.TransformResult) []string {
 	if tx == nil || len(tx.EgressPreference) == 0 {
 		return nil
 	}

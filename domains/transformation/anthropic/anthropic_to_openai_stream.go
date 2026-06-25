@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -50,7 +51,7 @@ func StreamAnthropicSSEToOpenAI(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
-) (outcome StreamOutcome) {
+) (outcome relay.StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -75,7 +76,7 @@ func StreamAnthropicSSEToOpenAI(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return StreamOutcome{Interrupted: true, Reason: "no_flusher"}
+		return relay.StreamOutcome{Interrupted: true, Reason: "no_flusher"}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -236,7 +237,7 @@ func StreamAnthropicSSEToOpenAI(
 					writeChunk(usageChunk)
 				}
 				writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
-				return StreamOutcome{ChunkCount: chunkCount}
+				return relay.StreamOutcome{ChunkCount: chunkCount}
 			}
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
@@ -468,7 +469,7 @@ func StreamAnthropicSSEToOpenAI(
 
 			// Emit [DONE]
 			writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
-			return StreamOutcome{ChunkCount: chunkCount}
+			return relay.StreamOutcome{ChunkCount: chunkCount}
 
 		case ir.ChunkTypeError:
 			if capture != nil {

@@ -1,3 +1,4 @@
+
 // model-routing-test.go — Multi-round routing test for the
 // auto-route heuristic classifier. Compiles as `go run` (this file
 // uses `package main` for zero-friction local testing).

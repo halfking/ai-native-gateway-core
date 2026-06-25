@@ -9,8 +9,8 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
-	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 )
 
 const anthropicSSEBufSize = 64 * 1024
@@ -36,7 +36,7 @@ func StreamAnthropicPassthrough(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
-) (outcome routing.StreamOutcome) {
+) (outcome relay.StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	// Top-level panic recovery. Mirrors StreamChatWithPendingCapture
@@ -68,7 +68,7 @@ func StreamAnthropicPassthrough(
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return routing.StreamOutcome{Interrupted: true, Reason: "no_flusher"}
+		return relay.StreamOutcome{Interrupted: true, Reason: "no_flusher"}
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

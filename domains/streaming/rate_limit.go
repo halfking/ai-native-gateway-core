@@ -9,7 +9,7 @@
 //
 // Behaviour contract (now identical across all three endpoints):
 //
-//	DB=NULL  → fall back to tier default (per auth.EffectiveRPM)
+//	DB=NULL  → fall back to tier default (per authentication.EffectiveRPM)
 //	DB=0     → explicit unlimited (CheckRPM treats limit<=0 as no cap)
 //	DB=N>0   → cap at N RPM
 package streaming
@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 )
 
@@ -40,7 +40,7 @@ type rateLimitOutcome struct {
 // the chat, responses and messages endpoints. It never writes to the
 // response — callers compose headers + body themselves so each endpoint
 // keeps its own response shape (OpenAI vs Anthropic vs Responses).
-func checkGatewayRateLimit(keyInfo *auth.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
+func checkGatewayRateLimit(keyInfo *authentication.KeyInfo, rl ratelimit.RPMLimiter) rateLimitOutcome {
 	if keyInfo == nil || rl == nil || keyInfo.IsInternal {
 		return rateLimitOutcome{Skipped: true}
 	}

@@ -1,7 +1,7 @@
 // Package transport 实现网络中转领域的统一接口。
 //
 // 核心理念：IR 和 Legacy 是 Transport 领域的两种实现，对外通过 TransportLayer 接口暴露。
-// 外部调用方（如 routing.Executor）只依赖此接口，不感知 IR 还是 Legacy。
+// 外部调用方（如 streaming.Executor）只依赖此接口，不感知 IR 还是 Legacy。
 package transformation
 
 import (

@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
@@ -49,7 +49,7 @@ import (
 func enforceTenantModelPolicy(
 	ctx context.Context,
 	preAutoModel string,
-	keyInfo *auth.KeyInfo,
+	keyInfo *authentication.KeyInfo,
 	mp *modelpolicy.Checker,
 	resolver *resolve.Resolver,
 	profile string,
@@ -92,7 +92,7 @@ func enforceTenantModelPolicy(
 func enforceTenantModelPolicyAfterAuto(
 	ctx context.Context,
 	preAutoModel, postAutoModel string,
-	keyInfo *auth.KeyInfo,
+	keyInfo *authentication.KeyInfo,
 	mp *modelpolicy.Checker,
 	resolver *resolve.Resolver,
 	profile string,

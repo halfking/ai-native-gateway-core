@@ -4,7 +4,7 @@
 // picks the optimal cut point that minimises information loss while
 // satisfying the target token budget.
 //
-// Unlike the mechanical trim (transform.CompressMessagesIfNeeded) which is
+// Unlike the mechanical trim (transformation.CompressMessagesIfNeeded) which is
 // a pure byte-size sliding window, the smart analyzer understands:
 //
 //  1. System messages are ALWAYS retained (they carry persona/instructions).
@@ -77,7 +77,7 @@ type MessageInfo struct {
 }
 
 // smartWindowSummaryPrefix is the prefix injected before LLM-generated
-// summary text in the rebuilt body. Mirrors routing.compactionSummaryPrefix.
+// summary text in the rebuilt body. Mirrors streaming.compactionSummaryPrefix.
 const smartWindowSummaryPrefix = "[Gateway compacted conversation summary — prior turns collapsed to fit context]\n"
 
 // smartWindowSummaryTokenBudget is the approximate tokens consumed by the

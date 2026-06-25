@@ -12,7 +12,7 @@
 // Tenant isolation: the list endpoint scopes by tenant_id when
 // the caller is a tenant_admin (similar to other admin routes);
 // the detail + delete paths take an explicit sessionID so a
-// tenant_admin can only see/clear their own sessions.
+// tenant_admin can only see/clear their own session.
 //
 // We do NOT depend on the sessions package (avoids an import
 // cycle: admin → sessions is not safe because sessions/handler.go

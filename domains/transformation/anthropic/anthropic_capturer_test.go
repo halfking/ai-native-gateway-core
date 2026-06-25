@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 // makeAnthropicSSEBody wraps raw Anthropic SSE event bytes (each event

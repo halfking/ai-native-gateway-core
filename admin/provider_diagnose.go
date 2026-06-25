@@ -94,7 +94,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 		// in pgx and the error is swallowed by the `continue` below, which
 		// makes diagnose silently report 0 credentials for a provider whose
 		// only credential has a non-null secret. Scan into []byte (the same
-		// shape routing.go uses) and convert to string for decryption.
+		// shape streaming.go uses) and convert to string for decryption.
 		var ciphertext []byte
 		if err := rows.Scan(&cd.CredentialID, &cd.Label, &cd.Status,
 			&cd.CircuitState, &cd.AvailabilityState, &cd.HealthStatus,

@@ -24,7 +24,7 @@ func NewAPIKeyAuthHook(v *Verifier) *APIKeyAuthHook {
 }
 
 // Name 返回 Hook 名称。
-func (h *APIKeyAuthHook) Name() string { return "auth.api_key" }
+func (h *APIKeyAuthHook) Name() string { return "authentication.api_key" }
 
 // Priority 返回 Hook 优先级。
 func (h *APIKeyAuthHook) Priority() int { return 100 }

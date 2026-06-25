@@ -19,7 +19,7 @@ type window struct {
 	resetAt time.Time
 }
 
-// NewRateLimiter creates a fixed-window rate limiter.
+// NewRateLimiter creates a fixed-window rate credential.
 // limit: max requests per window. window: e.g. 1*time.Minute.
 func NewRateLimiter(limit int, win time.Duration) *RateLimiter {
 	return &RateLimiter{

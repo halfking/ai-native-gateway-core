@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -159,7 +159,7 @@ func (e *Executor) executeOpenAI(
 		return nil, err
 	}
 	// Round 47 compression v7 T-NEW-4: capture the pre-request trim
-	// delta (transform.CompressMessagesIfNeeded inside finalize) so
+	// delta (transformation.CompressMessagesIfNeeded inside finalize) so
 	// emitTelemetry writes compression_meta into request_logs even when
 	// no 4xx happened. Without this the pre-request trim runs silently
 	// and operators can't see how many bytes were saved.
@@ -483,7 +483,7 @@ func (e *Executor) executeOpenAI(
 					// the request because the conversation exceeded the
 					// model's context window, attempt one client-side trim
 					// + retry. The pre-request trim path
-					// (transform.CompressMessagesIfNeeded) catches obvious
+					// (transformation.CompressMessagesIfNeeded) catches obvious
 					// overshoots; this catches the case where the heuristic
 					// underestimated (e.g. tool_call payloads are heavier
 					// than raw chars suggest) and the upstream is the
@@ -888,25 +888,25 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 		bodyBytes = injectStreamOptions(bodyBytes)
 	}
 	if params.Transform != nil {
-		bodyBytes = transform.ApplyRequestWhitelist(
+		bodyBytes = transformation.ApplyRequestWhitelist(
 			bodyBytes,
 			params.Transform.PassthroughFields,
 			params.Transform.StripRequestFields,
 			cand.Protocol,
 		)
 	}
-	if !transform.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transform.NeedsToolCollapse(bodyBytes) {
-		bodyBytes = transform.CollapseToolHistory(bodyBytes)
+	if !transformation.IsToolUseCapable(cand.CatalogCode, cand.Protocol) && transformation.NeedsToolCollapse(bodyBytes) {
+		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
 	}
-	bodyBytes = transform.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
-	bodyBytes = transform.MergeConsecutiveMessages(bodyBytes)
+	bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
 	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
 	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
 	// (executor_anthropic.go). See transform/ctx_compress.go for rationale:
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
 	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-		bodyBytes = transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
 	}
 	return bodyBytes
 }

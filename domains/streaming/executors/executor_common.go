@@ -5,11 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/circuit"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -24,10 +22,10 @@ import (
 // The wider field set is declared so future phases (P2 onwards) can
 // grow the abstraction without re-plumbing the type.
 type CommonExecutor struct {
-	Circuit              *circuit.Manager
-	Limiter              *limiter.Limiter
+	Circuit              *credential.Manager
+	Limiter              *credential.Limiter
 	Pools                *pool.PoolManager
-	State                *credentialstate.Writer
+	State                *credential.Writer
 	HeaderProfiles       *HeaderProfileCache
 	Upstream             *upstream.Client
 	FpSlots              *credentialfpslot.Manager
