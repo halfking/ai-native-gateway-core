@@ -1717,31 +1717,29 @@ onUnmounted(() => {
  *   - .spark-bar-row / .spark-bar: 滑动窗口条形
  * ──────────────────────────────────────────────────────────────────────── */
 .models-tab {
-  min-height: 500px;
+  /* 自然高度 — 由左右面板内容自适应 */
 }
 .models-tab-grid {
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 16px;
-  min-height: 500px;
+  align-items: start;
 }
 
 /* 左侧：模型列表 */
 .model-list-panel {
   border-right: 1px solid var(--border);
   padding-right: 12px;
-  max-height: 75vh;
-  overflow-y: auto;
 }
 .model-list {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   margin: 0;
   padding: 0;
 }
 .model-list-item {
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
@@ -1765,7 +1763,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   min-width: 0;
 }
 .mli-row2 {
@@ -1780,29 +1778,17 @@ onUnmounted(() => {
 }
 .mli-name {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-all;
   flex: 1;
   min-width: 0;
+  line-height: 1.4;
 }
 .mli-tag {
   font-size: 9px;
   padding: 1px 5px;
-}
-
-/* 细滚动条 — 与 SessionCompareView 风格一致 */
-.model-list-panel::-webkit-scrollbar { width: 6px; }
-.model-list-panel::-webkit-scrollbar-track { background: transparent; }
-.model-list-panel::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-.model-list-panel::-webkit-scrollbar-thumb:hover {
-  background: var(--muted);
 }
 
 /* 右侧：模型详情容器 */
@@ -1810,8 +1796,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: 75vh;
-  overflow-y: auto;
   padding-right: 4px;
 }
 .model-detail-panel.empty {
