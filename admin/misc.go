@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -343,6 +344,26 @@ func parseVersionString(raw string) map[string]any {
 	}
 	if envSHA := strings.TrimSpace(os.Getenv("GIT_SHA")); envSHA != "" {
 		gitSHA = envSHA
+	}
+	if ok, _ := regexp.MatchString(`^[0-9a-f]{7,40}$`, gitSHA); !ok {
+		if m := regexp.MustCompile(`g([0-9a-f]{7,40})`).FindStringSubmatch(raw); len(m) == 2 {
+			gitSHA = m[1]
+		} else {
+			for _, p := range strings.Split(raw, "-") {
+				if ok, _ := regexp.MatchString(`^[0-9a-f]{7,40}$`, p); ok {
+					gitSHA = p
+					break
+				}
+			}
+		}
+	}
+	if ok, _ := regexp.MatchString(`^(\d{8}|\d{4}-\d{2}-\d{2})$`, buildDate); !ok {
+		for _, p := range strings.Split(raw, "-") {
+			if ok, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, p); ok {
+				buildDate = p
+				break
+			}
+		}
 	}
 	if buildDate == "" {
 		if bt := strings.TrimSpace(os.Getenv("BUILD_TIME")); bt != "" {
