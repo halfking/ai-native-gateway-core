@@ -31,17 +31,21 @@ import (
 
 // Judgment is the data written to armor_judgments table.
 type Judgment struct {
-	RequestID   string    // from X-Request-Id or generated
-	TenantID    string    // from auth context
-	CheckType   string    // "prompt_inject", "pii", "hallucination"
-	Decision    Decision  // safe / warn / block
-	Score       float64   // [0,1] from judge
-	Threshold   float64   // policy threshold at judgment time
-	JudgeModel  string    // which model scored (e.g. "gpt-4o-mini")
-	LatencyMS   int       // judge latency
-	PatternHit  *string   // if pattern matched, which one
-	ErrorKind   *string   // if judge failed, error category
-	CreatedAt   time.Time // when judgment was made
+	RequestID    string    // from X-Request-Id or generated
+	TenantID     string    // from auth context
+	CheckType    string    // "prompt_inject", "pii", "hallucination"
+	Decision     Decision  // safe / warn / block
+	Source       string    // "pattern" | "judge" — defaults to "judge"
+	PatternIDs   []string  // source=pattern 时命中的 Pattern.ID 列表
+	JudgeModel   string    // which model scored (e.g. "gpt-4o-mini")
+	Score        float64   // [0,1] from judge
+	Threshold    float64   // policy threshold at judgment time
+	Mode         Mode      // observe | enforce — defaults to ModeObserve
+	LatencyMS    int       // judge latency
+	PromptSHA256 string    // prompt 的 SHA256 (隐私: 不存原文)
+	Snippet      string    // 命中片段 (≤80 字符)
+	Reason       string    // judge 给的可读解释
+	CreatedAt    time.Time // when judgment was made
 }
 
 // Logger writes armor judgments to PG. Safe for concurrent use.
@@ -56,9 +60,10 @@ func NewLogger(pool *pgxpool.Pool) *Logger {
 
 const insertJudgmentSQL = `
 INSERT INTO armor_judgments (
-	request_id, tenant_id, check_type, decision, score, threshold,
-	judge_model, latency_ms, pattern_hit, error_kind, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	request_id, tenant_id, check_type, decision, source, pattern_ids,
+	judge_model, score, threshold, mode, latency_ms,
+	prompt_sha256, snippet, reason, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 `
 
 // Log writes a Judgment to armor_judgments. Never returns error; failures are
@@ -75,6 +80,20 @@ func (l *Logger) Log(ctx context.Context, j Judgment) {
 		return
 	}
 
+	// Defaults for required NOT NULL columns
+	source := j.Source
+	if source == "" {
+		source = "judge"
+	}
+	mode := string(j.Mode)
+	if mode == "" {
+		mode = string(ModeObserve)
+	}
+	patternIDs := j.PatternIDs
+	if patternIDs == nil {
+		patternIDs = []string{}
+	}
+
 	// Use a separate context with 3s timeout so slow inserts don't block relay.
 	insertCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -86,12 +105,16 @@ func (l *Logger) Log(ctx context.Context, j Judgment) {
 			j.TenantID,
 			j.CheckType,
 			j.Decision.String(), // Decision marshals to "safe"/"warn"/"block"
+			source,
+			patternIDs,
+			j.JudgeModel,
 			j.Score,
 			j.Threshold,
-			j.JudgeModel,
+			mode,
 			j.LatencyMS,
-			j.PatternHit,
-			j.ErrorKind,
+			nullIfEmpty(j.PromptSHA256),
+			nullIfEmpty(j.Snippet),
+			nullIfEmpty(j.Reason),
 			j.CreatedAt,
 		)
 		return err
@@ -100,6 +123,15 @@ func (l *Logger) Log(ctx context.Context, j Judgment) {
 	if err != nil {
 		slog.Warn("armor logger: insert failed", "error", err, "request_id", j.RequestID)
 	}
+}
+
+// nullIfEmpty returns nil for empty strings so the DB column receives NULL
+// instead of an empty string. Useful for nullable TEXT columns.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // withTenantTx runs fn inside a pgx transaction with app.current_tenant set.
