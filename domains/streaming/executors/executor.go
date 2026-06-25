@@ -812,6 +812,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
 			e.recordStickySuccess(params, cand.CredentialID)
+			// Record success for Bandit scoring (Thompson Sampling)
+			e.recordBanditSuccess(cand.CredentialID, result.LatencyMs)
 			// Step 6 (2026-06-18): a successful response on this
 			// credential clears its model_not_found streak. The next
 			// request from this sticky session will not be tripped by
@@ -992,6 +994,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// to the next candidate, and we want the DB state to be
 				// authoritative before that next lookup.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
@@ -1021,6 +1024,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// with the correct kind; this branch keeps the circuit counter
 				// consistent and ensures the kind is recorded.
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, kind, execErr)
 					e.forceUnpinOnFatalKind(params.R.Context(), holder, cand.CredentialID, kind)
@@ -1106,6 +1110,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+		e.recordBanditFailure(cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 			ProviderID:   cand.ProviderID,
 			CredentialID: cand.CredentialID,
@@ -1693,6 +1698,45 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		return
 	}
 	e.Router.Sticky.RecordFailure(params.StickyKey, 5)
+}
+
+// recordBanditSuccess records a successful request in the Bandit scorer.
+// This updates the Beta distribution parameters for Thompson Sampling.
+func (e *Executor) recordBanditSuccess(credentialID int, latencyMs int) {
+	if e.Router == nil || e.Router.Bandit == nil {
+		return
+	}
+	credID := fmt.Sprintf("%d", credentialID)
+	e.Router.Bandit.RecordSuccess(credID, int64(latencyMs))
+}
+
+// recordBanditFailure records a failed request in the Bandit scorer.
+// This updates the Beta distribution parameters for Thompson Sampling.
+func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind) {
+	if e.Router == nil || e.Router.Bandit == nil {
+		return
+	}
+	
+	// Skip client-side errors (not the credential's fault)
+	if errorsx.IsClientBug(kind) {
+		return
+	}
+	
+	// Skip transient network errors
+	if kind == errorsx.KindCanceled ||
+		kind == errorsx.KindNetwork ||
+		kind == errorsx.KindTimeout ||
+		kind == errorsx.KindUpstreamDown {
+		return
+	}
+	
+	credID := fmt.Sprintf("%d", credentialID)
+	e.Router.Bandit.RecordFailure(credID)
+	
+	// Record 429 rate limit hits separately for penalty tracking
+	if kind == errorsx.KindRateLimit {
+		e.Router.Bandit.RecordRateLimitHit(credID)
+	}
 }
 
 // AsyncPendingError (Track C C4, 2026-06-18) is returned by Execute
