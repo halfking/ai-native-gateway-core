@@ -11,22 +11,22 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -386,6 +386,9 @@ type Executor struct {
 	// window analyzer + session cache integration (incremental compression).
 	// When nil, falls back to the legacy 3-tier recovery (mechanical → memora → llm).
 	RecoveryCoord *compression.RecoveryCoordinator
+	// RouteNodeRecorder records per-(credential, model) health outcomes.
+	// Nil disables route-node health recording.
+	Recorder RouteNodeRecorder
 }
 
 func NewExecutor(
@@ -812,6 +815,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
 			e.recordStickySuccess(params, cand.CredentialID)
+			if e.Recorder != nil {
+				e.Recorder.RecordSuccess(params.R.Context(), cand.CredentialID, cand.RawModel)
+			}
 			// Record success for Bandit scoring (Thompson Sampling)
 			e.recordBanditSuccess(cand.CredentialID, result.LatencyMs)
 			// Step 6 (2026-06-18): a successful response on this
@@ -983,6 +989,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				kind = errorsx.KindStreamTimeout
 			}
 			e.recordStickyFailure(params, cand.CredentialID, kind)
+			if e.Recorder != nil {
+				e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+			}
 
 			if sie.resumable {
 				// Stream is resumable (few chunks sent) - try next candidate.
@@ -1109,6 +1118,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       execErr.Error(),
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
+		if e.Recorder != nil {
+			e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+		}
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		e.recordBanditFailure(cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
@@ -1708,7 +1720,7 @@ func (e *Executor) recordBanditSuccess(credentialID int, latencyMs int) {
 	}
 	credID := fmt.Sprintf("%d", credentialID)
 	e.Router.Bandit.RecordSuccess(credID, int64(latencyMs))
-	
+
 	// Mark dirty for async flush to database
 	if e.Router.BanditFlusher != nil {
 		e.Router.BanditFlusher.MarkDirty(credID)
@@ -1721,12 +1733,12 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 	if e.Router == nil || e.Router.Bandit == nil {
 		return
 	}
-	
+
 	// Skip client-side errors (not the credential's fault)
 	if errorsx.IsClientBug(kind) {
 		return
 	}
-	
+
 	// Skip transient network errors
 	if kind == errorsx.KindCanceled ||
 		kind == errorsx.KindNetwork ||
@@ -1734,15 +1746,15 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 		kind == errorsx.KindUpstreamDown {
 		return
 	}
-	
+
 	credID := fmt.Sprintf("%d", credentialID)
 	e.Router.Bandit.RecordFailure(credID)
-	
+
 	// Record 429 rate limit hits separately for penalty tracking
 	if kind == errorsx.KindRateLimit {
 		e.Router.Bandit.RecordRateLimitHit(credID)
 	}
-	
+
 	// Mark dirty for async flush to database
 	if e.Router.BanditFlusher != nil {
 		e.Router.BanditFlusher.MarkDirty(credID)

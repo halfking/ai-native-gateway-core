@@ -7,7 +7,9 @@ import (
 	"math/rand"
 	"sort"
 	"sync/atomic"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -22,6 +24,7 @@ type Router struct {
 	FpSlots interface {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
+		GetNodeState(ctx context.Context, credentialID int, model string) (*credentialfpslot.NodeState, error)
 	}
 	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
 	// selection. When set, planByTier uses bandit scoring instead of P2C within
@@ -73,6 +76,8 @@ func (r *Router) PlanCandidates(
 		)
 		return nil
 	}
+
+	available = r.filterHealthyNodes(available)
 
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
@@ -175,6 +180,37 @@ func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 		}
 	}
 	return out
+}
+
+func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.Candidate {
+	if r.FpSlots == nil || !r.FpSlots.Enabled() {
+		return candidates
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	healthy := make([]provider.Candidate, 0, len(candidates))
+	now := time.Now()
+	for _, cand := range candidates {
+		state, err := r.FpSlots.GetNodeState(ctx, cand.CredentialID, cand.RawModel)
+		if err != nil {
+			healthy = append(healthy, cand)
+			continue
+		}
+		if state == nil || state.IsUsable(now) {
+			healthy = append(healthy, cand)
+			continue
+		}
+		slog.Debug("router: route node filtered out",
+			"credential_id", cand.CredentialID,
+			"model", cand.RawModel,
+			"disabled", state.Disabled,
+			"failure_count", state.FailureCount,
+			"consecutive_failures", state.ConsecutiveFailureStreak(now),
+		)
+	}
+	return healthy
 }
 
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
