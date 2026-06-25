@@ -3141,7 +3141,12 @@ func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {
 	results := make([]map[string]any, 0)
 	for _, rule := range mirrorRules {
 		var credID int
-		var label, ciphertext string
+		var label string
+		// secret_ciphertext is a bytea column; pgx will refuse to scan it
+		// into *string, so we must use []byte here (matches the rest of
+		// the codebase — see provider_refresh.go, provider_diagnose.go,
+		// credential_cycler.go, etc.).
+		var ciphertext []byte
 		err := h.db.QueryRow(ctx, `
 			SELECT c.id, c.label, c.secret_ciphertext
 			FROM credentials c
