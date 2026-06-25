@@ -797,6 +797,18 @@ func (h *ChatHandler) serveWithExecutor(
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
 
+	// V3.1 (2026-06-26): detect model switch and clear session preference
+	if sessionID != "" && h.sessionPref != nil {
+		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
+		if modelChanged {
+			slog.Info("session model switch detected, preference cleared",
+				"session_id", sessionID,
+				"previous_model", prevModel,
+				"new_model", clientModel,
+			)
+		}
+	}
+
 	// ── Tenant model policy — pre-auto check (Round 48, 2026-06-21) ──
 	// Must run BEFORE auto_route + GetCandidates so a denied request
 	// never reaches the upstream provider.  model="auto" is exempt

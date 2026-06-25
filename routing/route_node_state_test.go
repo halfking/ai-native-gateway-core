@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,7 +179,10 @@ func setupTestRedis(t *testing.T) (*redis.Client, func()) {
 	require.NoError(t, err)
 
 	client := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
+		Addr:         mr.Addr(),
+		MaxRetries:   3,
+		MinIdleConns: 5,
+		PoolSize:     10,
 	})
 
 	cleanup := func() {
@@ -261,6 +265,46 @@ func TestRouteNodeStore_RecordFailure(t *testing.T) {
 	assert.Equal(t, "req-fail", state.SlideWindow[0].RequestID)
 	assert.False(t, state.SlideWindow[0].Success)
 	assert.Equal(t, "timeout", state.SlideWindow[0].ErrorKind)
+}
+
+func TestRouteNodeStore_ConcurrentUpdates_NoLostUpdates(t *testing.T) {
+	client, cleanup := setupTestRedis(t)
+	defer cleanup()
+
+	store := NewRouteNodeStore(client)
+	ctx := context.Background()
+	workers := 4
+	recordsPerWorker := 3
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, workers*recordsPerWorker)
+
+	for w := range workers {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for r := range recordsPerWorker {
+				reqID := fmt.Sprintf("worker-%d-req-%d", workerID, r)
+				if err := store.RecordSuccess(ctx, 99, "gpt-4-optimistic", reqID); err != nil {
+					errChan <- fmt.Errorf("worker %d record %d failed: %w", workerID, r, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Fatal(err)
+	}
+
+	state, err := store.Get(ctx, 99, "gpt-4-optimistic")
+	require.NoError(t, err)
+	assert.Equal(t, int64(workers*recordsPerWorker), state.SuccessCount,
+		"expected all concurrent updates to be accounted for")
+	assert.Len(t, state.SlideWindow, workers*recordsPerWorker,
+		"expected all slide window records to be present")
 }
 
 func TestRouteNodeStore_RecordFailure_Consecutive(t *testing.T) {

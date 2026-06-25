@@ -145,7 +145,10 @@ func resolveSession(
 // detectAndHandleModelSwitch checks if the session's model has changed.
 // If model changed, clears SessionPreference to force re-selection.
 //
-// Per design spec (2026-06-26 V3.1, flow step 6).
+// Per design spec (2026-06-26 V3.1, flow step 6):
+// 1. Read current preference (credentialID + model)
+// 2. If previous model != clientModel → model changed
+// 3. On change: clear preference, return true
 //
 // Returns:
 // - modelChanged: true if model changed (session_pref was cleared)
@@ -156,22 +159,30 @@ func detectAndHandleModelSwitch(
 	sessionID string,
 	clientModel string,
 ) (modelChanged bool, previousModel string) {
-	if sessionPref == nil || sessionID == "" {
+	if sessionPref == nil || sessionID == "" || clientModel == "" {
 		return false, ""
 	}
 
-	// Read current preference
-	credID, found := sessionPref.Get(ctx, sessionID)
-	if !found {
+	// Read current preference (V3.1: includes model)
+	val, found := sessionPref.Get(ctx, sessionID)
+	if !found || val == nil {
 		return false, ""
 	}
 
-	// We need to track the model associated with this preference.
-	// For now, we use a convention: store model in a separate key.
-	// TODO: Refactor SessionPreference to also store model.
-	_ = credID // currently unused, will be used when we track model
+	// No previous model stored → first request, no switch to detect
+	if val.Model == "" {
+		return false, ""
+	}
 
-	return false, ""
+	// Compare models
+	if val.Model == clientModel {
+		return false, "" // same model, no switch
+	}
+
+	// Model changed → clear preference
+	prevModel := val.Model
+	sessionPref.ClearOnModelSwitch(ctx, sessionID, prevModel, clientModel)
+	return true, prevModel
 }
 
 // generateSystemSessionID generates a new system-assigned session ID.

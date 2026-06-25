@@ -1265,11 +1265,49 @@ func main() {
 	// cmd/gateway/main_v2_pipeline.go for the wiring.
 	registerV2PipelineRoutes(mux)
 
+	// R1.12 (2026-06-26): v1 dispatch Pipeline wrapper. When
+	// LLM_GATEWAY_USE_V2_PIPELINE=true, the 4 v1 chat endpoints
+	// (/v1/chat/completions, /v1/completions, /v1/messages,
+	// /v1/responses) are wrapped through the v2 Hook Pipeline
+	// (tracing, security, audit, observability) before reaching
+	// the existing relay.ChatHandler. Default OFF keeps the v1
+	// dispatch unchanged. See cmd/gateway/main_pipeline.go for
+	// the wiring.
+	//
+	// The v1 routes are registered FIRST (so they bind), then the
+	// v2 wrappers are registered LAST (so they win — Go's
+	// http.ServeMux picks the last-registered exact-path match).
+	v2DispatchEnabled := v2UsePipeline()
+	if v2DispatchEnabled {
+		slog.Info("v2 pipeline: LLM_GATEWAY_USE_V2_PIPELINE=true; 4 v1 endpoints will be Pipeline-wrapped")
+	} else {
+		slog.Info("v2 pipeline: flag not set; 4 v1 endpoints stay on v1 chatHandler (production default)")
+	}
+
 	mux.Handle("/v1/chat/completions", chatHandler)
 	mux.Handle("/v1/completions", chatHandler)
 	mux.Handle("/v1/messages", messagesHandler)
 	mux.Handle("/v1/responses", responsesHandler)
 	mux.Handle("/v1/models", modelsHandler)
+
+	// Overlay the v2 Pipeline wrapper on top of the 4 v1 endpoints
+	// when the flag is on. The wrapper is a Pipeline preflight
+	// (tracing/security/audit/...) → chatHandler.ServeHTTP →
+	// postflight. The 4 v1 handlers above stay registered as the
+	// fallback inside v2DispatchHandler; the Pipeline re-routes
+	// through them on a stage error or feature-flag off path.
+	if v2DispatchEnabled {
+		if _, v2Deps, ok := v2DispatchMux(chatHandler, messagesHandler, responsesHandler); ok && v2Deps != nil {
+			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatHandler))
+			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatHandler))
+			// /v1/messages and /v1/responses internally call
+			// chatHandler.ServeHTTP, so wrapping chatHandler is
+			// enough to put the Pipeline in front of all 4.
+			mux.Handle("/v1/messages", v2DispatchHandler(v2Deps, messagesHandler))
+			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesHandler))
+			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
+		}
+	}
 
 	if sessionMgr != nil {
 		sessionHandler := sessions.NewHandler(sessionMgr)
