@@ -16,13 +16,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -32,11 +36,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -218,6 +218,10 @@ type ChatHandler struct {
 	// When non-nil, handler calls Logger.Log after armor scoring.
 	// nil disables armor audit (judgments are not persisted).
 	armorLogger *armor.Logger
+	// lastSystemSession enables 5-minute no-id session reuse.
+	lastSystemSession *session.LastSystemSessionIndex
+	// sessionPref tracks session -> credential preference for model switch handling.
+	sessionPref *session.SessionPreference
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -238,6 +242,11 @@ func (h *ChatHandler) SetExecutor(exec *executors.Executor, prov providerResolve
 	h.executor = exec
 	h.provider = prov
 	h.sticky = sticky
+}
+
+func (h *ChatHandler) SetSessionRouting(lastSystemSession *session.LastSystemSessionIndex, sessionPref *session.SessionPreference) {
+	h.lastSystemSession = lastSystemSession
+	h.sessionPref = sessionPref
 }
 
 // SetModelPolicy wires the tenant-scoped model denylist checker
@@ -633,6 +642,22 @@ func (h *ChatHandler) serveWithExecutor(
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
+	if sessionID == "" && h.lastSystemSession != nil && keyInfo != nil && h.sessionGetter != nil {
+		entry, found := h.lastSystemSession.Get(ctx, keyInfo.ID)
+		if found {
+			si, err := h.sessionGetter.Get(ctx, entry.SessionID)
+			if err == nil && si != nil {
+				sessionID = entry.SessionID
+				sessionInfo = si
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Reused", "true")
+				slog.Debug("session reused from LastSystemSessionIndex",
+					"api_key_id", keyInfo.ID,
+					"session_id", sessionID,
+				)
+			}
+		}
+	}
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
@@ -654,6 +679,7 @@ func (h *ChatHandler) serveWithExecutor(
 					logCtx.SetSession(newSession)
 					ctx = session.SessionFromContextWith(ctx, newSession)
 					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+					w.Header().Set("X-Gw-Session-Auto", "true")
 					if r.Header.Get("X-Session-Id") != "" {
 						slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
 							"original_session_id", r.Header.Get("X-Session-Id"),
@@ -666,6 +692,16 @@ func (h *ChatHandler) serveWithExecutor(
 						"new_session_id", newSession.SessionID,
 						"task_id", taskID,
 					)
+					if h.lastSystemSession != nil {
+						lsEntry := &session.LastSystemSessionEntry{
+							SessionID:  newSession.SessionID,
+							DeviceSeed: deviceSeed,
+							TaskID:     taskID,
+						}
+						if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
+							slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+						}
+					}
 				}
 			} else if err != session.ErrSessionNotFound {
 				slog.Warn("session lookup failed", "error", err)
@@ -752,6 +788,16 @@ func (h *ChatHandler) serveWithExecutor(
 
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
+	if sessionID != "" && h.sessionPref != nil {
+		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
+		if modelChanged {
+			slog.Info("session model switch detected, preference cleared",
+				"session_id", sessionID,
+				"previous_model", prevModel,
+				"new_model", clientModel,
+			)
+		}
+	}
 
 	// ── Tenant model policy — pre-auto check (Round 48, 2026-06-21) ──
 	// Must run BEFORE auto_route + GetCandidates so a denied request
