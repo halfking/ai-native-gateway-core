@@ -1,7 +1,8 @@
 package admin
 
-// bytea_scan_lint_test.go — static regression guard for two related
-// PostgreSQL column-type anti-patterns:
+// bytea_scan_lint_test.go — static regression guard for PostgreSQL
+// column-type scan anti-patterns that have historically caused
+// production pgx errors:
 //
 // 1. bytea columns scanned into Go *string. pgx refuses:
 //      "cannot scan bytea (OID 17) in binary format into *string"
@@ -22,11 +23,9 @@ package admin
 //   tracked column (bytea or jsonb), it verifies the matching Scan
 //   destination is type-compatible:
 //
-//   - bytea MUST scan into []byte (or *[]byte / sql.NullString with
-//     explicit ::text elsewhere). Scanning into *string always fails.
-//   - jsonb MUST scan into a []byte / json.RawMessage / sql.NullString
-//     / *string destination, BUT only if the SELECT column uses a
-//     `::text` cast. Without the cast, pgx returns an error.
+//   - bytea MUST scan into []byte. Scanning into *string always fails.
+//   - jsonb MUST scan into a []byte / json.RawMessage / interface{}
+//     destination, OR the SELECT column must use a `::text` cast.
 //
 //   The test does NOT need a live database, does NOT need a network
 //   connection, and runs in <1s. It is intentionally conservative:
@@ -40,7 +39,6 @@ package admin
 //   cases must be verified by manual code review.
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -124,8 +122,7 @@ func TestScanPGColumnsIntoCompatibleType(t *testing.T) {
 func scanFile(fset *token.FileSet, file *ast.File) []string {
 	var violations []string
 
-	// Collect every package-level var declaration that has type `string`,
-	// mapping var name → "string". (Includes `var x, y string`.)
+	// Collect every package-level var declaration that has a string-like type.
 	stringDecls := collectStringDecls(file.Decls)
 
 	// Walk every function in the file.
@@ -141,8 +138,9 @@ func scanFile(fset *token.FileSet, file *ast.File) []string {
 }
 
 // collectStringDecls walks a list of top-level decls and returns a
-// map[name]typeText for every var declared with type "string" (or
-// anything ending in `.string` or `NullString` / `.NullString`).
+// map[name]typeText for every var declared with a string-like type:
+// "string", "*string", "sql.NullString", or any type whose name ends
+// in "string" or "NullString".
 func collectStringDecls(decls []ast.Decl) map[string]string {
 	out := map[string]string{}
 	for _, decl := range decls {
@@ -159,8 +157,7 @@ func collectStringDecls(decls []ast.Decl) map[string]string {
 			if typeText == "" {
 				continue
 			}
-			if typeText == "string" || strings.HasSuffix(typeText, ".string") ||
-				typeText == "NullString" || strings.HasSuffix(typeText, ".NullString") {
+			if isStringLikeType(typeText) {
 				for _, name := range vs.Names {
 					if name != nil {
 						out[name.Name] = typeText
@@ -172,16 +169,31 @@ func collectStringDecls(decls []ast.Decl) map[string]string {
 	return out
 }
 
+// isStringLikeType returns true for types that pgx refuses to scan
+// bytea/jsonb into without explicit casting. This includes:
+//   - string, *string
+//   - sql.NullString (or any *.NullString)
+//   - any type whose name ends in "string"
+func isStringLikeType(typeText string) bool {
+	if typeText == "string" {
+		return true
+	}
+	if typeText == "NullString" || strings.HasSuffix(typeText, ".NullString") {
+		return true
+	}
+	if strings.HasSuffix(typeText, ".string") {
+		return true
+	}
+	return false
+}
+
 // scanFunc finds every Scan(&...) call inside fn whose receiving call
 // is `db.Query(...)` or `db.QueryRow(...)` whose SQL projects at least
 // one bytea/jsonb column, and verifies each destination type.
 func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]string) []string {
 	var violations []string
 
-	// Function-local string declarations shadow package-level ones.
-	// We track `string` and `sql.NullString` (and any type ending in
-	// `.NullString` or `.string`) as string-like destinations that
-	// require the same pgx casting rules.
+	// Function-local string-like declarations shadow package-level ones.
 	localStringDecls := map[string]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		vs, ok := n.(*ast.ValueSpec)
@@ -189,11 +201,7 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			return true
 		}
 		typeText := exprText(vs.Type)
-		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
-			fmt.Printf("DEBUG scanFunc: listCredentials ValueSpec Names=%v Type=%s\n", vs.Names, typeText)
-		}
-		if typeText == "string" || strings.HasSuffix(typeText, ".string") ||
-			typeText == "NullString" || strings.HasSuffix(typeText, ".NullString") {
+		if isStringLikeType(typeText) {
 			for _, name := range vs.Names {
 				if name != nil {
 					localStringDecls[name.Name] = true
@@ -202,9 +210,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 		}
 		return true
 	})
-	if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
-		fmt.Printf("DEBUG scanFunc: listCredentials localStringDecls=%v\n", localStringDecls)
-	}
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -215,9 +220,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 		if !ok || sel.Sel == nil || sel.Sel.Name != "Scan" {
 			return true
 		}
-		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
-			fmt.Printf("DEBUG scanFunc: listCredentials Scan call: args=%d\n", len(call.Args))
-		}
 
 		sql := findSQLForScanCall(call)
 		if sql == "" {
@@ -226,12 +228,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			if id, ok := sel.X.(*ast.Ident); ok {
 				sql = findSQLFromBody(fn.Body, id.Name)
 			}
-		}
-		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
-			fmt.Printf("DEBUG scanFunc: listCredentials Scan sql_len=%d\n", len(sql))
-			// Direct call for comparison
-			directIdx, directOk, directCasted := findColumnIndexWithCast(sql, "tags")
-			fmt.Printf("DEBUG scanFunc: DIRECT findColumnIndexWithCast: idx=%d ok=%v casted=%v\n", directIdx, directOk, directCasted)
 		}
 		if sql == "" {
 			return true
@@ -255,25 +251,18 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 				": "+col+" (bytea) scanned into *string — must use []byte")
 		}
 
-		// Rule 2: jsonb columns scanning into *string/sql.NullString
+		// Rule 2: jsonb columns scanning into a string-like destination
 		// MUST be wrapped with a `::text` cast in the SELECT list.
 		for _, col := range jsonbColumnsRequiringCast {
-			colIdx, casted, ok := findColumnIndexWithCast(sql, col)
-			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" && col == "tags" {
-				fmt.Printf("DEBUG listCredentials jsonb lookup: col=%q idx=%d casted=%v ok=%v sql_len=%d sql_head=%.40q\n", col, colIdx, casted, ok, len(sql), sql)
-			}
-			if !ok {
+			colIdx, found, casted := findColumnIndexWithCast(sql, col)
+			if !found {
 				continue
 			}
 			if colIdx < 0 || colIdx >= len(call.Args) {
 				continue
 			}
 			dest := call.Args[colIdx]
-			isStr := isStringDestination(dest, localStringDecls, pkgStringDecls)
-			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" && col == "tags" {
-				fmt.Printf("DEBUG listCredentials jsonb: col=%s idx=%d casted=%v isStr=%v\n", col, colIdx, casted, isStr)
-			}
-			if !isStr {
+			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
 				continue
 			}
 			if casted {
@@ -304,9 +293,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 //
 //     rows, _ := h.db.Query(ctx, query, id)
 //     rows.Scan(&x)
-//
-// For (2), we walk the enclosing function body to find the assignment
-// that bound `rows` and resolve the SQL argument from that Query call.
 func findSQLForScanCall(call *ast.CallExpr) string {
 	if call.Fun == nil {
 		return ""
@@ -315,13 +301,9 @@ func findSQLForScanCall(call *ast.CallExpr) string {
 	if !ok {
 		return ""
 	}
-	// Pattern 1: Scan is invoked directly on a CallExpr.
 	if recv, ok := sel.X.(*ast.CallExpr); ok {
 		return sqlFromCallExpr(recv)
 	}
-	// Pattern 2: Scan is invoked on an Ident (rows variable). We need
-	// to find the AssignmentStmt that bound it. The caller (scanFunc)
-	// handles this — we return "".
 	return ""
 }
 
@@ -361,8 +343,7 @@ func sqlFromCallExpr(call *ast.CallExpr) string {
 //
 // Note: this function only resolves SQL when the Query call passes a
 // string LITERAL as its SQL arg. If the SQL is in a variable, we
-// conservatively return "" — such cases must be verified by manual
-// code review.
+// conservatively return "".
 func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 	var found string
 	ast.Inspect(body, func(n ast.Node) bool {
@@ -484,14 +465,12 @@ func findTopLevelKeyword(s string, kw string) int {
 		if depth != 0 {
 			continue
 		}
-		// Must be preceded by whitespace (or start of string).
 		if i > 0 && !isWhitespace(s[i-1]) {
 			continue
 		}
 		if s[i:i+len(kw)] != kw {
 			continue
 		}
-		// Must be followed by whitespace (or end of string).
 		end := i + len(kw)
 		if end < len(s) && !isWhitespace(s[end]) {
 			continue
@@ -530,10 +509,7 @@ func splitTopLevelCommas(s string) []string {
 }
 
 // isStringDestination returns true if `dest` is `&varName` where
-// varName was declared as a string-like type. We consider `string`,
-// `sql.NullString`, and `*string` (if its element is string) as
-// "string-like destinations" that all fail on bytea/jsonb scans
-// without proper casting.
+// varName was declared as a string-like type.
 func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStringDecls map[string]string) bool {
 	u, ok := dest.(*ast.UnaryExpr)
 	if !ok || u.Op != token.AND {
@@ -546,7 +522,7 @@ func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStr
 	if localStringDecls[id.Name] {
 		return true
 	}
-	if t, ok := pkgStringDecls[id.Name]; ok && (t == "string" || t == "NullString" || strings.HasSuffix(t, ".NullString")) {
+	if t, ok := pkgStringDecls[id.Name]; ok && isStringLikeType(t) {
 		return true
 	}
 	return false
@@ -555,10 +531,10 @@ func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStr
 // exprText returns a short text representation of a type expression
 // good enough to compare with "string". Examples:
 //
-//	Ident "string"         → "string"
-//	Ident "CipherText"     → "CipherText"
+//	Ident "string"             → "string"
+//	Ident "CipherText"         → "CipherText"
 //	ArrayType Elt=Ident "byte" → "byte"
-//	StarExpr X=Ident "Foo" → "Foo"
+//	StarExpr X=Ident "Foo"     → "Foo"
 //	SelectorExpr X="pkg" Sel="Bar" → "pkg.Bar"
 func exprText(e ast.Expr) string {
 	if e == nil {
