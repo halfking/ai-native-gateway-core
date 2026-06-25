@@ -108,6 +108,10 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 	if health == "" {
 		health = HealthUnknown
 	}
+	version := a.Version
+	if version == "" {
+		version = "0.0.0"
+	}
 
 	return s.withTenantTx(ctx, a.TenantID, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, upsertAssetSQL,
@@ -120,7 +124,7 @@ func (s *pgStore) Upsert(ctx context.Context, a Asset) error {
 			nullable(a.CostCenter), // 7
 			tagsJSON,               // 8
 			string(health),         // 9
-			nullable(a.Version),    // 10
+			version,                // 10 — never empty; defaults to "0.0.0"
 			metadataJSON,           // 11
 		)
 		return err
