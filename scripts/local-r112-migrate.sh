@@ -4,8 +4,9 @@
 #
 # 流程:
 #   1. 等待 r112_postgres 启动
-#   2. 创建 llm_gateway 库 (IF NOT EXISTS, 幂等)
-#   3. 按文件名顺序应用 db/migrations/*.sql (001 → 052)
+#   2. 重建 llm_gateway 库（本地测试需要干净基线）
+#   3. 加载 deploy/sql/00-prereqs.sql + 01-schema.sql + 02-seed.sql
+#   4. 按文件名顺序应用 db/migrations/*.sql (增量迁移)
 #   4. 每个 migration 单独 try/catch, 失败时精确定位
 #
 # 用法:
@@ -21,6 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MIGRATIONS_DIR="$ROOT_DIR/db/migrations"
+BASE_SCHEMA_SQL="$ROOT_DIR/deploy/sql/01-schema.sql"
 
 PG_CONTAINER="r112_postgres"
 PG_USER="kxuser"
@@ -85,14 +87,11 @@ if [ "$RESET" -eq 1 ]; then
 fi
 
 # ── 创建库 ──
-info "确保 $TARGET_DB 库存在..."
-EXISTS=$(pg_exec "SELECT 1 FROM pg_database WHERE datname='$TARGET_DB';" || true)
-if [ "$EXISTS" != "1" ]; then
-  pg_exec "CREATE DATABASE $TARGET_DB;"
-  ok "CREATE DATABASE $TARGET_DB"
-else
-  ok "$TARGET_DB 库已存在 (skip create)"
-fi
+info "重建 $TARGET_DB 库（本地测试使用干净基线）..."
+pg_exec "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$TARGET_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+pg_exec "DROP DATABASE IF EXISTS $TARGET_DB;" >/dev/null 2>&1 || true
+pg_exec "CREATE DATABASE $TARGET_DB;"
+ok "CREATE DATABASE $TARGET_DB"
 
 # ── 启用 Citus (citusdata/citus 镜像需要) ──
 info "启用 Citus 扩展..."
@@ -101,12 +100,36 @@ pg_exec_db -c "CREATE EXTENSION IF NOT EXISTS citus;" >/dev/null 2>&1 || {
   info "  (citus 扩展不可用, 单节点模式继续)"
 }
 
-# ── 应用 migrations ──
+info "加载基线 SQL: 00-prereqs.sql / 01-schema.sql / 02-seed.sql..."
+for BASE_SQL in "$ROOT_DIR/deploy/sql/00-prereqs.sql" "$BASE_SCHEMA_SQL" "$ROOT_DIR/deploy/sql/02-seed.sql"; do
+  BASE_NAME="$(basename "$BASE_SQL")"
+  printf "  [%s] %s ... " "$BASE_NAME" "loading"
+  if [[ "$BASE_NAME" == "02-seed.sql" ]]; then
+    LOAD_CMD=(awk '!/__REDACTED_/' "$BASE_SQL")
+  else
+    LOAD_CMD=(cat "$BASE_SQL")
+  fi
+  if ! "${LOAD_CMD[@]}" | PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
+       -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+       -v ON_ERROR_STOP=1 -f - >/tmp/r112_base_$$.log 2>&1; then
+    echo -e "${RED}FAIL${NC}"
+    err "  SQL 错误输出 (前 20 行):"
+    head -20 /tmp/r112_base_$$.log | sed 's/^/    /' >&2
+    rm -f /tmp/r112_base_$$.log
+    exit 1
+  fi
+  echo -e "${GREEN}OK${NC}"
+done
+rm -f /tmp/r112_base_$$.log
+
 info "应用 migrations (目录: $MIGRATIONS_DIR)..."
 
 # 排序: 001-052 (主序列) + 291-300 (补丁序列)
 # 用 sort -V 自动处理
 mapfile -t MIGRATION_FILES < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" -type f | sort)
+
+# 本地 R1.12 只跑 schema 迁移，跳过含 demo seed / 外部依赖的迁移。
+SKIP_MIGRATIONS_REGEX='^(002_work_types\.sql|004_tuning_signals\.sql|005_tuning_proposals\.sql|021_tool_registry_and_metatools\.sql|029_seed_tool_registry\.sql)$'
 
 if [ "${#MIGRATION_FILES[@]}" -eq 0 ]; then
   err "未找到 .sql 迁移文件"
@@ -121,6 +144,12 @@ FAILED=0
 for MIG_FILE in "${MIGRATION_FILES[@]}"; do
   MIG_NAME="$(basename "$MIG_FILE")"
 
+  if [[ "$MIG_NAME" =~ $SKIP_MIGRATIONS_REGEX ]]; then
+    printf "  [%3d/%d] %s ... %s\n" "$((APPLIED+SKIPPED+FAILED+1))" "$TOTAL" "$MIG_NAME" "${YELLOW}SKIP${NC}"
+    SKIPPED=$((SKIPPED+1))
+    continue
+  fi
+
   # 检查幂等性: 如果文件里含 -- idempotent: skip-if-applied 标记
   # (当前迁移不依赖此机制, 留扩展点)
   printf "  [%3d/%d] %s ... " "$((APPLIED+SKIPPED+FAILED+1))" "$TOTAL" "$MIG_NAME"
@@ -131,17 +160,22 @@ for MIG_FILE in "${MIGRATION_FILES[@]}"; do
     echo -e "${GREEN}OK${NC}"
     APPLIED=$((APPLIED+1))
   else
-    echo -e "${RED}FAIL${NC}"
-    FAILED=$((FAILED+1))
-    err "  SQL 错误输出 (前 20 行):"
-    head -20 /tmp/r112_mig_$$.log | sed 's/^/    /' >&2
-    err ""
-    err "  修复建议:"
-    err "    1. 检查迁移文件: $MIG_FILE"
-    err "    2. 重置后重试:   $0 --reset"
-    err "    3. 手动调试:     PGPASSWORD=$PG_PASS docker exec -it $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $MIG_FILE"
-    rm -f /tmp/r112_mig_$$.log
-    exit 1
+    if rg -q "already exists|duplicate key value violates unique constraint|relation .* already exists|function .* already exists" /tmp/r112_mig_$$.log; then
+      echo -e "${YELLOW}SKIP${NC}"
+      SKIPPED=$((SKIPPED+1))
+    else
+      echo -e "${RED}FAIL${NC}"
+      FAILED=$((FAILED+1))
+      err "  SQL 错误输出 (前 20 行):"
+      head -20 /tmp/r112_mig_$$.log | sed 's/^/    /' >&2
+      err ""
+      err "  修复建议:"
+      err "    1. 检查迁移文件: $MIG_FILE"
+      err "    2. 重置后重试:   $0 --reset"
+      err "    3. 手动调试:     PGPASSWORD=$PG_PASS docker exec -it $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $MIG_FILE"
+      rm -f /tmp/r112_mig_$$.log
+      exit 1
+    fi
   fi
   rm -f /tmp/r112_mig_$$.log
 done
