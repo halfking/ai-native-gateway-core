@@ -66,3 +66,19 @@ CREATE POLICY tenant_isolation_agents ON public.agents
     USING ((tenant_id)::text = (public.get_current_tenant())::text);
 
 COMMIT;
+
+-- +migrate Down
+-- Rollback script for 050_agents.sql
+-- Removes the agents table and its indexes/policies.
+-- Safe to run even if the table does not exist (IF EXISTS guards).
+
+BEGIN;
+
+DROP POLICY IF EXISTS tenant_isolation_agents ON public.agents;
+DROP INDEX IF EXISTS idx_agents_capabilities;
+DROP INDEX IF EXISTS idx_agents_heartbeat;
+DROP INDEX IF EXISTS idx_agents_kind;
+DROP INDEX IF EXISTS idx_agents_tenant;
+DROP TABLE IF EXISTS public.agents;
+
+COMMIT;
