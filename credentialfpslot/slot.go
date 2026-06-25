@@ -269,6 +269,30 @@ func pinRedisKey(holder string, credentialID int) string {
 	return fmt.Sprintf("llmgw:sess_cred_fp:%s:%d", holder, credentialID)
 }
 
+// slotKeyPrefix 返回 slot key 的前缀，用于 SCAN 整个凭据的所有 slot。
+// V3.1 (2026-06-26): SlotInfo 聚合查询时使用。
+func slotKeyPrefix(credentialID int) string {
+	return fmt.Sprintf("llmgw:cred_fp_slot:%d:", credentialID)
+}
+
+// inflightKey (V3.1, 2026-06-26) 返回 slot 的 in-flight 计数 key。
+//
+// 同一 fingerprint（holder）的多个并发请求可以共享同一 slot，
+// inflight 计数用于：
+//   - Release 时判断是否清 pin（inflight==0 才允许身份被抢占）
+//   - SlotInfo 显示当前并发占用数
+//
+// 类型：Integer，TTL 与 slot 一致（30min）。
+func inflightKey(credentialID, slotIndex int) string {
+	return fmt.Sprintf("llmgw:cred_fp_inflight:%d:%d", credentialID, slotIndex)
+}
+
+// pinKeyPrefix (V3.1, 2026-06-26) 返回 pin key 的前缀，用于 SCAN 整个凭据的所有 pin。
+// 通过 pin 反查 → slotIndex / holder。
+func pinKeyPrefix(credentialID int) string {
+	return fmt.Sprintf("llmgw:sess_cred_fp:")
+}
+
 // RoutingEligible reports whether holder can acquire a slot (prefilter).
 func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *int, holder string) bool {
 	if !m.Enabled() {
@@ -305,19 +329,18 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 	return nil, false
 }
 
-// Release frees a previously acquired slot while preserving the session pin.
+// Release (V3.1, 2026-06-26) 释放一个 slot。
 //
-// The pin survives release so the same holder's next request re-uses the same
-// slot within sessionPinTTLSeconds (24 h). If the slot was taken by another
-// holder meanwhile, acquireRedis's pin path migrates to a new free slot and
-// updates the pin atomically (see acquireSlotScript). This gives us:
-//   - stability for the common case (low contention, no credential death)
-//   - graceful migration under contention (slot can change, but only when forced)
-//   - clean cleanup of stale pins when the credential is force-unpinned
+// V3 关键变化：
+//   - DECR inflight 计数（共享的核心）
+//   - inflight==0 时清 pin（让身份可被抢占）
 //
-// Call ForceUnpin explicitly when a credential is dead (auth revoked, quota
-// permanent) so the next request doesn't try to re-acquire a slot in a dead
-// credential.
+// 与旧版的差异：
+//   - 旧版：始终保留 pin，24h 内同 holder 复用同一身份
+//   - 新版：inflight 归零就清 pin，其他 holder 可以立刻抢占这个身份
+//
+// 后果：上游看起来"还是同一虚拟客户"（slot key 保留 30min TTL），
+// 但实际身份可被抢占——当同 fingerprint 没有 in-flight 请求时。
 func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if lease == nil || lease.Unlimited {
 		return
@@ -325,21 +348,23 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if m.client != nil {
 		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
 		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
+		inflightK := inflightKey(lease.CredentialID, lease.SlotIndex)
 
-		// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
-		// (stable identity across the longer session).
-		refreshed, err := releaseSlotScript.Run(ctx, m.client,
-			[]string{key, pinKey},
+		arr, err := releaseSlotScript.Run(ctx, m.client,
+			[]string{key, pinKey, inflightK},
 			lease.Holder,
 			slotTTLSeconds,
 			sessionPinTTLSeconds,
 			lease.SlotIndex,
-		).Bool()
+		).Result()
 		if err != nil {
 			slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
+			return
 		}
-		if !refreshed {
-			slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
+		if r, ok := arr.([]interface{}); ok && len(r) >= 1 {
+			if ok2, _ := r[0].(int64); ok2 != 1 {
+				slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
+			}
 		}
 	}
 	m.releaseMemory(lease.CredentialID, lease.SlotIndex, lease.Holder)
@@ -365,32 +390,56 @@ func (m *Manager) ForceUnpin(ctx context.Context, holder string, credentialID in
 	m.mu.Unlock()
 }
 
+// releaseSlotScript (V3.1, 2026-06-26) 重新设计。
+//
+// V3 关键变化：
+//   - DECR inflight 计数（共享的核心：每次 Acquire 都 ++，Release 时 --）
+//   - inflight==0 时 DEL pin（V3 关键！让身份可被抢占）
+//     原设计：始终保留 pin，24h 内同 holder 复用
+//     新设计：inflight 归零就清 pin，让其他 holder 可以抢这个身份
+//   - 保留 slot key 但 refresh TTL，让"身份"在 pool 里"看起来仍在"
+//
+// KEYS[1] = slot key
+// KEYS[2] = pin key
+// KEYS[3] = inflight key
+// ARGV[1] = holder
+// ARGV[2] = slotTTL
+// ARGV[3] = pinTTL
+// ARGV[4] = slotIndex
+// Returns: {1, remainingInflight} on success, {0, ""} if holder mismatch
 var releaseSlotScript = redis.NewScript(`
-	local slotKey = KEYS[1]
-	local pinKey = KEYS[2]
-	local holder = ARGV[1]
-	local slotTTL = tonumber(ARGV[2])
-	local pinTTL = tonumber(ARGV[3])
-	local slotIndex = tonumber(ARGV[4])
+	local slotKey     = KEYS[1]
+	local pinKey      = KEYS[2]
+	local inflightKey = KEYS[3]
+	local holder      = ARGV[1]
+	local slotTTL     = tonumber(ARGV[2])
+	local pinTTL      = tonumber(ARGV[3])
+	local slotIndex   = tonumber(ARGV[4])
 
 	-- Check if slot is owned by this holder
 	local current = redis.call('GET', slotKey)
 	if current ~= holder then
-		return false
+		return {0, ''}
 	end
 
-	-- DO NOT delete the slot key. Instead, refresh its TTL to keep
-	-- the fingerprint identity alive for 24 hours. This allows the
-	-- same holder's next request to reuse the same slot, and other
-	-- sessions to see this slot as "occupied by a stable identity".
+	-- DECR inflight
+	local remaining = redis.call('DECR', inflightKey)
+	if remaining < 0 then
+		-- Defensive: 修正为 0（不应该发生）
+		redis.call('SET', inflightKey, 0, 'EX', slotTTL)
+		remaining = 0
+	end
+	redis.call('EXPIRE', inflightKey, slotTTL)
+
+	-- V3 关键：inflight==0 时清 pin（让身份可被抢占）
+	if remaining == 0 and pinKey ~= "" then
+		redis.call('DEL', pinKey)
+	end
+
+	-- 保留 slot key 但 refresh TTL（身份在 pool 里仍可见）
 	redis.call('EXPIRE', slotKey, slotTTL)
 
-	-- Also refresh the pin TTL so the holder can reuse this slot
-	if pinKey ~= "" and pinTTL > 0 then
-		redis.call('SET', pinKey, tostring(slotIndex), 'EX', pinTTL)
-	end
-
-	return true
+	return {1, tostring(remaining)}
 `)
 
 var forceUnpinScript = redis.NewScript(`
@@ -426,6 +475,27 @@ type SlotDetail struct {
 	MemoryMode bool   `json:"memory_mode"`
 }
 
+// SlotInfoV3 (Phase 6.3, 2026-06-26) 是 V3.1 版本的 slot 详细信息。
+//
+// 与 SlotDetail 的区别：
+//   - 新增 Inflight：当前并发请求数（共享语义的关键指标）
+//   - 新增 PinHolder：如果该 slot 被某个 holder pin 住，记录其 session ID
+//   - 新增 PinTTLSeconds：pin 的剩余 TTL（秒）
+//
+// 用于 admin 界面的"双层 SlotInfo"展示：
+//   - Layer 1: 指纹槽（slot）状态 — holder / ttl / inflight
+//   - Layer 2: 并发槽（inflight 计数）— 当前请求数 / 历史
+type SlotInfoV3 struct {
+	Index         int    `json:"index"`
+	Holder        string `json:"holder"`
+	TTLSeconds    int    `json:"ttl_seconds"`
+	Expired       bool   `json:"expired"`
+	Inflight      int    `json:"inflight"`       // V3 新增：当前并发请求数
+	PinHolder     string `json:"pin_holder"`     // V3 新增：pin 该 slot 的 session ID（可能与 holder 不同）
+	PinTTLSeconds int    `json:"pin_ttl_seconds"` // V3 新增：pin 的剩余 TTL
+	MemoryMode    bool   `json:"memory_mode"`
+}
+
 // DetailedStats returns per-slot occupancy for monitoring and diagnostics.
 //
 // This method is intended for admin dashboards and debugging tools that need
@@ -450,6 +520,122 @@ func (m *Manager) DetailedStats(ctx context.Context, credentialID int, limit *in
 
 	holders, details, healthySlots = m.detailedStatsMemory(credentialID, limitVal)
 	return slotLimit, holders, details, healthySlots
+}
+
+// SlotInfoV3 returns V3.1-style slot details with inflight count and pin info.
+// This is the primary query method for admin dashboards in V3.1.
+func (m *Manager) SlotInfoV3(ctx context.Context, credentialID int, limit *int) ([]SlotInfoV3, error) {
+	if !m.Enabled() {
+		return []SlotInfoV3{}, nil
+	}
+	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
+	if eff == nil {
+		return []SlotInfoV3{}, nil
+	}
+	limitVal := *eff
+
+	if m.client != nil {
+		return m.slotInfoV3Redis(ctx, credentialID, limitVal)
+	}
+	return m.slotInfoV3Memory(credentialID, limitVal)
+}
+
+// slotInfoV3Redis 从 Redis 聚合查询 V3.1 slot 信息。
+func (m *Manager) slotInfoV3Redis(ctx context.Context, credentialID, limit int) ([]SlotInfoV3, error) {
+	// Phase 6.3: 聚合查询 slot 状态 + inflight 计数 + pin 信息
+	pipe := m.client.Pipeline()
+	
+	type slotQuery struct {
+		getCmd  *redis.StringCmd
+		ttlCmd  *redis.DurationCmd
+		inflCmd *redis.StringCmd // inflight 是 INCR 整数，但 pipe.Get 返回 StringCmd
+	}
+	queries := make([]slotQuery, limit)
+	
+	for slot := 0; slot < limit; slot++ {
+		slotKey := slotRedisKey(credentialID, slot)
+		inflKey := inflightKey(credentialID, slot)
+		
+		queries[slot].getCmd = pipe.Get(ctx, slotKey)
+		queries[slot].ttlCmd = pipe.TTL(ctx, slotKey)
+		queries[slot].inflCmd = pipe.Get(ctx, inflKey)
+	}
+	
+	// 执行 pipeline
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		// pipeline 部分失败是预期的（key 不存在），继续处理
+	}
+	
+	results := make([]SlotInfoV3, limit)
+	for slot := 0; slot < limit; slot++ {
+		holder, holderErr := queries[slot].getCmd.Result()
+		ttl, _ := queries[slot].ttlCmd.Result()
+		ttlSeconds := int(ttl.Seconds())
+		
+		inflStr, inflErr := queries[slot].inflCmd.Result()
+		inflight := 0
+		if inflErr == nil && inflStr != "" {
+			if n, parseErr := strconv.Atoi(inflStr); parseErr == nil {
+				inflight = n
+			}
+		}
+		
+		results[slot] = SlotInfoV3{
+			Index:      slot,
+			Holder:     holder,
+			TTLSeconds: ttlSeconds,
+			Expired:    ttlSeconds <= 0,
+			Inflight:   inflight,
+			MemoryMode: false,
+		}
+		
+		// 如果 holder 获取失败，标记为过期
+		if holderErr != nil {
+			results[slot].Expired = true
+			results[slot].Holder = ""
+		}
+		
+		// Phase 6.3 TODO: 还需要查询 pin 信息（pinRedisKey）
+		// 这部分可以后续迭代添加
+	}
+	
+	return results, nil
+}
+
+// slotInfoV3Memory 从内存聚合查询 V3.1 slot 信息。
+func (m *Manager) slotInfoV3Memory(credentialID, limit int) ([]SlotInfoV3, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	now := time.Now()
+	m.purgeExpiredLocked(now)
+	
+	results := make([]SlotInfoV3, limit)
+	for slot := 0; slot < limit; slot++ {
+		key := slotKey{credentialID: credentialID, slotIndex: slot}
+		cur, exists := m.memSlots[key]
+		
+		results[slot] = SlotInfoV3{
+			Index:      slot,
+			MemoryMode: true,
+		}
+		
+		if !exists {
+			results[slot].Expired = true
+			continue
+		}
+		
+		ttlSeconds := int(time.Until(cur.exp).Seconds())
+		results[slot].Holder = cur.holder
+		results[slot].TTLSeconds = ttlSeconds
+		results[slot].Expired = ttlSeconds <= 0
+		
+		// Phase 6.3 TODO: 还需要查询 inflight 计数和 pin 信息
+		// 内存模式下的 inflight 计数需要额外维护
+	}
+	
+	return results, nil
 }
 
 func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit int) ([]string, []SlotDetail, int) {
@@ -527,7 +713,7 @@ func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *i
 	}
 	if m.client != nil {
 		result, err := availableCountScript.Run(ctx, m.client,
-			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+			[]string{slotKeyPrefix(credentialID)},
 			*eff,
 		).Int()
 		if err != nil {
@@ -617,32 +803,34 @@ func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) b
 func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
 	pinKey := pinRedisKey(holder, credentialID)
 	gate := m.cfg.resolveActiveGateSeconds()
-	// Phase 1: pin-reuse path. The Lua script applies the active
-	// gate for us — if our pin is on a slot that some other holder
-	// is now sitting on, the gate decides whether to preempt.
+
+	// Phase 1: pin-reuse path (V3.1, 2026-06-26).
+	// V3 关键变化：脚本返回从 bool 改为 {1, slotIndex} 或 {0, ""}。
 	if pinned, err := m.client.Get(ctx, pinKey).Result(); err == nil {
 		slot, parseErr := strconv.Atoi(strings.TrimSpace(pinned))
 		if parseErr == nil && slot >= 0 && slot < limit {
-			acquired, err := acquireSlotScript.Run(ctx, m.client,
-				[]string{slotRedisKey(credentialID, slot), pinKey},
+			arr, err := acquireSlotScript.Run(ctx, m.client,
+				[]string{
+					slotRedisKey(credentialID, slot),
+					pinKey,
+					inflightKey(credentialID, slot),
+				},
 				holder, slotTTLSeconds, sessionPinTTLSeconds, slot, gate,
-			).Bool()
+			).Result()
 			if err != nil {
 				slog.Debug("cred_fp_slot redis pin-reuse failed", "cred", credentialID, "slot", slot, "error", err)
-			} else if acquired {
-				eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+			} else if r, ok := arr.([]interface{}); ok && len(r) >= 1 {
+				if acq, _ := r[0].(int64); acq == 1 {
+					eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
+					return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
+				}
 			}
 		}
 	}
 
-	// Phase 2: LRU preempt — single atomic Lua call. Scans the
-	// pool once and either grabs a free slot (free wins over LRU
-	// preempt) or preempts the slot whose holder has been silent
-	// the LONGEST (and is past the active gate). Per operator spec
-	// (2026-06-24): "长时间占用的 slot 在 slot 满时，优先被抢占".
+	// Phase 2: LRU preempt (V3.1)
 	res, err := acquireLRUScript.Run(ctx, m.client,
-		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		[]string{slotKeyPrefix(credentialID)},
 		limit, holder, slotTTLSeconds, sessionPinTTLSeconds, gate, pinKey, credentialID,
 	).Result()
 	if err != nil {
@@ -714,46 +902,72 @@ func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, hold
 // ARGV[4] = slotIndex
 // ARGV[5] = activeGateSeconds (5 min default)
 // Returns: 1 on success (including preemption), 0 on refuse.
+// acquireSlotScript (V3.1, 2026-06-26) 重新设计。
+//
+// V3 核心变化：
+//   - inflight 计数：每次 Acquire 都 INCR inflight_<cred>_<slot>
+//   - 共享语义：同 holder 复用同一 slot，inflight++ 而非"占满"
+//   - 抢占条件：原 holder 的 pin 已过期（被 Release 清掉），而非 idle ≥ 5min
+//   - 仍保留 active gate 检查作为兜底：防止异常情况下立即被抢
+//
+// KEYS[1] = slot key
+// KEYS[2] = pin key
+// KEYS[3] = inflight key
+// ARGV[1] = holder
+// ARGV[2] = slotTTL
+// ARGV[3] = pinTTL
+// ARGV[4] = slotIndex
+// ARGV[5] = activeGateSeconds
+// Returns: {1, slotIndex} on success, {0, ""} on refuse
 var acquireSlotScript = redis.NewScript(`
-	local slotKey   = KEYS[1]
-	local pinKey    = KEYS[2]
-	local holder    = ARGV[1]
-	local slotTTL   = tonumber(ARGV[2])
-	local pinTTL    = tonumber(ARGV[3])
-	local slotIndex = tonumber(ARGV[4])
-	local gate      = tonumber(ARGV[5])
+	local slotKey     = KEYS[1]
+	local pinKey      = KEYS[2]
+	local inflightKey = KEYS[3]
+	local holder      = ARGV[1]
+	local slotTTL     = tonumber(ARGV[2])
+	local pinTTL      = tonumber(ARGV[3])
+	local slotIndex   = tonumber(ARGV[4])
+	local gate        = tonumber(ARGV[5])
 
 	local currentHolder = redis.call('GET', slotKey)
 
 	if currentHolder == false then
-		-- Slot is free, acquire it
+		-- Slot is free: take it
 		redis.call('SET', slotKey, holder, 'EX', slotTTL)
 	elseif currentHolder == holder then
-		-- Same holder: refresh TTL
+		-- Same holder: shared (V3 关键变化)
+		-- 刷新 TTL 让身份保持稳定
 		redis.call('EXPIRE', slotKey, slotTTL)
 	else
-		-- Owned by a different holder. Active gate check.
-		local remaining = redis.call('TTL', slotKey)
-		if remaining == -1 or remaining == -2 then
-			-- No TTL set: defensive, refuse.
-			return 0
+		-- Owned by a different holder. 检查 pin 是否已过期
+		local oldPinExists = redis.call('EXISTS', pinKey)
+		if oldPinExists == 1 then
+			-- 别人的 pin 仍在 → 不能抢（保留 idle 检查作为兜底）
+			local remaining = redis.call('TTL', slotKey)
+			if remaining == -1 or remaining == -2 then
+				return {0, ''}
+			end
+			local idle = slotTTL - remaining
+			if idle < gate then
+				return {0, ''}  -- 活跃持有者，不能抢
+			end
 		end
-		-- idle = (slotTTL - remaining), the time since last refresh.
-		local idle = slotTTL - remaining
-		if idle < gate then
-			-- Recent activity within gate window: do not preempt.
-			return 0
-		end
-		-- Preempt: overwrite slot with new holder, refresh TTL.
+		-- 可以抢占（pin 已过期 或 idle 超 gate）
 		redis.call('SET', slotKey, holder, 'EX', slotTTL)
+		-- 清掉旧 holder 的 pin（如果还存在）
+		redis.call('DEL', pinKey)
 	end
 
-	-- Set pin if pinKey provided
+	-- 刷新 pin（V3: pin 标记"我是这个 slot 的合法持有者"）
 	if pinKey ~= "" and pinTTL > 0 then
 		redis.call('SET', pinKey, tostring(slotIndex), 'EX', pinTTL)
 	end
 
-	return 1
+	-- V3: INCR inflight 计数（共享的关键）
+	redis.call('INCR', inflightKey)
+	redis.call('EXPIRE', inflightKey, slotTTL)
+
+	return {1, tostring(slotIndex)}
 `)
 
 // acquireLRUScript is the LRU-aware preempt path used when the
@@ -779,10 +993,26 @@ var acquireSlotScript = redis.NewScript(`
 // ARGV[7] = credentialID (for wiping the old holder's pin)
 // Returns: {1, slotIndex, oldHolder} on preempt, {0, "", ""} on
 // no preemptable slot.
+// acquireLRUScript (V3.1, 2026-06-26) 重新设计。
+//
+// V3 关键变化：
+//   - inflight==0 才认为 slot 可抢占（不是 idle 时间）
+//   - INCR inflight 在占成功后
+//   - 抢占时清旧 holder 的 pin
+//
+// KEYS[1] = slot key prefix (e.g. "llmgw:cred_fp_slot:42")
+// ARGV[1] = limit
+// ARGV[2] = holder
+// ARGV[3] = slotTTL
+// ARGV[4] = pinTTL
+// ARGV[5] = activeGateSeconds
+// ARGV[6] = pinKey (caller's pin)
+// ARGV[7] = credentialID
+// Returns: {1, slotIndex, oldHolder} on preempt, {0, "", ""} on no preemptable
 var acquireLRUScript = redis.NewScript(`
-	local prefix = KEYS[1]
-	local limit  = tonumber(ARGV[1])
-	local holder = ARGV[2]
+	local prefix  = KEYS[1]
+	local limit   = tonumber(ARGV[1])
+	local holder  = ARGV[2]
 	local slotTTL = tonumber(ARGV[3])
 	local pinTTL  = tonumber(ARGV[4])
 	local gate    = tonumber(ARGV[5])
@@ -797,47 +1027,62 @@ var acquireLRUScript = redis.NewScript(`
 		local key = prefix .. ':' .. tostring(slot)
 		local current = redis.call('GET', key)
 		if current == false then
-			-- Free slot — take it (no LRU bookkeeping needed)
+			-- Free slot — take it
 			redis.call('SET', key, holder, 'EX', slotTTL)
 			if pinKey ~= '' and pinTTL > 0 then
 				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
 			end
+			-- V3: INCR inflight
+			local infKey = prefix:gsub('cred_fp_slot', 'cred_fp_inflight') .. ':' .. tostring(slot)
+			redis.call('INCR', infKey)
+			redis.call('EXPIRE', infKey, slotTTL)
 			return {1, slot, ''}
 		end
 		local remaining = redis.call('TTL', key)
 		if remaining == -1 or remaining == -2 then
-			-- No TTL: take it.
+			-- No TTL: take it
 			redis.call('SET', key, holder, 'EX', slotTTL)
 			if pinKey ~= '' and pinTTL > 0 then
 				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
 			end
+			local infKey = prefix:gsub('cred_fp_slot', 'cred_fp_inflight') .. ':' .. tostring(slot)
+			redis.call('INCR', infKey)
+			redis.call('EXPIRE', infKey, slotTTL)
 			return {1, slot, ''}
 		end
-		local idle = slotTTL - remaining
-		if idle < gate then
-			-- Active holder: skip.
-		elseif idle > bestIdle then
-			bestSlot = slot
-			bestIdle = idle
-			bestOldHolder = current
+		-- V3 检查 inflight：inflight==0 才可抢占
+		local infKey = prefix:gsub('cred_fp_slot', 'cred_fp_inflight') .. ':' .. tostring(slot)
+		local inflight = tonumber(redis.call('GET', infKey) or '0')
+		if inflight > 0 then
+			-- Slot 上有 in-flight 请求，不能抢（即使 idle 长）
+		else
+			-- inflight==0，检查 idle 作为兜底
+			local idle = slotTTL - remaining
+			if idle < gate then
+				-- Recent activity: skip
+			elseif idle > bestIdle then
+				bestSlot = slot
+				bestIdle = idle
+				bestOldHolder = current
+			end
 		end
 	end
 
 	if bestSlot == -1 then
-		-- No free slot and no idle slot; later arrivals wait.
 		return {0, '', ''}
 	end
 
-	-- Preempt the LRU-most-idle slot.
+	-- Preempt the LRU-most-idle slot (with inflight==0)
 	local bestKey = prefix .. ':' .. tostring(bestSlot)
 	redis.call('SET', bestKey, holder, 'EX', slotTTL)
 	if pinKey ~= '' and pinTTL > 0 then
 		redis.call('SET', pinKey, tostring(bestSlot), 'EX', pinTTL)
 	end
-	-- Wipe the old holder's pin if it still points at the
-	-- preempted slot. Without this the old holder's next
-	-- Acquire would either re-take the slot (racing the new
-	-- holder) or fail spuriously.
+	-- V3: INCR inflight
+	local infKey = prefix:gsub('cred_fp_slot', 'cred_fp_inflight') .. ':' .. tostring(bestSlot)
+	redis.call('INCR', infKey)
+	redis.call('EXPIRE', infKey, slotTTL)
+	-- Wipe the old holder's pin if it still points at the preempted slot
 	if bestOldHolder then
 		local oldPinKey = 'llmgw:sess_cred_fp:' .. bestOldHolder .. ':' .. tostring(credID)
 		if redis.call('GET', oldPinKey) == tostring(bestSlot) then
@@ -1024,7 +1269,7 @@ func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) 
 	if m.client != nil {
 		// Delete all slot keys and pin keys via Lua script for atomicity
 		result, err := resetSlotsScript.Run(ctx, m.client,
-			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+			[]string{slotKeyPrefix(credentialID)},
 			*eff,
 			credentialID,
 		).Result()

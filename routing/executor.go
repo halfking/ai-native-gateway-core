@@ -447,6 +447,11 @@ type ExecParams struct {
 	ClientProtocol string
 	SessionKey     string
 	StickyKey      string
+	// SessionID (V3.1, 2026-06-26) 是当前请求的会话 ID。用于：
+	//   - PlanCandidates 阶段查询 session_pref:<sessionID>
+	//   - 上游成功后 SetSessionPreference 写入
+	// 空字符串表示无会话偏好（不查询、不写入）。
+	SessionID string
 	// KeyID is the API key ID from keyInfo.ID. Used for per-key concurrent limiting.
 	KeyID int
 	// KeyConcurrentLimit is the per-key concurrent limit from keyInfo.EffectiveConcurrent().
@@ -551,6 +556,12 @@ func (e *ExecuteError) Error() string {
 }
 
 func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
+	// V3.1 (2026-06-26): 同会话切模型检测。
+	// 如果该 session 上次写入 session_pref 时的 model 与当前请求的 ClientModel
+	// 不一致，清空 session_pref 让 P2C 按新 model 自由选择 credential。
+	// 旧 model 的 RouteNodeState 保留（它属于那个节点本身）。
+	e.detectSessionModelSwitch(params)
+
 	// Layer 0: Global identity pool cap (if enabled).
 	// Acquire a stable identity for this end-user. If the cap is reached,
 	// the pool LRU-recycles an existing identity, so the request appears
@@ -587,8 +598,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	_ = globalIdentity // suppress unused warning until wired into credentialfpslot
 
 	candidates := e.Router.PlanCandidates(
+		params.R.Context(),
 		params.Candidates,
 		e.stickyCredentialID(params.StickyKey),
+		e.sessionPreferredCredential(params.R.Context(), params.SessionID),
 		params.Policy,
 		egressPref(params.Transform),
 	)
@@ -808,6 +821,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// a stale counter from a prior intermittent failure.
 			e.resetMnfStreak(params, cand.CredentialID)
 
+			// V3.1 (2026-06-26): RouteNodeState + SessionPrefStore
+			// 更新。最佳时机是"已知 success 且还没返回"的瞬间：
+			//   1. RouteNodeStore.RecordSuccess 清掉该 (credID, model)
+			//      上的 Disabled（如果之前被禁用），让下次路由能复用。
+			//   2. SessionPrefStore.Set 标记"该会话倾向此 credential"，
+			//      下次 PlanCandidates 会优先复用。
+			// 这两个操作都是 best-effort，失败不影响响应。
+			e.recordRouteNodeSuccess(params, cand.CredentialID, cand.RawModel)
+
 			// Record successful call for health tracking
 			if e.HealthTracker != nil {
 				// PR-4 (T4 P0, 2026-06-23): use the real X-Request-Id
@@ -971,6 +993,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				kind = errorsx.KindStreamTimeout
 			}
 			e.recordStickyFailure(params, cand.CredentialID, kind)
+			// V3.1 (2026-06-26): 同步 RouteNodeState 失败计数
+			e.recordRouteNodeFailure(params, cand.CredentialID, cand.RawModel, kind)
 
 			if sie.resumable {
 				// Stream is resumable (few chunks sent) - try next candidate.
@@ -1095,6 +1119,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       execErr.Error(),
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
+		// V3.1 (2026-06-26): 同步 RouteNodeState 失败计数
+		e.recordRouteNodeFailure(params, cand.CredentialID, cand.RawModel, kind)
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 			ProviderID:   cand.ProviderID,
@@ -1165,8 +1191,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// 凭据，破坏会话连续性，且在 mnfStreak=3 时叠加 mnfStreakStickyBroken
 			// 形成 "一个正常一个失败" 交替模式。改为保留 sticky 偏好。
 			subCandidates := e.Router.PlanCandidates(
+				params.R.Context(),
 				params.Candidates,
 				e.stickyCredentialID(params.StickyKey),
+				e.sessionPreferredCredential(params.R.Context(), params.SessionID),
 				params.Policy,
 				egressPref(params.Transform),
 			)
@@ -1614,6 +1642,79 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 	return &credentialID
 }
 
+// detectSessionModelSwitch (V3.1, 2026-06-26) 检测"同会话切模型"场景。
+//
+// 当 session_pref:<sessionID> 中记录的 model 与当前请求的 ClientModel
+// 不一致时，清空该 session 的 preference，让 P2C 按新 model 重新选择 credential。
+//
+// 重要：只清 session_pref，不动 RouteNodeState。RouteNodeState 属于
+// 路由节点本身（按 credID+model 维度），与具体会话无关。
+//
+// nil receiver / nil SessionPrefStore / 空 SessionID 时 no-op。
+func (e *Executor) detectSessionModelSwitch(params *ExecParams) {
+	if e == nil || params == nil {
+		return
+	}
+	if e.Router == nil || e.Router.SessionPrefStore == nil {
+		return
+	}
+	if params.SessionID == "" || params.ClientModel == "" {
+		return
+	}
+
+	ctx := params.R.Context()
+	entry, found, err := e.Router.SessionPrefStore.Get(ctx, params.SessionID)
+	if err != nil || !found || entry == nil {
+		// 没有偏好记录或 Redis 错误：跳过
+		return
+	}
+
+	// 如果记录的 model 与当前 model 一致：保留偏好
+	// 注意：entry.Model 是 cand.RawModel（credential 匹配后的模型名），
+	// 而 params.ClientModel 是客户端原始请求模型。直接比较 entry.Model 与
+	// ClientModel 是粗略的，但实际场景中 cand.RawModel 通常 = ClientModel。
+	if entry.Model == params.ClientModel {
+		return
+	}
+
+	// model 不一致：清空 session_pref
+	if clearErr := e.Router.SessionPrefStore.Clear(ctx, params.SessionID); clearErr != nil {
+		// ErrSessionPreferenceNotFound 是良性：TTL 已过期
+		if clearErr != ErrSessionPreferenceNotFound {
+			slog.Warn("session_pref_clear_on_model_switch failed",
+				"session_id", params.SessionID,
+				"old_model", entry.Model,
+				"new_model", params.ClientModel,
+				"error", clearErr,
+			)
+			return
+		}
+	}
+	slog.Info("session_model_switched_clearing_pref",
+		"session_id", params.SessionID,
+		"old_model", entry.Model,
+		"new_model", params.ClientModel,
+	)
+}
+
+// sessionPreferredCredential (V3.1, 2026-06-26) 查询会话偏好的 credential。
+//
+// 返回值：
+//   - nil: 没有偏好（首次请求 / Redis 不可用 / sessionID 为空）
+//   - *int: 偏好指向的 credentialID（即使该 credential 已不在候选中）
+//
+// 该方法只读取 Redis，不做候选验证——候选验证由 PlanCandidates.prioritizeSessionPreferred 负责。
+func (e *Executor) sessionPreferredCredential(ctx context.Context, sessionID string) *int {
+	if e.Router == nil || e.Router.SessionPrefStore == nil || sessionID == "" {
+		return nil
+	}
+	entry, found, err := e.Router.SessionPrefStore.Get(ctx, sessionID)
+	if err != nil || !found || entry == nil {
+		return nil
+	}
+	return &entry.CredentialID
+}
+
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
 		return
@@ -1627,6 +1728,37 @@ func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 		stickyTTL = time.Minute
 	}
 	e.Router.Sticky.RecordSuccess(params.StickyKey, credentialID, stickyTTL)
+}
+
+// recordRouteNodeSuccess (V3.1, 2026-06-26) 在上游成功后更新两处状态：
+//   1. RouteNodeStore: 清掉 Disabled 标记 + 追加成功记录到滑动窗口
+//   2. SessionPrefStore: 标记"该会话偏好此 credential"
+//
+// 都是 best-effort：失败仅记 warn 日志，不影响响应路径。
+func (e *Executor) recordRouteNodeSuccess(params *ExecParams, credentialID int, model string) {
+	if e == nil || params == nil {
+		return
+	}
+	ctx := params.R.Context()
+	requestID := params.R.Header.Get("X-Request-Id")
+
+	// 1. RouteNodeStore.RecordSuccess
+	if e.Router != nil && e.Router.RouteNodeStore != nil {
+		if _, err := e.Router.RouteNodeStore.RecordSuccess(ctx, credentialID, model, requestID); err != nil {
+			slog.Warn("route_node_record_success failed",
+				"cred_id", credentialID, "model", model, "error", err,
+			)
+		}
+	}
+
+	// 2. SessionPrefStore.Set（标记会话偏好，同时记录 model 用于切模型检测）
+	if e.Router != nil && e.Router.SessionPrefStore != nil && params.SessionID != "" {
+		if err := e.Router.SessionPrefStore.Set(ctx, params.SessionID, credentialID, model); err != nil {
+			slog.Warn("session_pref_set failed",
+				"session_id", params.SessionID, "cred_id", credentialID, "error", err,
+			)
+		}
+	}
 }
 
 func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kind errorsx.ErrorKind) {
@@ -1658,6 +1790,66 @@ func (e *Executor) recordStickyFailure(params *ExecParams, credentialID int, kin
 		return
 	}
 	e.Router.Sticky.RecordFailure(params.StickyKey, 5)
+}
+
+// recordRouteNodeFailure (V3.1, 2026-06-26) 在 credential-level 失败时更新 RouteNodeState。
+//
+// 与 recordStickyFailure 共享相同的 kind 过滤规则：
+//   - credential-fatal kind（auth/quota permanent）→ 不计入（节点已坏）
+//   - 偶发 kind（network/timeout/upstream-down/client-bug/context-length）→ 不计入
+//   - 其他 credential-level kind（rate-limit/concurrent-overload/stream-timeout 等）→ 计入
+//
+// 返回 justDisabled=true 表示"刚刚触发了连续 3 次失败"，上层可记录日志/告警。
+func (e *Executor) recordRouteNodeFailure(params *ExecParams, credentialID int, model string, kind errorsx.ErrorKind) (justDisabled bool) {
+	if e == nil || params == nil {
+		return false
+	}
+	if e.Router == nil || e.Router.RouteNodeStore == nil {
+		return false
+	}
+	if !isCredentialLevelFailureForRouteNode(kind) {
+		return false
+	}
+	ctx := params.R.Context()
+	requestID := params.R.Header.Get("X-Request-Id")
+	_, justDisabled, err := e.Router.RouteNodeStore.RecordFailure(
+		ctx, credentialID, model, requestID, string(kind),
+	)
+	if err != nil {
+		slog.Warn("route_node_record_failure failed",
+			"cred_id", credentialID, "model", model, "kind", kind, "error", err,
+		)
+	}
+	if justDisabled {
+		slog.Warn("route_node_disabled",
+			"cred_id", credentialID,
+			"model", model,
+			"reason", "consecutive_failures",
+			"request_id", requestID,
+		)
+	}
+	return justDisabled
+}
+
+// isCredentialLevelFailureForRouteNode 判定该 kind 是否应计入 RouteNodeState 失败计数。
+//
+// 规则（与 recordStickyFailure 对齐）：
+//   - fatal（auth/quota permanent）→ 不计（节点已死，无需再 fail-count）
+//   - 偶发（network/timeout/upstream-down/client-bug/context-length/canceled）→ 不计
+//   - 其他（rate-limit/concurrent-overload/stream-timeout 等）→ 计
+func isCredentialLevelFailureForRouteNode(kind errorsx.ErrorKind) bool {
+	if errorsx.IsCredentialFatal(kind) {
+		return false
+	}
+	if kind == errorsx.KindCanceled ||
+		kind == errorsx.KindNetwork ||
+		kind == errorsx.KindTimeout ||
+		kind == errorsx.KindUpstreamDown ||
+		kind == errorsx.KindContextLength ||
+		errorsx.IsClientBug(kind) {
+		return false
+	}
+	return true
 }
 
 // AsyncPendingError (Track C C4, 2026-06-18) is returned by Execute
@@ -1924,8 +2116,10 @@ func (e *Executor) runAsyncRetry(
 		asyncParams.R = asyncParams.R.WithContext(ctx)
 	}
 	candidates := e.Router.PlanCandidates(
+		ctx,
 		params.Candidates,
 		nil, // no sticky: the async walk is its own attempt
+		nil, // no session preferred: async walk is its own attempt
 		params.Policy,
 		egressPref(params.Transform),
 	)

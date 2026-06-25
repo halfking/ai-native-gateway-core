@@ -415,6 +415,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
 	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
 
+	// V3.1 (2026-06-26): credential slot info endpoint for admin dashboard.
+	// Returns per-slot fingerprint + inflight details for the given credential.
+	mux.HandleFunc("/api/credentials/{id}/slots", admin(h.handleCredentialSlots))
+
 	// Track C C7 (2026-06-18): pending response admin API.
 	// Three endpoints, all under the standard admin auth wrap.
 	// The /stats path is a peer of the list endpoint, registered

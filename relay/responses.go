@@ -258,9 +258,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+	// V2 (2026-06-26): see relay/messages.go for header priority rationale.
 	sessionID := r.Header.Get("X-Gw-Session-Id")
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Conversation-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Chat-Session-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Thread-Id")
 	}
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))

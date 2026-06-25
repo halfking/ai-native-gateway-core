@@ -285,9 +285,24 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+	// V2 (2026-06-26): scan multiple session-id headers so audit can
+	// trace whichever convention the client uses. Priority order matches
+	// relay/handler.go's session resolution: gw-id > session-id >
+	// conversation-id > chat-session-id > thread-id. Only the first
+	// non-empty value is recorded here; the actual session lookup /
+	// creation happens in ChatHandler.ServeHTTP.
 	sessionID := r.Header.Get("X-Gw-Session-Id")
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Conversation-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Chat-Session-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Thread-Id")
 	}
 	var endUser string
 	if reqBody.Metadata != nil && reqBody.Metadata.UserID != "" {

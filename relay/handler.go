@@ -136,6 +136,17 @@ type ChatHandler struct {
 		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
 		BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 	}
+	// lastSystemSessionIndex (2026-06-26 V2) provides "5-minute reuse" for
+	// system-assigned sessions. When a request comes in without any session
+	// header, the index checks Redis for the most recent system-assigned
+	// session for this client within the last 5 minutes. If found, it is
+	// treated as a continuation of the same session (X-Gw-Session-Id-Resume
+	// is set). This gives clients that don't send stable session IDs
+	// natural conversation continuity.
+	//
+	// nil disables the feature (every no-header request creates a fresh
+	// session), matching legacy behavior.
+	lastSystemSessionIndex *sessions.LastSystemSessionIndex
 	// idempotentCache (Track C C5, 2026-06-18) deduplicates
 	// re-sent requests within a 5-minute window. When a client
 	// retries (network glitch, double-click), the handler
@@ -319,6 +330,13 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 }) {
 	h.sessionGetter = sg
+}
+
+// SetLastSystemSessionIndex (2026-06-26 V2) installs the index used for
+// "5-minute reuse" of system-assigned sessions. Pass nil to disable the
+// feature (legacy behavior: every no-header request creates a fresh session).
+func (h *ChatHandler) SetLastSystemSessionIndex(idx *sessions.LastSystemSessionIndex) {
+	h.lastSystemSessionIndex = idx
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -576,12 +594,62 @@ func (h *ChatHandler) serveWithExecutor(
 		ctx = sessions.SetTenantID(ctx, keyInfo.TenantID)
 	}
 
-	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
+	// ── Session validation ─────────────────────────────────────────────
+	//
+	// V2 (2026-06-26): extend the recognized session header set to support
+	// more client conventions. Priority order (first non-empty wins):
+	//
+	//   1. X-Gw-Session-Id   — gateway-native V2 id (must start with "gw_")
+	//   2. X-Session-Id      — legacy gateway header
+	//   3. X-Conversation-Id — Anthropic / OpenAI Assistants convention
+	//   4. X-Chat-Session-Id — vendor-specific
+	//   5. X-Thread-Id       — OpenAI Assistants / Threads
+	//
+	// When none of these headers are present, fall back to "5-minute reuse":
+	// look up the most recent system-assigned session for this client and
+	// resume it. This gives clients without stable session ids natural
+	// continuity within a 5-minute sliding window.
 	var sessionInfo *sessions.Session
 	sessionID := sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Conversation-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Chat-Session-Id")
+	}
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Thread-Id")
+	}
+
+	// V2: 5-minute reuse — when no client header provided and we have a
+	// recent system-assigned session for this client, resume it. This
+	// makes "no-id" requests within a 5-minute window part of the same
+	// conversation instead of fragmenting into one session per request.
+	if sessionID == "" && h.lastSystemSessionIndex != nil && keyInfo != nil {
+		if entry, found, err := h.lastSystemSessionIndex.Get(ctx, keyInfo.ID); err == nil && found && entry != nil {
+			// Verify the indexed session still exists in Redis (TTL may
+			// have expired between Set and Get under edge cases).
+			if si, gerr := h.sessionGetter.Get(ctx, entry.SessionID); gerr == nil {
+				sessionID = si.SessionID
+				sessionInfo = si
+				logCtx.SetSession(si)
+				ctx = sessions.SessionFromContextWith(ctx, si)
+				w.Header().Set("X-Gw-Session-Id-Resume", si.SessionID)
+				w.Header().Set("X-Gw-Session-Reused", "true")
+				// Refresh the index TTL so the 5-minute window extends
+				// from this reuse. Best-effort; ignore errors.
+				_ = h.lastSystemSessionIndex.Touch(ctx, keyInfo.ID)
+				slog.Info("session reused from last_system_session index",
+					"client_id", keyInfo.ID,
+					"session_id", si.SessionID,
+				)
+			}
+		}
+	}
+
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
@@ -615,6 +683,16 @@ func (h *ChatHandler) serveWithExecutor(
 						"new_session_id", newSession.SessionID,
 						"task_id", taskID,
 					)
+					// V2: record this system-assigned session in the
+					// LastSystemSessionIndex so subsequent no-header
+					// requests within 5 minutes can resume it.
+					if h.lastSystemSessionIndex != nil {
+						_ = h.lastSystemSessionIndex.Set(ctx, keyInfo.ID, &sessions.LastSystemSessionEntry{
+							SessionID:  newSession.SessionID,
+							DeviceSeed: deviceSeed,
+							TaskID:     taskID,
+						})
+					}
 				}
 			} else if err != sessions.ErrSessionNotFound {
 				slog.Warn("session lookup failed", "error", err)
@@ -646,6 +724,44 @@ func (h *ChatHandler) serveWithExecutor(
 				h.sessionGetter.Touch(touchCtx, sessionID)
 			}()
 			ctx = sessions.SessionFromContextWith(ctx, sessionInfo)
+		}
+	}
+
+	// V2: "no-id" path — neither client header nor 5-minute reuse produced
+	// a session. Create a fresh system-assigned session and record it in
+	// the LastSystemSessionIndex so the next no-id request within 5
+	// minutes can resume it.
+	if sessionID == "" && sessionInfo == nil && h.sessionGetter != nil && keyInfo != nil {
+		deviceSeed := r.Header.Get("X-Device-Seed")
+		if deviceSeed == "" {
+			deviceSeed = r.Header.Get("X-Machine-Id")
+		}
+		if deviceSeed == "" {
+			deviceSeed = "default"
+		}
+		taskID := r.Header.Get("X-Gw-Task-Id")
+		newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
+		if createErr != nil {
+			slog.Error("session auto-create failed (no id path)", "error", createErr)
+		} else {
+			sessionInfo = newSession
+			sessionID = newSession.SessionID
+			logCtx.SetSession(newSession)
+			ctx = sessions.SessionFromContextWith(ctx, newSession)
+			w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+			w.Header().Set("X-Gw-Session-Auto", "true")
+			slog.Info("session auto-assigned (no id)",
+				"client_id", keyInfo.ID,
+				"new_session_id", newSession.SessionID,
+				"task_id", taskID,
+			)
+			if h.lastSystemSessionIndex != nil {
+				_ = h.lastSystemSessionIndex.Set(ctx, keyInfo.ID, &sessions.LastSystemSessionEntry{
+					SessionID:  newSession.SessionID,
+					DeviceSeed: deviceSeed,
+					TaskID:     taskID,
+				})
+			}
 		}
 	}
 

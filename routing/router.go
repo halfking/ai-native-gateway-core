@@ -22,61 +22,159 @@ type Router struct {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
 	}
+	// RouteNodeStore (V3.1, 2026-06-26) 提供 (credID, model) 维度的健康状态。
+	// PlanCandidates 会过滤 IsUsable()==false 的候选。
+	// nil 时跳过该过滤（向后兼容）。
+	RouteNodeStore *RouteNodeStore
+	// SessionPrefStore (V3.1, 2026-06-26) 提供会话偏好的 credential。
+	// PlanCandidates 会将该 credential 排到候选首位。
+	// nil 时跳过该偏好（向后兼容）。
+	SessionPrefStore *SessionPreferenceStore
 }
 
 func NewRouter(sticky *StickyCache, lim *limiter.Limiter) *Router {
 	return &Router{Sticky: sticky, Limiter: lim}
 }
 
+// PlanCandidatesInputs 是 V3.1 新版 PlanCandidates 的输入参数包。
+//
+// 与原签名相比，把 stickyCredentialID 保留为单独字段（向后兼容），
+// 同时新增 sessionPreferredCredential 用于"会话级偏好优先于 client 级 sticky"。
+type PlanCandidatesInputs struct {
+	StickyCredentialID        *int
+	SessionPreferredCredential *int
+}
+
+// PlanCandidates 根据 V3.1 规则选择候选顺序。
+//
+// 优先级（从高到低）：
+//  1. 候选必须可用（filterAvailable：状态正常）
+//  2. RouteNodeStore.IsUsable(credID, model) == true（V3.1 新增）
+//  3. 候选排序：
+//     a. SessionPreferredCredential（V3.1 新增）排首位
+//     b. StickyCredentialID 排次位（向后兼容）
+//     c. 按 billing round / tier / P2C / loadScore 排序
+//  4. egress 协议亲和性
 func (r *Router) PlanCandidates(
+	ctx context.Context,
 	candidates []provider.Candidate,
 	stickyCredentialID *int,
+	sessionPreferredCredential *int,
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
+	// 步骤 1: provider 层面的可用性过滤
 	available := filterAvailable(candidates)
 	if len(available) == 0 {
-		// Build a per-reason breakdown so the next "all providers failed at
-		// the same time" outage can be root-caused from this log line alone.
-		reasonCounts := make(map[string]int, 8)
-		var sampleReasons []string
-		for _, c := range candidates {
-			reason := c.UnavailableReason()
-			if reason == "" {
-				reason = "unknown"
-			}
-			reasonCounts[reason]++
-			if len(sampleReasons) < 5 {
-				sampleReasons = append(sampleReasons, fmt.Sprintf(
-					"cred=%d prov=%d reason=%s", c.CredentialID, c.ProviderID, reason,
-				))
-			}
-		}
-		slog.Warn("router: all candidates unavailable",
-			"total", len(candidates),
-			"reasons", reasonCounts,
-			"sample", sampleReasons,
-		)
+		r.logAllUnavailable(candidates)
 		return nil
 	}
 
-	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
-	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
+	// 步骤 2 (V3.1 新增): RouteNodeStore 健康状态过滤
+	if r.RouteNodeStore != nil {
+		available = r.filterByRouteNodeHealth(ctx, available)
+		if len(available) == 0 {
+			slog.Warn("router: all candidates filtered by route_node health",
+				"total", len(candidates),
+			)
+			return nil
+		}
+	}
+
+	// 步骤 3: billing round / tier / P2C 排序
 	round1, round2 := splitByBillingRound(available)
 	ordered := r.planByTier(round1, policy)
 	if len(round2) > 0 {
 		ordered = append(ordered, r.planByTier(round2, policy)...)
 	}
 
-	if stickyCredentialID != nil {
+	// 步骤 4 (V3.1 新增): 会话偏好优先于 client 级 sticky
+	// 顺序：session preferred > sticky > 默认排序
+	switch {
+	case sessionPreferredCredential != nil:
+		ordered = prioritizeSessionPreferred(ordered, *sessionPreferredCredential)
+	case stickyCredentialID != nil:
 		ordered = prioritizeSticky(ordered, *stickyCredentialID)
 	}
 
+	// 步骤 5: egress 协议亲和性
 	if len(egressPreference) > 0 {
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
 	return ordered
+}
+
+// filterByRouteNodeHealth 过滤 RouteNodeStore.IsUsable()==false 的候选。
+func (r *Router) filterByRouteNodeHealth(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
+	if r.RouteNodeStore == nil {
+		return candidates
+	}
+	out := make([]provider.Candidate, 0, len(candidates))
+	filtered := 0
+	for _, c := range candidates {
+		if r.RouteNodeStore.IsUsable(ctx, c.CredentialID, c.RawModel) {
+			out = append(out, c)
+		} else {
+			filtered++
+			slog.Debug("router: candidate filtered by route_node health",
+				"credential_id", c.CredentialID,
+				"raw_model", c.RawModel,
+			)
+		}
+	}
+	if filtered > 0 {
+		slog.Info("router: filtered candidates by route_node health",
+			"filtered_count", filtered,
+			"remaining_count", len(out),
+		)
+	}
+	return out
+}
+
+// logAllUnavailable 记录所有候选都不可用的诊断信息。
+func (r *Router) logAllUnavailable(candidates []provider.Candidate) {
+	reasonCounts := make(map[string]int, 8)
+	var sampleReasons []string
+	for _, c := range candidates {
+		reason := c.UnavailableReason()
+		if reason == "" {
+			reason = "unknown"
+		}
+		reasonCounts[reason]++
+		if len(sampleReasons) < 5 {
+			sampleReasons = append(sampleReasons, fmt.Sprintf(
+				"cred=%d prov=%d reason=%s", c.CredentialID, c.ProviderID, reason,
+			))
+		}
+	}
+	slog.Warn("router: all candidates unavailable",
+		"total", len(candidates),
+		"reasons", reasonCounts,
+		"sample", sampleReasons,
+	)
+}
+
+// prioritizeSessionPreferred 把指定 credential 排到候选首位。
+// 注意：该 credential 必须在 candidates 中存在；否则 noop。
+func prioritizeSessionPreferred(ordered []provider.Candidate, preferredID int) []provider.Candidate {
+	if preferredID == 0 {
+		return ordered
+	}
+	var preferred, rest []provider.Candidate
+	for _, c := range ordered {
+		if c.CredentialID == preferredID {
+			preferred = append(preferred, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	if len(preferred) == 0 {
+		// session_pref 指向的 credential 已不在候选中（可能因为其他原因被过滤）
+		// 不强行加入，让 P2C 自由选择
+		return ordered
+	}
+	return append(preferred, rest...)
 }
 
 func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.Candidate) {

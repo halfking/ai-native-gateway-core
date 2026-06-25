@@ -204,6 +204,19 @@ func main() {
 				Password: cfg.RedisPassword,
 				DB:       cfg.RedisDB,
 			})
+			// V2 (2026-06-26): enable the 5-minute "last_system_session"
+			// reuse index so requests without any session id can resume
+			// the most recent system-assigned session within 5 minutes.
+			// Reuses the same *redis.Client as fpSlotRedis (both target
+			// the same backing server).
+			chatHandler.SetLastSystemSessionIndex(
+				sessions.NewLastSystemSessionIndex(fpSlotRedis),
+			)
+			fpSlotRedis = redis.NewClient(&redis.Options{
+				Addr:     cfg.RedisAddr,
+				Password: cfg.RedisPassword,
+				DB:       cfg.RedisDB,
+			})
 			// Track C (2026-06-18): pending response cache for client
 			// reconnect and vendor async retry. Uses the same Redis
 			// connection as fpSlotRedis (both are independent *redis.Client

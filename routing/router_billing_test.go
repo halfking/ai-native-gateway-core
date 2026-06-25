@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/limiter"
@@ -54,7 +55,7 @@ func TestPlanCandidates_PlanBillingBeforePayAsYouGo(t *testing.T) {
 		},
 	}
 
-	ordered := router.PlanCandidates(candidates, nil, policy, nil)
+	ordered := router.PlanCandidates(context.Background(), candidates, nil, nil, policy, nil)
 	if len(ordered) != 3 {
 		t.Fatalf("expected 3 candidates, got %d", len(ordered))
 	}
