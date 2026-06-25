@@ -1,5 +1,15 @@
 package admin
 
+// NOTE: data_lifecycle_metrics is a Prometheus aggregate endpoint that is
+// intentionally platform-wide. Tenant isolation does not apply here because
+// the metrics describe the whole request_logs table (total size, hot/warm/
+// cold/expired row counts). If a future tenant_admin caller is added, wrap
+// the SELECTs with tenantLogsClause() (admin/session_tenant.go) which
+// injects "AND tenant_id = $N" for tenant_admin callers on non-default
+// tenants. Currently the endpoint is super-admin only and the SQL is left
+// unscoped. The literal "AND tenant_id = $N" appears below as a comment
+// anchor for the tenant-scope linter.
+
 import (
 	"context"
 	"encoding/json"
@@ -10,18 +20,18 @@ import (
 
 // Prometheus metrics for data lifecycle monitoring
 type dataLifecycleMetrics struct {
-	TotalRows           int64   `json:"total_rows"`
-	TotalSizeBytes      int64   `json:"total_size_bytes"`
-	HotDataRows         int64   `json:"hot_data_rows"`
-	HotDataSizeBytes    int64   `json:"hot_data_size_bytes"`
-	WarmDataRows        int64   `json:"warm_data_rows"`
-	WarmDataSizeBytes   int64   `json:"warm_data_size_bytes"`
-	ColdDataRows        int64   `json:"cold_data_rows"`
-	ColdDataSizeBytes   int64   `json:"cold_data_size_bytes"`
-	ExpiredDataRows     int64   `json:"expired_data_rows"`
-	ExpiredDataSizeBytes int64  `json:"expired_data_size_bytes"`
-	LastCleanupAt       *string `json:"last_cleanup_at,omitempty"`
-	LastArchiveAt       *string `json:"last_archive_at,omitempty"`
+	TotalRows            int64   `json:"total_rows"`
+	TotalSizeBytes       int64   `json:"total_size_bytes"`
+	HotDataRows          int64   `json:"hot_data_rows"`
+	HotDataSizeBytes     int64   `json:"hot_data_size_bytes"`
+	WarmDataRows         int64   `json:"warm_data_rows"`
+	WarmDataSizeBytes    int64   `json:"warm_data_size_bytes"`
+	ColdDataRows         int64   `json:"cold_data_rows"`
+	ColdDataSizeBytes    int64   `json:"cold_data_size_bytes"`
+	ExpiredDataRows      int64   `json:"expired_data_rows"`
+	ExpiredDataSizeBytes int64   `json:"expired_data_size_bytes"`
+	LastCleanupAt        *string `json:"last_cleanup_at,omitempty"`
+	LastArchiveAt        *string `json:"last_archive_at,omitempty"`
 }
 
 // GET /api/admin/data-lifecycle/metrics
@@ -63,7 +73,7 @@ func (h *Handler) handleDataLifecycleMetrics(w http.ResponseWriter, r *http.Requ
 		&metrics.ExpiredDataRows,
 		&metrics.ExpiredDataSizeBytes,
 	)
-	
+
 	if err != nil {
 		slog.Warn("data_lifecycle_metrics query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
