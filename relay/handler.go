@@ -1600,7 +1600,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 	}
 	requestPreviewText := requestPreview(requestBody)
 	transformSummaryText := transformSummary(txResult, evt.OutboundModel)
-	responsePreviewText := responsePreview(responseBody)
+	
+	// 2026-06-26: Fix response_preview missing for streaming responses.
+	// For streaming, responseBody is empty but responseBodyText contains the
+	// reconstructed response. Use responseBodyText if available.
+	var responsePreviewText string
+	if responseBodyText != nil && *responseBodyText != "" {
+		responsePreviewText = responsePreview([]byte(*responseBodyText))
+	} else if len(responseBody) > 0 {
+		responsePreviewText = responsePreview(responseBody)
+	}
+	
 	var requestPreviewPtr *string
 	if requestPreviewText != "" {
 		requestPreviewPtr = strPtr(requestPreviewText)
