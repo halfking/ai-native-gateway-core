@@ -28,7 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/audit"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/auth"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/circuit"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
+	oldcompressor "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/limiter"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
@@ -247,7 +247,7 @@ func main() {
 	// Initialise the unified runtime-config registry. Specs registered here
 	// become readable via settings.Global.EffectiveValue(scope, key, tenantID).
 	// Order matters: must run BEFORE any code that calls LoadMode/LoadFraction
-	// (e.g. compressor.NewCompressor).
+	// (e.g. oldcompressor.NewCompressor).
 	var providerSettingsResolver *settings.ProviderSettingsResolver
 	if dbConn != nil && dbConn.Enabled() {
 		settingsDB := settings.NewStoreDB(dbConn.Pool())
@@ -534,7 +534,7 @@ func main() {
 		// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
 		// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
 		// misconfigured install degrades gracefully to ModeOff.
-		routingExec.Compressor = compressor.NewCompressor()
+		routingExec.Compressor = oldcompressor.NewCompressor()
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
@@ -692,23 +692,23 @@ func main() {
 	// LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE so the deploy can roll back
 	// instantly without code change. Captures `exec` from the outer scope.
 	if redisClientForCache != nil && dbConn != nil && dbConn.Enabled() && telemetryClient.Enabled() && !compressorSessionDisabled() {
-		scCache := compressor.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
-		scDeps := compressor.SessionCompressorDeps{
+		scCache := oldcompressor.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
+		scDeps := oldcompressor.SessionCompressorDeps{
 			Cache:          scCache,
 			CompactionDeps: NewDependenciesFromExecutor(routingExec),
 		}
-		chatHandler.SetSessionCompressor(compressor.NewSessionCompressor(scDeps))
+		chatHandler.SetSessionCompressor(oldcompressor.NewSessionCompressor(scDeps))
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.
 		// Uses the same SessionCache for CutMarker persistence so that
 		// context_length_exceeded recovery results are cached for 30 minutes
 		// (Redis TTL), enabling incremental compression on the next request.
-		rcDeps := compressor.RecoveryDeps{
+		rcDeps := oldcompressor.RecoveryDeps{
 			Cache:      scCache,
 			MaxRetries: 2,
 		}
-		routingExec.RecoveryCoord = compressor.NewRecoveryCoordinator(rcDeps)
+		routingExec.RecoveryCoord = oldcompressor.NewRecoveryCoordinator(rcDeps)
 		slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 	} else {
 		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
