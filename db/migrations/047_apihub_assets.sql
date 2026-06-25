@@ -52,16 +52,3 @@ CREATE POLICY tenant_isolation_assets ON public.assets
 
 COMMIT;
 
--- +migrate Down
--- Rollback script for 047_apihub_assets.sql
--- Removes the assets table and its indexes/policies.
--- Safe to run even if the table does not exist (IF EXISTS guards).
-
-BEGIN;
-
-DROP POLICY IF EXISTS tenant_isolation_assets ON public.assets;
-DROP INDEX IF EXISTS idx_assets_tags;
-DROP INDEX IF EXISTS idx_assets_tenant_kind;
-DROP TABLE IF EXISTS public.assets;
-
-COMMIT;
