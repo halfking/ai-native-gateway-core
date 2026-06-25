@@ -3,6 +3,7 @@ import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+import SlotInfoCard from '../components/SlotInfoCard.vue'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 
@@ -84,6 +85,12 @@ async function loadCredentialDecisions() {
   } finally {
     credentialDecisionsLoading.value = false
   }
+}
+
+// V3.1 SlotInfoCard ref (2026-06-26)
+const slotInfoCardRef = ref<InstanceType<typeof import('../components/SlotInfoCard.vue')['default']> | null>(null)
+function refreshSlotInfo() {
+  slotInfoCardRef.value?.refresh()
 }
 
 // Fingerprint slot visualization (2026-06-23)
@@ -1060,20 +1067,17 @@ onUnmounted(() => {
                 <!-- 并发槽位（保留） -->
                 <div class="drawer-section">
                   <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                    <span>并发槽位与指纹分配</span>
-                    <button class="btn btn-xs btn-ghost" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
+                    <span>V3.1 双层槽位信息</span>
+                    <button class="btn btn-xs btn-ghost" @click="refreshSlotInfo" :disabled="fpSlotStatsLoading">
                       {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
                     </button>
                   </div>
-                  <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
-                    点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
-                  </div>
-                  <FpSlotVisualizer
-                    v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
-                    :details="fpSlotStats.details"
-                    :slot-limit="fpSlotStats.slot_limit"
+                  <SlotInfoCard
+                    v-if="selectedCred"
+                    ref="slotInfoCardRef"
+                    :credential-id="selectedCred.id"
+                    :key="selectedCred.id"
                   />
-                  <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
                 </div>
               </div>
               <!-- 右侧：未选中模型时的占位 -->
