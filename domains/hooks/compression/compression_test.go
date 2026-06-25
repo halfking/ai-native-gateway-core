@@ -57,8 +57,8 @@ func TestLCSCompressor_MoreThan10_Truncate(t *testing.T) {
 
 func TestLCSCompressor_Strategy(t *testing.T) {
 	c := NewLCSCompressor(4096)
-	if c.Strategy() != StrategyLCS {
-		t.Fatalf("expected StrategyLCS, got %q", c.Strategy())
+	if c.Strategy() != HookStrategyLCS {
+		t.Fatalf("expected HookStrategyLCS, got %q", c.Strategy())
 	}
 	if c.Name() != "lcs" {
 		t.Fatalf("expected name=lcs, got %q", c.Name())
@@ -86,8 +86,8 @@ func TestNoopCompressor_PassThrough(t *testing.T) {
 	if n.Name() != "noop" {
 		t.Fatalf("expected name=noop, got %q", n.Name())
 	}
-	if n.Strategy() != StrategyNone {
-		t.Fatalf("expected StrategyNone, got %q", n.Strategy())
+	if n.Strategy() != HookStrategyNone {
+		t.Fatalf("expected HookStrategyNone, got %q", n.Strategy())
 	}
 	msgs := []Message{{Role: "user", Content: "hi"}, {Role: "assistant", Content: "hello"}}
 	ctx := Context{Messages: msgs}
@@ -209,9 +209,9 @@ func TestCompressionHook_WrongMessagesType_StillProceeds(t *testing.T) {
 // 错误注入 Compressor
 type errCompressor struct{}
 
-func (errCompressor) Name() string             { return "err" }
-func (errCompressor) Strategy() Strategy       { return Strategy("err") }
-func (errCompressor) Compress(*Context) error   { return errors.New("boom") }
+func (errCompressor) Name() string            { return "err" }
+func (errCompressor) Strategy() HookStrategy  { return HookStrategy("err") }
+func (errCompressor) Compress(*Context) error { return errors.New("boom") }
 
 func TestCompressionHook_CompressorError_RecordedAndOnErrorSwallows(t *testing.T) {
 	h := NewCompressionHook(errCompressor{})
