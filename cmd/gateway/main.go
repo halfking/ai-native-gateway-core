@@ -47,6 +47,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -162,7 +163,7 @@ func main() {
 
 	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
 	healthHandler := relay.NewHealthHandler(cm, lim, upClient.Proxy())
-	modelsHandler := relay.NewModelsHandler()
+	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := relay.NewMessagesHandler(chatHandler)
 	responsesHandler := relay.NewResponsesHandler(chatHandler)
 
@@ -1259,7 +1260,7 @@ func main() {
 	slog.Info("CHECKPOINT: before static handler init")
 
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
-	staticHandler := relay.NewStaticHandler(cfg.StaticDir)
+	staticHandler := streaming.NewStaticHandler(cfg.StaticDir)
 
 	slog.Info("CHECKPOINT: before router init")
 
