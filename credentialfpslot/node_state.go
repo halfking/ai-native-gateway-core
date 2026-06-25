@@ -48,6 +48,9 @@ func (n *NodeState) IsUsable(now time.Time) bool {
 	if n == nil {
 		return true
 	}
+	if n.Disabled && n.DisabledUntil > 0 && now.Unix() < n.DisabledUntil {
+		return false
+	}
 	n.recoverIfCooldownExpired(now.Unix())
 	return n.ConsecutiveFailureStreak(now) < nodeFailStreakLimit
 }
