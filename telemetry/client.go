@@ -412,6 +412,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$12, $13,
 			$14, $15, $16, $17, $18
 		)
+		ON CONFLICT (request_id) DO NOTHING
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
