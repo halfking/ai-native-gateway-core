@@ -12,9 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupTestDB 创建测试数据库连接
-// 需要设置环境变量 TOOL_REGISTRY_TEST_DB
-// 例如: export TOOL_REGISTRY_TEST_DB="postgres://llm_gateway:password@host:5432/llm_gateway?sslmode=disable"
+// setupTestDB creates a test database connection.
+// Requires the TOOL_REGISTRY_TEST_DB env var (PostgreSQL DSN with credentials).
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	testDBURL := os.Getenv("TOOL_REGISTRY_TEST_DB")
 	if testDBURL == "" {

@@ -16,7 +16,7 @@ import (
 // from CreateInitial to Update to UpdateSync, against a real PostgreSQL database.
 //
 // To run this test:
-//   export LLM_GATEWAY_PG_URL="postgres://user:pass@host:port/db?sslmode=disable"
+//   export LLM_GATEWAY_PG_URL=<your-postgres-dsn-with-credentials>
 //   go test -tags=integration ./tests/integration -v -run TestRequestLifecycle
 func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 	if testing.Short() {

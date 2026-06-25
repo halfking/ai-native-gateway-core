@@ -269,7 +269,7 @@ func TestGenerateAliases_MiMo(t *testing.T) {
 func TestXiaomiMiMo_LiveIntegration(t *testing.T) {
 	apiKey := os.Getenv("XIAOMI_API_KEY")
 	if apiKey == "" {
-		apiKey = "__REDACTED_XIAOMI_API_KEY__"
+		t.Skip("XIAOMI_API_KEY not set; live integration test requires a real key")
 	}
 	baseURL := os.Getenv("XIAOMI_BASE_URL")
 	if baseURL == "" {
