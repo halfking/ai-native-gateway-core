@@ -47,7 +47,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 )
 
 // MemoraClient is the subset of *memora.Client that the compaction flow
@@ -110,7 +110,7 @@ var defaultHTTPDoer upstreamHTTPDoer = func(req *http.Request) (*http.Response, 
 const defaultCompactionMinWindow = 800_000
 
 // compactionSystemPrompt is the enhanced SESSION_MEMORY_PROMPT used by
-// the v3 session-level compressor. Based on Anthropic's official template
+// the v3 session-level compression. Based on Anthropic's official template
 // (https://platform.claude.com/cookbook/misc-session-memory-compaction)
 // with key enhancements for lossless compression:
 //

@@ -1,4 +1,4 @@
-// Package compressor - compressor.go (Round 47 / v7 T8)
+// Package compressor - compression.go (Round 47 / v7 T8)
 //
 // Three-mode dispatcher (v7 §2 / §3.4):
 //   mode=0 (off)             → no compression, body passes through
@@ -300,7 +300,7 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 	}
 
 	// === Tier 1 (mechanical trim) ===
-	// This is the cheapest path. transform.CompressMessagesIfNeeded /
+	// This is the cheapest path. transformation.CompressMessagesIfNeeded /
 	// CompressAnthropicMessagesIfNeeded are the existing in-place
 	// sliding-window trims. They preserve system messages (existing
 	// A-track behaviour) and tool-round integrity (per the v7 §6
@@ -381,7 +381,7 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 }
 
 // compressMechanical is the in-place sliding-window trim. Thin wrapper
-// around transform.CompressMessagesIfNeeded so the dispatcher doesn't
+// around transformation.CompressMessagesIfNeeded so the dispatcher doesn't
 // need to import transform directly. The mechanical tier already
 // preserves system messages (existing behaviour); tool-round integrity
 // is preserved by transform/ctx_compress.go's dropExtent logic.
@@ -393,7 +393,7 @@ func compressMechanical(body []byte, contextWindow int) []byte {
 }
 
 // CompressMessagesIfNeededBody is a package-level alias for
-// transform.CompressMessagesIfNeeded so compressor doesn't need to
+// transformation.CompressMessagesIfNeeded so compressor doesn't need to
 // import transform at the call site. Avoids a circular dep while still
 // routing through the canonical trim implementation.
 func CompressMessagesIfNeededBody(body []byte, contextWindow int) []byte {

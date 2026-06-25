@@ -9,7 +9,7 @@ import (
 )
 
 // KeyVerifier 是 Handler 用来验证 API key 的抽象。
-// 真实的实现可能在旧 auth.KeyVerifier 或新 domains/authentication.Verifier。
+// 真实的实现可能在旧 authentication.KeyVerifier 或新 domains/authentication.Verifier。
 // 用 interface 解耦，避免 domains/session 直接 import auth/。
 type KeyVerifier interface {
 	Enabled() bool
@@ -78,7 +78,7 @@ func NewHandler(manager *Manager) *Handler {
 }
 
 // SetAuth 安装 KeyVerifier 抽象。
-// 旧 auth.KeyVerifier 与新 domains/authentication.Verifier 都通过
+// 旧 authentication.KeyVerifier 与新 domains/authentication.Verifier 都通过
 // 适配器实现此接口。
 func (h *Handler) SetAuth(kv KeyVerifier) {
 	h.keyVerifier = kv

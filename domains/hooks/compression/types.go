@@ -19,7 +19,7 @@ import "errors"
 
 // HookStrategy 压缩策略标识（Hook 抽象层）。
 //
-// 注意：与 compressor.CompressionStrategy（底层 telemetry 用的策略）不同。
+// 注意：与 compression.CompressionStrategy（底层 telemetry 用的策略）不同。
 // 本类型是 Hook 抽象层定义的最小契约；下游可选用实现（本包提供 LCS / Noop）。
 type HookStrategy string
 

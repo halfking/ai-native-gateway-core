@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 

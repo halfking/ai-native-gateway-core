@@ -39,7 +39,7 @@ func (h *HealthCheckHook) Execute(ctx context.Context, env *domain.PipelineReque
 		return err
 	}
 	healthy := h.checker.FilterHealthy(creds)
-	// 序列化为 candidate 列表（与 routing.Candidate 兼容）
+	// 序列化为 candidate 列表（与 streaming.Candidate 兼容）
 	type cand struct {
 		CredentialID string
 		Provider     string

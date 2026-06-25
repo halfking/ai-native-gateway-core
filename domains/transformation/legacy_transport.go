@@ -8,9 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/relay"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 )
 
 // LegacyTransport 使用直接转换实现协议转换（复用 relay 包）。
@@ -46,7 +47,7 @@ func (t *LegacyTransport) Convert(ctx context.Context, envelope *domain.RequestE
 
 	// Q2: Anthropic → OpenAI
 	if isAnthropic(tc.ClientProtocol) && isOpenAI(tc.UpstreamProtocol) {
-		out, err := relay.ConvertAnthropicRequestToChat(tc.BodyBytes)
+		out, err := anthropic.ConvertAnthropicRequestToChat(tc.BodyBytes)
 		if err != nil {
 			conversionErrors.WithLabelValues("legacy", "request").Inc()
 			return nil, fmt.Errorf("legacy_transport: anthropic→openai: %w", err)
@@ -90,7 +91,7 @@ func (t *LegacyTransport) ConvertResponse(ctx context.Context, envelope *domain.
 
 	// Q3: OpenAI client ← Anthropic upstream
 	if isOpenAI(tc.ClientProtocol) && isAnthropic(tc.UpstreamProtocol) {
-		out, err := relay.ConvertAnthropicResponseToChat(upstreamBody, tc.ClientModel)
+		out, err := anthropic.ConvertAnthropicResponseToChat(upstreamBody, tc.ClientModel)
 		if err != nil {
 			conversionErrors.WithLabelValues("legacy", "response").Inc()
 			return nil, fmt.Errorf("legacy_transport: openai←anthropic: %w", err)
@@ -116,13 +117,13 @@ func (t *LegacyTransport) ConvertStream(ctx context.Context, envelope *domain.Re
 	tc := envelope.Transport
 
 	capture := t.captureBuilder()
-	pc := relay.NewPendingCapturer(0)
+	pc := anthropic.NewPendingCapturer(0)
 
 	switch {
 	case tc.ClientProtocol == tc.UpstreamProtocol:
 		// 直通：Anthropic→Anthropic 或 OpenAI→OpenAI
 		if isAnthropic(tc.ClientProtocol) {
-			relay.StreamAnthropicPassthrough(
+			anthropic.StreamAnthropicPassthrough(
 				tc.W, upstreamResp,
 				tc.ClientModel, tc.OutboundModel, envelope.RequestID,
 				capture, pc,
@@ -139,7 +140,7 @@ func (t *LegacyTransport) ConvertStream(ctx context.Context, envelope *domain.Re
 		}
 	case isOpenAI(tc.ClientProtocol) && isAnthropic(tc.UpstreamProtocol):
 		// Q3: OpenAI ← Anthropic
-		relay.StreamAnthropicSSEToOpenAI(
+		anthropic.StreamAnthropicSSEToOpenAI(
 			tc.W, upstreamResp,
 			tc.ClientModel, tc.OutboundModel, envelope.RequestID,
 			capture, pc,

@@ -119,7 +119,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Rate limit by client IP
 	clientIP := clientIPFromRequest(r)
 	if !loginLimiter.Allow(clientIP) {
-		h.auditLog("unknown", "auth.rate_limited", "user", 0, map[string]any{"ip": clientIP})
+		h.auditLog("unknown", "authentication.rate_limited", "user", 0, map[string]any{"ip": clientIP})
 		writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
 		return
 	}
@@ -156,7 +156,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					var tenantStatus string
 					err := h.db.QueryRow(ctx, `SELECT status FROM tenants WHERE code = $1`, u.TenantID).Scan(&tenantStatus)
 					if err != nil || tenantStatus == "disabled" {
-						h.auditLog(req.Username, "auth.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
+						h.auditLog(req.Username, "authentication.login_failed", "user", u.ID, fmt.Sprintf("method=jwt reason=tenant_disabled tenant=%s ip=%s", u.TenantID, clientIP))
 						writeError(w, http.StatusForbidden, "tenant is disabled, contact your administrator")
 						return
 					}
@@ -172,7 +172,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				h.auditLog(u.Username, "auth.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
+				h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
 				writeJSON(w, http.StatusOK, map[string]any{
 					"access_token": token,
 					"token_type":   "Bearer",
@@ -189,7 +189,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		h.auditLog(req.Username, "auth.login_failed", "user", 0, fmt.Sprintf("method=jwt ip=%s", r.RemoteAddr))
+		h.auditLog(req.Username, "authentication.login_failed", "user", 0, fmt.Sprintf("method=jwt ip=%s", r.RemoteAddr))
 	}
 
 	// ── Fall back to legacy admin key auth ────────────────────────────
@@ -226,7 +226,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 			h.db.Exec(ctx, `UPDATE api_keys SET is_system = TRUE, remark = 'admin login: reused existing key' WHERE id = $1 AND (remark IS NULL OR remark = '')`, existingID)
 			prefix := decrypted[:12]
 			loginLimiter.Reset(clientIP)
-			h.auditLog("admin", "auth.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", clientIP))
+			h.auditLog("admin", "authentication.login", "user", 0, fmt.Sprintf("method=legacy_key ip=%s", clientIP))
 			writeJSON(w, http.StatusOK, keyCreatedResponse{
 				APIKey:    decrypted,
 				KeyPrefix: prefix + "****",

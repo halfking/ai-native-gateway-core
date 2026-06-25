@@ -1,3 +1,4 @@
+
 // Package siem formats audit events into SIEM-friendly formats (CEF, LEEF)
 // and forwards them to a Security Information and Event Management system
 // (Splunk / QRadar / Elastic / syslog).

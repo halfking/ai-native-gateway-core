@@ -1,3 +1,4 @@
+
 // Package siem — configuration schema (B3-2).
 //
 // SIEM forwarding is configured via settings_kv with a stable JSON shape.

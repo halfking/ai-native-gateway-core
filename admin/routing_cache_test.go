@@ -5,7 +5,7 @@ import "testing"
 // 2026-06-19 audit: ensure /api/routing/available-models cache hit/miss
 // and invalidation behave correctly so the previous "一会就被刷新" can
 // not regress through a stale cache (or worse, stay sticky after a
-// PATCH).  The cache lives in routing.go; this test exercises the
+// PATCH).  The cache lives in streaming.go; this test exercises the
 // exported helper hooks in the same package.
 func TestAvailableModelsCacheLifecycle(t *testing.T) {
 	InvalidateAvailableModelsCache()

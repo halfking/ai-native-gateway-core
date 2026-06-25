@@ -14,7 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -16,7 +16,7 @@ var tierOrder = [4]int{1, 2, 3, 9}
 
 type Router struct {
 	Sticky  *StickyCache
-	Limiter *limiter.Limiter
+	Limiter *credential.Limiter
 	// FpSlots is the credential-level concurrency tracker. When set,
 	// loadScore includes FP slot pressure in its P2C selection.
 	FpSlots interface {
@@ -29,7 +29,7 @@ type Router struct {
 	rrCounter atomic.Uint64
 }
 
-func NewRouter(sticky *StickyCache, lim *limiter.Limiter) *Router {
+func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{Sticky: sticky, Limiter: lim}
 }
 

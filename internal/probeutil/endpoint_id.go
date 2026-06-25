@@ -14,7 +14,7 @@
 // endpoint IDs (ep-XXXXXXXX).  Calling them by raw model name returns 404
 // with error_code "InvalidEndpointOrModel.NotFound".  Naively interpreting
 // that 404 as "model gone / provider gone" drives false
-// broken_confirmed / unreachable states that block routing.
+// broken_confirmed / unreachable states that block streaming.
 package probeutil
 
 import "strings"

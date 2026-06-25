@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform"
 )
 
 const (

@@ -109,7 +109,7 @@ func MatchModelOffer(clientModel, offerModel string) bool {
 // StripProviderPrefix removes the provider prefix from a model name
 // while preserving the original casing. Used for route matching and display —
 // NOT for upstream request bodies; those must use the offer raw_model_name
-// (see routing.resolveOutboundModel).
+// (see streaming.resolveOutboundModel).
 //
 //	"z-ai/glm-5.1" → "glm-5.1"
 //	"scnet/minimax-m2.5" → "minimax-m2.5"

@@ -461,7 +461,7 @@ func WrapQualityProcessStreamLine() func(line, mode string, accFlags []string, s
 }
 
 // WrapSetQualityFixModeOnContext exposes SetQualityFixModeOnContext
-// as a closure that matches the routing.QualitySetModeFunc shape
+// as a closure that matches the streaming.QualitySetModeFunc shape
 // (context.Context, string) → context.Context. cmd/gateway/main.go
 // wires this into Executor.QualitySetMode so the routing executor
 // can stamp the per-provider mode without importing relay.
