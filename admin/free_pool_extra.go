@@ -626,10 +626,10 @@ var (
 		"localhost":      true,
 		"127.0.0.1":      true,
 		"0.0.0.0":        true,
-		"llm.kxpms.cn":   true,
-		"auth.kxpms.cn":  true,
-		"acc.kxpms.cn":   true,
-		"mcp.kxpms.cn":   true,
+		"llmgateway.internal.example.com":   true,
+		"auth.internal.example.com":  true,
+		"acc.internal.example.com":   true,
+		"mcp.internal.example.com":   true,
 	}
 	probePrivateNets = []*net.IPNet{
 		mustCIDR("10.0.0.0/8"),

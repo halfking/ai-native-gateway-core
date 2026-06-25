@@ -1534,7 +1534,7 @@ func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *
 //
 // Environment variables consumed (all optional except Endpoint):
 //
-//	LLMGatewayAutoLLMEndpoint  base URL (e.g. "https://llm.kxpms.cn/v1")
+//	LLMGatewayAutoLLMEndpoint  base URL (e.g. "https://llmgateway.internal.example.com/v1")
 //	LLMGatewayAutoLLMApiKey   bearer token
 //	LLMGatewayAutoLLMModel    model name (default "gpt-4o-mini")
 //	LLMGatewayAutoLLMTimeout  seconds (default 3)

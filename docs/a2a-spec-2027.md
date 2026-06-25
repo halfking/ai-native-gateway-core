@@ -148,7 +148,7 @@ message Task {
     }
   ],
   "supportedInterfaces": [
-    { "url": "https://brandmind.kxpms.cn/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0" }
+    { "url": "https://brandmind.internal.example.com/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0" }
   ],
   "securitySchemes": { "bearer": { "http": { "scheme": "bearer" } } }
 }

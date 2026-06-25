@@ -5,7 +5,7 @@
 > **任务**：对 2026-06-18 ~ 2026-06-21 的 ~110 个 commit 做全面审计
 > **镜像**：`kx-llm-gateway-go:gitsha-8cc5b8d7` (与子模块 HEAD 一致)
 > **部署**：184 k3s `pms-test/llm-gateway-go-deployment-7fdbb875fb-cx846`
-> **Healthz**：https://llmgo.kxpms.cn/healthz → 200 OK
+> **Healthz**：https://llmgateway.internal.example.com/healthz → 200 OK
 > **审计报告**：`docs/2026-06-21-three-day-audit.md`
 
 ## 🎯 任务 (本轮)
@@ -232,7 +232,7 @@ HGETALL session:sc:default:{gwSessionID}:v1
 ### 镜像构建
 
 ```bash
-K8S_SSH_PASSWORD='Kaixuan2025&9900#' \
+K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__' \
 ALLOW_SUBMODULE_DIRTY=1 ALLOW_DOCKERHUB_FROM=1 \
 REMOTE_BUILD=1 INCREMENTAL_BASE_IMAGE='kx-llm-gateway-go:latest' \
 ./scripts/deploy-llm-gateway-go-184.sh --only app

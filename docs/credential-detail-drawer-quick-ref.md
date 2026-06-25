@@ -109,7 +109,7 @@ Response:
 
 ### 前端测试（浏览器）
 ```javascript
-// 1. 打开 https://llmgo.kxpms.cn/routing-v2/credentials
+// 1. 打开 https://llmgateway.internal.example.com/routing-v2/credentials
 // 2. 点击任一凭据
 // 3. 在控制台执行：
 
@@ -125,10 +125,10 @@ fetch('/api/credentials/decisions?credential_id=1&limit=10')
 ### 后端测试（curl）
 ```bash
 # 测试决策API
-curl -s "https://llmgo.kxpms.cn/api/credentials/decisions?credential_id=1&limit=5" | jq
+curl -s "https://llmgateway.internal.example.com/api/credentials/decisions?credential_id=1&limit=5" | jq
 
 # 测试清除API
-curl -X POST "https://llmgo.kxpms.cn/api/credentials/clear-manual-disabled" \
+curl -X POST "https://llmgateway.internal.example.com/api/credentials/clear-manual-disabled" \
   -H "Content-Type: application/json" \
   -d '{"credential_id": 1, "reason": "test"}' | jq
 ```
@@ -161,18 +161,18 @@ cd web && npm run build && cd ..
 go test ./admin/... -v
 
 # 3. 构建镜像
-docker build -t registry.kxpms.cn/kx-llm-gateway-go:$(date +%Y%m%d) .
+docker build -t registry.internal.example.com/kx-llm-gateway-go:$(date +%Y%m%d) .
 
 # 4. 推送镜像
-docker push registry.kxpms.cn/kx-llm-gateway-go:$(date +%Y%m%d)
+docker push registry.internal.example.com/kx-llm-gateway-go:$(date +%Y%m%d)
 
 # 5. 部署184
 kubectl -n pms-test set image deployment/kx-llm-gateway-go \
-  llm-gateway-go=registry.kxpms.cn/kx-llm-gateway-go:$(date +%Y%m%d)
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:$(date +%Y%m%d)
 
 # 6. 验证
 kubectl -n pms-test rollout status deployment/kx-llm-gateway-go
-curl -s https://llmgo.kxpms.cn/healthz | jq
+curl -s https://llmgateway.internal.example.com/healthz | jq
 ```
 
 ## 🔍 故障排查
@@ -186,7 +186,7 @@ curl -s https://llmgo.kxpms.cn/healthz | jq
 kubectl -n pms-test logs -l app=llm-gateway-go --tail=50 | grep "decisions"
 
 # 3. 检查API可达性
-curl -v https://llmgo.kxpms.cn/api/credentials/decisions?credential_id=1
+curl -v https://llmgateway.internal.example.com/api/credentials/decisions?credential_id=1
 ```
 
 ### 问题：路由决策表格空白
@@ -204,7 +204,7 @@ SELECT MAX(ts) FROM routing_decision_log;
 ### 问题：清除manual_disabled失败
 ```bash
 # 1. 检查凭据是否存在
-curl "https://llmgo.kxpms.cn/api/credentials/monitor-summary" | jq '.credentials[] | select(.id==123)'
+curl "https://llmgateway.internal.example.com/api/credentials/monitor-summary" | jq '.credentials[] | select(.id==123)'
 
 # 2. 检查权限（tenant_admin需要匹配tenant_id）
 # 3. 查看后端日志

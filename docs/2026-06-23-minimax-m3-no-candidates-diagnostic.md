@@ -234,9 +234,9 @@ kubectl -n pms-test logs deployment/llm-gateway-go-deployment \
   | grep -E "no_candidate|cred_fp_slot|redis"
 
 # 2. 检查 Redis 连接状态
-kubectl -n pms-test exec deploy/llm-gateway-go-deployment -- redis-cli -h 172.31.0.4 INFO clients
+kubectl -n pms-test exec deploy/llm-gateway-go-deployment -- redis-cli -h __INTERNAL_K8S_HOST__ INFO clients
 
 # 3. 检查 Lua 脚本执行时间
 kubectl -n pms-test exec deploy/llm-gateway-go-deployment -- \
-  redis-cli -h 172.31.0.4 SLOWLOG GET 10
+  redis-cli -h __INTERNAL_K8S_HOST__ SLOWLOG GET 10
 ```

@@ -736,7 +736,7 @@ golangci-lint run ./internal/ir/ ./relay/
 
 # 4. Integration test (184 deployment)
 # Test multi-turn tool conversation:
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

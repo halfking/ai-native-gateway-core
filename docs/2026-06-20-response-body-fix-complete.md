@@ -116,7 +116,7 @@ PASS: TestAnthropicExecutor_Q4PassthroughSkipsQualityHook
 
 **测试 1**: 简单请求
 ```bash
-curl -X POST "https://llmgo.kxpms.cn/v1/chat/completions" \
+curl -X POST "https://llmgateway.internal.example.com/v1/chat/completions" \
   -H "Authorization: Bearer sk-1R7I...KZw7" \
   -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"只回复一个字：好"}]}'
 
@@ -125,7 +125,7 @@ curl -X POST "https://llmgo.kxpms.cn/v1/chat/completions" \
 
 **测试 2**: 较长请求
 ```bash
-curl -X POST "https://llmgo.kxpms.cn/v1/chat/completions" \
+curl -X POST "https://llmgateway.internal.example.com/v1/chat/completions" \
   -H "Authorization: Bearer sk-1R7I...KZw7" \
   -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"为什么天空是蓝色的？"}]}'
 
@@ -184,14 +184,14 @@ go build -o llm-gateway-go ./cmd/gateway
 ### Step 2: 部署到 184 k3s
 ```bash
 # 构建镜像
-docker build -t registry.kxpms.cn/kx-llm-gateway-go:fix-response-body .
+docker build -t registry.internal.example.com/kx-llm-gateway-go:fix-response-body .
 
 # 推送镜像
-docker push registry.kxpms.cn/kx-llm-gateway-go:fix-response-body
+docker push registry.internal.example.com/kx-llm-gateway-go:fix-response-body
 
 # 更新 k8s deployment
 kubectl -n pms-test set image deployment/llm-gateway-go-deployment \
-  llm-gateway-go=registry.kxpms.cn/kx-llm-gateway-go:fix-response-body
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:fix-response-body
 
 # 等待 rollout 完成
 kubectl -n pms-test rollout status deployment/llm-gateway-go-deployment
@@ -206,7 +206,7 @@ kubectl -n pms-test get pods -l app=llm-gateway-go
 kubectl -n pms-test logs -f deployment/llm-gateway-go-deployment --tail=100
 
 # 3. 发送测试请求
-curl -X POST "https://llmgo.kxpms.cn/v1/chat/completions" \
+curl -X POST "https://llmgateway.internal.example.com/v1/chat/completions" \
   -H "Authorization: Bearer sk-1R7I...KZw7" \
   -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"测试"}]}'
 

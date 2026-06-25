@@ -1,7 +1,7 @@
 # llm-gateway-go 协议转换增强 - 部署验证报告
 
 **部署时间**: 2026-06-20  
-**部署目标**: 184 k3s 集群 (llmgo.kxpms.cn)  
+**部署目标**: 184 k3s 集群 (llmgateway.internal.example.com)  
 **部署状态**: ✅ 成功
 
 ---
@@ -14,7 +14,7 @@
 - **镜像**: kx-llm-gateway-go:gitsha-0c73a1d5
 - **命名空间**: pms-test
 - **副本数**: 2
-- **健康检查**: ✅ PASS (https://llmgo.kxpms.cn/healthz)
+- **健康检查**: ✅ PASS (https://llmgateway.internal.example.com/healthz)
 
 ### 部署日志摘要
 ```
@@ -60,7 +60,7 @@
 /tmp/test-q3-thinking.sh
 
 # 测试内容
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
     "model": "claude-opus-4-8",
@@ -88,7 +88,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 /tmp/test-q2-conversion.sh
 
 # 测试内容
-curl -X POST https://llmgo.kxpms.cn/v1/messages \
+curl -X POST https://llmgateway.internal.example.com/v1/messages \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -155,7 +155,7 @@ GROUP BY error_kind, client_model;
 
 ### 服务状态
 ```bash
-$ curl -s https://llmgo.kxpms.cn/healthz | jq .status
+$ curl -s https://llmgateway.internal.example.com/healthz | jq .status
 "ok"
 ```
 

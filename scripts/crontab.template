@@ -8,7 +8,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 MAILTO=ops@kaixuan.com
 
 # 数据库配置
-DB_HOST=172.31.0.4
+DB_HOST=__INTERNAL_DB_HOST__
 DB_PORT=5432
 DB_NAME=llm_gateway
 DB_USER=stockuser

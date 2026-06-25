@@ -11,10 +11,10 @@
 
 ```bash
 # Healthz
-curl -i https://llmgo.kxpms.cn/healthz
+curl -i https://llmgateway.internal.example.com/healthz
 
 # Auto route — code task
-curl -i -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -i -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -23,7 +23,7 @@ curl -i -X POST https://llmgo.kxpms.cn/v1/chat/completions \
   }'
 
 # Verify response header
-curl -is -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -is -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}' \
@@ -34,25 +34,25 @@ curl -is -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 
 ```bash
 # Recent decisions
-curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/decisions?limit=10" \
+curl -s "https://llmgateway.internal.example.com/api/admin/auto-route/decisions?limit=10" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 
 # Current index snapshot
-curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/index?top=20" \
+curl -s "https://llmgateway.internal.example.com/api/admin/auto-route/index?top=20" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 
 # Set sticky profile for an API key
-curl -s -X PUT "https://llmgo.kxpms.cn/api/admin/auto-route/profile" \
+curl -s -X PUT "https://llmgateway.internal.example.com/api/admin/auto-route/profile" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"api_key_id": 42, "profile": "cost_first"}' | jq
 
 # Aggregated stats
-curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/audit" \
+curl -s "https://llmgateway.internal.example.com/api/admin/auto-route/audit" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 
 # Manually trigger index refresh
-curl -s -X POST "https://llmgo.kxpms.cn/api/admin/auto-route/refresh" \
+curl -s -X POST "https://llmgateway.internal.example.com/api/admin/auto-route/refresh" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 ```
 
@@ -119,7 +119,7 @@ claude-sonnet-4.5.
 kubectl -n pms-test logs deploy/llm-gateway-go --tail=200 | grep -i 'autoroute'
 
 # Check index freshness
-curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/audit" \
+curl -s "https://llmgateway.internal.example.com/api/admin/auto-route/audit" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.total_auto_requests'
 ```
 
@@ -136,7 +136,7 @@ curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/audit" \
 **Check**:
 ```bash
 # How old is the latest bucket?
-curl -s "https://llmgo.kxpms.cn/api/admin/auto-route/index?top=1" \
+curl -s "https://llmgateway.internal.example.com/api/admin/auto-route/index?top=1" \
   -H "Authorization: Bearer $ADMIN_TOKEN" | jq '.[0].bucket'
 ```
 

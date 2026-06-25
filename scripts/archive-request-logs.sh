@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 默认配置
-DB_HOST="${DB_HOST:-172.31.0.4}"
+DB_HOST="${DB_HOST:-__INTERNAL_DB_HOST__}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-llm_gateway}"
 DB_USER="${DB_USER:-stockuser}"

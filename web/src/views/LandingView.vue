@@ -65,7 +65,7 @@ const advantages = [
       :advantages="advantages"
       advantages-title="差异化优势"
       advantages-subtitle="海外厂商给不了的能力"
-      footer-text="开轩 LLM Gateway · llmgo.kxpms.cn · 私有部署 · 中国本地化"
+      footer-text="开轩 LLM Gateway · llmgateway.internal.example.com · 私有部署 · 中国本地化"
       accent="#6366f1"
       :hide-cta="true"
     />

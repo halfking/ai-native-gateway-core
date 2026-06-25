@@ -35,7 +35,7 @@ spec:
           serviceAccountName: default
           containers:
           - name: refresh
-            image: registry.kxpms.cn/kx-base:go-vue
+            image: registry.internal.example.com/kx-base:go-vue
             imagePullPolicy: IfNotPresent
             command:
             - /bin/sh

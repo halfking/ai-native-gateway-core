@@ -20,7 +20,7 @@
 
 ### 1.2 部署
 
-- 生产：`https://llmgo.kxpms.cn`（184 k3s，`k8s/apps/llm-gateway-go.yaml`）
+- 生产：`https://llmgateway.internal.example.com`（184 k3s，`k8s/apps/llm-gateway-go.yaml`）
 - 技术栈：Go 后端 + Vue3 前端（`web/`）
 
 ---
@@ -239,7 +239,7 @@ credits = ceil(
 3. **数据**：造一笔 chat 请求 → request_logs.credits_charged > 0；ledger 有 consume 行
 4. **UI**：Playwright 登录 tenant 测试账号 → 三页截图与 Figma/方案对比
 5. **default 对比**：super_admin 同页可见 USD 成本列（仅 default）
-6. **部署**：184 滚动后 `https://llmgo.kxpms.cn/healthz` 200
+6. **部署**：184 滚动后 `https://llmgateway.internal.example.com/healthz` 200
 7. **提交**：子模块 commit → 主仓 bump；不提交 agents/
 
 ---

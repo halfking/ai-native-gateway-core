@@ -216,7 +216,7 @@ async function generate() {
   hasGenerated.value = false
 
   const key = selectedKey.value
-  const baseURL = 'https://llmgo.kxpms.cn/v1'
+  const baseURL = 'https://llmgateway.internal.example.com/v1'
   let models = selectedModels.value
   if (selectedScope.value === 'featured') models = [...featuredModels.value]
 

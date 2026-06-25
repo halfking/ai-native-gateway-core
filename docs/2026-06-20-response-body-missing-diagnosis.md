@@ -146,7 +146,7 @@ grep -rn "func.*Log\|func.*Write.*Request" . --include="*.go" | grep -v test
 
 ```bash
 # 发送请求
-REQUEST_ID=$(curl -s -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+REQUEST_ID=$(curl -s -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"test"}]}' \
   | jq -r '.id' | sed 's/msg_//')

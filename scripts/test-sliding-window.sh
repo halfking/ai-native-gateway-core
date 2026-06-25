@@ -3,7 +3,7 @@
 
 set -e
 
-API_BASE="https://llmgo.kxpms.cn"
+API_BASE="https://llmgateway.internal.example.com"
 ADMIN_TOKEN="${ADMIN_TOKEN:-your_admin_token_here}"
 
 echo "=== Testing Sliding Window API ==="

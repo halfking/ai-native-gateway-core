@@ -273,7 +273,7 @@ bash scripts/cleanup-request-logs.sh
 ### 3. 访问管理界面
 
 ```
-URL: https://llmgo.kxpms.cn/admin/data-lifecycle
+URL: https://llmgateway.internal.example.com/admin/data-lifecycle
 权限: platform_ops 或 super_admin
 ```
 
@@ -291,7 +291,7 @@ URL: https://llmgo.kxpms.cn/admin/data-lifecycle
 scrape_configs:
   - job_name: 'llm-gateway-data-lifecycle'
     static_configs:
-      - targets: ['llmgo.kxpms.cn']
+      - targets: ['llmgateway.internal.example.com']
     metrics_path: '/api/admin/data-lifecycle/metrics'
     scrape_interval: 5m
 ```

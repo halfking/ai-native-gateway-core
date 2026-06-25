@@ -9,7 +9,7 @@
 
 ```bash
 # On the target server, with admin DB credentials:
-DATABASE_URL='postgresql://kxuser:***@14.103.112.184:5432/<DB_NAME>?ssl=false' \
+DATABASE_URL='postgresql://<DB_USER>/<DB_PASSWORD>@<DB_HOST>:5432/<DB_NAME>?ssl=false' \
   ./init.sh
 ```
 
@@ -43,9 +43,9 @@ To override, edit `verify.sh`'s `EXPECTED_OVERRIDE` array.
 After schema changes are deployed to production, refresh the SQL files:
 
 ```bash
-DATABASE_URL='postgresql://kxuser:***@14.103.112.184:5432/<DB_NAME>?ssl=false' \
+DATABASE_URL='postgresql://<DB_USER>/<DB_PASSWORD>@<DB_HOST>:5432/<DB_NAME>?ssl=false' \
   ./dump-schema.sh
-DATABASE_URL='postgresql://kxuser:***@14.103.112.184:5432/<DB_NAME>?ssl=false' \
+DATABASE_URL='postgresql://<DB_USER>/<DB_PASSWORD>@<DB_HOST>:5432/<DB_NAME>?ssl=false' \
   ./dump-seed.sh
 ```
 
@@ -106,7 +106,7 @@ work on a fresh DB:
 
 ## Production DB reference (snapshot <DATE>)
 
-- **Host**: `14.103.112.184:5432` (single citus cluster, all 14 DBs)
+- **Host**: `DB_HOST:5432` (single citus cluster, all 14 DBs)
 - **Database**: `<DB_NAME>`
 - **User**: `kxuser` (formerly `stockuser` / `postgres` — merged 2026-06-24)
 - **PG version**: PostgreSQL 15.2 (Ubuntu 15.2-1.pgdg22.04+1)

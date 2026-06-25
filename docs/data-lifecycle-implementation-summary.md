@@ -256,7 +256,7 @@ $ go build ./...
 
 2. **预览清理计划**：
 ```bash
-curl -X POST https://llmgo.kxpms.cn/api/admin/data-lifecycle/cleanup/preview \
+curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cleanup/preview \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action": "archive", "from": "2026-03-01", "to": "2026-04-01"}'

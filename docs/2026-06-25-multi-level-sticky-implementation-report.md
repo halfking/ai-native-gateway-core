@@ -123,7 +123,7 @@ Model:     clientModel,
 
 1. **清空旧 sticky 数据** (可选，但推荐):
 ```bash
-K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@172.31.0.4 \
+K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
   "docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c 'TRUNCATE TABLE sticky_sessions;'"
 ```
 
@@ -156,7 +156,7 @@ cd /Users/xutaohuang/workspace/official-deploy
 **验证**:
 ```bash
 # 检查健康
-curl -s https://llmgo.kxpms.cn/healthz
+curl -s https://llmgateway.internal.example.com/healthz
 
 # 检查日志
 kubectl -n pms-test logs deploy/kx-llm-gateway-go -f | grep "sticky"
@@ -177,10 +177,10 @@ cd /Users/xutaohuang/workspace/official-deploy
 **验证**:
 ```bash
 # 检查健康
-curl -s https://llm.kxpms.cn/healthz
+curl -s https://llmgateway.internal.example.com/healthz
 
 # 检查日志
-K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@172.31.0.3 \
+K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
   "docker logs llm-gateway-go -f --tail=100" | grep "sticky"
 ```
 
@@ -190,7 +190,7 @@ K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@172.31.0.3 \
 
 ```bash
 # 场景1: 选择 claude-opus-4-8，应该直接用 claude 的 credential
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \
@@ -203,7 +203,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 # 应该显示使用了 claude 相关的 credential
 
 # 场景2: 同一会话切换到 minimax，应该用 minimax 的 credential
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \
@@ -215,7 +215,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 # 应该使用 minimax 的 credential，而不是之前的 claude
 
 # 场景3: 切回 claude，应该复用之前的 claude credential (L1)
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "X-Gw-Session-Id: test-session-001" \
   -H "Content-Type: application/json" \
@@ -230,7 +230,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 ### 数据库查询验证
 
 ```bash
-K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@172.31.0.4 \
+K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
   "docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c \"
     SELECT 
       sticky_key,
@@ -271,7 +271,7 @@ git push
 ### 数据回滚 (清空 sticky)
 
 ```bash
-K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@172.31.0.4 \
+K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
   "docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c 'TRUNCATE TABLE sticky_sessions;'"
 ```
 

@@ -276,7 +276,7 @@ DRY_RUN=true bash scripts/cleanup-request-logs.sh
 scrape_configs:
   - job_name: 'llm-gateway-data-lifecycle'
     static_configs:
-      - targets: ['llmgo.kxpms.cn']
+      - targets: ['llmgateway.internal.example.com']
     metrics_path: '/api/admin/data-lifecycle/metrics'
     scrape_interval: 5m
     bearer_token: '<platform_ops_token>'
@@ -285,7 +285,7 @@ scrape_configs:
 ### 4. 访问管理界面
 
 ```
-URL: https://llmgo.kxpms.cn/admin/data-lifecycle
+URL: https://llmgateway.internal.example.com/admin/data-lifecycle
 权限: platform_ops 或 super_admin
 ```
 
@@ -302,11 +302,11 @@ cd /opt/llm-gateway-go
 ./scripts/analyze-request-logs-size.sh
 
 # API
-curl https://llmgo.kxpms.cn/api/admin/data-lifecycle/stats \
+curl https://llmgateway.internal.example.com/api/admin/data-lifecycle/stats \
   -H "Authorization: Bearer $TOKEN"
 
 # Web 界面
-https://llmgo.kxpms.cn/admin/data-lifecycle
+https://llmgateway.internal.example.com/admin/data-lifecycle
 ```
 
 ### 归档冷数据（30-90天）

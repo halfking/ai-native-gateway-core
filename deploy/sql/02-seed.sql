@@ -478,7 +478,11 @@ INSERT INTO public.applications VALUES (9, 'default', 'default', 'default', 'kev
 INSERT INTO public.applications VALUES (10, 'default', 'wbing', 'wbing', 'admin', 'internal', true, NULL, '2026-06-18 07:11:36.682434+00', '2026-06-18 07:11:36.682434+00', NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.applications VALUES (11, 'default', 'caiyc', 'caiyc', 'admin', 'internal', true, NULL, '2026-06-18 07:20:00.819343+00', '2026-06-18 07:20:00.819343+00', NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.applications VALUES (12, 'default', 'default-app', 'default-app', 'applicant', 'internal', true, NULL, '2026-06-19 16:17:21.976265+00', '2026-06-19 16:17:21.976265+00', NULL, NULL) ON CONFLICT DO NOTHING;
-INSERT INTO public.key_applications VALUES ('6c795908-9d7b-418e-8b2b-6103feada5d3', '111.0.232.226', 'c3004ee0bfe5e36653f8c184fd5a76ed4ca455ad18d5a58341645b96dddf3e5d', 'test@kxpms.cn', '', 'approved', 6, 'auto-approved for test', 'admin', '2026-06-12 04:39:25.5682+00', '2026-06-13 04:38:44.818957+00', '2026-06-12 04:38:44.818957+00', '2026-06-12 04:39:25.5682+00') ON CONFLICT DO NOTHING;
+-- Test key_application entries. Production seed data is provided out-of-band.
+-- The actual key hash and applicant IP are intentionally NOT seeded here; create your own
+-- record via the admin UI or by supplying the values in your private seed file.
+-- See deploy/sql/03-private-seed.sql.example for the template (gitignored).
+INSERT INTO public.key_applications VALUES ('6c795908-9d7b-418e-8b2b-6103feada5d3', '__REDACTED_IP__', '__REDACTED_KEY_HASH__', 'redacted@example.com', '', 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.key_applications VALUES ('58cef7c8-db04-4625-b02b-abcecb28a331', '60.176.167.110', '1f21ade5ee98c0415f2174f30321dfe0eb0c4a39117df64c2ec2d5258b7b5808', 'admin@test.com', 'e2e-test', 'pending', NULL, NULL, NULL, NULL, '2026-06-24 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00', '2026-06-23 09:29:03.689041+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.maas_settings VALUES (1, 0.0100, 600, 'CNY', '2026-06-19 09:13:05.694408+00', '', '', '', '', 1500, 50, 80, 0.8200) ON CONFLICT DO NOTHING;
 INSERT INTO public.model_aliases VALUES (1, 1, 'gpt-4o', NULL, NULL, 'active', NULL, '2026-06-11 16:22:43.670498+00', '2026-06-11 16:22:43.670498+00', NULL) ON CONFLICT DO NOTHING;

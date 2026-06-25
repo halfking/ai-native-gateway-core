@@ -150,7 +150,7 @@ spec:
     spec:
       containers:
       - name: presidio
-        image: registry.kxpms.cn/kx-presidio-sidecar:v0.1  # 自建镜像
+        image: registry.internal.example.com/kx-presidio-sidecar:v0.1  # 自建镜像
         ports: [{ containerPort: 3004 }]
         resources:
           requests: { cpu: 200m, memory: 200Mi }

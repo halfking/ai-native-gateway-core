@@ -251,7 +251,7 @@ const clientGuides = computed((): ClientGuide[] => [
       '模型：填写网关支持的模型 ID（如 glm-4-flash），或使用 auto 开启自动路由',
       '保存后可在对话窗口选择该提供商下的模型',
     ],
-    mcpNote: 'MCP：设置 → MCP 服务器 → 导入配置。Memora 端点 https://mcp.kxpms.cn/memora/mcp，Header 填 Authorization: Bearer <MEMORA_API_KEY>（与 LLM 密钥不同，需在 ACC 申请 memora scope）。',
+    mcpNote: 'MCP：设置 → MCP 服务器 → 导入配置。Memora 端点 https://mcp.internal.example.com/memora/mcp，Header 填 Authorization: Bearer <MEMORA_API_KEY>（与 LLM 密钥不同，需在 ACC 申请 memora scope）。',
   },
   {
     id: 'cursor',
@@ -265,7 +265,7 @@ const clientGuides = computed((): ClientGuide[] => [
       'Add Custom Model：添加 glm-5.1、minimax-m3、deepseek-v4-pro 等（完整列表见下方「列出模型」示例）',
       '可选：请求头 X-Client-Profile: cursor、X-Request-Mode: agent 用于 Agent 模式优化',
     ],
-    mcpNote: 'MCP：Cursor Settings → MCP，可导入 mcp.kxpms.cn 的 acc/memora/trendradar 服务（需对应 scope 的 API Key）。',
+    mcpNote: 'MCP：Cursor Settings → MCP，可导入 mcp.internal.example.com 的 acc/memora/trendradar 服务（需对应 scope 的 API Key）。',
   },
   {
     id: 'claude',
@@ -274,7 +274,7 @@ const clientGuides = computed((): ClientGuide[] => [
     steps: [
       'Claude Desktop 本身走 Anthropic 账号；若需接入开轩 MCP 工具：',
       '编辑 claude_desktop_config.json（macOS: ~/Library/Application Support/Claude/）',
-      '添加 HTTP MCP：url https://mcp.kxpms.cn/memora/mcp，headers.Authorization = Bearer <MEMORA_API_KEY>',
+      '添加 HTTP MCP：url https://mcp.internal.example.com/memora/mcp，headers.Authorization = Bearer <MEMORA_API_KEY>',
       'Quit & Reopen Claude Desktop 生效（需 ≥ 1.0 版本）',
       `LLM 对话走网关：使用支持 OpenAI 协议的客户端，Base URL ${baseUrl.value}`,
     ],

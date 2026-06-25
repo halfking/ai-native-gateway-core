@@ -93,3 +93,46 @@ version.json
 web/public/version.json
 web-vue/tsconfig.tsbuildinfo
 traffic-replay-bin
+
+# ─────────────────────────────────────────────────────────────
+# 敏感信息防护 (2026-06-25 双仓库策略补充)
+# 详见 docs/REPO-MIRROR-POLICY.md
+# ─────────────────────────────────────────────────────────────
+
+# 环境变量 / 凭据文件 (拒绝追踪)
+.env
+.env.local
+.env.*.local
+.env.*.user
+.env.*.production
+*.env
+secrets.json
+secrets.yaml
+secrets.yml
+credentials.json
+credentials.yaml
+*.kubeconfig
+.kube/config
+kubeconfig
+
+# 私钥 / 证书
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_dsa
+id_ecdsa
+known_hosts
+
+# 部署脚本 (内含生产凭据)
+deploy/prod-*.sh
+deploy/prod-*.yaml
+deploy/prod-*.yml
+.env.*.k8s
+

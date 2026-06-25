@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# .githooks/pre-push — SI-LLM-Gateway 双仓库推送保护
+# ─────────────────────────────────────────────────────────────────────────────
+set -uo pipefail
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
+if [[ -z "$remote_name" || -z "$remote_url" ]]; then
+  exit 0
+fi
+
+# 仅对 github 远端做严格检查
+if [[ "$remote_url" != *"github.com"* ]]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+scanner="$repo_root/scripts/scan-secrets.sh"
+
+if [[ ! -x "$scanner" ]]; then
+  echo "⚠️  scan-secrets.sh not found or not executable: $scanner" >&2
+  echo "    Run: ./scripts/install-githooks.sh" >&2
+fi
+
+echo "🔍 GitHub push detected — running sensitive-info scan (strict mode)..."
+
+# 扫描 working tree 关键目录
+scan_failed=0
+if [[ -x "$scanner" ]]; then
+  baseline="$repo_root/scripts/scan-secrets.baseline"
+  baseline_arg=""
+  [[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
+  if ! "$scanner" --mode=strict --paths=. --tracked-only $baseline_arg --format=text >/tmp/scan-output.txt 2>&1; then
+    echo "❌ Sensitive findings detected:" >&2
+    head -50 /tmp/scan-output.txt
+    scan_failed=1
+  fi
+fi
+
+if [[ $scan_failed -eq 1 ]]; then
+  echo "" >&2
+  echo "🚫 Push to GitHub BLOCKED by pre-push hook." >&2
+  echo "" >&2
+  echo "   If you believe these are false positives:" >&2
+  echo "   1. Add an entry to scripts/scan-secrets.baseline with the file:line:category" >&2
+  echo "   2. Or run: git push --no-verify github  (use with extreme caution)" >&2
+  echo "" >&2
+  exit 1
+fi
+
+echo "✅ Scan clean — push to GitHub allowed"
+exit 0

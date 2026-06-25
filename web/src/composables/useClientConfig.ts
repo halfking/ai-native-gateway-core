@@ -68,7 +68,7 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   zcode: {
     providerUUID: 'kx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
     providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgo.kxpms.cn/v1',
+    baseURL: 'https://llmgateway.internal.example.com/v1',
     configPath: {
       macos: '~/.zcode/v2/config.json',
       windows: '%APPDATA%/zcode/v2/config.json',
@@ -79,7 +79,7 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   opencode: {
     providerUUID: 'kx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
     providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgo.kxpms.cn/v1',
+    baseURL: 'https://llmgateway.internal.example.com/v1',
     configPath: {
       macos: '~/.config/opencode/config.json',
       windows: '%APPDATA%/opencode/config.json',
@@ -90,7 +90,7 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   cursor: {
     providerUUID: '',
     providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgo.kxpms.cn/v1',
+    baseURL: 'https://llmgateway.internal.example.com/v1',
     configPath: {
       macos: 'Settings → Models → Add Custom Model',
       windows: 'Settings → Models → Add Custom Model',
@@ -101,7 +101,7 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   cherry_studio: {
     providerUUID: '',
     providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgo.kxpms.cn/v1',
+    baseURL: 'https://llmgateway.internal.example.com/v1',
     configPath: {
       macos: '设置 → 模型服务 → 添加自定义 → 导入 JSON',
       windows: '设置 → 模型服务 → 添加自定义 → 导入 JSON',
@@ -112,7 +112,7 @@ export const TOOL_TEMPLATES: Record<ToolId, ToolTemplate> = {
   roocode: {
     providerUUID: '',
     providerName: 'kaixuan-gateway',
-    baseURL: 'https://llmgo.kxpms.cn/v1',
+    baseURL: 'https://llmgateway.internal.example.com/v1',
     configPath: {
       macos: '~/.vscode/settings.json',
       windows: '%APPDATA%/Code/User/settings.json',
@@ -184,7 +184,7 @@ export function renderOpenCodeConfig(apiKey: string, models: string[]): any {
 export function renderCherryStudioConfig(apiKey: string, models: string[]): any {
   return {
     name: 'kaixuan-gateway',
-    api_base: 'https://llmgo.kxpms.cn/v1',
+    api_base: 'https://llmgateway.internal.example.com/v1',
     api_key: apiKey,
     models: models.map(m => ({ name: m, label: m })),
   }
@@ -235,7 +235,7 @@ if (Test-Path $SettingsPath) {
 }
 
 $Settings["roo-cline.openAiApiKey"] = "${apiKey}"
-$Settings["roo-cline.openAiBaseUrl"] = "https://llmgo.kxpms.cn/v1"
+$Settings["roo-cline.openAiBaseUrl"] = "https://llmgateway.internal.example.com/v1"
 $Settings["roo-cline.openAiModelId"] = "auto"
 
 $Settings | ConvertTo-Json -Depth 10 | Set-Content $SettingsPath -Encoding UTF8
@@ -274,7 +274,7 @@ if os.path.exists(path):
         except: settings = {}
 
 settings['roo-cline.openAiApiKey'] = '${apiKey}'
-settings['roo-cline.openAiBaseUrl'] = 'https://llmgo.kxpms.cn/v1'
+settings['roo-cline.openAiBaseUrl'] = 'https://llmgateway.internal.example.com/v1'
 settings['roo-cline.openAiModelId'] = 'auto'
 
 with open(path, 'w') as f:
@@ -344,7 +344,7 @@ echo "请重启 ZCode / OpenCode 使配置生效。"
 }
 
 export function getManualSteps(tool: ToolId, os: OS): string {
-  const baseURL = 'https://llmgo.kxpms.cn/v1'
+  const baseURL = 'https://llmgateway.internal.example.com/v1'
   if (tool === 'cursor') {
     return `Cursor 配置步骤：
 

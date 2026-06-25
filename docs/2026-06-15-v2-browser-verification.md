@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-14
 **Verifier**: browser-use (Chromium headless)
-**Target**: `https://llmgo.kxpms.cn` (production 184 k3s)
+**Target**: `https://llmgateway.internal.example.com` (production 184 k3s)
 **Image deployed**: `kx-llm-gateway-go:gitsha-6f593dd6-r2` (v2.0.1)
 **Credentials**: admin / `<ADMIN_PASSWORD_REDACTED>`
 
@@ -12,7 +12,7 @@
 
 | Step | Action | Result |
 |------|--------|--------|
-| 1 | Open `https://llmgo.kxpms.cn/admin/login` | ✅ Login page rendered |
+| 1 | Open `https://llmgateway.internal.example.com/admin/login` | ✅ Login page rendered |
 | 2 | Input "admin" into username field | ✅ Index 3, type=text |
 | 3 | Input `<ADMIN_PASSWORD_REDACTED>` into password field | ✅ Index 4, type=password |
 | 4 | Click 登录 button (Index 8) | ✅ Redirected to dashboard |

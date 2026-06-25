@@ -10,9 +10,9 @@
 ### ✅ 已验证的功能
 
 1. **服务健康状态** - ✅ PASS
-   - 184 k3s: https://llmgo.kxpms.cn/healthz → 200 OK
+   - 184 k3s: https://llmgateway.internal.example.com/healthz → 200 OK
    - 71 systemd: http://14.103.174.71:8781/healthz → 200 OK
-   - 56 nginx 转发: https://llm.kxpms.cn/healthz → 200 OK
+   - 56 nginx 转发: https://llmgateway.internal.example.com/healthz → 200 OK
 
 2. **Q3 路径基础功能** - ✅ PASS
    - OpenAI 格式成功调用 Anthropic 模型
@@ -87,7 +87,7 @@ LIMIT 10;
 
 **验证方法**: 配置 OpenAI 提供商后重新测试
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/messages \
+curl -X POST https://llmgateway.internal.example.com/v1/messages \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -138,7 +138,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/messages \
 
 **方法 1: 直接 API 调用**（已验证 ✅）
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "claude-opus-4-8",
@@ -155,7 +155,7 @@ kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=50 | grep "
 
 **方法 3: 查看响应头**
 ```bash
-curl -v https://llmgo.kxpms.cn/v1/chat/completions \
+curl -v https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '...'
 ```

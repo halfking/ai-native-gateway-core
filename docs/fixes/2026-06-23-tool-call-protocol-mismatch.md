@@ -216,7 +216,7 @@ make build
 kubectl -n pms-test logs deploy/llm-gateway-go-deployment -f | grep "tool.*not found"
 
 # 检查成功率
-curl -s https://llmgo.kxpms.cn/api/credentials/6 | jq '.recent_success_rate'
+curl -s https://llmgateway.internal.example.com/api/credentials/6 | jq '.recent_success_rate'
 ```
 
 ---

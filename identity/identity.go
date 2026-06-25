@@ -77,7 +77,7 @@ type ClientIdentity struct {
 	Fingerprint     ClientFingerprint
 	IdentityHash    string // 64-char hex (SHA-256)
 	VirtualClientID string // "vc-" + IdentityHash[:16]
-	VirtualIP       string // e.g. "10.42.17.33"
+	VirtualIP       string // e.g. "192.0.2.33"
 	VirtualMAC      string // e.g. "02:ab:cd:ef:12:34"
 }
 
@@ -97,7 +97,7 @@ func sha256Hex(data string) string {
 func deriveVirtualIP(h string) string {
 	b := hexBytes(h, 0, 6)
 	if len(b) < 3 {
-		return "10.1.1.1"
+		return "192.0.2.1"
 	}
 	clamp := func(v byte) int { v = v%254 + 1; return int(v) }
 	return fmt.Sprintf("%d.%d.%d.%d", virtualIPPrefix, clamp(b[0]), clamp(b[1]), clamp(b[2]))

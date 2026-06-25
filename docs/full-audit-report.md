@@ -204,18 +204,18 @@ Commits:
 
 ### 1. 查看压缩概览
 ```
-访问: https://llmgo.kxpms.cn/compression
+访问: https://llmgateway.internal.example.com/compression
 ```
 
 ### 2. 查看数据统计
 ```bash
-curl https://llmgo.kxpms.cn/api/admin/data-lifecycle/stats \
+curl https://llmgateway.internal.example.com/api/admin/data-lifecycle/stats \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 3. 预览清理
 ```bash
-curl -X POST https://llmgo.kxpms.cn/api/admin/data-lifecycle/cleanup/preview \
+curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cleanup/preview \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action": "archive", "from": "2026-03-01", "to": "2026-04-01"}'
@@ -295,7 +295,7 @@ cd /opt/llm-gateway-go
 - 删除工具: `scripts/delete-old-request-logs.sh`
 
 ### API 文档
-- Swagger: https://llmgo.kxpms.cn/swagger
+- Swagger: https://llmgateway.internal.example.com/swagger
 - 或查看源码注释: `admin/data_lifecycle.go`
 
 ---

@@ -1,7 +1,7 @@
 # 错误请求信息记录修复 - 生产验证报告
 
 **日期**: 2026-06-20  
-**环境**: 生产环境 (llmgo.kxpms.cn / 184 k3s)  
+**环境**: 生产环境 (llmgateway.internal.example.com / 184 k3s)  
 **验证人**: AI Agent  
 **状态**: ✅ 验证通过
 

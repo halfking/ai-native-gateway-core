@@ -3,12 +3,22 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, "postgres://llm_gateway:<DB_PASSWORD_REDACTED>@10.43.62.6:5432/llm_gateway?sslmode=disable")
+	// DSN is read from environment to avoid committing secrets into git.
+	// Set LLM_GATEWAY_TEST_PG_URL before running this binary. The value must be
+	// a PostgreSQL DSN with credentials, e.g. user/pass@host:port/dbname.
+	dsn := os.Getenv("LLM_GATEWAY_TEST_PG_URL")
+	if dsn == "" {
+		fmt.Println("LLM_GATEWAY_TEST_PG_URL not set; nothing to do.")
+		return
+	}
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		fmt.Printf("Pool error: %v\n", err)
 		return

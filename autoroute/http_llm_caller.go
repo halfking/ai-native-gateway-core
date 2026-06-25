@@ -14,7 +14,7 @@ package autoroute
 //
 // Wiring:
 //   buildAutoLLMCaller() in cmd/gateway/main.go reads:
-//     LLMGatewayAutoLLMEndpoint   (e.g. "https://llm.kxpms.cn/v1")
+//     LLMGatewayAutoLLMEndpoint   (e.g. "https://llmgateway.internal.example.com/v1")
 //     LLMGatewayAutoLLMApiKey    (e.g. "sk-...")
 //     LLMGatewayAutoLLMModel     (e.g. "claude-3-5-sonnet")
 //   When Endpoint is set, returns HTTPLlmCaller wrapped in
@@ -183,7 +183,7 @@ func (h *HTTPLlmCaller) Call(ctx context.Context, prompt string) (string, error)
 // LLM fallback is enabled. When disabled, returns (DisabledCaller{}, false).
 //
 // Env vars (all optional except Endpoint):
-//   LLMGatewayAutoLLMEndpoint  — base URL, e.g. https://llm.kxpms.cn/v1
+//   LLMGatewayAutoLLMEndpoint  — base URL, e.g. https://llmgateway.internal.example.com/v1
 //   LLMGatewayAutoLLMApiKey   — bearer token (or "env:OPENAI_API_KEY" to use $OPENAI_API_KEY)
 //   LLMGatewayAutoLLMModel    — model name (default: gpt-4o-mini)
 //   LLMGatewayAutoLLMTimeout  — seconds, default 3

@@ -103,7 +103,7 @@ ON CONFLICT (key) DO NOTHING;
 ### 方式 1: Admin API
 
 ```bash
-curl -X PUT https://llmgo.kxpms.cn/api/admin/settings \
+curl -X PUT https://llmgateway.internal.example.com/api/admin/settings \
   -H "Authorization: Bearer <token>" \
   -d '{
     "llmgw_slot_ttl_seconds": 43200

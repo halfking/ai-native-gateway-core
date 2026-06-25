@@ -9,7 +9,7 @@ Outputs:
 
 Usage:
   # Full diff (needs DB access via SSH):
-  python3 diff-pricing.py --admin-url https://llmgo.kxpms.cn --admin-token $API_KEY
+  python3 diff-pricing.py --admin-url https://llmgateway.internal.example.com --admin-token $API_KEY
 
   # Dry-run (SSOT only, no DB):
   python3 diff-pricing.py --dry-run
@@ -86,7 +86,7 @@ def dry_run():
 
 def main():
     p = argparse.ArgumentParser(description='Diff pricing SSOT vs DB')
-    p.add_argument('--admin-url', default='https://llmgo.kxpms.cn')
+    p.add_argument('--admin-url', default='https://llmgateway.internal.example.com')
     p.add_argument('--admin-token', default=os.environ.get('LLMGO_API_KEY', ''))
     p.add_argument('--out-dir', default='/tmp/pricing-diff')
     p.add_argument('--dry-run', action='store_true', help='SSOT summary only')

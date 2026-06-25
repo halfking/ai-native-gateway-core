@@ -8,12 +8,12 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCS_DIR="$REPO_ROOT/services/llm-gateway-go/docs/pricing"
 
 # 凭据
-SSH_PASS="${K8S_SSH_PASSWORD:-Kaixuan2025&9900#}"
+SSH_PASS="${K8S_SSH_PASSWORD:-__REDACTED_SSH_PASSWORD__}"
 SSH_HOST="${SSH_HOST:-root@14.103.112.184}"
 POSTGRES_POD="llm-gateway-pg-58cbbc4559-qq2rh"
 PSQL_USER="llm_gateway"
 PSQL_DB="llm_gateway"
-LLMGO_URL="https://llmgo.kxpms.cn"
+LLMGO_URL="https://llmgateway.internal.example.com"
 
 # 0. 凭据检查
 if ! command -v sshpass >/dev/null; then

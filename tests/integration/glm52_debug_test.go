@@ -32,7 +32,7 @@ func TestGLM52RealRequest(t *testing.T) {
 	}{
 		{
 			name:        "glm-5.2_openai_format_non_stream",
-			endpoint:    "https://llm.kxpms.cn/v1/chat/completions",
+			endpoint:    "https://llmgateway.internal.example.com/v1/chat/completions",
 			model:       "glm-5.2",
 			contentType: "application/json",
 			authHeader:  "Bearer ", // Will be filled from env
@@ -40,7 +40,7 @@ func TestGLM52RealRequest(t *testing.T) {
 		},
 		{
 			name:        "glm-5.2_openai_format_stream",
-			endpoint:    "https://llm.kxpms.cn/v1/chat/completions",
+			endpoint:    "https://llmgateway.internal.example.com/v1/chat/completions",
 			model:       "glm-5.2",
 			contentType: "application/json",
 			authHeader:  "Bearer ",

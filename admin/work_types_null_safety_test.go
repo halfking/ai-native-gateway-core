@@ -23,7 +23,7 @@ func readWorkTypesSource(t *testing.T) string {
 }
 
 // TestHandleStats_NullSafeIsAutoFilter guards the 2026-06-24 fix that
-// addressed the heatmap "暂无数据" bug on llmgo.kxpms.cn/routing-v2.
+// addressed the heatmap "暂无数据" bug on llmgateway.internal.example.com/routing-v2.
 // The work-types endpoint has the same anti-pattern in three places —
 // explicit-model branch `is_auto_request = FALSE` is NULL-unsafe and
 // silently drops every historical request_logs row where the writer

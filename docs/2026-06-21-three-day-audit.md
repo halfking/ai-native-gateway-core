@@ -141,7 +141,7 @@ UMB §Round 编号已固定: "Round 48 = Round 24 + 24, 第二轮 L1 审计"
 
 | 联动 | 状态 | 审计点 |
 |------|------|--------|
-| ACC → llm-gateway-go (`X-Gw-Session-Id`) | `5012ef0e` 已部署 | 184 nginx acc.kxpms.cn → ACC → gateway e2e 验证 |
+| ACC → llm-gateway-go (`X-Gw-Session-Id`) | `5012ef0e` 已部署 | 184 nginx acc.internal.example.com → ACC → gateway e2e 验证 |
 | llm-gateway-go → kxmemory (SmartSearch) | `1d8db55d` env 已加 | kxmemory 6/20-6/21 也有未提交变更 |
 | Deploy 序号 | `.deploy_seq = 457`, 184 实际 image `gitsha-8cc5b8d7` | UMB 提「seq-313」, 差 144 次, 2 天未记录 |
 | 71 host docker llm-gateway-go | `1f60e8ef` (6/14) | 落后 5+ commit (到 8cc5b8d7 6/21) |

@@ -79,7 +79,7 @@ bash scripts/apply-pricing.sh  # 登录 admin → POST /api/pricing/import + psq
 
 # 5. 校验
 curl -sk -H "Authorization: Bearer $API_KEY" \
-  "https://llmgo.kxpms.cn/api/pricing/summary" | jq .
+  "https://llmgateway.internal.example.com/api/pricing/summary" | jq .
 ```
 
 ## 安全 & 凭据
