@@ -493,77 +493,11 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($62 AS text[]), CAST($63 AS jsonb), $64,
 		$65,
 		CAST($66 AS jsonb)
-			)
-				ON CONFLICT (request_id) DO UPDATE SET
-				ts = EXCLUDED.ts,
-			tenant_id = EXCLUDED.tenant_id,
-			application_id = EXCLUDED.application_id,
-			api_key_id = EXCLUDED.api_key_id,
-			end_user_id = EXCLUDED.end_user_id,
-			client_model = EXCLUDED.client_model,
-			outbound_model = EXCLUDED.outbound_model,
-			credential_id = EXCLUDED.credential_id,
-			provider_id = EXCLUDED.provider_id,
-			canonical_id = EXCLUDED.canonical_id,
-			client_profile = EXCLUDED.client_profile,
-			request_mode = EXCLUDED.request_mode,
-			prompt_tokens = EXCLUDED.prompt_tokens,
-			completion_tokens = EXCLUDED.completion_tokens,
-			cache_read_tokens = EXCLUDED.cache_read_tokens,
-			cache_write_tokens = EXCLUDED.cache_write_tokens,
-			total_tokens = EXCLUDED.total_tokens,
-			cost_usd = EXCLUDED.cost_usd,
-			cost_display = EXCLUDED.cost_display,
-			cost_currency = EXCLUDED.cost_currency,
-			latency_ms = EXCLUDED.latency_ms,
-			success = EXCLUDED.success,
-			request_status = EXCLUDED.request_status,
-			error_kind = CASE
-				WHEN EXCLUDED.success = TRUE THEN NULL
-				ELSE EXCLUDED.error_kind
-			END,
-			search_text = EXCLUDED.search_text,
-			identity_hash = EXCLUDED.identity_hash,
-			response_checksum = EXCLUDED.response_checksum,
-			transform_rule_id = EXCLUDED.transform_rule_id,
-			egress_protocol = EXCLUDED.egress_protocol,
-			failure_stage = EXCLUDED.failure_stage,
-			failure_detail_code = EXCLUDED.failure_detail_code,
-			request_preview = EXCLUDED.request_preview,
-			transform_summary = EXCLUDED.transform_summary,
-			response_preview = EXCLUDED.response_preview,
-			request_body = EXCLUDED.request_body,
-			response_body = EXCLUDED.response_body,
-			stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
-			stream_chunk_count = EXCLUDED.stream_chunk_count,
-			stream_done_received = EXCLUDED.stream_done_received,
-			stream_interrupted = EXCLUDED.stream_interrupted,
-			usage_source = EXCLUDED.usage_source,
-			gw_session_id = EXCLUDED.gw_session_id,
-			gw_task_id = EXCLUDED.gw_task_id,
-			api_key_prefix = EXCLUDED.api_key_prefix,
-			api_key_owner_user = EXCLUDED.api_key_owner_user,
-			application_code = EXCLUDED.application_code,
-			is_auto_request = EXCLUDED.is_auto_request,
-			task_type = EXCLUDED.task_type,
-			auto_profile = EXCLUDED.auto_profile,
-			auto_decision = EXCLUDED.auto_decision,
-			auto_confidence = EXCLUDED.auto_confidence,
-			work_type = EXCLUDED.work_type,
-			credits_charged = EXCLUDED.credits_charged,
-			parent_request_id = EXCLUDED.parent_request_id,
-			compression_reason = EXCLUDED.compression_reason,
-			compression_strategy = EXCLUDED.compression_strategy,
-			compression_meta = EXCLUDED.compression_meta,
-			outbound_body = EXCLUDED.outbound_body,
-			outbound_msg_count = EXCLUDED.outbound_msg_count,
-			outbound_token_est = EXCLUDED.outbound_token_est,
-			outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
-		quality_flags = EXCLUDED.quality_flags,
-		quality_fix_actions = EXCLUDED.quality_fix_actions,
-		quality_score = EXCLUDED.quality_score,
-		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
-		tool_calls = EXCLUDED.tool_calls
+	)
+	-- 2026-06-26: Removed ON CONFLICT clause because the unique constraint is
+	-- (request_id, ts) where ts=now() differs each INSERT, so UPSERT never matches.
+	-- The first INSERT creates the initial row, subsequent updates use
+	-- updateRequestLog() which targets the earliest row by (request_id) only.
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -902,27 +836,34 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		// 2026-06-26: Disable fallback INSERT to prevent duplicate records.
-		// The root cause is that the UPSERT uses (request_id, ts) as conflict
-		// key, where ts=now() differs each time, creating multiple rows for
-		// the same request_id. The UPDATE CTE searches for the latest row by
-		// DESC order, but if a concurrent fallback INSERT created a newer row,
-		// the UPDATE matches zero rows and triggers another fallback, creating
-		// an infinite loop.
+		// 2026-06-26: Re-enabled fallback INSERT after the duplicate-row fix.
 		//
-		// Disabling fallback INSERT stops the multiplication. The UPDATE query
-		// below is also improved to target the earliest row (ASC order) instead
-		// of the latest, ensuring it always finds the initial INSERT row.
+		// History: The original code issued a blind INSERT here, which
+		// produced up to 5 duplicate rows per request_id when retry storms
+		// generated concurrent INSERTs/UPDATEs (audit b2f52a3a). The audit
+		// fixed that by deleting the INSERT and logging a warning; the
+		// trade-off was that genuinely missing initial rows caused success
+		// records to be silently dropped — exactly the symptom reported
+		// 2026-06-26 for minimax-m3 from kaixuan: request_logs contained
+		// only failure rows because every retry storm's UPDATE missed its
+		// INSERT.
 		//
-		// If we truly have no initial row (e.g., a late-arriving async success
-		// after gateway restart), we log a warning but do not create duplicate
-		// rows. The request will be missing from request_logs, but that's
-		// better than 5 duplicate rows all stuck in 'in_progress'.
-		slog.Warn("telemetry update matched zero rows, skipping fallback insert",
+		// New behaviour: route through upsertRequestLogFallback(), which
+		// uses ON CONFLICT (request_id) DO UPDATE and is guarded by
+		// `request_status='in_progress'` so a later final-state row cannot
+		// be downgraded by an earlier in-flight update. Only the
+		// "final-state" columns (success / request_status / latency_ms /
+		// error_kind / tokens / cost / usage_source / response_* /
+		// failure_*) are touched; initial metadata (client_model,
+		// request_body, gw_session_id, …) is preserved from the original
+		// row when one exists. When no initial row exists, the fallback
+		// INSERT creates a new one populated only with what the UPDATE
+		// knew — body fields are NULL.
+		slog.Warn("telemetry update matched zero rows, falling back to upsert",
 			"request_id", entry.RequestID,
 			"success", entry.Success,
 			"request_status", strPtrValue(entry.RequestStatus))
-		return tx.Commit(ctx)
+		return c.upsertRequestLogFallback(entry)
 	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
@@ -958,6 +899,197 @@ func intptr(v int) *int           { return &v }
 func floatptr(v float64) *float64 { return &v }
 func strptr(v string) *string     { return &v }
 func boolptr(v bool) *bool        { return &v }
+
+// upsertRequestLogFallback (2026-06-26, replaces the disabled-by-audit fallback INSERT)
+// handles the case where updateRequestLog's UPDATE matched 0 rows. This happens when:
+//  1. The initial INSERT never landed (e.g. tx rolled back under load, gateway
+//     restarted before the INSERT flushed, or a concurrent retry's INSERT raced
+//     with the UPDATE).
+//  2. The UPDATE CTE's `WHERE rl.ts = earliest.ts` precision didn't match the
+//     stored timestamp because pgx's `now()` and the CTE's `now()` ran in
+//     different statements (the UPDATE path uses one statement, the INSERT path
+//     another; under burst load they may straddle a microsecond boundary).
+//
+// Behaviour:
+//   - When no row exists for request_id: INSERT a new row populated only with the
+//     "final-state" fields the UPDATE knew. Body / session / task / identity
+//     columns are NULL — we can't reconstruct them. The row's request_status
+//     matches entry.RequestStatus (success / failure / in_progress).
+//   - When a row already exists for request_id: ON CONFLICT DO UPDATE touches
+//     only the "final-state" columns, and only when the existing row is still
+//     'in_progress'. This prevents a delayed update from downgrading a row
+//     that a later, fresher update already finalised — the gate is the
+//     `request_logs.request_status = 'in_progress'` predicate. Combined with
+//     updateRequestLog's COALESCE-based "don't overwrite metadata" guards,
+//     the merge is monotonic: request_status can only transition from
+//     in_progress → success / failure, never the other way around.
+//
+// The fallback never introduces a duplicate row for the same request_id,
+// even under the worst concurrent retry storm, because ON CONFLICT
+// (request_id) is the unique key — and the unique index added by
+// db/migrations/301_request_logs_unique_request_id_only.sql is the
+// last line of defence against application bugs that bypass this helper.
+func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
+	if c.dbPool == nil {
+		return errNoTelemetryDB
+	}
+	sanitizeRequestLogEntry(entry)
+	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Derive the final request_status if the caller didn't set it explicitly.
+	// ResolveRequestStatus already handles the success / failure / in_progress
+	// trichotomy; the fallback may receive an entry that came in via
+	// updateRequestLog without a normalised status field.
+	normalizeRequestStatus(entry)
+
+	_, err := c.dbPool.Exec(ctx, `
+		INSERT INTO request_logs (
+			request_id, ts, tenant_id,
+			client_model, outbound_model,
+			credential_id, provider_id, canonical_id,
+			client_profile, request_mode,
+			prompt_tokens, completion_tokens,
+			cache_read_tokens, cache_write_tokens, total_tokens,
+			cost_usd, cost_display, cost_currency,
+			latency_ms, success, request_status, error_kind,
+			identity_hash, response_checksum,
+			transform_rule_id, egress_protocol,
+			failure_stage, failure_detail_code,
+			request_preview, transform_summary, response_preview,
+			request_body, response_body,
+			stream_first_chunk_ms, stream_chunk_count,
+			stream_done_received, stream_interrupted,
+			usage_source,
+			gw_session_id, gw_task_id,
+			api_key_prefix, api_key_owner_user, application_code,
+			is_auto_request, task_type, auto_profile, auto_decision, auto_confidence,
+			work_type, credits_charged,
+			upstream_finish_reason
+		) VALUES (
+			$1, now(), $2,
+			COALESCE($3, ''), COALESCE($4, ''),
+			$5, $6, $7,
+			COALESCE(NULLIF($8, ''), NULL), COALESCE(NULLIF($9, ''), NULL),
+			$10, $11,
+			$12, $13, $14,
+			$15, $16, $17,
+			$18, $19, $20, $21,
+			COALESCE(NULLIF($22, ''), NULL), COALESCE(NULLIF($23, ''), NULL),
+			COALESCE(NULLIF($24, ''), NULL), COALESCE(NULLIF($25, ''), NULL),
+			COALESCE(NULLIF($26, ''), NULL), COALESCE(NULLIF($27, ''), NULL),
+			COALESCE(NULLIF($28, ''), NULL), COALESCE(NULLIF($29, ''), NULL), COALESCE(NULLIF($30, ''), NULL),
+			CAST(NULLIF($31, '') AS jsonb), CAST(NULLIF($32, '') AS jsonb),
+			$33, $34,
+			$35, $36,
+			COALESCE(NULLIF($37, ''), NULL),
+			COALESCE(NULLIF($38, ''), NULL), COALESCE(NULLIF($39, ''), NULL),
+			COALESCE(NULLIF($40, ''), NULL), COALESCE(NULLIF($41, ''), NULL), COALESCE(NULLIF($42, ''), NULL),
+			$43, COALESCE(NULLIF($44, ''), NULL), COALESCE(NULLIF($45, ''), NULL),
+			COALESCE(NULLIF($46, ''), NULL), $47,
+			COALESCE(NULLIF($48, ''), NULL), $49,
+			COALESCE(NULLIF($50, ''), NULL)
+		)
+		ON CONFLICT (request_id) DO UPDATE SET
+			success = CASE
+				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.success
+				ELSE request_logs.success
+			END,
+			request_status = CASE
+				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.request_status
+				ELSE request_logs.request_status
+			END,
+			error_kind = CASE
+				WHEN request_logs.request_status = 'in_progress'
+				     AND EXCLUDED.success = TRUE THEN NULL
+				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.error_kind
+				ELSE request_logs.error_kind
+			END,
+			latency_ms = CASE
+				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.latency_ms
+				ELSE request_logs.latency_ms
+			END,
+			prompt_tokens = COALESCE(request_logs.prompt_tokens, EXCLUDED.prompt_tokens),
+			completion_tokens = COALESCE(request_logs.completion_tokens, EXCLUDED.completion_tokens),
+			cache_read_tokens = COALESCE(request_logs.cache_read_tokens, EXCLUDED.cache_read_tokens),
+			cache_write_tokens = COALESCE(request_logs.cache_write_tokens, EXCLUDED.cache_write_tokens),
+			total_tokens = COALESCE(request_logs.total_tokens, EXCLUDED.total_tokens),
+			cost_usd = COALESCE(request_logs.cost_usd, EXCLUDED.cost_usd),
+			cost_display = COALESCE(request_logs.cost_display, EXCLUDED.cost_display),
+			cost_currency = COALESCE(request_logs.cost_currency, EXCLUDED.cost_currency),
+			usage_source = COALESCE(NULLIF(request_logs.usage_source, ''), EXCLUDED.usage_source),
+			stream_first_chunk_ms = COALESCE(request_logs.stream_first_chunk_ms, EXCLUDED.stream_first_chunk_ms),
+			stream_chunk_count = COALESCE(request_logs.stream_chunk_count, EXCLUDED.stream_chunk_count),
+			stream_done_received = COALESCE(request_logs.stream_done_received, EXCLUDED.stream_done_received),
+			stream_interrupted = COALESCE(request_logs.stream_interrupted, EXCLUDED.stream_interrupted),
+			upstream_finish_reason = COALESCE(NULLIF(request_logs.upstream_finish_reason, ''), EXCLUDED.upstream_finish_reason),
+			failure_stage = COALESCE(NULLIF(request_logs.failure_stage, ''), EXCLUDED.failure_stage),
+			failure_detail_code = COALESCE(NULLIF(request_logs.failure_detail_code, ''), EXCLUDED.failure_detail_code),
+			response_preview = COALESCE(NULLIF(request_logs.response_preview, ''), EXCLUDED.response_preview),
+			response_body = COALESCE(request_logs.response_body, EXCLUDED.response_body),
+			identity_hash = COALESCE(NULLIF(request_logs.identity_hash, ''), EXCLUDED.identity_hash)
+		-- NOTE: do NOT update client_model, request_body, gw_session_id, gw_task_id,
+		-- api_key_*, application_code, is_auto_request, task_type, auto_*,
+		-- work_type, credits_charged, request_preview, transform_summary,
+		-- transform_rule_id, egress_protocol, request_mode, client_profile here:
+		-- those are populated by recordInitialRequestLog before the upstream call
+		-- and the fallback INSERT preserves them. Without the omission, a delayed
+		-- fallback would clobber the original request's metadata.
+	`,
+		entry.RequestID,                         // $1
+		nonEmpty(entry.TenantID, "default"),     // $2
+		entry.ClientModel,                       // $3 (only used on INSERT branch)
+		entry.OutboundModel,                     // $4 (only used on INSERT branch)
+		entry.CredentialID,                      // $5
+		entry.ProviderID,                        // $6
+		entry.CanonicalID,                       // $7
+		strPtrValue(entry.ClientProfile),        // $8
+		strPtrValue(entry.RequestMode),          // $9
+		entry.PromptTokens,                      // $10
+		entry.CompletionTokens,                  // $11
+		entry.CacheReadTokens,                   // $12
+		entry.CacheWriteTokens,                  // $13
+		totalTokens,                             // $14
+		entry.CostUSD,                           // $15
+		entry.CostDisplay,                       // $16
+		entry.CostCurrency,                      // $17
+		entry.LatencyMs,                         // $18
+		boolptr(entry.Success),                  // $19
+		strPtrValue(entry.RequestStatus),        // $20
+		entry.ErrorKind,                         // $21
+		strPtrValue(entry.IdentityHash),         // $22
+		strPtrValue(entry.ResponseChecksum),     // $23
+		strPtrValue(entry.TransformRuleID),      // $24
+		strPtrValue(entry.EgressProtocol),       // $25
+		strPtrValue(entry.FailureStage),         // $26
+		strPtrValue(entry.FailureDetailCode),    // $27
+		strPtrValue(entry.RequestPreview),       // $28
+		strPtrValue(entry.TransformSummary),     // $29
+		strPtrValue(entry.ResponsePreview),      // $30
+		strPtrValue(entry.RequestBody),          // $31 (only used on INSERT branch)
+		strPtrValue(entry.ResponseBody),         // $32 (only used on INSERT branch)
+		entry.StreamFirstChunkMs,                // $33
+		entry.StreamChunkCount,                  // $34
+		entry.StreamDoneReceived,                // $35
+		entry.StreamInterrupted,                 // $36
+		nonEmptyPtr(entry.UsageSource, ""),      // $37
+		strPtrValue(entry.GwSessionID),          // $38 (only used on INSERT branch)
+		strPtrValue(entry.GwTaskID),             // $39 (only used on INSERT branch)
+		strPtrValue(entry.APIKeyPrefix),         // $40 (only used on INSERT branch)
+		strPtrValue(entry.APIKeyOwnerUser),      // $41 (only used on INSERT branch)
+		strPtrValue(entry.ApplicationCode),      // $42 (only used on INSERT branch)
+		entry.IsAutoRequest,                     // $43
+		strPtrValue(entry.TaskType),             // $44
+		strPtrValue(entry.AutoProfile),          // $45
+		strPtrValue(entry.AutoDecision),         // $46 (only used on INSERT branch)
+		entry.AutoConfidence,                    // $47
+		strPtrValue(entry.WorkType),             // $48
+		entry.CreditsCharged,                    // $49
+		strPtrValue(entry.UpstreamFinishReason), // $50
+	)
+	return err
+}
 
 func nonEmpty(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
