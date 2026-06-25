@@ -16,23 +16,16 @@ const windowEntries = ref<CallEntry[]>([])
 const windowSource = ref<'redis' | 'request_logs'>('redis')
 const windowLoading = ref(false)
 
-// ── 2026-06-23: 详情页 4-tab 化重构 ────────────────────────────────────
-// 4 tab = 概览 / 模型 / 监控 / 历史. 抽到 view-local const 不入 store,
-// 因为只有 drawer 内需要,生命周期 = drawer open.
-type DetailTab = 'overview' | 'models' | 'monitoring' | 'history'
+// ── 2026-06-26: 详情页 3-tab 重构（合并模型+监控为「模型」）─────────────
+// 3 tab = 基础信息 / 模型 / 请求数据. 「模型」tab 内部采用左列表+右详情布局.
+// 历史 tab 内容（状态变化历史 + 路由决策）整合进「请求数据」tab.
+type DetailTab = 'overview' | 'models' | 'requests'
 const detailActiveTab = ref<DetailTab>('overview')
 const detailTabs: SegTab[] = [
-  { value: 'overview',   label: '概览' },
-  { value: 'models',     label: '模型可用性' },
-  { value: 'monitoring', label: '监控' },
-  { value: 'history',    label: '历史' },
+  { value: 'overview',  label: '基础信息' },
+  { value: 'models',    label: '模型' },
+  { value: 'requests',  label: '请求数据' },
 ]
-// 切 tab 时也把 selectedModel 重置 (历史 tab 仍可看),避免混乱.
-watch(detailActiveTab, (newTab) => {
-  if (newTab !== 'monitoring' && newTab !== 'history') {
-    // keep selectedModel — 监控/历史 tab 仍依赖
-  }
-})
 // 打开 detail 时默认到第一个 tab
 watch(selectedCred, (newVal) => {
   if (newVal) detailActiveTab.value = 'overview'
@@ -302,6 +295,54 @@ function brokenPreview(c: CredentialMonitorSummary): string[] {
   return brokenModels(c).slice(0, 3).map(m => m.raw_model_name)
 }
 
+// ── 2026-06-26: 当前选中模型对象（右侧详情用）─────────────────────────────
+const currentModel = computed<CredentialModelStatus | null>(() => {
+  if (!selectedCred.value || !selectedModel.value) return null
+  return (selectedCred.value.models || []).find(m => m.raw_model_name === selectedModel.value) ?? null
+})
+
+// ── 2026-06-26: 3 个状态图标点击处理 ──────────────────────────────────────
+// 图标 1: 手工禁用 — 对应整凭据 manual_disabled（不是 per-model）
+// 图标 2: 手工启动 — 对应 per-model manual_offline
+// 图标 3: 自动   — 自动探测控制
+//
+// 点击语义：
+//   1. 手工禁用（非激活态）→ 弹出确认对话框 → set manual_disabled=true
+//   1. 手工禁用（已激活态）→ 弹出确认对话框 → clear manual_disabled
+//   2. 手工启动（非激活态）→ 弹出确认对话框 → toggle model offline（manual_offline）
+//   2. 手工启动（已激活态）→ 弹出确认对话框 → toggle model online
+//   3. 自动（非激活态）     → 弹出确认对话框 → 解除 manual_offline（让自动接管）
+function handleManualDisableClick() {
+  if (!selectedCred.value || !currentModel.value) return
+  if (selectedCred.value.manual_disabled) {
+    // 当前已禁用 → 询问是否解除
+    openClearDisabledDialog()
+  } else {
+    // 当前未禁用 → 询问是否禁用整凭据
+    openSetManualDisabledDialog(true)
+  }
+}
+
+function handleManualOnlineClick() {
+  if (!currentModel.value) return
+  if (currentModel.value.binding_unavailable_reason === 'manual_offline') {
+    // 当前是 manual_offline → 弹确认切换回 auto
+    openToggleDialog(currentModel.value, 'online')
+  } else {
+    // 当前不是 manual_offline → 弹确认设为 offline
+    openToggleDialog(currentModel.value, 'offline')
+  }
+}
+
+function handleAutoClick() {
+  if (!currentModel.value) return
+  // 自动状态下点击：如果是 manual_offline 则弹 online 切换回自动
+  if (currentModel.value.binding_unavailable_reason === 'manual_offline') {
+    openToggleDialog(currentModel.value, 'online')
+  }
+  // 其他自动场景下按钮实际为禁用态，所以通常不会进入这里
+}
+
 function openDetail(cred: CredentialMonitorSummary) {
   selectedCred.value = cred
   // default the window to the first broken model, else the lowest-rate model
@@ -354,7 +395,30 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
   const labels = Object.keys(errorKinds)
   const data = Object.values(errorKinds)
 
-  if (labels.length === 0) return
+  // 🆕 2026-06-26: 无错误时显示绿色单扇形 "全部健康"，避免空白
+  if (labels.length === 0) {
+    errorPieChart = new Chart(canvas, {
+      type: 'pie',
+      data: {
+        labels: ['全部健康'],
+        datasets: [{
+          data: [1],
+          backgroundColor: ['#10b981'], // var(--success)
+          borderColor: ['rgba(16, 185, 129, 0.4)'],
+          borderWidth: 2,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: 'right' },
+          title: { display: true, text: '错误类型分布 · 全部健康' },
+        },
+      },
+    })
+    return
+  }
 
   errorPieChart = new Chart(canvas, {
     type: 'pie',
@@ -774,10 +838,10 @@ onUnmounted(() => {
         </div>
 
         <div class="drawer-body">
-          <!-- ════════════ Tab 1: 概览 (Overview) ════════════ -->
+          <!-- ════════════ Tab 1: 基础信息 (Overview) ════════════ -->
           <div v-if="detailActiveTab === 'overview'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div class="drawer-section">
-              <div class="drawer-section-title">状态概览</div>
+              <div class="drawer-section-title">基础信息 · 凭据统计</div>
               <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
                 <div>
                   <label class="field-label">可用性</label>
@@ -804,6 +868,26 @@ onUnmounted(() => {
                 <div>
                   <label class="field-label">总请求数</label>
                   <span class="mono-sm">{{ selectedCred.total_requests }}</span>
+                </div>
+                <div>
+                  <label class="field-label">模型总数</label>
+                  <span class="mono-sm">{{ modelCount(selectedCred).total }}</span>
+                </div>
+                <div>
+                  <label class="field-label">可用模型数</label>
+                  <span class="mono-sm">{{ modelCount(selectedCred).avail }} / {{ modelCount(selectedCred).total }}</span>
+                </div>
+                <div>
+                  <label class="field-label">聚合成功率</label>
+                  <span class="rate-cell" :class="rateClass(selectedCred.aggregated_success_rate)">
+                    {{ rateText(selectedCred.aggregated_success_rate) }}
+                  </span>
+                </div>
+                <div>
+                  <label class="field-label">broken 模型数</label>
+                  <span :class="brokenModels(selectedCred).length > 0 ? 'badge badge-red' : 'badge badge-gray'">
+                    {{ brokenModels(selectedCred).length }}
+                  </span>
                 </div>
               </div>
               <div v-if="selectedCred.state_reason_detail" class="cell-sub" style="margin-top:8px">
@@ -835,162 +919,175 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- ════════════ Tab 2: 模型可用性 (Models) ════════════ -->
-          <div v-else-if="detailActiveTab === 'models'">
-            <div class="drawer-section">
-              <div class="drawer-section-title">
-                模型可用性 ({{ (selectedCred.models || []).length }})
-                <span class="cell-sub" style="margin-left:8px">点击行联动查看滑动窗口</span>
-              </div>
-              <div v-if="!(selectedCred.models || []).length" class="cell-muted">无模型</div>
-              <div v-else style="overflow-x:auto">
-                <table class="model-table">
-                  <thead>
-                    <tr>
-                      <th>模型</th>
-                      <th>总状态</th>
-                      <th>可用</th>
-                      <th>来源</th>
-                      <th>延迟 P95</th>
-                      <th>成功率</th>
-                      <th>样本</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="m in selectedCred.models" :key="m.raw_model_name"
-                        :class="{
-                          'model-row-selected': m.raw_model_name === selectedModel,
-                          'model-row-declared': m.data_source === 'declared',
-                        }"
-                        :title="m.model_disabled_reason || ''"
-                        @click="selectModel(m.raw_model_name)">
-                      <td>
-                        <code class="mono-sm">{{ m.raw_model_name }}</code>
-                        <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
-                      </td>
-                      <td>
-                        <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
-                      </td>
-                      <td>
-                        <span v-if="m.offer_available && m.binding_available" style="color:var(--success)">✓</span>
-                        <span v-else style="color:var(--danger)">✗</span>
-                      </td>
-                      <td>
-                        <span class="source-chip" :class="`source-${m.data_source}`">{{ m.data_source }}</span>
-                        <span v-if="m.last_used_at" class="cell-sub" style="margin-left:4px;font-size:10px">
-                          {{ m.total_calls }}次
-                        </span>
-                      </td>
-                      <td>
-                        <span v-if="m.p95_latency_ms == null" class="cell-muted">N/A</span>
-                        <span v-else class="mono-sm" :class="p95Class(m.p95_latency_ms)">
-                          {{ m.p95_latency_ms }}ms
-                          <span class="cell-sub" style="font-size:9px;margin-left:2px">({{ m.p95_source === 'bg_rollup' ? 'bg' : 'live' }})</span>
-                        </span>
-                      </td>
-                      <td><span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span></td>
-                      <td class="cell-sub">{{ m.recent_samples }}</td>
-                      <td @click.stop>
-                        <button
-                          v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
-                          class="btn btn-xs btn-ghost"
-                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                          :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
-                          @click="openToggleDialog(m, 'offline')"
-                        >🔴 下线</button>
-                        <button
-                          v-else-if="m.binding_unavailable_reason === 'manual_offline'"
-                          class="btn btn-xs btn-ghost"
-                          :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
-                          title="恢复后下一轮自动探测（~10 min）会重新评估"
-                          @click="openToggleDialog(m, 'online')"
-                        >🟢 上线</button>
-                        <span
-                          v-else
-                          class="cell-muted"
-                          :title="`由自动探测控制: ${m.binding_unavailable_reason || '—'}（不可手动）`"
-                        >auto</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <!-- ════════════ Tab 3: 监控 (Monitoring) ════════════ -->
-          <div v-else-if="detailActiveTab === 'monitoring'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div class="drawer-section">
-              <div class="drawer-section-title">
-                滑动窗口 (最近 1 小时)
-                <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
-                  {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
-                </span>
-              </div>
-              <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
-              <div v-else>
-                <div style="margin-bottom:8px">
-                  <label class="field-label">模型:</label>
-                  <code class="mono-sm">{{ selectedModel }}</code>
+          <!-- ════════════ Tab 2: 模型 (Models — 左列表 + 右详情) ════════════ -->
+          <div v-else-if="detailActiveTab === 'models'" class="models-tab">
+            <div class="models-tab-grid">
+              <!-- 左侧：简要模型列表 -->
+              <div class="model-list-panel">
+                <div class="drawer-section-title">
+                  模型列表 ({{ (selectedCred.models || []).length }})
+                  <span class="cell-sub" style="margin-left:8px;font-weight:400">点击查看详情</span>
                 </div>
-                <div v-if="windowLoading">加载中...</div>
-                <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
-                <div v-else>
-                  <div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0">
-                    <div
-                      v-for="(e, i) in windowEntries.slice(0, 100)"
-                      :key="i"
-                      :style="{
-                        width: '4px',
-                        height: '40px',
-                        background: e.ok ? '#10b981' : '#ef4444',
-                        opacity: 0.8,
+                <div v-if="!(selectedCred.models || []).length" class="cell-muted" style="padding:12px">无模型</div>
+                <ul v-else class="model-list">
+                  <li v-for="m in selectedCred.models" :key="m.raw_model_name"
+                      :class="{
+                        active: m.raw_model_name === selectedModel,
+                        declared: m.data_source === 'declared',
                       }"
-                      :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"
-                    ></div>
+                      :title="m.model_disabled_reason || m.raw_model_name"
+                      @click="selectModel(m.raw_model_name)">
+                    <div class="model-list-row1">
+                      <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
+                      <code class="model-list-name">{{ m.raw_model_name }}</code>
+                    </div>
+                    <div class="model-list-row2">
+                      <span class="model-list-rate">
+                        <span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span>
+                        <span class="cell-sub">{{ m.recent_samples ?? 0 }}样本</span>
+                      </span>
+                      <span v-if="m.data_source === 'declared'" class="badge badge-gray model-list-tag">未调用</span>
+                      <span v-else-if="!m.offer_available || !m.binding_available" class="badge badge-yellow model-list-tag">unavail</span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+
+              <!-- 右侧：模型详细统计（有选中模型时显示完整详情） -->
+              <div v-if="selectedModel && currentModel" class="model-detail-panel">
+                <!-- 模型名称 + 3 个状态图标 -->
+                <div class="model-header">
+                  <div class="model-header-title">
+                    <code class="model-name">{{ selectedModel }}</code>
+                    <StatusBadge :state="currentModel.effective_state" :reason="currentModel.model_disabled_reason" />
                   </div>
-                  <div style="display:flex;gap:16px;margin-top:8px;font-size:13px;flex-wrap:wrap">
-                    <span>总计: {{ windowEntries.length }}</span>
-                    <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
-                    <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
-                    <span>失败率: {{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</span>
+                  <div class="status-icons">
+                    <!-- 1. 手工禁用 (整凭据 manual_disabled) -->
+                    <button
+                      class="status-icon icon-manual-disable"
+                      :class="{ active: currentModel.effective_state === 'manual_disabled' }"
+                      :title="currentModel.effective_state === 'manual_disabled' ? '当前为手工禁用状态，点击解除' : '手工禁用此模型'"
+                      :disabled="toggleBusy[selectedCred.id + '|' + selectedModel]"
+                      @click="handleManualDisableClick"
+                    >
+                      <span class="status-icon-dot"></span>
+                      手工禁用
+                    </button>
+                    <!-- 2. 手工启动 (manual_offline) -->
+                    <button
+                      class="status-icon icon-manual-enable"
+                      :class="{ active: currentModel.binding_unavailable_reason === 'manual_offline' && currentModel.effective_state !== 'manual_disabled' }"
+                      :title="currentModel.binding_unavailable_reason === 'manual_offline' ? '当前为手工启动（offline）状态，点击切换为自动' : '将此模型手工设为 offline（自动探测将跳过）'"
+                      :disabled="toggleBusy[selectedCred.id + '|' + selectedModel]"
+                      @click="handleManualOnlineClick"
+                    >
+                      <span class="status-icon-dot"></span>
+                      手工启动
+                    </button>
+                    <!-- 3. 自动 (auto_probe 控制) -->
+                    <button
+                      class="status-icon icon-auto"
+                      :class="{ active: !['manual_disabled', 'manual_offline'].includes(currentModel.binding_unavailable_reason || '') && !currentModel.effective_state.startsWith('manual_') }"
+                      :title="'由自动探测控制（不可手动切换到该状态）'"
+                      @click="handleAutoClick"
+                    >
+                      <span class="status-icon-dot"></span>
+                      自动
+                    </button>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div class="drawer-section">
-              <div class="drawer-section-title">错误分布</div>
-              <div style="height:200px;position:relative">
-                <canvas id="errorPieChart"></canvas>
-              </div>
-            </div>
+                <!-- 4 个统计指标卡 -->
+                <div class="model-stats-grid">
+                  <div class="stat-card">
+                    <span class="label">P95 延迟</span>
+                    <span :class="p95Class(currentModel.p95_latency_ms)">
+                      <template v-if="currentModel.p95_latency_ms != null">{{ currentModel.p95_latency_ms }}ms</template>
+                      <template v-else>—</template>
+                    </span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="label">最近成功率</span>
+                    <span class="rate-cell" :class="rateClass(currentModel.recent_success_rate)">{{ rateText(currentModel.recent_success_rate) }}</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="label">样本数</span>
+                    <span class="mono-sm">{{ currentModel.recent_samples ?? '—' }}</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="label">24h 调用次数</span>
+                    <span class="mono-sm">{{ currentModel.total_calls ?? 0 }}</span>
+                  </div>
+                </div>
 
-            <div class="drawer-section" style="grid-column:1 / -1">
-              <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                <span>并发槽位与指纹分配</span>
-                <button class="btn btn-sm" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
-                  {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
-                </button>
+                <!-- 滑动窗口 -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title">
+                    滑动窗口 (最近 1 小时)
+                    <span class="source-tag" :class="windowSource === 'redis' ? 'src-redis' : 'src-rl'">
+                      {{ windowSource === 'redis' ? 'Redis' : 'request_logs' }}
+                    </span>
+                  </div>
+                  <div v-if="windowLoading">加载中...</div>
+                  <div v-else-if="!windowEntries.length" class="cell-muted">无数据</div>
+                  <div v-else>
+                    <div class="spark-bar-row">
+                      <div v-for="(e, i) in windowEntries.slice(0, 100)" :key="i"
+                           class="spark-bar"
+                           :style="{
+                             background: e.ok ? '#10b981' : '#ef4444',
+                             opacity: 0.8,
+                           }"
+                           :title="`${e.ok ? '✓' : '✗'} ${e.lat}ms ${e.err || ''}`"></div>
+                    </div>
+                    <div class="window-stats">
+                      <span>总计: {{ windowEntries.length }}</span>
+                      <span style="color:#10b981">成功: {{ windowEntries.filter(e => e.ok).length }}</span>
+                      <span style="color:#ef4444">失败: {{ windowEntries.filter(e => !e.ok).length }}</span>
+                      <span>失败率: {{ ((windowEntries.filter(e => !e.ok).length / windowEntries.length) * 100).toFixed(1) }}%</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 错误分布（饼图，无错时显示绿色） -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title">错误分布</div>
+                  <div style="height:200px;position:relative">
+                    <canvas id="errorPieChart"></canvas>
+                  </div>
+                </div>
+
+                <!-- 并发槽位（保留） -->
+                <div class="drawer-section">
+                  <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>并发槽位与指纹分配</span>
+                    <button class="btn btn-xs btn-ghost" @click="loadFpSlotStats" :disabled="fpSlotStatsLoading">
+                      {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
+                    </button>
+                  </div>
+                  <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
+                    点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
+                  </div>
+                  <FpSlotVisualizer
+                    v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
+                    :details="fpSlotStats.details"
+                    :slot-limit="fpSlotStats.slot_limit"
+                  />
+                  <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
+                </div>
               </div>
-              <div v-if="!fpSlotStats" class="cell-muted" style="margin-top:8px">
-                点击「刷新」加载指纹槽位图，查看每个会话的指纹分配情况
+              <!-- 右侧：未选中模型时的占位 -->
+              <div v-else class="model-detail-panel empty">
+                <div class="cell-muted">请从左侧选择模型查看详情</div>
               </div>
-              <FpSlotVisualizer
-                v-else-if="fpSlotStats.slot_limit && fpSlotStats.details"
-                :details="fpSlotStats.details"
-                :slot-limit="fpSlotStats.slot_limit"
-              />
-              <div v-else-if="fpSlotStats.unlimited" class="cell-muted">{{ fpSlotStats.message }}</div>
             </div>
           </div>
 
-          <!-- ════════════ Tab 4: 历史 (History) ════════════ -->
-          <div v-else-if="detailActiveTab === 'history'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <!-- ════════════ Tab 3: 请求数据 (Requests — 原 历史+决策) ════════════ -->
+          <div v-else-if="detailActiveTab === 'requests'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div class="drawer-section">
               <div class="drawer-section-title" style="display:flex;align-items:center;gap:8px">
-                状态变化历史
+                请求数据 · 模型状态变化历史
                 <span v-if="historyEvents.length" class="cell-sub">({{ historyEvents.length }})</span>
                 <button
                   class="btn btn-xs btn-ghost"
@@ -999,7 +1096,7 @@ onUnmounted(() => {
                   @click="loadHistory"
                 >↻ 刷新</button>
               </div>
-              <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
+              <div v-if="!selectedModel" class="cell-muted">点击「模型」tab 中的模型查看</div>
               <div v-else-if="historyLoading">加载中...</div>
               <div v-else-if="!historyEvents.length" class="cell-muted">无状态变化记录</div>
               <table v-else class="history-table">
@@ -1041,7 +1138,7 @@ onUnmounted(() => {
 
             <div class="drawer-section" style="grid-column:1 / -1">
               <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                <span>最近路由决策 (50条)</span>
+                <span>请求数据 · 最近路由决策 (50条)</span>
                 <button
                   class="btn btn-xs btn-ghost"
                   :disabled="credentialDecisionsLoading"
@@ -1605,5 +1702,246 @@ onUnmounted(() => {
 }
 .decision-table tbody tr:hover {
   background: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * 2026-06-26: 凭据详情页重构 — 「模型」tab 左右布局 + 3 个状态图标
+ *   - .models-tab-grid: 左右 2 列网格 (280px 列表 + 1fr 详情)
+ *   - .model-list / .model-list-panel: 左侧模型列表
+ *   - .model-detail-panel: 右侧详情容器
+ *   - .status-icon*: 模型名称旁的 3 个状态图标按钮
+ *   - .model-stats-grid / .stat-card: 4 个统计卡片
+ *   - .spark-bar-row / .spark-bar: 滑动窗口条形
+ * ──────────────────────────────────────────────────────────────────────── */
+.models-tab {
+  min-height: 500px;
+}
+.models-tab-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  min-height: 500px;
+}
+
+/* 左侧：模型列表 */
+.model-list-panel {
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  max-height: 75vh;
+  overflow-y: auto;
+}
+.model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.model-list li {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.model-list li:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.model-list li.active {
+  background: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+.model-list li.declared {
+  opacity: 0.7;
+}
+.model-list li.declared:hover {
+  opacity: 1;
+}
+.model-list-row1 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.model-list-row2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+}
+.model-list-name {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-all;
+  color: var(--text);
+}
+.model-list-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.model-list-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+}
+
+/* 右侧：模型详情容器 */
+.model-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 75vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.model-detail-panel.empty {
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+/* 模型头部：名称 + 3 个状态图标 */
+.model-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.model-header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.model-name {
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* 3 个状态图标按钮 */
+.status-icons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.status-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--muted);
+  transition: all 0.12s;
+  user-select: none;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.status-icon:hover:not(:disabled) {
+  color: var(--text);
+}
+.status-icon:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.status-icon-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+/* 各状态图标颜色 */
+.icon-manual-disable {
+  color: var(--danger);
+}
+.icon-manual-enable {
+  color: var(--warning);
+}
+.icon-auto {
+  color: var(--success);
+}
+/* 激活态 (高亮当前选中状态) */
+.status-icon.active {
+  background: var(--card);
+  box-shadow: 0 0 0 2px currentColor;
+}
+.icon-manual-disable.active { background: rgba(248, 81, 73, 0.12); }
+.icon-manual-enable.active { background: rgba(210, 153, 34, 0.12); }
+.icon-auto.active          { background: rgba(63, 185, 80, 0.12); }
+
+/* 4 个统计卡片 */
+.model-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.stat-card {
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.stat-card .label {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.stat-card > span:not(.label) {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 滑动窗口 spark bars */
+.spark-bar-row {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 8px 0;
+}
+.spark-bar {
+  width: 4px;
+  height: 40px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+.window-stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1100px) {
+  .models-tab-grid {
+    grid-template-columns: 220px 1fr;
+  }
+  .model-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 </style>
