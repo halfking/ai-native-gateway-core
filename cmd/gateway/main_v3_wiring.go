@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/compressor"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
 	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/routing"
-	"github.com/kaixuan/llm-gateway-go/sessions"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
 )
 
 // compressorSessionDisabled returns true when the v3 session compressor is

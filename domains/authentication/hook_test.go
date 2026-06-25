@@ -9,8 +9,8 @@ import (
 
 func TestAPIKeyAuthHook_Name(t *testing.T) {
 	h := NewAPIKeyAuthHook(&Verifier{})
-	if h.Name() != "auth.api_key" {
-		t.Fatalf("Name() = %q, want auth.api_key", h.Name())
+	if h.Name() != "authentication.api_key" {
+		t.Fatalf("Name() = %q, want authentication.api_key", h.Name())
 	}
 }
 

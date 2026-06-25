@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 )
 
 // =====================================================================
@@ -159,7 +160,7 @@ func (p *pendingCapturer) markInterrupted(reason string) {
 // passthrough path) is treated identically to "client_cancel" for
 // replayability — both indicate the upstream kept streaming but the
 // client went away mid-stream, so we have the body for replay.
-func (p *pendingCapturer) finalize(outcome StreamOutcome) {
+func (p *pendingCapturer) finalize(outcome relay.StreamOutcome) {
 	if p == nil {
 		return
 	}

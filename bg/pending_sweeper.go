@@ -11,7 +11,7 @@ import (
 // PendingSweeper (Track C C6, 2026-06-18) is a periodic background
 // worker that marks abandoned in_progress pending entries as
 // failed. An entry is "abandoned" when:
-//   - the async retry goroutine (routing.runAsyncRetry) crashed
+//   - the async retry goroutine (streaming.runAsyncRetry) crashed
 //     without writing a terminal status, OR
 //   - the client disconnected and never polled, OR
 //   - the Redis write succeeded but the goroutine was lost to a

@@ -1,6 +1,6 @@
 // Package compressor - strip.go (v4 T1)
 //
-// Tool/thinking info stripper for the v4 intelligent session compressor.
+// Tool/thinking info stripper for the v4 intelligent session compression.
 //
 // Problem:
 //

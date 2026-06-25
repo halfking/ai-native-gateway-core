@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {

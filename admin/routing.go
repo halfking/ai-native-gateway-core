@@ -19,7 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
 )
 
 type routingHandler struct {

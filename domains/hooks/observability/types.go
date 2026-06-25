@@ -5,6 +5,7 @@ package observability
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"sort"
 	"sync"
 	"time"
 )
@@ -253,8 +254,14 @@ func labelKey(labels map[string]string) string {
 	if len(labels) == 0 {
 		return ""
 	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	s := ""
-	for k, v := range labels {
+	for _, k := range keys {
+		v := labels[k]
 		s += k + "=" + v + ","
 	}
 	return s

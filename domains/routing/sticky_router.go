@@ -23,7 +23,7 @@ type StickyRouter struct {
 // 这与"粘性必须有降级路径"的不变量绑定。
 func NewStickyRouter(fallback Router) *StickyRouter {
 	if fallback == nil {
-		panic("routing.NewStickyRouter: fallback router must not be nil")
+		panic("streaming.NewStickyRouter: fallback router must not be nil")
 	}
 	return &StickyRouter{fallback: fallback}
 }

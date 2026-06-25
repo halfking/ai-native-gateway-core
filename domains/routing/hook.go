@@ -13,7 +13,7 @@ import (
 // 行为：
 //   - Enabled: env != nil && env.SelectedCredential == nil
 //     （如果其他 Hook 已选中凭据，跳过）
-//   - Execute: 构造 routing.Context，调用 router.Route，
+//   - Execute: 构造 streaming.Context，调用 router.Route，
 //     将 Decision.Selected 翻译为 env.SelectedCredential。
 //   - OnError: 路由失败必须上报（OnError 透传 error）。
 //
@@ -27,13 +27,13 @@ type RoutingHook struct {
 // NewRoutingHook 构造一个路由 Hook。
 func NewRoutingHook(router Router) *RoutingHook {
 	if router == nil {
-		panic("routing.NewRoutingHook: router must not be nil")
+		panic("streaming.NewRoutingHook: router must not be nil")
 	}
 	return &RoutingHook{router: router}
 }
 
 // Name 返回 Hook 名称。
-func (h *RoutingHook) Name() string { return "routing.decide" }
+func (h *RoutingHook) Name() string { return "streaming.decide" }
 
 // Priority 返回 Hook 优先级（在 Phase 内排序；100 为中等）。
 func (h *RoutingHook) Priority() int { return 100 }
@@ -58,7 +58,7 @@ func (h *RoutingHook) Execute(ctx context.Context, env *domain.PipelineRequest) 
 		candidates = []*Candidate{}
 	}
 
-	// 构造 routing.Context
+	// 构造 streaming.Context
 	rc := Context{
 		TenantID:   env.TenantID,
 		Metadata:   env.Metadata,

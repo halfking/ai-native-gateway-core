@@ -41,7 +41,7 @@ func TestIdempotent_Documented(t *testing.T) {
 }
 
 // TestNoCacheControlInjection_Documented: this package does NOT inject
-// cache_control markers (that's sessions.CacheInjector). The boundary must be
+// cache_control markers (that's session.CacheInjector). The boundary must be
 // explicit so nobody duplicates the logic.
 func TestNoCacheControlInjection_Documented(t *testing.T) {
 	src := mustRead(t, "prefix.go")

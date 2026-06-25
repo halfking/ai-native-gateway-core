@@ -89,8 +89,8 @@ func TestBuildRequestPipeline_AuthStageHookCount(t *testing.T) {
 	if len(stages[0].Hooks) != 1 {
 		t.Fatalf("auth stage should have 1 hook, got %d", len(stages[0].Hooks))
 	}
-	if stages[0].Hooks[0].Name() != "auth.api_key" {
-		t.Errorf("auth hook name = %q, want auth.api_key", stages[0].Hooks[0].Name())
+	if stages[0].Hooks[0].Name() != "authentication.api_key" {
+		t.Errorf("auth hook name = %q, want authentication.api_key", stages[0].Hooks[0].Name())
 	}
 }
 

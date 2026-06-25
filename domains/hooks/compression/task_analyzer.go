@@ -1,6 +1,6 @@
 // Package compressor - task_analyzer.go (v4 T2)
 //
-// Task completion detection for the v4 intelligent session compressor.
+// Task completion detection for the v4 intelligent session compression.
 //
 // Problem:
 //
@@ -20,7 +20,7 @@
 //	4. Turn-pair analysis: user asks → assistant answers → user accepts
 //
 // This module provides the analysis functions. The actual filtering
-// is done by the compressor orchestrator (session_compressor.go).
+// is done by the compressor orchestrator (session_compression.go).
 
 package compression
 

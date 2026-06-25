@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 func requestPreview(body []byte) string {
@@ -18,7 +18,7 @@ func responsePreview(body []byte) string {
 	return previewJSON(body, 320)
 }
 
-func transformSummary(tx *transform.TransformResult, outboundModel string) string {
+func transformSummary(tx *transformation.TransformResult, outboundModel string) string {
 	if tx == nil {
 		if outboundModel == "" {
 			return ""

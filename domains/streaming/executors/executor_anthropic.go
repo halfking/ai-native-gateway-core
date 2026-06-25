@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -374,12 +374,12 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		if e.SanitizeAnthropicTools != nil {
 			bodyBytes = e.SanitizeAnthropicTools(bodyBytes)
 		}
-		fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
+		fixedBytes, fixErr := transformation.FixAnthropicMessages(bodyBytes)
 		if fixErr != nil {
 			return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
 		}
 		bodyBytes = fixedBytes
-		if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
+		if valErr := transformation.ValidateAnthropicMessages(bodyBytes); valErr != nil {
 			slog.Warn("invalid anthropic message sequence after fix",
 				"error", valErr,
 				"tenant_id", params.TenantID,
@@ -393,9 +393,9 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 
 	if cand.ContextWindow != nil {
 		if params.ClientProtocol == "anthropic-messages" {
-			bodyBytes = transform.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+			bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
 		} else {
-			bodyBytes = transform.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+			bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
 		}
 	}
 
@@ -435,14 +435,14 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// 2026-06-21: Fix empty response issue (Request ID: 92ef59e52efae25c396d0504efbfa2e6)
 		// Claude API doesn't support "tool" role and requires user/assistant alternation.
 		// Convert "tool" role to "user" + tool_result block and merge consecutive messages.
-		fixedBytes, fixErr := transform.FixAnthropicMessages(bodyBytes)
+		fixedBytes, fixErr := transformation.FixAnthropicMessages(bodyBytes)
 		if fixErr != nil {
 			return nil, fmt.Errorf("fix anthropic messages: %w", fixErr)
 		}
 		bodyBytes = fixedBytes
 
 		// Validate message sequence (warning mode only, don't block requests)
-		if valErr := transform.ValidateAnthropicMessages(bodyBytes); valErr != nil {
+		if valErr := transformation.ValidateAnthropicMessages(bodyBytes); valErr != nil {
 			slog.Warn("invalid anthropic message sequence after fix",
 				"error", valErr,
 				"tenant_id", params.TenantID,

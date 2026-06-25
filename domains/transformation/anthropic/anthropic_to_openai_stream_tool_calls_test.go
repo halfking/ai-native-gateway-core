@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 // TestStreamAnthropicSSEToOpenAI_ToolCalls_Complete tests end-to-end tool call capture

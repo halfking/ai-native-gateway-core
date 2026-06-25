@@ -1,0 +1,701 @@
+
+package relay
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/audit"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/auth"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/identity"
+	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform"
+)
+
+type responsesRequestBody struct {
+	Model           string                     `json:"model"`
+	Input           json.RawMessage            `json:"input"`
+	Instructions    string                     `json:"instructions,omitempty"`
+	MaxOutputTokens *int                       `json:"max_output_tokens,omitempty"`
+	Stream          bool                       `json:"stream"`
+	Temperature     *float64                   `json:"temperature,omitempty"`
+	TopP            *float64                   `json:"top_p,omitempty"`
+	Extra           map[string]json.RawMessage `json:"-"`
+}
+
+func (r *responsesRequestBody) UnmarshalJSON(data []byte) error {
+	type alias responsesRequestBody
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	delete(raw, "model")
+	delete(raw, "input")
+	delete(raw, "instructions")
+	delete(raw, "max_output_tokens")
+	delete(raw, "stream")
+	delete(raw, "temperature")
+	delete(raw, "top_p")
+	*r = responsesRequestBody(decoded)
+	r.Extra = raw
+	return nil
+}
+
+type ResponsesHandler struct {
+	chatHandler *ChatHandler
+}
+
+func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
+	return &ResponsesHandler{chatHandler: ch}
+}
+
+func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	//nolint:errcheck // best-effort close
+	defer r.Body.Close()
+
+	// ── requestAttempt safety-net: every OpenAI /v1/responses
+	//    request must produce exactly one request_logs row.  See
+	//    ChatHandler.ServeHTTP for the full rationale.
+	var (
+		attemptLoggedFlag   bool
+		attemptKeyInfo      *auth.KeyInfo
+		attemptClientModel  string
+		attemptErrCode      string
+		attemptErrMsg       string
+		attemptProviderID   *int
+		attemptCredentialID *int
+		attemptRequestBody  []byte
+	)
+	attemptLogged := &attemptLoggedFlag
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = uuid.NewString()
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	startTime := time.Now()
+	defer func() {
+		// Panic recovery: catch any panic from the inner pipeline and
+		// emit a safety-net request_logs row before bubbling up.
+		if rec := recover(); rec != nil {
+			slog.Error("responses handler panic", "panic", rec, "request_id", requestID)
+			attemptErrCode = "internal_panic"
+			attemptErrMsg = "internal server error"
+			if len(attemptRequestBody) == 0 {
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			}
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+			if !*attemptLogged {
+				writeResponsesError(w, http.StatusInternalServerError, "internal server error", "api_error", "internal_panic")
+			}
+			return
+		}
+		if attemptErrCode != "" && !*attemptLogged {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+		}
+	}()
+
+	if r.Method != http.MethodPost {
+		attemptErrCode = "method_not_allowed"
+		attemptErrMsg = "method not allowed"
+		writeResponsesError(w, http.StatusMethodNotAllowed, "Method not allowed", "invalid_request", "method_not_allowed")
+		return
+	}
+
+	_ = ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel)
+
+	var keyInfo *auth.KeyInfo
+	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
+		rawKey := extractBearerToken(r)
+		if rawKey == "" {
+			attemptErrCode = "missing_key"
+			attemptErrMsg = "missing api key"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
+			return
+		}
+		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		if verifyErr != nil {
+			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+				attemptErrCode = "invalid_key"
+				attemptErrMsg = "invalid or expired api key"
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+				writeResponsesError(w, http.StatusUnauthorized, "Invalid or expired API key", "authentication_error", "invalid_key")
+				return
+			}
+			attemptErrCode = "auth_unavailable"
+			attemptErrMsg = "authentication service temporarily unavailable"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			slog.Warn("responses: key verification RPC failed", "error", verifyErr)
+			writeResponsesError(w, http.StatusServiceUnavailable, "Authentication service temporarily unavailable", "api_error", "auth_unavailable")
+			return
+		} else {
+			keyInfo = ki
+			attemptKeyInfo = ki
+		}
+	}
+
+	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			// Peek the body so the safety-net can recover client_model
+			// and request preview from the rejected request. Body is
+			// read lazily so non-rate-limited requests are not penalised.
+			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+			if len(peeked) > maxBodySize {
+				peeked = peeked[:maxBodySize]
+			}
+			if len(peeked) > 0 {
+				attemptRequestBody = peeked
+				if attemptClientModel == "" {
+					attemptClientModel = extractModelFromBody(peeked)
+				}
+			}
+			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
+			return
+		}
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	if err != nil {
+		if len(bodyBytes) > 0 {
+			attemptRequestBody = bodyBytes
+			if attemptClientModel == "" {
+				attemptClientModel = extractModelFromBody(bodyBytes)
+			}
+		}
+		attemptErrCode = "body_read_error"
+		attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		slog.Warn("responses request body read failed",
+			"request_id", requestID,
+			"error", err,
+			"content_length", r.ContentLength,
+			"partial_bytes", len(bodyBytes),
+			"client_model", attemptClientModel,
+		)
+		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
+		return
+	}
+	if len(bodyBytes) > 0 {
+		attemptRequestBody = bodyBytes
+	}
+	if len(bodyBytes) > maxBodySize {
+		attemptErrCode = "body_too_large"
+		attemptErrMsg = "request body too large"
+		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
+		return
+	}
+
+	var reqBody responsesRequestBody
+	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		attemptErrCode = "json_parse_error"
+		attemptErrMsg = "invalid JSON in request body"
+		writeResponsesError(w, http.StatusBadRequest, "Invalid JSON in request body", "invalid_request", "json_parse_error")
+		return
+	}
+	if reqBody.Model == "" {
+		attemptErrCode = "missing_model"
+		attemptErrMsg = "model is required"
+		attemptClientModel = "<unknown>"
+		writeResponsesError(w, http.StatusBadRequest, "model is required", "invalid_request", "missing_model")
+		return
+	}
+
+	chatBody := convertResponsesToChatBody(&reqBody)
+	chatBodyBytes, err := json.Marshal(chatBody)
+	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
+		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
+		return
+	}
+	attemptClientModel = reqBody.Model
+
+	clientModel := reqBody.Model
+
+	// ── Tenant model policy (Round 48, 2026-06-21) ──────────────
+	// Inserted here so a denied request never reaches GetCandidates.
+	// The /v1/responses path does not use auto_route, so a single
+	// pre-check is sufficient.
+	if keyInfo != nil {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.chatHandler.modelPolicy, h.chatHandler.resolver, profile,
+		)
+		if denied {
+			attemptErrCode = "model_forbidden"
+			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			attemptClientModel = canonical
+			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
+				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusForbidden,
+				fmt.Sprintf("Model '%s' is not available for your account", canonical),
+				"permission_error", "model_forbidden")
+			return
+		}
+	}
+
+	isStream := reqBody.Stream
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
+	endUser := extractEndUser(r)
+	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
+
+	auditBuilder := newAuditEvent(requestID).
+		ClientModel(clientModel).
+		IdentityHash(clientID.ShortID()).
+		ClientProfile(clientID.Fingerprint.ClientProfile).
+		Stream(isStream).
+		RequestChecksum(bodyBytes)
+
+	var streamCapture *audit.StreamCapture
+	if isStream {
+		streamCapture = audit.NewStreamCapture()
+	}
+	defer func() {
+		if streamCapture != nil {
+			auditBuilder.StreamMetrics(streamCapture)
+		}
+		h.chatHandler.auditor.Emit(r.Context(), auditBuilder.Build())
+	}()
+
+	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	if candErr != nil || len(candidates) == 0 {
+		attemptErrCode = "no_candidate"
+		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+		*attemptLogged = true
+		writeResponsesError(w, http.StatusServiceUnavailable, fmt.Sprintf("No available provider for model '%s'", clientModel), "server_error", "no_candidate")
+		return
+	}
+	if len(candidates) > 0 {
+		pid := candidates[0].ProviderID
+		cid := candidates[0].CredentialID
+		attemptProviderID = &pid
+		attemptCredentialID = &cid
+	}
+
+	var modelResolution *resolve.Resolution
+	if h.chatHandler.resolver != nil {
+		modelResolution = h.chatHandler.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	}
+
+	var txResult *transform.TransformResult
+	tCtx := &transform.TransformContext{
+		RequestMode:   "responses",
+		ClientProfile: clientID.Fingerprint.ClientProfile,
+		ClientModel:   clientModel,
+	}
+	if modelResolution != nil && modelResolution.CanonicalName != nil {
+		tCtx.CanonicalName = *modelResolution.CanonicalName
+	}
+	if h.chatHandler.matrix != nil {
+		txResult = h.chatHandler.matrix.Resolve(tCtx)
+	}
+	explicitOutbound := ""
+	if len(candidates) > 0 {
+		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
+	}
+
+	egressProtocol := ""
+	if len(candidates) > 0 {
+		egressProtocol = candidates[0].Protocol
+	}
+	var canonicalID *int
+	if modelResolution != nil {
+		canonicalID = modelResolution.CanonicalID
+	}
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessions.SessionFromContext(r.Context()))
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
+	h.chatHandler.recordInitialRequestLog(
+		requestID, clientModel, outboundForLog, endUser, "responses", keyInfo,
+		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
+		attemptProviderID, attemptCredentialID, canonicalID,
+		bodyBytes, txResult, egressProtocol, isStream,
+		gwSessionID, gwTaskID,
+		nil,
+	)
+
+	result, execErr := h.chatHandler.executor.Execute(&routing.ExecParams{
+		W:                    w,
+		R:                    r,
+		BodyBytes:            chatBodyBytes,
+		IsStream:             isStream,
+		SuppressSuccessWrite: !isStream,
+		ClientModel:          clientModel,
+		OutboundModel:        outboundForLog,
+		ClientID:             clientID,
+		Transform:            txResult,
+		Resolution:           modelResolution,
+		Candidates:           candidates,
+		Policy:               policy,
+		AuditBuilder:         auditBuilder,
+		Capture:              streamCapture,
+		ToolsRequested:       false,
+		StreamWrapper:        responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		KeyID: func() int {
+			if keyInfo != nil {
+				return keyInfo.ID
+			}
+			return 0
+		}(),
+		KeyConcurrentLimit: func() int {
+			if keyInfo != nil {
+				return keyInfo.EffectiveConcurrent()
+			}
+			return 0
+		}(),
+	})
+
+	if execErr != nil {
+		errCode := "provider_error"
+		errMsg := execErr.Error()
+		if ee, ok := execErr.(*routing.ExecuteError); ok && ee.Exhausted {
+			errCode = "model_not_found"
+			errMsg = "all providers unavailable"
+		}
+		attemptErrCode = errCode
+		attemptErrMsg = errMsg
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo, r)
+		*attemptLogged = true
+		if execErr, ok := execErr.(*routing.ExecuteError); ok && execErr.Exhausted {
+			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			return
+		}
+		writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		return
+	}
+
+	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
+
+	var responseBody []byte
+	if !isStream {
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+	}
+
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.RequestBody, responseBody, nil)
+	*attemptLogged = true
+}
+
+func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
+	chatBody := map[string]any{
+		"model":  req.Model,
+		"stream": req.Stream,
+	}
+
+	var messages []any
+	if req.Instructions != "" {
+		messages = append(messages, map[string]any{"role": "system", "content": req.Instructions})
+	}
+
+	var rawInput json.RawMessage = req.Input
+	if len(rawInput) > 0 {
+		if rawInput[0] == '"' {
+			var s string
+			if json.Unmarshal(rawInput, &s) == nil {
+				messages = append(messages, map[string]any{"role": "user", "content": s})
+			}
+		} else if rawInput[0] == '[' {
+			var items []map[string]any
+			if json.Unmarshal(rawInput, &items) == nil {
+				for _, item := range items {
+					role, _ := item["role"].(string)
+					if role == "" {
+						role = "user"
+					}
+					content := item["content"]
+					if content == nil {
+						content = ""
+					}
+					messages = append(messages, map[string]any{"role": role, "content": content})
+				}
+			}
+		}
+	}
+	chatBody["messages"] = messages
+
+	if req.MaxOutputTokens != nil {
+		chatBody["max_tokens"] = *req.MaxOutputTokens
+	}
+	if req.Temperature != nil {
+		chatBody["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		chatBody["top_p"] = *req.TopP
+	}
+
+	for key, raw := range req.Extra {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		if key == "tools" {
+			value = normalizeResponsesTools(value)
+		}
+		chatBody[key] = value
+	}
+
+	return chatBody
+}
+
+func normalizeResponsesTools(value any) any {
+	tools, ok := value.([]any)
+	if !ok {
+		return value
+	}
+
+	normalized := make([]any, 0, len(tools))
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			normalized = append(normalized, item)
+			continue
+		}
+		if _, exists := tool["function"]; exists {
+			normalized = append(normalized, tool)
+			continue
+		}
+		if toolType, _ := tool["type"].(string); toolType != "function" {
+			normalized = append(normalized, tool)
+			continue
+		}
+
+		function := map[string]any{}
+		for _, key := range []string{"name", "description", "parameters", "strict"} {
+			if val, exists := tool[key]; exists {
+				function[key] = val
+				delete(tool, key)
+			}
+		}
+		if len(function) == 0 {
+			normalized = append(normalized, tool)
+			continue
+		}
+		tool["function"] = function
+		normalized = append(normalized, tool)
+	}
+
+	return normalized
+}
+
+func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
+	if len(body) == 0 {
+		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
+		return nil
+	}
+
+	respBody := convertChatResponseToResponses(body, clientModel, requestID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", requestID)
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck // HTTP write error non-recoverable
+	w.Write(respBody)
+	return respBody
+}
+
+func convertChatResponseToResponses(body []byte, clientModel, requestID string) []byte {
+	var chatResp map[string]json.RawMessage
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return body
+	}
+
+	var choices []map[string]any
+	if raw, ok := chatResp["choices"]; ok {
+		//nolint:errcheck // test parse, non-critical
+		json.Unmarshal(raw, &choices)
+	}
+
+	finishReason := "stop"
+	textContent := ""
+	reasoningContent := ""
+	var toolCalls []map[string]any
+
+	if len(choices) > 0 {
+		choice := choices[0]
+		if fr, ok := choice["finish_reason"].(string); ok {
+			finishReason = fr
+		}
+		if msg, ok := choice["message"].(map[string]any); ok {
+			if c, ok := msg["content"].(string); ok {
+				textContent = c
+			}
+			if rc, ok := msg["reasoning_content"].(string); ok {
+				reasoningContent = rc
+			}
+			if tc, ok := msg["tool_calls"].([]any); ok {
+				for _, call := range tc {
+					toolCall, ok := call.(map[string]any)
+					if !ok {
+						continue
+					}
+					toolCalls = append(toolCalls, toolCall)
+				}
+			}
+		}
+	}
+
+	status := "completed"
+	if finishReason == "length" {
+		status = "incomplete"
+	}
+
+	inputTokens := 0
+	outputTokens := 0
+	totalTokens := 0
+	if raw, ok := chatResp["usage"]; ok {
+		var usage map[string]any
+		if json.Unmarshal(raw, &usage) == nil {
+			if v, ok := usage["prompt_tokens"].(float64); ok {
+				inputTokens = int(v)
+			}
+			if v, ok := usage["completion_tokens"].(float64); ok {
+				outputTokens = int(v)
+			}
+			if v, ok := usage["total_tokens"].(float64); ok {
+				totalTokens = int(v)
+			}
+		}
+	}
+
+	created := int(time.Now().Unix())
+	if raw, ok := chatResp["created"]; ok {
+		var v float64
+		if json.Unmarshal(raw, &v) == nil {
+			created = int(v)
+		}
+	}
+
+	respID := "resp_"
+	msgID := "msg_"
+	if len(requestID) > 24 {
+		respID += requestID[:24]
+		msgID += requestID[8:24]
+	} else {
+		respID += requestID
+		msgID += requestID
+	}
+
+	output := make([]map[string]any, 0, 2)
+	if reasoningContent != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning",
+			"id":   msgID + "_reasoning",
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": reasoningContent,
+			}},
+		})
+	}
+	if len(toolCalls) > 0 {
+		for index, call := range toolCalls {
+			function, _ := call["function"].(map[string]any)
+			name, _ := function["name"].(string)
+			arguments, _ := function["arguments"].(string)
+			callID, _ := call["id"].(string)
+			output = append(output, map[string]any{
+				"type":      "function_call",
+				"id":        fmt.Sprintf("%s_fc_%d", msgID, index),
+				"call_id":   callID,
+				"name":      name,
+				"arguments": arguments,
+				"status":    "completed",
+			})
+		}
+	} else {
+		output = append(output, map[string]any{
+			"type":   "message",
+			"id":     msgID,
+			"status": status,
+			"role":   "assistant",
+			"content": []map[string]any{
+				{
+					"type":        "output_text",
+					"text":        textContent,
+					"annotations": []any{},
+				},
+			},
+		})
+	}
+
+	resp := map[string]any{
+		"id":         respID,
+		"object":     "response",
+		"created_at": created,
+		"model":      clientModel,
+		"status":     status,
+		"output":     output,
+		"usage": map[string]any{
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+			"total_tokens":  totalTokens,
+		},
+		"x_request_id": requestID,
+	}
+
+	result, err := json.Marshal(resp)
+	if err != nil {
+		return body
+	}
+	return result
+}
+
+func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errType,
+			"param":   "model",
+			"code":    code,
+		},
+	})
+}
+
+func responsesStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) routing.StreamWrapperFunc {
+	return func(w http.ResponseWriter, resp *http.Response, norm routing.NormalizerFunc, cap *audit.StreamCapture) routing.StreamOutcome {
+		c := cap
+		if c == nil {
+			c = capture
+		}
+		return StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
+	}
+}

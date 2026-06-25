@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 )
 
 const (

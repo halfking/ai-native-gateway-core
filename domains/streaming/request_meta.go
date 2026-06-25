@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kaixuan/llm-gateway-go/auth"
-	"github.com/kaixuan/llm-gateway-go/identity"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 var errBodyTooLarge = errors.New("request body too large")
@@ -94,7 +94,7 @@ func formatKeyPrefixDisplay(prefix string) string {
 	return prefix + "***"
 }
 
-func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *auth.KeyInfo, meta *requestAttemptMeta) {
+func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
 	if meta == nil || r == nil {
 		return
 	}
@@ -116,7 +116,7 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *auth.KeyInfo, me
 	}
 }
 
-func (h *ChatHandler) resolveKeyMeta(ctx context.Context, rawKey string, keyInfo *auth.KeyInfo, meta *requestAttemptMeta) {
+func (h *ChatHandler) resolveKeyMeta(ctx context.Context, rawKey string, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
 	if meta == nil {
 		return
 	}
@@ -159,7 +159,7 @@ func (h *ChatHandler) resolveKeyMeta(ctx context.Context, rawKey string, keyInfo
 	meta.KeyStatus = "invalid_unknown"
 }
 
-func apiKeyIDForLog(keyInfo *auth.KeyInfo, meta *requestAttemptMeta) *int {
+func apiKeyIDForLog(keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) *int {
 	if keyInfo != nil {
 		return apiKeyIDPtr(keyInfo)
 	}
@@ -169,14 +169,14 @@ func apiKeyIDForLog(keyInfo *auth.KeyInfo, meta *requestAttemptMeta) *int {
 	return nil
 }
 
-func applicationIDForLog(keyInfo *auth.KeyInfo) *int {
+func applicationIDForLog(keyInfo *authentication.KeyInfo) *int {
 	if keyInfo == nil {
 		return nil
 	}
 	return appID(keyInfo)
 }
 
-func enrichRequestLogFromMeta(reqLog *telemetry.RequestLogEntry, keyInfo *auth.KeyInfo, meta *requestAttemptMeta) {
+func enrichRequestLogFromMeta(reqLog *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
 	if reqLog == nil || meta == nil {
 		return
 	}
@@ -206,7 +206,7 @@ func enrichRequestLogFromMeta(reqLog *telemetry.RequestLogEntry, keyInfo *auth.K
 	}
 }
 
-func keyMetaFromKeyInfo(keyInfo *auth.KeyInfo) (prefix, owner, appCode string) {
+func keyMetaFromKeyInfo(keyInfo *authentication.KeyInfo) (prefix, owner, appCode string) {
 	if keyInfo == nil {
 		return "", "", ""
 	}
@@ -222,7 +222,7 @@ func keyMetaFromKeyInfo(keyInfo *auth.KeyInfo) (prefix, owner, appCode string) {
 }
 
 // applyKeyInfoToRequestLog fills api key display fields on a telemetry row.
-func applyKeyInfoToRequestLog(reqLog *telemetry.RequestLogEntry, keyInfo *auth.KeyInfo) {
+func applyKeyInfoToRequestLog(reqLog *telemetry.RequestLogEntry, keyInfo *authentication.KeyInfo) {
 	if reqLog == nil || keyInfo == nil {
 		return
 	}

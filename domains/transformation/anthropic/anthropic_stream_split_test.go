@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
 
 // streamSourceServer spins up an upstream HTTP server that emits the

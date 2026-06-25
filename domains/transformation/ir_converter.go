@@ -9,12 +9,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
-// IRConverterAdapter mirrors routing.IRConverter's method set without
+// IRConverterAdapter mirrors streaming.IRConverter's method set without
 // importing routing (avoids transport→routing dependency). The production
 // irAdapter (cmd/gateway/main.go) satisfies this via Go structural typing.
 //
-// Method signatures must stay identical to routing.IRConverter so that
-// TransportIRConverter also satisfies routing.IRConverter (structural).
+// Method signatures must stay identical to streaming.IRConverter so that
+// TransportIRConverter also satisfies streaming.IRConverter (structural).
 type IRConverterAdapter interface {
 	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
 	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
@@ -32,7 +32,7 @@ type IRConverterAdapter interface {
 var ErrConverterCircuitOpen = errors.New("transport: converter circuit open")
 
 // TransportIRConverter bridges the transport package into the real request
-// pipeline by implementing routing.IRConverter (via structural typing).
+// pipeline by implementing streaming.IRConverter (via structural typing).
 //
 // It wraps an inner converter (typically irAdapter → internal/ir) and adds:
 //   - ExtensionsBag Extract (during Parse) / Restore (during Serialize) for

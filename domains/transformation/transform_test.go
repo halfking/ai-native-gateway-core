@@ -9,7 +9,7 @@ import (
 func writeTestYAML(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "transform.yaml")
+	path := filepath.Join(dir, "transformation.yaml")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}

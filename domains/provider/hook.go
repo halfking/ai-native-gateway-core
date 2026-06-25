@@ -45,7 +45,7 @@ func (h *ProviderDiscoveryHook) Execute(ctx context.Context, env *domain.Pipelin
 	if len(healthy) == 0 {
 		return errors.New("provider: no healthy provider for model " + model)
 	}
-	// 序列化为 routing.Candidate 格式
+	// 序列化为 streaming.Candidate 格式
 	type cand struct {
 		CredentialID string
 		Provider     string

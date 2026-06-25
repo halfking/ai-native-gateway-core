@@ -153,7 +153,7 @@ type RequestLogEntry struct {
 
 	// v3 (2026-06-19) session-level outbound body T23.
 	// Mirrors 4 columns added by db/migrations/016_outbound_body.sql.
-	// Populated by compressor.SessionCompressor when the session cache
+	// Populated by compression.SessionCompressor when the session cache
 	// rewrites the body (delta-append + optional sliding-window summary).
 	// NULL means no session compressor was active for this request.
 	OutboundBody      json.RawMessage `json:"outbound_body,omitempty"`

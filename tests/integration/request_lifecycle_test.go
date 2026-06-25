@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

@@ -373,7 +373,7 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 		// Volcano Ark and similar providers: this model needs an endpoint ID
 		// (outbound_model_name) to be callable.  Use the canonical error code
 		// so classifyProbeFailure can map it to a non-fatal state instead of
-		// marking the credential unreachable and blocking all routing.
+		// marking the credential unreachable and blocking all streaming.
 		return false, fmt.Sprintf("%s: %s", probeutil.EndpointIDRequiredErrCode, truncateBody(body))
 	}
 	return false, fmt.Sprintf("chat status %d: %s", resp.StatusCode, truncateBody(body))

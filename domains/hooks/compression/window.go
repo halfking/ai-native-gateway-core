@@ -49,7 +49,7 @@ const (
 	DefaultIdleSeconds = 300 // 5 minutes
 
 	// DefaultMinIdleMsgCount is the minimum message count required for the
-	// IDLE trigger to fire. Prevents compression of very short idle sessions.
+	// IDLE trigger to fire. Prevents compression of very short idle session.
 	DefaultMinIdleMsgCount = 10
 
 	// RecentCompressedGuardSecs is the mutual-exclusion window: if a proactive

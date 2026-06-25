@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -787,7 +787,7 @@ func (p *pendingCapturer) BytesCaptured() int {
 // ClientHasSessionID (Track C C2, 2026-06-18) is a small helper
 // used by the wiring in cmd/gateway/main.go to decide whether
 // to attach a capturer to a stream. The decision mirrors the
-// one in routing.hasSessionID: if the upstream request
+// one in streaming.hasSessionID: if the upstream request
 // carries X-Gw-Session-Id or X-Session-Id, the client is
 // eligible for replay and we capture the stream body.
 //

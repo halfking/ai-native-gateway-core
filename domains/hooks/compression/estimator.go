@@ -1,6 +1,6 @@
 // Package compressor - estimator.go (Round 47 / v7 T4)
 //
-// Internal estimator that bridges transform.ThresholdBytes with the
+// Internal estimator that bridges transformation.ThresholdBytes with the
 // mode=1 (auto_threshold) decision path. Lives inside compressor/ rather
 // than transform/ because it pulls from environment configuration
 // (LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION) which is compressor-specific
@@ -9,8 +9,8 @@
 // Layering:
 //
 //	executor_chat.go (pre-request check)
-//	  -> compressor.Estimator.NeedsCompression(body, cand)
-//	  -> transform.ThresholdBytes(window, fraction)
+//	  -> compression.Estimator.NeedsCompression(body, cand)
+//	  -> transformation.ThresholdBytes(window, fraction)
 //	  -> bool
 //
 // estimator.go is intentionally tiny (no caching, no state): every call
@@ -28,7 +28,7 @@ import (
 	"strconv"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 // defaultWindowFraction matches LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION
@@ -100,14 +100,14 @@ func (e *Estimator) Fraction() float64 {
 // window. Returns false when the window is unknown (caller falls through
 // to the 4xx recovery path - see v7 §3.4).
 //
-// Pure delegation to transform.NeedsCompression - kept as a method so
+// Pure delegation to transformation.NeedsCompression - kept as a method so
 // callers can swap the underlying rule without touching the executor.
 func (e *Estimator) NeedsCompression(body []byte, contextWindow int) bool {
 	frac := defaultWindowFraction
 	if e != nil && e.fraction > 0 {
 		frac = e.fraction
 	}
-	return transform.NeedsCompression(body, contextWindow, frac)
+	return transformation.NeedsCompression(body, contextWindow, frac)
 }
 
 // ThresholdBytes exposes the byte threshold for a given window under the
@@ -118,5 +118,5 @@ func (e *Estimator) ThresholdBytes(contextWindow int) int {
 	if e != nil && e.fraction > 0 {
 		frac = e.fraction
 	}
-	return transform.ThresholdBytes(contextWindow, frac)
+	return transformation.ThresholdBytes(contextWindow, frac)
 }

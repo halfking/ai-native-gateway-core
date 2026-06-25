@@ -16,28 +16,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/audit"
-	"github.com/kaixuan/llm-gateway-go/auth"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/circuit"
-	"github.com/kaixuan/llm-gateway-go/compressor"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
-	"github.com/kaixuan/llm-gateway-go/sessions"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -140,18 +139,18 @@ type providerResolver interface {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit         *circuit.Manager
-	limiter         *limiter.Limiter
-	matrix          *transform.Matrix
+	circuit         *credential.Manager
+	limiter         *credential.Limiter
+	matrix          *transformation.Matrix
 	pools           *pool.PoolManager
 	resolver        *resolve.Resolver
 	auditor         audit.Sink
 	client          *upstreampkg.Client
 	normalizer      *Normalizer
-	executor        *routing.Executor
+	executor        *executors.Executor
 	provider        providerResolver
-	sticky          *routing.StickyCache
-	keyVerifier     *auth.KeyVerifier
+	sticky          *executors.StickyCache
+	keyVerifier     *authentication.KeyVerifier
 	rateLimiter     ratelimit.RPMLimiter
 	telemetryClient *telemetry.Client
 	// decider (v2.0) is the optional autoroute.Decider. When non-nil,
@@ -165,9 +164,9 @@ type ChatHandler struct {
 	requestLogHook func(*telemetry.RequestLogEntry)
 	maasSvc        *maas.Service
 	sessionGetter  interface {
-		Get(ctx context.Context, id string) (*sessions.Session, error)
+		Get(ctx context.Context, id string) (*session.Session, error)
 		Touch(ctx context.Context, id string) error
-		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
+		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, error)
 		BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 	}
 	// idempotentCache (Track C C5, 2026-06-18) deduplicates
@@ -179,11 +178,11 @@ type ChatHandler struct {
 	idempotentCache *IdempotentCache
 
 	// sessionCompressor (v3, 2026-06-19) is the session-level
-	// intelligent compressor. When non-nil, each request runs a
+	// intelligent compression. When non-nil, each request runs a
 	// message-level LCS delta-append + optional proactive sliding-window
 	// LLM summary before forwarding to the upstream. nil disables v3
 	// (every request forwards the client body as-is, matching v7 behaviour).
-	sessionCompressor *compressor.SessionCompressor
+	sessionCompressor *compression.SessionCompressor
 
 	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
 	// (list_categories, load_tools) locally without forwarding to upstream.
@@ -228,14 +227,14 @@ type ToolRegistryService interface {
 	ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string
 }
 
-func NewChatHandler(cm *circuit.Manager, l *limiter.Limiter, matrix *transform.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
+func NewChatHandler(cm *credential.Manager, l *credential.Limiter, matrix *transformation.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
 	if auditor == nil {
 		auditor = &audit.LogSink{}
 	}
 	return &ChatHandler{circuit: cm, limiter: l, matrix: matrix, pools: pools, resolver: resolver, auditor: auditor, client: upstreampkg.New(), normalizer: NewNormalizer()}
 }
 
-func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov providerResolver, sticky *routing.StickyCache) {
+func (h *ChatHandler) SetExecutor(exec *executors.Executor, prov providerResolver, sticky *executors.StickyCache) {
 	h.executor = exec
 	h.provider = prov
 	h.sticky = sticky
@@ -258,10 +257,10 @@ func (h *ChatHandler) SetIdempotentCache(c *IdempotentCache) {
 	h.idempotentCache = c
 }
 
-// SetSessionCompressor wires the v3 session-level intelligent compressor.
+// SetSessionCompressor wires the v3 session-level intelligent compression.
 // When set, each request performs message-level delta-append + optional
 // proactive sliding-window LLM summary before forwarding to the upstream.
-func (h *ChatHandler) SetSessionCompressor(sc *compressor.SessionCompressor) {
+func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 	h.sessionCompressor = sc
 }
 
@@ -316,7 +315,7 @@ func (h *ChatHandler) expandToolIDs(ctx context.Context, tenantID string, toolID
 	return json.Marshal(tools)
 }
 
-func (h *ChatHandler) SetAuth(kv *auth.KeyVerifier, rl ratelimit.RPMLimiter) {
+func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLimiter) {
 	h.keyVerifier = kv
 	h.rateLimiter = rl
 }
@@ -365,9 +364,9 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
-	Get(ctx context.Context, id string) (*sessions.Session, error)
+	Get(ctx context.Context, id string) (*session.Session, error)
 	Touch(ctx context.Context, id string) error
-	CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*sessions.Session, error)
+	CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, error)
 	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 }) {
 	h.sessionGetter = sg
@@ -545,7 +544,7 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// ── API key authentication ──────────────────────────────────────────
-	var keyInfo *auth.KeyInfo
+	var keyInfo *authentication.KeyInfo
 	if h.keyVerifier != nil && h.keyVerifier.Enabled() {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
@@ -555,7 +554,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
 		if verifyErr != nil {
-			if _, ok := verifyErr.(*auth.InvalidKeyError); ok {
+			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
 				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
@@ -573,7 +572,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
 		// llm-gateway-go is Pattern A (direct tenant_id from
-		// auth.KeyInfo). Every authenticated request now carries
+		// authentication.KeyInfo). Every authenticated request now carries
 		// tenant.id so production debugging can filter Jaeger.
 		span := trace.SpanFromContext(r.Context())
 		observability.SetTenantAttrs(span, keyInfo.TenantID, "api_key",
@@ -602,7 +601,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── Budget pre-check ─────────────────────────────────────────────────
 	if keyInfo != nil && h.keyVerifier != nil {
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
-			if _, ok := budgetErr.(*auth.BudgetExceededError); ok {
+			if _, ok := budgetErr.(*authentication.BudgetExceededError); ok {
 				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil)
 				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
 				return
@@ -624,12 +623,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// ── Inject API Key info into context for session middleware ─────────
 	ctx := r.Context()
 	if keyInfo != nil {
-		ctx = sessions.SetAPIKeyID(ctx, keyInfo.ID)
-		ctx = sessions.SetTenantID(ctx, keyInfo.TenantID)
+		ctx = session.SetAPIKeyID(ctx, keyInfo.ID)
+		ctx = session.SetTenantID(ctx, keyInfo.TenantID)
 	}
 
 	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
-	var sessionInfo *sessions.Session
+	var sessionInfo *session.Session
 	sessionID := sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
@@ -637,7 +636,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
-			if err == sessions.ErrSessionNotFound && keyInfo != nil {
+			if err == session.ErrSessionNotFound && keyInfo != nil {
 				deviceSeed := r.Header.Get("X-Device-Seed")
 				if deviceSeed == "" {
 					deviceSeed = r.Header.Get("X-Machine-Id")
@@ -653,7 +652,7 @@ func (h *ChatHandler) serveWithExecutor(
 					sessionInfo = newSession
 					sessionID = newSession.SessionID
 					logCtx.SetSession(newSession)
-					ctx = sessions.SessionFromContextWith(ctx, newSession)
+					ctx = session.SessionFromContextWith(ctx, newSession)
 					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
 					if r.Header.Get("X-Session-Id") != "" {
 						slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
@@ -668,7 +667,7 @@ func (h *ChatHandler) serveWithExecutor(
 						"task_id", taskID,
 					)
 				}
-			} else if err != sessions.ErrSessionNotFound {
+			} else if err != session.ErrSessionNotFound {
 				slog.Warn("session lookup failed", "error", err)
 			}
 		} else {
@@ -697,7 +696,7 @@ func (h *ChatHandler) serveWithExecutor(
 				//nolint:errcheck // best-effort touch, non-critical
 				h.sessionGetter.Touch(touchCtx, sessionID)
 			}()
-			ctx = sessions.SessionFromContextWith(ctx, sessionInfo)
+			ctx = session.SessionFromContextWith(ctx, sessionInfo)
 		}
 	}
 
@@ -993,8 +992,8 @@ func (h *ChatHandler) serveWithExecutor(
 		modelResolution = h.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	}
 
-	var txResult *transform.TransformResult
-	tCtx := &transform.TransformContext{
+	var txResult *transformation.TransformResult
+	tCtx := &transformation.TransformContext{
 		RequestMode:   "chat",
 		ClientProfile: clientID.Fingerprint.ClientProfile,
 		ClientModel:   clientModel,
@@ -1227,7 +1226,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientProtocol = detected
 	}
 
-	result, execErr := h.executor.Execute(&routing.ExecParams{
+	result, execErr := h.executor.Execute(&executors.ExecParams{
 		W:              w,
 		R:              r,
 		BodyBytes:      upstreamBody,
@@ -1294,8 +1293,8 @@ func (h *ChatHandler) serveWithExecutor(
 		)
 		var providerID, credentialID *int
 		var tried int
-		var failTrace *routing.Trace
-		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok {
+		var failTrace *executors.Trace
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
 		}
@@ -1310,7 +1309,7 @@ func (h *ChatHandler) serveWithExecutor(
 		// (see sessions/handler.go C3). The body is a small JSON
 		// status object; the real response lands in pending store
 		// when the async goroutine completes.
-		var asyncErr *routing.AsyncPendingError
+		var asyncErr *executors.AsyncPendingError
 		if errors.As(execErr, &asyncErr) {
 			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
 			w.Header().Set("X-Gw-Pending-Request", asyncErr.RequestID)
@@ -1334,7 +1333,7 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		errCode := "provider_error"
-		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok && execErrTyped.Exhausted {
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
 			// Step 6 (2026-06-18): preserve backward-compat error.code
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
@@ -1415,7 +1414,7 @@ func (h *ChatHandler) serveWithExecutor(
 			"tried":     tried,
 			"retryable": false,
 		}
-		if execErrTyped, ok := execErr.(*routing.ExecuteError); ok {
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
 			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
@@ -1469,7 +1468,7 @@ func (h *ChatHandler) serveWithExecutor(
 	markLogged()
 }
 
-func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResult, endUser string, keyInfo *auth.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transform.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
+func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -1706,7 +1705,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		ResponseBody:     responseBodyText,
 		// Round 47 compression v7 T-NEW-3: write the compression event
 		// captured by the executor's 4xx recovery (see
-		// routing.context_summarize.handleContextLengthRecovery) into
+		// executors.context_summarize.handleContextLengthRecovery) into
 		// request_logs.compression_*. Operators can then SQL-trace the
 		// parent-child chain via parent_request_id.
 		//
@@ -2012,7 +2011,7 @@ func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel 
 }
 
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
-func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *auth.KeyInfo, r *http.Request) {
+func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
 	ctx := &RequestLogContext{
 		handler:       h,
 		RequestID:     requestID,
@@ -2024,7 +2023,7 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		OutboundModel: outboundModel,
 	}
 	if r != nil {
-		if session := sessions.SessionFromContext(r.Context()); session != nil {
+		if session := session.SessionFromContext(r.Context()); session != nil {
 			ctx.Session = session
 		}
 		ctx.refreshMeta()
@@ -2033,7 +2032,7 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 }
 
 // clientProfileFromKey returns the API key / application default client profile.
-func clientProfileFromKey(keyInfo *auth.KeyInfo) string {
+func clientProfileFromKey(keyInfo *authentication.KeyInfo) string {
 	if keyInfo != nil && keyInfo.DefaultClientProfile != nil {
 		return strings.TrimSpace(*keyInfo.DefaultClientProfile)
 	}
@@ -2042,7 +2041,7 @@ func clientProfileFromKey(keyInfo *auth.KeyInfo) string {
 
 // failedRequestIdentity builds client_profile + identity_hash from request
 // headers and key anchors without requiring a parsed request body.
-func failedRequestIdentity(r *http.Request, keyInfo *auth.KeyInfo) (clientProfile, identityHash string) {
+func failedRequestIdentity(r *http.Request, keyInfo *authentication.KeyInfo) (clientProfile, identityHash string) {
 	if r == nil {
 		return "", ""
 	}
@@ -2097,7 +2096,7 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 	errCode, errMessage string,
 	latencyMs int,
 	requestBody []byte,
-	keyInfo *auth.KeyInfo,
+	keyInfo *authentication.KeyInfo,
 	clientProfile, identityHash, requestMode string,
 	gwSessionID, gwTaskID string,
 	meta *requestAttemptMeta,
@@ -2222,11 +2221,11 @@ func classifyFailureStage(errCode string) string {
 // and final success/error state via EmitRequestLogUpdate.
 func (h *ChatHandler) recordInitialRequestLog(
 	requestID, clientModel, outboundModel, endUser, requestMode string,
-	keyInfo *auth.KeyInfo,
+	keyInfo *authentication.KeyInfo,
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	requestBody []byte,
-	txResult *transform.TransformResult,
+	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
 	gwSessionID, gwTaskID string,
@@ -2346,7 +2345,7 @@ func extractModelFieldLoose(body []byte) string {
 	return strings.TrimSpace(string(rest[1 : endIdx+1]))
 }
 
-func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyInfo *auth.KeyInfo, clientID identity.ClientIdentity, candidatesTried int, modelResolution *resolve.Resolution, txResult *transform.TransformResult, errCode string, failTrace *routing.Trace, latencyMs int) {
+func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyInfo *authentication.KeyInfo, clientID identity.ClientIdentity, candidatesTried int, modelResolution *resolve.Resolution, txResult *transformation.TransformResult, errCode string, failTrace *executors.Trace, latencyMs int) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
 	}
@@ -2514,13 +2513,13 @@ type HealthResponse struct {
 
 // HealthHandler returns health information including circuit breaker and limiter stats.
 type HealthHandler struct {
-	circuit *circuit.Manager
-	limiter *limiter.Limiter
+	circuit *credential.Manager
+	limiter *credential.Limiter
 	proxy   *upstreampkg.ProxyResolver
 }
 
 // NewHealthHandler creates a new health handler.
-func NewHealthHandler(cm *circuit.Manager, l *limiter.Limiter, proxy *upstreampkg.ProxyResolver) *HealthHandler {
+func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upstreampkg.ProxyResolver) *HealthHandler {
 	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy}
 }
 
@@ -2845,7 +2844,7 @@ func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, e
 //
 // Returns "" when no kind can be determined (caller should omit the
 // header and the field).
-func mapExecuteErrorToKind(err *routing.ExecuteError) string {
+func mapExecuteErrorToKind(err *executors.ExecuteError) string {
 	if err == nil {
 		return ""
 	}

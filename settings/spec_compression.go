@@ -87,7 +87,7 @@ func CompressionSpecs() []*Spec {
 			Max:             floatPtr(8760),
 			Default:         168,
 			Description:     "会话 TTL",
-			DescriptionLong: "会话在 Redis 中保留的小时数。影响 sessions.Manager 的 TTL。",
+			DescriptionLong: "会话在 Redis 中保留的小时数。影响 session.Manager 的 TTL。",
 			Unit:            "小时",
 			DangerLevel:     Dangerous,
 			HotReload:       true,

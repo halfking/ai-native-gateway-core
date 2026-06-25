@@ -58,7 +58,7 @@ const (
 	l1MaxSessions = 1024
 
 	// compactionMarkerPrefix is the content prefix used to identify summary
-	// boundary messages injected by the session compressor. Any message
+	// boundary messages injected by the session compression. Any message
 	// whose "content" field starts with this prefix is treated as a
 	// compacted summary and is skipped by the LCS diff.
 	CompactionMarkerPrefix = "[smm_v1:"

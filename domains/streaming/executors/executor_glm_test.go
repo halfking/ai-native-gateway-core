@@ -7,9 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/circuit"
-	"github.com/kaixuan/llm-gateway-go/identity"
-	"github.com/kaixuan/llm-gateway-go/limiter"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -123,9 +122,9 @@ func TestExecute_GLM51_TriesThirdCandidateAfterTwoModelNotFound(t *testing.T) {
 	policy.TierFallbackMax = 3
 
 	exec := NewExecutor(
-		NewRouter(NewStickyCache(), limiter.New()),
-		circuit.NewManager(),
-		limiter.New(),
+		NewRouter(NewStickyCache(), credential.NewLimiter()),
+		credential.NewManager(),
+		credential.NewLimiter(),
 		pool.NewPoolManager(nil),
 		nil,
 		func(chunk []byte, isStream bool) []byte { return chunk },

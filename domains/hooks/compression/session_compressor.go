@@ -1,4 +1,4 @@
-// Package compressor - session_compressor.go (v3 T27)
+// Package compressor - session_compression.go (v3 T27)
 //
 // SessionCompressor is the top-level orchestrator for v3 session-level
 // intelligent compression. It wires together:
@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 // SessionCompressorDeps are the external dependencies of SessionCompressor.
@@ -367,9 +367,9 @@ func mechanicalTrim(body []byte, contextWindow int, protocol string) []byte {
 		return body
 	}
 	if protocol == "anthropic-messages" {
-		return transform.CompressAnthropicMessagesIfNeeded(body, contextWindow)
+		return transformation.CompressAnthropicMessagesIfNeeded(body, contextWindow)
 	}
-	return transform.CompressMessagesIfNeeded(body, contextWindow)
+	return transformation.CompressMessagesIfNeeded(body, contextWindow)
 }
 
 // injectSummaryMarker wraps the summarised body so the first assistant
@@ -428,7 +428,7 @@ func extractTaskType(ctx context.Context) string {
 // taskTypeCtxKey is the context key for propagating task_type.
 type taskTypeCtxKey struct{}
 
-// WithTaskType stores the task_type in a context for the session compressor.
+// WithTaskType stores the task_type in a context for the session compression.
 func WithTaskType(ctx context.Context, taskType string) context.Context {
 	return context.WithValue(ctx, taskTypeCtxKey{}, taskType)
 }

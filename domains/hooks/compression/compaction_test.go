@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/memora"
+	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 )
 
 // fakeMemoraClient records which retrieval method was called so we can

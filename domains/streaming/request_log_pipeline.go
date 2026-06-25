@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/auth"
-	"github.com/kaixuan/llm-gateway-go/sessions"
-	"github.com/kaixuan/llm-gateway-go/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // jsonMarshal is a local alias used by auto_route.go to avoid pulling
@@ -26,9 +26,9 @@ type RequestLogContext struct {
 	RequestID string
 	StartTime time.Time
 	Request   *http.Request
-	Session   *sessions.Session
+	Session   *session.Session
 
-	KeyInfo       *auth.KeyInfo
+	KeyInfo       *authentication.KeyInfo
 	Body          []byte
 	ClientModel   string
 	OutboundModel string
@@ -143,11 +143,11 @@ func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, st
 	}
 }
 
-func (c *RequestLogContext) SetSession(session *sessions.Session) {
+func (c *RequestLogContext) SetSession(session *session.Session) {
 	c.Session = session
 }
 
-func (c *RequestLogContext) SetKey(keyInfo *auth.KeyInfo) {
+func (c *RequestLogContext) SetKey(keyInfo *authentication.KeyInfo) {
 	c.KeyInfo = keyInfo
 	c.refreshMeta()
 }

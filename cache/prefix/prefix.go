@@ -19,7 +19,7 @@
 //   maximizes the byte-stable prefix length, which maximizes cache hits.
 //
 // What this package does NOT do:
-//   - It does NOT inject cache_control markers (that is sessions.CacheInjector's
+//   - It does NOT inject cache_control markers (that is session.CacheInjector's
 //     job; this package just orders messages so the injector's markers land on
 //     a stable boundary).
 //   - It does NOT call the LLM or know about providers.

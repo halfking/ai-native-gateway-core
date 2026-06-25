@@ -37,8 +37,8 @@ import (
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/relay"
-	"github.com/kaixuan/llm-gateway-go/routing"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 )
 
 // captured holds everything a mock upstream observed so tests can assert.
@@ -89,7 +89,7 @@ func TestQuadrant1_ChatClientToChatUpstream(t *testing.T) {
 		RawModel:     "gpt-4o-mini",
 	}
 
-	ce := &routing.ChatExecutor{}
+	ce := &streaming.ChatExecutor{}
 	req, err := ce.BuildRequest(cand, clientBody, false)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
@@ -119,7 +119,7 @@ func TestQuadrant1_ChatClientToChatUpstream(t *testing.T) {
 
 // Q2: Anthropic Messages client -> OpenAI Chat Completions upstream.
 // The gateway MUST convert the request body to chat format and use Bearer
-// auth. (The full Q2 response converter is unexported; the upstream call
+// authentication. (The full Q2 response converter is unexported; the upstream call
 // side is provably correct here.)
 func TestQuadrant2_AnthropicClientToChatUpstream(t *testing.T) {
 	upstreamResp := []byte(`{
@@ -147,7 +147,7 @@ func TestQuadrant2_AnthropicClientToChatUpstream(t *testing.T) {
 		RawModel:     "gpt-4o-mini",
 	}
 
-	ce := &routing.ChatExecutor{}
+	ce := &streaming.ChatExecutor{}
 	req, err := ce.BuildRequest(cand, convertedBody, false)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
@@ -184,7 +184,7 @@ func TestQuadrant2_AnthropicClientToChatUpstream(t *testing.T) {
 
 // Q3: OpenAI Chat Completions client -> Anthropic Messages upstream.
 // The gateway MUST convert the chat body to Anthropic shape and use
-// x-api-key auth. The upstream response MUST be converted back to chat
+// x-api-key authentication. The upstream response MUST be converted back to chat
 // shape, dropping thinking blocks and recording _kxg_meta.has_thinking.
 func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 	upstreamResp := []byte(`{
@@ -212,7 +212,7 @@ func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 		RawModel:     "MiniMax-M2.7",
 	}
 
-	ae := &routing.AnthropicExecutor{}
+	ae := &streaming.AnthropicExecutor{}
 	req, err := ae.BuildRequest(cand, convertedBody, false)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
@@ -308,7 +308,7 @@ func TestQuadrant4_AnthropicClientToAnthropicUpstream(t *testing.T) {
 		RawModel:     "MiniMax-M2.7",
 	}
 
-	ae := &routing.AnthropicExecutor{}
+	ae := &streaming.AnthropicExecutor{}
 	req, err := ae.BuildRequest(cand, clientBody, false)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)

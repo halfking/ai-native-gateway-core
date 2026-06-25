@@ -4,14 +4,14 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/transform"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 // renderOutboundFromTransform mirrors Python prepare_candidate → render_outbound_model().
-// When no transform template matches, returns "" so routing.resolveOutboundModel uses
+// When no transform template matches, returns "" so streaming.resolveOutboundModel uses
 // the offer's COALESCE(outbound_model_name, raw_model_name) from cand.RawModel.
 func renderOutboundFromTransform(
-	txResult *transform.TransformResult,
+	txResult *transformation.TransformResult,
 	cand provider.Candidate,
 	canonicalName string,
 ) string {
@@ -22,7 +22,7 @@ func renderOutboundFromTransform(
 	if offerRaw == "" {
 		offerRaw = cand.RawModel
 	}
-	return transform.RenderOutboundModel(
+	return transformation.RenderOutboundModel(
 		txResult.OutboundModel,
 		cand.RawModel,
 		offerRaw,

@@ -161,7 +161,7 @@ func (b *Breaker) State() State { return State(b.state.Load()) }
 // ConsecutiveFailures returns the consecutive failure count.
 func (b *Breaker) ConsecutiveFailures() int { return int(b.consecutive.Load()) }
 
-// Allow checks whether a request should be allowed through the circuit.
+// Allow checks whether a request should be allowed through the credential.
 func (b *Breaker) Allow() bool {
 	state := b.State()
 	switch state {
@@ -442,7 +442,7 @@ func (m *Manager) RecordSuccess(providerID, credentialID int) {
 	b.RecordSuccess()
 }
 
-// Allow checks if a request should be allowed through the circuit.
+// Allow checks if a request should be allowed through the credential.
 func (m *Manager) Allow(providerID, credentialID int) bool {
 	b := m.GetOrCreate(providerID, credentialID)
 	return b.Allow()
