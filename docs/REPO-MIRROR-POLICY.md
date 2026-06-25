@@ -44,15 +44,15 @@
 
 | 类别 | 示例 |
 |------|------|
-| **LLM API Key** | `sk-...` (OpenAI), `sk-ant-...` (Anthropic), `AIza...` (Google), `sk_live_...` (Stripe) |
-| **GitHub Token** | `ghp_/gho_/ghu_/ghs_/ghr_/github_pat_` |
+| **LLM API Key** | `sk-…` (OpenAI), `sk-ant-…` (Anthropic), `AIza…` (Google), `sk_live_…` (Stripe) |
+| **GitHub Token** | `ghp_/gho_/ghu_/ghs_/ghr_/github_pat_` 前缀 |
 | **AWS Key** | `AKIA[0-9A-Z]{16}` |
 | **私钥** | `-----BEGIN ... PRIVATE KEY-----` |
-| **DB 连接串** | `postgres://user:pass@host` (带密码) |
-| **SSH 密码** | `K8S_SSH_PASSWORD="literal_value"` |
-| **内部 IP** | `10.x` / `172.16-31.x` / `192.168.x` |
-| **内部域名** | `kxpms.cn` / `kxpms.com` |
-| **已知泄露** | 之前从仓库提取的真实凭据字面量 |
+| **DB 连接串** | `postgres://<USER>/<PASSWORD>@<HOST>` (带密码字段) |
+| **SSH 密码** | `K8S_SSH_PASSWORD=...` 含字面量赋值 |
+| **内部 IP** | RFC1918 段 (10.x / 172.16-31.x / 192.168.x) |
+| **内部域名** | 公司内部 `<corp>.internal.example.com` 段 |
+| **已知泄露** | 之前从仓库提取的真实凭据字面量（黑名单） |
 | **敏感文件** | `.env*` / `*.pem` / `*.key` / `*.kubeconfig` |
 
 ### 2.4 使用方式
@@ -143,25 +143,26 @@ git push --no-verify github
 
 ## 4. 历史重写规则 (`scan-secrets.replacements`)
 
-| 模式 | 替换为 |
+| 模式类别 | 替换为 |
 |------|--------|
-| `<DB_PASSWORD_REDACTED>` | `__REDACTED_DB_PASSWORD__` |
-| `Kaixuan2025&9900#` | `__REDACTED_SSH_PASSWORD__` |
-| `tp-cia63detlzzaz731c3q3gebwi7ab6y1fas5r4sajo8n11l4m` | `__REDACTED_XIAOMI_API_KEY__` |
-| `111.0.232.226` | `__INTERNAL_PUBLIC_IP__` |
-| `10.43.62.x` | `__INTERNAL_K8S_HOST__` |
-| `10.43.61.x` | `__INTERNAL_DOCKER_HOST__` |
-| `172.31.0.3` / `172.31.0.4` | `__INTERNAL_K8S_HOST__` |
-| `registry.kxpms.cn` | `registry.internal.example.com` |
-| `llm.kxpms.cn` / `llmgo.kxpms.cn` | `llmgateway.internal.example.com` |
-| `auth.kxpms.cn` / `acc.kxpms.cn` / `mcp.kxpms.cn` | `<sub>.internal.example.com` |
-| 通用 `kxpms.cn` / `kxpms.com` | `internal.example.com` |
+| 已知 DB 密码 | `__REDACTED_DB_PASSWORD__` |
+| 已知 SSH 密码 | `__REDACTED_SSH_PASSWORD__` |
+| 已知第三方 API key | `__REDACTED_<VENDOR>_API_KEY__` |
+| 已知公网 IP（含内网 NAT） | `__INTERNAL_PUBLIC_IP__` |
+| K8s host IP (10.43.62.x 段) | `__INTERNAL_K8S_HOST__` |
+| Docker host IP (10.43.61.x 段) | `__INTERNAL_DOCKER_HOST__` |
+| K8s 节点 IP (172.31.x 段) | `__INTERNAL_K8S_HOST__` |
+| 内部镜像仓库 (registry.<corp>.cn) | `registry.<corp>.internal.example.com` |
+| 业务主域名 (<svc>.<corp>.cn) | `<svc>.internal.example.com` |
+| 通用内部域 (含 `.cn` / `.com`) | `internal.example.com` |
+
+> 注：具体替换表见 `scripts/scan-secrets.replacements` (生产环境内网 IP / 域名)。
 
 ---
 
 ## 5. 白名单 (`scan-secrets.baseline`)
 
-针对测试 fixture 中的合法占位符（如 `APIKey: "test-key"`, `10.0.0.1` 等），
+针对测试 fixture 中的合法占位符（合成占位符 API key、合成 RFC5737 IP 等），
 使用 baseline 文件标注为已知误报。
 
 格式：`file:line:category`（每行一条，`#` 开头为注释）

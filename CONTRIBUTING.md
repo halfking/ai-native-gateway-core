@@ -254,4 +254,4 @@ Closes #123
 - 项目仓库：https://github.com/halfking/SI-LLM-Gateway
 - 内部仓库：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
 - 内部 IM：halfking
-- 邮件：dev@kxpms.cn
+- 邮件：dev@internal.example.com

@@ -32,7 +32,10 @@ echo "   history:   $([[ $SKIP_HISTORY -eq 1 ]] && echo skip || echo rewrite)"
 echo ""
 
 echo "━━━ Step 1/5: Working tree scan (strict, tracked-only) ━━━"
-if ! "$scanner" --mode=strict --paths=. --tracked-only --format=text; then
+baseline="$repo_root/scripts/scan-secrets.baseline"
+baseline_arg=""
+[[ -f "$baseline" ]] && baseline_arg="--baseline=$baseline"
+if ! "$scanner" --mode=strict --paths=. --tracked-only $baseline_arg --format=text; then
   echo ""
   echo "❌ Working tree has sensitive findings. Clean them first."
   echo "   See: docs/REPO-MIRROR-POLICY.md"
@@ -67,7 +70,9 @@ echo "━━━ Step 4/5: Verify mirror is clean ━━━"
 verify_dir="/tmp/llmgw-verify"
 rm -rf "$verify_dir"
 git clone --no-hardlinks "$mirror_dir" "$verify_dir" 2>&1 | tail -3
-if ! "$scanner" --mode=strict --paths="$verify_dir" --format=text; then
+# 把 baseline 复制到 verify_dir (因为 scanner 会按相对路径计算 rel)
+cp "$repo_root/scripts/scan-secrets.baseline" "$verify_dir/scripts/scan-secrets.baseline"
+if ! "$scanner" --mode=strict --repo-root="$verify_dir" --paths="$verify_dir" --baseline="$verify_dir/scripts/scan-secrets.baseline" --format=text; then
   echo ""
   echo "❌ Mirror still has sensitive content. Aborting."
   rm -rf "$verify_dir"
