@@ -236,23 +236,16 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
 		      AND v.raw_model_name = mo.raw_model_name
-		CROSS JOIN LATERAL (
+		LEFT JOIN LATERAL (
 			SELECT 
-				COALESCE(
-					(SELECT COUNT(CASE WHEN success THEN 1 END)::float / NULLIF(COUNT(*), 0)
-					 FROM request_logs 
-					 WHERE credential_id = c.id 
-					   AND outbound_model = mo.raw_model_name 
-					 ORDER BY ts DESC 
-					 LIMIT 50), 
-					1.0
-				) AS rate,
-				(SELECT COUNT(*) FROM request_logs 
-				 WHERE credential_id = c.id 
-				   AND outbound_model = mo.raw_model_name 
-				 ORDER BY ts DESC 
-				 LIMIT 50) AS samples
-		) AS rsr
+				COUNT(CASE WHEN success THEN 1 END)::float / NULLIF(COUNT(*), 0) AS rate,
+				COUNT(*) AS samples
+			FROM request_logs 
+			WHERE credential_id = c.id 
+			  AND outbound_model = mo.raw_model_name 
+			ORDER BY ts DESC 
+			LIMIT 50
+		) AS rsr ON true
 		WHERE p.tenant_id = 'default'
 		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
 		  AND mo.available IS TRUE
