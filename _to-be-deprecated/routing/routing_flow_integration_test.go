@@ -1,4 +1,3 @@
-
 package routing
 
 import (
@@ -7,12 +6,13 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // TestRoutingFlow_EndToEnd simulates a complete routing flow:
@@ -28,10 +28,10 @@ func TestRoutingFlow_EndToEnd(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize all components
-	routeNodeStore := NewRouteNodeStore(client)
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, client)
 	sessionPref := sessions.NewSessionPreference(client)
 	lastSystemSessionIdx := sessions.NewLastSystemSessionIndex(client)
-	recorder := NewRouteNodeRecorder(routeNodeStore, sessionPref)
+	recorder := NewRouteNodeRecorder(fpSlots, sessionPref)
 
 	// Setup: Pretend a client has a previous system session
 	apiKeyID := 123
@@ -53,9 +53,9 @@ func TestRoutingFlow_EndToEnd(t *testing.T) {
 	assert.Equal(t, previousSessionID, entry.SessionID)
 
 	// Step 2: RouteNode filter - credential 100 should be healthy
-	state100, err := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state100, err := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
-	assert.True(t, state100.IsUsable(time.Now()))
+	assert.True(t, state100 == nil || state100.IsUsable(time.Now()))
 
 	// Step 3: Record success
 	recorder.RecordSuccess(ctx, 100, "gpt-4", previousSessionID)
@@ -67,8 +67,9 @@ func TestRoutingFlow_EndToEnd(t *testing.T) {
 	assert.Equal(t, "gpt-4", val.Model)
 
 	// Step 5: Verify RouteNode success count
-	state100, err = routeNodeStore.Get(ctx, 100, "gpt-4")
+	state100, err = fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state100)
 	assert.Equal(t, int64(1), state100.SuccessCount)
 }
 
@@ -79,9 +80,9 @@ func TestRouteNodeFailure_AutoDisableAndRecover(t *testing.T) {
 
 	ctx := context.Background()
 
-	routeNodeStore := NewRouteNodeStore(client)
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, client)
 	sessionPref := sessions.NewSessionPreference(client)
-	recorder := NewRouteNodeRecorder(routeNodeStore, sessionPref)
+	recorder := NewRouteNodeRecorder(fpSlots, sessionPref)
 
 	// Step 1: Make 3 consecutive credential-level failures
 	for i := 0; i < RouteNodeFailStreakLimit; i++ {
@@ -89,23 +90,25 @@ func TestRouteNodeFailure_AutoDisableAndRecover(t *testing.T) {
 	}
 
 	// Step 2: Verify node is disabled
-	state, err := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state, err := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state)
 	assert.True(t, state.Disabled)
 	assert.False(t, state.IsUsable(time.Now()))
 
 	// Step 3: Filter should exclude this node
 	router := NewRouter(nil, nil)
-	router.RouteNodeStore = routeNodeStore
+	router.FpSlots = fpSlots
 
 	// Step 4: Manually set DisabledUntil to past for testing
-	state.DisabledUntil = time.Now().Add(-1 * time.Second)
-	err = routeNodeStore.Set(ctx, state)
+	state.DisabledUntil = time.Now().Add(-1 * time.Second).Unix()
+	err = fpSlots.SetNodeState(ctx, state)
 	require.NoError(t, err)
 
 	// Step 5: After cooldown, node should be usable again
-	state, err = routeNodeStore.Get(ctx, 100, "gpt-4")
+	state, err = fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state)
 	assert.True(t, state.IsUsable(time.Now()), "node should be usable after cooldown")
 	assert.False(t, state.Disabled, "node should no longer be disabled")
 }
@@ -117,8 +120,8 @@ func TestTransientFailure_Ignored(t *testing.T) {
 
 	ctx := context.Background()
 
-	routeNodeStore := NewRouteNodeStore(client)
-	recorder := NewRouteNodeRecorder(routeNodeStore, nil)
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, client)
+	recorder := NewRouteNodeRecorder(fpSlots, nil)
 
 	// Make 10 transient failures (way over the threshold)
 	for i := 0; i < 10; i++ {
@@ -127,10 +130,12 @@ func TestTransientFailure_Ignored(t *testing.T) {
 	}
 
 	// Verify node is still healthy
-	state, err := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state, err := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), state.FailureCount)
-	assert.False(t, state.Disabled)
+	if state != nil {
+		assert.Equal(t, int64(0), state.FailureCount)
+		assert.False(t, state.Disabled)
+	}
 }
 
 // TestMixedFailureTypes_OnlyCredentialCounts verifies mixed failure types.
@@ -140,8 +145,8 @@ func TestMixedFailureTypes_OnlyCredentialCounts(t *testing.T) {
 
 	ctx := context.Background()
 
-	routeNodeStore := NewRouteNodeStore(client)
-	recorder := NewRouteNodeRecorder(routeNodeStore, nil)
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, client)
+	recorder := NewRouteNodeRecorder(fpSlots, nil)
 
 	// Mix of transient and credential failures
 	recorder.RecordFailure(ctx, 100, "gpt-4", errorsx.KindNetwork)      // transient
@@ -151,8 +156,9 @@ func TestMixedFailureTypes_OnlyCredentialCounts(t *testing.T) {
 	recorder.RecordFailure(ctx, 100, "gpt-4", errorsx.KindUpstreamDown) // transient
 
 	// Only credential failures should be counted
-	state, err := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state, err := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state)
 	assert.Equal(t, int64(2), state.FailureCount)
 }
 
@@ -163,40 +169,41 @@ func TestPlanCandidates_RouteNodeFilter(t *testing.T) {
 
 	ctx := context.Background()
 
-	routeNodeStore := NewRouteNodeStore(client)
+	fpSlots := credentialfpslot.New(credentialfpslot.Config{Enabled: true, DefaultLimit: 5}, client)
 	router := NewRouter(nil, nil)
-	router.RouteNodeStore = routeNodeStore
+	router.FpSlots = fpSlots
 
 	// Setup: Disable credential 100 by recording 3 consecutive failures
 	for i := 0; i < RouteNodeFailStreakLimit; i++ {
-		if err := routeNodeStore.RecordFailure(ctx, 100, "gpt-4", "req-"+string(rune('0'+i)), "rate_limit"); err != nil {
+		if err := fpSlots.RecordNodeFailure(ctx, 100, "gpt-4", "req-"+string(rune('0'+i)), "rate_limit"); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Verify credential 100 is disabled
-	state, err := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state, err := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state)
 	assert.True(t, state.Disabled)
 
 	// Verify credential 200 is healthy
-	state, err = routeNodeStore.Get(ctx, 200, "gpt-4")
+	state, err = fpSlots.GetNodeState(ctx, 200, "gpt-4")
 	require.NoError(t, err)
+	require.NotNil(t, state)
 	assert.False(t, state.Disabled)
 
 	// Verify the state.IsUsable works correctly
-	state100, _ := routeNodeStore.Get(ctx, 100, "gpt-4")
+	state100, _ := fpSlots.GetNodeState(ctx, 100, "gpt-4")
 	assert.False(t, state100.IsUsable(time.Now()))
 
-	state200, _ := routeNodeStore.Get(ctx, 200, "gpt-4")
+	state200, _ := fpSlots.GetNodeState(ctx, 200, "gpt-4")
 	assert.True(t, state200.IsUsable(time.Now()))
 }
 
-// TestPlanCandidates_RouteNodeFilter_NoStore verifies graceful degradation.
-func TestPlanCandidates_RouteNodeFilter_NoStore(t *testing.T) {
+// TestPlanCandidates_RouteNodeFilter_NoFpSlots verifies graceful degradation.
+func TestPlanCandidates_RouteNodeFilter_NoFpSlots(t *testing.T) {
 	router := NewRouter(nil, nil)
-	// No RouteNodeStore set - should return input unchanged
-	assert.Nil(t, router.RouteNodeStore)
+	assert.Nil(t, router.FpSlots)
 }
 
 // TestSessionPreference_AfterModelSwitch verifies session pref behavior.
