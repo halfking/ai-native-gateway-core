@@ -1,0 +1,176 @@
+# R1.12 本地测试 docker-compose
+#
+# 用法:
+#   docker-compose -f docker-compose.local-r112.yml config    # 验证语法
+#   ./scripts/local-r112-up.sh                                  # 启动 + 等健康
+#   ./scripts/local-r112-down.sh                                # 停止 + 清理 volumes
+#
+# 端口映射 (避免与本地其他 compose 冲突):
+#   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
+#   - 6379  redis
+#   - 1080  llm-mock  (mockserver, OpenAI 兼容)
+#   - 8782  gateway-v2 (本仓库 cmd/gateway-v2)
+#   - 10302 memora-mcp (mock 占位, 注释说明)
+#
+# 所有 volume 名前缀 r112_ —— 避免与本地其他 docker-compose 冲突
+
+version: "3.9"
+
+x-pg-env: &pg-env
+  POSTGRES_USER: kxuser
+  POSTGRES_PASSWORD: <TEST_DB_PASSWORD_REDACTED>
+  POSTGRES_DB: postgres
+
+services:
+  # ─────────────────────────────────────────────────────────────────────
+  # PostgreSQL (Citus 11.3, 与 184/71 生产一致)
+  # ─────────────────────────────────────────────────────────────────────
+  postgres:
+    image: citusdata/citus:11.3.0
+    container_name: r112_postgres
+    environment:
+      <<: *pg-env
+    ports:
+      - "5432:5432"
+    volumes:
+      - r112_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kxuser -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Redis 7
+  # ─────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: r112_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - r112_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Memora MCP server (mock 占位)
+  # ─────────────────────────────────────────────────────────────────────
+  # TODO(r112): 替换为真实 mcp-server 镜像 (registry.kxpms.cn/kx-memora-mcp:<tag>)
+  # 当前用 nginx:alpine + 假 /healthz 端点保证 gateway-v2 启动不报错
+  # ─────────────────────────────────────────────────────────────────────
+  memora-mcp:
+    image: nginx:alpine
+    container_name: r112_memora_mcp
+    ports:
+      - "10302:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost/healthz | grep -q ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      # 注入假 healthz 响应
+      - ./scripts/mocks/memora-healthz.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # LLM mock (OpenAI 兼容 mock, 用于 v2 集成测试)
+  # ─────────────────────────────────────────────────────────────────────
+  llm-mock:
+    image: mockserver/mockserver:latest
+    container_name: r112_llm_mock
+    ports:
+      - "1080:1080"
+    environment:
+      MOCKSERVER_SERVER_PORT: 1080
+      MOCKSERVER_LOG_LEVEL: WARN
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:1080/mockserver/status | grep -q mockserver || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Gateway v2 (本地 build, Dockerfile 待创建于 cmd/gateway-v2/Dockerfile)
+  # ─────────────────────────────────────────────────────────────────────
+  gateway-v2:
+    build:
+      context: .
+      dockerfile: cmd/gateway-v2/Dockerfile
+    image: r112-gateway-v2:local
+    container_name: r112_gateway_v2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      memora-mcp:
+        condition: service_healthy
+      llm-mock:
+        condition: service_healthy
+    ports:
+      - "8782:8080"
+    environment:
+      # ── 基础 ──
+      GIN_MODE: release
+      LOG_LEVEL: info
+      LISTEN_ADDR: ":8080"
+      # ── 依赖指向 compose 内服务名 (docker DNS 自动解析) ──
+      DATABASE_URL: postgres://kxuser:<TEST_DB_PASSWORD_REDACTED>@postgres:5432/llm_gateway?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      MEMORA_URL: http://memora-mcp:80
+      OPENAI_BASE_URL: http://llm-mock:1080
+      # ── v2 特性开关 ──
+      GATEWAY_V2_ENABLED: "true"
+      COMPRESSOR_ENABLED: "true"
+      ARMOR_ENABLED: "true"
+      CREDENTIAL_FP_SLOTS_ENABLED: "true"
+      # ── 关闭外部认证 (本地测试不需要 Casdoor) ──
+      AUTH_DISABLED: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/healthz | grep -q ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Test runner (alpine + curl, 用于一次性跑 curl 测试)
+  # ─────────────────────────────────────────────────────────────────────
+  test-runner:
+    image: alpine:3.20
+    container_name: r112_test_runner
+    entrypoint: ["sleep", "infinity"]
+    networks:
+      - r112_net
+    profiles:
+      - test
+
+volumes:
+  r112_pg_data:
+    name: r112_pg_data
+  r112_redis_data:
+    name: r112_redis_data
+
+networks:
+  r112_net:
+    name: r112_net
+    driver: bridge
