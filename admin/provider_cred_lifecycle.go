@@ -193,13 +193,25 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 		sampleModels = []string{}
 	}
 
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
+	// Update health status. The WHERE clause includes both id and provider_id
+	// as a defensive constraint: if the credential doesn't belong to this
+	// provider (shouldn't happen given loadCredentialRowLite check above, but
+	// protects against race conditions or manual DB edits), the update will
+	// affect 0 rows and we'll catch that.
+	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials SET health_status = $1, health_checked_at = now(), health_error = $2,
 		    health_latency_ms = $3, health_source = 'probe', api_models_ok = $4,
 		    api_models_last_checked_at = now(), api_models_error = $5
-		WHERE id = $6
-	`, healthStatus, healthError, healthLatencyMs, modelsOk, apiModelsErr, credID)
+		WHERE id = $6 AND provider_id = $7
+	`, healthStatus, healthError, healthLatencyMs, modelsOk, apiModelsErr, credID, providerID)
+	if err != nil {
+		slog.Error("doHealthCheck: UPDATE credentials failed", "credential_id", credID, "provider_id", providerID, "error", err)
+		return nil, fmt.Errorf("failed to update credential health: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Error("doHealthCheck: UPDATE affected 0 rows (provider_id/credential_id mismatch?)", "credential_id", credID, "provider_id", providerID)
+		return nil, fmt.Errorf("credential %d does not belong to provider %d", credID, providerID)
+	}
 
 	return map[string]any{
 		"credential_id":          credID,

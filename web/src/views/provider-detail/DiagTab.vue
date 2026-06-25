@@ -10,6 +10,18 @@ const loading = ref(false)
 const error = ref('')
 const polling = ref(false)
 
+function assertDiagnoseTaskMatches(task: BackgroundTask, expectedProviderId: number) {
+  const tp = task.provider_id
+  if (tp == null) return
+  if (tp === expectedProviderId) return
+  const msg =
+    `[diag] task ${task.id} refers to provider=${tp} ` +
+    `but caller requested provider=${expectedProviderId}; ` +
+    `treating as a stale/foreign task`
+  console.error(msg, task)
+  throw new Error(msg)
+}
+
 async function runDiagnose() {
   loading.value = true
   error.value = ''
@@ -20,6 +32,9 @@ async function runDiagnose() {
     while (Date.now() < deadline) {
       const task = await getTask(task_id)
       taskStatus.value = task
+      // Defensive: if the polled task belongs to a different provider,
+      // bail out instead of silently showing wrong-provider results.
+      assertDiagnoseTaskMatches(task, props.providerId)
       if (task.status !== 'running') {
         polling.value = false
         if (task.status === 'succeeded') {

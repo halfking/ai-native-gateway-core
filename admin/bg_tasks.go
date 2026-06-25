@@ -78,11 +78,27 @@ func getBackgroundTask(ctx context.Context, db *pgxpool.Pool, taskID int64) (map
 	if errText != nil {
 		result["error"] = *errText
 	}
-	if requestJSON != nil {
+if requestJSON != nil {
 		var req any
 		//nolint:errcheck // test parse, non-critical
 		json.Unmarshal([]byte(*requestJSON), &req)
 		result["request"] = req
+
+		// ID-consistency check: the top-level provider_id/credential_id columns
+		// must match what is stored inside request_json. If they diverge we have
+		// either a bug in some INSERT path or a manually-edited row; flag it so
+		// ops can spot the case without grepping the DB.
+		if reqMap, ok := req.(map[string]any); ok {
+			if mismatch, ok := detectBackgroundTaskIDMismatch(taskID, taskType, providerID, credentialID, reqMap); ok {
+				slog.Warn("background_task ID mismatch: top-level columns do not match request_json",
+					"task_id", id, "task_type", taskType,
+					"top_provider_id", mismatch["top_provider_id"],
+					"top_credential_id", mismatch["top_credential_id"],
+					"request_provider_id", mismatch["request_provider_id"],
+					"request_credential_id", mismatch["request_credential_id"])
+				result["id_inconsistency"] = mismatch
+			}
+		}
 	}
 	if resultJSON != nil {
 		var res any
@@ -116,4 +132,51 @@ func getLatestDiagnoseResult(ctx context.Context, db *pgxpool.Pool, providerID i
 		result["result"] = res
 	}
 	return result, nil
+}
+
+// detectBackgroundTaskIDMismatch extracts provider_id/credential_id from a
+// parsed request_json map and compares them against the top-level column
+// values stored in background_tasks. Returns a non-nil mismatch map and true
+// when any present pair disagrees. nil/false otherwise. Extracted from
+// getBackgroundTask so it can be unit-tested without a DB.
+func detectBackgroundTaskIDMismatch(taskID int64, taskType string, topPID, topCID *int64, req map[string]any) (map[string]any, bool) {
+	getInt64 := func(key string) *int64 {
+		v, ok := req[key]
+		if !ok {
+			return nil
+		}
+		switch x := v.(type) {
+		case float64:
+			n := int64(x)
+			return &n
+		case int64:
+			return &x
+		case int:
+			n := int64(x)
+			return &n
+		case json.Number:
+			n, err := x.Int64()
+			if err != nil {
+				return nil
+			}
+			return &n
+		}
+		return nil
+	}
+	reqPID := getInt64("provider_id")
+	reqCID := getInt64("credential_id")
+
+	pidMismatch := reqPID != nil && topPID != nil && *reqPID != *topPID
+	cidMismatch := reqCID != nil && topCID != nil && *reqCID != *topCID
+	if !pidMismatch && !cidMismatch {
+		return nil, false
+	}
+	return map[string]any{
+		"task_id":              taskID,
+		"task_type":            taskType,
+		"top_provider_id":      topPID,
+		"top_credential_id":    topCID,
+		"request_provider_id":  reqPID,
+		"request_credential_id": reqCID,
+	}, true
 }

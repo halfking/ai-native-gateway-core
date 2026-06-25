@@ -275,10 +275,19 @@ export interface BackgroundTask {
   id: number
   task_type: string
   status: 'running' | 'succeeded' | 'failed'
+  provider_id?: number
+  credential_id?: number
+  request?: any
   result?: any
   error?: string
   started_at: string
   finished_at?: string
+  id_inconsistency?: {
+    top_provider_id?: number | null
+    top_credential_id?: number | null
+    request_provider_id?: number | null
+    request_credential_id?: number | null
+  }
 }
 
 export function getTask(taskId: number) {
@@ -472,6 +481,7 @@ export function startCredentialCheck(providerId: number, credId: number) {
 export async function checkCredential(providerId: number, credId: number) {
   const { task_id } = await startCredentialCheck(providerId, credId)
   const task = await pollTask(task_id)
+  assertTaskMatches(task, providerId, credId)
   if (task.status === 'failed') {
     throw new Error(task.error || 'credential check failed')
   }
@@ -480,7 +490,28 @@ export async function checkCredential(providerId: number, credId: number) {
 
 export async function checkCredentialHealth(providerId: number, credId: number) {
   const { task_id } = await startCredentialCheck(providerId, credId)
-  return pollTask(task_id)
+  const task = await pollTask(task_id)
+  assertTaskMatches(task, providerId, credId)
+  return task
+}
+
+/**
+ * Defensive guard: the polled task row must refer to the same
+ * (providerId, credId) we just triggered. If the server's row has different
+ * IDs we are looking at someone else's task (DB drift, a stale insert path,
+ * or a UI race). Surface that explicitly instead of silently swallowing it.
+ */
+function assertTaskMatches(task: BackgroundTask, providerId: number, credId: number) {
+  const tp = task.provider_id
+  const tc = task.credential_id
+  if (tp == null || tc == null) return
+  if (tp === providerId && tc === credId) return
+  const msg =
+    `[check] task ${task.id} refers to provider=${tp} credential=${tc} ` +
+    `but caller requested provider=${providerId} credential=${credId}; ` +
+    `treating as a stale/foreign task`
+  console.error(msg, task)
+  throw new Error(msg)
 }
 
 export function batchRecoverCredentials(providerId: number) {
@@ -585,7 +616,26 @@ export function getDiagnoseResult(providerId: number) {
 
 export async function diagnoseProvider(providerId: number, opts: { force?: boolean } = {}) {
   const { task_id } = await startDiagnose(providerId, opts)
-  return pollTask(task_id)
+  const task = await pollTask(task_id)
+  assertProviderMatches(task, providerId)
+  return task
+}
+
+/**
+ * Same defensive guard as assertTaskMatches but for provider-only tasks
+ * (diagnose). If the polled task row belongs to a different provider, fail
+ * loudly instead of silently reporting wrong-provider results.
+ */
+function assertProviderMatches(task: BackgroundTask, providerId: number) {
+  const tp = task.provider_id
+  if (tp == null) return
+  if (tp === providerId) return
+  const msg =
+    `[diagnose] task ${task.id} refers to provider=${tp} ` +
+    `but caller requested provider=${providerId}; ` +
+    `treating as a stale/foreign task`
+  console.error(msg, task)
+  throw new Error(msg)
 }
 
 export function queryProviderModels(providerId: number, body: {

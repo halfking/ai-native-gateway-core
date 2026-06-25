@@ -113,7 +113,6 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
 			    unavailable_at     = NULL,
-			    unavailable_recover_at = NULL,
 			    updated_at         = now()
 			WHERE mo.credential_id = $1
 			  AND mo.available = FALSE
@@ -140,27 +139,26 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		`, credentialID, rawModel); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `
-			UPDATE model_offers mo
-			SET available          = TRUE,
-			    unavailable_reason = NULL,
-			    unavailable_at     = NULL,
-			    unavailable_recover_at = NULL,
-			    updated_at         = now()
-			FROM provider_models pm
-			WHERE pm.raw_model_name = mo.raw_model_name
-			  AND pm.id = (
-			      SELECT cmb.provider_model_id
-			      FROM credential_model_bindings cmb
-			      WHERE cmb.credential_id = $1
-			        AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
-			      LIMIT 1
-			  )
-			  AND mo.credential_id = $1
-			  AND mo.available = FALSE
-			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
-			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, rawModel); err != nil {
+			if _, err = tx.Exec(ctx, `
+				UPDATE model_offers mo
+				SET available          = TRUE,
+				    unavailable_reason = NULL,
+				    unavailable_at     = NULL,
+				    updated_at         = now()
+				FROM provider_models pm
+				WHERE pm.raw_model_name = mo.raw_model_name
+				  AND pm.id = (
+				      SELECT cmb.provider_model_id
+				      FROM credential_model_bindings cmb
+				      WHERE cmb.credential_id = $1
+				        AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
+				      LIMIT 1
+				  )
+				  AND mo.credential_id = $1
+				  AND mo.available = FALSE
+				  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
+				  AND COALESCE(mo.admin_protected, FALSE) = FALSE
+			`, credentialID, rawModel); err != nil {
 			return err
 		}
 	}

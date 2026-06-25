@@ -493,8 +493,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($62 AS text[]), CAST($63 AS jsonb), $64,
 		$65,
 		CAST($66 AS jsonb)
-		)
-			ON CONFLICT (request_id, ts) DO UPDATE SET
+			)
+				ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
@@ -738,11 +738,11 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	tag, err := tx.Exec(ctx, `
-		WITH latest AS (
+		WITH earliest AS (
 			SELECT id, ts
 			FROM request_logs
 			WHERE request_id = $1
-			ORDER BY ts DESC
+			ORDER BY ts ASC
 			LIMIT 1
 		)
 		UPDATE request_logs rl
@@ -821,9 +821,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason),
 	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
 	   tool_calls = COALESCE(CAST($63 AS jsonb), rl.tool_calls)
-	  FROM latest
-	 WHERE rl.id = latest.id
-	   AND rl.ts = latest.ts
+	  FROM earliest
+	 WHERE rl.id = earliest.id
+	   AND rl.ts = earliest.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,
@@ -902,13 +902,27 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		// No early row — fall back to insert so the request is not lost.
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
-		}
-		fallback := *entry
-		fallback.Op = RequestLogInsert
-		return c.insertRequestLog(&fallback)
+		// 2026-06-26: Disable fallback INSERT to prevent duplicate records.
+		// The root cause is that the UPSERT uses (request_id, ts) as conflict
+		// key, where ts=now() differs each time, creating multiple rows for
+		// the same request_id. The UPDATE CTE searches for the latest row by
+		// DESC order, but if a concurrent fallback INSERT created a newer row,
+		// the UPDATE matches zero rows and triggers another fallback, creating
+		// an infinite loop.
+		//
+		// Disabling fallback INSERT stops the multiplication. The UPDATE query
+		// below is also improved to target the earliest row (ASC order) instead
+		// of the latest, ensuring it always finds the initial INSERT row.
+		//
+		// If we truly have no initial row (e.g., a late-arriving async success
+		// after gateway restart), we log a warning but do not create duplicate
+		// rows. The request will be missing from request_logs, but that's
+		// better than 5 duplicate rows all stuck in 'in_progress'.
+		slog.Warn("telemetry update matched zero rows, skipping fallback insert",
+			"request_id", entry.RequestID,
+			"success", entry.Success,
+			"request_status", strPtrValue(entry.RequestStatus))
+		return tx.Commit(ctx)
 	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
@@ -955,6 +969,13 @@ func nonEmpty(value, fallback string) string {
 func nonEmptyPtr(p *string, fallback string) string {
 	if p == nil || strings.TrimSpace(*p) == "" {
 		return fallback
+	}
+	return *p
+}
+
+func strPtrValue(p *string) string {
+	if p == nil {
+		return ""
 	}
 	return *p
 }
