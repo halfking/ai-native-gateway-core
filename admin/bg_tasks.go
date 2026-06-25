@@ -1,3 +1,35 @@
+// Package admin: bg_tasks.go — background_tasks table helpers.
+//
+// ID-consistency contract (2026-06-26):
+//
+//	background_tasks row has two pieces of ID info:
+//	  1. top-level columns: provider_id, credential_id (nullable)
+//	  2. request_json (jsonb): { "provider_id": <int>, "credential_id": <int>, ... }
+//
+//	Both MUST refer to the same logical (provider, credential) pair, because
+//	all INSERT paths (admin/provider_cred_lifecycle.go:111 health_check,
+//	admin/provider_credential.go:89 auto_on_create,
+//	admin/providers.go:905 auto_on_provider_update,
+//	admin/provider_diagnose.go:306 diagnose) pass the same value to both.
+//
+//	If you ever observe an id_inconsistency field in GET /api/tasks/{id}
+//	responses, or the slog.Warn "background_task ID mismatch" line, do this:
+//
+//	  1. Run the diagnostic query in admin/bg_tasks_test.go commentary / or:
+//	       SELECT id, task_type, provider_id, credential_id,
+//	              (request_json->>'provider_id')::bigint AS req_pid,
+//	              (request_json->>'credential_id')::bigint AS req_cid
+//	       FROM background_tasks
+//	       WHERE task_type='health_check'
+//	         AND ( (request_json->>'provider_id')::bigint IS DISTINCT FROM provider_id
+//	            OR (request_json->>'credential_id')::bigint IS DISTINCT FROM credential_id )
+//	       ORDER BY id DESC LIMIT 20;
+//	  2. Identify the offending INSERT path from the request_json contents
+//	     (e.g. "source":"auto_on_create" → admin/provider_credential.go:89).
+//	  3. Fix the path so both top-level columns and request_json receive the
+//	     same IDs. Until then the frontend will reject such rows via the
+//	     assertTaskMatches / assertProviderMatches guards in
+//	     web/src/api/providers.ts and DiagTab.vue.
 package admin
 
 import (

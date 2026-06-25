@@ -112,8 +112,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			UPDATE model_offers mo
 			SET available          = TRUE,
 			    unavailable_reason = NULL,
-			    unavailable_at     = NULL,
-			    updated_at         = now()
+			    unavailable_at     = NULL
 			WHERE mo.credential_id = $1
 			  AND mo.available = FALSE
 			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
@@ -143,8 +142,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 				UPDATE model_offers mo
 				SET available          = TRUE,
 				    unavailable_reason = NULL,
-				    unavailable_at     = NULL,
-				    updated_at         = now()
+				    unavailable_at     = NULL
 				FROM provider_models pm
 				WHERE pm.raw_model_name = mo.raw_model_name
 				  AND pm.id = (
