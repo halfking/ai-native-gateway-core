@@ -20,6 +20,7 @@ else
   RED=""; YELLOW=""; GREEN=""; BLUE=""; BOLD=""; RESET=""
 fi
 
+REPO_ROOT_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode=*)        MODE="${1#*=}" ;;
@@ -28,11 +29,16 @@ while [[ $# -gt 0 ]]; do
     --format=*)      FORMAT="${1#*=}" ;;
     --baseline=*)    BASELINE_FILE="${1#*=}" ;;
     --tracked-only)  TRACKED_ONLY=1 ;;
+    --repo-root=*)   REPO_ROOT_OVERRIDE="${1#*=}" ;;
     --help|-h) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+if [[ -n "$REPO_ROOT_OVERRIDE" ]]; then
+  REPO_ROOT="$REPO_ROOT_OVERRIDE"
+fi
 
 case "$MODE" in
   strict|normal|permissive) ;;
