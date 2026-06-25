@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS public.agents (
     tenant_id       text         NOT NULL,
     name            text         NOT NULL,
     kind            text         NOT NULL,
-    endpoint        text         NOT NULL,           -- e.g. "https://brandmind.kxpms.cn/api/v1/agent"
+    endpoint        text         NOT NULL,           -- e.g. "https://brandmind.internal.example.com/api/v1/agent"
     status          text         NOT NULL DEFAULT 'unknown',  -- 'healthy' | 'degraded' | 'down' | 'unknown'
     capabilities    jsonb        NOT NULL DEFAULT '{}'::jsonb,
     version         text         NOT NULL DEFAULT '0.0.0',
@@ -64,5 +64,21 @@ ALTER TABLE public.agents ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_agents ON public.agents;
 CREATE POLICY tenant_isolation_agents ON public.agents
     USING ((tenant_id)::text = (public.get_current_tenant())::text);
+
+COMMIT;
+
+-- +migrate Down
+-- Rollback script for 050_agents.sql
+-- Removes the agents table and its indexes/policies.
+-- Safe to run even if the table does not exist (IF EXISTS guards).
+
+BEGIN;
+
+DROP POLICY IF EXISTS tenant_isolation_agents ON public.agents;
+DROP INDEX IF EXISTS idx_agents_capabilities;
+DROP INDEX IF EXISTS idx_agents_heartbeat;
+DROP INDEX IF EXISTS idx_agents_kind;
+DROP INDEX IF EXISTS idx_agents_tenant;
+DROP TABLE IF EXISTS public.agents;
 
 COMMIT;

@@ -62,3 +62,18 @@ CREATE POLICY tenant_isolation_armor_judgments ON public.armor_judgments
     USING ((tenant_id)::text = (public.get_current_tenant())::text);
 
 COMMIT;
+
+-- +migrate Down
+-- Rollback script for 049_armor_judgments.sql
+-- Removes the armor_judgments table and its indexes/policies.
+-- Safe to run even if the table does not exist (IF EXISTS guards).
+
+BEGIN;
+
+DROP POLICY IF EXISTS tenant_isolation_armor_judgments ON public.armor_judgments;
+DROP INDEX IF EXISTS idx_armor_judgments_stats;
+DROP INDEX IF EXISTS idx_armor_judgments_request;
+DROP INDEX IF EXISTS idx_armor_judgments_tenant_time;
+DROP TABLE IF EXISTS public.armor_judgments;
+
+COMMIT;
