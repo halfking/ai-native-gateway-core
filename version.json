@@ -1,8 +1,8 @@
 {
-  "version": "domain-refactor-phase-4-0-gc054779f",
-  "git_tag": "domain-refactor-phase-4-0-gc054779f",
-  "git_sha": "c054779f",
-  "build_seq": 693,
+  "version": "domain-refactor-phase-4-5-g53922204",
+  "git_tag": "domain-refactor-phase-4-5-g53922204",
+  "git_sha": "53922204",
+  "build_seq": 694,
   "build_date": "2026-06-25",
   "module": "llm-gateway-go"
 }
