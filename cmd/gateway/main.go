@@ -55,6 +55,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/routing"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/sessions"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/telemetry"
@@ -1174,6 +1175,14 @@ func main() {
 		apihubWatcher.Start(context.Background())
 		defer apihubWatcher.Stop()
 		slog.Info("apihub watcher initialized", "interval", "60s")
+
+		// ── Armor Logger (Track A B1-4) ─────────────────────────────────
+		// Writes armor judgments to armor_judgments table. Used by relay
+		// handlers (when armor is enabled) to audit every judge decision.
+		// Safe for concurrent use; failures are logged, never block relay.
+		armorLogger := armor.NewLogger(dbConn.Pool())
+		_ = armorLogger // TODO(B1-4): wire into relay handler (next commit)
+		slog.Info("armor logger initialized")
 	}
 
 	slog.Info("CHECKPOINT: before static handler init")
