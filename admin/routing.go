@@ -222,21 +222,21 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mo.standardized_name, mo.raw_model_name) AS standardized_name,
 			COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
 			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
-			-- Routing filter columns (2026-06-26 audit fix)
-			COALESCE(v.is_routable, FALSE) AS is_routable,
-			(SELECT state FROM model_probe_state mps 
-			 WHERE mps.credential_id = c.id 
-			   AND mps.raw_model_name = mo.raw_model_name 
-			 LIMIT 1) AS probe_state,
-			rsr.rate AS recent_success_rate,
-			rsr.samples AS recent_samples
+		-- Routing filter columns (2026-06-26 audit fix)
+		COALESCE(v.is_routable, FALSE) AS is_routable,
+		mps.state AS probe_state,
+		rsr.rate AS recent_success_rate,
+		rsr.samples AS recent_samples
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN v_routable_credential_models v
-		       ON v.credential_id = mo.credential_id
-		      AND v.raw_model_name = mo.raw_model_name
-		LEFT JOIN LATERAL (
+	LEFT JOIN v_routable_credential_models v
+	       ON v.credential_id = mo.credential_id
+	      AND v.raw_model_name = mo.raw_model_name
+	LEFT JOIN model_probe_state mps
+	       ON mps.credential_id = c.id
+	      AND mps.raw_model_name = mo.raw_model_name
+	LEFT JOIN LATERAL (
 			SELECT 
 				COUNT(CASE WHEN success THEN 1 END)::float / NULLIF(COUNT(*), 0) AS rate,
 				COUNT(*) AS samples

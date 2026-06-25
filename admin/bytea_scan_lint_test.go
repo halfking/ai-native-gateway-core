@@ -30,6 +30,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"testing"
 )
@@ -130,7 +131,7 @@ func scanFile(fset *token.FileSet, file *ast.File, t *testing.T) []string {
 		if !ok || fn.Body == nil {
 			continue
 		}
-		violations = append(violations, scanFunc(fset, fn, stringDecls, nil)...)
+		violations = append(violations, scanFunc(fset, fn, stringDecls, t)...)
 	}
 
 	return violations
@@ -179,11 +180,12 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, stringDecls map[string]stri
 		}
 		// call.Fun is `<recv>.Scan`; we expect recv to be a QueryRow / Query
 		// call. Walk back through statement context to find the SQL string.
-		sql := findEnclosingSQLString(call)
+		sql := findEnclosingSQLStringDebug(call, t)
+		if t != nil {
+			t.Logf("DEBUG: Scan call found sql_len=%d contains_cipher=%v",
+				len(sql), containsSecretCiphertext(sql))
+		}
 		if sql == "" {
-			if t != nil {
-				t.Logf("DEBUG Scan call has no SQL: recv=%T sel.X=%T", sel.X, sel.X)
-			}
 			return true
 		}
 		if t != nil {
@@ -226,7 +228,7 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, stringDecls map[string]stri
 //      Query/QueryRow → the first string arg is the SQL.
 //   2. Otherwise, walk up assignments until we find a CallExpr to
 //      Query/QueryRow whose first string arg matches.
-func findEnclosingSQLString(call *ast.CallExpr) string {
+func findEnclosingSQLStringDebug(call *ast.CallExpr, t *testing.T) string {
 	if call.Fun == nil {
 		return ""
 	}
@@ -234,10 +236,11 @@ func findEnclosingSQLString(call *ast.CallExpr) string {
 	if !ok {
 		return ""
 	}
+	if t != nil {
+		t.Logf("DEBUG findSQL: sel.X=%T sel.Sel.Name=%s", sel.X, sel.Sel.Name)
+	}
 	recv, ok := sel.X.(*ast.CallExpr)
 	if !ok {
-		// Sometimes the assignment is `rows, err := db.Query(...)` and
-		// then `rows.Scan(...)`. Try the assignment walk below.
 		return findSQLFromAssignmentChain(call)
 	}
 	if recv.Fun == nil {
@@ -247,17 +250,28 @@ func findEnclosingSQLString(call *ast.CallExpr) string {
 	if !ok || rsel.Sel == nil {
 		return ""
 	}
+	if t != nil {
+		t.Logf("DEBUG findSQL: rsel.Sel.Name=%s recv.Args=%d", rsel.Sel.Name, len(recv.Args))
+	}
 	if rsel.Sel.Name != "Query" && rsel.Sel.Name != "QueryRow" {
 		return ""
 	}
-	if len(recv.Args) == 0 {
-		return ""
+	// Find the first STRING-typed argument. Query/QueryRow usually take
+	// (ctx, sql, ...args) — the SQL string is the first string literal,
+	// not necessarily Args[0].
+	for _, arg := range recv.Args {
+		bl, ok := arg.(*ast.BasicLit)
+		if !ok {
+			continue
+		}
+		if bl.Kind == token.STRING {
+			return unquoteGoString(bl.Value)
+		}
 	}
-	bl, ok := recv.Args[0].(*ast.BasicLit)
-	if !ok || bl.Kind != token.STRING {
-		return ""
+	if t != nil {
+		t.Logf("DEBUG findSQL: no STRING arg found in %d args", len(recv.Args))
 	}
-	return unquoteGoString(bl.Value)
+	return ""
 }
 
 // findSQLFromAssignmentChain handles patterns like
@@ -285,7 +299,7 @@ func findSQLFromAssignmentChain(call *ast.CallExpr) string {
 	}
 	// Otherwise, sel.X is itself a CallExpr — re-enter findEnclosingSQLString.
 	if _, ok := sel.X.(*ast.CallExpr); ok {
-		return findEnclosingSQLString(call)
+		return findEnclosingSQLStringDebug(call, nil)
 	}
 	return ""
 }
@@ -435,17 +449,25 @@ func stripLineComments(s string) string {
 	return b.String()
 }
 
-// repoRoot returns the module root for this repo. We compute it from
-// the package directory at test runtime by going up two levels (we are
-// in admin/, repo root is one level up).
+// repoRoot returns the module root for this repo.
+//
+// We are running from the admin/ package directory (cwd = <root>/admin).
+// The repo root contains go.mod. We resolve it by walking up one level.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	// All tests in this package run with the package's directory as cwd,
-	// which is <repoRoot>/admin. The repo root contains go.mod.
-	// We resolve it via `go env GOMOD` if available, falling back to "..".
-	root := ".."
-	if _, err := parser.ParseFile(token.NewFileSet(), root+"/go.mod", nil, parser.ParseComments); err == nil {
-		return root
+	// go.mod is not a Go source file, so we can't parse it with
+	// go/parser. Just stat() it.
+	candidates := []string{"..", "../..", "."}
+	for _, c := range candidates {
+		if _, err := os.Stat(c + "/go.mod"); err == nil {
+			return c
+		}
 	}
-	return "."
+	t.Fatalf("could not find repo root (no go.mod found above cwd=%q)", mustGetwd())
+	return ""
+}
+
+func mustGetwd() string {
+	wd, _ := os.Getwd()
+	return wd
 }
