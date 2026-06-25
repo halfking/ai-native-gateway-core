@@ -54,7 +54,8 @@ WHERE ts >= NOW() - $1::interval
 | `GET /api/admin/auto-route/analytics/flow` L12/L23 | 同上 | — |
 | `GET /api/admin/auto-route/audit` | 移除过滤；新增 `total_requests`、`specified_model_requests` 字段 | — |
 | `GET /api/admin/work-types/stats` | 移除过滤；新增 `total_specified` 字段 | — |
-| `GET /api/admin/auto-route/analytics/funnel` | **保持 `is_auto_request = TRUE`** | Funnel 是 L2 凭据漏斗，specified-model 没有 L1 决策过程，强行套用没业务意义 |
+| `GET /api/admin/auto-route/analytics/funnel` | **回退查询也放开**：approximate / mixed 分支的 `request_logs` 回退从 `WHERE is_auto_request = TRUE` 改为 `WHERE (is_auto_request = TRUE OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> ''))` | Funnel 是 L2 凭据漏斗；specified-model 也会走 L2 凭据选择，回退统计应包含 |
+| `GET /api/admin/auto-route/decisions` | 移除 `is_auto_request = TRUE` 硬过滤；task_type 字段为空时合成 `__specified__`；model 过滤改用 `COALESCE(outbound_model, client_model)`；`task=__specified__` 时改用 `is_auto_request = FALSE` | — |
 
 ### 4. 前端改动
 
@@ -82,13 +83,15 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_explicit_model
 
 ### 6. 测试覆盖
 
-`admin/analytics_specified_model_test.go`（12 个 unit tests）：
+`admin/analytics_specified_model_test.go`（12 个 unit tests）+ `admin/analytics_decisions_specified_model_test.go`（4 个）+ `admin/analytics_funnel_specified_model_test.go`（1 个）：
 
 - 常量契约（双下划线 + 非空标签）
 - `buildMatrixQuery` 各 metric 生成的 SQL
 - `buildMatrixQuery` 拒绝非法参数
 - `effectiveTaskExpr` / `effectiveModelExpr` 表达式内容
 - `buildFlowL12Query` / `buildFlowL23Query` 准入 specified 分支
+- `handleDecisions` 准入 specified-model 请求、`__specified__` task 过滤走 `is_auto_request = FALSE`、model 过滤走 `COALESCE`
+- `handleFunnel` 近似 / 混合回退查询也包含 specified-model
 - `handleAudit` 字段集 sentinel（防 specified_model_requests 被误删）
 
 ## 部署

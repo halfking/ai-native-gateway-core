@@ -805,9 +805,12 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
 				COUNT(*) FILTER (WHERE success IS TRUE)::int
 			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
+			WHERE ts >= NOW() - $1::interval
 			  AND outbound_model = ANY($2)
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+			  )
 		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
@@ -832,9 +835,12 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
 				COUNT(*) FILTER (WHERE success IS TRUE)::int
 			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
+			WHERE ts >= NOW() - $1::interval
 			  AND outbound_model = ANY($2)
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+			  )
 		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq

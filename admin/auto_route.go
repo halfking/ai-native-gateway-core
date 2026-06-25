@@ -95,7 +95,8 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 }
 
 // handleDecisions returns the most recent N auto-route decisions from
-// request_logs (filter: is_auto_request = TRUE).
+// request_logs. Includes both auto requests and explicit-model requests
+// (where the client specified a model directly).
 //
 // Query params:
 //   - limit : max rows (default 50, max 500)
@@ -125,13 +126,19 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		       auto_confidence, client_model, outbound_model,
 		       credential_id, auto_decision, success, latency_ms, work_type
 		FROM request_logs
-		WHERE is_auto_request = TRUE
+		WHERE (is_auto_request = TRUE OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> ''))
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`
 	args := []interface{}{}
 	if task != "" {
-		args = append(args, task)
-		query += fmt.Sprintf(" AND task_type = $%d", len(args))
+		if task == SpecifiedModelTaskKey {
+			// The synthetic __specified__ task key represents non-auto
+			// requests; their task_type column is NULL in the DB.
+			query += " AND is_auto_request = FALSE"
+		} else {
+			args = append(args, task)
+			query += fmt.Sprintf(" AND task_type = $%d", len(args))
+		}
 	}
 	if workType != "" {
 		args = append(args, workType)
@@ -143,7 +150,9 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 			names = []string{model}
 		}
 		args = append(args, names)
-		query += fmt.Sprintf(" AND outbound_model = ANY($%d)", len(args))
+		// Use COALESCE to match both auto (outbound_model) and
+		// specified-model (client_model) requests.
+		query += fmt.Sprintf(" AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($%d)", len(args))
 	}
 	if profile != "" {
 		args = append(args, profile)
@@ -162,17 +171,23 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var ts time.Time
-		var reqID, taskType, prof, clientModel, outbound string
-		var workTypeVal sql.NullString
+		var reqID, prof, clientModel, outbound string
+		var workTypeVal, taskTypeVal sql.NullString
 		var apiKeyID, credentialID *int
 		var confidence *float64
 		var decision *string
 		var success bool
 		var latency *int
-		if err := rows.Scan(&ts, &reqID, &apiKeyID, &taskType, &prof,
+		if err := rows.Scan(&ts, &reqID, &apiKeyID, &taskTypeVal, &prof,
 			&confidence, &clientModel, &outbound, &credentialID, &decision,
 			&success, &latency, &workTypeVal); err != nil {
 			continue
+		}
+		// For specified model requests, task_type is NULL; use the
+		// synthetic __specified__ key so the frontend can identify them.
+		taskType := taskTypeVal.String
+		if taskType == "" {
+			taskType = SpecifiedModelTaskKey
 		}
 		entry := map[string]interface{}{
 			"ts":             ts.Format(time.RFC3339),

@@ -38,7 +38,9 @@ function widthPct(v: number): string {
 <template>
   <div class="funnel-wrap">
     <div v-if="loading" class="empty-hint">加载漏斗…</div>
-    <div v-else-if="!stages.length" class="empty-hint">暂无 L2 漏斗数据</div>
+    <div v-else-if="!stages.length || (stages.length && stages.every(s => s.value === 0))" class="empty-hint">
+      暂无 L2 漏斗数据 — 模型在窗口内没有请求记录
+    </div>
     <template v-else>
       <div v-if="model" class="funnel-title">
         <span>{{ model }}</span>

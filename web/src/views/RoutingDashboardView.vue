@@ -120,7 +120,7 @@ const modalDecisionId = ref('')
 
 const analyticsEmpty = computed(() =>
   !analyticsLoading.value &&
-  audit.value.total_auto_requests === 0 &&
+  (audit.value.total_requests ?? 0) === 0 &&
   (!matrixData.value || matrixData.value.rows.length === 0)
 )
 
@@ -153,6 +153,10 @@ async function onMatrixCellClick(row: string, col: string, value: number) {
   cellDecisions.value = []
   modalDecisionId.value = ''
   funnelStages.value = []
+  funnelDataSource.value = undefined
+  funnelSampleN.value = 0
+  funnelConfidence.value = undefined
+  funnelConfidenceHint.value = ''
   try {
     const isSpecified = col === SPECIFIED_MODEL_TASK_KEY
     // For the synthetic __specified__ column, request_logs.task_type
@@ -167,6 +171,8 @@ async function onMatrixCellClick(row: string, col: string, value: number) {
       row,
       workTypeArg,
     )
+    // Funnel is L2 credential-level routing data, which is shared
+    // between auto and specified-model requests; load it for both.
     await loadFunnel(row)
   } catch (e) {
     console.error('onMatrixCellClick', e)
@@ -751,13 +757,18 @@ onUnmounted(() => stopPoll())
                 v-for="d in cellDecisions"
                 :key="d.request_id"
                 class="dec-row clickable"
-                :class="{ active: modalDecisionId === d.request_id }"
+                :class="{
+                  active: modalDecisionId === d.request_id,
+                  'dec-row-specified': d.task_type === SPECIFIED_MODEL_TASK_KEY,
+                }"
                 @click="openDecisionModal(d.request_id)"
               >
                 <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
-                <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
+                <span
+                  :class="d.task_type === SPECIFIED_MODEL_TASK_KEY ? 'badge badge-specified' : 'badge badge-blue'"
+                >{{ d.task_type === SPECIFIED_MODEL_TASK_KEY ? SPECIFIED_MODEL_DISPLAY_LABEL : (d.task_type || '-') }}</span>
                 <span v-if="d.work_type" class="badge badge-gray">{{ d.work_type }}</span>
-                <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
+                <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || d.client_model || '-' }}</span>
                 <span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span>
                 <span v-if="d.latency_ms" class="text-muted">{{ fmtMs(d.latency_ms) }}</span>
               </div>
@@ -1164,12 +1175,22 @@ onUnmounted(() => stopPoll())
             <thead><tr><th>时间</th><th>任务</th><th>Profile</th><th>模型</th><th>置信</th><th>状态</th><th></th></tr></thead>
             <tbody>
               <template v-for="d in decisions" :key="d.request_id">
-                <tr class="model-row" @click="onExpandDecision(d.request_id)">
+                <tr
+                  class="model-row"
+                  :class="{ 'model-row-specified': d.task_type === SPECIFIED_MODEL_TASK_KEY }"
+                  @click="onExpandDecision(d.request_id)"
+                >
                   <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
-                  <td><span class="badge badge-blue">{{ d.task_type || d.auto_decision?.task_type || '-' }}</span></td>
-                  <td>{{ d.auto_profile || d.auto_decision?.profile || '-' }}</td>
-                  <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || '-' }}</td>
-                  <td>{{ fmt((d.auto_confidence ?? d.auto_decision?.confidence ?? 0) * 100, 0) }}%</td>
+                  <td>
+                    <span
+                      v-if="d.task_type === SPECIFIED_MODEL_TASK_KEY"
+                      class="badge badge-specified"
+                    >{{ SPECIFIED_MODEL_DISPLAY_LABEL }}</span>
+                    <span v-else class="badge badge-blue">{{ d.task_type || d.auto_decision?.task_type || '-' }}</span>
+                  </td>
+                  <td>{{ d.auto_profile || d.auto_decision?.profile || (d.task_type === SPECIFIED_MODEL_TASK_KEY ? '—' : '-') }}</td>
+                  <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || d.client_model || '-' }}</td>
+                  <td>{{ d.task_type === SPECIFIED_MODEL_TASK_KEY ? '—' : fmt((d.auto_confidence ?? d.auto_decision?.confidence ?? 0) * 100, 0) + '%' }}</td>
                   <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span></td>
                   <td class="expand-icon">{{ expandedDecision === d.request_id ? '▼' : '▶' }}</td>
                 </tr>
@@ -1187,7 +1208,7 @@ onUnmounted(() => stopPoll())
               </template>
             </tbody>
           </table>
-          <div v-else class="text-muted">暂无 auto 决策</div>
+          <div v-else class="text-muted">暂无最近决策</div>
         </div>
       </div>
     </div>
@@ -1426,6 +1447,17 @@ onUnmounted(() => stopPoll())
 .model-row { cursor: pointer; }
 .model-row:hover { background: rgba(255,255,255,.03); }
 .model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.model-row-specified td { color: #6b7280; font-style: italic; }
+.badge-specified {
+  background: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+  border-left: 2px solid #6b7280;
+  font-style: italic;
+}
+.dec-row-specified {
+  background: rgba(107, 114, 128, 0.04);
+  border-left: 2px solid #6b7280;
+}
 .detail-row td { padding: 6px; background: var(--bg-subtle); border-top: none; }
 
 .expand-grid {
