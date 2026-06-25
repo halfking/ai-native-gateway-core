@@ -43,6 +43,7 @@ import MaaSUsageView          from './views/tenant/MaaSUsageView.vue'
 import MaaSOrderView          from './views/tenant/MaaSOrderView.vue'
 import TenantModelsView       from './views/tenant/TenantModelsView.vue'
 import CredentialMonitorView  from './views/CredentialMonitorView.vue'
+import AgentRegistryView    from './views/AgentRegistryView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -125,6 +126,7 @@ export const router = createRouter({
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
+    { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
