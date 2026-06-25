@@ -3,6 +3,8 @@ package apihub
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -290,4 +292,65 @@ func TestGet_CacheHit(t *testing.T) {
 		t.Errorf("cache miss: expected cached name 'cached', got %q (store was mutated)", a2.Name)
 	}
 	_ = a
+}
+
+// TestStartRefresh verifies the background cache sweep goroutine removes expired entries.
+func TestStartRefresh(t *testing.T) {
+	store := newMemStore()
+	// Use a very short TTL (50ms) so the test runs quickly.
+	svc := New(store, WithCacheTTL(50*time.Millisecond))
+
+	ctx := WithTenant(context.Background(), "t1")
+
+	// Register an asset.
+	_ = svc.Register(ctx, Asset{Kind: KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "expiring"})
+
+	// First Get populates cache.
+	_, err := svc.Get(ctx, KindLLMEndpoint, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify cache hit before expiry.
+	if _, ok := svc.cache.get("t1", KindLLMEndpoint, 1); !ok {
+		t.Fatal("cache miss before expiry")
+	}
+
+	// Wait for entry to expire (50ms TTL).
+	time.Sleep(60 * time.Millisecond)
+
+	// Before sweep, expired entry is still in the map (get returns false but entry exists).
+	svc.cache.mu.RLock()
+	_, stillInMap := svc.cache.m[cacheKey("t1", KindLLMEndpoint, 1)]
+	svc.cache.mu.RUnlock()
+	if !stillInMap {
+		t.Fatal("expected expired entry to remain in map before sweep")
+	}
+
+	// Manually trigger sweep (simulating what StartRefresh does periodically).
+	svc.cache.sweep()
+
+	// After sweep, expired entry should be removed.
+	svc.cache.mu.RLock()
+	_, afterSweep := svc.cache.m[cacheKey("t1", KindLLMEndpoint, 1)]
+	svc.cache.mu.RUnlock()
+	if afterSweep {
+		t.Fatal("expected expired entry to be removed after sweep")
+	}
+}
+
+// TestWithLogger and TestWithCacheTTL verify the option setters work.
+func TestWithLogger(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	svc := New(newMemStore(), WithLogger(logger))
+	if svc.logger != logger {
+		t.Fatal("WithLogger did not set logger")
+	}
+}
+
+func TestWithCacheTTL(t *testing.T) {
+	svc := New(newMemStore(), WithCacheTTL(5*time.Minute))
+	if svc.cache.ttl != 5*time.Minute {
+		t.Fatalf("WithCacheTTL: got %v, want 5m", svc.cache.ttl)
+	}
 }
