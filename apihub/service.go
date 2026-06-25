@@ -64,6 +64,9 @@ func WithCacheTTL(d time.Duration) Option {
 // Register validates and upserts an asset. It enforces Kind validity and
 // stamps RegisteredAt. The Store is responsible for RLS scoping.
 func (s *Service) Register(ctx context.Context, a Asset) error {
+	if s.store == nil {
+		return errors.New("apihub: store is not configured")
+	}
 	if !a.Kind.IsValid() {
 		return fmt.Errorf("%w: %q", ErrInvalidKind, a.Kind)
 	}
