@@ -838,6 +838,7 @@ func main() {
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
+	var partitionManager *bg.PartitionManager
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 
@@ -949,6 +950,15 @@ func main() {
 		slog.Info("CHECKPOINT: before stickyCleaner.Start")
 		stickyCleaner.Start(context.Background())
 		slog.Info("CHECKPOINT: after stickyCleaner.Start")
+
+		// Partition manager: auto-creates monthly request_logs partitions
+		// and archives 2+ months old data to columnar storage.
+		// 2026-06-26: Added per storage-optimization plan.
+		slog.Info("CHECKPOINT: before NewPartitionManager")
+		partitionManager = bg.NewPartitionManager(dbConn.Pool(), 24*time.Hour)
+		slog.Info("CHECKPOINT: before partitionManager.Start")
+		partitionManager.Start(context.Background())
+		slog.Info("CHECKPOINT: after partitionManager.Start")
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 
 		// settings-management: 7-day audit retention worker (Q6: C).
@@ -1236,6 +1246,12 @@ func main() {
 
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
+	// v2 Pipeline feature flag (R1.12). Opt-in via LLM_GATEWAY_V2_ENABLED.
+	// Default OFF → no-op; production v1 routes are untouched. When ON,
+	// a parallel /v2/* route group is mounted on the same mux. See
+	// cmd/gateway/main_v2_pipeline.go for the wiring.
+	registerV2PipelineRoutes(mux)
+
 	mux.Handle("/v1/chat/completions", chatHandler)
 	mux.Handle("/v1/completions", chatHandler)
 	mux.Handle("/v1/messages", messagesHandler)
@@ -1476,6 +1492,9 @@ func main() {
 	}
 	if stickyCleaner != nil {
 		stickyCleaner.Stop()
+	}
+	if partitionManager != nil {
+		partitionManager.Stop()
 	}
 	if envelopeCleaner != nil {
 		envelopeCleaner.Stop()
