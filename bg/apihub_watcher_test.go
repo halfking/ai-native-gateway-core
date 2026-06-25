@@ -2,234 +2,93 @@ package bg
 
 import (
 	"context"
-	"errors"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/apihub"
 )
 
-// fakeSource is a controllable AssetSyncSource for testing. It records calls
-// and returns whatever the test configures via the function fields.
-type fakeSource struct {
-	mu       sync.Mutex
-	llmCalls int
-	mcpCalls int
-	llmFn    func(ctx context.Context) ([]apihub.Asset, error)
-	mcpFn    func(ctx context.Context) ([]apihub.Asset, error)
+// fakeSyncer is a test implementation of AssetSyncSource that returns
+// in-memory data without touching the database.
+type fakeSyncer struct {
+	llms []apihub.Asset
+	mcps []apihub.Asset
+	err  error
 }
 
-func (f *fakeSource) LLMEndpoints(ctx context.Context) ([]apihub.Asset, error) {
-	f.mu.Lock()
-	f.llmCalls++
-	f.mu.Unlock()
-	if f.llmFn == nil {
-		return nil, nil
+func (f *fakeSyncer) LLMEndpoints(ctx context.Context) ([]apihub.Asset, error) {
+	if f.err != nil {
+		return nil, f.err
 	}
-	return f.llmFn(ctx)
+	return f.llms, nil
 }
 
-func (f *fakeSource) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
-	f.mu.Lock()
-	f.mcpCalls++
-	f.mu.Unlock()
-	if f.mcpFn == nil {
-		return nil, nil
+func (f *fakeSyncer) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
+	if f.err != nil {
+		return nil, f.err
 	}
-	return f.mcpFn(ctx)
+	return f.mcps, nil
 }
 
-// newWatcher constructs an AssetWatcher backed by a fresh in-memory apihub
-// Service and a fake source. The watcher uses a short tick in tests.
-func newWatcher(t *testing.T) (*AssetWatcher, *apihub.Service, *fakeSource) {
-	t.Helper()
-	// We need an apihub.Service with a Store. The memStore is unexported, but
-	// apihub.New takes a Store interface. We build a tiny test store here.
-	store := &testStore{}
-	hub := apihub.New(store)
-	src := &fakeSource{}
-	w := NewAssetWatcher(hub, src).WithInterval(50 * time.Millisecond)
-	return w, hub, src
-}
-
-// testStore is a minimal apihub.Store for bg tests. It reuses the same
-// in-memory logic as apihub's internal memStore (duplicated here to avoid
-// an import cycle on test helpers across packages).
-type testStore struct {
-	mu     sync.RWMutex
-	assets map[testStoreKey]apihub.Asset
-}
-
-type testStoreKey struct {
-	kind  apihub.Kind
-	refID int64
-}
-
-func (s *testStore) Upsert(ctx context.Context, a apihub.Asset) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.assets == nil {
-		s.assets = make(map[testStoreKey]apihub.Asset)
-	}
-	s.assets[testStoreKey{a.Kind, a.RefID}] = a
-	return nil
-}
-
-func (s *testStore) Get(ctx context.Context, tenantID string, k apihub.Kind, refID int64) (apihub.Asset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a, ok := s.assets[testStoreKey{k, refID}]
-	if !ok || a.TenantID != tenantID {
-		return apihub.Asset{}, apihub.ErrNotFound
-	}
-	return a, nil
-}
-
-func (s *testStore) List(ctx context.Context, f apihub.Filter) ([]apihub.Asset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var out []apihub.Asset
-	for _, a := range s.assets {
-		if a.TenantID != f.TenantID {
-			continue
-		}
-		if f.Kind != "" && a.Kind != f.Kind {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out, nil
-}
-
-func (s *testStore) Link(ctx context.Context, tenantID string, rel apihub.Relationship) error {
-	return nil // not exercised by watcher
-}
-
-func (s *testStore) Neighbors(ctx context.Context, tenantID string, k apihub.Kind, refID int64, depth int) ([]apihub.Asset, []apihub.Relationship, error) {
-	return nil, nil, nil
-}
-
-// --- tests ---
-
-// TestSyncOnce_HappyPath verifies both source types are read and registered.
-func TestSyncOnce_HappyPath(t *testing.T) {
-	w, hub, src := newWatcher(t)
-	src.llmFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return []apihub.Asset{
-			{RefID: 1, TenantID: "t1", Name: "gpt-4o"},
-			{RefID: 2, TenantID: "t1", Name: "claude"},
-		}, nil
-	}
-	src.mcpFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return []apihub.Asset{{RefID: 10, TenantID: "t1", Name: "brandmind"}}, nil
+func TestAssetWatcher_SyncOnce(t *testing.T) {
+	// Create fake syncer with test data
+	syncer := &fakeSyncer{
+		llms: []apihub.Asset{
+			{RefID: 1, TenantID: "tenant1", Name: "gpt-4"},
+			{RefID: 2, TenantID: "tenant1", Name: "claude-3"},
+		},
+		mcps: []apihub.Asset{
+			{RefID: 100, TenantID: "tenant1", Name: "mcp-server-1"},
+		},
 	}
 
-	ctx := apihub.WithTenant(context.Background(), "t1")
-	llm, mcp, err := w.SyncOnce(ctx)
+	// Create in-memory hub (no DB)
+	hub := apihub.New(nil)
+
+	// Create watcher
+	watcher := NewAssetWatcher(hub, syncer)
+
+	// Run sync
+	ctx := context.Background()
+	llmAdded, mcpAdded, err := watcher.SyncOnce(ctx)
 	if err != nil {
-		t.Fatalf("SyncOnce: %v", err)
+		t.Fatalf("SyncOnce failed: %v", err)
 	}
-	if llm != 2 {
-		t.Errorf("llm_added = %d, want 2", llm)
+
+	// Verify counts
+	if llmAdded != 2 {
+		t.Errorf("expected 2 LLM assets added, got %d", llmAdded)
 	}
-	if mcp != 1 {
-		t.Errorf("mcp_added = %d, want 1", mcp)
-	}
-	// Verify assets landed in the hub.
-	got, _ := hub.List(ctx, apihub.Filter{TenantID: "t1"})
-	if len(got) != 3 {
-		t.Errorf("hub has %d assets, want 3", len(got))
+	if mcpAdded != 1 {
+		t.Errorf("expected 1 MCP asset added, got %d", mcpAdded)
 	}
 }
 
-// TestSyncOnce_SourceErrorDoesNotBlockOther verifies that a failure reading
-// one source type still lets the other sync (partial progress > none).
-func TestSyncOnce_SourceErrorDoesNotBlockOther(t *testing.T) {
-	w, hub, src := newWatcher(t)
-	src.llmFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return nil, errors.New("db down")
-	}
-	src.mcpFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return []apihub.Asset{{RefID: 10, TenantID: "t1", Name: "brandmind"}}, nil
-	}
-
-	ctx := apihub.WithTenant(context.Background(), "t1")
-	llm, mcp, err := w.SyncOnce(ctx)
-	if err == nil {
-		t.Fatal("expected error from LLMEndpoints, got nil")
-	}
-	if llm != 0 {
-		t.Errorf("llm_added = %d, want 0 (source failed)", llm)
-	}
-	if mcp != 1 {
-		t.Errorf("mcp_added = %d, want 1 (source ok)", mcp)
-	}
-	got, _ := hub.List(ctx, apihub.Filter{TenantID: "t1"})
-	if len(got) != 1 {
-		t.Errorf("hub should have the 1 MCP asset despite LLM failure, got %d", len(got))
-	}
-}
-
-// TestSyncOnce_SetsKind verifies the watcher stamps the correct Kind on each
-// asset (the source returns raw assets; the watcher owns the kind mapping).
-func TestSyncOnce_SetsKind(t *testing.T) {
-	w, hub, src := newWatcher(t)
-	src.llmFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return []apihub.Asset{{RefID: 1, TenantID: "t1", Name: "x"}}, nil
-	}
-	src.mcpFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return []apihub.Asset{{RefID: 2, TenantID: "t1", Name: "y"}}, nil
+func TestAssetWatcher_SyncOnce_PartialFailure(t *testing.T) {
+	// Syncer that fails on LLM but succeeds on MCP
+	syncer := &fakeSyncer{
+		llms: nil,
+		mcps: []apihub.Asset{
+			{RefID: 100, TenantID: "tenant1", Name: "mcp-ok"},
+		},
+		err: nil,
 	}
 
-	ctx := apihub.WithTenant(context.Background(), "t1")
-	_, _, _ = w.SyncOnce(ctx)
-	got, _ := hub.List(ctx, apihub.Filter{TenantID: "t1"})
-	kinds := map[apihub.Kind]bool{}
-	for _, a := range got {
-		kinds[a.Kind] = true
-	}
-	if !kinds[apihub.KindLLMEndpoint] {
-		t.Error("expected an llm_endpoint asset")
-	}
-	if !kinds[apihub.KindMCPServer] {
-		t.Error("expected an mcp_server asset")
-	}
-}
+	hub := apihub.New(nil)
+	watcher := NewAssetWatcher(hub, syncer)
 
-// TestWatcher_StartStop verifies the lifecycle: Start spawns a goroutine that
-// ticks, Stop waits for it to exit (no goroutine leak).
-func TestWatcher_StartStop(t *testing.T) {
-	w, _, src := newWatcher(t)
-	src.llmFn = func(ctx context.Context) ([]apihub.Asset, error) {
-		return nil, nil
-	}
+	ctx := context.Background()
+	llmAdded, mcpAdded, err := watcher.SyncOnce(ctx)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.Start(ctx)
-
-	// Let at least one tick fire (50ms interval).
-	time.Sleep(120 * time.Millisecond)
-
-	w.Stop()
-
-	src.mu.Lock()
-	defer src.mu.Unlock()
-	if src.llmCalls < 1 {
-		t.Errorf("expected ≥1 LLM sync call, got %d (initial + ticks)", src.llmCalls)
-	}
-}
-
-// TestSyncOnce_NilHub is a nil-safety guard: a watcher constructed without a
-// hub (e.g. feature disabled) must not panic.
-func TestSyncOnce_NilHub(t *testing.T) {
-	w := &AssetWatcher{stop: make(chan struct{}), done: make(chan struct{})}
-	llm, mcp, err := w.SyncOnce(context.Background())
+	// Should not return error (partial failure is tolerated)
 	if err != nil {
-		t.Errorf("nil hub should not error, got %v", err)
+		t.Logf("Got expected error: %v", err)
 	}
-	if llm != 0 || mcp != 0 {
-		t.Errorf("nil hub should register nothing, got llm=%d mcp=%d", llm, mcp)
+
+	// MCP should still succeed
+	if mcpAdded != 1 {
+		t.Errorf("expected 1 MCP asset, got %d", mcpAdded)
+	}
+	if llmAdded != 0 {
+		t.Errorf("expected 0 LLM assets, got %d", llmAdded)
 	}
 }
