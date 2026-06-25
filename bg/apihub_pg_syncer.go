@@ -30,33 +30,33 @@ func NewPGSyncer(pool *pgxpool.Pool) *PGSyncer {
 // LLMEndpoints reads model_offers joined with api_keys to produce
 // apihub.Asset entries with kind=llm-endpoint.
 //
-// Schema assumptions:
-//   - model_offers: id, credential_id, raw_model, enabled, ...
-//   - api_keys: id, tenant_id, name, provider, enabled, ...
+// Schema (verified 2026-06-25 against 184 PG schema):
+//   - model_offers: id, credential_id, raw_model_name, available, ...
+//   - api_keys:     id, tenant_id, owner_user, enabled, status='active', ...
 //
 // Each model_offer becomes one asset with:
-//   - RefID: model_offers.id
+//   - RefID:    model_offers.id
 //   - TenantID: api_keys.tenant_id
-//   - Name: raw_model
-//   - Owner: api_keys.name (credential name)
-//   - Metadata: {provider, enabled, credential_id, ...}
+//   - Name:     raw_model_name
+//   - Owner:    owner_user
+//   - Metadata: {credential_id, available, ...}
 func (s *PGSyncer) LLMEndpoints(ctx context.Context) ([]apihub.Asset, error) {
 	if s.pool == nil {
 		return nil, fmt.Errorf("pg syncer: pool is nil")
 	}
 
 	query := `
-		SELECT 
+		SELECT
 			mo.id AS model_id,
-			mo.raw_model,
+			mo.raw_model_name,
 			mo.credential_id,
-			mo.enabled AS model_enabled,
+			mo.available AS model_available,
 			ak.tenant_id,
-			ak.name AS credential_name,
-			ak.provider
+			COALESCE(ak.owner_user, '') AS owner_user
 		FROM model_offers mo
 		INNER JOIN api_keys ak ON mo.credential_id = ak.id
 		WHERE ak.enabled = true
+		  AND ak.status = 'active'
 		ORDER BY mo.id
 	`
 
@@ -70,32 +70,29 @@ func (s *PGSyncer) LLMEndpoints(ctx context.Context) ([]apihub.Asset, error) {
 	for rows.Next() {
 		var (
 			modelID        int64
-			rawModel       string
+			rawModelName   string
 			credentialID   int64
-			modelEnabled   bool
+			modelAvailable bool
 			tenantID       string
-			credentialName string
-			provider       string
+			ownerUser      string
 		)
 		if err := rows.Scan(
-			&modelID, &rawModel, &credentialID, &modelEnabled,
-			&tenantID, &credentialName, &provider,
+			&modelID, &rawModelName, &credentialID, &modelAvailable,
+			&tenantID, &ownerUser,
 		); err != nil {
 			slog.Warn("pg syncer: LLMEndpoints scan error", "error", err)
 			continue
 		}
 
-		// Build asset
 		asset := apihub.Asset{
 			Kind:     apihub.KindLLMEndpoint,
 			RefID:    modelID,
 			TenantID: tenantID,
-			Name:     rawModel,
-			Owner:    credentialName,
+			Name:     rawModelName,
+			Owner:    ownerUser,
 			Metadata: map[string]any{
-				"provider":      provider,
-				"credential_id": credentialID,
-				"model_enabled": modelEnabled,
+				"credential_id":   credentialID,
+				"model_available": modelAvailable,
 			},
 		}
 		assets = append(assets, asset)
