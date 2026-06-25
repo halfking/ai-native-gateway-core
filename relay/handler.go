@@ -219,6 +219,14 @@ type ChatHandler struct {
 	// When non-nil, handler calls Logger.Log after armor scoring.
 	// nil disables armor audit (judgments are not persisted).
 	armorLogger *armor.Logger
+
+	// lastSystemSession (V3.1, 2026-06-26) enables 5-minute no-id session reuse
+	// via LastSystemSessionIndex. nil disables reuse (each request creates a new session).
+	lastSystemSession *sessions.LastSystemSessionIndex
+
+	// sessionPref (V3.1, 2026-06-26) tracks session→credential preference for model
+	// switch detection. nil disables preference tracking.
+	sessionPref *sessions.SessionPreference
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -246,6 +254,13 @@ func (h *ChatHandler) SetExecutor(exec *routing.Executor, prov providerResolver,
 // non-nil Checker from cmd/gateway/main.go.
 func (h *ChatHandler) SetModelPolicy(mp *modelpolicy.Checker) {
 	h.modelPolicy = mp
+}
+
+// SetSessionRouting wires V3.1 routing components (LastSystemSessionIndex + SessionPreference).
+// nil values are safe (feature disabled).
+func (h *ChatHandler) SetSessionRouting(lastSystemSession *sessions.LastSystemSessionIndex, sessionPref *sessions.SessionPreference) {
+	h.lastSystemSession = lastSystemSession
+	h.sessionPref = sessionPref
 }
 
 // SetIdempotentCache (Track C C5, 2026-06-18) wires the
@@ -628,12 +643,28 @@ func (h *ChatHandler) serveWithExecutor(
 		ctx = sessions.SetTenantID(ctx, keyInfo.TenantID)
 	}
 
-	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
+	// ── Session validation (V3.1: 5-header priority + LastSystemSessionIndex reuse) ──
 	var sessionInfo *sessions.Session
-	sessionID := sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
-	if sessionID == "" {
-		sessionID = r.Header.Get("X-Session-Id")
+	sessionID := extractSessionIDFromHeaders(r)
+
+	// V3.1 (2026-06-26): LastSystemSessionIndex reuse for no-id clients
+	if sessionID == "" && h.lastSystemSession != nil && keyInfo != nil && h.sessionGetter != nil {
+		entry, found := h.lastSystemSession.Get(ctx, keyInfo.ID)
+		if found {
+			si, err := h.sessionGetter.Get(ctx, entry.SessionID)
+			if err == nil && si != nil {
+				sessionID = entry.SessionID
+				sessionInfo = si
+				logCtx.SetSession(si)
+				ctx = sessions.SessionFromContextWith(ctx, si)
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Reused", "true")
+				slog.Debug("session reused from LastSystemSessionIndex",
+					"api_key_id", keyInfo.ID, "session_id", sessionID)
+			}
+		}
 	}
+
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
@@ -661,6 +692,18 @@ func (h *ChatHandler) serveWithExecutor(
 							"new_session_id", newSession.SessionID,
 						)
 						w.Header().Set("Deprecation", "true")
+					}
+					// V3.1 (2026-06-26): Update LastSystemSessionIndex for 5-minute reuse
+					if h.lastSystemSession != nil {
+						lsEntry := &sessions.LastSystemSessionEntry{
+							SessionID:  newSession.SessionID,
+							DeviceSeed: deviceSeed,
+							TaskID:     taskID,
+						}
+						if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
+							slog.Warn("LastSystemSessionIndex update failed",
+								"error", setErr, "api_key_id", keyInfo.ID)
+						}
 					}
 					slog.Info("session fallback created",
 						"original_session_id", r.Header.Get("X-Gw-Session-Id"),
