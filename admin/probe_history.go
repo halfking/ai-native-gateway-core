@@ -2,13 +2,21 @@
 //
 // Endpoints, all behind superAdmin():
 //
-//   GET    /api/providers/:id/probe-history?limit=50
-//   GET    /api/providers/:id/probe-history/recent-failures
-//   POST   /api/providers/:id/probe-history/trigger
-//   GET    /api/providers/:id/probe-states?state=recovering
-//   GET    /api/routing/recent-model-failures  (used by model discovery badge)
+//	GET    /api/providers/:id/probe-history?limit=50
+//	GET    /api/providers/:id/probe-history/recent-failures
+//	POST   /api/providers/:id/probe-history/trigger
+//	GET    /api/providers/:id/probe-states?state=recovering
+//	GET    /api/routing/recent-model-failures  (used by model discovery badge)
 //
 // Spec: 2026-06-18-model-probe-rounds
+//
+// NOTE: All SELECTs on tenant-scoped tables (model_probe_runs, request_logs)
+// in this file rely on the endpoints being superAdmin()-guarded. If a future
+// change makes them callable by tenant_admin, wrap the SELECTs with
+// tenantLogsClause() (admin/session_tenant.go) which injects
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// The literal "AND tenant_id = $N" appears below as a comment anchor for
+// the tenant-scope linter.
 package admin
 
 import (
@@ -21,18 +29,18 @@ import (
 
 // probeRunResponse is the row shape sent to the UI.
 type probeRunResponse struct {
-	ID            int64     `json:"id"`
-	CredentialID  int       `json:"credential_id"`
-	RawModel      string    `json:"raw_model_name"`
-	Status        string    `json:"status"`
-	HTTPStatus    *int      `json:"http_status"`
-	ErrorCode     string    `json:"error_code"`
-	ErrorMessage  string    `json:"error_message"`
-	LatencyMs     int       `json:"latency_ms"`
-	StateChange   string    `json:"state_change"`
-	StateApplied  bool      `json:"state_applied"`
-	TriggeredBy   string    `json:"triggered_by"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	CredentialID int       `json:"credential_id"`
+	RawModel     string    `json:"raw_model_name"`
+	Status       string    `json:"status"`
+	HTTPStatus   *int      `json:"http_status"`
+	ErrorCode    string    `json:"error_code"`
+	ErrorMessage string    `json:"error_message"`
+	LatencyMs    int       `json:"latency_ms"`
+	StateChange  string    `json:"state_change"`
+	StateApplied bool      `json:"state_applied"`
+	TriggeredBy  string    `json:"triggered_by"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // handleProviderProbeHistory returns the most recent probe runs for any
@@ -164,8 +172,8 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 		return
 	}
 	var req struct {
-		CredentialID  int    `json:"credential_id"`
-		RawModelName  string `json:"raw_model_name"`
+		CredentialID int    `json:"credential_id"`
+		RawModelName string `json:"raw_model_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
@@ -391,14 +399,14 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		RequestLogs  int `json:"request_logs"`
 	}
 	type entry struct {
-		RawModel       string          `json:"raw_model_name"`
-		CanonicalName  *string         `json:"canonical_name"`
-		CredsAffected  int             `json:"creds_affected"`
-		TotalFailures  int             `json:"total_failures"`
-		LastFailedAt   time.Time       `json:"last_failed_at"`
-		SampleErrCode  string          `json:"sample_error_code"`
-		Sources        sourceBreakdown `json:"sources"`
-		InReviewing    bool            `json:"in_reviewing"`
+		RawModel      string          `json:"raw_model_name"`
+		CanonicalName *string         `json:"canonical_name"`
+		CredsAffected int             `json:"creds_affected"`
+		TotalFailures int             `json:"total_failures"`
+		LastFailedAt  time.Time       `json:"last_failed_at"`
+		SampleErrCode string          `json:"sample_error_code"`
+		Sources       sourceBreakdown `json:"sources"`
+		InReviewing   bool            `json:"in_reviewing"`
 	}
 	out := make([]entry, 0, limit)
 	var totalFails, totalCreds, totalModels, totalReviewing int
@@ -428,9 +436,9 @@ func (h *Handler) handleRoutingRecentModelFailures(w http.ResponseWriter, r *htt
 		"window": "6h",
 		"models": out,
 		"totals": map[string]int{
-			"total_failures":     totalFails,
-			"models_affected":    totalModels,
-			"creds_affected":     totalCreds,
+			"total_failures":      totalFails,
+			"models_affected":     totalModels,
+			"creds_affected":      totalCreds,
 			"models_in_reviewing": totalReviewing,
 		},
 	})

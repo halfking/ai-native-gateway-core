@@ -25,56 +25,62 @@ package admin
 //   - byTaskType: per-task_type success/latency/cost
 //   - byModelTask: per-(model, task_type) detail (catches outliers)
 //   - verdict: top-3 models by composite score per task type
+//
+// NOTE: All SELECTs on request_logs in this file are wrapped with
+// tenantLogsClause() (admin/session_tenant.go) — adds
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
 
 import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // AutoRouteCorrelationsResponse is the JSON wire format returned by
 // the correlations endpoint. Fields are stable for the admin UI.
 type AutoRouteCorrelationsResponse struct {
-	WindowDays int                  `json:"window_days"`
-	ByModel    []CorrelationRow     `json:"by_model"`
-	ByStrategy []CorrelationRow     `json:"by_strategy"`
-	ByTaskType []CorrelationRow     `json:"by_task_type"`
-	ByModelTask []CorrelationRowMT `json:"by_model_task"`
-	Verdict    []CorrelationVerdict  `json:"verdict"`
-	GeneratedAt string              `json:"generated_at"`
+	WindowDays  int                  `json:"window_days"`
+	ByModel     []CorrelationRow     `json:"by_model"`
+	ByStrategy  []CorrelationRow     `json:"by_strategy"`
+	ByTaskType  []CorrelationRow     `json:"by_task_type"`
+	ByModelTask []CorrelationRowMT   `json:"by_model_task"`
+	Verdict     []CorrelationVerdict `json:"verdict"`
+	GeneratedAt string               `json:"generated_at"`
 }
 
 // CorrelationRow is a generic (label, samples, success, latency,
 // cost, quality) row.
 type CorrelationRow struct {
-	Label     string  `json:"label"`
-	Samples   int     `json:"samples"`
-	Success   float64 `json:"success_rate"`
-	AvgLatency int    `json:"avg_latency_ms"`
-	AvgCost   float64 `json:"avg_cost_usd"`
-	Quality   float64 `json:"avg_quality"` // optional: present when tuning_signals is joined
+	Label      string  `json:"label"`
+	Samples    int     `json:"samples"`
+	Success    float64 `json:"success_rate"`
+	AvgLatency int     `json:"avg_latency_ms"`
+	AvgCost    float64 `json:"avg_cost_usd"`
+	Quality    float64 `json:"avg_quality"` // optional: present when tuning_signals is joined
 }
 
 // CorrelationRowMT extends CorrelationRow with task_type for the
 // per-(model, task_type) breakdown.
 type CorrelationRowMT struct {
-	Model    string  `json:"model"`
-	TaskType string  `json:"task_type"`
-	Samples  int     `json:"samples"`
-	Success  float64 `json:"success_rate"`
-	AvgLatency int   `json:"avg_latency_ms"`
-	AvgCost  float64 `json:"avg_cost_usd"`
+	Model      string  `json:"model"`
+	TaskType   string  `json:"task_type"`
+	Samples    int     `json:"samples"`
+	Success    float64 `json:"success_rate"`
+	AvgLatency int     `json:"avg_latency_ms"`
+	AvgCost    float64 `json:"avg_cost_usd"`
 }
 
 // CorrelationVerdict is the top-N models per task type (ranked by
 // success rate, ties broken by latency).
 type CorrelationVerdict struct {
-	TaskType  string  `json:"task_type"`
-	Model     string  `json:"model"`
-	Success   float64 `json:"success_rate"`
-	AvgLatency int    `json:"avg_latency_ms"`
-	Rank      int     `json:"rank"`
+	TaskType   string  `json:"task_type"`
+	Model      string  `json:"model"`
+	Success    float64 `json:"success_rate"`
+	AvgLatency int     `json:"avg_latency_ms"`
+	Rank       int     `json:"rank"`
 }
 
 // handleAutoRouteCorrelations: GET /auto-route/correlations
@@ -124,7 +130,8 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		HAVING COUNT(*) >= $2
 		ORDER BY success DESC, avg_latency ASC
 	`
-	if err := h.queryCorrelations(w, r, byModelQuery, []any{days, minSamples}, &resp.ByModel, "model_chosen"); err != nil {
+	byModelQ, byModelArgs := applyTenantFilterToQuery(r, byModelQuery, []any{days, minSamples})
+	if err := h.queryCorrelations(w, r, byModelQ, byModelArgs, &resp.ByModel, "model_chosen"); err != nil {
 		return
 	}
 
@@ -144,7 +151,8 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		HAVING COUNT(*) >= $2
 		ORDER BY success DESC, avg_latency ASC
 	`
-	if err := h.queryCorrelations(w, r, byStrategyQuery, []any{days, minSamples}, &resp.ByStrategy, "strategy_used"); err != nil {
+	byStrategyQ, byStrategyArgs := applyTenantFilterToQuery(r, byStrategyQuery, []any{days, minSamples})
+	if err := h.queryCorrelations(w, r, byStrategyQ, byStrategyArgs, &resp.ByStrategy, "strategy_used"); err != nil {
 		return
 	}
 
@@ -164,7 +172,8 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		HAVING COUNT(*) >= $2
 		ORDER BY samples DESC
 	`
-	if err := h.queryCorrelations(w, r, byTaskTypeQuery, []any{days, minSamples}, &resp.ByTaskType, "task_type_chosen"); err != nil {
+	byTaskTypeQ, byTaskTypeArgs := applyTenantFilterToQuery(r, byTaskTypeQuery, []any{days, minSamples})
+	if err := h.queryCorrelations(w, r, byTaskTypeQ, byTaskTypeArgs, &resp.ByTaskType, "task_type_chosen"); err != nil {
 		return
 	}
 
@@ -186,7 +195,8 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		HAVING COUNT(*) >= $2
 		ORDER BY success DESC, model_chosen, task_type_chosen
 	`
-	rows, err := h.db.Query(r.Context(), byModelTaskQuery, days, minSamples)
+	byModelTaskQ, byModelTaskArgs := applyTenantFilterToQuery(r, byModelTaskQuery, []any{days, minSamples})
+	rows, err := h.db.Query(r.Context(), byModelTaskQ, byModelTaskArgs...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -229,7 +239,8 @@ func (h *AutoRouteHandlers) handleAutoRouteCorrelations(w http.ResponseWriter, r
 		WHERE rn <= 3
 		ORDER BY task_type_chosen, rn
 	`
-	rows2, err := h.db.Query(r.Context(), verdictQuery, days, minSamples)
+	verdictQ, verdictArgs := applyTenantFilterToQuery(r, verdictQuery, []any{days, minSamples})
+	rows2, err := h.db.Query(r.Context(), verdictQ, verdictArgs...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -298,4 +309,29 @@ func (h *AutoRouteHandlers) queryCorrelations(
 // RegisterAutoRouteRoutes) so the new endpoint is easy to find.
 func (h *AutoRouteHandlers) RegisterAutoRouteCorrelationsRoute(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/admin/auto-route/correlations", adminWrap(h.handleAutoRouteCorrelations))
+}
+
+// applyTenantFilterToQuery injects "AND tenant_id = $N" (via
+// tenantLogsClause) into the query just before its first "GROUP BY"
+// marker, appending the tenant id to args. The first existing placeholder
+// must be $1 — caller passes the existing positional args. If the caller
+// is not a tenant admin on a non-default tenant, the SQL and args are
+// returned unchanged (no-op).
+//
+// We use the "GROUP BY" anchor because every query in this file follows
+// the shape: WHERE ... AND ts >= ... GROUP BY ... HAVING ... — so the
+// tenant filter belongs between the WHERE and the GROUP BY.
+func applyTenantFilterToQuery(r *http.Request, query string, args []any) (string, []any) {
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, len(args)+1)
+	if tenantFrag == "" {
+		return query, args
+	}
+	if strings.Contains(query, "GROUP BY") {
+		query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+	} else {
+		// fallback: append at end (still valid SQL — filter applies to all rows)
+		query = query + tenantFrag
+	}
+	args = append(args, tenantArgs...)
+	return query, args
 }

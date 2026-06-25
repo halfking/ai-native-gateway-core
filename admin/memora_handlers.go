@@ -1,5 +1,11 @@
 package admin
 
+// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// use sessionLogsWhere() / buildMemoraSessionsSQL() which embed
+// tenantLogsClause() (admin/session_tenant.go) to inject
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
+
 import (
 	"context"
 	"encoding/json"
@@ -86,14 +92,14 @@ func (h *Handler) handleMemoraPing(w http.ResponseWriter, r *http.Request) {
 	latency := time.Since(start).Milliseconds()
 	if err == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"connected":   true,
+			"connected":  true,
 			"latency_ms": latency,
 		})
 	} else {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"connected":   false,
+			"connected":  false,
 			"latency_ms": latency,
-			"error":       err.Error(),
+			"error":      err.Error(),
 		})
 	}
 }
@@ -139,21 +145,21 @@ func (h *Handler) handleMemoraSinkControl(w http.ResponseWriter, r *http.Request
 }
 
 type sessionRow struct {
-	TaskID           *string
-	SessionID        *string
-	RequestCount     int
-	OkCount          int
-	FailCount        int
-	FirstActivity    time.Time
-	LastActivity     time.Time
-	LatestModel      *string
-	APIKeyPrefix     *string
-	APIKeyOwnerUser  *string
-	ApplicationCode  *string
-	APIKeyID         *int64
-	NoTopic          bool
-	NoTopicLabel     *string
-	HourStart        *time.Time
+	TaskID          *string
+	SessionID       *string
+	RequestCount    int
+	OkCount         int
+	FailCount       int
+	FirstActivity   time.Time
+	LastActivity    time.Time
+	LatestModel     *string
+	APIKeyPrefix    *string
+	APIKeyOwnerUser *string
+	ApplicationCode *string
+	APIKeyID        *int64
+	NoTopic         bool
+	NoTopicLabel    *string
+	HourStart       *time.Time
 }
 
 // handleMemoraSessions lists recent task/session activity from
@@ -755,16 +761,16 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"task_id":                  taskID,
-		"session_id":               nilStr(sessionID),
-		"messages":                 messages,
-		"message_count":            len(messages),
-		"request_count":            len(messages),
-		"hours":                    sc.Hours,
-		"scoped_session_id":        scopedSessionIDResp(sc.SessionID),
-		"total_prompt_tokens":      totalPromptTokens,
-		"total_completion_tokens":  totalCompletionTokens,
-		"total_cost_usd":           totalCost,
+		"task_id":                 taskID,
+		"session_id":              nilStr(sessionID),
+		"messages":                messages,
+		"message_count":           len(messages),
+		"request_count":           len(messages),
+		"hours":                   sc.Hours,
+		"scoped_session_id":       scopedSessionIDResp(sc.SessionID),
+		"total_prompt_tokens":     totalPromptTokens,
+		"total_completion_tokens": totalCompletionTokens,
+		"total_cost_usd":          totalCost,
 	})
 }
 

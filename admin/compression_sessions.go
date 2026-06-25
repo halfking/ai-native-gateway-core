@@ -1,5 +1,10 @@
 package admin
 
+// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// rely on tenantLogsClause() (admin/session_tenant.go) to inject
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
+
 import (
 	"context"
 	"log/slog"
@@ -9,16 +14,16 @@ import (
 )
 
 type compressionSessionItem struct {
-	GwSessionID          string    `json:"gw_session_id"`
-	CompressionStrategy  string    `json:"compression_strategy"`
-	RequestCount         int       `json:"request_count"`
-	FirstTs              time.Time `json:"first_ts"`
-	LastTs               time.Time `json:"last_ts"`
-	OutboundMsgCount     *int      `json:"outbound_msg_count"`
-	OutboundTokenEst     *int      `json:"outbound_token_est"`
-	EstimatedOrigMsgs    *int      `json:"estimated_original_msgs"`
-	MsgReduction         *int      `json:"msg_reduction"`
-	SampleRequestID      string    `json:"sample_request_id"`
+	GwSessionID         string    `json:"gw_session_id"`
+	CompressionStrategy string    `json:"compression_strategy"`
+	RequestCount        int       `json:"request_count"`
+	FirstTs             time.Time `json:"first_ts"`
+	LastTs              time.Time `json:"last_ts"`
+	OutboundMsgCount    *int      `json:"outbound_msg_count"`
+	OutboundTokenEst    *int      `json:"outbound_token_est"`
+	EstimatedOrigMsgs   *int      `json:"estimated_original_msgs"`
+	MsgReduction        *int      `json:"msg_reduction"`
+	SampleRequestID     string    `json:"sample_request_id"`
 }
 
 type compressionSessionsResponse struct {
@@ -84,6 +89,12 @@ func (h *Handler) handleCompressionSessions(w http.ResponseWriter, r *http.Reque
 	whereClause := `rl.ts >= $1 AND rl.ts <= $2 AND rl.outbound_body IS NOT NULL AND rl.gw_session_id IS NOT NULL AND ($3 OR rl.success)`
 	args := []any{from, to, !tenantFilter}
 	argIdx := 4
+	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, argIdx)
+	if tenantFrag != "" {
+		whereClause += tenantFrag
+		args = append(args, tenantArgs...)
+		argIdx = nextArg
+	}
 
 	if strategyFilter != "" {
 		whereClause += ` AND rl.compression_strategy = $` + strconv.Itoa(argIdx)

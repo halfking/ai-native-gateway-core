@@ -5,6 +5,12 @@
 //	GET /api/admin/auto-route/analytics/model-task-index
 //	GET /api/admin/auto-route/analytics/decision/{request_id}
 //	GET /api/admin/auto-route/analytics/funnel
+//
+// NOTE: All SELECTs on tenant-scoped tables (request_logs,
+// routing_decision_log) in this file are wrapped with tenantLogsClause()
+// (admin/session_tenant.go) — adds "AND tenant_id = $N" for tenant_admin
+// callers on non-default tenants. Super-admin / legacy admin_key /
+// default-tenant callers see all rows.
 package admin
 
 import (
@@ -267,7 +273,13 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	}
 
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-	rows, err := h.db.Query(ctx, query, intervalStr)
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+	args := []any{intervalStr}
+	if tenantFrag != "" {
+		query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+		args = append(args, tenantArgs...)
+	}
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -382,10 +394,19 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+	l12Args := []any{intervalStr}
+	if tenantFrag != "" {
+		// deferred injection happens after build*Query call
+	}
 
 	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
 	l12Query := buildFlowL12Query()
-	l12Rows, err := h.db.Query(ctx, l12Query, intervalStr)
+	if tenantFrag != "" {
+		l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+		l12Args = append(l12Args, tenantArgs...)
+	}
+	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -437,7 +458,12 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	// use client_model as the model anchor and __specified__ as the task.
 	// NOTE: providers table column is display_name, NOT name.
 	l23Query := buildFlowL23Query()
-	l23Rows, err := h.db.Query(ctx, l23Query, intervalStr)
+	l23Args := []any{intervalStr}
+	if tenantFrag != "" {
+		l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+		l23Args = append(l23Args, tenantArgs...)
+	}
+	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -619,14 +645,19 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 	var success bool
 	var latency *int
 
+	replayTenantFrag, replayTenantArgs, _ := tenantLogsClause(r, 2)
+	replayArgs := []any{reqID}
+	if replayTenantFrag != "" {
+		replayArgs = append(replayArgs, replayTenantArgs...)
+	}
 	err := h.db.QueryRow(ctx, `
 		SELECT ts, task_type, auto_profile, auto_confidence,
 		       client_model, outbound_model, api_key_id, credential_id,
 		       auto_decision, success, latency_ms
 		FROM request_logs
-		WHERE request_id = $1::uuid
+		WHERE request_id = $1::uuid`+replayTenantFrag+`
 		LIMIT 1
-	`, reqID).Scan(
+	`, replayArgs...).Scan(
 		&ts, &taskType, &prof, &confidence,
 		&clientModel, &outbound, &apiKeyID, &credentialID,
 		&autoDecision, &success, &latency,
@@ -685,10 +716,10 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		       candidates_tried, success, resolution_path, canonical_model,
 		       decision_trace::text
 		FROM routing_decision_log
-		WHERE request_id = $1::uuid
+		WHERE request_id = $1::uuid`+replayTenantFrag+`
 		ORDER BY ts DESC
 		LIMIT 1
-	`, reqID).Scan(
+	`, replayArgs...).Scan(
 		&rdlTS, &chosenCredID, &chosenProvID, &tier,
 		&candidatesTried, &rdlSuccess, &resolutionPath, &canonicalModel,
 		&decisionTrace,
@@ -781,6 +812,13 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	dataSource := "exact"
 
 	// Primary: routing_decision_log decision_trace aggregates.
+	rdlTenantFrag, rdlTenantArgs, _ := tenantLogsClause(r, 3)
+	rdlArgs := []any{intervalStr, modelNames}
+	rdlTenantWhere := ""
+	if rdlTenantFrag != "" {
+		rdlTenantWhere = rdlTenantFrag
+		rdlArgs = append(rdlArgs, rdlTenantArgs...)
+	}
 	rdlQuery := `
 		SELECT
 			COUNT(*)::int,
@@ -803,9 +841,9 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  AND (
 		    outbound_model = ANY($2) OR canonical_model = ANY($2)
 		    OR client_model = ANY($2) OR model = ANY($2)
-		  )
+		  )` + rdlTenantWhere + `
 	`
-	_ = h.db.QueryRow(ctx, rdlQuery, intervalStr, modelNames).Scan(
+	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
 		&fr.requests, &fr.traceRows, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
 	)
@@ -813,6 +851,10 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	if fr.requests == 0 {
 		dataSource = "approximate"
 		var autoReq, routed, ok int
+		approxArgs := []any{intervalStr, modelNames}
+		if rdlTenantFrag != "" {
+			approxArgs = append(approxArgs, rdlTenantArgs...)
+		}
 		if err := h.db.QueryRow(ctx, `
 			SELECT
 				COUNT(*)::int,
@@ -821,8 +863,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 			FROM request_logs
 			WHERE is_auto_request = TRUE
 			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)
-		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok); err != nil {
+			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
+		`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
@@ -840,6 +882,10 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		// RDL rows exist but traces empty — supplement from request_logs.
 		dataSource = "mixed"
 		var autoReq, routed, ok int
+		mixedArgs := []any{intervalStr, modelNames}
+		if rdlTenantFrag != "" {
+			mixedArgs = append(mixedArgs, rdlTenantArgs...)
+		}
 		_ = h.db.QueryRow(ctx, `
 			SELECT
 				COUNT(*)::int,
@@ -848,8 +894,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 			FROM request_logs
 			WHERE is_auto_request = TRUE
 			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)
-		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok)
+			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
+		`, mixedArgs...).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq
 		}

@@ -1,5 +1,10 @@
 package admin
 
+// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// rely on tenantLogsClause() (admin/session_tenant.go) to inject
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
+
 import (
 	"context"
 	"log/slog"
@@ -60,17 +65,27 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 	tenantFilter := IsTenantAdmin(r)
 
 	var result = struct {
-		TotalRequests        int             `json:"total_requests"`
-		CompressedTotal      int             `json:"compressed_total"`
-		CompressionRate      float64         `json:"compression_rate"`
-		StrategyDistribution map[string]int  `json:"strategy_distribution"`
-		TotalOutboundTokens  *int64          `json:"total_outbound_tokens,omitempty"`
-		EstimatedOrigTokens  *int64          `json:"estimated_original_tokens,omitempty"`
-		EstimatedTokensSaved *int64          `json:"estimated_tokens_saved,omitempty"`
-		HourlySeries         []hourBucket    `json:"hourly_series"`
+		TotalRequests        int            `json:"total_requests"`
+		CompressedTotal      int            `json:"compressed_total"`
+		CompressionRate      float64        `json:"compression_rate"`
+		StrategyDistribution map[string]int `json:"strategy_distribution"`
+		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
+		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
+		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
+		HourlySeries         []hourBucket   `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
 		HourlySeries:         make([]hourBucket, 0),
+	}
+
+	aggArgs := []any{from, to, !tenantFilter}
+	aggArgIdx := 4
+	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, aggArgIdx)
+	aggWhere := ""
+	if tenantFrag != "" {
+		aggWhere = tenantFrag
+		aggArgs = append(aggArgs, tenantArgs...)
+		aggArgIdx = nextArg
 	}
 
 	aggRows, err := h.db.Query(ctx, `
@@ -82,10 +97,10 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
-		  AND ($3 OR rl.success)
+		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
 		ORDER BY cnt DESC
-	`, from, to, !tenantFilter)
+	`, aggArgs...)
 	if err != nil {
 		slog.Warn("compression_stats agg query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -121,8 +136,8 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		SELECT COALESCE(SUM(CEIL(LENGTH(COALESCE(rl.request_body, ''))::numeric / 4.0)), 0)::bigint
 		FROM request_logs rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
-		  AND ($3 OR rl.success)
-	`, from, to, !tenantFilter).Scan(&estimatedOrig)
+		  AND ($3 OR rl.success)`+aggWhere+`
+	`, aggArgs...).Scan(&estimatedOrig)
 	if err == nil && estimatedOrig > 0 {
 		result.EstimatedOrigTokens = &estimatedOrig
 		if totalToksAfter > 0 && estimatedOrig > totalToksAfter {
@@ -148,10 +163,10 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 			COUNT(rl.outbound_body)::int AS compressed
 		FROM request_logs rl
 		WHERE rl.ts >= $1 AND rl.ts <= $2
-		  AND ($3 OR rl.success)
+		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket
 		ORDER BY bucket
-	`, from, to, !tenantFilter)
+	`, aggArgs...)
 	if err != nil {
 		slog.Warn("compression_stats bucket query failed", "error", err)
 	} else {
