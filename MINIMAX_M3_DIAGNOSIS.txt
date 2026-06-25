@@ -1,0 +1,280 @@
+================================================================================
+MiniMax-M3 路由问题诊断报告
+================================================================================
+
+执行时间: $(date)
+问题: 为什么找不到 minimax-m3 的可用节点？
+
+================================================================================
+📊 诊断结果总结
+================================================================================
+
+✅ 数据库层面：完全正常，minimax-m3 是可路由的
+✅ Redis 层面：Credential 10 没有被禁用的记录
+✅ 结论：minimax-m3 应该是可以找到的！
+
+================================================================================
+🔍 详细检查结果
+================================================================================
+
+1. Provider 状态
+--------------------------------------------------------------------------------
+ID:              12
+Code:            minimax
+Display Name:    MiniMax
+Base URL:        https://api.minimax.chat
+Enabled:         ✅ TRUE
+Manual Disabled: ✅ FALSE
+状态:            ✅ 正常
+
+2. Credential 状态
+--------------------------------------------------------------------------------
+ID:                     10
+Provider:               MiniMax
+Label:                  Mock Key MiniMax
+Status:                 ✅ active
+Lifecycle Status:       ✅ active
+Availability State:     ✅ ready
+Quota State:            ✅ ok
+Circuit State:          ✅ closed
+Consecutive Failures:   ✅ 0
+Manual Disabled:        ✅ FALSE
+状态:                   ✅ 完全正常
+
+3. Model Offer 状态
+--------------------------------------------------------------------------------
+ID:                 13
+Credential ID:      10
+Raw Model Name:     minimax-m3
+Available:          ✅ TRUE
+Unavailable Reason: (NULL)
+Routing Tier:       1
+Weight:             90
+Manual Priority:    99
+状态:               ✅ 正常
+
+4. v_routable_credential_models 视图
+--------------------------------------------------------------------------------
+Provider ID:        12
+Credential ID:      10
+Raw Model Name:     minimax-m3
+Is Routable:        ✅ TRUE
+Unavailable Reason: (NULL)
+状态:               ✅ 可路由
+
+5. model_probe_state 检查
+--------------------------------------------------------------------------------
+状态: ✅ 没有 broken_confirmed 标记
+结论: 探测状态正常
+
+6. recent_success_rate 检查
+--------------------------------------------------------------------------------
+Samples:            0
+Rate:               NULL
+Filter Status:      ✅ 样本不足，通过质量门
+结论:               没有被质量门过滤
+
+7. Redis RouteNodeStore 检查
+--------------------------------------------------------------------------------
+Key:                route_node:10:minimax-m3
+状态:               ✅ 不存在
+结论:               没有被 RouteNodeStore 标记为不可用
+
+找到的其他 minimax-m3 记录（不同 credential）:
+  - route_node:92000:minimax-m3 (disabled=false, 正常)
+  - route_node:88001:minimax-m3-health
+  - route_node:88101:minimax-m3-filter
+  - 等等...
+
+这些是其他测试或生产环境的 credentials，不影响 credential 10。
+
+8. 完整路由 SQL 查询测试
+--------------------------------------------------------------------------------
+执行查询: ✅ 成功
+找到节点: ✅ 1 个
+详情:
+  Credential ID:      10
+  Provider:           MiniMax
+  Model:              minimax-m3
+  Tier:               1
+  Runtime Routable:   TRUE
+  Recent Samples:     0
+  
+结论: SQL 层面完全可路由
+
+================================================================================
+🎯 根本原因分析
+================================================================================
+
+根据所有检查结果，minimax-m3 在以下所有层面都是可用的：
+
+1. ✅ Provider 层面：启用且未手动禁用
+2. ✅ Credential 层面：active、ready、无冷却
+3. ✅ Model Offer 层面：available=true
+4. ✅ 视图层面：is_routable=true
+5. ✅ 探测层面：没有 broken_confirmed
+6. ✅ 质量门层面：通过（样本不足，默认通过）
+7. ✅ Redis 层面：没有禁用记录
+8. ✅ SQL 查询层面：能找到节点
+
+结论：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+minimax-m3 在数据库和 Redis 层面都是完全可路由的！
+如果应用中找不到，可能的原因是：
+
+1. 应用未连接到这个数据库
+2. 应用使用了不同的 tenant_id
+3. 应用的缓存未更新
+4. 应用配置了不同的 Redis 实例
+5. 实际查询的模型名称不匹配（大小写、拼写）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+================================================================================
+🔧 验证步骤
+================================================================================
+
+请执行以下步骤来验证应用是否真的找不到 minimax-m3：
+
+1. 确认应用配置
+--------------------------------------------------------------------------------
+检查应用的环境变量：
+  echo $LLM_GATEWAY_DATABASE_URL
+  # 应该是: postgresql://xutaohuang@localhost:5432/llm_gateway
+
+检查应用使用的 tenant_id：
+  # 默认应该是 'default'
+
+2. 清除应用缓存
+--------------------------------------------------------------------------------
+如果应用有缓存，重启应用：
+  pkill -f gateway
+  ./start_gateway.sh
+
+或者调用缓存失效 API（如果有）：
+  curl -X POST http://localhost:8080/admin/cache/invalidate
+
+3. 测试路由解析 API
+--------------------------------------------------------------------------------
+curl "http://localhost:8080/api/routing/resolve?model=minimax-m3"
+
+预期结果：应该找到 1 个候选节点（credential_id=10）
+
+4. 查看应用日志
+--------------------------------------------------------------------------------
+grep -i "minimax-m3" logs/app.log
+grep -i "no candidates" logs/app.log
+grep -i "filtered" logs/app.log
+
+查找以下关键信息：
+  - "routing: filtered candidates by route_node health"
+  - "router: all candidates unavailable"
+  - 候选节点被过滤的原因
+
+5. 检查实际使用的数据库
+--------------------------------------------------------------------------------
+在应用启动日志中查找数据库连接信息：
+  grep -i "postgres connected" logs/app.log
+
+确认连接的是 llm_gateway 数据库
+
+================================================================================
+🛠️ 可能的修复方案
+================================================================================
+
+方案 1: 应用连接了错误的数据库
+--------------------------------------------------------------------------------
+问题: 应用可能连接了生产数据库而不是本地测试数据库
+解决:
+  export LLM_GATEWAY_DATABASE_URL="postgresql://xutaohuang@localhost:5432/llm_gateway"
+  ./start_gateway.sh
+
+方案 2: 模型名称不匹配
+--------------------------------------------------------------------------------
+问题: 客户端请求的模型名可能不是 "minimax-m3"
+解决: 检查实际请求的模型名称
+  
+支持的变体：
+  - minimax-m3 (raw_model_name)
+  - minimax-m3 (standardized_name)
+
+方案 3: tenant_id 不匹配
+--------------------------------------------------------------------------------
+问题: 应用使用了不同的 tenant_id
+解决: 确认应用配置中的 tenant_id 为 'default'
+
+方案 4: Redis 中有旧的禁用状态（不太可能）
+--------------------------------------------------------------------------------
+虽然检查显示 credential 10 没有记录，但如果怀疑有问题：
+
+清除所有 minimax-m3 的 route_node 记录：
+  redis-cli KEYS "route_node:*:minimax-m3" | xargs redis-cli DEL
+
+方案 5: 应用代码中有额外的过滤逻辑
+--------------------------------------------------------------------------------
+检查代码中是否有针对 minimax 的特殊过滤：
+  grep -r "minimax" routing/ provider/ --include="*.go"
+
+================================================================================
+📝 测试命令
+================================================================================
+
+直接在数据库中验证路由查询：
+--------------------------------------------------------------------------------
+psql -d llm_gateway << 'SQL'
+-- 完整模拟应用的路由查询
+SELECT 
+    c.id AS credential_id,
+    p.display_name AS provider,
+    mo.raw_model_name AS model,
+    COALESCE(mo.routing_tier, 2) AS tier,
+    COALESCE(v.is_routable, FALSE) AS is_routable
+FROM model_offers mo
+JOIN credentials c ON c.id = mo.credential_id
+JOIN providers p ON p.id = c.provider_id
+LEFT JOIN v_routable_credential_models v
+       ON v.credential_id = mo.credential_id
+      AND v.raw_model_name = mo.raw_model_name
+CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+WHERE p.tenant_id = 'default'
+  AND COALESCE(c.status, 'active') NOT IN ('disabled')
+  AND v.is_routable = TRUE
+  AND NOT EXISTS (
+      SELECT 1 FROM model_probe_state mps
+      WHERE mps.credential_id = c.id
+        AND mps.raw_model_name = mo.raw_model_name
+        AND mps.state = 'broken_confirmed'
+  )
+  AND NOT (rsr.samples >= 20 AND COALESCE(rsr.rate, 1.0) < 0.3)
+  AND lower(mo.raw_model_name) = 'minimax-m3'
+ORDER BY COALESCE(mo.manual_priority, 99);
+SQL
+
+预期结果：应该返回 1 行（credential_id=10）
+
+Redis 状态检查：
+--------------------------------------------------------------------------------
+redis-cli GET "route_node:10:minimax-m3"
+# 预期：(nil) 或者 disabled=false
+
+================================================================================
+✅ 结论
+================================================================================
+
+基于所有检查结果，minimax-m3 在当前配置下是完全可路由的。
+
+数据库状态:     ✅ 正常，1 个可用节点
+Redis 状态:      ✅ 正常，没有禁用记录
+路由查询测试:    ✅ 通过，能找到节点
+
+如果应用中仍然报告"找不到可用节点"，需要：
+1. 检查应用连接的是否是这个数据库
+2. 检查应用日志中的详细错误信息
+3. 确认实际请求的模型名称
+4. 验证应用的 tenant_id 配置
+
+建议：启动应用并查看详细日志，确认具体的过滤原因。
+
+================================================================================
+报告生成时间: $(date)
+状态: ✅ 诊断完成
+================================================================================
