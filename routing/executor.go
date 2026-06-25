@@ -388,6 +388,12 @@ type Executor struct {
 	// window analyzer + session cache integration (incremental compression).
 	// When nil, falls back to the legacy 3-tier recovery (mechanical → memora → llm).
 	RecoveryCoord *compressor.RecoveryCoordinator
+
+	// Recorder (V3.1, 2026-06-26) records route node state for per-(credentialID, model)
+	// health tracking and session preference. Coexists with StickyCache: StickyCache
+	// tracks per-session L1/L2/L3 anti-fingerprinting routing while Recorder tracks
+	// node-level health for candidate filtering. nil disables V3.1 recording.
+	Recorder *RouteNodeRecorder
 }
 
 func NewExecutor(
@@ -814,6 +820,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if execErr == nil {
 			e.restoreCredentialState(params.R.Context(), cand.CredentialID, cand.RawModel)
 			e.recordStickySuccess(params, cand.CredentialID)
+			// V3.1 (2026-06-26): record route node + session preference
+			if e.Recorder != nil {
+				e.Recorder.RecordSuccess(params.R.Context(), cand.CredentialID, cand.RawModel, params.SessionID)
+			}
 			// Step 6 (2026-06-18): a successful response on this
 			// credential clears its model_not_found streak. The next
 			// request from this sticky session will not be tripped by
@@ -983,6 +993,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				kind = errorsx.KindStreamTimeout
 			}
 			e.recordStickyFailure(params, cand.CredentialID, kind)
+			// V3.1 (2026-06-26): record route node failure
+			if e.Recorder != nil {
+				e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+			}
 
 			if sie.resumable {
 				// Stream is resumable (few chunks sent) - try next candidate.
@@ -1107,6 +1121,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			Reason:       execErr.Error(),
 		})
 		e.recordStickyFailure(params, cand.CredentialID, kind)
+		// V3.1 (2026-06-26): record route node failure
+		if e.Recorder != nil {
+			e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
+		}
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 			ProviderID:   cand.ProviderID,
