@@ -1,0 +1,172 @@
+{
+  "dashboard": {
+    "title": "LLM Gateway - Routing Quality Gate",
+    "tags": ["llm-gateway", "routing", "quality"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Quality Gate Fallback Rate (Last Hour)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(llm_gateway_routing_quality_gate_fallback_total[5m])",
+            "legendFormat": "{{model}} - {{threshold}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "ops", "label": "Fallbacks/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "title": "Quality Gate Fallback Count by Model",
+        "type": "table",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "sum by (model) (llm_gateway_routing_quality_gate_fallback_total)",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "transformations": [
+          {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+        ]
+      },
+      {
+        "title": "Candidate Count Distribution",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(llm_gateway_routing_candidates_count_bucket[5m])) by (le, model))",
+            "legendFormat": "p50 - {{model}}"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(llm_gateway_routing_candidates_count_bucket[5m])) by (le, model))",
+            "legendFormat": "p95 - {{model}}"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(llm_gateway_routing_candidates_count_bucket[5m])) by (le, model))",
+            "legendFormat": "p99 - {{model}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Candidate Count"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "title": "Models Using Fallback (Last 24h)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "count(sum by (model) (increase(llm_gateway_routing_quality_gate_fallback_total[24h]) > 0))"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "orientation": "auto",
+          "textMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 5}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Total Fallback Events (Last 24h)",
+        "type": "stat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 8},
+        "targets": [
+          {
+            "expr": "sum(increase(llm_gateway_routing_quality_gate_fallback_total[24h]))"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "orientation": "auto",
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 10},
+                {"color": "orange", "value": 100},
+                {"color": "red", "value": 1000}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "Zero Candidate Routing Failures",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "targets": [
+          {
+            "expr": "sum by (model) (llm_gateway_routing_candidates_count_bucket{le=\"0\"})",
+            "legendFormat": "{{model}}"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Count"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "name": "High Quality Gate Fallback Rate",
+          "conditions": [
+            {
+              "evaluator": {"params": [10], "type": "gt"},
+              "operator": {"type": "and"},
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"params": [], "type": "avg"},
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "for": "5m",
+          "frequency": "1m",
+          "message": "Quality gate fallback rate is high. Check credential health.",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "title": "Fallback Threshold Distribution (Last 1h)",
+        "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "targets": [
+          {
+            "expr": "sum by (threshold) (increase(llm_gateway_routing_quality_gate_fallback_total[1h]))",
+            "legendFormat": "{{threshold}}"
+          }
+        ],
+        "options": {
+          "legend": {"displayMode": "table", "placement": "right"},
+          "pieType": "pie",
+          "displayLabels": ["percent"]
+        }
+      }
+    ],
+    "refresh": "30s",
+    "schemaVersion": 30,
+    "version": 1
+  },
+  "overwrite": true
+}
