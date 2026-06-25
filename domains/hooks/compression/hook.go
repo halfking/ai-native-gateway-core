@@ -41,14 +41,14 @@ const MetaKeyCompressionError = "compression_error"
 //
 // 注意：本 Hook 不直接修改 env.TransformedRequest——压缩结果仅放在
 // Metadata 中供下游 Hook 读取。这样设计保证：
-//   1. 压缩是可选的（如果不读 Metadata，行为无变化）
-//   2. 与 transformation 领域的 TransformHook 不冲突
+//  1. 压缩是可选的（如果不读 Metadata，行为无变化）
+//  2. 与 transformation 领域的 TransformHook 不冲突
 type CompressionHook struct {
-	compressor Compressor
+	compressor HookCompressor
 }
 
 // NewCompressionHook 构造 CompressionHook。
-func NewCompressionHook(c Compressor) *CompressionHook {
+func NewCompressionHook(c HookCompressor) *CompressionHook {
 	return &CompressionHook{compressor: c}
 }
 
@@ -114,8 +114,8 @@ func (h *CompressionHook) OnError(ctx context.Context, env *domain.PipelineReque
 	return nil
 }
 
-// Compressor 返回底层 Compressor（用于测试与 telemetry）。
-func (h *CompressionHook) Compressor() Compressor { return h.compressor }
+// Compressor 返回底层 HookCompressor（用于测试与 telemetry）。
+func (h *CompressionHook) Compressor() HookCompressor { return h.compressor }
 
 // 编译期接口断言。
 var _ pipeline.Hook = (*CompressionHook)(nil)
