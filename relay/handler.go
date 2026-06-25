@@ -1174,22 +1174,27 @@ func (h *ChatHandler) serveWithExecutor(
 			scoreResp, judgeErr := h.armorJudge.Score(ctx, scoreReq)
 			judgeLatency := time.Since(judgeStart)
 
+			if judgeErr != nil {
+				slog.Warn("armor: judge call failed",
+					"request_id", requestID,
+					"error", judgeErr,
+					"latency_ms", judgeLatency.Milliseconds())
+			}
+
 			// Construct judgment for audit
 			judgment := armor.Judgment{
 				RequestID:  requestID,
 				TenantID:   keyInfo.TenantID,
 				CheckType:  armor.CheckPromptInject,
 				Decision:   armor.ResolveDecision(scoreResp.Score, scoreReq.Threshold, armor.ModeObserve),
+				Source:     "judge",
 				Score:      scoreResp.Score,
 				Threshold:  scoreReq.Threshold,
+				Mode:       armor.ModeObserve,
 				JudgeModel: scoreResp.JudgeModel,
 				LatencyMS:  int(judgeLatency.Milliseconds()),
+				Reason:     scoreResp.Reason,
 				CreatedAt:  time.Now(),
-			}
-
-			if judgeErr != nil {
-				errKind := "judge_error"
-				judgment.ErrorKind = &errKind
 			}
 
 			// Async write to armor_judgments (never blocks relay)

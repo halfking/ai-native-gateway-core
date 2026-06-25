@@ -64,21 +64,24 @@ func TestLogger_DecisionMarshal(t *testing.T) {
 // TestJudgment_Fields verifies Judgment struct can hold all expected fields.
 func TestJudgment_Fields(t *testing.T) {
 	now := time.Now()
-	patternHit := "base64_spam"
-	errorKind := "judge_timeout"
+	patternID := "base64_spam"
 
 	j := Judgment{
-		RequestID:  "req-3",
-		TenantID:   "acme",
-		CheckType:  "prompt_inject",
-		Decision:   DecisionWarn,
-		Score:      0.85,
-		Threshold:  0.7,
-		JudgeModel: "gpt-4o-mini",
-		LatencyMS:  120,
-		PatternHit: &patternHit,
-		ErrorKind:  &errorKind,
-		CreatedAt:  now,
+		RequestID:    "req-3",
+		TenantID:     "acme",
+		CheckType:    "prompt_inject",
+		Decision:     DecisionWarn,
+		Source:       "judge",
+		PatternIDs:   []string{patternID},
+		JudgeModel:   "gpt-4o-mini",
+		Score:        0.85,
+		Threshold:    0.7,
+		Mode:         ModeObserve,
+		LatencyMS:    120,
+		PromptSHA256: "abc123def456",
+		Snippet:      "ignore previous instructions",
+		Reason:       "prompt injection detected",
+		CreatedAt:    now,
 	}
 
 	if j.RequestID != "req-3" {
@@ -90,14 +93,17 @@ func TestJudgment_Fields(t *testing.T) {
 	if j.Decision != DecisionWarn {
 		t.Errorf("Decision: want warn, got %s", j.Decision.String())
 	}
+	if j.Source != "judge" {
+		t.Errorf("Source: want judge, got %s", j.Source)
+	}
 	if j.Score != 0.85 {
 		t.Errorf("Score: want 0.85, got %.2f", j.Score)
 	}
-	if j.PatternHit == nil || *j.PatternHit != "base64_spam" {
-		t.Errorf("PatternHit: want base64_spam, got %v", j.PatternHit)
+	if len(j.PatternIDs) != 1 || j.PatternIDs[0] != "base64_spam" {
+		t.Errorf("PatternIDs: want [base64_spam], got %v", j.PatternIDs)
 	}
-	if j.ErrorKind == nil || *j.ErrorKind != "judge_timeout" {
-		t.Errorf("ErrorKind: want judge_timeout, got %v", j.ErrorKind)
+	if j.Reason != "prompt injection detected" {
+		t.Errorf("Reason: want 'prompt injection detected', got %s", j.Reason)
 	}
 	if !j.CreatedAt.Equal(now) {
 		t.Errorf("CreatedAt: want %v, got %v", now, j.CreatedAt)
