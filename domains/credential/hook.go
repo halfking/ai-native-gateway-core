@@ -69,6 +69,14 @@ var _ pipeline.Hook = (*HealthCheckHook)(nil)
 
 // LimiterHook 并发限制 Hook
 // 占用选中凭据的并发槽位
+//
+// 2026-06-26 migration: hooks into the migrated 4-layer Limiter (was a
+// simple in-memory map before). The hook uses the per-credential layer
+// of the new Limiter via Limiter.Credential(providerID, credentialID),
+// which returns a *Semaphore keyed by int IDs. We derive the int
+// credentialID by FNV-hashing the string ID, and stash the semaphore
+// in env.Metadata so OnError can release the same slot. ProviderID
+// is 0 (pipeline view doesn't carry a numeric provider ID yet).
 type LimiterHook struct {
 	limiter *Limiter
 }
@@ -94,23 +102,42 @@ func (h *LimiterHook) Execute(ctx context.Context, env *domain.PipelineRequest) 
 	if env.SelectedCredential == nil {
 		return errors.New("credential: no selected credential")
 	}
-	ok, err := h.limiter.Acquire(env.SelectedCredential.ID)
-	if err != nil {
-		return err
-	}
-	if !ok {
+	credID := fnvHash(env.SelectedCredential.ID)
+	sem := h.limiter.Credential(0, credID)
+	if !sem.TryAcquire() {
 		return fmt.Errorf("credential: rate limit exceeded for %s", env.SelectedCredential.ID)
 	}
 	env.Metadata["credential_locked"] = true
+	env.Metadata["credential_semaphore"] = sem
+	env.Metadata["credential_cred_id"] = credID
 	return nil
 }
 
 // OnError 释放槽位
 func (h *LimiterHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
-	if env != nil && env.SelectedCredential != nil {
-		h.limiter.Release(env.SelectedCredential.ID)
+	if env == nil {
+		return err
+	}
+	if sem, ok := env.Metadata["credential_semaphore"].(*Semaphore); ok && sem != nil {
+		sem.Release()
 	}
 	return err
 }
 
 var _ pipeline.Hook = (*LimiterHook)(nil)
+
+// fnvHash maps a string credential ID to the int credential slot used by
+// the migrated 4-layer Limiter. FNV-1a 32-bit is collision-resistant enough
+// for per-credential rate limiting (we just need a stable mapping).
+func fnvHash(s string) int {
+	const (
+		offset32 = 2166136261
+		prime32  = 16777619
+	)
+	h := uint32(offset32)
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= prime32
+	}
+	return int(h)
+}

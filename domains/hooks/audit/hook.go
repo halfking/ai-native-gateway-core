@@ -50,7 +50,7 @@ func (h *AuditLogHook) Execute(ctx context.Context, env *domain.PipelineRequest)
 		Stage:      "post_response",
 		Action:     action,
 		StatusCode: env.StatusCode,
-		LatencyMs:  time.Since(env.CreatedAt).Milliseconds(),
+		LatencyMs:  int(time.Since(env.CreatedAt).Milliseconds()),
 		Error:      errString(env.Error),
 		Metadata:   env.Metadata,
 		CreatedAt:  time.Now(),

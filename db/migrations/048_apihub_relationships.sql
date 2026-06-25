@@ -57,16 +57,3 @@ CREATE POLICY tenant_isolation_asset_relationships ON public.asset_relationships
 
 COMMIT;
 
--- +migrate Down
--- Rollback script for 048_apihub_relationships.sql
--- Removes the asset_relationships table and its indexes/policies.
--- Safe to run even if the table does not exist (IF EXISTS guards).
-
-BEGIN;
-
-DROP POLICY IF EXISTS tenant_isolation_asset_relationships ON public.asset_relationships;
-DROP INDEX IF EXISTS idx_asset_rel_dst;
-DROP INDEX IF EXISTS idx_asset_rel_src;
-DROP TABLE IF EXISTS public.asset_relationships;
-
-COMMIT;

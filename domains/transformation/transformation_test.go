@@ -11,84 +11,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSanitizer_Transform 验证 Sanitizer.Transform 不报错且写入元数据。
-func TestSanitizer_Transform(t *testing.T) {
-	s := NewSanitizer()
-	ctx := Context{
-		Request:  []byte(`{"password": "abc"}`),
-		Metadata: map[string]any{},
-	}
-	err := s.Transform(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, len(defaultSanitizeRules()), ctx.Metadata["sanitize_rules_count"])
-	assert.Equal(t, "sanitizer", s.Name())
+// TestApplyRequestWhitelist_NoFilters 验证无 passthrough/strip 时 body 保持不变。
+func TestApplyRequestWhitelist_NoFilters(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[],"custom":"value"}`)
+	out := ApplyRequestWhitelist(body, nil, nil)
+	assert.JSONEq(t, string(body), string(out))
 }
 
-// TestSanitizer_NilRequest 验证 nil Request 不 panic。
-func TestSanitizer_NilRequest(t *testing.T) {
-	s := NewSanitizer()
-	ctx := Context{Request: nil, Metadata: map[string]any{}}
-	err := s.Transform(ctx)
-	require.NoError(t, err)
+// TestApplyRequestWhitelist_StripFields 验证 stripFields 中字段被删除。
+func TestApplyRequestWhitelist_StripFields(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","secret":"x","messages":[]}`)
+	out := ApplyRequestWhitelist(body, nil, []string{"secret"})
+	assert.NotContains(t, string(out), "secret")
+	assert.Contains(t, string(out), "model")
 }
 
-// TestSanitizer_NilReceiver 验证 nil 接收者安全。
-func TestSanitizer_NilReceiver(t *testing.T) {
-	var s *Sanitizer
-	ctx := Context{Request: []byte("x"), Metadata: map[string]any{}}
-	err := s.Transform(ctx)
-	require.NoError(t, err)
+// TestApplyRequestWhitelist_PassthroughFields 验证未在 passthrough+allowlist 中的字段被删除。
+func TestApplyRequestWhitelist_PassthroughFields(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[],"unknown_field":"x"}`)
+	out := ApplyRequestWhitelist(body, []string{"model", "messages"}, nil)
+	assert.Contains(t, string(out), "model")
+	assert.Contains(t, string(out), "messages")
+	assert.NotContains(t, string(out), "unknown_field")
 }
 
-// TestCompressor_LongRequest 验证超长请求被标记。
-func TestCompressor_LongRequest(t *testing.T) {
-	c := NewCompressor(100) // 阈值 400 字节
-	long := strings.Repeat("x", 500)
-	ctx := Context{Request: []byte(long), Metadata: map[string]any{}}
-	err := c.Transform(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, true, ctx.Metadata["needs_compression"])
-	assert.Equal(t, 100, ctx.Metadata["compress_max_tokens"])
+// TestCompressMessagesIfNeeded_NoCompression 验证未超限时 body 不变。
+func TestCompressMessagesIfNeeded_NoCompression(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`)
+	out := CompressMessagesIfNeeded(body, 100000)
+	assert.Equal(t, string(body), string(out))
 }
 
-// TestCompressor_ShortRequest 验证正常请求不标记。
-func TestCompressor_ShortRequest(t *testing.T) {
-	c := NewCompressor(4096) // 阈值 16384 字节
-	short := []byte(`{"model":"gpt-4"}`)
-	ctx := Context{Request: short, Metadata: map[string]any{}}
-	err := c.Transform(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, false, ctx.Metadata["needs_compression"])
-}
-
-// TestCompressor_DefaultMaxTokens 验证 0 maxTokens 使用默认 4096。
-func TestCompressor_DefaultMaxTokens(t *testing.T) {
-	c := NewCompressor(0)
-	assert.Equal(t, 4096, c.maxTokens)
-
-	c2 := NewCompressor(-1)
-	assert.Equal(t, 4096, c2.maxTokens)
+// TestCompressMessagesIfNeeded_ZeroContext 验证 contextWindow=0 时直接返回原 body。
+func TestCompressMessagesIfNeeded_ZeroContext(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[]}`)
+	out := CompressMessagesIfNeeded(body, 0)
+	assert.Equal(t, string(body), string(out))
 }
 
 // TestTransformHook_ChainsTransformers 验证多个 transformer 串联执行。
 func TestTransformHook_ChainsTransformers(t *testing.T) {
-	s := NewSanitizer()
-	c := NewCompressor(100)
-	hook := NewTransformHook(s, c)
+	t1 := &recordingTransformer{name: "t1"}
+	t2 := &recordingTransformer{name: "t2"}
+	hook := NewTransformHook(t1, t2)
 
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.Metadata = map[string]any{}
-	env.TransformedRequest = []byte(strings.Repeat("y", 500))
+	env.TransformedRequest = []byte(strings.Repeat("y", 100))
 
 	err := hook.Execute(context.Background(), env)
 	require.NoError(t, err)
-	assert.Equal(t, true, env.Metadata["needs_compression"], "compressor should mark long request")
-	assert.NotNil(t, env.Metadata["sanitize_rules_count"], "sanitizer should have run")
+	assert.True(t, t1.called, "t1 should have been called")
+	assert.True(t, t2.called, "t2 should have been called")
 }
 
 // TestTransformHook_SkipsWhenAlreadyTransformed 验证已转换时跳过。
 func TestTransformHook_SkipsWhenAlreadyTransformed(t *testing.T) {
-	hook := NewTransformHook(NewSanitizer())
+	hook := NewTransformHook(&recordingTransformer{})
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.TransformedRequest = []byte("already-transformed")
 	enabled := hook.Enabled(context.Background(), env)
@@ -113,7 +92,7 @@ func TestTransformHook_PropagatesTransformerError(t *testing.T) {
 
 // TestTransformHook_NilEnv 验证 nil envelope 不 panic。
 func TestTransformHook_NilEnv(t *testing.T) {
-	hook := NewTransformHook(NewSanitizer())
+	hook := NewTransformHook(&recordingTransformer{})
 	err := hook.Execute(context.Background(), nil)
 	require.NoError(t, err)
 }
@@ -129,15 +108,14 @@ func TestTransformHook_EmptyChain(t *testing.T) {
 
 // TestTransformHook_NilTransformerSkipped 验证 nil transformer 跳过。
 func TestTransformHook_NilTransformerSkipped(t *testing.T) {
-	called := false
-	t1 := &countingTransformer{called: &called}
+	t1 := &recordingTransformer{}
 	hook := NewTransformHook(nil, t1, nil)
 
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	env.Metadata = map[string]any{}
 	err := hook.Execute(context.Background(), env)
 	require.NoError(t, err)
-	assert.True(t, called, "non-nil transformer should still execute")
+	assert.True(t, t1.called, "non-nil transformer should still execute")
 }
 
 // failingTransformer 始终返回错误的 Transformer。
@@ -150,13 +128,24 @@ func (f *failingTransformer) Transform(ctx Context) error {
 	return f.err
 }
 
-// countingTransformer 记录是否被调用。
-type countingTransformer struct {
-	called *bool
+// recordingTransformer 记录被调用状态。
+type recordingTransformer struct {
+	name   string
+	called bool
 }
 
-func (c *countingTransformer) Name() string { return "counting" }
-func (c *countingTransformer) Transform(ctx Context) error {
-	*c.called = true
+func (r *recordingTransformer) Name() string {
+	if r.name == "" {
+		return "recording"
+	}
+	return r.name
+}
+
+func (r *recordingTransformer) Transform(ctx Context) error {
+	r.called = true
 	return nil
 }
+
+// _ unused modifyTransformer removed: Context is passed by value, so a
+// single transformer cannot mutate the hook's view of Request. Tests that
+// rely on this behavior should set Request on env directly.

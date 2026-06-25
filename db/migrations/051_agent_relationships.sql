@@ -60,16 +60,3 @@ CREATE POLICY tenant_isolation_agent_relationships ON public.agent_relationships
 
 COMMIT;
 
--- +migrate Down
--- Rollback script for 051_agent_relationships.sql
--- Removes the agent_relationships table and its indexes/policies.
--- Safe to run even if the table does not exist (IF EXISTS guards).
-
-BEGIN;
-
-DROP POLICY IF EXISTS tenant_isolation_agent_relationships ON public.agent_relationships;
-DROP INDEX IF EXISTS idx_agent_rel_dst;
-DROP INDEX IF EXISTS idx_agent_rel_src;
-DROP TABLE IF EXISTS public.agent_relationships;
-
-COMMIT;
