@@ -58,7 +58,7 @@ func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (cre
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json::text
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -196,7 +196,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 			c.secret_ciphertext,
 			COALESCE(pc.models_endpoint_template, ''),
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json::text
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)

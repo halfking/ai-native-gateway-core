@@ -116,9 +116,9 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, tenantID, sessionID string) (*SessionCompareData, error) {
 	// Query all request_logs for this session, ordered by time
 	query := `
-		SELECT 
+		SELECT
 			request_id, request_body, outbound_body, response_body,
-			compression_strategy, compression_meta, 
+			compression_strategy, compression_meta,
 			outbound_msg_count, outbound_token_est,
 			client_model, outbound_model,
 			ts, provider_id
@@ -490,7 +490,7 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT request_body, response_body, created_at
+			SELECT request_body::text, response_body::text, created_at
 			FROM request_logs
 			WHERE gw_session_id = $1 AND tenant_id = $2
 			ORDER BY created_at DESC

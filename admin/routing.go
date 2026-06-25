@@ -175,6 +175,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		CompositeScore       float64  `json:"composite_score"`
 		BillingMode          string   `json:"billing_mode"`
 		BillingRound         int      `json:"billing_round"`
+		RecentSuccessRate    *float64 `json:"recent_success_rate,omitempty"`
+		RecentSamples        *int     `json:"recent_samples,omitempty"`
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
@@ -299,7 +301,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			continue
 		}
-		// 2026-06-26: Apply same filters as provider.Client.loadCandidatesDB
+		
+		// 2026-06-26: Multi-tier quality gate matching provider.Client.loadCandidatesDB
+		// Store raw filter results for multi-round evaluation
 		c.RuntimeRoutable = c.Available &&
 			c.CredentialStatus == "active" &&
 			c.LifecycleStatus == "active" &&
@@ -308,8 +312,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			c.CircuitState != "open" &&
 			isRoutable &&  // from v_routable_credential_models
 			!providerManualDisabled &&
-			(probeState == nil || *probeState != "broken_confirmed") &&
-			(recentSamples == nil || *recentSamples < 20 || recentSuccessRate == nil || *recentSuccessRate >= 0.3)
+			(probeState == nil || *probeState != "broken_confirmed")
+		
+		// Store recent success metrics for multi-round evaluation
+		c.RecentSuccessRate = recentSuccessRate
+		c.RecentSamples = recentSamples
 		
 		c.Routable = c.RuntimeRoutable
 		if !c.RuntimeRoutable {
@@ -320,8 +327,6 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				c.BlockReason = "not_in_routable_view"
 			} else if probeState != nil && *probeState == "broken_confirmed" {
 				c.BlockReason = "probe_broken_confirmed"
-			} else if recentSamples != nil && *recentSamples >= 20 && recentSuccessRate != nil && *recentSuccessRate < 0.3 {
-				c.BlockReason = fmt.Sprintf("recent_success_rate_low:%.2f%%", *recentSuccessRate*100)
 			} else if c.LifecycleStatus != "active" {
 				c.BlockReason = "lifecycle_" + c.LifecycleStatus
 			} else if c.CircuitState == "open" {
@@ -375,6 +380,59 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		)
 	})
 
+	// 2026-06-26: Multi-tier fallback strategy matching provider.Client.loadCandidatesDB
+	// Apply quality gate in multiple rounds with progressively relaxed thresholds
+	thresholds := []float64{0.3, 0.0}
+	var usedThreshold float64
+	var routableCandidates []candidate
+	
+	for _, threshold := range thresholds {
+		routableCandidates = nil
+		for _, c := range candidates {
+			// Apply quality gate: recent success rate threshold
+			passesQualityGate := c.RecentSamples == nil || 
+				*c.RecentSamples < 20 || 
+				c.RecentSuccessRate == nil || 
+				*c.RecentSuccessRate >= threshold
+			
+			if c.RuntimeRoutable && passesQualityGate {
+				routableCandidates = append(routableCandidates, c)
+			} else if !c.RuntimeRoutable {
+				// Already has block_reason from earlier checks
+			} else {
+				// Blocked by quality gate
+				c.BlockReason = fmt.Sprintf("recent_success_rate_low:%.2f%% (threshold:%.0f%%)", 
+					*c.RecentSuccessRate*100, threshold*100)
+			}
+		}
+		
+		if len(routableCandidates) > 0 {
+			usedThreshold = threshold
+			break
+		}
+	}
+	
+	// Update candidates with quality gate results
+	for i := range candidates {
+		found := false
+		for _, rc := range routableCandidates {
+			if candidates[i].CredentialID == rc.CredentialID {
+				candidates[i].Routable = true
+				found = true
+				break
+			}
+		}
+		if !found && candidates[i].RuntimeRoutable {
+			// Was routable but filtered by quality gate
+			candidates[i].Routable = false
+			if candidates[i].BlockReason == "" && candidates[i].RecentSamples != nil && 
+				*candidates[i].RecentSamples >= 20 && candidates[i].RecentSuccessRate != nil {
+				candidates[i].BlockReason = fmt.Sprintf("recent_success_rate_low:%.2f%%", 
+					*candidates[i].RecentSuccessRate*100)
+			}
+		}
+	}
+
 	for i := range candidates {
 		candidates[i].Rank = i + 1
 	}
@@ -395,6 +453,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resolutionPath := "direct"
+	var qualityGateInfo map[string]any
 	if len(candidates) > 0 {
 		// 2026-06-19 audit: if the SQL matched a variant that is
 		// different from the normalized form, surface ':variant' so
@@ -404,8 +463,17 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resolutionPath = "canonical:variant"
 		}
+		
+		// 2026-06-26: Report quality gate threshold used
+		qualityGateInfo = map[string]any{
+			"threshold_used":    usedThreshold,
+			"routable_count":    len(routableCandidates),
+			"total_count":       len(candidates),
+			"fallback_applied":  usedThreshold < 0.3,
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	
+	response := map[string]any{
 		"client_model":    model,
 		"canonical_name":  rawModels[0],
 		"canonical_id":    nil,
@@ -413,7 +481,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		"raw_models":      rawModels,
 		"plan_order":      []any{},
 		"candidates":      candidates,
-	})
+	}
+	if qualityGateInfo != nil {
+		response["quality_gate"] = qualityGateInfo
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // isRoutable and blockReason work on the anonymous candidate struct via an

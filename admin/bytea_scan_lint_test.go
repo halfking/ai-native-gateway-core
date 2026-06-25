@@ -1,33 +1,40 @@
 package admin
 
-// bytea_scan_lint_test.go — static regression guard for the
-// "scan secret_ciphertext (bytea) into *string" anti-pattern.
+// bytea_scan_lint_test.go — static regression guard for two related
+// PostgreSQL column-type anti-patterns:
+//
+// 1. bytea columns scanned into Go *string. pgx refuses:
+//      "cannot scan bytea (OID 17) in binary format into *string"
+// 2. jsonb columns scanned into Go *string / sql.NullString WITHOUT
+//    a `::text` cast in the SELECT. pgx refuses:
+//      "cannot scan jsonb (OID 3802) into *string"
 //
 // Background (2026-06-26):
-//   admin/routing.go:3194 (mirrorExistingKeys) declared
-//       var label, ciphertext string
-//   and scanned `c.secret_ciphertext` (a PostgreSQL bytea column) into
-//   `&ciphertext`. pgx refuses with:
-//       cannot scan bytea (OID 17) in binary format into *string
-//   causing the free-pool mirror to silently skip every row that has
-//   a real key.
+//   admin/routing.go:3194 (mirrorExistingKeys) — bytea→string bug
+//   admin/provider_credential.go:135, admin/provider_refresh.go:273/313,
+//   admin/provider_vendor.go:61/199, discovery/discovery.go:302/320,
+//   admin/session_compare.go:120/493 — jsonb→string bugs (missing ::text)
 //
 // Strategy:
 //   For every .go file in admin/, bg/, discovery/, provider/, and
 //   cmd/probe-cred/, this test walks every function body and finds
-//   every `db.Query/QueryRow(...).Scan(&x, &y, ...)` chain where the
-//   SQL contains the column `secret_ciphertext`. It then verifies that
-//   the destination corresponding to that column has been declared as
-//   type []byte (NOT string) in either the function-local declarations
-//   or the package-level declarations.
+//   every `db.Query/QueryRow(...).Scan(&x, &y, ...)` chain. For each
+//   tracked column (bytea or jsonb), it verifies the matching Scan
+//   destination is type-compatible:
 //
-// The test does NOT need a live database, does NOT need a network
-// connection, and runs in <1s. It is intentionally conservative: it
-// only flags *clear* mismatches where the scan target is unambiguously
-// `*string` (var declarations with `string` type). It does not chase
-// type aliases or generic interfaces.
+//   - bytea MUST scan into []byte (or *[]byte / sql.NullString with
+//     explicit ::text elsewhere). Scanning into *string always fails.
+//   - jsonb MUST scan into a []byte / json.RawMessage / sql.NullString
+//     / *string destination, BUT only if the SELECT column uses a
+//     `::text` cast. Without the cast, pgx returns an error.
+//
+//   The test does NOT need a live database, does NOT need a network
+//   connection, and runs in <1s. It is intentionally conservative:
+//   it only flags clear mismatches where the scan target is
+//   unambiguously a string-typed var.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -45,18 +52,31 @@ var byteaColumns = []string{
 	"secret_ciphertext", // credentials.secret_ciphertext (AES-GCM encrypted)
 }
 
-// TestScanByteaColumnsIntoBytea walks all credential-handling Go
-// files and ensures that no SELECT statement projecting any bytea
-// column scans into a Go `*string`.
+// jsonbColumnsRequiringCast is the set of jsonb columns that, when
+// scanned into Go *string / sql.NullString, MUST be wrapped with a
+// `::text` cast in the SELECT list. Without the cast, pgx v5 will
+// return "cannot scan jsonb (OID 3802) into *string".
 //
-// Without this guard, any future contributor who writes
+// jsonb columns that are scanned into []byte / json.RawMessage /
+// interface{} do NOT need a cast (pgx handles those natively).
+var jsonbColumnsRequiringCast = []string{
+	"tags",                // credentials.tags (jsonb)
+	"models_manifest_json", // provider_catalog.models_manifest_json (jsonb)
+	"request_body",        // request_logs.request_body (jsonb)
+	"response_body",       // request_logs.response_body (jsonb)
+	"outbound_body",       // request_logs.outbound_body (jsonb)
+	"compression_meta",    // request_logs.compression_meta (jsonb)
+}
+
+// TestScanPGColumnsIntoCompatibleType walks all credential-handling
+// Go files and ensures that bytea columns scan into []byte and that
+// jsonb columns either scan into a non-string type or are wrapped
+// with `::text` in the SELECT.
 //
-//	var ciphertext string
-//	db.QueryRow(ctx, `SELECT secret_ciphertext FROM credentials ...`).Scan(&ciphertext)
-//
-// will reintroduce the production bug fixed in commit c278ff84. This
-// test makes that mistake fail CI before it ships.
-func TestScanByteaColumnsIntoBytea(t *testing.T) {
+// Without this guard, contributors will keep introducing the same
+// pgx scan failures that bit us in commits c278ff84 (bytea) and
+// the jsonb audit (2026-06-26).
+func TestScanPGColumnsIntoCompatibleType(t *testing.T) {
 	root := repoRoot(t)
 	dirs := []string{
 		"admin",
@@ -176,11 +196,20 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 
 		sql := findSQLForScanCall(call)
 		if sql == "" {
+			// Pattern 2: rows.Scan() where rows comes from a
+			// Query/QueryRow assignment elsewhere in this function.
+			if id, ok := sel.X.(*ast.Ident); ok {
+				sql = findSQLFromBody(fn.Body, id.Name)
+			}
+		}
+		if sql == "" {
+			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "loadCompareData" {
+				fmt.Printf("DEBUG: loadCompareData Scan found but no SQL; sel.X=%T\n", sel.X)
+			}
 			return true
 		}
 
-		// For each bytea column, find its position in the SELECT list
-		// and verify the matching Scan destination is NOT a string.
+		// Rule 1: bytea columns must scan into []byte, never *string.
 		for _, col := range byteaColumns {
 			colIdx, ok := findColumnIndex(sql, col)
 			if !ok {
@@ -195,7 +224,30 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			}
 			pos := fset.Position(call.Pos())
 			violations = append(violations, pos.String()+
-				": "+col+" scanned into *string — must use []byte")
+				": "+col+" (bytea) scanned into *string — must use []byte")
+		}
+
+		// Rule 2: jsonb columns scanning into *string/sql.NullString
+		// MUST be wrapped with a `::text` cast in the SELECT list.
+		for _, col := range jsonbColumnsRequiringCast {
+			colIdx, casted, ok := findColumnIndexWithCast(sql, col)
+			if !ok {
+				continue
+			}
+			if colIdx < 0 || colIdx >= len(call.Args) {
+				continue
+			}
+			dest := call.Args[colIdx]
+			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
+				continue
+			}
+			if casted {
+				continue
+			}
+			pos := fset.Position(call.Pos())
+			violations = append(violations, pos.String()+
+				": "+col+" (jsonb) scanned into *string without `::text` cast — "+
+				"add `::text` to the column in the SELECT list (e.g. `c.tags::text`)")
 		}
 		return true
 	})
@@ -206,6 +258,20 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 // findSQLForScanCall returns the SQL string of the Query/QueryRow call
 // that `.Scan(&...)` is invoked on. Returns "" if the structure is too
 // complex to resolve statically (in which case we conservatively skip).
+//
+// We handle two patterns:
+//
+//  1. Direct chaining:
+//
+//     h.db.QueryRow(ctx, `SELECT ...`, id).Scan(&x)
+//
+//  2. Assignment chain:
+//
+//     rows, _ := h.db.Query(ctx, query, id)
+//     rows.Scan(&x)
+//
+// For (2), we walk the enclosing function body to find the assignment
+// that bound `rows` and resolve the SQL argument from that Query call.
 func findSQLForScanCall(call *ast.CallExpr) string {
 	if call.Fun == nil {
 		return ""
@@ -214,25 +280,41 @@ func findSQLForScanCall(call *ast.CallExpr) string {
 	if !ok {
 		return ""
 	}
-	recv, ok := sel.X.(*ast.CallExpr)
+	// Pattern 1: Scan is invoked directly on a CallExpr.
+	if recv, ok := sel.X.(*ast.CallExpr); ok {
+		return sqlFromCallExpr(recv)
+	}
+	// Pattern 2: Scan is invoked on an Ident (rows variable). We need
+	// to find the AssignmentStmt that bound it.
+	_, ok = sel.X.(*ast.Ident)
 	if !ok {
 		return ""
 	}
-	if recv.Fun == nil {
+	// Pattern 2 requires the enclosing function. We don't have it here,
+	// so scanFunc should pre-compute this and pass via a context. For
+	// simplicity (and to avoid threading state through the AST walk),
+	// we leave Pattern 2 to a separate scan pass that uses fn.Body.
+	return ""
+}
+
+// sqlFromCallExpr extracts the SQL string from a Query/QueryRow call.
+func sqlFromCallExpr(call *ast.CallExpr) string {
+	if call.Fun == nil {
 		return ""
 	}
-	rsel, ok := recv.Fun.(*ast.SelectorExpr)
+	rsel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || rsel.Sel == nil {
 		return ""
 	}
 	if rsel.Sel.Name != "Query" && rsel.Sel.Name != "QueryRow" {
 		return ""
 	}
-	// The SQL is the first STRING-typed argument. Query/QueryRow take
-	// (ctx, sql, ...args) — so SQL is usually Args[1], not Args[0].
-	for _, arg := range recv.Args {
+	for _, arg := range call.Args {
 		bl, ok := arg.(*ast.BasicLit)
 		if !ok {
+			if os.Getenv("LINT_DEBUG") != "" {
+				fmt.Printf("DEBUG sqlFromCallExpr: arg is %T, not BasicLit\n", arg)
+			}
 			continue
 		}
 		if bl.Kind == token.STRING {
@@ -242,24 +324,87 @@ func findSQLForScanCall(call *ast.CallExpr) string {
 	return ""
 }
 
+// findSQLFromBody walks the function body looking for the assignment
+// that binds `rowsIdent` to a Query/QueryRow call. Returns the SQL
+// string from that call, or "" if not found.
+//
+// Handles both single-return and multi-return assignment forms:
+//
+//	rows := db.Query(...)
+//	rows, err := db.Query(...)
+//	row := db.QueryRow(...)
+func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
+	var found string
+	debug := os.Getenv("LINT_DEBUG") != ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found != "" {
+			return false
+		}
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		if debug {
+			fmt.Printf("DEBUG findSQLFromBody: AssignStmt with %d Lhs, %d Rhs\n", len(as.Lhs), len(as.Rhs))
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok {
+				if debug {
+					fmt.Printf("DEBUG findSQLFromBody: Lhs[%d] is %T\n", i, lhs)
+				}
+				continue
+			}
+			if debug && id.Name == rowsIdent {
+				fmt.Printf("DEBUG findSQLFromBody: found binding rows=%s at index %d\n", rowsIdent, i)
+			}
+			if id.Name != rowsIdent {
+				continue
+			}
+			if i >= len(as.Rhs) {
+				continue
+			}
+			call, ok := as.Rhs[i].(*ast.CallExpr)
+			if !ok {
+				if debug {
+					fmt.Printf("DEBUG findSQLFromBody: Rhs[%d] is %T, not CallExpr\n", i, as.Rhs[i])
+				}
+				continue
+			}
+			if sql := sqlFromCallExpr(call); sql != "" {
+				found = sql
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
 // findColumnIndex returns the 0-based column index of `col` in the
 // top-level SELECT list of `sql`, and whether it was found.
 //
 // We recognize the column by its suffix (e.g. `c.secret_ciphertext`,
 // `secret_ciphertext`) or exact match.
 func findColumnIndex(sql string, col string) (int, bool) {
+	idx, _, found := findColumnIndexWithCast(sql, col)
+	return idx, found
+}
+
+// findColumnIndexWithCast is like findColumnIndex but additionally
+// returns whether the column expression in the SELECT list ends with
+// a `::text` cast. The cast is required for jsonb→string scans.
+func findColumnIndexWithCast(sql string, col string) (int, bool, bool) {
 	cleaned := stripLineComments(sql)
 	low := strings.ToLower(cleaned)
 
 	selectIdx := strings.Index(low, "select")
 	if selectIdx < 0 {
-		return 0, false
+		return 0, false, false
 	}
-	// Find `from` keyword at the top level (not inside parens).
-	// The keyword may be preceded by any whitespace, including \n and tabs.
 	fromIdx := findTopLevelKeyword(low[selectIdx:], "from")
 	if fromIdx < 0 {
-		return 0, false
+		return 0, false, false
 	}
 	list := cleaned[selectIdx+len("select") : selectIdx+fromIdx]
 
@@ -268,14 +413,22 @@ func findColumnIndex(sql string, col string) (int, bool) {
 	for i, c := range cols {
 		stripped := strings.TrimSpace(c)
 		strippedLower := strings.ToLower(stripped)
-		if strippedLower == colLower {
-			return i, true
+		if strippedLower != colLower && !strings.HasSuffix(strippedLower, "."+colLower) {
+			continue
 		}
-		if strings.HasSuffix(strippedLower, "."+colLower) {
-			return i, true
+		// Match. Check if the column expression ends with `::text` cast.
+		casted := false
+		// Walk to the end of the column expression (skipping any
+		// trailing whitespace). If the next non-space token is `::text`,
+		// the column is cast.
+		tail := stripped[strings.LastIndex(strippedLower, colLower)+len(colLower):]
+		tailTrimmed := strings.TrimSpace(tail)
+		if strings.HasPrefix(tailTrimmed, "::") && strings.Contains(tailTrimmed, "text") {
+			casted = true
 		}
+		return i, true, casted
 	}
-	return 0, false
+	return 0, false, false
 }
 
 // findTopLevelKeyword returns the byte offset of `kw` in `s` such that
