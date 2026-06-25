@@ -117,8 +117,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	// Query all request_logs for this session, ordered by time
 	query := `
 		SELECT
-			request_id, request_body, outbound_body, response_body,
-			compression_strategy, compression_meta,
+			request_id, request_body::text, outbound_body::text, response_body::text,
+			compression_strategy, compression_meta::text,
 			outbound_msg_count, outbound_token_est,
 			client_model, outbound_model,
 			ts, provider_id

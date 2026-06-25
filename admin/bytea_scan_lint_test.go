@@ -174,6 +174,9 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			return true
 		}
 		typeText := exprText(vs.Type)
+		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "mirrorExistingKeys" && typeText == "string" {
+			fmt.Printf("DEBUG: mirrorExistingKeys ValueSpec Names=%v Type=%s\n", vs.Names, typeText)
+		}
 		if typeText == "string" || strings.HasSuffix(typeText, ".string") {
 			for _, name := range vs.Names {
 				if name != nil {
@@ -203,9 +206,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			}
 		}
 		if sql == "" {
-			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "loadCompareData" {
-				fmt.Printf("DEBUG: loadCompareData Scan found but no SQL; sel.X=%T\n", sel.X)
-			}
 			return true
 		}
 
@@ -220,6 +220,10 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			}
 			dest := call.Args[colIdx]
 			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
+				if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "mirrorExistingKeys" {
+					fmt.Printf("DEBUG: mirrorExistingKeys col=%s idx=%d dest=%s not_string=true localDecls=%v\n",
+						col, colIdx, exprText(dest), localStringDecls)
+				}
 				continue
 			}
 			pos := fset.Position(call.Pos())
@@ -312,9 +316,6 @@ func sqlFromCallExpr(call *ast.CallExpr) string {
 	for _, arg := range call.Args {
 		bl, ok := arg.(*ast.BasicLit)
 		if !ok {
-			if os.Getenv("LINT_DEBUG") != "" {
-				fmt.Printf("DEBUG sqlFromCallExpr: arg is %T, not BasicLit\n", arg)
-			}
 			continue
 		}
 		if bl.Kind == token.STRING {
@@ -330,12 +331,22 @@ func sqlFromCallExpr(call *ast.CallExpr) string {
 //
 // Handles both single-return and multi-return assignment forms:
 //
-//	rows := db.Query(...)
-//	rows, err := db.Query(...)
-//	row := db.QueryRow(...)
+//	rows := db.Query(...)           // Lhs=1, Rhs=1
+//	rows, err := db.Query(...)      // Lhs=2, Rhs=1 (Rhs[0] is the call)
+//	row := db.QueryRow(...)         // Lhs=1, Rhs=1
+//
+// When Lhs and Rhs have the same length, each Lhs[i] is bound to
+// Rhs[i]. When Lhs has more entries than Rhs (multi-return), Rhs[0]
+// is the single call that yields multiple values, so we look at
+// Rhs[0] for any matching Lhs.
+//
+// Note: this function only resolves SQL when the Query call passes a
+// string LITERAL as its SQL arg. If the SQL is in a variable, we
+// conservatively return "" — such cases must be verified by manual
+// code review. This is acceptable for our codebase because almost all
+// SELECT statements are written inline as raw strings.
 func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 	var found string
-	debug := os.Getenv("LINT_DEBUG") != ""
 	ast.Inspect(body, func(n ast.Node) bool {
 		if found != "" {
 			return false
@@ -344,21 +355,31 @@ func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 		if !ok {
 			return true
 		}
-		if debug {
-			fmt.Printf("DEBUG findSQLFromBody: AssignStmt with %d Lhs, %d Rhs\n", len(as.Lhs), len(as.Rhs))
+		if len(as.Lhs) == 0 || len(as.Rhs) == 0 {
+			return true
 		}
+		// Multi-return form: rows, err := call() — every Lhs binds to Rhs[0].
+		if len(as.Lhs) > len(as.Rhs) {
+			for _, lhs := range as.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok || id.Name != rowsIdent {
+					continue
+				}
+				call, ok := as.Rhs[0].(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				if sql := sqlFromCallExpr(call); sql != "" {
+					found = sql
+					return false
+				}
+			}
+			return true
+		}
+		// Standard form: each Lhs[i] binds to Rhs[i].
 		for i, lhs := range as.Lhs {
 			id, ok := lhs.(*ast.Ident)
-			if !ok {
-				if debug {
-					fmt.Printf("DEBUG findSQLFromBody: Lhs[%d] is %T\n", i, lhs)
-				}
-				continue
-			}
-			if debug && id.Name == rowsIdent {
-				fmt.Printf("DEBUG findSQLFromBody: found binding rows=%s at index %d\n", rowsIdent, i)
-			}
-			if id.Name != rowsIdent {
+			if !ok || id.Name != rowsIdent {
 				continue
 			}
 			if i >= len(as.Rhs) {
@@ -366,9 +387,6 @@ func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 			}
 			call, ok := as.Rhs[i].(*ast.CallExpr)
 			if !ok {
-				if debug {
-					fmt.Printf("DEBUG findSQLFromBody: Rhs[%d] is %T, not CallExpr\n", i, as.Rhs[i])
-				}
 				continue
 			}
 			if sql := sqlFromCallExpr(call); sql != "" {

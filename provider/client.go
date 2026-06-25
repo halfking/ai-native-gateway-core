@@ -579,6 +579,36 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 	if c.dbPool == nil {
 		return nil, nil
 	}
+	
+	// 2026-06-26: Multi-tier fallback strategy for quality gate.
+	// Try strict threshold first (0.3), then relaxed (0.0) if no candidates.
+	// This prevents "no available provider" when only low-quality candidates exist.
+	thresholds := []float64{0.3, 0.0}
+	
+	for i, threshold := range thresholds {
+		candidates, err := c.loadCandidatesDBWithThreshold(ctx, clientModel, threshold)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidates) > 0 {
+			if i > 0 {
+				slog.Warn("routing fallback: using relaxed quality gate",
+					"model", clientModel,
+					"threshold", threshold,
+					"candidates_count", len(candidates))
+			}
+			return candidates, nil
+		}
+	}
+	
+	// No candidates even with relaxed threshold
+	return nil, nil
+}
+
+func (c *Client) loadCandidatesDBWithThreshold(ctx context.Context, clientModel string, successRateThreshold float64) ([]Candidate, error) {
+	if c.dbPool == nil {
+		return nil, nil
+	}
 	clientModelLower := strings.ToLower(clientModel)
 	rows, err := c.dbPool.Query(ctx, `
 		SELECT
