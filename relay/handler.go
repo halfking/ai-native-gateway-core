@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +57,38 @@ func sanitizeGwSessionHeader(v string) string {
 		return ""
 	}
 	return s
+}
+
+// stripLegacyToolCallText removes the legacy "[Tool Call: <name>]\n"
+// markers (and the bare arguments JSON that immediately follows them)
+// from a stream_text_content blob when the same tool_calls are also
+// available as structured data via audit.StreamCapture.ToolCalls.
+//
+// audit/stream.go ObserveChunk appends both a structured entry
+// (sc.ToolCalls, via mergeToolCall) AND a free-text rendering into
+// sc.textContent. The latter is preserved for any consumer that reads
+// stream_text_content as a unified text preview. When emitTelemetry
+// synthesizes a final response_body, however, the structured entries
+// must be the SOLE source of truth for tool_calls — otherwise the same
+// data appears twice in different shapes and OpenAI Chat Completions
+// clients (which expect content to be plain assistant prose and
+// tool_calls to be a separate array) reject the response.
+//
+// The marker format emitted by audit/stream.go is:
+//
+//	"\n[Tool Call: <name>]\n<arguments-json>"
+//
+// We strip every "[Tool Call: ...]" marker plus the JSON value that
+// follows it on the same logical block. We are deliberately conservative:
+// the marker text is a fixed-prefix sentinel that no upstream LLM emits
+// in practice, so false-positive stripping is not a concern.
+var legacyToolCallMarkerRE = regexp.MustCompile(`(?s)\[Tool Call:[^\]]*\]\n?`)
+
+func stripLegacyToolCallText(s string) string {
+	if s == "" {
+		return s
+	}
+	return legacyToolCallMarkerRE.ReplaceAllString(s, "")
 }
 
 // ServiceID maps an API key to a (providerID, credentialID) pair.
@@ -1452,7 +1485,25 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 		if v, ok := m["stream_text_content"].(string); ok && v != "" {
 			textContent = v
 		}
-		if textContent != "" {
+		// 2026-06-25 T-NEW-1: structured tool_calls from the IR layer (see
+		// audit/stream.go mergeToolCall). SummaryAsMap emits them under
+		// the "tool_calls" key. Cast to []map[string]any so we can rewrite
+		// each entry to drop the streaming-only "index" field.
+		var toolCallsFromStream []map[string]any
+		if v, ok := m["tool_calls"].([]map[string]any); ok && len(v) > 0 {
+			toolCallsFromStream = v
+		}
+		// audit/stream.go ObserveChunk still emits a legacy "[Tool Call:
+		// <name>]\n<arguments>" text rendering into stream_text_content
+		// (kept for backward compatibility with consumers that read it
+		// as a free-text preview). When we are also embedding structured
+		// tool_calls in message.tool_calls, that legacy rendering would
+		// duplicate the data inside `content` and break clients that
+		// parse `content` as plain assistant text. Strip it.
+		if toolCallsFromStream != nil {
+			textContent = stripLegacyToolCallText(textContent)
+		}
+		if textContent != "" || toolCallsFromStream != nil {
 			var pt, ct int
 			if v, ok := m["prompt_tokens"].(int); ok {
 				pt = v
@@ -1460,9 +1511,43 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *routing.ExecuteResu
 			if v, ok := m["completion_tokens"].(int); ok {
 				ct = v
 			}
+			// 2026-06-25 T-NEW-1: When streaming, the IR layer (audit/stream.go
+			// mergeToolCall) accumulates structured tool_calls into
+			// sc.ToolCalls. Persist them into the synthetic response_body as
+			// `message.tool_calls` so downstream admin UI / API consumers can
+			// read tool_calls directly from response_body (instead of only
+			// from the dedicated request_logs.tool_calls JSONB column).
+			//
+			// We strip the streaming-only `index` key from each entry: OpenAI
+			// final-response tool_calls do NOT carry `index` (only streaming
+			// deltas do), and including it confuses clients that strictly
+			// validate the schema. We also flip finish_reason to "tool_calls"
+			// when at least one tool call was emitted, matching the upstream
+			// OpenAI Chat Completions contract.
+			finishReason := "stop"
+			var cleanedToolCalls []map[string]any
+			if toolCallsFromStream != nil {
+				finishReason = "tool_calls"
+				cleanedToolCalls = make([]map[string]any, 0, len(toolCallsFromStream))
+				for _, tc := range toolCallsFromStream {
+					entry := map[string]any{}
+					for k, v := range tc {
+						// Skip streaming-only fields
+						if k == "index" {
+							continue
+						}
+						entry[k] = v
+					}
+					cleanedToolCalls = append(cleanedToolCalls, entry)
+				}
+			}
+			message := map[string]any{"role": "assistant", "content": textContent}
+			if len(cleanedToolCalls) > 0 {
+				message["tool_calls"] = cleanedToolCalls
+			}
 			pseudoBody := map[string]any{
 				"choices": []map[string]any{
-					{"message": map[string]any{"role": "assistant", "content": textContent}, "finish_reason": "stop"},
+					{"message": message, "finish_reason": finishReason},
 				},
 			}
 			if pt > 0 || ct > 0 {
