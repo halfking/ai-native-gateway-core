@@ -23,6 +23,10 @@ type Router struct {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
 	}
+	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
+	// selection. When set, planByTier uses bandit scoring instead of P2C within
+	// each tier. Falls back to P2C if Bandit is nil.
+	Bandit *credential.BanditScorer
 	// rrCounter is a round-robin counter for load balancing when multiple
 	// candidates have equal routing scores. Prevents all requests from
 	// always selecting the first candidate in a sorted list.
@@ -113,8 +117,15 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 			continue
 		}
 
-		// P2C sort candidates by load
-		sorted := p2cOrder(bucket, r)
+		// Hybrid mode: use Bandit if available, fall back to P2C
+		var sorted []provider.Candidate
+		if r.Bandit != nil {
+			// Thompson Sampling Bandit ordering (with pressure factor)
+			sorted = r.banditOrder(bucket)
+		} else {
+			// Legacy P2C ordering (load-aware)
+			sorted = p2cOrder(bucket, r)
+		}
 
 		// Apply round-robin rotation when multiple candidates exist
 		// This prevents always selecting the first candidate when scores are equal
@@ -451,4 +462,67 @@ func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeight
 	})
 
 	return candidates
+}
+
+// banditOrder orders candidates using Thompson Sampling bandit algorithm.
+// This provides intelligent credential selection based on historical performance.
+// Falls back to P2C if any step fails.
+func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
+	if len(cands) <= 1 || r.Bandit == nil {
+		return cands
+	}
+
+	ctx := context.Background()
+
+	// Score each candidate using Bandit + pressure factor
+	type scoredCandidate struct {
+		cand  provider.Candidate
+		score float64
+	}
+	scored := make([]scoredCandidate, 0, len(cands))
+
+	for _, c := range cands {
+		// Get bandit score (0-1, higher is better)
+		credID := fmt.Sprintf("%d", c.CredentialID)
+		banditScore := r.Bandit.Sample(credID)
+
+		// Apply pressure factor to avoid overloading high-performing credentials
+		pressureFactor := 1.0
+		if r.FpSlots != nil && r.FpSlots.Enabled() {
+			if limit, used, _ := r.FpSlots.Stats(ctx, c.CredentialID, c.ConcurrencyLimit); used != nil && limit != nil && *limit > 0 {
+				pressure := float64(*used) / float64(*limit)
+				if pressure > 1.0 {
+					pressure = 1.0
+				}
+				// pressureFactor: 1.0 when empty, 0.0 when saturated
+				pressureFactor = 1.0 - pressure
+			}
+		}
+
+		// Final score: bandit × pressure
+		// If credential is saturated (pressureFactor=0), score becomes 0
+		finalScore := banditScore * pressureFactor
+
+		scored = append(scored, scoredCandidate{
+			cand:  c,
+			score: finalScore,
+		})
+	}
+
+	// Sort by score descending (higher is better)
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		// Tie-breaker: credential ID
+		return scored[i].cand.CredentialID < scored[j].cand.CredentialID
+	})
+
+	// Extract sorted candidates
+	result := make([]provider.Candidate, len(scored))
+	for i, sc := range scored {
+		result[i] = sc.cand
+	}
+
+	return result
 }
