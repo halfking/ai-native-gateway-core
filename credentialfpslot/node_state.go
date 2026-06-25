@@ -43,6 +43,32 @@ type NodeRecord struct {
 	Timestamp int64  `json:"timestamp"` // unix seconds
 }
 
+// IsUsable determines if the node is currently routable.
+func (n *NodeState) IsUsable(now time.Time) bool {
+	if n == nil {
+		return true
+	}
+	n.recoverIfCooldownExpired(now.Unix())
+	return n.ConsecutiveFailureStreak(now) < nodeFailStreakLimit
+}
+
+// ConsecutiveFailureStreak counts tail failures within the active sliding window.
+func (n *NodeState) ConsecutiveFailureStreak(now time.Time) int {
+	if n == nil {
+		return 0
+	}
+	n.pruneWindow(now.Unix())
+	streak := 0
+	for i := len(n.SlideWindow) - 1; i >= 0; i-- {
+		if !n.SlideWindow[i].Success {
+			streak++
+			continue
+		}
+		break
+	}
+	return streak
+}
+
 // nodeKey returns the Redis key for a node state.
 func nodeKey(credentialID int, model string) string {
 	return fmt.Sprintf("llmgw:cred_fp_node:%d:%s", credentialID, model)
@@ -65,6 +91,21 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 		if err := json.Unmarshal([]byte(data), &state); err != nil {
 			return nil, fmt.Errorf("unmarshal node state: %w", err)
 		}
+		if state.CredentialID == 0 {
+			state.CredentialID = credentialID
+		}
+		if state.Model == "" {
+			state.Model = model
+		}
+		if state.Disabled {
+			before := state.Disabled
+			state.recoverIfCooldownExpired(time.Now().Unix())
+			if before && !state.Disabled {
+				if err := m.SetNodeState(ctx, &state); err != nil {
+					return nil, err
+				}
+			}
+		}
 		return &state, nil
 	}
 
@@ -72,9 +113,39 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if entry, ok := m.memNodeStates[nodeMemKey{credentialID, model}]; ok {
+		if entry.Disabled {
+			entry.recoverIfCooldownExpired(time.Now().Unix())
+			m.memNodeStates[nodeMemKey{credentialID, model}] = entry
+		}
 		return &entry, nil
 	}
 	return newZeroNodeState(credentialID, model), nil
+}
+
+// SetNodeState stores node health state directly.
+// Used by tests to inject specific cooldown timestamps.
+func (m *Manager) SetNodeState(ctx context.Context, state *NodeState) error {
+	if state == nil {
+		return nil
+	}
+	if m.client != nil {
+		data, err := json.Marshal(state)
+		if err != nil {
+			return fmt.Errorf("marshal node state: %w", err)
+		}
+		if err := m.client.Set(ctx, nodeKey(state.CredentialID, state.Model), data, time.Duration(nodeStateTTLSec)*time.Second).Err(); err != nil {
+			return fmt.Errorf("set node state: %w", err)
+		}
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.memNodeStates == nil {
+		m.memNodeStates = make(map[nodeMemKey]NodeState)
+	}
+	m.memNodeStates[nodeMemKey{credentialID: state.CredentialID, model: state.Model}] = *state
+	return nil
 }
 
 // RecordNodeSuccess records a successful request atomically via Lua.
@@ -115,6 +186,7 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 	defer m.mu.Unlock()
 	state := m.getOrCreateMemNodeStateLocked(credentialID, model)
 	state.recordOutcome(kind, requestID, errorKind, time.Now())
+	m.memNodeStates[nodeMemKey{credentialID: credentialID, model: model}] = *state
 	return nil
 }
 
@@ -130,15 +202,7 @@ func newZeroNodeState(credentialID int, model string) *NodeState {
 // used by the memory fallback path.
 func (n *NodeState) recordOutcome(kind, requestID, errorKind string, now time.Time) {
 	nowUnix := now.Unix()
-	cutoff := nowUnix - nodeWindowSeconds
-
-	pruned := make([]NodeRecord, 0, len(n.SlideWindow))
-	for _, rec := range n.SlideWindow {
-		if rec.Timestamp >= cutoff {
-			pruned = append(pruned, rec)
-		}
-	}
-	n.SlideWindow = pruned
+	n.pruneWindow(nowUnix)
 
 	rec := NodeRecord{
 		RequestID: requestID,
@@ -173,10 +237,27 @@ func (n *NodeState) recordOutcome(kind, requestID, errorKind string, now time.Ti
 		n.DisabledReason = fmt.Sprintf("consecutive %d failures", nodeFailStreakLimit)
 	}
 
+	n.recoverIfCooldownExpired(nowUnix)
+}
+
+func (n *NodeState) pruneWindow(nowUnix int64) {
+	cutoff := nowUnix - nodeWindowSeconds
+	pruned := make([]NodeRecord, 0, len(n.SlideWindow))
+	for _, rec := range n.SlideWindow {
+		if rec.Timestamp >= cutoff {
+			pruned = append(pruned, rec)
+		}
+	}
+	n.SlideWindow = pruned
+}
+
+func (n *NodeState) recoverIfCooldownExpired(nowUnix int64) {
 	if n.Disabled && n.DisabledUntil > 0 && nowUnix >= n.DisabledUntil {
 		n.Disabled = false
 		n.FailureCount = 0
 		n.SlideWindow = []NodeRecord{}
+		n.DisabledUntil = 0
+		n.DisabledReason = ""
 	}
 }
 
@@ -241,6 +322,8 @@ var recordNodeOutcomeScript = redis.NewScript(`
 	if not state.disabled then state.disabled = false end
 	if not state.credential_id then state.credential_id = 0 end
 	if not state.model then state.model = '' end
+	if state.credential_id == 0 then state.credential_id = tonumber(string.match(key, '^llmgw:cred_fp_node:(%d+):')) or 0 end
+	if state.model == '' then state.model = string.match(key, '^llmgw:cred_fp_node:%d+:(.*)$') or '' end
 
 	local cutoff = now - window_sec
 	local pruned = {}

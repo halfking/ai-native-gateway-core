@@ -45,6 +45,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -192,7 +193,6 @@ func main() {
 	var pendingStore *pending.Store
 	var redisClientForCache *sessions.RedisClient
 	var routingExec *routing.Executor
-	var routeNodeStore *routing.RouteNodeStore
 	var lastSystemSession *sessions.LastSystemSessionIndex
 	var sessionPref *sessions.SessionPreference
 	if cfg.RedisAddr != "" {
@@ -217,8 +217,6 @@ func main() {
 			// (Store becomes a no-op); explicit construction here so
 			// the GET endpoint is available whenever Redis is up.
 			pendingStore = pending.NewStore(fpSlotRedis, ttl)
-			// V3.1 (2026-06-26): route node health tracking + session preference
-			routeNodeStore = routing.NewRouteNodeStore(fpSlotRedis)
 			lastSystemSession = sessions.NewLastSystemSessionIndex(fpSlotRedis)
 			sessionPref = sessions.NewSessionPreference(fpSlotRedis)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
@@ -289,8 +287,24 @@ func main() {
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
 
-		// V3.1 (2026-06-26): wire route node store for healthy-candidate filtering
-		router.RouteNodeStore = routeNodeStore
+		// Phase 1 Bandit Scoring (2026-06-26): Initialize Thompson Sampling scorer
+		// for intelligent credential selection based on historical performance.
+		// Flushes state to database every 10s or when 100 credentials are dirty.
+		if dbConn != nil && dbConn.Enabled() {
+			banditScorer := credential.NewBanditScorer()
+			banditFlusher := credential.NewBanditFlusher(
+				dbConn.Pool(),
+				banditScorer,
+				10*time.Second, // flush interval
+				100,            // batch size
+			)
+			banditFlusher.Start()
+			defer banditFlusher.Stop()
+
+			router.Bandit = banditScorer
+			router.BanditFlusher = banditFlusher
+			slog.Info("bandit_scoring", "enabled", true, "flush_interval", "10s", "batch_size", 100)
+		}
 
 		norm := relay.NewNormalizer()
 		routingExec = routing.NewExecutor(
@@ -597,9 +611,9 @@ func main() {
 			routingExec.DisguisePool = disguise.DefaultPool
 			slog.Info("disguise mode enabled")
 		}
-		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		// V3.1 (2026-06-26): wire route node recorder + session routing
-		routingExec.Recorder = routing.NewRouteNodeRecorder(routeNodeStore, sessionPref)
+		routingExec.Recorder = routing.NewRouteNodeRecorder(fpSlots, sessionPref)
+		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
 		// Default 100 entries / 5 min TTL; override via env.

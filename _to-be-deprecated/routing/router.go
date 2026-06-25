@@ -1,4 +1,3 @@
-
 package routing
 
 import (
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/limiter"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -24,14 +25,17 @@ type Router struct {
 	FpSlots interface {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
+		GetNodeState(ctx context.Context, credentialID int, model string) (*credentialfpslot.NodeState, error)
 	}
-	// RouteNodeStore tracks per-(credentialID, model) health state.
-	// When set, PlanCandidates filters out unhealthy route nodes
-	// (consecutive 3 failures → 5min cooldown).
-	//
-	// 2026-06-26: Added as part of routing redesign V3.1.
-	// Optional: if nil, route node filtering is skipped (legacy behavior).
-	RouteNodeStore *RouteNodeStore
+	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
+	// selection. When set, planByTier uses bandit scoring instead of P2C within
+	// each tier. Falls back to P2C if Bandit is nil.
+	Bandit *credential.BanditScorer
+	// BanditFlusher is the async batch writer for Bandit state. When set,
+	// the executor calls MarkDirty after recording success/failure events.
+	BanditFlusher interface {
+		MarkDirty(credentialID string)
+	}
 	// rrCounter is a round-robin counter for load balancing when multiple
 	// candidates have equal routing scores. Prevents all requests from
 	// always selecting the first candidate in a sorted list.
@@ -101,10 +105,10 @@ func (r *Router) PlanCandidates(
 // due to consecutive failures (>= 3 within 5-minute window).
 //
 // 2026-06-26: New filtering layer in V3.1 routing redesign.
-// If RouteNodeStore is nil, returns input unchanged (backward compatible).
+// If FpSlots is nil, returns input unchanged (backward compatible).
 // If Redis is unavailable, gracefully degrades to returning all candidates.
 func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.Candidate {
-	if r.RouteNodeStore == nil {
+	if r.FpSlots == nil || !r.FpSlots.Enabled() {
 		return candidates
 	}
 
@@ -115,14 +119,14 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	now := time.Now()
 
 	for _, c := range candidates {
-		state, err := r.RouteNodeStore.Get(ctx, c.CredentialID, c.RawModel)
+		state, err := r.FpSlots.GetNodeState(ctx, c.CredentialID, c.RawModel)
 		if err != nil {
 			// Graceful degradation: if Redis fails, include the candidate
 			healthy = append(healthy, c)
 			continue
 		}
 
-		if state.IsUsable(now) {
+		if state == nil || state.IsUsable(now) {
 			healthy = append(healthy, c)
 		} else {
 			slog.Debug("router: route node filtered out",
@@ -130,7 +134,7 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 				"model", c.RawModel,
 				"disabled", state.Disabled,
 				"failure_count", state.FailureCount,
-				"consecutive_failures", state.ConsecutiveFailureStreak(),
+				"consecutive_failures", state.ConsecutiveFailureStreak(now),
 			)
 		}
 	}

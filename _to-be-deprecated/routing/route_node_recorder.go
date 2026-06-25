@@ -1,4 +1,3 @@
-
 package routing
 
 import (
@@ -7,26 +6,25 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-// RouteNodeRecorder encapsulates route node success/failure recording logic.
-// Wraps RouteNodeStore + SessionPreference to provide a single API for executor.
-//
-// 2026-06-26: New component in V3.1 routing redesign.
-// Decoupled from Executor to keep executor.go focused on execution flow.
+// RouteNodeRecorder encapsulates route node success/failure recording.
+// 2026-06-26 deep integration: delegates node health persistence to
+// credentialfpslot.Manager while keeping SessionPreference updates here.
 type RouteNodeRecorder struct {
-	store       *RouteNodeStore
+	fpSlots     *credentialfpslot.Manager
 	sessionPref *sessions.SessionPreference
 	requestID   string
 }
 
 // NewRouteNodeRecorder creates a new recorder.
-// Both store and sessionPref are optional (nil-safe).
-func NewRouteNodeRecorder(store *RouteNodeStore, sessionPref *sessions.SessionPreference) *RouteNodeRecorder {
+// Both fpSlots and sessionPref are optional (nil-safe).
+func NewRouteNodeRecorder(fpSlots *credentialfpslot.Manager, sessionPref *sessions.SessionPreference) *RouteNodeRecorder {
 	return &RouteNodeRecorder{
-		store:       store,
+		fpSlots:     fpSlots,
 		sessionPref: sessionPref,
 	}
 }
@@ -48,9 +46,8 @@ func (r *RouteNodeRecorder) RecordSuccess(
 		return
 	}
 
-	// Record to RouteNodeStore
-	if r.store != nil {
-		if err := r.store.RecordSuccess(ctx, credentialID, model, r.requestID); err != nil {
+	if r.fpSlots != nil {
+		if err := r.fpSlots.RecordNodeSuccess(ctx, credentialID, model, r.requestID); err != nil {
 			slog.Debug("route node success record failed",
 				"error", err,
 				"credential_id", credentialID,
@@ -85,7 +82,7 @@ func (r *RouteNodeRecorder) RecordFailure(
 	model string,
 	kind errorsx.ErrorKind,
 ) {
-	if r == nil || r.store == nil {
+	if r == nil || r.fpSlots == nil {
 		return
 	}
 
@@ -94,8 +91,7 @@ func (r *RouteNodeRecorder) RecordFailure(
 		return
 	}
 
-	// Record to RouteNodeStore
-	if err := r.store.RecordFailure(ctx, credentialID, model, r.requestID, string(kind)); err != nil {
+	if err := r.fpSlots.RecordNodeFailure(ctx, credentialID, model, r.requestID, string(kind)); err != nil {
 		slog.Debug("route node failure record failed",
 			"error", err,
 			"credential_id", credentialID,
