@@ -118,9 +118,33 @@ const decisionReplayCache = ref<Record<string, DecisionReplayResponse | null>>({
 const decisionReplayLoading = ref('')
 const modalDecisionId = ref('')
 
+/**
+ * analyticsEmpty drives the "no data at all" full-page empty state.
+ *
+ * Pre-2026-06-26 this check used three conditions ANDed together, which
+ * caused a visible flash-and-disappear bug:
+ *   - On initial mount `audit.total_requests` is undefined → `?? 0`
+ *     evaluates to 0, so the empty state showed immediately.
+ *   - When `loadAnalytics()` set `analyticsLoading = true`, the empty
+ *     state hid and the heatmap card briefly appeared with "加载热力图…".
+ *   - When the matrix query returned 0 rows (no recent request_logs),
+ *     `analyticsEmpty` flipped back to true and the empty state replaced
+ *     the heatmap card again — producing the "闪一下就消失了" flicker.
+ *
+ * Fix: only show the full-page empty state when BOTH the audit and the
+ * initial matrix fetch have completed AND neither has any data. This
+ * keeps the heatmap card on screen throughout the load lifecycle so the
+ * user sees a stable layout. The heatmap card itself renders an inline
+ * "暂无矩阵数据" hint via HeatmapMatrix's isEmpty computed, so the user
+ * still gets a clear "no data" signal — just without the page flicker.
+ */
+const analyticsFetched = ref(false)
+const auditFetched = ref(false)
+
 const analyticsEmpty = computed(() =>
-  !analyticsLoading.value &&
-  (audit.value.total_requests ?? 0) === 0 &&
+  auditFetched.value &&
+  analyticsFetched.value &&
+  (audit.value.total_requests ?? audit.value.total_auto_requests ?? 0) === 0 &&
   (!matrixData.value || matrixData.value.rows.length === 0)
 )
 
@@ -135,8 +159,12 @@ async function loadAnalytics() {
     flowData.value = flow
   } catch (e) {
     console.error('loadAnalytics', e)
+    // Preserve previous data on error so the user does not see the
+    // heatmap flash to empty and back. The card's inline "暂无矩阵数据"
+    // hint will be replaced by a clearer error message below.
   } finally {
     analyticsLoading.value = false
+    analyticsFetched.value = true
   }
 }
 
@@ -366,7 +394,13 @@ const simResult = ref<{ status: number; decision?: Record<string, unknown>; erro
 const simLoading = ref(false)
 
 async function loadAudit() {
-  try { audit.value = await getAutoRouteAudit() } catch (e) { console.error('loadAudit', e) }
+  try {
+    audit.value = await getAutoRouteAudit()
+  } catch (e) {
+    console.error('loadAudit', e)
+  } finally {
+    auditFetched.value = true
+  }
 }
 async function loadDecisions() {
   try { decisions.value = await getAutoRouteDecisions(15) } catch (e) { console.error('loadDecisions', e) }

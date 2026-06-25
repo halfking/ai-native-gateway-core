@@ -25,6 +25,23 @@ export function headers(method: string): Record<string, string> {
   return h
 }
 
+/**
+ * Whether the next 401 from `req()` should trigger a hard redirect to
+ * /login. Disabled during the very first page load (before any view
+ * has had a chance to render) so that a stale token does not produce
+ * a one-frame flash of the protected page followed by an immediate
+ * jump to /login — which the user reported as "页面闪了一下就消失了".
+ *
+ * Views flip this back on inside `onMounted` once their initial paint
+ * is committed, so a subsequent 401 (e.g. token truly expired during
+ * navigation) still triggers the redirect as before.
+ */
+let authRedirectEnabled = false
+
+export function enableAuthRedirect(): void {
+  authRedirectEnabled = true
+}
+
 export async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
   const r = await fetch(BASE + path, {
     method,
@@ -32,12 +49,19 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (r.status === 401) {
-    // Token expired or invalid. Clear credentials and redirect to /login
-    // so the user can re-authenticate instead of seeing a cascade of 401s.
-    // Using window.location to force a full page reset (clears all
-    // in-flight requests that would also 401 with the now-empty store).
+    // Token expired or invalid. Clear credentials and (eventually)
+    // redirect to /login so the user can re-authenticate instead of
+    // seeing a cascade of 401s. We skip the redirect until the first
+    // view has finished its initial paint — otherwise a stale token
+    // causes the protected page to flash for one frame and then jump
+    // to /login, which reads as "the page disappeared" (see issue:
+    // 热力图没有数据显示 + 页面闪了一下就消失了, 2026-06-26).
     clearAll()
-    if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+    if (
+      authRedirectEnabled &&
+      typeof window !== 'undefined' &&
+      !window.location.pathname.startsWith('/login')
+    ) {
       window.location.href = '/login'
     }
     throw new Error('Unauthorized')
