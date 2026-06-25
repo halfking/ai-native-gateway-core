@@ -336,6 +336,12 @@ func resolveDecision(score, threshold float64, mode Mode) Decision {
 	return DecisionWarn // observe (v1) always downgrades to warn
 }
 
+// ResolveDecision is the exported version of resolveDecision for use by relay handlers.
+// It enforces v1 observe-only mode: even if mode=enforce is passed, returns warn instead of block.
+func ResolveDecision(score, threshold float64, mode Mode) Decision {
+	return resolveDecision(score, threshold, mode)
+}
+
 // clampScore forces any numeric value into [0,1]. Defends against LLMs that
 // hallucinate "score": 1.5 or "-0.2".
 func clampScore(s float64) float64 {

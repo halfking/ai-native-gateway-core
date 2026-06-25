@@ -1189,8 +1189,34 @@ func main() {
 		// handlers (when armor is enabled) to audit every judge decision.
 		// Safe for concurrent use; failures are logged, never block relay.
 		armorLogger := armor.NewLogger(dbConn.Pool())
-		_ = armorLogger // TODO(B1-4): wire into relay handler (next commit)
 		slog.Info("armor logger initialized")
+
+		// ── Armor Judge (Track A B1-5) ──────────────────────────────────
+		// HTTP judge client calls external LLM to score prompts. v1 observe-only mode.
+		var armorJudge armor.Judge
+		judgeEndpoint := os.Getenv("ARMOR_JUDGE_ENDPOINT") // e.g. "https://api.openai.com/v1"
+		judgeModel := os.Getenv("ARMOR_JUDGE_MODEL")       // e.g. "gpt-4o-mini"
+		judgeAPIKey := os.Getenv("ARMOR_JUDGE_API_KEY")    // OpenAI-compatible API key
+		if judgeEndpoint != "" && judgeModel != "" && judgeAPIKey != "" {
+			var err error
+			armorJudge, err = armor.NewHTTPJudge(armor.HTTPOptions{
+				BaseURL: judgeEndpoint,
+				Model:   judgeModel,
+				APIKey:  judgeAPIKey,
+			})
+			if err != nil {
+				slog.Error("armor judge init failed", "error", err)
+				armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
+			} else {
+				slog.Info("armor judge initialized", "endpoint", judgeEndpoint, "model", judgeModel)
+			}
+		} else {
+			armorJudge = armor.NewMockJudge(0.0, "mock") // fallback: always safe
+			slog.Warn("armor judge not configured, using mock judge (always safe)")
+		}
+
+		// Wire armor into chat handler
+		chatHandler.SetArmor(armorJudge, armorLogger)
 	}
 
 	slog.Info("CHECKPOINT: before static handler init")
