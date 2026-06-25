@@ -1708,6 +1708,11 @@ func (e *Executor) recordBanditSuccess(credentialID int, latencyMs int) {
 	}
 	credID := fmt.Sprintf("%d", credentialID)
 	e.Router.Bandit.RecordSuccess(credID, int64(latencyMs))
+	
+	// Mark dirty for async flush to database
+	if e.Router.BanditFlusher != nil {
+		e.Router.BanditFlusher.MarkDirty(credID)
+	}
 }
 
 // recordBanditFailure records a failed request in the Bandit scorer.
@@ -1736,6 +1741,11 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 	// Record 429 rate limit hits separately for penalty tracking
 	if kind == errorsx.KindRateLimit {
 		e.Router.Bandit.RecordRateLimitHit(credID)
+	}
+	
+	// Mark dirty for async flush to database
+	if e.Router.BanditFlusher != nil {
+		e.Router.BanditFlusher.MarkDirty(credID)
 	}
 }
 
