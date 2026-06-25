@@ -1,8 +1,9 @@
 # LLM Gateway Go 领域驱动架构重构
 
-> **状态**: ✅ Design Completed  
-> **日期**: 2026-06-25  
-> **团队**: AI Architecture Team  
+> **状态**: ✅ Phase 1.5 R1.1-R1.11 完成 (2026-06-25) + R1.12 旁路完成 (2026-06-26)
+> **日期**: 2026-06-26 (Round 49)
+> **团队**: AI Architecture Team
+> **下一步**: R1.13 切流量 (用户授权后)
 
 ## 📋 文档导航
 
@@ -10,10 +11,30 @@
 |------|------|------|
 | [domain-refactoring-plan.md](./domain-refactoring-plan.md) | 完整架构设计方案 | ✅ 已完成 |
 | [implementation-plan.md](./implementation-plan.md) | 详细实施计划 | ✅ 已完成 |
+| [phase1.5-revised-plan-20260625.md](./phase1.5-revised-plan-20260625.md) | Phase 1.5 修订计划 R1.1-R1.13 | ✅ 已完成 |
+| [phase1-execution-audit-v2-revised-20260625.md](./phase1-execution-audit-v2-revised-20260625.md) | 执行审计 v2 | ✅ 已完成 |
+| [phase2-r112-local-test-plan.md](./phase2-r112-local-test-plan.md) | R1.12 本地测试方案 | ✅ 已完成 |
+| [_to-be-deprecated/README.md](../../_to-be-deprecated/README.md) | R1.13 待删除代码迁移说明 | ✅ 已完成 |
+| [_to-be-deprecated/MIGRATION-MANIFEST.md](../../_to-be-deprecated/MIGRATION-MANIFEST.md) | 14 个老包详细迁移清单 | ✅ 已完成 |
 
 ---
 
 ## 🎯 重构目标
+
+### Round 49 进度 (2026-06-26)
+
+| 任务 | 状态 | 详情 |
+|------|------|------|
+| Phase 1.5 R1.1-R1.11 迁移 | ✅ | 23 个领域包, 46k 行, 651 tests PASS |
+| R1.12 旁路 feature flag | ✅ | cmd/gateway/main_v2_pipeline.go (16 stages) |
+| R1.12 本地测试环境 | ✅ | docker-compose + 4 scripts |
+| Admin tenant scope 修复 | ✅ | 14 个 handler, L1 14→0 |
+| RLS migration 052 | ✅ | candidate_failure_logs + request_wal, L1 2→0 |
+| deploy-mobile-h5 SSOT | ✅ | lint-deploy-ssot L1 1→0 |
+| 9 blocking linter | ✅ | 全部 L1=0 |
+| _to-be-deprecated/ 目录 | ✅ | 6 文件已迁, 14 老包待 R1.13 |
+| R1.13 切流量 | ⏸️ | 待用户授权 |
+| R1.12 完整集成 (v1 main.go) | ⏸️ | 待用户授权 |
 
 ### 核心目标（优先级 ABC）
 
@@ -151,6 +172,54 @@
 
 **总体复用率**: 约 70%
 
+## 📂 当前目录结构 (Round 49)
+
+```
+llm-gateway-go/
+├── cmd/
+│   ├── gateway/               # v1 生产入口 (1663 行, 待 R1.13 重写)
+│   ├── gateway-v2/           # v2 Pipeline 入口 (393 行, R1.12 验证用)
+│   └── ...                   # 其他 cmd (probe-cred, traffic-replay 等)
+├── domains/                  # ⭐ 新分层架构 (R1.1-R1.11 完成)
+│   ├── authentication/        # 认证
+│   ├── agent-ecosystem/       # 智能体生态
+│   ├── credential/            # 凭据 (breaker + limiter + writer)
+│   ├── hooks/                 # 横切关注点
+│   │   ├── audit/             # 审计日志
+│   │   ├── cache/             # 会话缓存
+│   │   ├── compression/       # 压缩 (R1.6 + R1.7 + compaction)
+│   │   ├── observability/     # 可观测性 + telemetry
+│   │   ├── security/          # 安全
+│   │   ├── session-inspector/ # 会话检查器
+│   │   └── tools/             # 工具拦截
+│   ├── identity/             # 身份
+│   ├── integration/          # 集成 (含 memora 部分)
+│   ├── pipeline/             # Pipeline 编排
+│   ├── provider/             # 供应商
+│   ├── routing/              # 路由 (新)
+│   ├── session/              # 会话
+│   ├── streaming/            # 流式 + executors
+│   └── transformation/       # 转换 + anthropic
+├── admin/                    # Admin API handlers
+├── _to-be-deprecated/        # ⭐ R1.13 待删除 (Round 49 新增)
+│   ├── README.md
+│   ├── MIGRATION-MANIFEST.md
+│   ├── observability/siem/    # ✅ 已迁 (5 文件)
+│   ├── orphan-tests/          # ✅ 已迁 (model-routing-test.go)
+│   └── audit/ auth/ ...      # ⏳ 14 老包待 R1.13
+├── audit/  auth/  circuit/  compressor/  credentialstate/  identity/
+├── limiter/  memora/  observability/  relay/  routing/  sessions/
+├── telemetry/  transform/  transport/    # 14 老包 (生产 main.go 仍用)
+└── ...
+```
+
+**目录组织原则**:
+1. `domains/` — 新分层架构 (Domain-Driven Design)
+2. `cmd/` — 所有可执行入口
+3. `admin/` — Admin HTTP handlers (新)
+4. `_to-be-deprecated/` — R1.13 切流量前的过渡区
+5. 顶层老包 — R1.13 时整体迁入 `_to-be-deprecated/`
+
 ---
 
 ## ✅ 验收标准
@@ -236,11 +305,12 @@ go test ./domains/... -v -cover
 - [原始架构文档](../../ARCHITECTURE.md)
 - [domain/ 包 README](../../domain/README.md)
 - [transport/ 包 README](../../transport/README.md)
-- [现有 Hook 示例](../../relay/metatool_interceptor.go)
-- [现有压缩器](../../compressor/session_compressor.go)
+- [_to-be-deprecated/ README](../../_to-be-deprecated/README.md) ⭐
+- [_to-be-deprecated/ 迁移清单](../../_to-be-deprecated/MIGRATION-MANIFEST.md) ⭐
+- [Phase 1.5 R1.13 待删除目录](https://github.com/anomalyco/opencode/wiki)
 
 ---
 
-**最后更新**: 2026-06-25  
-**维护者**: AI Architecture Team  
-**版本**: v2.0
+**最后更新**: 2026-06-26 (Round 49: Phase 1.5 完成 + R1.12 旁路 + _to-be-deprecated/ 创建)
+**维护者**: AI Architecture Team
+**版本**: v2.1
