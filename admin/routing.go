@@ -464,12 +464,25 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			resolutionPath = "canonical:variant"
 		}
 		
-		// 2026-06-26: Report quality gate threshold used
+		// 2026-06-26: Report quality gate threshold used and filtering stats
+		filteredCount := len(candidates) - len(routableCandidates)
 		qualityGateInfo = map[string]any{
-			"threshold_used":    usedThreshold,
-			"routable_count":    len(routableCandidates),
-			"total_count":       len(candidates),
-			"fallback_applied":  usedThreshold < 0.3,
+			"threshold_used":   usedThreshold,
+			"routable_count":   len(routableCandidates),
+			"filtered_count":   filteredCount,
+			"total_count":      len(candidates),
+			"fallback_applied": usedThreshold < 0.3,
+		}
+		
+		// Add statistics about filter reasons
+		if filteredCount > 0 {
+			filterReasons := make(map[string]int)
+			for _, c := range candidates {
+				if !c.Routable && c.BlockReason != "" {
+					filterReasons[c.BlockReason]++
+				}
+			}
+			qualityGateInfo["filter_reasons"] = filterReasons
 		}
 	}
 	

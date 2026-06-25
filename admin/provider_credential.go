@@ -132,7 +132,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.api_models_error,
 		       c.effective_at,
 		       c.expires_at,
-		       c.tags::text,
+		       c.tags,
 		       COALESCE(c.notes,''),
 		       c.secret_ciphertext,
 		       COALESCE(c.manual_disabled, false),

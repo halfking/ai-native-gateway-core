@@ -592,16 +592,25 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 		}
 		if len(candidates) > 0 {
 			if i > 0 {
+				// Fallback was used
+				RecordQualityGateFallback(clientModel, threshold)
 				slog.Warn("routing fallback: using relaxed quality gate",
 					"model", clientModel,
 					"threshold", threshold,
 					"candidates_count", len(candidates))
 			}
+			RecordRoutingCandidates(clientModel, len(candidates))
 			return candidates, nil
+		} else if i == 0 {
+			// First round returned no candidates - track filtering
+			slog.Debug("routing quality gate: no candidates passed strict threshold",
+				"model", clientModel,
+				"threshold", threshold)
 		}
 	}
 	
 	// No candidates even with relaxed threshold
+	RecordRoutingCandidates(clientModel, 0)
 	return nil, nil
 }
 

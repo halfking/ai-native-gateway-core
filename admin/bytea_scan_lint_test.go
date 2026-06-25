@@ -40,6 +40,7 @@ package admin
 //   cases must be verified by manual code review.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -140,8 +141,8 @@ func scanFile(fset *token.FileSet, file *ast.File) []string {
 }
 
 // collectStringDecls walks a list of top-level decls and returns a
-// map[name]"string" for every var declared with type "string" (or
-// anything ending in `.string`).
+// map[name]typeText for every var declared with type "string" (or
+// anything ending in `.string` or `NullString` / `.NullString`).
 func collectStringDecls(decls []ast.Decl) map[string]string {
 	out := map[string]string{}
 	for _, decl := range decls {
@@ -155,10 +156,14 @@ func collectStringDecls(decls []ast.Decl) map[string]string {
 				continue
 			}
 			typeText := exprText(vs.Type)
-			if typeText == "" || typeText == "string" || strings.HasSuffix(typeText, ".string") {
+			if typeText == "" {
+				continue
+			}
+			if typeText == "string" || strings.HasSuffix(typeText, ".string") ||
+				typeText == "NullString" || strings.HasSuffix(typeText, ".NullString") {
 				for _, name := range vs.Names {
 					if name != nil {
-						out[name.Name] = "string"
+						out[name.Name] = typeText
 					}
 				}
 			}
@@ -174,6 +179,9 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 	var violations []string
 
 	// Function-local string declarations shadow package-level ones.
+	// We track `string` and `sql.NullString` (and any type ending in
+	// `.NullString` or `.string`) as string-like destinations that
+	// require the same pgx casting rules.
 	localStringDecls := map[string]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		vs, ok := n.(*ast.ValueSpec)
@@ -181,7 +189,11 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			return true
 		}
 		typeText := exprText(vs.Type)
-		if typeText == "string" || strings.HasSuffix(typeText, ".string") {
+		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
+			fmt.Printf("DEBUG scanFunc: listCredentials ValueSpec Names=%v Type=%s\n", vs.Names, typeText)
+		}
+		if typeText == "string" || strings.HasSuffix(typeText, ".string") ||
+			typeText == "NullString" || strings.HasSuffix(typeText, ".NullString") {
 			for _, name := range vs.Names {
 				if name != nil {
 					localStringDecls[name.Name] = true
@@ -190,6 +202,9 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 		}
 		return true
 	})
+	if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
+		fmt.Printf("DEBUG scanFunc: listCredentials localStringDecls=%v\n", localStringDecls)
+	}
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -200,6 +215,9 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 		if !ok || sel.Sel == nil || sel.Sel.Name != "Scan" {
 			return true
 		}
+		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
+			fmt.Printf("DEBUG scanFunc: listCredentials Scan call: args=%d\n", len(call.Args))
+		}
 
 		sql := findSQLForScanCall(call)
 		if sql == "" {
@@ -208,6 +226,12 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 			if id, ok := sel.X.(*ast.Ident); ok {
 				sql = findSQLFromBody(fn.Body, id.Name)
 			}
+		}
+		if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" {
+			fmt.Printf("DEBUG scanFunc: listCredentials Scan sql_len=%d\n", len(sql))
+			// Direct call for comparison
+			directIdx, directOk, directCasted := findColumnIndexWithCast(sql, "tags")
+			fmt.Printf("DEBUG scanFunc: DIRECT findColumnIndexWithCast: idx=%d ok=%v casted=%v\n", directIdx, directOk, directCasted)
 		}
 		if sql == "" {
 			return true
@@ -235,6 +259,9 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 		// MUST be wrapped with a `::text` cast in the SELECT list.
 		for _, col := range jsonbColumnsRequiringCast {
 			colIdx, casted, ok := findColumnIndexWithCast(sql, col)
+			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" && col == "tags" {
+				fmt.Printf("DEBUG listCredentials jsonb lookup: col=%q idx=%d casted=%v ok=%v sql_len=%d sql_head=%.40q\n", col, colIdx, casted, ok, len(sql), sql)
+			}
 			if !ok {
 				continue
 			}
@@ -242,7 +269,11 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]s
 				continue
 			}
 			dest := call.Args[colIdx]
-			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
+			isStr := isStringDestination(dest, localStringDecls, pkgStringDecls)
+			if os.Getenv("LINT_DEBUG") != "" && fn.Name.Name == "listCredentials" && col == "tags" {
+				fmt.Printf("DEBUG listCredentials jsonb: col=%s idx=%d casted=%v isStr=%v\n", col, colIdx, casted, isStr)
+			}
+			if !isStr {
 				continue
 			}
 			if casted {
@@ -392,7 +423,7 @@ func findSQLFromBody(body *ast.BlockStmt, rowsIdent string) string {
 // We recognize the column by its suffix (e.g. `c.secret_ciphertext`,
 // `secret_ciphertext`) or exact match.
 func findColumnIndex(sql string, col string) (int, bool) {
-	idx, _, found := findColumnIndexWithCast(sql, col)
+	idx, found, _ := findColumnIndexWithCast(sql, col)
 	return idx, found
 }
 
@@ -499,7 +530,10 @@ func splitTopLevelCommas(s string) []string {
 }
 
 // isStringDestination returns true if `dest` is `&varName` where
-// varName was declared as type string.
+// varName was declared as a string-like type. We consider `string`,
+// `sql.NullString`, and `*string` (if its element is string) as
+// "string-like destinations" that all fail on bytea/jsonb scans
+// without proper casting.
 func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStringDecls map[string]string) bool {
 	u, ok := dest.(*ast.UnaryExpr)
 	if !ok || u.Op != token.AND {
@@ -512,7 +546,7 @@ func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStr
 	if localStringDecls[id.Name] {
 		return true
 	}
-	if t, ok := pkgStringDecls[id.Name]; ok && t == "string" {
+	if t, ok := pkgStringDecls[id.Name]; ok && (t == "string" || t == "NullString" || strings.HasSuffix(t, ".NullString")) {
 		return true
 	}
 	return false
