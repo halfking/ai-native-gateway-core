@@ -29,6 +29,23 @@ func (f *fakeSyncer) MCPServers(ctx context.Context) ([]apihub.Asset, error) {
 	return f.mcps, nil
 }
 
+// okStore is a no-op apihub.Store that swallows every call. We use it so
+// the AssetWatcher test exercises the full sync flow without a database
+// or a separate apihub.memStore (which is unexported).
+type okStore struct{}
+
+func (okStore) Upsert(_ context.Context, _ apihub.Asset) error { return nil }
+func (okStore) Get(_ context.Context, _ string, _ apihub.Kind, _ int64) (apihub.Asset, error) {
+	return apihub.Asset{}, nil
+}
+func (okStore) List(_ context.Context, _ apihub.Filter) ([]apihub.Asset, error) {
+	return nil, nil
+}
+func (okStore) Link(_ context.Context, _ string, _ apihub.Relationship) error { return nil }
+func (okStore) Neighbors(_ context.Context, _ string, _ apihub.Kind, _ int64, _ int) ([]apihub.Asset, []apihub.Relationship, error) {
+	return nil, nil, nil
+}
+
 func TestAssetWatcher_SyncOnce(t *testing.T) {
 	// Create fake syncer with test data
 	syncer := &fakeSyncer{
@@ -41,8 +58,8 @@ func TestAssetWatcher_SyncOnce(t *testing.T) {
 		},
 	}
 
-	// Create in-memory hub (no DB)
-	hub := apihub.New(nil)
+	// Hub backed by noop store — same shape as production minus DB.
+	hub := apihub.New(okStore{})
 
 	// Create watcher
 	watcher := NewAssetWatcher(hub, syncer)
@@ -73,7 +90,7 @@ func TestAssetWatcher_SyncOnce_PartialFailure(t *testing.T) {
 		err: nil,
 	}
 
-	hub := apihub.New(nil)
+	hub := apihub.New(okStore{})
 	watcher := NewAssetWatcher(hub, syncer)
 
 	ctx := context.Background()
