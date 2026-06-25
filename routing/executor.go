@@ -1626,6 +1626,31 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 	return &credentialID
 }
 
+// stickyCredentialIDMultiLevel uses the multi-level sticky lookup (L1 → L2 → L3).
+// L1 = session+model, L2 = client+model, L3 = client baseline.
+// Returns the credentialID and the level that matched (for telemetry).
+//
+// 2026-06-25: This is the new primary sticky lookup. The old
+// stickyCredentialID (L3 only) is kept for backward compatibility with
+// any external callers and is used when the multi-level inputs are
+// unavailable (e.g., model is empty).
+func (e *Executor) stickyCredentialIDMultiLevel(
+	tenantID string,
+	appID, apiKeyID *int,
+	clientProfile string,
+	sessionID string,
+	model string,
+) *int {
+	if e.Router == nil || e.Router.Sticky == nil {
+		return nil
+	}
+	result := e.Router.Sticky.GetMultiLevel(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
+	if !result.Found {
+		return nil
+	}
+	return &result.CredentialID
+}
+
 func (e *Executor) recordStickySuccess(params *ExecParams, credentialID int) {
 	if e.Router == nil || e.Router.Sticky == nil || params == nil || params.StickyKey == "" || params.Policy == nil {
 		return
