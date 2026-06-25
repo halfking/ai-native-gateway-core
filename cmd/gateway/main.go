@@ -192,6 +192,9 @@ func main() {
 	var pendingStore *pending.Store
 	var redisClientForCache *sessions.RedisClient
 	var routingExec *routing.Executor
+	var routeNodeStore *routing.RouteNodeStore
+	var lastSystemSession *sessions.LastSystemSessionIndex
+	var sessionPref *sessions.SessionPreference
 	if cfg.RedisAddr != "" {
 		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -214,6 +217,10 @@ func main() {
 			// (Store becomes a no-op); explicit construction here so
 			// the GET endpoint is available whenever Redis is up.
 			pendingStore = pending.NewStore(fpSlotRedis, ttl)
+			// V3.1 (2026-06-26): route node health tracking + session preference
+			routeNodeStore = routing.NewRouteNodeStore(fpSlotRedis)
+			lastSystemSession = sessions.NewLastSystemSessionIndex(fpSlotRedis)
+			sessionPref = sessions.NewSessionPreference(fpSlotRedis)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -281,6 +288,9 @@ func main() {
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
+
+		// V3.1 (2026-06-26): wire route node store for healthy-candidate filtering
+		router.RouteNodeStore = routeNodeStore
 
 		norm := relay.NewNormalizer()
 		routingExec = routing.NewExecutor(
@@ -588,6 +598,9 @@ func main() {
 			slog.Info("disguise mode enabled")
 		}
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
+		// V3.1 (2026-06-26): wire route node recorder + session routing
+		routingExec.Recorder = routing.NewRouteNodeRecorder(routeNodeStore, sessionPref)
+		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
 		// Default 100 entries / 5 min TTL; override via env.
 		idempotentCap := 100
