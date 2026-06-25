@@ -82,6 +82,8 @@ migrate_package() {
 
     if [[ "$DRY_RUN" == "false" ]]; then
         mkdir -p "$ROOT_DIR/$(dirname "$dst")"
+        mkdir -p "$BACKUP_DIR/$(dirname "$src")"
+        cp -R "$ROOT_DIR/$src" "$BACKUP_DIR/$src"
         cp -R "$ROOT_DIR/$src" "$ROOT_DIR/$dst"
         # macOS BSD sed: 必须有 '' 参数
         find "$ROOT_DIR/$dst" -name "*.go" -type f -exec sed -i '' \

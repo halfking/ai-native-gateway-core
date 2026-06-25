@@ -116,6 +116,7 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	defer cancel()
 
 	healthy := make([]provider.Candidate, 0, len(candidates))
+	filtered := make([]provider.Candidate, 0)
 	now := time.Now()
 
 	for _, c := range candidates {
@@ -136,7 +137,15 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 				"failure_count", state.FailureCount,
 				"consecutive_failures", state.ConsecutiveFailureStreak(now),
 			)
+			filtered = append(filtered, c)
 		}
+	}
+	if len(healthy) == 0 && len(filtered) > 0 {
+		slog.Warn("router: all route nodes filtered by health state, failing open",
+			"total", len(candidates),
+			"filtered", len(filtered),
+		)
+		return candidates
 	}
 
 	return healthy
