@@ -178,6 +178,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
+	// 2026-06-26: Mirror provider.Client.loadCandidatesDB query so resolve API
+	// shows exactly what real routing sees, including all filter reasons.
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			p.id AS provider_id,
@@ -186,6 +188,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(p.protocol, 'openai-completions') AS protocol,
 			p.base_url,
 			p.enabled AS provider_enabled,
+			p.manual_disabled AS provider_manual_disabled,
 			c.id AS credential_id,
 			COALESCE(c.label, '') AS credential_label,
 			COALESCE(c.status, 'active') AS credential_status,
@@ -201,8 +204,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			(c.effective_at IS NULL OR c.effective_at <= now())
 				AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
 			c.balance_usd::float8,
-			COALESCE(c.circuit_state, 'closed') AS circuit_state,
-			c.cooling_until::text,
+			COALESCE(mo.circuit_state, 'closed') AS circuit_state,
+			mo.cooling_until::text,
 			mo.available,
 			COALESCE(mo.routing_tier, 2) AS tier,
 			COALESCE(mo.weight, 100) AS weight,
@@ -218,10 +221,38 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			mo.raw_model_name AS model_name,
 			COALESCE(mo.standardized_name, mo.raw_model_name) AS standardized_name,
 			COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
-			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd
+			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
+			-- Routing filter columns (2026-06-26 audit fix)
+			COALESCE(v.is_routable, FALSE) AS is_routable,
+			(SELECT state FROM model_probe_state mps 
+			 WHERE mps.credential_id = c.id 
+			   AND mps.raw_model_name = mo.raw_model_name 
+			 LIMIT 1) AS probe_state,
+			rsr.rate AS recent_success_rate,
+			rsr.samples AS recent_samples
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN v_routable_credential_models v
+		       ON v.credential_id = mo.credential_id
+		      AND v.raw_model_name = mo.raw_model_name
+		CROSS JOIN LATERAL (
+			SELECT 
+				COALESCE(
+					(SELECT COUNT(CASE WHEN success THEN 1 END)::float / NULLIF(COUNT(*), 0)
+					 FROM request_logs 
+					 WHERE credential_id = c.id 
+					   AND outbound_model = mo.raw_model_name 
+					 ORDER BY ts DESC 
+					 LIMIT 50), 
+					1.0
+				) AS rate,
+				(SELECT COUNT(*) FROM request_logs 
+				 WHERE credential_id = c.id 
+				   AND outbound_model = mo.raw_model_name 
+				 ORDER BY ts DESC 
+				 LIMIT 50) AS samples
+		) AS rsr
 		WHERE p.tenant_id = 'default'
 		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
 		  AND mo.available IS TRUE
@@ -239,7 +270,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mo.manual_priority, 99),
 			COALESCE(mo.routing_tier, 2),
 			COALESCE(mo.weight, 100) DESC,
-			COALESCE(mo.success_rate, 0.9) DESC
+			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 	`, rawModels)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -251,9 +282,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	candidates := make([]candidate, 0)
 	for rows.Next() {
 		var c candidate
+		var providerManualDisabled bool
+		var isRoutable bool
+		var probeState *string
+		var recentSuccessRate *float64
+		var recentSamples *int
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
-			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
+			&c.ProviderEnabled, &providerManualDisabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
 			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
@@ -262,18 +298,34 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency, &c.SuccessRate,
 			&c.P95LatencyMs, &c.ModelName, &c.StandardizedName,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
+			&isRoutable, &probeState, &recentSuccessRate, &recentSamples,
 		); err != nil {
 			continue
 		}
+		// 2026-06-26: Apply same filters as provider.Client.loadCandidatesDB
 		c.RuntimeRoutable = c.Available &&
 			c.CredentialStatus == "active" &&
 			c.LifecycleStatus == "active" &&
 			c.AvailabilityState == "ready" &&
 			c.QuotaState == "ok" &&
-			c.CircuitState != "open"
+			c.CircuitState != "open" &&
+			isRoutable &&  // from v_routable_credential_models
+			!providerManualDisabled &&
+			(probeState == nil || *probeState != "broken_confirmed") &&
+			(recentSamples == nil || *recentSamples < 20 || recentSuccessRate == nil || *recentSuccessRate >= 0.3)
+		
 		c.Routable = c.RuntimeRoutable
 		if !c.RuntimeRoutable {
-			if c.LifecycleStatus != "active" {
+			// Build detailed block reason (2026-06-26 audit fix)
+			if providerManualDisabled {
+				c.BlockReason = "provider_manual_disabled"
+			} else if !isRoutable {
+				c.BlockReason = "not_in_routable_view"
+			} else if probeState != nil && *probeState == "broken_confirmed" {
+				c.BlockReason = "probe_broken_confirmed"
+			} else if recentSamples != nil && *recentSamples >= 20 && recentSuccessRate != nil && *recentSuccessRate < 0.3 {
+				c.BlockReason = fmt.Sprintf("recent_success_rate_low:%.2f%%", *recentSuccessRate*100)
+			} else if c.LifecycleStatus != "active" {
 				c.BlockReason = "lifecycle_" + c.LifecycleStatus
 			} else if c.CircuitState == "open" {
 				c.BlockReason = "circuit_open"
