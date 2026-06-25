@@ -244,15 +244,20 @@ func newDeps(cfg *v2Config) *v2Deps {
 
 	credStore := credential.NewInMemoryStore()
 	credHealth := credential.NewHealthChecker(credStore)
-	credLimiter := credential.NewLimiter(credStore)
+	// 2026-06-26 migration: NewLimiter() no longer takes *InMemoryStore.
+	// The migrated 4-layer Limiter is keyed by int (providerID, credentialID)
+	// and uses NewWithLimits(global, pool, credential, identity) for
+	// custom limits. We use the defaults — the gateway-v2 demo is
+	// single-tenant with no production concurrency tuning.
+	credLimiter := credential.NewLimiter()
 
 	// 预置一个默认 credential 供 demo 使用
 	_ = credStore.Save(&credential.Credential{
 		ID: "default-cred", TenantID: "default", ProviderID: "default-openai", Model: "gpt-4",
-		EncryptedKey:   []byte("demo-encrypted-key"),
-		Priority:       50,
-		Status:         credential.StatusActive,
-		MaxConcurrent:  10,
+		EncryptedKey:  []byte("demo-encrypted-key"),
+		Priority:      50,
+		Status:        credential.StatusActive,
+		MaxConcurrent: 10,
 	})
 
 	provStore := provider.NewInMemoryStore()
@@ -320,7 +325,7 @@ func httpHandler(deps *v2Deps) http.Handler {
 			}
 			w.WriteHeader(env.StatusCode)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": err.Error(),
+				"error":      err.Error(),
 				"request_id": env.Envelope.RequestID,
 			})
 			return
