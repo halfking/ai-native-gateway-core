@@ -13,14 +13,6 @@
 -- Replace (request_id, ts) unique constraint with (request_id) only.
 -- This ensures one row per request_id, making UPSERT and UPDATE operations
 -- deterministic.
---
--- IMPORTANT: request_logs is a TimescaleDB hypertable partitioned by ts.
--- PostgreSQL normally requires that unique constraints on partitioned tables
--- include ALL partitioning columns. However, we can work around this by:
--- 1. Using a UNIQUE INDEX (not constraint) which TimescaleDB allows
--- 2. Or detaching the hypertable, adding constraint, then reattaching
---
--- We choose option 1 (UNIQUE INDEX) as it's simpler and non-destructive.
 
 -- Step 1: Drop the old (request_id, ts) unique index
 DROP INDEX IF EXISTS idx_request_logs_request_id_ts_unique;
@@ -40,13 +32,7 @@ WHERE rl1.request_id = rl2.request_id
   AND rl1.ts > rl2.first_ts;
 
 -- Step 3: Create UNIQUE INDEX on request_id only
--- Note: TimescaleDB allows unique indexes on non-partition columns in some cases,
--- but if this fails, we need to use exclude constraints or application-level
--- uniqueness. The index will at least provide fast lookups.
---
--- If this CREATE fails with "cannot create a unique index without the column ts",
--- we'll need to implement cleanup via application logic (already done) and
--- rely on the improved UPDATE query (targeting earliest row).
+-- This ensures only one row per request_id can exist in the table.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_request_logs_request_id_unique
     ON request_logs (request_id);
 

@@ -190,25 +190,6 @@ git revert <commit-hash>
 
 ## 注意事项
 
-### TimescaleDB 限制
-
-`request_logs` 是 TimescaleDB hypertable，按 `ts` 分区。PostgreSQL 通常要求分区表的唯一约束必须包含所有分区列。
-
-**可能的问题：**
-
-如果 `CREATE UNIQUE INDEX ON request_logs (request_id)` 失败并报错：
-```
-ERROR: cannot create a unique index without the column "ts"
-```
-
-**解决方案：**
-
-1. **方案1**：使用 exclusion constraint（更复杂）
-2. **方案2**：依赖应用层逻辑（已实现）- 改进的 UPDATE 查询 + 禁用 fallback INSERT
-3. **方案3**：从 hypertable 中 detach，添加约束，再 attach（需要停机）
-
-**建议：** 先尝试运行迁移，如果失败，我们已经通过代码层面的修复解决了大部分问题。
-
 ### 清理历史数据
 
 迁移只清理最近7天的重复记录。如果需要清理更旧的数据：
