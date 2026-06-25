@@ -269,7 +269,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 	`, rawModels)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed")
+		slog.Error("routing resolve query failed", "error", err, "model", model)
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
