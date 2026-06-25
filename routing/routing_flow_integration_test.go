@@ -42,8 +42,8 @@ func TestRoutingFlow_EndToEnd(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Setup: Session prefers credential 100
-	err = sessionPref.Set(ctx, previousSessionID, 100)
+	// Setup: Session prefers credential 100 with model gpt-4
+	err = sessionPref.Set(ctx, previousSessionID, 100, "gpt-4")
 	require.NoError(t, err)
 
 	// Step 1: New request from same client (no session ID)
@@ -59,10 +59,11 @@ func TestRoutingFlow_EndToEnd(t *testing.T) {
 	// Step 3: Record success
 	recorder.RecordSuccess(ctx, 100, "gpt-4", previousSessionID)
 
-	// Step 4: Verify SessionPreference updated
-	credID, found := sessionPref.Get(ctx, previousSessionID)
+	// Step 4: Verify SessionPreference updated (with model)
+	val, found := sessionPref.Get(ctx, previousSessionID)
 	require.True(t, found)
-	assert.Equal(t, 100, credID)
+	assert.Equal(t, 100, val.CredentialID)
+	assert.Equal(t, "gpt-4", val.Model)
 
 	// Step 5: Verify RouteNode success count
 	state100, err = routeNodeStore.Get(ctx, 100, "gpt-4")
@@ -209,7 +210,7 @@ func TestSessionPreference_AfterModelSwitch(t *testing.T) {
 	sessionPref := sessions.NewSessionPreference(client)
 
 	// Set preference
-	err := sessionPref.Set(ctx, "session-1", 100)
+	err := sessionPref.Set(ctx, "session-1", 100, "gpt-4")
 	require.NoError(t, err)
 
 	// Simulate model switch (clear preference)
@@ -217,17 +218,18 @@ func TestSessionPreference_AfterModelSwitch(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify preference is cleared
-	credID, found := sessionPref.Get(ctx, "session-1")
+	val, found := sessionPref.Get(ctx, "session-1")
 	assert.False(t, found)
-	assert.Equal(t, 0, credID)
+	assert.Nil(t, val)
 
 	// Now set new preference for new model
-	err = sessionPref.Set(ctx, "session-1", 200)
+	err = sessionPref.Set(ctx, "session-1", 200, "gpt-3.5")
 	require.NoError(t, err)
 
-	credID, found = sessionPref.Get(ctx, "session-1")
+	val, found = sessionPref.Get(ctx, "session-1")
 	require.True(t, found)
-	assert.Equal(t, 200, credID)
+	assert.Equal(t, 200, val.CredentialID)
+	assert.Equal(t, "gpt-3.5", val.Model)
 }
 
 // TestLastSystemSession_ReuseWindow verifies 5-minute reuse.

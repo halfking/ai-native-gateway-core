@@ -46,9 +46,10 @@ func TestRouteNodeRecorder_RecordSuccess(t *testing.T) {
 	assert.Equal(t, int64(1), state.SuccessCount)
 
 	// Verify SessionPreference was set
-	credID, found := sessionPref.Get(ctx, "session-1")
+	val, found := sessionPref.Get(ctx, "session-1")
 	require.True(t, found)
-	assert.Equal(t, 100, credID)
+	assert.Equal(t, 100, val.CredentialID)
+	assert.Equal(t, "gpt-4", val.Model)
 }
 
 func TestRouteNodeRecorder_RecordSuccess_NoSession(t *testing.T) {
