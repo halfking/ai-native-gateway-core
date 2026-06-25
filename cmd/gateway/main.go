@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/audit"
 	"github.com/kaixuan/llm-gateway-go/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -1159,6 +1160,20 @@ func main() {
 		bg.StartWorkTypeACCSync(context.Background(), dbConn.Pool(), func(ctx context.Context) error {
 			return admin.SyncWorkTypesFromACCForBG(ctx, dbConn.Pool())
 		})
+
+		// ── APIHub AssetWatcher (Track A A1-1 / A1-2) ──────────────────
+		// Periodically syncs model_offers + tool_registry.tools into the
+		// unified assets table. RLS is enforced via PGStore per-query.
+		// Best-effort: if DB is misconfigured the gateway still serves
+		// traffic; we only log.
+		apihubStore := apihub.NewPGStore(dbConn.Pool())
+		apihubSvc := apihub.New(apihubStore, apihub.WithLogger(slog.Default()))
+		apihubSvc.StartRefresh(context.Background())
+		apihubWatcher := bg.NewAssetWatcher(apihubSvc, bg.NewPGSyncer(dbConn.Pool()))
+		apihubWatcher.WithInterval(60 * time.Second)
+		apihubWatcher.Start(context.Background())
+		defer apihubWatcher.Stop()
+		slog.Info("apihub watcher initialized", "interval", "60s")
 	}
 
 	slog.Info("CHECKPOINT: before static handler init")
