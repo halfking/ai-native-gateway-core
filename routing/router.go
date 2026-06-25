@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/limiter"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -23,6 +24,13 @@ type Router struct {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
 	}
+	// RouteNodeStore tracks per-(credentialID, model) health state.
+	// When set, PlanCandidates filters out unhealthy route nodes
+	// (consecutive 3 failures → 5min cooldown).
+	//
+	// 2026-06-26: Added as part of routing redesign V3.1.
+	// Optional: if nil, route node filtering is skipped (legacy behavior).
+	RouteNodeStore *RouteNodeStore
 	// rrCounter is a round-robin counter for load balancing when multiple
 	// candidates have equal routing scores. Prevents all requests from
 	// always selecting the first candidate in a sorted list.
@@ -65,6 +73,10 @@ func (r *Router) PlanCandidates(
 		return nil
 	}
 
+	// 2026-06-26: Filter out unhealthy route nodes (consecutive 3 failures → 5min cooldown).
+	// This is the V3.1 routing redesign requirement.
+	available = r.filterHealthyNodes(available)
+
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
 	round1, round2 := splitByBillingRound(available)
@@ -82,6 +94,47 @@ func (r *Router) PlanCandidates(
 	}
 
 	return ordered
+}
+
+// filterHealthyNodes filters out route nodes that are in cooldown state
+// due to consecutive failures (>= 3 within 5-minute window).
+//
+// 2026-06-26: New filtering layer in V3.1 routing redesign.
+// If RouteNodeStore is nil, returns input unchanged (backward compatible).
+// If Redis is unavailable, gracefully degrades to returning all candidates.
+func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.Candidate {
+	if r.RouteNodeStore == nil {
+		return candidates
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	healthy := make([]provider.Candidate, 0, len(candidates))
+	now := time.Now()
+
+	for _, c := range candidates {
+		state, err := r.RouteNodeStore.Get(ctx, c.CredentialID, c.RawModel)
+		if err != nil {
+			// Graceful degradation: if Redis fails, include the candidate
+			healthy = append(healthy, c)
+			continue
+		}
+
+		if state.IsUsable(now) {
+			healthy = append(healthy, c)
+		} else {
+			slog.Debug("router: route node filtered out",
+				"credential_id", c.CredentialID,
+				"model", c.RawModel,
+				"disabled", state.Disabled,
+				"failure_count", state.FailureCount,
+				"consecutive_failures", state.ConsecutiveFailureStreak(),
+			)
+		}
+	}
+
+	return healthy
 }
 
 func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.Candidate) {

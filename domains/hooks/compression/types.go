@@ -17,16 +17,19 @@ package compression
 
 import "errors"
 
-// Strategy 压缩策略标识。
-type Strategy string
+// HookStrategy 压缩策略标识（Hook 抽象层）。
+//
+// 注意：与 compressor.CompressionStrategy（底层 telemetry 用的策略）不同。
+// 本类型是 Hook 抽象层定义的最小契约；下游可选用实现（本包提供 LCS / Noop）。
+type HookStrategy string
 
 const (
-	// StrategyNone 不压缩（恒等映射）。
-	StrategyNone Strategy = "none"
-	// StrategyLCS 最长公共子序列去重 / 滑动窗口截断。
-	StrategyLCS Strategy = "lcs"
-	// StrategyLLMSumm 调用 LLM 总结（需要外部凭据，未在本包实现）。
-	StrategyLLMSumm Strategy = "llm_summ"
+	// HookStrategyNone 不压缩（恒等映射）。
+	HookStrategyNone HookStrategy = "none"
+	// HookStrategyLCS 最长公共子序列去重 / 滑动窗口截断。
+	HookStrategyLCS HookStrategy = "lcs"
+	// HookStrategyLLMSumm 调用 LLM 总结（需要外部凭据，未在本包实现）。
+	HookStrategyLLMSumm HookStrategy = "llm_summ"
 )
 
 // Message 简化的消息结构（用于压缩上下文）。
@@ -60,11 +63,11 @@ var ErrEmptyContext = errors.New("compression: empty context")
 //   - Name() 返回稳定标识（用于 telemetry）
 //   - Strategy() 返回策略类型
 //   - Compress() 在 ctx 上原地修改 ctx.Messages；返回非 nil error 时表示失败
-type Compressor interface {
+type HookCompressor interface {
 	// Name 返回压缩器名称。
 	Name() string
 	// Strategy 返回策略类型。
-	Strategy() Strategy
+	Strategy() HookStrategy
 	// Compress 应用压缩。原地修改 ctx.Messages（通过 *Context 指针）。
 	Compress(ctx *Context) error
 }
@@ -83,8 +86,8 @@ type Compressor interface {
 //   - 此实现演示"按窗口大小截断"——保证总长度有界
 //   - 调用方可通过实现自己的 Compressor 接入真实 LCS 算法
 type LCSCompressor struct {
-	maxTokens  int
-	maxRetain  int // 最多保留的消息数
+	maxTokens int
+	maxRetain int // 最多保留的消息数
 }
 
 // NewLCSCompressor 构造 LCS 压缩器。
@@ -103,7 +106,7 @@ func NewLCSCompressor(maxTokens int) *LCSCompressor {
 func (c *LCSCompressor) Name() string { return "lcs" }
 
 // Strategy 返回策略类型。
-func (c *LCSCompressor) Strategy() Strategy { return StrategyLCS }
+func (c *LCSCompressor) Strategy() HookStrategy { return HookStrategyLCS }
 
 // Compress 应用截断压缩。
 func (c *LCSCompressor) Compress(ctx *Context) error {
@@ -131,13 +134,13 @@ func NewNoopCompressor() *NoopCompressor { return &NoopCompressor{} }
 func (NoopCompressor) Name() string { return "noop" }
 
 // Strategy 返回策略类型。
-func (NoopCompressor) Strategy() Strategy { return StrategyNone }
+func (NoopCompressor) Strategy() HookStrategy { return HookStrategyNone }
 
 // Compress 恒等映射（不修改消息）。
 func (NoopCompressor) Compress(ctx *Context) error { return nil }
 
 // 编译期接口断言。
 var (
-	_ Compressor = (*LCSCompressor)(nil)
-	_ Compressor = (*NoopCompressor)(nil)
+	_ HookCompressor = (*LCSCompressor)(nil)
+	_ HookCompressor = (*NoopCompressor)(nil)
 )
