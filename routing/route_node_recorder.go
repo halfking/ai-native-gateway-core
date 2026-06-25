@@ -58,13 +58,14 @@ func (r *RouteNodeRecorder) RecordSuccess(
 		}
 	}
 
-	// Update SessionPreference (session → credential)
+	// Update SessionPreference (session → credential + model)
 	if r.sessionPref != nil && sessionID != "" {
-		if err := r.sessionPref.Set(ctx, sessionID, credentialID); err != nil {
+		if err := r.sessionPref.Set(ctx, sessionID, credentialID, model); err != nil {
 			slog.Debug("session pref set failed",
 				"error", err,
 				"session_id", sessionID,
 				"credential_id", credentialID,
+				"model", model,
 			)
 		}
 	}

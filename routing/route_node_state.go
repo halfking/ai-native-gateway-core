@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -145,12 +146,10 @@ func (s *RouteNodeStore) redisKey(credentialID int, model string) string {
 	return fmt.Sprintf("route_node:%d:%s", credentialID, model)
 }
 
-// Get retrieves the route node state from Redis.
-func (s *RouteNodeStore) Get(ctx context.Context, credentialID int, model string) (*RouteNodeState, error) {
-	key := s.redisKey(credentialID, model)
-	data, err := s.client.Get(ctx, key).Result()
+// readState reads RouteNodeState from a generic redis Cmdable (client or tx).
+func readState(cmdable redis.Cmdable, ctx context.Context, key string, credentialID int, model string) (*RouteNodeState, error) {
+	data, err := cmdable.Get(ctx, key).Result()
 	if err == redis.Nil {
-		// Not found, return empty state
 		return &RouteNodeState{
 			CredentialID: credentialID,
 			Model:        model,
@@ -168,7 +167,27 @@ func (s *RouteNodeStore) Get(ctx context.Context, credentialID int, model string
 	return &state, nil
 }
 
-// Set stores the route node state to Redis.
+// isTransactionConflict checks if the error indicates a concurrent modification
+// that should be retried. In real Redis this is redis.TxFailedErr; miniredis
+// returns proto.RedisError with the same text.
+func isTransactionConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == redis.TxFailedErr {
+		return true
+	}
+	return strings.Contains(err.Error(), "transaction failed")
+}
+
+// Get retrieves the route node state from Redis.
+func (s *RouteNodeStore) Get(ctx context.Context, credentialID int, model string) (*RouteNodeState, error) {
+	return readState(s.client, ctx, s.redisKey(credentialID, model), credentialID, model)
+}
+
+// Set stores the route node state to Redis (direct write, no optimistic locking).
+// Used by tests to inject specific state. Production paths use RecordSuccess/RecordFailure
+// which employ WATCH/MULTI/EXEC for atomicity.
 func (s *RouteNodeStore) Set(ctx context.Context, state *RouteNodeState) error {
 	key := s.redisKey(state.CredentialID, state.Model)
 	data, err := json.Marshal(state)
@@ -183,22 +202,76 @@ func (s *RouteNodeStore) Set(ctx context.Context, state *RouteNodeState) error {
 	return nil
 }
 
-// RecordSuccess records a successful request and updates Redis.
-func (s *RouteNodeStore) RecordSuccess(ctx context.Context, credentialID int, model, requestID string) error {
-	state, err := s.Get(ctx, credentialID, model)
-	if err != nil {
+// updateState atomically reads, applies updateFn, and writes RouteNodeState
+// using Redis WATCH/MULTI/EXEC optimistic locking. Prevents lost updates
+// under concurrent requests.
+//
+// Retries up to 10 times with exponential backoff on transaction conflict.
+func (s *RouteNodeStore) updateState(ctx context.Context, credentialID int, model string, updateFn func(*RouteNodeState)) error {
+	key := s.redisKey(credentialID, model)
+	ttl := time.Duration(RouteNodeStateTTLSeconds) * time.Second
+	const maxRetries = 10
+
+	var lastErr error
+	for attempt := range maxRetries + 1 {
+		err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+			state, err := readState(tx, ctx, key, credentialID, model)
+			if err != nil {
+				return err
+			}
+			state.CredentialID = credentialID
+			state.Model = model
+			if state.SlideWindow == nil {
+				state.SlideWindow = []RouteNodeRecord{}
+			}
+
+			updateFn(state)
+
+			data, marshalErr := json.Marshal(state)
+			if marshalErr != nil {
+				return fmt.Errorf("json marshal failed in watch: %w", marshalErr)
+			}
+
+			_, pipeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, key, data, ttl)
+				return nil
+			})
+			return pipeErr
+		}, key)
+
+		if err == nil {
+			return nil
+		}
+
+		if isTransactionConflict(err) && attempt < maxRetries {
+			lastErr = err
+			// Exponential backoff: 1ms, 2ms, 4ms, 8ms, ...
+			select {
+			case <-time.After(time.Duration(1<<attempt) * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
+		}
+
 		return err
 	}
-	state.RecordSuccess(requestID, time.Now())
-	return s.Set(ctx, state)
+
+	return fmt.Errorf("update state failed after %d retries: %w", maxRetries, lastErr)
 }
 
-// RecordFailure records a failed request and updates Redis.
+// RecordSuccess records a successful request and updates Redis atomically.
+// Uses WATCH/MULTI/EXEC to prevent lost updates under concurrent requests.
+func (s *RouteNodeStore) RecordSuccess(ctx context.Context, credentialID int, model, requestID string) error {
+	return s.updateState(ctx, credentialID, model, func(state *RouteNodeState) {
+		state.RecordSuccess(requestID, time.Now())
+	})
+}
+
+// RecordFailure records a failed request and updates Redis atomically.
+// Uses WATCH/MULTI/EXEC to prevent lost updates under concurrent requests.
 func (s *RouteNodeStore) RecordFailure(ctx context.Context, credentialID int, model, requestID, errorKind string) error {
-	state, err := s.Get(ctx, credentialID, model)
-	if err != nil {
-		return err
-	}
-	state.RecordFailure(requestID, errorKind, time.Now())
-	return s.Set(ctx, state)
+	return s.updateState(ctx, credentialID, model, func(state *RouteNodeState) {
+		state.RecordFailure(requestID, errorKind, time.Now())
+	})
 }
