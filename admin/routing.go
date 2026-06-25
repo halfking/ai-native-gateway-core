@@ -240,11 +240,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			SELECT 
 				COUNT(CASE WHEN success THEN 1 END)::float / NULLIF(COUNT(*), 0) AS rate,
 				COUNT(*) AS samples
-			FROM request_logs 
-			WHERE credential_id = c.id 
-			  AND outbound_model = mo.raw_model_name 
-			ORDER BY ts DESC 
-			LIMIT 50
+			FROM (
+				SELECT success
+				FROM request_logs 
+				WHERE credential_id = c.id 
+				  AND outbound_model = mo.raw_model_name 
+				ORDER BY ts DESC 
+				LIMIT 50
+			) recent
 		) AS rsr ON true
 		WHERE p.tenant_id = 'default'
 		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
@@ -3186,12 +3189,7 @@ func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {
 	results := make([]map[string]any, 0)
 	for _, rule := range mirrorRules {
 		var credID int
-		var label string
-		// secret_ciphertext is a bytea column; pgx will refuse to scan it
-		// into *string, so we must use []byte here (matches the rest of
-		// the codebase — see provider_refresh.go, provider_diagnose.go,
-		// credential_cycler.go, etc.).
-		var ciphertext []byte
+		var label, ciphertext string
 		err := h.db.QueryRow(ctx, `
 			SELECT c.id, c.label, c.secret_ciphertext
 			FROM credentials c
