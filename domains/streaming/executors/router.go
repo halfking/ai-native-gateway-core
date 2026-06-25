@@ -27,6 +27,11 @@ type Router struct {
 	// selection. When set, planByTier uses bandit scoring instead of P2C within
 	// each tier. Falls back to P2C if Bandit is nil.
 	Bandit *credential.BanditScorer
+	// BanditFlusher is the async batch writer for Bandit state. When set,
+	// the executor calls MarkDirty after recording success/failure events.
+	BanditFlusher interface {
+		MarkDirty(credentialID string)
+	}
 	// rrCounter is a round-robin counter for load balancing when multiple
 	// candidates have equal routing scores. Prevents all requests from
 	// always selecting the first candidate in a sorted list.
