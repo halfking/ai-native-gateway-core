@@ -671,93 +671,87 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
+	// 2026-06-26: Simplified UPDATE without CTE to support columnar storage.
+	// Since we now prevent duplicates at INSERT time, we can directly update
+	// by request_id without needing to find the "earliest" row.
 	tag, err := tx.Exec(ctx, `
-		WITH earliest AS (
-			SELECT id, ts
-			FROM request_logs
-			WHERE request_id = $1
-			ORDER BY ts ASC
-			LIMIT 1
-		)
-		UPDATE request_logs rl
-		   SET client_model = COALESCE($2, rl.client_model),
-		       outbound_model = COALESCE($3, rl.outbound_model),
-		       credential_id = COALESCE($4, rl.credential_id),
-		       provider_id = COALESCE($5, rl.provider_id),
-		       canonical_id = COALESCE($6, rl.canonical_id),
-		       client_profile = COALESCE($7, rl.client_profile),
-		       request_mode = COALESCE($8, rl.request_mode),
-		       end_user_id = COALESCE($9, rl.end_user_id),
-		       prompt_tokens = COALESCE($10, rl.prompt_tokens),
-		       completion_tokens = COALESCE($11, rl.completion_tokens),
-		       total_tokens = COALESCE($12, rl.total_tokens),
-		       cache_read_tokens = COALESCE($13, rl.cache_read_tokens),
-		       cache_write_tokens = COALESCE($14, rl.cache_write_tokens),
-		       cost_usd = COALESCE($15, rl.cost_usd),
-		       cost_display = COALESCE($16, rl.cost_display),
-		       cost_currency = COALESCE($17, rl.cost_currency),
-		       stream_first_chunk_ms = COALESCE($18, rl.stream_first_chunk_ms),
-		       stream_chunk_count = COALESCE($19, rl.stream_chunk_count),
-		       stream_done_received = COALESCE($20, rl.stream_done_received),
-		       stream_interrupted = COALESCE($21, rl.stream_interrupted),
-		       response_checksum = COALESCE($22, rl.response_checksum),
-		       response_preview = COALESCE($23, rl.response_preview),
-		       response_body = COALESCE(CAST($24 AS jsonb), rl.response_body),
-		       failure_stage = COALESCE($25, rl.failure_stage),
-		       failure_detail_code = COALESCE($26, rl.failure_detail_code),
-		       transform_rule_id = COALESCE($27, rl.transform_rule_id),
-		       egress_protocol = COALESCE($28, rl.egress_protocol),
-		       request_preview = COALESCE($29, rl.request_preview),
-		       transform_summary = COALESCE($30, rl.transform_summary),
-		       request_body = COALESCE(CAST($31 AS jsonb), rl.request_body),
-		       usage_source = COALESCE(NULLIF($32, ''), rl.usage_source),
-		       success = COALESCE($33, rl.success),
-		       request_status = COALESCE($34, rl.request_status),
+		UPDATE request_logs
+		   SET client_model = COALESCE($2, client_model),
+		       outbound_model = COALESCE($3, outbound_model),
+		       credential_id = COALESCE($4, credential_id),
+		       provider_id = COALESCE($5, provider_id),
+		       canonical_id = COALESCE($6, canonical_id),
+		       client_profile = COALESCE($7, client_profile),
+		       request_mode = COALESCE($8, request_mode),
+		       end_user_id = COALESCE($9, end_user_id),
+		       prompt_tokens = COALESCE($10, prompt_tokens),
+		       completion_tokens = COALESCE($11, completion_tokens),
+		       total_tokens = COALESCE($12, total_tokens),
+		       cache_read_tokens = COALESCE($13, cache_read_tokens),
+		       cache_write_tokens = COALESCE($14, cache_write_tokens),
+		       cost_usd = COALESCE($15, cost_usd),
+		       cost_display = COALESCE($16, cost_display),
+		       cost_currency = COALESCE($17, cost_currency),
+		       stream_first_chunk_ms = COALESCE($18, stream_first_chunk_ms),
+		       stream_chunk_count = COALESCE($19, stream_chunk_count),
+		       stream_done_received = COALESCE($20, stream_done_received),
+		       stream_interrupted = COALESCE($21, stream_interrupted),
+		       response_checksum = COALESCE($22, response_checksum),
+		       response_preview = COALESCE($23, response_preview),
+		       response_body = COALESCE(CAST($24 AS jsonb), response_body),
+		       failure_stage = COALESCE($25, failure_stage),
+		       failure_detail_code = COALESCE($26, failure_detail_code),
+		       transform_rule_id = COALESCE($27, transform_rule_id),
+		       egress_protocol = COALESCE($28, egress_protocol),
+		       request_preview = COALESCE($29, request_preview),
+		       transform_summary = COALESCE($30, transform_summary),
+		       request_body = COALESCE(CAST($31 AS jsonb), request_body),
+		       usage_source = COALESCE(NULLIF($32, ''), usage_source),
+		       success = COALESCE($33, success),
+		       request_status = COALESCE($34, request_status),
 		       -- 2026-06-20: clear error_kind on success to prevent
 		       -- cross-request pollution (e.g. a previous failure's
 		       -- error_kind leaking into a later successful UPDATE).
 		       error_kind = CASE
-		           WHEN COALESCE($33, rl.success) = TRUE THEN NULL
-		           ELSE COALESCE($35, rl.error_kind)
+		           WHEN COALESCE($33, success) = TRUE THEN NULL
+		           ELSE COALESCE($35, error_kind)
 		       END,
-		       latency_ms = COALESCE($36, rl.latency_ms),
-		       identity_hash = COALESCE($37, rl.identity_hash),
-		       search_text = COALESCE($38, rl.search_text),
-		       gw_session_id = COALESCE($39, rl.gw_session_id),
-		       gw_task_id = COALESCE($40, rl.gw_task_id),
-		       api_key_prefix = COALESCE($41, rl.api_key_prefix),
-		       api_key_owner_user = COALESCE($42, rl.api_key_owner_user),
-		       application_code = COALESCE($43, rl.application_code),
-		       is_auto_request = COALESCE($44, rl.is_auto_request),
-		       task_type = COALESCE($45, rl.task_type),
-		       auto_profile = COALESCE($46, rl.auto_profile),
-		       auto_decision = COALESCE(CAST($47 AS jsonb), rl.auto_decision),
-		       auto_confidence = COALESCE($48, rl.auto_confidence),
-		       work_type = COALESCE($49, rl.work_type),
-		       credits_charged = COALESCE($50, rl.credits_charged),
+		       latency_ms = COALESCE($36, latency_ms),
+		       identity_hash = COALESCE($37, identity_hash),
+		       search_text = COALESCE($38, search_text),
+		       gw_session_id = COALESCE($39, gw_session_id),
+		       gw_task_id = COALESCE($40, gw_task_id),
+		       api_key_prefix = COALESCE($41, api_key_prefix),
+		       api_key_owner_user = COALESCE($42, api_key_owner_user),
+		       application_code = COALESCE($43, application_code),
+		       is_auto_request = COALESCE($44, is_auto_request),
+		       task_type = COALESCE($45, task_type),
+		       auto_profile = COALESCE($46, auto_profile),
+		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
+		       auto_confidence = COALESCE($48, auto_confidence),
+		       work_type = COALESCE($49, work_type),
+		       credits_charged = COALESCE($50, credits_charged),
 		       -- Round 47 compression v7 T2: parent-child chain payload.
-		       parent_request_id = COALESCE($51, rl.parent_request_id),
-		       compression_reason = COALESCE($52, rl.compression_reason),
-		       compression_strategy = COALESCE($53, rl.compression_strategy),
-		       compression_meta = COALESCE(CAST($54 AS jsonb), rl.compression_meta),
+		       parent_request_id = COALESCE($51, parent_request_id),
+		       compression_reason = COALESCE($52, compression_reason),
+		       compression_strategy = COALESCE($53, compression_strategy),
+		       compression_meta = COALESCE(CAST($54 AS jsonb), compression_meta),
 		       -- v3 (2026-06-19) T23: session-level outbound body payload.
-		       outbound_body      = COALESCE(CAST($55 AS jsonb), rl.outbound_body),
-		       outbound_msg_count = COALESCE($56, rl.outbound_msg_count),
-		       outbound_token_est = COALESCE($57, rl.outbound_token_est),
-		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), rl.outbound_msg_hashes),
+		       outbound_body      = COALESCE(CAST($55 AS jsonb), outbound_body),
+		       outbound_msg_count = COALESCE($56, outbound_msg_count),
+		       outbound_token_est = COALESCE($57, outbound_token_est),
+		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), outbound_msg_hashes),
 		       -- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
-		       quality_flags        = COALESCE(CAST($59 AS text[]), rl.quality_flags),
-		       quality_fix_actions  = COALESCE(CAST($60 AS jsonb), rl.quality_fix_actions),
-		       quality_score        = COALESCE($61, rl.quality_score),
+		       quality_flags        = COALESCE(CAST($59 AS text[]), quality_flags),
+		       quality_fix_actions  = COALESCE(CAST($60 AS jsonb), quality_fix_actions),
+		       quality_score        = COALESCE($61, quality_score),
 	   -- 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code
 	   -- (db/migrations/018_upstream_finish_reason.sql). The new column is
 	   -- the SOLE home for the upstream finish_reason.
-	   upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason),
+	   upstream_finish_reason = COALESCE($62, upstream_finish_reason),
 	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	   tool_calls = COALESCE(CAST($63 AS jsonb), rl.tool_calls)
-	  FROM earliest
-	 WHERE rl.id = earliest.id
-	   AND rl.ts = earliest.ts
+	   tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls)
+	 WHERE request_id = $1
 `,
 		entry.RequestID,
 		entry.ClientModel,
