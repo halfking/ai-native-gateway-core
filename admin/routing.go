@@ -204,8 +204,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			(c.effective_at IS NULL OR c.effective_at <= now())
 				AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
 			c.balance_usd::float8,
-			COALESCE(mo.circuit_state, 'closed') AS circuit_state,
-			mo.cooling_until::text,
+			COALESCE(c.circuit_state, 'closed') AS circuit_state,
+			c.cooling_until::text,
 			mo.available,
 			COALESCE(mo.routing_tier, 2) AS tier,
 			COALESCE(mo.weight, 100) AS weight,
