@@ -28,6 +28,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domain"
 	"github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
@@ -38,6 +39,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/integration"
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
+	"github.com/kaixuan/llm-gateway-go/domains/provider"
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
@@ -77,15 +79,20 @@ func getEnv(key, def string) string {
 
 // v2Deps 集中管理所有依赖（便于测试替换）
 type v2Deps struct {
-	Config      *v2Config
-	Pipeline    *pipeline.RequestPipeline
-	EventBus    *eventbus.MemoryBus
-	CacheStore  cache.Store
-	AuditSink   audit.Sink
-	AuditWriter *audit.BatchWriter
-	Metrics     *observability.Registry
-	Tracer      observability.Tracer
-	AgentReg    *agentecosystem.Registry
+	Config           *v2Config
+	Pipeline         *pipeline.RequestPipeline
+	EventBus         *eventbus.MemoryBus
+	CacheStore       cache.Store
+	AuditSink        audit.Sink
+	AuditWriter      *audit.BatchWriter
+	Metrics          *observability.Registry
+	Tracer           observability.Tracer
+	AgentReg         *agentecosystem.Registry
+	CredentialStore  *credential.InMemoryStore
+	CredentialHealth *credential.HealthChecker
+	CredentialLimit  *credential.Limiter
+	ProviderStore    *provider.InMemoryStore
+	ProviderProber   *provider.Prober
 }
 
 // buildPipeline 组装完整的 Pipeline（包含所有横切 + 核心 Hook）
@@ -112,6 +119,22 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 			},
 		})
 	}
+
+	// === Phase: Provider Discovery (PreRouting) ===
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "provider_discovery", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			provider.NewProviderDiscoveryHook(deps.ProviderStore, deps.ProviderProber),
+		},
+	})
+
+	// === Phase: Credential Health (PreRouting) ===
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "credential_health", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{
+			credential.NewHealthCheckHook(deps.CredentialStore, deps.CredentialHealth),
+		},
+	})
 
 	// === Phase: Cache lookup (PreRouting) ===
 	if deps.Config.EnableCache {
@@ -144,6 +167,12 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 	p.AddStage(&pipeline.PipelineStage{
 		Name: "routing", Phase: pipeline.PhaseRouting, Mode: pipeline.ModeSequential,
 		Hooks: []pipeline.Hook{routing.NewRoutingHook(sticky)},
+	})
+
+	// === Phase: Credential Limit (PostRouting) ===
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "credential_limit", Phase: pipeline.PhasePostRouting, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{credential.NewLimiterHook(deps.CredentialLimit)},
 	})
 
 	// === Phase: Transform (Transform) ===
@@ -213,15 +242,50 @@ func newDeps(cfg *v2Config) *v2Deps {
 	tracer := observability.NewInMemoryTracer()
 	agentReg := agentecosystem.NewRegistry()
 
+	credStore := credential.NewInMemoryStore()
+	credHealth := credential.NewHealthChecker(credStore)
+	credLimiter := credential.NewLimiter(credStore)
+
+	// 预置一个默认 credential 供 demo 使用
+	_ = credStore.Save(&credential.Credential{
+		ID: "default-cred", TenantID: "default", ProviderID: "default-openai", Model: "gpt-4",
+		EncryptedKey:   []byte("demo-encrypted-key"),
+		Priority:       50,
+		Status:         credential.StatusActive,
+		MaxConcurrent:  10,
+	})
+
+	provStore := provider.NewInMemoryStore()
+	provProber := provider.NewProber(provStore)
+
+	// 预置一个默认 provider（gpt-4）供 demo 使用
+	_ = provStore.Save(&provider.Provider{
+		ID:       "default-openai",
+		Name:     "OpenAI",
+		BaseURL:  "https://api.openai.com",
+		Protocol: provider.ProtocolOpenAI,
+		AuthType: "bearer",
+		Models: []provider.ModelSpec{
+			{Name: "gpt-4", MaxContextTokens: 8192, SupportsStream: true, SupportsTools: true},
+			{Name: "gpt-3.5-turbo", MaxContextTokens: 4096, SupportsStream: true},
+		},
+		TimeoutSec: 60,
+	})
+
 	return &v2Deps{
-		Config:      cfg,
-		CacheStore:  cacheStore,
-		AuditSink:   auditSink,
-		AuditWriter: auditWriter,
-		Metrics:     metrics,
-		Tracer:      tracer,
-		AgentReg:    agentReg,
-		EventBus:    eventbus.NewMemoryBus(100),
+		Config:           cfg,
+		CacheStore:       cacheStore,
+		AuditSink:        auditSink,
+		AuditWriter:      auditWriter,
+		Metrics:          metrics,
+		Tracer:           tracer,
+		AgentReg:         agentReg,
+		CredentialStore:  credStore,
+		CredentialHealth: credHealth,
+		CredentialLimit:  credLimiter,
+		ProviderStore:    provStore,
+		ProviderProber:   provProber,
+		EventBus:         eventbus.NewMemoryBus(100),
 	}
 }
 
@@ -319,4 +383,6 @@ var (
 	_ session.SessionLoaderHook
 	_ *integration.MinimalDeps
 	_ pipeline.Hook = (*observability.TracingHook)(nil)
+	_ *credential.HealthCheckHook
+	_ *provider.ProviderDiscoveryHook
 )
