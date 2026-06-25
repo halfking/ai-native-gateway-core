@@ -21,14 +21,21 @@ package admin
 //
 // The response also includes an "insights" section that ranks
 // each predictor by absolute Pearson correlation with quality_score.
+//
+// NOTE: All SELECTs on request_logs in this file use buildBreakdownQuery()
+// which is wrapped by the handler to inject tenantLogsClause() (see
+// admin/session_tenant.go) — adds "AND tenant_id = $N" for tenant_admin
+// callers on non-default tenants. Super-admin / legacy admin_key /
+// default-tenant callers see all rows.
 
 import (
+	"context"
+	"github.com/jackc/pgx/v5"
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
-	"context"
-	"github.com/jackc/pgx/v5"
 )
 
 // QualityCorrelationRow is a single bucket row.
@@ -44,20 +51,20 @@ type QualityCorrelationRow struct {
 // QualityCorrelationInsight is one row in the "what predicts failure"
 // section.
 type QualityCorrelationInsight struct {
-	Predictor    string  `json:"predictor"` // 'prompt_length', 'tools', 'images', 'code_block'
-	Buckets       int     `json:"buckets"`  // number of distinct buckets
-	Samples       int     `json:"samples"`
-	Correlation  float64 `json:"correlation"`  // Pearson r
-	AbsR         float64 `json:"abs_r"`
-	Interpretation string `json:"interpretation"` // human-readable
+	Predictor      string  `json:"predictor"` // 'prompt_length', 'tools', 'images', 'code_block'
+	Buckets        int     `json:"buckets"`   // number of distinct buckets
+	Samples        int     `json:"samples"`
+	Correlation    float64 `json:"correlation"` // Pearson r
+	AbsR           float64 `json:"abs_r"`
+	Interpretation string  `json:"interpretation"` // human-readable
 }
 
 // QualityCorrelationResponse is the JSON wire format.
 type QualityCorrelationResponse struct {
-	WindowDays int                          `json:"window_days"`
-	By         string                       `json:"by"`
-	Breakdown  []QualityCorrelationRow      `json:"breakdown"`
-	Insights   []QualityCorrelationInsight  `json:"insights"`
+	WindowDays  int                         `json:"window_days"`
+	By          string                      `json:"by"`
+	Breakdown   []QualityCorrelationRow     `json:"breakdown"`
+	Insights    []QualityCorrelationInsight `json:"insights"`
 	GeneratedAt string                      `json:"generated_at"`
 }
 
@@ -96,7 +103,13 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 
 	// Build the breakdown query based on `by`.
 	breakdownQuery, _ := buildBreakdownQuery(by)
-	rows, err := h.db.Query(r.Context(), breakdownQuery, days)
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+	breakdownArgs := []any{days}
+	if tenantFrag != "" {
+		breakdownQuery = strings.Replace(breakdownQuery, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+		breakdownArgs = append(breakdownArgs, tenantArgs...)
+	}
+	rows, err := h.db.Query(r.Context(), breakdownQuery, breakdownArgs...)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -122,14 +135,14 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 	// by Pearson correlation. Skip if total samples < 30.
 	insights := []QualityCorrelationInsight{}
 	if totalSamples(breakdown) >= 30 {
-		insights = computeAllInsights(r.Context(), h.db, days)
+		insights = computeAllInsights(r.Context(), h.db, r, days)
 	}
 
 	writeJSON(w, http.StatusOK, QualityCorrelationResponse{
 		WindowDays:  days,
-		By:         by,
-		Breakdown:  breakdown,
-		Insights:   insights,
+		By:          by,
+		Breakdown:   breakdown,
+		Insights:    insights,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -225,7 +238,7 @@ func totalSamples(rows []QualityCorrelationRow) int {
 // correlation. Each query returns (bucket, samples, success, quality)
 // and the function uses bucket-index as X and avg_quality as Y
 // (weighted by samples). The result is sorted by |r| desc.
-func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityCorrelationInsight {
+func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, days int) []QualityCorrelationInsight {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -237,7 +250,13 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityC
 		if err != nil {
 			continue
 		}
-		rows, err := db.Query(ctx, q, days)
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+		qArgs := []any{days}
+		if tenantFrag != "" {
+			q = strings.Replace(q, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+			qArgs = append(qArgs, tenantArgs...)
+		}
+		rows, err := db.Query(ctx, q, qArgs...)
 		if err != nil {
 			continue
 		}
@@ -263,11 +282,11 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, days int) []QualityC
 		}
 		r := weightedPearson(xs, ys, ws)
 		results = append(results, QualityCorrelationInsight{
-			Predictor:     p,
-			Buckets:       len(xs),
-			Samples:       int(sumFloat(ws)),
-			Correlation:   r,
-			AbsR:          math.Abs(r),
+			Predictor:      p,
+			Buckets:        len(xs),
+			Samples:        int(sumFloat(ws)),
+			Correlation:    r,
+			AbsR:           math.Abs(r),
 			Interpretation: interpretCorrelation(p, r),
 		})
 	}

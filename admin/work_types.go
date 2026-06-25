@@ -10,6 +10,11 @@
 //	PATCH  /api/admin/work-types/:key         — update
 //	DELETE /api/admin/work-types/:key         — soft delete (enabled=false)
 //	PUT    /api/admin/work-types/:key/routes  — replace model routes
+//
+// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// are wrapped with tenantLogsClause() (admin/session_tenant.go) — adds
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
 package admin
 
 import (
@@ -119,6 +124,15 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// NULL row, so explicit-model requests never appeared in by_work_type /
 	// by_l1_task / top_models. Use `is_auto_request IS NOT TRUE` so NULL
 	// rows are admitted alongside TRUE auto requests.
+	wtArgs := []any{}
+	wtArgIdx := 1
+	wtTenantFrag, wtTenantArgs, wtNextArg := tenantLogsClause(r, wtArgIdx)
+	wtTenantWhere := ""
+	if wtTenantFrag != "" {
+		wtTenantWhere = wtTenantFrag
+		wtArgs = append(wtArgs, wtTenantArgs...)
+		wtArgIdx = wtNextArg
+	}
 	wtDirect := map[string]int{}
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(work_type, 'unknown'), COUNT(*)
@@ -128,9 +142,9 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
+		  )`+wtTenantWhere+`
 		GROUP BY work_type
-	`)
+	`, wtArgs...)
 	if err == nil {
 		for rows.Next() {
 			var k string
@@ -161,9 +175,9 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
+		  )`+wtTenantWhere+`
 		GROUP BY (%s)
-	`, taskExpr, taskExpr))
+	`, taskExpr, taskExpr), wtArgs...)
 	if err == nil {
 		for rows.Next() {
 			var k string
@@ -188,8 +202,8 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
 		FROM request_logs
-		WHERE ts >= NOW() - INTERVAL '24 hours'
-	`).Scan(&totalAuto, &totalSpec)
+		WHERE ts >= NOW() - INTERVAL '24 hours'`+wtTenantWhere+`
+	`, wtArgs...).Scan(&totalAuto, &totalSpec)
 	out["total_auto"] = totalAuto
 	out["total_specified"] = totalSpec
 
@@ -250,11 +264,11 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
+		  )`+wtTenantWhere+`
 		GROUP BY m
 		ORDER BY c DESC
 		LIMIT 10
-	`)
+	`, wtArgs...)
 	if err == nil {
 		for rows.Next() {
 			var m string
@@ -326,8 +340,8 @@ type modelRoute struct {
 	MinScore      float64 `json:"min_score"`
 	Enabled       bool    `json:"enabled"`
 	// 新增（需求 #6）：三级路由字段
-	Tier              string  `json:"tier"`                // primary/secondary/fallback
-	TaskQualityScore  float64 `json:"task_quality_score"`  // 任务质量评分 0-1
+	Tier             string  `json:"tier"`               // primary/secondary/fallback
+	TaskQualityScore float64 `json:"task_quality_score"` // 任务质量评分 0-1
 }
 
 func (h *WorkTypeHandlers) listWorkTypes(w http.ResponseWriter, r *http.Request) {
@@ -619,32 +633,32 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		return
 	}
 
-		for _, rt := range routes {
-			if strings.TrimSpace(rt.CanonicalName) == "" {
-				continue
-			}
-			wt := rt.Weight
-			if wt <= 0 {
-				wt = 1
-			}
-			// 新增（需求 #6）：支持 tier 和 task_quality_score
-			tier := rt.Tier
-			if tier == "" {
-				tier = "secondary" // 默认 secondary
-			}
-			taskQuality := rt.TaskQualityScore
-			if taskQuality <= 0 {
-				taskQuality = 0.5 // 默认中等质量
-			}
-			_, err := tx.Exec(ctx, `
+	for _, rt := range routes {
+		if strings.TrimSpace(rt.CanonicalName) == "" {
+			continue
+		}
+		wt := rt.Weight
+		if wt <= 0 {
+			wt = 1
+		}
+		// 新增（需求 #6）：支持 tier 和 task_quality_score
+		tier := rt.Tier
+		if tier == "" {
+			tier = "secondary" // 默认 secondary
+		}
+		taskQuality := rt.TaskQualityScore
+		if taskQuality <= 0 {
+			taskQuality = 0.5 // 默认中等质量
+		}
+		_, err := tx.Exec(ctx, `
 				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, task_quality_score)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, taskQuality)
-			if err != nil {
-				writeInternalErr(w, err)
-				return
-			}
+		if err != nil {
+			writeInternalErr(w, err)
+			return
 		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		writeInternalErr(w, err)

@@ -10,6 +10,11 @@
 //
 // All routes are mounted via RegisterAutoRouteRoutes (called from
 // admin/handler.go).
+//
+// NOTE: All SELECTs on tenant-scoped tables (request_logs etc.) in this file
+// are wrapped with tenantLogsClause() (admin/session_tenant.go) — adds
+// "AND tenant_id = $N" for tenant_admin callers on non-default tenants.
+// Super-admin / legacy admin_key / default-tenant callers see all rows.
 package admin
 
 import (
@@ -129,6 +134,11 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`
 	args := []interface{}{}
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, len(args)+1)
+	if tenantFrag != "" {
+		query += tenantFrag
+		args = append(args, tenantArgs...)
+	}
 	if task != "" {
 		args = append(args, task)
 		query += fmt.Sprintf(" AND task_type = $%d", len(args))
@@ -446,6 +456,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// in total. Use `COALESCE(is_auto_request, FALSE)` so the arithmetic
 	// reads the NULL as FALSE instead of dropping it.
 	var total, successes, totalAuto, totalSpecified int
+	auditTenantFrag, auditTenantArgs, _ := tenantLogsClause(r, 1)
 	err := h.db.QueryRow(ctx, `
 		SELECT
 		  COUNT(*),
@@ -457,8 +468,8 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
-	`).Scan(&total, &successes, &totalAuto, &totalSpecified)
+		  )`+auditTenantFrag+`
+	`, auditTenantArgs...).Scan(&total, &successes, &totalAuto, &totalSpecified)
 	if err != nil {
 		writeInternalErr(w, err)
 		return
@@ -484,11 +495,11 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
+		  )`+auditTenantFrag+`
 		GROUP BY (%s)
 		ORDER BY COUNT(*) DESC
 		LIMIT 20
-	`, taskExpr, taskExpr))
+	`, taskExpr, taskExpr), auditTenantArgs...)
 	if err == nil {
 		for rows.Next() {
 			var t string
@@ -507,11 +518,11 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
 		FROM request_logs
 		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'
+		  AND ts >= NOW() - INTERVAL '7 days'`+auditTenantFrag+`
 		GROUP BY p
 		ORDER BY COUNT(*) DESC
 		LIMIT 10
-	`)
+	`, auditTenantArgs...)
 	if err == nil {
 		for rows.Next() {
 			var p string
@@ -534,11 +545,11 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
+		  )`+auditTenantFrag+`
 		GROUP BY m
 		ORDER BY c DESC
 		LIMIT 10
-	`)
+	`, auditTenantArgs...)
 	if err == nil {
 		topModels := make([]map[string]interface{}, 0)
 		for rows.Next() {
