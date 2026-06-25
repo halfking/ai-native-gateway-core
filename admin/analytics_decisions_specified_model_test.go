@@ -5,71 +5,173 @@ import (
 	"testing"
 )
 
-// TestHandleDecisions_IncludesSpecifiedModel documents the wiring of the
-// /api/admin/auto-route/decisions endpoint after the specified-model
-// statistics update. The endpoint must accept both auto and explicit-model
-// requests so the heatmap's __specified__ column has a drill-down.
-//
-// We can't run the handler without a real DB, so the test guards the SQL
-// pattern by string-matching the WHERE clause shape: it must drop the
-// hard `is_auto_request = TRUE` filter and replace it with an OR branch
-// admitting non-auto requests with a non-empty client_model.
-func TestHandleDecisions_IncludesSpecifiedModel(t *testing.T) {
-	// Reconstruct the WHERE clause shape used by handleDecisions.
-	// Mirrors the production SQL at admin/auto_route.go:handleDecisions.
-	whereClause := `WHERE (is_auto_request = TRUE OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> ''))
-		  AND ts >= NOW() - INTERVAL '7 days'`
-
-	if !strings.Contains(whereClause, "is_auto_request = TRUE") {
-		t.Fatalf("decisions WHERE clause must keep the auto-request branch:\n%s", whereClause)
+// TestBuildDecisionsQuery_DefaultAdmitsSpecifiedModel checks the base
+// query (no caller filters) admits both auto and explicit-model
+// requests — the precondition for the heatmap's __specified__ column.
+func TestBuildDecisionsQuery_DefaultAdmitsSpecifiedModel(t *testing.T) {
+	q, _, err := buildDecisionsQuery(decisionsFilters{Limit: 10})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
 	}
-	if !strings.Contains(whereClause, "is_auto_request = FALSE") {
-		t.Fatalf("decisions WHERE clause must include the explicit-model branch:\n%s", whereClause)
+	if !strings.Contains(q, "is_auto_request = TRUE") {
+		t.Errorf("base query must keep the auto-request branch:\n%s", q)
 	}
-	if !strings.Contains(whereClause, "client_model") {
-		t.Fatalf("decisions WHERE clause must reference client_model (for explicit-model filter):\n%s", whereClause)
+	if !strings.Contains(q, "is_auto_request = FALSE") {
+		t.Errorf("base query must include the explicit-model branch:\n%s", q)
 	}
-	// No lingering hard `WHERE is_auto_request = TRUE` — must be inside OR.
-	if strings.Contains(whereClause, "WHERE is_auto_request = TRUE ") {
-		t.Fatalf("decisions WHERE clause must not hard-filter to auto-only:\n%s", whereClause)
+	if !strings.Contains(q, "client_model") {
+		t.Errorf("base query must reference client_model (for explicit-model filter):\n%s", q)
+	}
+	// No hard is_auto_request = TRUE as a top-level WHERE — must be inside OR.
+	if strings.Contains(q, "WHERE is_auto_request = TRUE ") {
+		t.Errorf("base query must not hard-filter to auto-only:\n%s", q)
 	}
 }
 
-// TestHandleDecisions_SynthesizesTaskTypeForExplicitModel documents the
-// expected JSON output for explicit-model rows: task_type must be the
-// synthetic __specified__ key (so the UI can render "指定模型" with the
-// same chip styling as the heatmap column).
-func TestHandleDecisions_SynthesizesTaskTypeForExplicitModel(t *testing.T) {
-	// The handler substitutes __specified__ for an empty task_type
-	// before serialising the row. The constant is the contract.
-	if SpecifiedModelTaskKey != "__specified__" {
-		t.Fatalf("SpecifiedModelTaskKey changed; UI display label mapping may break")
+// TestBuildDecisionsQuery_SpecifiedTaskFilter pins the contract that
+// filtering by task=__specified__ must translate to is_auto_request = FALSE
+// (because the task_type column is NULL for explicit-model rows).
+func TestBuildDecisionsQuery_SpecifiedTaskFilter(t *testing.T) {
+	q, args, err := buildDecisionsQuery(decisionsFilters{
+		Task:  SpecifiedModelTaskKey,
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
+	}
+	if !strings.Contains(q, " AND is_auto_request = FALSE") {
+		t.Errorf("task=__specified__ must emit is_auto_request = FALSE:\n%s", q)
+	}
+	// No $N placeholder should be bound for the __specified__ case.
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == SpecifiedModelTaskKey {
+			t.Errorf("__specified__ must NOT be bound as a parameter (would scan NULL and miss):\n%s", q)
+		}
 	}
 }
 
-// TestHandleDecisions_ModelFilterUsesCoalesce documents that the model
-// filter on decisions must use COALESCE(outbound_model, client_model) —
-// non-auto requests have NULL outbound_model and would otherwise be
-// invisible to the model filter.
-func TestHandleDecisions_ModelFilterUsesCoalesce(t *testing.T) {
-	filterClause := `AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($1)`
-	if !strings.Contains(filterClause, "COALESCE") {
-		t.Fatalf("decisions model filter must use COALESCE:\n%s", filterClause)
+// TestBuildDecisionsQuery_RealTaskFilter checks the normal task_type
+// path: the value is bound and the SQL references $N.
+func TestBuildDecisionsQuery_RealTaskFilter(t *testing.T) {
+	q, args, err := buildDecisionsQuery(decisionsFilters{
+		Task:  "code",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
 	}
-	if !strings.Contains(filterClause, "outbound_model") {
-		t.Fatalf("decisions model filter must prefer outbound_model:\n%s", filterClause)
+	if !strings.Contains(q, " AND task_type = $") {
+		t.Errorf("real task filter must bind as a parameter:\n%s", q)
 	}
-	if !strings.Contains(filterClause, "client_model") {
-		t.Fatalf("decisions model filter must fall back to client_model:\n%s", filterClause)
+	if strings.Contains(q, " AND is_auto_request = FALSE") {
+		t.Errorf("real task filter must NOT inject is_auto_request = FALSE:\n%s", q)
+	}
+	found := false
+	for _, a := range args {
+		if s, ok := a.(string); ok && s == "code" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'code' in args, got %v", args)
 	}
 }
 
-// TestHandleDecisions_SpecifiedTaskFilter documents the special case:
-// filtering by task=__specified__ must translate to `is_auto_request = FALSE`
-// because the task_type column is NULL for explicit-model rows.
-func TestHandleDecisions_SpecifiedTaskFilter(t *testing.T) {
-	filterClause := `AND is_auto_request = FALSE`
-	if !strings.Contains(filterClause, "is_auto_request = FALSE") {
-		t.Fatalf("__specified__ task filter must use is_auto_request = FALSE:\n%s", filterClause)
+// TestBuildDecisionsQuery_ModelFilterSplit covers the OR-of-ANY model
+// filter that lets a single canonical name match both auto (outbound_model)
+// and specified-model (client_model) requests.
+func TestBuildDecisionsQuery_ModelFilterSplit(t *testing.T) {
+	q, args, err := buildDecisionsQuery(decisionsFilters{
+		Model: []string{"gpt-4o"},
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
+	}
+	// Splits the predicate so PG can use the partial index on
+	// (outbound_model) for the auto path and
+	// idx_request_logs_explicit_model for the specified-model path.
+	if !strings.Contains(q, "outbound_model = ANY($") {
+		t.Errorf("model filter must include outbound_model = ANY:\n%s", q)
+	}
+	if !strings.Contains(q, "is_auto_request = FALSE AND client_model = ANY($") {
+		t.Errorf("model filter must split the specified-model branch:\n%s", q)
+	}
+	// Both ANY clauses must point at the same parameter.
+	if strings.Count(q, "outbound_model = ANY($") != 1 {
+		t.Errorf("model filter must reuse the same $N for both branches (one param binding), got:\n%s", q)
+	}
+	// Arg must be bound exactly once.
+	count := 0
+	for _, a := range args {
+		if sl, ok := a.([]string); ok && len(sl) == 1 && sl[0] == "gpt-4o" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one []string{gpt-4o} binding, got %d (args=%v)", count, args)
+	}
+}
+
+// TestBuildDecisionsQuery_ProfileFilterAdmitsSpecified documents the
+// OR-clause that lets profile=foo also return non-auto rows. Without
+// this, callers filtering by profile would silently drop the entire
+// specified-model population (whose auto_profile is NULL).
+func TestBuildDecisionsQuery_ProfileFilterAdmitsSpecified(t *testing.T) {
+	q, _, err := buildDecisionsQuery(decisionsFilters{
+		Profile: "smart",
+		Limit:   10,
+	})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
+	}
+	if !strings.Contains(q, " AND (auto_profile = $") {
+		t.Errorf("profile filter must bind auto_profile:\n%s", q)
+	}
+	if !strings.Contains(q, " OR is_auto_request = FALSE)") {
+		t.Errorf("profile filter must OR in is_auto_request = FALSE to admit specified-model rows (whose auto_profile is NULL):\n%s", q)
+	}
+}
+
+// TestBuildDecisionsQuery_AllFiltersComposed confirms that all four
+// optional filters compose into one query with the correct placeholder
+// ordering (no off-by-one regressions).
+func TestBuildDecisionsQuery_AllFiltersComposed(t *testing.T) {
+	q, args, err := buildDecisionsQuery(decisionsFilters{
+		Task:     "code",
+		WorkType: "wt1",
+		Model:    []string{"gpt-4o", "gpt-4o-mini"},
+		Profile:  "smart",
+		Limit:    25,
+	})
+	if err != nil {
+		t.Fatalf("buildDecisionsQuery: %v", err)
+	}
+	// Expected: task=$1, work_type=$2, model=$3 (used twice in OR), profile=$4, limit=$5.
+	want := []string{
+		"task_type = $1",
+		"work_type = $2",
+		"outbound_model = ANY($3)",
+		"client_model = ANY($3)",
+		"auto_profile = $4",
+		"LIMIT $5",
+	}
+	for _, frag := range want {
+		if !strings.Contains(q, frag) {
+			t.Errorf("expected %q in query, got:\n%s", frag, q)
+		}
+	}
+	if len(args) != 5 {
+		t.Errorf("expected 5 bound args, got %d: %v", len(args), args)
+	}
+}
+
+// TestBuildDecisionsQuery_RejectsBadLimit documents input validation.
+func TestBuildDecisionsQuery_RejectsBadLimit(t *testing.T) {
+	cases := []int{0, -1, 501, 10000}
+	for _, lim := range cases {
+		if _, _, err := buildDecisionsQuery(decisionsFilters{Limit: lim}); err == nil {
+			t.Errorf("expected error for limit=%d", lim)
+		}
 	}
 }

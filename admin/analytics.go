@@ -799,19 +799,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	if fr.requests == 0 {
 		dataSource = "approximate"
 		var autoReq, routed, ok int
-		if err := h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)
-			  AND (
-			    is_auto_request = TRUE
-			    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
-			  )
-		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok); err != nil {
+		q := funnelRequestLogsFallbackQuery()
+		if err := h.db.QueryRow(ctx, q, intervalStr, modelNames).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
@@ -829,19 +818,8 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		// RDL rows exist but traces empty — supplement from request_logs.
 		dataSource = "mixed"
 		var autoReq, routed, ok int
-		_ = h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)
-			  AND (
-			    is_auto_request = TRUE
-			    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
-			  )
-		`, intervalStr, modelNames).Scan(&autoReq, &routed, &ok)
+		q := funnelRequestLogsFallbackQuery()
+		_ = h.db.QueryRow(ctx, q, intervalStr, modelNames).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq
 		}
@@ -912,4 +890,32 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	}
 	globalFunnelCache.set(cacheKey, out)
 	writeJSONOk(w, out)
+}
+
+// funnelRequestLogsFallbackQuery returns the request_logs aggregate used
+// by handleFunnel when (a) no RDL rows exist (approximate branch) or
+// (b) RDL rows exist but their decision_trace is empty (mixed branch).
+//
+// The query is the same for both branches — only the surrounding logic
+// in handleFunnel differs. Extracted so the SQL contract is testable
+// without standing up a database, and so the
+// (is_auto_request = TRUE OR explicit-model) OR clause is documented in
+// one place rather than duplicated in two nearby string literals.
+//
+// Bind: $1 = interval string (e.g. "604800 seconds"), $2 = []string of
+// expanded canonical / raw model names.
+func funnelRequestLogsFallbackQuery() string {
+	return `
+		SELECT
+			COUNT(*)::int,
+			COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+			COUNT(*) FILTER (WHERE success IS TRUE)::int
+		FROM request_logs
+		WHERE ts >= NOW() - $1::interval
+		  AND outbound_model = ANY($2)
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+	`
 }

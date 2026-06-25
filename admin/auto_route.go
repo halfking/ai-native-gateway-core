@@ -94,6 +94,71 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 		adminWrap(h.handleQualityCorrelations))
 }
 
+// decisionsQueryBase returns the fixed SELECT/WHERE prefix used by
+// handleDecisions — no caller-supplied filters. Extracted so the
+// schema and base WHERE clause are unit-testable in isolation.
+const decisionsQueryBase = `
+		SELECT ts, request_id, api_key_id, task_type, auto_profile,
+		       auto_confidence, client_model, outbound_model,
+		       credential_id, auto_decision, success, latency_ms, work_type
+		FROM request_logs
+		WHERE (is_auto_request = TRUE OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> ''))
+		  AND ts >= NOW() - INTERVAL '7 days'
+	`
+
+// decisionsFilters bundles caller-supplied filters for buildDecisionsQuery.
+// All fields are optional; the zero value produces a 50-row recent dump.
+type decisionsFilters struct {
+	Task     string   // task_type value, or SpecifiedModelTaskKey for non-auto
+	WorkType string   // work_type column value
+	Model    []string // expanded canonical / raw model names
+	Profile  string   // auto_profile value (auto-only — see SQL OR clause)
+	Limit    int      // row cap (1..500)
+}
+
+// buildDecisionsQuery assembles the SELECT used by handleDecisions.
+// Extracted so the WHERE-clause shape can be unit-tested without a DB.
+func buildDecisionsQuery(f decisionsFilters) (string, []interface{}, error) {
+	if f.Limit <= 0 || f.Limit > 500 {
+		return "", nil, fmt.Errorf("limit must be 1..500")
+	}
+	query := decisionsQueryBase
+	args := []interface{}{}
+	if f.Task != "" {
+		if f.Task == SpecifiedModelTaskKey {
+			// Synthetic __specified__ key represents non-auto
+			// requests; their task_type column is NULL in the DB.
+			query += " AND is_auto_request = FALSE"
+		} else {
+			args = append(args, f.Task)
+			query += fmt.Sprintf(" AND task_type = $%d", len(args))
+		}
+	}
+	if f.WorkType != "" {
+		args = append(args, f.WorkType)
+		query += fmt.Sprintf(" AND work_type = $%d", len(args))
+	}
+	if len(f.Model) > 0 {
+		// Splits the predicate so PostgreSQL can use the partial
+		// index on (outbound_model) for the auto path and
+		// idx_request_logs_explicit_model for the specified-model path.
+		args = append(args, f.Model)
+		query += fmt.Sprintf(
+			" AND (outbound_model = ANY($%d) OR (is_auto_request = FALSE AND client_model = ANY($%d)))",
+			len(args), len(args),
+		)
+	}
+	if f.Profile != "" {
+		// auto_profile is only populated for auto requests;
+		// specified-model requests have NULL. Allow either match.
+		args = append(args, f.Profile)
+		query += fmt.Sprintf(" AND (auto_profile = $%d OR is_auto_request = FALSE)", len(args))
+	}
+	args = append(args, f.Limit)
+	query += fmt.Sprintf(" ORDER BY ts DESC LIMIT $%d", len(args))
+	return query, args, nil
+}
+
 // handleDecisions returns the most recent N auto-route decisions from
 // request_logs. Includes both auto requests and explicit-model requests
 // (where the client specified a model directly).
@@ -121,45 +186,25 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	query := `
-		SELECT ts, request_id, api_key_id, task_type, auto_profile,
-		       auto_confidence, client_model, outbound_model,
-		       credential_id, auto_decision, success, latency_ms, work_type
-		FROM request_logs
-		WHERE (is_auto_request = TRUE OR (is_auto_request = FALSE AND client_model IS NOT NULL AND client_model <> ''))
-		  AND ts >= NOW() - INTERVAL '7 days'
-	`
-	args := []interface{}{}
-	if task != "" {
-		if task == SpecifiedModelTaskKey {
-			// The synthetic __specified__ task key represents non-auto
-			// requests; their task_type column is NULL in the DB.
-			query += " AND is_auto_request = FALSE"
-		} else {
-			args = append(args, task)
-			query += fmt.Sprintf(" AND task_type = $%d", len(args))
-		}
-	}
-	if workType != "" {
-		args = append(args, workType)
-		query += fmt.Sprintf(" AND work_type = $%d", len(args))
+	filters := decisionsFilters{
+		Task:     task,
+		WorkType: workType,
+		Profile:  profile,
+		Limit:    limit,
 	}
 	if model != "" {
 		names, _ := expandModelFilter(ctx, h.db, model)
 		if len(names) == 0 {
 			names = []string{model}
 		}
-		args = append(args, names)
-		// Use COALESCE to match both auto (outbound_model) and
-		// specified-model (client_model) requests.
-		query += fmt.Sprintf(" AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($%d)", len(args))
+		filters.Model = names
 	}
-	if profile != "" {
-		args = append(args, profile)
-		query += fmt.Sprintf(" AND auto_profile = $%d", len(args))
+
+	query, args, err := buildDecisionsQuery(filters)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
-	args = append(args, limit)
-	query += fmt.Sprintf(" ORDER BY ts DESC LIMIT $%d", len(args))
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -171,7 +216,8 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 	out := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var ts time.Time
-		var reqID, prof, clientModel, outbound string
+		var reqID string
+		var prof, clientModel, outbound sql.NullString
 		var workTypeVal, taskTypeVal sql.NullString
 		var apiKeyID, credentialID *int
 		var confidence *float64
@@ -185,6 +231,8 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		}
 		// For specified model requests, task_type is NULL; use the
 		// synthetic __specified__ key so the frontend can identify them.
+		// auto_profile is also NULL for non-auto requests; surface it as
+		// the empty string and let the frontend render '—' instead.
 		taskType := taskTypeVal.String
 		if taskType == "" {
 			taskType = SpecifiedModelTaskKey
@@ -193,9 +241,9 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 			"ts":             ts.Format(time.RFC3339),
 			"request_id":     reqID,
 			"task_type":      taskType,
-			"auto_profile":   prof,
-			"client_model":   clientModel,
-			"outbound_model": outbound,
+			"auto_profile":   prof.String,
+			"client_model":   clientModel.String,
+			"outbound_model": outbound.String,
 			"success":        success,
 		}
 		if workTypeVal.Valid && workTypeVal.String != "" {

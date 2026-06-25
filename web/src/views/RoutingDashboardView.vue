@@ -1191,7 +1191,7 @@ onUnmounted(() => stopPoll())
                   <td>{{ d.auto_profile || d.auto_decision?.profile || (d.task_type === SPECIFIED_MODEL_TASK_KEY ? '—' : '-') }}</td>
                   <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || d.client_model || '-' }}</td>
                   <td>{{ d.task_type === SPECIFIED_MODEL_TASK_KEY ? '—' : fmt((d.auto_confidence ?? d.auto_decision?.confidence ?? 0) * 100, 0) + '%' }}</td>
-                  <td><span :class="d.success ? 'badge badge-green' : 'badge badge-red'">{{ d.success ? '✓' : '✗' }}</span></td>
+                  <td><span :class="d.success ? 'badge badge-green no-spec-tint' : 'badge badge-red no-spec-tint'">{{ d.success ? '✓' : '✗' }}</span></td>
                   <td class="expand-icon">{{ expandedDecision === d.request_id ? '▼' : '▶' }}</td>
                 </tr>
                 <tr v-if="expandedDecision === d.request_id" class="detail-row">
@@ -1447,7 +1447,9 @@ onUnmounted(() => stopPoll())
 .model-row { cursor: pointer; }
 .model-row:hover { background: rgba(255,255,255,.03); }
 .model-row.expanded { background: color-mix(in srgb, var(--accent) 5%, transparent); }
-.model-row-specified td { color: #6b7280; font-style: italic; }
+/* Use td:not(.no-spec-tint) so the success/fail badge (which uses
+   its own badge-green / badge-red classes) keeps its semantic colour. */
+.model-row-specified td:not(.no-spec-tint) { color: #6b7280; font-style: italic; }
 .badge-specified {
   background: rgba(107, 114, 128, 0.15);
   color: #6b7280;
