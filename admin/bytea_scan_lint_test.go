@@ -4,48 +4,59 @@ package admin
 // "scan secret_ciphertext (bytea) into *string" anti-pattern.
 //
 // Background (2026-06-26):
-//   admin/routing.go:3144 (mirrorExistingKeys) declared
+//   admin/routing.go:3194 (mirrorExistingKeys) declared
 //       var label, ciphertext string
 //   and scanned `c.secret_ciphertext` (a PostgreSQL bytea column) into
 //   `&ciphertext`. pgx refuses with:
 //       cannot scan bytea (OID 17) in binary format into *string
 //   causing the free-pool mirror to silently skip every row that has
-//   a real key, and surfacing as a generic "query credential: ..."
-//   failure on the async health_check task.
+//   a real key.
 //
-// This test walks every *.go file in admin/, bg/, discovery/, provider/,
-// cmd/probe-cred/ using go/ast, finds every SELECT statement that
-// includes `secret_ciphertext`, finds the destination list of the
-// matching QueryRow.Scan() / rows.Scan() call (in the same enclosing
-// function), and asserts every destination that corresponds to
-// `secret_ciphertext` has type `[]byte`.
+// Strategy:
+//   For every .go file in admin/, bg/, discovery/, provider/, and
+//   cmd/probe-cred/, this test walks every function body and finds
+//   every `db.Query/QueryRow(...).Scan(&x, &y, ...)` chain where the
+//   SQL contains the column `secret_ciphertext`. It then verifies that
+//   the destination corresponding to that column has been declared as
+//   type []byte (NOT string) in either the function-local declarations
+//   or the package-level declarations.
 //
 // The test does NOT need a live database, does NOT need a network
 // connection, and runs in <1s. It is intentionally conservative: it
 // only flags *clear* mismatches where the scan target is unambiguously
-// `*string` (var/field declarations with `string` types). It does not
-// attempt to chase generic interfaces or type aliases.
+// `*string` (var declarations with `string` type). It does not chase
+// type aliases or generic interfaces.
 
 import (
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// TestSecretCiphertextScanIntoBytea statically verifies that no Go
-// source file scans credentials.secret_ciphertext into a string.
+// byteaColumns is the set of PostgreSQL bytea columns in this schema.
+// We track them here because the "scan-into-string" failure mode applies
+// uniformly to any bytea column, and a future contributor who adds a
+// new bytea column should add it here too.
+var byteaColumns = []string{
+	"secret_ciphertext", // credentials.secret_ciphertext (AES-GCM encrypted)
+}
+
+// TestScanByteaColumnsIntoBytea walks all credential-handling Go
+// files and ensures that no SELECT statement projecting any bytea
+// column scans into a Go `*string`.
 //
 // Without this guard, any future contributor who writes
 //
 //	var ciphertext string
 //	db.QueryRow(ctx, `SELECT secret_ciphertext FROM credentials ...`).Scan(&ciphertext)
 //
-// will reintroduce the same production bug. This test makes that
-// mistake fail CI.
-func TestSecretCiphertextScanIntoBytea(t *testing.T) {
+// will reintroduce the production bug fixed in commit c278ff84. This
+// test makes that mistake fail CI before it ships.
+func TestScanByteaColumnsIntoBytea(t *testing.T) {
 	root := repoRoot(t)
 	dirs := []string{
 		"admin",
@@ -61,48 +72,54 @@ func TestSecretCiphertextScanIntoBytea(t *testing.T) {
 	for _, dir := range dirs {
 		pkgs, err := parser.ParseDir(fset, root+"/"+dir, nil, parser.AllErrors|parser.ParseComments)
 		if err != nil {
-			t.Logf("DEBUG ParseDir err for %s: %v", dir, err)
-			// Some directories may not exist (e.g. cmd/probe-cred); skip.
+			// Directory may not exist (e.g. cmd/probe-cred); skip.
 			continue
 		}
-		fileCount := 0
-		for _, pkg := range pkgs {
-			for range pkg.Files {
-				fileCount++
-			}
-		}
-		t.Logf("DEBUG dir=%s files=%d", dir, fileCount)
 		for _, pkg := range pkgs {
 			for _, file := range pkg.Files {
-				violations = append(violations, scanFile(fset, file, t)...)
+				violations = append(violations, scanFile(fset, file)...)
 			}
 		}
 	}
 
 	if len(violations) > 0 {
 		t.Fatalf("found %d bytea-into-string violation(s):\n  %s\n\n"+
-			"credentials.secret_ciphertext is a bytea column. "+
-			"Scan destinations for this column must be []byte, not string. "+
-			"See admin/routing.go:3197 and commit c278ff84 for context.",
+			"PostgreSQL bytea columns MUST be scanned into []byte, not string. "+
+			"pgx returns: \"cannot scan bytea (OID 17) in binary format into *string\". "+
+			"See commit c278ff84 (mirrorExistingKeys) for context.",
 			len(violations), strings.Join(violations, "\n  "))
 	}
 }
 
 // scanFile walks one Go file and returns a list of "file:line: ..." strings
-// describing every location where a SELECT statement that includes
-// `secret_ciphertext` is paired with a Scan() call whose corresponding
-// destination is a *string.
-func scanFile(fset *token.FileSet, file *ast.File, t *testing.T) []string {
+// describing every bytea-into-string violation.
+func scanFile(fset *token.FileSet, file *ast.File) []string {
 	var violations []string
 
-	// Collect every var/field declaration in the file together with the
-	// (name → type-string) mapping. We only need to recognize names that
-	// resolve to `string`; everything else (including untyped, []byte,
-	// *string, named types) is considered safe-by-default.
-	stringDecls := map[string]string{} // var name → source-text-of-type
+	// Collect every package-level var declaration that has type `string`,
+	// mapping var name → "string". (Includes `var x, y string`.)
+	stringDecls := collectStringDecls(file.Decls)
+
+	// Walk every function in the file.
 	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		violations = append(violations, scanFunc(fset, fn, stringDecls)...)
+	}
+
+	return violations
+}
+
+// collectStringDecls walks a list of top-level decls and returns a
+// map[name]"string" for every var declared with type "string" (or
+// anything ending in `.string`).
+func collectStringDecls(decls []ast.Decl) map[string]string {
+	out := map[string]string{}
+	for _, decl := range decls {
 		gd, ok := decl.(*ast.GenDecl)
-		if !ok {
+		if !ok || gd.Tok != token.VAR {
 			continue
 		}
 		for _, spec := range gd.Specs {
@@ -110,50 +127,34 @@ func scanFile(fset *token.FileSet, file *ast.File, t *testing.T) []string {
 			if !ok {
 				continue
 			}
-			for i, name := range vs.Names {
-				if name == nil {
-					continue
-				}
-				if i < len(vs.Values) {
-					// `var ciphertext string = "x"` — skip, rare and still detectable from type
-				}
-				typeText := exprText(vs.Type)
-				if typeText != "" {
-					stringDecls[name.Name] = typeText
+			typeText := exprText(vs.Type)
+			if typeText == "" || typeText == "string" || strings.HasSuffix(typeText, ".string") {
+				for _, name := range vs.Names {
+					if name != nil {
+						out[name.Name] = "string"
+					}
 				}
 			}
 		}
 	}
-
-	// Walk every function in the file and look for Query/QueryRow().Scan().
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
-		}
-		violations = append(violations, scanFunc(fset, fn, stringDecls, t)...)
-	}
-
-	return violations
+	return out
 }
 
-// scanFunc finds every QueryRow/Query().Scan(&...) call inside fn and
-// verifies its destinations match the SELECT list.
-func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, stringDecls map[string]string, t *testing.T) []string {
+// scanFunc finds every Scan(&...) call inside fn whose receiving call
+// is `db.Query(...)` or `db.QueryRow(...)` whose SQL projects at least
+// one bytea column, and verifies each destination type.
+func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, pkgStringDecls map[string]string) []string {
 	var violations []string
 
-	// Pre-collect function-local var declarations. We re-walk the body
-	// for `var x string` patterns because they shadow package-level names.
-	// Note: a single `var a, b string` ValueSpec has Names=[a b] and
-	// a single Type="string" — every name inherits that type, so we
-	// must register all Names, not just Names[0].
+	// Function-local string declarations shadow package-level ones.
 	localStringDecls := map[string]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		vs, ok := n.(*ast.ValueSpec)
 		if !ok {
 			return true
 		}
-		if exprText(vs.Type) == "string" {
+		typeText := exprText(vs.Type)
+		if typeText == "string" || strings.HasSuffix(typeText, ".string") {
 			for _, name := range vs.Names {
 				if name != nil {
 					localStringDecls[name.Name] = true
@@ -162,9 +163,6 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, stringDecls map[string]stri
 		}
 		return true
 	})
-	if t != nil {
-		t.Logf("DEBUG scanFunc: fn=%s localStringDecls=%v", fn.Name.Name, localStringDecls)
-	}
 
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
@@ -175,60 +173,40 @@ func scanFunc(fset *token.FileSet, fn *ast.FuncDecl, stringDecls map[string]stri
 		if !ok || sel.Sel == nil || sel.Sel.Name != "Scan" {
 			return true
 		}
-		if t != nil {
-			t.Logf("DEBUG found Scan call in fn=%s", fn.Name.Name)
-		}
-		// call.Fun is `<recv>.Scan`; we expect recv to be a QueryRow / Query
-		// call. Walk back through statement context to find the SQL string.
-		sql := findEnclosingSQLStringDebug(call, t)
-		if t != nil {
-			t.Logf("DEBUG: Scan call found sql_len=%d contains_cipher=%v",
-				len(sql), containsSecretCiphertext(sql))
-		}
+
+		sql := findSQLForScanCall(call)
 		if sql == "" {
 			return true
 		}
-		if t != nil {
-			t.Logf("DEBUG Scan SQL len=%d contains_cipher=%v", len(sql), containsSecretCiphertext(sql))
+
+		// For each bytea column, find its position in the SELECT list
+		// and verify the matching Scan destination is NOT a string.
+		for _, col := range byteaColumns {
+			colIdx, ok := findColumnIndex(sql, col)
+			if !ok {
+				continue
+			}
+			if colIdx < 0 || colIdx >= len(call.Args) {
+				continue
+			}
+			dest := call.Args[colIdx]
+			if !isStringDestination(dest, localStringDecls, pkgStringDecls) {
+				continue
+			}
+			pos := fset.Position(call.Pos())
+			violations = append(violations, pos.String()+
+				": "+col+" scanned into *string — must use []byte")
 		}
-		if !containsSecretCiphertext(sql) {
-			return true
-		}
-		// The SELECT must reference secret_ciphertext; the column index in
-		// the SELECT list determines which Scan arg is the bytea target.
-		colIdx, found := findCipherColumnIndex(sql)
-		if !found {
-			// SELECT uses some join alias we don't recognize; skip safely.
-			return true
-		}
-		if colIdx < 0 || colIdx >= len(call.Args) {
-			return true
-		}
-		dest := call.Args[colIdx]
-		if !isStringDestination(dest, localStringDecls, stringDecls) {
-			t.Logf("DEBUG: colIdx=%d dest=%s localDecls=%v pkgDecls=%v sql=%.80q",
-				colIdx, exprText(dest), localStringDecls, stringDecls, sql)
-			return true
-		}
-		pos := fset.Position(call.Pos())
-		violations = append(violations, pos.String()+
-			": secret_ciphertext scanned into *string — must use []byte")
 		return true
 	})
 
 	return violations
 }
 
-// findEnclosingSQLString looks for the first ancestor of `call` that is
-// `db.QueryRow(ctx, "<sql>", ...)` or `db.Query(ctx, "<sql>", ...)` and
-// returns the SQL literal (with newlines/indent collapsed).
-//
-// We try in this order:
-//   1. The immediate receiver of call.Fun is itself a CallExpr to
-//      Query/QueryRow → the first string arg is the SQL.
-//   2. Otherwise, walk up assignments until we find a CallExpr to
-//      Query/QueryRow whose first string arg matches.
-func findEnclosingSQLStringDebug(call *ast.CallExpr, t *testing.T) string {
+// findSQLForScanCall returns the SQL string of the Query/QueryRow call
+// that `.Scan(&...)` is invoked on. Returns "" if the structure is too
+// complex to resolve statically (in which case we conservatively skip).
+func findSQLForScanCall(call *ast.CallExpr) string {
 	if call.Fun == nil {
 		return ""
 	}
@@ -236,12 +214,9 @@ func findEnclosingSQLStringDebug(call *ast.CallExpr, t *testing.T) string {
 	if !ok {
 		return ""
 	}
-	if t != nil {
-		t.Logf("DEBUG findSQL: sel.X=%T sel.Sel.Name=%s", sel.X, sel.Sel.Name)
-	}
 	recv, ok := sel.X.(*ast.CallExpr)
 	if !ok {
-		return findSQLFromAssignmentChain(call)
+		return ""
 	}
 	if recv.Fun == nil {
 		return ""
@@ -250,15 +225,11 @@ func findEnclosingSQLStringDebug(call *ast.CallExpr, t *testing.T) string {
 	if !ok || rsel.Sel == nil {
 		return ""
 	}
-	if t != nil {
-		t.Logf("DEBUG findSQL: rsel.Sel.Name=%s recv.Args=%d", rsel.Sel.Name, len(recv.Args))
-	}
 	if rsel.Sel.Name != "Query" && rsel.Sel.Name != "QueryRow" {
 		return ""
 	}
-	// Find the first STRING-typed argument. Query/QueryRow usually take
-	// (ctx, sql, ...args) — the SQL string is the first string literal,
-	// not necessarily Args[0].
+	// The SQL is the first STRING-typed argument. Query/QueryRow take
+	// (ctx, sql, ...args) — so SQL is usually Args[1], not Args[0].
 	for _, arg := range recv.Args {
 		bl, ok := arg.(*ast.BasicLit)
 		if !ok {
@@ -268,55 +239,15 @@ func findEnclosingSQLStringDebug(call *ast.CallExpr, t *testing.T) string {
 			return unquoteGoString(bl.Value)
 		}
 	}
-	if t != nil {
-		t.Logf("DEBUG findSQL: no STRING arg found in %d args", len(recv.Args))
-	}
 	return ""
 }
 
-// findSQLFromAssignmentChain handles patterns like
+// findColumnIndex returns the 0-based column index of `col` in the
+// top-level SELECT list of `sql`, and whether it was found.
 //
-//	rows, err := h.db.Query(ctx, `SELECT ...`)
-//	...
-//	rows.Scan(&x, &y)
-//
-// We don't need to chase the rows variable's call — we already have
-// the receiver of `Scan`. If the receiver is a CallExpr, findEnclosingSQLString
-// will handle it. Otherwise we have nothing to go on, return "" so the
-// caller skips.
-func findSQLFromAssignmentChain(call *ast.CallExpr) string {
-	if call.Fun == nil {
-		return ""
-	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return ""
-	}
-	// sel.X may be an Ident (`rows`) referring to a rows variable, in
-	// which case we cannot resolve the SQL statically. Return "".
-	if _, ok := sel.X.(*ast.Ident); ok {
-		return ""
-	}
-	// Otherwise, sel.X is itself a CallExpr — re-enter findEnclosingSQLString.
-	if _, ok := sel.X.(*ast.CallExpr); ok {
-		return findEnclosingSQLStringDebug(call, nil)
-	}
-	return ""
-}
-
-func containsSecretCiphertext(sql string) bool {
-	// Be flexible: `c.secret_ciphertext`, `secret_ciphertext`, with
-	// different casing from SQL folding.
-	low := strings.ToLower(sql)
-	return strings.Contains(low, "secret_ciphertext")
-}
-
-// findCipherColumnIndex finds the (0-based) column index of
-// `secret_ciphertext` inside the top-level SELECT list of sql.
-// Returns false if the SELECT list can't be parsed (e.g. uses
-// non-trivial expressions across columns).
-func findCipherColumnIndex(sql string) (int, bool) {
-	// Strip line comments for safety.
+// We recognize the column by its suffix (e.g. `c.secret_ciphertext`,
+// `secret_ciphertext`) or exact match.
+func findColumnIndex(sql string, col string) (int, bool) {
 	cleaned := stripLineComments(sql)
 	low := strings.ToLower(cleaned)
 
@@ -324,34 +255,71 @@ func findCipherColumnIndex(sql string) (int, bool) {
 	if selectIdx < 0 {
 		return 0, false
 	}
-	fromIdx := strings.Index(low[selectIdx:], " from ")
+	// Find `from` keyword at the top level (not inside parens).
+	// The keyword may be preceded by any whitespace, including \n and tabs.
+	fromIdx := findTopLevelKeyword(low[selectIdx:], "from")
 	if fromIdx < 0 {
 		return 0, false
 	}
 	list := cleaned[selectIdx+len("select") : selectIdx+fromIdx]
 
-	// Split top-level columns by commas (not commas inside parens).
 	cols := splitTopLevelCommas(list)
-	for i, col := range cols {
-		// A column reference like `c.secret_ciphertext` or `secret_ciphertext`.
-		// We treat the whole expression as referring to secret_ciphertext if
-		// it ends with `.secret_ciphertext` or equals `secret_ciphertext`.
-		stripped := strings.TrimSpace(col)
+	colLower := strings.ToLower(col)
+	for i, c := range cols {
+		stripped := strings.TrimSpace(c)
 		strippedLower := strings.ToLower(stripped)
-		if strippedLower == "secret_ciphertext" {
+		if strippedLower == colLower {
 			return i, true
 		}
-		if strings.HasSuffix(strippedLower, ".secret_ciphertext") {
+		if strings.HasSuffix(strippedLower, "."+colLower) {
 			return i, true
 		}
 	}
 	return 0, false
 }
 
-// splitTopLevelCommas splits s on commas that are not nested inside
-// parentheses. It is good enough for our SELECT-list parsing; it does
-// not handle string literals containing commas, but SELECT lists in
-// this codebase don't contain those.
+// findTopLevelKeyword returns the byte offset of `kw` in `s` such that
+// `kw` is at the top level (not inside parens) and bounded by
+// whitespace. Returns -1 if not found.
+func findTopLevelKeyword(s string, kw string) int {
+	depth := 0
+	for i := 0; i+len(kw) <= len(s); i++ {
+		c := s[i]
+		if c == '(' {
+			depth++
+			continue
+		}
+		if c == ')' {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 {
+			continue
+		}
+		// Must be preceded by whitespace (or start of string).
+		if i > 0 && !isWhitespace(s[i-1]) {
+			continue
+		}
+		if s[i:i+len(kw)] != kw {
+			continue
+		}
+		// Must be followed by whitespace (or end of string).
+		end := i + len(kw)
+		if end < len(s) && !isWhitespace(s[end]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isWhitespace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// splitTopLevelCommas splits s on commas not nested inside parens.
 func splitTopLevelCommas(s string) []string {
 	var out []string
 	depth := 0
@@ -375,9 +343,8 @@ func splitTopLevelCommas(s string) []string {
 	return out
 }
 
-// isStringDestination returns true if `dest` is a `&varName` where
-// `varName` was declared as type `string` in either the local or
-// package-level decls.
+// isStringDestination returns true if `dest` is `&varName` where
+// varName was declared as type string.
 func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStringDecls map[string]string) bool {
 	u, ok := dest.(*ast.UnaryExpr)
 	if !ok || u.Op != token.AND {
@@ -396,6 +363,14 @@ func isStringDestination(dest ast.Expr, localStringDecls map[string]bool, pkgStr
 	return false
 }
 
+// exprText returns a short text representation of a type expression
+// good enough to compare with "string". Examples:
+//
+//	Ident "string"         → "string"
+//	Ident "CipherText"     → "CipherText"
+//	ArrayType Elt=Ident "byte" → "byte"
+//	StarExpr X=Ident "Foo" → "Foo"
+//	SelectorExpr X="pkg" Sel="Bar" → "pkg.Bar"
 func exprText(e ast.Expr) string {
 	if e == nil {
 		return ""
@@ -409,28 +384,25 @@ func exprText(e ast.Expr) string {
 		return exprText(v.X)
 	case *ast.SelectorExpr:
 		return exprText(v.X) + "." + v.Sel.Name
-	case *ast.MapType:
-		return "map"
-	default:
-		return ""
 	}
+	return ""
 }
 
+// unquoteGoString handles both raw-quoted (``...``) and
+// double-quoted ("...") Go string literals.
 func unquoteGoString(raw string) string {
 	if len(raw) < 2 {
 		return raw
 	}
-	// raw-quoted: `...`
 	if raw[0] == '`' && raw[len(raw)-1] == '`' {
 		return raw[1 : len(raw)-1]
 	}
-	// double-quoted (with possible escaped chars; we keep it simple)
 	if raw[0] == '"' && raw[len(raw)-1] == '"' {
 		inner := raw[1 : len(raw)-1]
-		// Light handling of common escapes.
 		inner = strings.ReplaceAll(inner, `\"`, `"`)
 		inner = strings.ReplaceAll(inner, `\\`, `\`)
 		inner = strings.ReplaceAll(inner, `\n`, "\n")
+		inner = strings.ReplaceAll(inner, `\t`, "\t")
 		return inner
 	}
 	return raw
@@ -449,21 +421,18 @@ func stripLineComments(s string) string {
 	return b.String()
 }
 
-// repoRoot returns the module root for this repo.
-//
-// We are running from the admin/ package directory (cwd = <root>/admin).
-// The repo root contains go.mod. We resolve it by walking up one level.
+// repoRoot returns the module root for this repo. We are running from
+// the admin/ package directory (cwd = <root>/admin). The repo root
+// contains go.mod.
 func repoRoot(t *testing.T) string {
 	t.Helper()
-	// go.mod is not a Go source file, so we can't parse it with
-	// go/parser. Just stat() it.
 	candidates := []string{"..", "../..", "."}
 	for _, c := range candidates {
 		if _, err := os.Stat(c + "/go.mod"); err == nil {
 			return c
 		}
 	}
-	t.Fatalf("could not find repo root (no go.mod found above cwd=%q)", mustGetwd())
+	t.Fatalf("could not find repo root (no go.mod above cwd=%q)", strconv.Quote(mustGetwd()))
 	return ""
 }
 
