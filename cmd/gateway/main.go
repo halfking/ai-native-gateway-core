@@ -840,6 +840,14 @@ func main() {
 	var taxonomySync *bg.TaxonomySync
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
+
+	// Phase 3.7 (A3-1): apihub.Service is used both inside the
+	// dbConn-enabled init block (for the AssetWatcher) and outside
+	// (for the Agent Registry API routes registered in the router
+	// section below). Declaring it at the outer scope avoids the
+	// "undefined: apihubSvc" scoping bug at line ~1346.
+	var apihubSvc *apihub.Service
+
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
@@ -1168,7 +1176,7 @@ func main() {
 		// Best-effort: if DB is misconfigured the gateway still serves
 		// traffic; we only log.
 		apihubStore := apihub.NewPGStore(dbConn.Pool())
-		apihubSvc := apihub.New(apihubStore, apihub.WithLogger(slog.Default()))
+		apihubSvc = apihub.New(apihubStore, apihub.WithLogger(slog.Default()))
 		apihubSvc.StartRefresh(context.Background())
 		apihubWatcher := bg.NewAssetWatcher(apihubSvc, bg.NewPGSyncer(dbConn.Pool()))
 		apihubWatcher.WithInterval(60 * time.Second)
@@ -1341,6 +1349,20 @@ func main() {
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
 		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))
 		slog.Info("Phase 3.6 credential success rate management enabled (/api/admin/credential-success-rates)")
+
+		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
+		agentsAPI := admin.NewAgentsHandler(apihubSvc)
+		mux.HandleFunc("/api/agents", wrapAdmin(agentsAPI.List))
+		mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/link") && r.Method == "POST" {
+				wrapAdmin(agentsAPI.Link)(w, r)
+			} else if r.Method == "GET" {
+				wrapAdmin(agentsAPI.Get)(w, r)
+			} else {
+				http.NotFound(w, r)
+			}
+		})
+		slog.Info("Phase 3.7 agent registry API enabled (/api/agents, /api/agents/:id, /api/agents/:id/link)")
 	}
 
 	slog.Info("CHECKPOINT: before middleware stack build")
