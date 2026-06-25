@@ -1,27 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import FpSlotVisualizer from './FpSlotVisualizer.vue'
-
-interface SlotInfoV3 {
-  index: number
-  holder: string
-  ttl_seconds: number
-  expired: boolean
-  inflight: number
-  pin_holder: string
-  pin_ttl_seconds: number
-  memory_mode: boolean
-}
-
-interface SlotInfoResponse {
-  credential_id: number
-  enabled: boolean
-  fp_slot_limit: number | null
-  total_slots: number
-  active_slots: number
-  total_inflight: number
-  slots: SlotInfoV3[]
-}
+import { getCredentialSlots, type SlotInfoResponse } from '../api/providers'
 
 interface Props {
   credentialId: number
@@ -51,21 +31,10 @@ const slotDetails = computed(() => {
 async function fetchSlotInfo() {
   loading.value = true
   error.value = null
-  
   try {
-    const response = await fetch(`/api/credentials/${props.credentialId}/slots`, {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('token')}`,
-      },
-    })
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-    
-    data.value = await response.json()
+    data.value = await getCredentialSlots(props.credentialId)
   } catch (e: any) {
-    error.value = e.message || 'Failed to load slot info'
+    error.value = e?.message || 'Failed to load slot info'
   } finally {
     loading.value = false
   }

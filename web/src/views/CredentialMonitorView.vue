@@ -936,28 +936,27 @@ onUnmounted(() => {
                   <span class="cell-sub" style="margin-left:8px;font-weight:400">点击查看详情</span>
                 </div>
                 <div v-if="!(selectedCred.models || []).length" class="cell-muted" style="padding:12px">无模型</div>
-                <ul v-else class="model-list">
-                  <li v-for="m in selectedCred.models" :key="m.raw_model_name"
+                <div v-else class="model-list">
+                  <div v-for="m in selectedCred.models" :key="m.raw_model_name"
+                      class="model-list-item"
                       :class="{
                         active: m.raw_model_name === selectedModel,
                         declared: m.data_source === 'declared',
                       }"
                       :title="m.model_disabled_reason || m.raw_model_name"
                       @click="selectModel(m.raw_model_name)">
-                    <div class="model-list-row1">
+                    <div class="mli-row1">
                       <StatusBadge :state="m.effective_state" :reason="m.model_disabled_reason" />
-                      <code class="model-list-name">{{ m.raw_model_name }}</code>
+                      <code class="mli-name">{{ m.raw_model_name }}</code>
                     </div>
-                    <div class="model-list-row2">
-                      <span class="model-list-rate">
-                        <span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span>
-                        <span class="cell-sub">{{ m.recent_samples ?? 0 }}样本</span>
-                      </span>
-                      <span v-if="m.data_source === 'declared'" class="badge badge-gray model-list-tag">未调用</span>
-                      <span v-else-if="!m.offer_available || !m.binding_available" class="badge badge-yellow model-list-tag">unavail</span>
+                    <div class="mli-row2">
+                      <span class="rate-cell" :class="rateClass(m.recent_success_rate)">{{ rateText(m.recent_success_rate) }}</span>
+                      <span class="cell-sub">{{ m.recent_samples ?? 0 }}样本</span>
+                      <span v-if="m.data_source === 'declared'" class="badge badge-gray mli-tag">未调用</span>
+                      <span v-else-if="!m.offer_available || !m.binding_available" class="badge badge-yellow mli-tag">unavail</span>
                     </div>
-                  </li>
-                </ul>
+                  </div>
+                </div>
               </div>
 
               <!-- 右侧：模型详细统计（有选中模型时显示完整详情） -->
@@ -1067,7 +1066,7 @@ onUnmounted(() => {
                 <!-- 并发槽位（保留） -->
                 <div class="drawer-section">
                   <div class="drawer-section-title" style="display:flex;justify-content:space-between;align-items:center">
-                    <span>V3.1 双层槽位信息</span>
+                    <span>双层槽位信息</span>
                     <button class="btn btn-xs btn-ghost" @click="refreshSlotInfo" :disabled="fpSlotStatsLoading">
                       {{ fpSlotStatsLoading ? '加载中…' : '↻ 刷新' }}
                     </button>
@@ -1735,60 +1734,75 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 .model-list {
-  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
   margin: 0;
   padding: 0;
 }
-.model-list li {
+.model-list-item {
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
-  margin-bottom: 4px;
   border: 1px solid transparent;
   transition: background 0.12s, border-color 0.12s;
+  min-width: 0;
 }
-.model-list li:hover {
+.model-list-item:hover {
   background: rgba(255, 255, 255, 0.04);
 }
-.model-list li.active {
+.model-list-item.active {
   background: rgba(99, 102, 241, 0.12);
   border-color: rgba(99, 102, 241, 0.4);
 }
-.model-list li.declared {
+.model-list-item.declared {
   opacity: 0.7;
 }
-.model-list li.declared:hover {
+.model-list-item.declared:hover {
   opacity: 1;
 }
-.model-list-row1 {
+.mli-row1 {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
   margin-bottom: 4px;
+  min-width: 0;
 }
-.model-list-row2 {
+.mli-row2 {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
   font-size: 11px;
+  color: var(--muted);
 }
-.model-list-name {
+.mli-row2 .rate-cell {
+  font-weight: 600;
+}
+.mli-name {
   font-family: 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
   font-weight: 600;
-  word-break: break-all;
   color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
 }
-.model-list-rate {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.model-list-tag {
+.mli-tag {
   font-size: 9px;
   padding: 1px 5px;
+}
+
+/* 细滚动条 — 与 SessionCompareView 风格一致 */
+.model-list-panel::-webkit-scrollbar { width: 6px; }
+.model-list-panel::-webkit-scrollbar-track { background: transparent; }
+.model-list-panel::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.model-list-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 /* 右侧：模型详情容器 */

@@ -535,6 +535,34 @@ export function getCredentialFpSlotStats(providerId: number, credId: number) {
   )
 }
 
+// V3.1 (2026-06-26): per-slot fingerprint + inflight details for the
+// credential-detail "双层槽位信息" panel. Backed by
+// admin/credential_slot_info.go handler /api/credentials/{id}/slots.
+export interface SlotInfoV3 {
+  index: number
+  holder: string
+  ttl_seconds: number
+  expired: boolean
+  inflight: number
+  pin_holder: string
+  pin_ttl_seconds: number
+  memory_mode: boolean
+}
+
+export interface SlotInfoResponse {
+  credential_id: number
+  enabled: boolean
+  fp_slot_limit: number | null
+  total_slots: number
+  active_slots: number
+  total_inflight: number
+  slots: SlotInfoV3[]
+}
+
+export function getCredentialSlots(credId: number) {
+  return req<SlotInfoResponse>('GET', `/api/credentials/${credId}/slots`)
+}
+
 export function forceRecoverCredential(credId: number) {
   return req<{ triggered: boolean; credential_id: number }>(
     'POST', `/api/providers/credentials/${credId}/force-recover`
