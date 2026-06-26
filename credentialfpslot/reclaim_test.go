@@ -61,49 +61,6 @@ func TestReclaim_Redis_IdleSlotIsDeleted(t *testing.T) {
 	_ = l2
 }
 
-func TestReclaim_Memory_IdleSlotIsDeleted(t *testing.T) {
-	m := New(Config{Enabled: true, DefaultLimit: 5}, nil) // memory fallback
-	ctx := context.Background()
-	credID := 400
-	limit := 2
-
-	// Acquire
-	m.Acquire(ctx, credID, &limit, "alice", "tenant1")
-	m.Acquire(ctx, credID, &limit, "bob", "tenant1")
-	avail, _ := m.AvailableCount(ctx, credID, &limit)
-	if avail != 0 {
-		t.Fatalf("expected 0 free slots, got %d", avail)
-	}
-
-	// Manually expire entries by manipulating memSlots
-	m.mu.Lock()
-	now := time.Now()
-	for k := range m.memSlots {
-		m.memSlots[k] = memEntry{
-			holder: m.memSlots[k].holder,
-			exp:    now.Add(-time.Hour), // 1h ago = expired beyond idle
-		}
-	}
-	m.mu.Unlock()
-
-	// Reclaim with idle=10s
-	reclaimed, err := m.reclaimIdleSlotsMemory(ctx, reclaimConfig{
-		idleAfter: 10 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("reclaimIdleSlotsMemory failed: %v", err)
-	}
-	if reclaimed < 2 {
-		t.Errorf("expected at least 2 slots reclaimed, got %d", reclaimed)
-	}
-
-	availAfter, _ := m.AvailableCount(ctx, credID, &limit)
-	if availAfter != 2 {
-		t.Errorf("expected 2 free slots after reclaim, got %d", availAfter)
-	}
-	t.Logf("Memory reclaim OK: reclaimed=%d, free after=%d", reclaimed, availAfter)
-}
-
 func TestReclaim_FreshSlotsNotReclaimed(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
@@ -35,13 +37,45 @@ func extractSessionIDFromHeaders(r *http.Request) string {
 	return ""
 }
 
-var sessionFieldPriority = []string{
+var defaultSessionFieldPriority = []string{
 	"gwsessionid",
 	"sessionid",
 	"session",
 	"conversationid",
 	"chatsessionid",
 	"threadid",
+}
+
+var (
+	sessionFieldPriorityOnce sync.Once
+	sessionFieldPriority     []string
+)
+
+func configuredSessionFieldPriority() []string {
+	sessionFieldPriorityOnce.Do(func() {
+		seen := make(map[string]struct{}, len(defaultSessionFieldPriority))
+		merged := make([]string, 0, len(defaultSessionFieldPriority)+4)
+		for _, key := range defaultSessionFieldPriority {
+			seen[key] = struct{}{}
+			merged = append(merged, key)
+		}
+		raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS"))
+		if raw != "" {
+			for _, item := range strings.Split(raw, ",") {
+				normalized := normalizeSessionFieldName(item)
+				if normalized == "" {
+					continue
+				}
+				if _, ok := seen[normalized]; ok {
+					continue
+				}
+				seen[normalized] = struct{}{}
+				merged = append(merged, normalized)
+			}
+		}
+		sessionFieldPriority = merged
+	})
+	return sessionFieldPriority
 }
 
 func extractSessionIDFromRequest(r *http.Request, body []byte) string {
@@ -65,7 +99,7 @@ func extractSessionIDFromBody(body []byte) string {
 func findSessionIDValue(node any) string {
 	switch typed := node.(type) {
 	case map[string]any:
-		for _, key := range sessionFieldPriority {
+		for _, key := range configuredSessionFieldPriority() {
 			for rawKey, rawValue := range typed {
 				if normalizeSessionFieldName(rawKey) != key {
 					continue
