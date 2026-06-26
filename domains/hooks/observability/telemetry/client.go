@@ -871,8 +871,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   -- a late success UPDATE does not blank a value set on INSERT.
 	   client_request_id = COALESCE($64, client_request_id)
 	  FROM latest
-	 WHERE id = latest.id
-	   AND ts = latest.ts
+	 WHERE request_logs.id = latest.id
+	   AND request_logs.ts = latest.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,
