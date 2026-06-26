@@ -255,6 +255,11 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 		return nil, DefaultPolicy(), fmt.Errorf("provider client not configured")
 	}
 	routeModel := modelname.NormalizeRouteKey(model)
+	
+	slog.Info("provider.GetCandidates called", 
+		"original_model", model, 
+		"route_model", routeModel, 
+		"profile", profile)
 
 	key := routeModel
 	if profile != "" {
@@ -266,6 +271,7 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 		c.mu.RUnlock()
 		policy, _ := c.getPolicyCached(ctx)
 		cands := c.enrichWithAPIKeys(ctx, entry.value)
+		slog.Info("provider.GetCandidates: cache hit", "count", len(cands))
 		return cands, policy, nil
 	}
 	c.mu.RUnlock()
@@ -273,8 +279,11 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
 		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile)
 		if fetchErr != nil {
+			slog.Warn("provider.GetCandidates: fetchCandidatesDB failed", "error", fetchErr)
 			return nil, fetchErr
 		}
+		slog.Info("provider.GetCandidates: fetchCandidatesDB returned", 
+			"candidate_count", len(resp.Candidates))
 
 		c.mu.Lock()
 		c.candCache[key] = cacheEntry[*resolveResponse]{
@@ -290,6 +299,15 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 
 	policy, _ := c.getPolicyCached(ctx)
 	cands := c.enrichWithAPIKeys(ctx, v.(*resolveResponse))
+	slog.Info("provider.GetCandidates: final result", 
+		"count_after_enrich", len(cands),
+		"candidate_details", func() []string {
+			details := make([]string, 0, len(cands))
+			for _, c := range cands {
+				details = append(details, fmt.Sprintf("cred=%d,model=%s", c.CredentialID, c.RawModel))
+			}
+			return details
+		}())
 	return cands, policy, nil
 }
 

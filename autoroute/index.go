@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -214,11 +215,14 @@ func (idx *Index) Refresh(ctx context.Context) error {
 	defer rows.Close()
 
 	out := make([]Candidate, 0, 64)
+	scanErrors := 0
 	for rows.Next() {
 		c, scanErr := scanIndexRow(rows)
 		if scanErr != nil {
 			// Skip the bad row but keep going — partial refresh
 			// is better than no refresh.
+			scanErrors++
+			slog.Warn("autoroute.Index.Refresh: scan error", "error", scanErr)
 			continue
 		}
 		out = append(out, c)
@@ -226,6 +230,21 @@ func (idx *Index) Refresh(ctx context.Context) error {
 	if rows.Err() != nil {
 		return fmt.Errorf("iterate credential_model_index: %w", rows.Err())
 	}
+
+	// Log what was loaded
+	modelSet := make(map[string]int)
+	modelNames := make([]string, 0)
+	for i := range out {
+		modelSet[out[i].RawModel]++
+		if len(modelNames) < 20 {
+			modelNames = append(modelNames, out[i].RawModel)
+		}
+	}
+	slog.Info("autoroute.Index.Refresh: query completed",
+		"total_candidates", len(out),
+		"scan_errors", scanErrors,
+		"unique_models", len(modelSet),
+		"sample_models", modelNames)
 
 	// Build byCanonical lookup
 	byCanon := make(map[int][]*Candidate, 16)
