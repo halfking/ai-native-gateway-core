@@ -190,7 +190,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- for debug / cross-system tracing. Mirror of submodule's
 		    -- db/db.go change so the schema is identical across both
 		    -- build paths (184 k3s submodule + 71 host-docker fork).
-		    See db/migrations/054_request_logs_client_request_id.sql.
+		    -- See db/migrations/054_request_logs_client_request_id.sql.
 		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
