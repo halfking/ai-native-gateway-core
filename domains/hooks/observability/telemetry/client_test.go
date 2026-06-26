@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -81,6 +82,89 @@ func TestResolveRequestStatus(t *testing.T) {
 				t.Fatalf("ResolveRequestStatus() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
+	const updateSQL = `
+		UPDATE request_logs rl
+		   SET client_model = COALESCE($2, client_model),
+		       outbound_model = COALESCE($3, outbound_model),
+		       credential_id = COALESCE($4, credential_id),
+		       provider_id = COALESCE($5, provider_id),
+		       canonical_id = COALESCE($6, canonical_id),
+		       client_profile = COALESCE($7, client_profile),
+		       request_mode = COALESCE($8, request_mode),
+		       end_user_id = COALESCE($9, end_user_id),
+		       prompt_tokens = COALESCE($10, prompt_tokens),
+		       completion_tokens = COALESCE($11, completion_tokens),
+		       total_tokens = COALESCE($12, total_tokens),
+		       cache_read_tokens = COALESCE($13, cache_read_tokens),
+		       cache_write_tokens = COALESCE($14, cache_write_tokens),
+		       cost_usd = COALESCE($15, cost_usd),
+		       cost_display = COALESCE($16, cost_display),
+		       cost_currency = COALESCE($17, cost_currency),
+		       stream_first_chunk_ms = COALESCE($18, stream_first_chunk_ms),
+		       stream_chunk_count = COALESCE($19, stream_chunk_count),
+		       stream_done_received = COALESCE($20, stream_done_received),
+		       stream_interrupted = COALESCE($21, stream_interrupted),
+		       response_checksum = COALESCE($22, response_checksum),
+		       response_preview = COALESCE($23, response_preview),
+		       response_body = COALESCE(CAST($24 AS jsonb), response_body),
+		       failure_stage = COALESCE($25, failure_stage),
+		       failure_detail_code = COALESCE($26, failure_detail_code),
+		       transform_rule_id = COALESCE($27, transform_rule_id),
+		       egress_protocol = COALESCE($28, egress_protocol),
+		       request_preview = COALESCE($29, request_preview),
+		       transform_summary = COALESCE($30, transform_summary),
+		       request_body = COALESCE(CAST($31 AS jsonb), request_body),
+		       usage_source = COALESCE(NULLIF($32, ''), usage_source),
+		       success = COALESCE($33, success),
+		       request_status = COALESCE($34, request_status),
+		       error_kind = CASE
+		           WHEN COALESCE($33, success) = TRUE THEN NULL
+		           ELSE COALESCE($35, error_kind)
+		       END,
+		       latency_ms = COALESCE($36, latency_ms),
+		       identity_hash = COALESCE($37, identity_hash),
+		       search_text = COALESCE($38, search_text),
+		       gw_session_id = COALESCE($39, gw_session_id),
+		       gw_task_id = COALESCE($40, gw_task_id),
+		       api_key_prefix = COALESCE($41, api_key_prefix),
+		       api_key_owner_user = COALESCE($42, api_key_owner_user),
+		       application_code = COALESCE($43, application_code),
+		       is_auto_request = COALESCE($44, is_auto_request),
+		       task_type = COALESCE($45, task_type),
+		       auto_profile = COALESCE($46, auto_profile),
+		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
+		       auto_confidence = COALESCE($48, auto_confidence),
+		       work_type = COALESCE($49, work_type),
+		       credits_charged = COALESCE($50, credits_charged),
+		       parent_request_id = COALESCE($51, parent_request_id),
+		       compression_reason = COALESCE($52, compression_reason),
+		       compression_strategy = COALESCE($53, compression_strategy),
+		       compression_meta = COALESCE(CAST($54 AS jsonb), compression_meta),
+		       outbound_body = COALESCE(CAST($55 AS jsonb), outbound_body),
+		       outbound_msg_count = COALESCE($56, outbound_msg_count),
+		       outbound_token_est = COALESCE($57, outbound_token_est),
+		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), outbound_msg_hashes),
+		       quality_flags = COALESCE(CAST($59 AS text[]), quality_flags),
+		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions),
+		       quality_score = COALESCE($61, quality_score),
+		       upstream_finish_reason = COALESCE($62, upstream_finish_reason),
+		       tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
+		       client_request_id = COALESCE($64, client_request_id)
+		  FROM latest
+	`
+
+	setIdx := strings.Index(updateSQL, "SET ")
+	fromIdx := strings.Index(updateSQL, "FROM latest")
+	if setIdx < 0 || fromIdx <= setIdx {
+		t.Fatalf("unexpected update SQL layout")
+	}
+	setClause := updateSQL[setIdx:fromIdx]
+	if strings.Contains(setClause, "rl.") {
+		t.Fatalf("SET clause must not reference target alias rl: %s", setClause)
 	}
 }
 
