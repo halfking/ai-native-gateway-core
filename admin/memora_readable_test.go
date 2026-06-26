@@ -5,17 +5,17 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 type fakeMemoraSearch struct {
-	byUser map[string][]memora.Memory
+	byUser map[string][]memory.Memory
 	err    error
 }
 
 func (f *fakeMemoraSearch) Disabled() bool { return false }
 
-func (f *fakeMemoraSearch) SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+func (f *fakeMemoraSearch) SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -55,7 +55,7 @@ func TestFormatReadableBlockEmpty(t *testing.T) {
 
 func TestSearchMergedFactsDualNamespace(t *testing.T) {
 	client := &fakeMemoraSearch{
-		byUser: map[string][]memora.Memory{
+		byUser: map[string][]memory.Memory{
 			"k:42:default": {
 				{ID: "1", Text: "task fact about deployment"},
 			},
@@ -83,8 +83,8 @@ func TestSearchMergedFactsDualNamespace(t *testing.T) {
 func TestSearchMergedFactsDedupe(t *testing.T) {
 	dup := "same fact repeated"
 	client := &fakeMemoraSearch{
-		byUser: map[string][]memora.Memory{
-			"k:7:task-a": {{ID: "1", Text: dup}},
+		byUser: map[string][]memory.Memory{
+			"k:7:task-a":           {{ID: "1", Text: dup}},
 			"k:7:gw-session:ses-x": {{ID: "2", Text: dup}},
 		},
 	}
@@ -98,7 +98,7 @@ func TestSearchMergedFactsDedupe(t *testing.T) {
 }
 
 func TestSearchMergedFactsEmpty(t *testing.T) {
-	client := &fakeMemoraSearch{byUser: map[string][]memora.Memory{}}
+	client := &fakeMemoraSearch{byUser: map[string][]memory.Memory{}}
 	blocks, err := searchMergedFacts(context.Background(), client, "", 1, "task", "", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestTruncateMemoraPreview(t *testing.T) {
 }
 
 func TestBatchMemoraPreviewsEmptyStatus(t *testing.T) {
-	client := &fakeMemoraSearch{byUser: map[string][]memora.Memory{}}
+	client := &fakeMemoraSearch{byUser: map[string][]memory.Memory{}}
 	results := batchMemoraPreviews(context.Background(), client, []sessionPreviewInput{
 		{Index: 0, TaskID: "t1", APIKeyID: 1},
 	})
@@ -136,7 +136,7 @@ func TestBatchMemoraPreviewsEmptyStatus(t *testing.T) {
 // Regression: session row Index can be sparse (e.g. 19) while results len is preview count.
 func TestBatchMemoraPreviewsSparseSessionIndex(t *testing.T) {
 	client := &fakeMemoraSearch{
-		byUser: map[string][]memora.Memory{
+		byUser: map[string][]memory.Memory{
 			"k:1:task-far": {{ID: "1", Text: "preview at row 19"}},
 		},
 	}
