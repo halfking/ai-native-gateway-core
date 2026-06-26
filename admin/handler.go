@@ -14,7 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -71,7 +71,7 @@ type Handler struct {
 	}
 	// memoraSink provides write-path stats for the admin UI.
 	memoraSink interface {
-		Stats() memora.Stats
+		Stats() memory.Stats
 		Pause()
 		Resume()
 	}
@@ -271,10 +271,10 @@ func (h *Handler) SetMemoraServices(client interface {
 	Disabled() bool
 	Ping(ctx context.Context) error
 	BaseURL() string
-	AddMessage(ctx context.Context, userID string, messages []memora.Message, info map[string]any) error
-	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error
+	Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 }, sink interface {
-	Stats() memora.Stats
+	Stats() memory.Stats
 	Pause()
 	Resume()
 }) {
