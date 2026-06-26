@@ -189,7 +189,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    -- 2026-06-26: client-provided X-Request-Id is preserved here
 		    -- for debug / cross-system tracing. Mirror of submodule's
 		    -- db/db.go change so the schema is identical across both
-		    build paths (184 k3s submodule + 71 host-docker fork).
+		    -- build paths (184 k3s submodule + 71 host-docker fork).
 		    See db/migrations/054_request_logs_client_request_id.sql.
 		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
