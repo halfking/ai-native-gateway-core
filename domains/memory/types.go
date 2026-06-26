@@ -25,6 +25,22 @@ type WriteOp struct {
 	Source   string
 }
 
+// Stats reports async sink counters for admin/healthz views.
+// The concrete producer lives in the legacy memora writer adapter;
+// admin only needs this transport shape.
+type Stats struct {
+	Enqueued          uint64 `json:"enqueued"`
+	Dropped           uint64 `json:"dropped"`
+	Processed         uint64 `json:"processed"`
+	Errored           uint64 `json:"errored"`
+	QueueLen          int    `json:"queue_len"`
+	QueueCap          int    `json:"queue_cap"`
+	ConsecutiveErrors int64  `json:"consecutive_errors"`
+	LastError         string `json:"last_error"`
+	LastErrorAt       string `json:"last_error_at"`
+	Paused            bool   `json:"paused"`
+}
+
 // Reader is the minimum read surface needed by gateway compression and executor paths.
 type Reader interface {
 	Disabled() bool
