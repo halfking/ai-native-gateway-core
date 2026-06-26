@@ -421,13 +421,29 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//    pointer so success / explicit-failure paths can mark the
 	//    row as already-written to avoid double-logging.
 	var logCtx *RequestLogContext
+	// 2026-06-26: server-side request id is ALWAYS freshly generated.
+	// The middleware (RequestIDMiddleware) sets X-Request-Id to a new
+	// UUID and X-Gw-Client-Request-Id to the client-supplied value.
+	// We still defensively fall back to generateRequestID() here in
+	// case the middleware chain was bypassed (e.g. direct unit-test
+	// invocation), and we capture the client value for
+	// request_logs.client_request_id so retries can be correlated.
 	requestID := r.Header.Get("X-Request-Id")
 	if requestID == "" {
 		requestID = generateRequestID()
 		w.Header().Set("X-Request-Id", requestID)
 	}
+	clientRequestID := r.Header.Get("X-Gw-Client-Request-Id")
+	if clientRequestID == "" {
+		// Backstop: read the original (pre-middleware) client value.
+		clientRequestID = r.Header.Get("X-Client-Request-Id")
+	}
+	if clientRequestID != "" && clientRequestID != requestID {
+		w.Header().Set("X-Client-Request-Id", clientRequestID)
+	}
 	startTime := time.Now()
 	logCtx = h.NewRequestLogContext(r, requestID, startTime)
+	logCtx.ClientRequestID = clientRequestID
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
@@ -1823,6 +1839,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		CompressionStrategy: result.CompressionStrategy,
 		CompressionMeta:     result.CompressionMeta,
 		ParentRequestID:     result.ParentRequestID,
+		// 2026-06-26: persist the client-supplied X-Request-Id for debug
+		// alongside the server-generated RequestID. Distinguishes
+		// legitimate client retries (same client_request_id, distinct
+		// request_id) from genuinely fresh requests.
+		ClientRequestID: strPtr(logCtx.ClientRequestID),
 	}
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
@@ -2133,6 +2154,14 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 		if session := session.SessionFromContext(r.Context()); session != nil {
 			ctx.Session = session
 		}
+		// 2026-06-26: forward the client-supplied X-Request-Id (set by
+		// the RequestIDMiddleware into X-Gw-Client-Request-Id) so the
+		// failure row records it for debug / cross-system tracing.
+		if gw := r.Header.Get("X-Gw-Client-Request-Id"); gw != "" {
+			ctx.ClientRequestID = gw
+		} else if gw := r.Header.Get("X-Client-Request-Id"); gw != "" {
+			ctx.ClientRequestID = gw
+		}
 		ctx.refreshMeta()
 	}
 	ctx.EmitFailure(errCode, errMessage, providerID, credentialID)
@@ -2376,6 +2405,11 @@ func (h *ChatHandler) recordInitialRequestLog(
 		transformRuleID = strPtr(txResult.MatchedRule)
 	}
 	streamInterrupted := false
+	var clientRequestIDPtr *string
+	if autoCtx != nil && autoCtx.ClientRequestID != "" {
+		v := autoCtx.ClientRequestID
+		clientRequestIDPtr = &v
+	}
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         requestID,
 		TenantID:          tenantID,
@@ -2403,6 +2437,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		TransformRuleID:   transformRuleID,
 		EgressProtocol:    strPtr(egressProtocol),
 		StreamInterrupted: &streamInterrupted,
+		// 2026-06-26: preserve client-supplied X-Request-Id for debug
+		// (request_id itself is server-generated; see middleware/requestid_mw.go).
+		ClientRequestID: clientRequestIDPtr,
 	}
 	if isStream {
 		zero := 0

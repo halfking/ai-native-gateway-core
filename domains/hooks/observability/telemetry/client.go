@@ -184,6 +184,14 @@ type RequestLogEntry struct {
 	// non-streaming (extracted from response_body.choices[0].message.tool_calls).
 	// OpenAI format: [{id, type, function: {name, arguments}}].
 	ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
+
+	// 2026-06-26: client-supplied X-Request-Id. Persisted in
+	// request_logs.client_request_id for debug / cross-system tracing.
+	// Distinct from RequestID (which is now ALWAYS a server-generated
+	// UUID, see migration 054 and the requestid_mw / handler fixes) so
+	// that client retries reusing the same id do not collapse into a
+	// single audit row.
+	ClientRequestID *string `json:"client_request_id,omitempty"`
 }
 
 func NewClient() *Client {
@@ -498,7 +506,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- the SOLE home for the upstream finish_reason.
 		upstream_finish_reason,
 		-- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-		tool_calls
+		tool_calls,
+		-- 2026-06-26: client-supplied X-Request-Id (debug only;
+		-- request_logs.request_id is server-generated, see migration 054).
+		client_request_id
 	) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -523,7 +534,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($58 AS jsonb), $59, $60, CAST($61 AS jsonb),
 		CAST($62 AS text[]), CAST($63 AS jsonb), $64,
 		$65,
-		CAST($66 AS jsonb)
+		CAST($66 AS jsonb),
+		$67
 		)
 			ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
@@ -594,7 +606,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_fix_actions = EXCLUDED.quality_fix_actions,
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
-		tool_calls = EXCLUDED.tool_calls
+		tool_calls = EXCLUDED.tool_calls,
+		client_request_id = COALESCE(EXCLUDED.client_request_id, rl.client_request_id)
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -671,6 +684,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.UpstreamFinishReason,
 		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
 		entry.ToolCalls,
+		// 2026-06-26: client-supplied X-Request-Id (debug only).
+		entry.ClientRequestID,
 	)
 	if err != nil {
 		return err
@@ -851,7 +866,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   -- the SOLE home for the upstream finish_reason.
 	   upstream_finish_reason = COALESCE($62, rl.upstream_finish_reason),
 	   -- 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
-	   tool_calls = COALESCE(CAST($63 AS jsonb), rl.tool_calls)
+	   tool_calls = COALESCE(CAST($63 AS jsonb), rl.tool_calls),
+	   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
+	   -- a late success UPDATE does not blank a value set on INSERT.
+	   client_request_id = COALESCE($64, rl.client_request_id)
 	  FROM latest
 	 WHERE rl.id = latest.id
 	   AND rl.ts = latest.ts
@@ -928,6 +946,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.UpstreamFinishReason,
 		// 2026-06-23: structured tool_calls (042_tool_calls_column.sql).
 		entry.ToolCalls,
+		// 2026-06-26: client-supplied X-Request-Id (debug only).
+		entry.ClientRequestID,
 	)
 	if err != nil {
 		return err
@@ -1308,6 +1328,11 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
 	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)
 	mergeInt64Ptr(&dst.CreditsCharged, src.CreditsCharged)
+	// 2026-06-26: keep first non-empty client_request_id across merges
+	// so a follow-up UPDATE never blanks the value the initial INSERT
+	// captured. Critical for debugging client-side retry storms where
+	// the same X-Request-Id appears 5 times in the audit trail.
+	mergeStringPtr(&dst.ClientRequestID, src.ClientRequestID)
 	if src.Success {
 		dst.Success = true
 	}

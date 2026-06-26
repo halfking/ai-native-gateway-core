@@ -439,6 +439,12 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		// 2026-06-26: prefer the server-generated X-Request-Id (the
+		// RequestIDMiddleware always overwrites this header). Fall
+		// back to a v2pipe-prefixed timestamp only when the middleware
+		// chain was bypassed — e.g. direct unit-test dispatch. Never
+		// reuse the client-supplied value: a misbehaving client could
+		// otherwise collapse every retry into a single audit row.
 		requestID := r.Header.Get("X-Request-Id")
 		if requestID == "" {
 			requestID = fmt.Sprintf("v2pipe-%d", time.Now().UnixNano())
