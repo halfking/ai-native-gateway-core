@@ -204,6 +204,37 @@ func (c *Client) Enabled() bool {
 	return c.dbPool != nil
 }
 
+func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identityHash string, apiKeyID int, since time.Duration) (string, error) {
+	if c == nil || c.dbPool == nil || tenantID == "" || identityHash == "" || apiKeyID <= 0 {
+		return "", nil
+	}
+	if since <= 0 {
+		since = 5 * time.Minute
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var sessionID string
+	err := c.dbPool.QueryRow(queryCtx, `
+		SELECT gw_session_id
+		FROM request_logs
+		WHERE tenant_id = $1
+		  AND api_key_id = $2
+		  AND identity_hash = $3
+		  AND gw_session_id LIKE 'gw\_%'
+		  AND ts >= NOW() - ($4 * INTERVAL '1 second')
+		ORDER BY ts DESC
+		LIMIT 1
+	`, tenantID, apiKeyID, identityHash, int(since.Seconds())).Scan(&sessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			return "", nil
+		}
+		return "", err
+	}
+	return sessionID, nil
+}
+
 func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 }

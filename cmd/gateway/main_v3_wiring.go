@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -158,7 +159,7 @@ func NewDependenciesFromExecutor(exec *executors.Executor) *compression.Dependen
 // memoraClientAdapter bridges *memora.Client to the compression.MemoraClient
 // interface (Disabled + Search).
 type memoraClientAdapter struct {
-	c *memora.Client
+	c memory.Reader
 }
 
 func (m memoraClientAdapter) Disabled() bool {
@@ -168,12 +169,98 @@ func (m memoraClientAdapter) Disabled() bool {
 	return m.c.Disabled()
 }
 
-func (m memoraClientAdapter) Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
-	return m.c.Search(ctx, userID, query, topK)
+func (m memoraClientAdapter) Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
+	items, err := m.c.Search(ctx, userID, query, topK)
+	if err != nil {
+		return nil, err
+	}
+	return convertMemoraItems(items), nil
 }
 
-func (m memoraClientAdapter) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
-	return m.c.SmartSearch(ctx, userID, query, topK)
+func (m memoraClientAdapter) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
+	items, err := m.c.SmartSearch(ctx, userID, query, topK)
+	if err != nil {
+		return nil, err
+	}
+	return convertMemoraItems(items), nil
+}
+
+func convertMemoraItems(items []memory.Memory) []memory.Memory { return items }
+
+type legacyMemoraReader struct {
+	c *memora.Client
+}
+
+type legacyMemoraWriter struct {
+	s *memora.Sink
+}
+
+func (m legacyMemoraReader) Disabled() bool {
+	if m.c == nil {
+		return true
+	}
+	return m.c.Disabled()
+}
+
+func (m legacyMemoraReader) Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
+	if m.c == nil {
+		return nil, nil
+	}
+	items, err := m.c.Search(ctx, userID, query, topK)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]memory.Memory, 0, len(items))
+	for i := range items {
+		out = append(out, memory.Memory{
+			ID:     items[i].ID,
+			Text:   items[i].Text,
+			Tags:   items[i].Tags,
+			Score:  items[i].Score,
+			CubeID: items[i].CubeID,
+		})
+	}
+	return out, nil
+}
+
+func (m legacyMemoraReader) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
+	if m.c == nil {
+		return nil, nil
+	}
+	items, err := m.c.SmartSearch(ctx, userID, query, topK)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]memory.Memory, 0, len(items))
+	for i := range items {
+		out = append(out, memory.Memory{
+			ID:     items[i].ID,
+			Text:   items[i].Text,
+			Tags:   items[i].Tags,
+			Score:  items[i].Score,
+			CubeID: items[i].CubeID,
+		})
+	}
+	return out, nil
+}
+
+func (w legacyMemoraWriter) Enqueue(op memory.WriteOp) {
+	if w.s == nil {
+		return
+	}
+	msgs := make([]memora.Message, 0, len(op.Messages))
+	for i := range op.Messages {
+		msgs = append(msgs, memora.Message{
+			Role:    op.Messages[i].Role,
+			Content: op.Messages[i].Content,
+		})
+	}
+	w.s.Enqueue(memora.WriteOp{
+		UserID:   op.UserID,
+		Info:     op.Info,
+		Source:   op.Source,
+		Messages: msgs,
+	})
 }
 
 // providerClientAdapter bridges executors providerResolver to compression.ProviderClient.
