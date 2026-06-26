@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"
@@ -363,7 +363,7 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 		return
 	}
 
-	userID := memora.UserID(tenantID, apiKeyID, virtualTaskID)
+	userID := memory.UserID(tenantID, apiKeyID, virtualTaskID)
 	if userID == "" {
 		writeError(w, http.StatusBadRequest, "cannot derive memora user_id")
 		return
@@ -387,7 +387,7 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 		}
 	}
 
-	stats := memora.ExtractFromPreviews(turns, existingFacts, includeResponses)
+	stats := memory.ExtractFromPreviews(turns, existingFacts, includeResponses)
 	projectID := strings.TrimSpace(os.Getenv("MEMORA_PROJECT_ID"))
 	if projectID == "" {
 		projectID = "kaixuan-1-deploy"
@@ -413,7 +413,7 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 	written := 0
 	var writeErr error
 	for _, fact := range stats.Candidates {
-		msgs := []memora.Message{
+		msgs := []memory.Message{
 			{Role: "user", Content: "[会话提炼] " + fact},
 		}
 		info := map[string]any{
@@ -515,7 +515,7 @@ func (h *Handler) noTopicAPIKeyAndTenant(ctx context.Context, prefix string, hou
 	return int(*apiKeyIDPtr), tenantID, nil
 }
 
-func (h *Handler) loadNoTopicPreviewTurns(ctx context.Context, prefix string, hours int, hourStart string, r *http.Request, limit int) ([]memora.PreviewTurn, error) {
+func (h *Handler) loadNoTopicPreviewTurns(ctx context.Context, prefix string, hours int, hourStart string, r *http.Request, limit int) ([]memory.PreviewTurn, error) {
 	where, args := noTopicLogsWhere(prefix, hours, r)
 	var hourFrag string
 	hourFrag, args = noTopicHourFilter(hourStart, args)
@@ -535,7 +535,7 @@ func (h *Handler) loadNoTopicPreviewTurns(ctx context.Context, prefix string, ho
 	}
 	defer rows.Close()
 
-	var turns []memora.PreviewTurn
+	var turns []memory.PreviewTurn
 	for rows.Next() {
 		var prompt, response, workType, reqMode *string
 		if err := rows.Scan(&prompt, &response, &workType, &reqMode); err != nil {
@@ -550,7 +550,7 @@ func (h *Handler) loadNoTopicPreviewTurns(ctx context.Context, prefix string, ho
 				dir = "assistant"
 			}
 		}
-		pt := memora.PreviewTurn{Direction: dir}
+		pt := memory.PreviewTurn{Direction: dir}
 		if prompt != nil {
 			pt.PromptPreview = *prompt
 		}

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 const (
@@ -497,7 +497,7 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 	// session-summary admin endpoint runs as super_admin so we fall back to
 	// "default" if the calling user has no tenant context. Single-tenant
 	// installs stay on the legacy "k:<key_id>" layout.
-	userID := memora.UserID("", keyID, memoraTaskID)
+	userID := memory.UserID("", keyID, memoraTaskID)
 
 	facts := []string{"[会话总结] " + summary}
 	for _, kp := range keyPoints {
@@ -512,7 +512,7 @@ func (h *Handler) handleSessionSummaryToMemora(w http.ResponseWriter, r *http.Re
 	written := 0
 	var writeErr error
 	for _, fact := range facts {
-		msgs := []memora.Message{
+		msgs := []memory.Message{
 			{Role: "user", Content: fact},
 		}
 		info := map[string]any{

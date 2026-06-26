@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 const sessionContextPrefix = "/api/system/session-context/"
@@ -105,7 +105,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 	// Extract tenant from the session's API key (keyInfo.TenantID via auth).
 	// Fall back to "" (legacy single-tenant layout) if absent.
 	tenantID := h.sessionTenantID(ctx, taskID, sc, r)
-	userID := memora.UserID(tenantID, apiKeyID, taskID)
+	userID := memory.UserID(tenantID, apiKeyID, taskID)
 	if userID == "" {
 		writeError(w, http.StatusBadRequest, "cannot derive memora user_id")
 		return
@@ -119,10 +119,10 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 
 	var existingFacts []string
 	searchCtx, searchCancel := context.WithTimeout(ctx, 8*time.Second)
-	var memories []memora.Memory
+	var memories []memory.Memory
 	var searchErr error
 	if adminSearcher, ok := writer.(interface {
-		SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+		SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 	}); ok {
 		memories, searchErr = adminSearcher.SearchAdmin(searchCtx, userID, "", 30)
 	} else {
@@ -137,7 +137,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	stats := memora.ExtractFromPreviews(turns, existingFacts, includeResponses)
+	stats := memory.ExtractFromPreviews(turns, existingFacts, includeResponses)
 	projectID := strings.TrimSpace(os.Getenv("MEMORA_PROJECT_ID"))
 	if projectID == "" {
 		projectID = "kaixuan-1-deploy"
@@ -163,7 +163,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 	written := 0
 	var writeErr error
 	for _, fact := range stats.Candidates {
-		msgs := []memora.Message{
+		msgs := []memory.Message{
 			{Role: "user", Content: "[会话提炼] " + fact},
 		}
 		info := map[string]any{
@@ -266,7 +266,7 @@ func (h *Handler) sessionAPIKeyID(ctx context.Context, taskID string, sc session
 
 // sessionTenantID fetches the tenant_id associated with the request_logs
 // rows for a task. Returns "" if unavailable (caller should pass that to
-// memora.UserID which then falls back to the legacy single-tenant layout).
+// memory.UserID which then falls back to the legacy single-tenant layout).
 //
 // Round 47 compression v7 T13: required so the Memora user_id we use to
 // search Memora for compression-side-facts is tenant-namespaced. Without
@@ -286,7 +286,7 @@ func (h *Handler) sessionTenantID(ctx context.Context, taskID string, sc session
 	return *tenantID
 }
 
-func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, r *http.Request, limit int) ([]memora.PreviewTurn, error) {
+func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc sessionScope, r *http.Request, limit int) ([]memory.PreviewTurn, error) {
 	where, args := sessionLogsWhere(taskID, sc, r)
 	args = append(args, limit)
 	limitArg := "$" + strconv.Itoa(len(args))
@@ -306,7 +306,7 @@ func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc
 	}
 	defer rows.Close()
 
-	var turns []memora.PreviewTurn
+	var turns []memory.PreviewTurn
 	for rows.Next() {
 		var prompt, response, workType, reqMode *string
 		if err := rows.Scan(&prompt, &response, &workType, &reqMode); err != nil {
@@ -321,7 +321,7 @@ func (h *Handler) loadSessionPreviewTurns(ctx context.Context, taskID string, sc
 				dir = "assistant"
 			}
 		}
-		pt := memora.PreviewTurn{Direction: dir}
+		pt := memory.PreviewTurn{Direction: dir}
 		if prompt != nil {
 			pt.PromptPreview = *prompt
 		}
@@ -368,13 +368,13 @@ func truncateSamples(candidates []string, n int) []string {
 
 func (h *Handler) memoraWriteClient() interface {
 	Disabled() bool
-	AddMessage(ctx context.Context, userID string, messages []memora.Message, info map[string]any) error
-	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error
+	Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 } {
 	if c, ok := h.memoraClient.(interface {
 		Disabled() bool
-		AddMessage(ctx context.Context, userID string, messages []memora.Message, info map[string]any) error
-		Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+		AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error
+		Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 	}); ok {
 		return c
 	}
