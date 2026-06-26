@@ -21,12 +21,15 @@ export interface CredentialMonitorSummary {
   state_reason_detail: string | null
   health_checked_at: string | null
   total_requests: number
+  model_total: number
+  model_available: number
+  broken_model_count: number
   // Per-(credential, model) availability breakdown (2026-06-22). Replaces the
   // single-model recent_window_stats. Empty array when the credential has no
   // model_offers rows.
   models?: CredentialModelStatus[]
-  // Min recent success rate across the credential's models (conservative).
-  // null when there are no samples.
+// Min recent success rate across the credential's models (conservative).
+// null when there are no samples.
   aggregated_success_rate?: number | null
 }
 
@@ -87,12 +90,10 @@ export interface CallEntry {
   err?: string // error kind
 }
 
-export function getCredentialMonitorSummary(opts?: { provider_id?: number; include_window_stats?: boolean }) {
+export function getCredentialMonitorSummary(opts?: { provider_id?: number; credential_id?: number }) {
   const params = new URLSearchParams()
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
-  // include_window_stats is retained for backward-compat but the new endpoint
-  // always returns models[]; the param is a no-op now.
-  if (opts?.include_window_stats) params.set('include_window_stats', 'true')
+  if (opts?.credential_id) params.set('credential_id', String(opts.credential_id))
   const qs = params.toString()
   return req<{ credentials: CredentialMonitorSummary[]; count: number }>(
     'GET',
