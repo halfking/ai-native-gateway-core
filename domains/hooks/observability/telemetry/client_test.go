@@ -155,6 +155,8 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 		       tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
 		       client_request_id = COALESCE($64, client_request_id)
 		  FROM latest
+		 WHERE request_logs.id = latest.id
+		   AND request_logs.ts = latest.ts
 	`
 
 	setIdx := strings.Index(updateSQL, "SET ")
