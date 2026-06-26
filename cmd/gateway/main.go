@@ -25,7 +25,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -83,11 +82,9 @@ func main() {
 	var weeklyPeakRollup *bg.WeeklyPeakRollup
 	var slotSuggester *bg.SlotSuggester
 	var autoIndexRefresher *bg.AutoIndexRefresher
-	// memoraSink is the async write buffer for Memora persistence.
-	// Declared at the top so both the executor wiring and the
-	// graceful-shutdown sequence can reference it.
-	var memoraSink *memora.Sink
-	var memoraClient *memora.Client
+	// memorySvc holds the legacy memora concrete client/sink behind the
+	// live memory.Reader / memory.Writer interfaces used by gateway runtime.
+	var memorySvc *legacyMemoryServices
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -484,19 +481,13 @@ func main() {
 		// Memora for L1 session facts on context overflow and rebuild
 		// the body around them. Disabled by default (no env var).
 		if memoraBase := os.Getenv("LLM_GATEWAY_MEMORA_BASE_URL"); memoraBase != "" {
-			memoraClient = memora.NewClient(memora.ClientConfig{
-				BaseURL:            memoraBase,
-				APIKey:             os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
-				SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
-				SmartSearchAPIKey:  os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_API_KEY"),
-			})
-			routingExec.Memora = legacyMemoraReader{c: memoraClient}
+			memorySvc = newLegacyMemoryServicesFromEnv(memoraBase)
+			routingExec.Memora = memorySvc.Reader()
 			// Async sink: fire-and-forget write buffer for L1 session
 			// memory persistence. 2 workers / 2048-deep queue is enough
 			// for the write volume (one enqueue per successful request).
-			memoraSink = memora.NewSink(memoraClient, 2, 2048)
-			memoraSink.Start()
-			routingExec.MemoraSink = legacyMemoraWriter{s: memoraSink}
+			memorySvc.Start()
+			routingExec.MemoraSink = memorySvc.Writer()
 			smartSearchBase := os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL")
 			slog.Info("memora context-compression oracle enabled",
 				"base_url", memoraBase,
@@ -540,7 +531,11 @@ func main() {
 		}
 		// Enable disguise mode if configured.
 		if cfg.EnableDisguise {
-			routingExec.DisguisePool = disguise.DefaultPool
+			if fpSlotRedis != nil {
+				routingExec.DisguisePool = disguise.NewRedisPool(fpSlotRedis, 30*time.Minute)
+			} else {
+				routingExec.DisguisePool = disguise.DefaultPool
+			}
 			slog.Info("disguise mode enabled")
 		}
 		// V3.1 (2026-06-26): wire route node recorder + session routing
@@ -1016,6 +1011,11 @@ func main() {
 				// (process-local) sticky to DB-backed (cluster-wide).
 				autoroute.NewDBProfileStore(dbConn.Pool()),
 			)
+			if fpSlotRedis != nil {
+				decider.SetIntentCache(autoroute.NewRedisSessionIntentCache(fpSlotRedis, 10*time.Minute))
+			} else {
+				decider.SetIntentCache(nil)
+			}
 			// v2.1: Decider reads the LLM-fallback threshold from
 			// tuningStore dynamically (atomic.Pointer load, no lock).
 			decider.SetTuningStore(tuningStore)
@@ -1117,8 +1117,8 @@ func main() {
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
 		slog.Info("CHECKPOINT: before memoraClient check")
-		if memoraClient != nil {
-			adminHandler.SetMemoraServices(legacyMemoraReader{c: memoraClient}, legacyMemoraWriter{s: memoraSink})
+		if memorySvc != nil {
+			adminHandler.SetMemoraServices(memorySvc.AdminClient(), memorySvc.AdminSink())
 		}
 
 		slog.Info("CHECKPOINT: before autoIndexRefresher check")
@@ -1515,9 +1515,9 @@ func main() {
 	// Drain the Memora sink queue on shutdown so in-flight writes
 	// are not lost. Bounded to 5s so shutdown is not held hostage
 	// to a slow Memora.
-	if memoraSink != nil {
+	if memorySvc != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		memoraSink.Stop(stopCtx)
+		memorySvc.Stop(stopCtx)
 		stopCancel()
 	}
 
