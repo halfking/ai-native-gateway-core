@@ -4,6 +4,7 @@ package credentialfpslot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -146,13 +147,18 @@ type memPinEntry struct {
 	exp  time.Time
 }
 
+var ErrRedisRequired = errors.New("credentialfpslot requires redis client")
+
+var ErrSlotSaturated = errors.New("credential fingerprint slot saturated")
+
 // DefaultDefaultLimit is the fallback slot-pool size when neither
 // the per-credential DB value nor the Config.DefaultLimit is set.
 // 2026-06-24: bumped 5 → 20 per operator spec — wider pool avoids
 // the "fp_slot contention" class of issues observed in production.
 const DefaultDefaultLimit = 20
 
-// New creates a slot manager. client may be nil (memory fallback).
+// New creates a slot manager. Redis is required for slot/pin ownership.
+// node_state fallback still uses in-memory state when Redis is absent.
 func New(cfg Config, client *redis.Client) *Manager {
 	if cfg.DefaultLimit <= 0 {
 		cfg.DefaultLimit = DefaultDefaultLimit
@@ -289,7 +295,7 @@ func (m *Manager) RoutingEligible(ctx context.Context, credentialID int, limit *
 	return free > 0
 }
 
-// Acquire tries to take one slot. ok=false means saturated.
+// Acquire tries to take one slot. ok=false means unavailable.
 func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, holder, tenantID string) (*Lease, bool) {
 	if !m.Enabled() {
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
@@ -298,12 +304,10 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 	if eff == nil {
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder}, true
 	}
-	if m.client != nil {
-		if lease, ok := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID); ok {
-			return lease, true
-		}
+	if m.client == nil {
+		return nil, false
 	}
-	if lease, ok := m.acquireMemory(credentialID, *eff, holder, tenantID); ok {
+	if lease, ok := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID); ok {
 		return lease, true
 	}
 	return nil, false
@@ -326,27 +330,27 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 	if lease == nil || lease.Unlimited {
 		return
 	}
-	if m.client != nil {
-		key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
-		pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
-
-		// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
-		// (stable identity across the longer session).
-		refreshed, err := releaseSlotScript.Run(ctx, m.client,
-			[]string{key, pinKey},
-			lease.Holder,
-			slotTTLSeconds,
-			sessionPinTTLSeconds,
-			lease.SlotIndex,
-		).Bool()
-		if err != nil {
-			slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
-		}
-		if !refreshed {
-			slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
-		}
+	if m.client == nil {
+		return
 	}
-	m.releaseMemory(lease.CredentialID, lease.SlotIndex, lease.Holder)
+	key := slotRedisKey(lease.CredentialID, lease.SlotIndex)
+	pinKey := pinRedisKey(lease.Holder, lease.CredentialID)
+
+	// Refresh TTLs: slot for 30 min (reclaimable sooner), pin for 24 h
+	// (stable identity across the longer session).
+	refreshed, err := releaseSlotScript.Run(ctx, m.client,
+		[]string{key, pinKey},
+		lease.Holder,
+		slotTTLSeconds,
+		sessionPinTTLSeconds,
+		lease.SlotIndex,
+	).Bool()
+	if err != nil {
+		slog.Debug("cred_fp_slot redis release failed", "cred", lease.CredentialID, "error", err)
+	}
+	if !refreshed {
+		slog.Debug("cred_fp_slot redis release: slot not owned", "cred", lease.CredentialID, "slot", lease.SlotIndex)
+	}
 }
 
 // ForceUnpin removes a holder's pin for a credential, regardless of slot state.
@@ -359,14 +363,12 @@ func (m *Manager) ForceUnpin(ctx context.Context, holder string, credentialID in
 		return
 	}
 	pinKey := pinRedisKey(holder, credentialID)
-	if m.client != nil {
-		if _, err := forceUnpinScript.Run(ctx, m.client, []string{pinKey}).Result(); err != nil {
-			slog.Debug("cred_fp_slot force-unpin redis failed", "cred", credentialID, "holder", holder, "error", err)
-		}
+	if m.client == nil {
+		return
 	}
-	m.mu.Lock()
-	delete(m.memPins, pinKey)
-	m.mu.Unlock()
+	if _, err := forceUnpinScript.Run(ctx, m.client, []string{pinKey}).Result(); err != nil {
+		slog.Debug("cred_fp_slot force-unpin redis failed", "cred", credentialID, "holder", holder, "error", err)
+	}
 }
 
 var releaseSlotScript = redis.NewScript(`
@@ -447,12 +449,10 @@ func (m *Manager) DetailedStats(ctx context.Context, credentialID int, limit *in
 	limitVal := *eff
 	slotLimit = &limitVal
 
-	if m.client != nil {
-		holders, details, healthySlots = m.detailedStatsRedis(ctx, credentialID, limitVal)
-		return slotLimit, holders, details, healthySlots
+	if m.client == nil {
+		return slotLimit, nil, nil, 0
 	}
-
-	holders, details, healthySlots = m.detailedStatsMemory(credentialID, limitVal)
+	holders, details, healthySlots = m.detailedStatsRedis(ctx, credentialID, limitVal)
 	return slotLimit, holders, details, healthySlots
 }
 
@@ -493,87 +493,42 @@ func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit in
 	return holders, details, healthySlots
 }
 
-func (m *Manager) detailedStatsMemory(credentialID, limit int) ([]string, []SlotDetail, int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	m.purgeExpiredLocked(now)
-
-	holders := make([]string, 0, limit)
-	details := make([]SlotDetail, 0, limit)
-	healthySlots := 0
-
-	for slot := 0; slot < limit; slot++ {
-		key := slotKey{credentialID: credentialID, slotIndex: slot}
-		cur, exists := m.memSlots[key]
-		if !exists {
-			details = append(details, SlotDetail{Index: slot, Holder: "", Expired: true, MemoryMode: true})
-			continue
-		}
-
-		ttlSeconds := int(time.Until(cur.exp).Seconds())
-		expired := ttlSeconds <= 0
-		if !expired {
-			healthySlots++
-			holders = append(holders, cur.holder)
-		}
-		details = append(details, SlotDetail{Index: slot, Holder: cur.holder, TTLSeconds: ttlSeconds, Expired: expired, MemoryMode: true})
-	}
-
-	return holders, details, healthySlots
-}
-
 // AvailableCount returns free slots.
 func (m *Manager) AvailableCount(ctx context.Context, credentialID int, limit *int) (int, error) {
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
 		return 0, nil
 	}
-	if m.client != nil {
-		result, err := availableCountScript.Run(ctx, m.client,
-			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
-			*eff,
-		).Int()
-		if err != nil {
-			slog.Debug("cred_fp_slot available_count script failed", "cred", credentialID, "error", err)
-			// fallback: count via pipeline
-			pipe := m.client.Pipeline()
-			cmds := make([]*redis.StringCmd, *eff)
-			for slot := 0; slot < *eff; slot++ {
-				cmds[slot] = pipe.Get(ctx, slotRedisKey(credentialID, slot))
-			}
-			if _, pipeErr := pipe.Exec(ctx); pipeErr != nil && pipeErr != redis.Nil {
-				return *eff, pipeErr
-			}
-			used := 0
-			for _, cmd := range cmds {
-				if cmd.Err() == nil {
-					used++
-				}
-			}
-			free := *eff - used
-			if free < 0 {
-				free = 0
-			}
-			return free, nil
+	if m.client == nil {
+		return 0, ErrRedisRequired
+	}
+	result, err := availableCountScript.Run(ctx, m.client,
+		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		*eff,
+	).Int()
+	if err != nil {
+		slog.Debug("cred_fp_slot available_count script failed", "cred", credentialID, "error", err)
+		pipe := m.client.Pipeline()
+		cmds := make([]*redis.StringCmd, *eff)
+		for slot := 0; slot < *eff; slot++ {
+			cmds[slot] = pipe.Get(ctx, slotRedisKey(credentialID, slot))
 		}
-		free := result
+		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil && pipeErr != redis.Nil {
+			return *eff, pipeErr
+		}
+		used := 0
+		for _, cmd := range cmds {
+			if cmd.Err() == nil {
+				used++
+			}
+		}
+		free := *eff - used
 		if free < 0 {
 			free = 0
 		}
 		return free, nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	m.purgeExpiredLocked(now)
-	used := 0
-	for k, e := range m.memSlots {
-		if k.credentialID == credentialID && e.exp.After(now) {
-			used++
-		}
-	}
-	free := *eff - used
+	free := result
 	if free < 0 {
 		free = 0
 	}
@@ -597,25 +552,11 @@ var availableCountScript = redis.NewScript(`
 `)
 
 func (m *Manager) hasPin(ctx context.Context, holder string, credentialID int) bool {
-	if m.client != nil {
-		_, err := m.client.Get(ctx, pinRedisKey(holder, credentialID)).Result()
-		return err == nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	pinKey := pinRedisKey(holder, credentialID)
-	pin, ok := m.memPins[pinKey]
-	if !ok {
+	if m.client == nil {
 		return false
 	}
-	if !pin.exp.After(now) {
-		// Pin has expired (sessionPinTTLSeconds elapsed with no activity).
-		// Drop the stale entry and report absence so the caller re-acquires.
-		delete(m.memPins, pinKey)
-		return false
-	}
-	return true
+	_, err := m.client.Get(ctx, pinRedisKey(holder, credentialID)).Result()
+	return err == nil
 }
 
 func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
@@ -851,164 +792,6 @@ var acquireLRUScript = redis.NewScript(`
 	return {1, bestSlot, bestOldHolder or ''}
 `)
 
-func (m *Manager) acquireMemory(credentialID, limit int, holder, tenantID string) (*Lease, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	m.purgeExpiredLocked(now)
-
-	gate := time.Duration(m.cfg.resolveActiveGateSeconds()) * time.Second
-	// "Active" means: the holder refreshed their slot within the
-	// last `gate` seconds, so the slot's remaining TTL is at
-	// least (slotTTLSeconds - gate). Anything below that bound is
-	// idle and preemptable.
-	activeRemaining := time.Duration(slotTTLSeconds)*time.Second - gate
-	pinKey := pinRedisKey(holder, credentialID)
-
-	// Phase 1: pin-reuse path. Active gate applies — if our pin
-	// points at a slot that some other holder is now sitting on,
-	// the gate decides whether to preempt. "Same holder" branch
-	// always succeeds (we own it).
-	if pin, ok := m.memPins[pinKey]; ok && pin.exp.After(now) {
-		key := slotKey{credentialID: credentialID, slotIndex: pin.slot}
-		cur, exists := m.memSlots[key]
-		if !exists || cur.exp.Before(now) {
-			// Slot is free (or expired) — take it.
-			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-			eg := identity.BuildEgressIdentity(credentialID, pin.slot, tenantID)
-			return &Lease{SlotIndex: pin.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-		}
-		if cur.holder == holder {
-			// Same holder, refresh TTL.
-			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-			m.memPins[pinKey] = memPinEntry{slot: pin.slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
-			eg := identity.BuildEgressIdentity(credentialID, pin.slot, tenantID)
-			return &Lease{SlotIndex: pin.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-		}
-		// Different holder on our pinned slot. Active gate?
-		if cur.exp.Sub(now) >= activeRemaining {
-			// Active: don't preempt. 5 min 内不允许抢的。
-			return nil, false
-		}
-		// Idle: preempt. (This case is rare — pin path is usually
-		// taken when the holder has been active recently; preemption
-		// here is the safety net for the "we left a pin pointing at
-		// a slot, then went away, then came back" case.)
-		//
-		// Wipe the old holder's pin: it would otherwise still
-		// point at this slot, leading to a future "same pin
-		// → same slot" Acquire that races against the new
-		// holder and either overwrites it or fails.
-		oldHolder := cur.holder
-		oldPinKey := pinRedisKey(oldHolder, credentialID)
-		delete(m.memPins, oldPinKey)
-		m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-		m.memPins[pinKey] = memPinEntry{slot: pin.slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
-		eg := identity.BuildEgressIdentity(credentialID, pin.slot, tenantID)
-		return &Lease{SlotIndex: pin.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-	}
-
-	// Phase 2 + 3: find the best slot to take.
-	//  2a. First free slot wins (cost = 0).
-	//  2b. Otherwise: LRU preempt — pick the slot whose holder has
-	//       been silent the LONGEST, but only if its remaining TTL
-	//       has dropped below the active-gate bound (i.e. idle ≥
-	//       gate). Per operator spec (2026-06-24): "长时间占用的
-	//       slot 在 slot 满时，优先被抢占". The "longest idle
-	//       first" order is the LRU implementation of that rule.
-	type candidate struct {
-		slot int
-		idle time.Duration
-		old  string
-		exp  time.Time
-	}
-	var best *candidate
-	for slot := 0; slot < limit; slot++ {
-		key := slotKey{credentialID: credentialID, slotIndex: slot}
-		cur, exists := m.memSlots[key]
-
-		if !exists || cur.exp.Before(now) {
-			// Free slot — take it immediately. No LRU bookkeeping
-			// needed; free is cheaper than preempt.
-			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-			m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
-			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-		}
-		if cur.holder == holder {
-			// Same holder, refresh TTL.
-			m.memSlots[key] = memEntry{holder: holder, exp: now.Add(time.Duration(slotTTLSeconds) * time.Second)}
-			m.memPins[pinKey] = memPinEntry{slot: slot, exp: now.Add(time.Duration(sessionPinTTLSeconds) * time.Second)}
-			eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-			return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-		}
-		// Occupied by a different holder. Eligible for preempt
-		// only if idle ≥ gate. Track the LRU-most-idle one.
-		idle := time.Duration(slotTTLSeconds)*time.Second - cur.exp.Sub(now)
-		if idle < gate {
-			// Active: skip.
-			continue
-		}
-		if best == nil || idle > best.idle {
-			best = &candidate{slot: slot, idle: idle, old: cur.holder, exp: cur.exp}
-		}
-	}
-	if best == nil {
-		// All slots active (or all slots owned by us, which would
-		// have been caught above). No preempt possible; later
-		// arrivals wait (sync_retry in routing layer).
-		return nil, false
-	}
-	// LRU preempt. Wipe the old holder's pin so it doesn't race
-	// against the new one on its next Acquire.
-	oldPinKey := pinRedisKey(best.old, credentialID)
-	delete(m.memPins, oldPinKey)
-	m.memSlots[slotKey{credentialID: credentialID, slotIndex: best.slot}] = memEntry{
-		holder: holder,
-		exp:    now.Add(time.Duration(slotTTLSeconds) * time.Second),
-	}
-	m.memPins[pinKey] = memPinEntry{
-		slot: best.slot,
-		exp:  now.Add(time.Duration(sessionPinTTLSeconds) * time.Second),
-	}
-	eg := identity.BuildEgressIdentity(credentialID, best.slot, tenantID)
-	return &Lease{SlotIndex: best.slot, Egress: &eg, CredentialID: credentialID, Holder: holder}, true
-}
-
-func (m *Manager) releaseMemory(credentialID, slotIndex int, holder string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	now := time.Now()
-	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
-	if cur, ok := m.memSlots[key]; ok && cur.holder == holder {
-		// DO NOT delete the slot. Refresh its TTL to keep the fingerprint
-		// identity alive for 24 hours (same as Redis mode).
-		m.memSlots[key] = memEntry{
-			holder: holder,
-			exp:    now.Add(time.Duration(slotTTLSeconds) * time.Second),
-		}
-		// Refresh pin TTL as well
-		pinKey := pinRedisKey(holder, credentialID)
-		m.memPins[pinKey] = memPinEntry{
-			slot: slotIndex,
-			exp:  now.Add(time.Duration(sessionPinTTLSeconds) * time.Second),
-		}
-	}
-}
-
-func (m *Manager) purgeExpiredLocked(now time.Time) {
-	for k, e := range m.memSlots {
-		if !e.exp.After(now) {
-			delete(m.memSlots, k)
-		}
-	}
-	for k, p := range m.memPins {
-		if !p.exp.After(now) {
-			delete(m.memPins, k)
-		}
-	}
-}
-
 // ResetSlots clears all slot and pin keys for a credential, resetting occupancy to zero.
 // Used by admin UI "复位" button when slots appear stuck due to:
 //   - Gateway restart before defer cleanup
@@ -1025,48 +808,26 @@ func (m *Manager) ResetSlots(ctx context.Context, credentialID int, limit *int) 
 		return 0, 0, nil
 	}
 
-	if m.client != nil {
-		// Delete all slot keys and pin keys via Lua script for atomicity
-		result, err := resetSlotsScript.Run(ctx, m.client,
-			[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
-			*eff,
-			credentialID,
-		).Result()
-		if err != nil {
-			return 0, 0, fmt.Errorf("redis reset failed: %w", err)
-		}
-		// Lua returns two integers
-		results := result.([]interface{})
-		slots := int(results[0].(int64))
-		pins := int(results[1].(int64))
-		slog.Info("cred_fp_slot reset completed",
-			"credential_id", credentialID,
-			"deleted_slots", slots,
-			"deleted_pins", pins,
-		)
-		return slots, pins, nil
+	if m.client == nil {
+		return 0, 0, ErrRedisRequired
 	}
-
-	// Memory fallback
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	deletedSlots := 0
-	deletedPins := 0
-	for k := range m.memSlots {
-		if k.credentialID == credentialID {
-			delete(m.memSlots, k)
-			deletedSlots++
-		}
+	result, err := resetSlotsScript.Run(ctx, m.client,
+		[]string{fmt.Sprintf("llmgw:cred_fp_slot:%d", credentialID)},
+		*eff,
+		credentialID,
+	).Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("redis reset failed: %w", err)
 	}
-	// Pin keys contain credentialID at the end: "llmgw:sess_cred_fp:{holder}:{credentialID}"
-	pinSuffix := fmt.Sprintf(":%d", credentialID)
-	for k := range m.memPins {
-		if strings.HasSuffix(k, pinSuffix) {
-			delete(m.memPins, k)
-			deletedPins++
-		}
-	}
-	return deletedSlots, deletedPins, nil
+	results := result.([]interface{})
+	slots := int(results[0].(int64))
+	pins := int(results[1].(int64))
+	slog.Info("cred_fp_slot reset completed",
+		"credential_id", credentialID,
+		"deleted_slots", slots,
+		"deleted_pins", pins,
+	)
+	return slots, pins, nil
 }
 
 // ReleaseSlot frees a single fingerprint slot (and its pin) for a credential.
@@ -1076,49 +837,24 @@ func (m *Manager) ReleaseSlot(ctx context.Context, credentialID, slotIndex int) 
 		return false, nil
 	}
 
-	if m.client != nil {
-		result, err := releaseFpSlotScript.Run(ctx, m.client,
-			[]string{
-				slotRedisKey(credentialID, slotIndex),
-			},
-			credentialID,
-		).Result()
-		if err != nil {
-			return false, fmt.Errorf("redis release slot failed: %w", err)
-		}
-		released := result.(int64) == 1
-		if released {
-			slog.Info("fp_slot released",
-				"credential_id", credentialID,
-				"slot_index", slotIndex,
-			)
-		}
-		return released, nil
+	if m.client == nil {
+		return false, ErrRedisRequired
 	}
-
-	// Memory fallback
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := slotKey{credentialID: credentialID, slotIndex: slotIndex}
-	entry, exists := m.memSlots[key]
-	if !exists {
-		return false, nil
+	result, err := releaseFpSlotScript.Run(ctx, m.client,
+		[]string{slotRedisKey(credentialID, slotIndex)},
+		credentialID,
+	).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis release slot failed: %w", err)
 	}
-	delete(m.memSlots, key)
-	// Also remove associated pin
-	pinSuffix := fmt.Sprintf(":%d", credentialID)
-	for k := range m.memPins {
-		if strings.HasSuffix(k, pinSuffix) {
-			delete(m.memPins, k)
-			break
-		}
+	released := result.(int64) == 1
+	if released {
+		slog.Info("fp_slot released",
+			"credential_id", credentialID,
+			"slot_index", slotIndex,
+		)
 	}
-	slog.Info("fp_slot released (memory)",
-		"credential_id", credentialID,
-		"slot_index", slotIndex,
-		"holder", entry.holder,
-	)
-	return true, nil
+	return released, nil
 }
 
 // releaseFpSlotScript Lua: GET slot key → DEL it + DEL its pin.
