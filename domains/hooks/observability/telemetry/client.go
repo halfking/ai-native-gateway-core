@@ -791,7 +791,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			ORDER BY ts DESC
 			LIMIT 1
 		)
-		UPDATE request_logs rl
+		UPDATE request_logs
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),
@@ -871,8 +871,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   -- a late success UPDATE does not blank a value set on INSERT.
 	   client_request_id = COALESCE($64, client_request_id)
 	  FROM latest
-	 WHERE rl.id = latest.id
-	   AND rl.ts = latest.ts
+	 WHERE id = latest.id
+	   AND ts = latest.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,

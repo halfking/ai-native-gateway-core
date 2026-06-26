@@ -87,7 +87,7 @@ func TestResolveRequestStatus(t *testing.T) {
 
 func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
 	const updateSQL = `
-		UPDATE request_logs rl
+		UPDATE request_logs
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),
@@ -165,6 +165,9 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	setClause := updateSQL[setIdx:fromIdx]
 	if strings.Contains(setClause, "rl.") {
 		t.Fatalf("SET clause must not reference target alias rl: %s", setClause)
+	}
+	if strings.Contains(updateSQL, "UPDATE request_logs rl") {
+		t.Fatal("UPDATE must not alias request_logs as rl")
 	}
 }
 
