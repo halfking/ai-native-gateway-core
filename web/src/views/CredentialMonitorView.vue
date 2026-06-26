@@ -907,7 +907,7 @@ onUnmounted(() => {
               <option :value="10">10秒</option>
               <option :value="30">30秒</option>
             </select>
-            <button class="btn btn-sm btn-ghost" @click="refreshDetailDrawer" title="刷新详情">
+            <button class="btn btn-sm btn-ghost" :disabled="detailLoading" @click="refreshDetailDrawer" title="刷新详情">
               <span style="font-size:16px">↻</span>
             </button>
             <button class="btn btn-ghost btn-sm" @click="selectedCred = null">关闭</button>
@@ -922,7 +922,20 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <div class="drawer-body">
+        <div class="drawer-body" :class="{ 'drawer-body-loading': detailLoading && !!(selectedCred.models || []).length }">
+          <div v-if="detailLoading && !(selectedCred.models || []).length" class="detail-loading-state">
+            <div class="detail-skeleton-grid">
+              <div v-for="idx in 4" :key="idx" class="detail-skeleton-card">
+                <div class="skeleton skeleton-title"></div>
+                <div class="skeleton skeleton-line"></div>
+                <div class="skeleton skeleton-line short"></div>
+              </div>
+            </div>
+            <div class="detail-loading-hint">正在加载凭据详情与模型明细...</div>
+          </div>
+          <div v-else-if="detailLoading" class="detail-refresh-mask">
+            <div class="detail-refresh-pill">详情刷新中...</div>
+          </div>
           <!-- ════════════ Tab 1: 概览 (Overview) ════════════ -->
           <div v-if="detailActiveTab === 'overview'" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div class="drawer-section">
@@ -1646,6 +1659,84 @@ onUnmounted(() => {
 .summary-warn .summary-value { color: var(--warning); }
 .summary-bad { border-color: rgba(248, 81, 73, 0.4); }
 .summary-bad .summary-value { color: var(--danger); }
+
+.drawer-body {
+  position: relative;
+}
+
+.drawer-body-loading {
+  min-height: 320px;
+}
+
+.detail-loading-state {
+  padding: 20px 16px 8px;
+}
+
+.detail-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.detail-skeleton-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.skeleton {
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(139, 148, 158, 0.16) 25%, rgba(139, 148, 158, 0.28) 50%, rgba(139, 148, 158, 0.16) 75%);
+  background-size: 200% 100%;
+  animation: detail-skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton-title {
+  width: 36%;
+  height: 12px;
+  margin-bottom: 14px;
+}
+
+.skeleton-line {
+  width: 100%;
+  height: 10px;
+  margin-bottom: 10px;
+}
+
+.skeleton-line.short {
+  width: 68%;
+  margin-bottom: 0;
+}
+
+.detail-loading-hint {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.detail-refresh-mask {
+  position: absolute;
+  top: 10px;
+  right: 16px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.detail-refresh-pill {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
+  color: var(--muted);
+  font-size: 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+@keyframes detail-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 /* Quick filter pills */
 .quick-filter-group {
