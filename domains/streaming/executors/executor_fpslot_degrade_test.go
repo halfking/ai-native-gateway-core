@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/redis/go-redis/v9"
 )
 
 // TestExecutor_FpSlotAllSaturated_DegradesInsteadOfFailing pins the 2026-06-23
@@ -25,10 +27,12 @@ import (
 // though the credential was otherwise healthy.
 func TestExecutor_FpSlotAllSaturated_DegradesInsteadOfFailing(t *testing.T) {
 	// FpSlots manager with a single-slot limit so we can saturate it trivially.
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	fpMgr := credentialfpslot.New(credentialfpslot.Config{
 		DefaultLimit: 1,
 		Enabled:      true,
-	}, nil)
+	}, client)
 	ctx := t.Context()
 
 	// Saturate credential 6's only slot with a different holder.
@@ -59,21 +63,21 @@ func TestExecutor_FpSlotAllSaturated_DegradesInsteadOfFailing(t *testing.T) {
 		Limiter:         lim,
 		Router:          router,
 		FpSlots:         fpMgr,
-		UpstreamTimeout:  5 * time.Second,
+		UpstreamTimeout: 5 * time.Second,
 		StreamTimeout:   10 * time.Second,
 	}
 
 	fpLimit := 1
 	cand := provider.Candidate{
-		ProviderID:    14,
-		CredentialID:  6,
-		BaseURL:       srv.URL,
-		Protocol:      "openai-completions",
-		APIKey:        "sk-test",
-		RawModel:      "MiniMax-M3",
-		FpSlotLimit:   &fpLimit,
-		Tier:          2,
-		BillingMode:   "token",
+		ProviderID:   14,
+		CredentialID: 6,
+		BaseURL:      srv.URL,
+		Protocol:     "openai-completions",
+		APIKey:       "sk-test",
+		RawModel:     "MiniMax-M3",
+		FpSlotLimit:  &fpLimit,
+		Tier:         2,
+		BillingMode:  "token",
 	}
 	// Mark available so filterAvailable keeps it (Routable=true,
 	// no BlockReason, healthy states).
@@ -114,10 +118,12 @@ func TestExecutor_FpSlotAllSaturated_DegradesInsteadOfFailing(t *testing.T) {
 // path does NOT kick in when at least one candidate has a free slot. In that
 // case the normal filtered set is used and the upstream is hit normally.
 func TestExecutor_FpSlotNotSaturated_PrefersFilteredSet(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	fpMgr := credentialfpslot.New(credentialfpslot.Config{
 		DefaultLimit: 5,
 		Enabled:      true,
-	}, nil)
+	}, client)
 
 	var upstreamHit bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -139,21 +145,21 @@ func TestExecutor_FpSlotNotSaturated_PrefersFilteredSet(t *testing.T) {
 		Limiter:         lim,
 		Router:          router,
 		FpSlots:         fpMgr,
-		UpstreamTimeout:  5 * time.Second,
+		UpstreamTimeout: 5 * time.Second,
 		StreamTimeout:   10 * time.Second,
 	}
 
 	fpLimit := 5
 	cand := provider.Candidate{
-		ProviderID:    14,
-		CredentialID:  7,
-		BaseURL:       srv.URL,
-		Protocol:      "openai-completions",
-		APIKey:        "sk-test",
-		RawModel:      "minimax-m3",
-		FpSlotLimit:   &fpLimit,
-		Tier:          2,
-		BillingMode:   "token",
+		ProviderID:   14,
+		CredentialID: 7,
+		BaseURL:      srv.URL,
+		Protocol:     "openai-completions",
+		APIKey:       "sk-test",
+		RawModel:     "minimax-m3",
+		FpSlotLimit:  &fpLimit,
+		Tier:         2,
+		BillingMode:  "token",
 	}
 	cand.Routable = true
 
