@@ -544,6 +544,10 @@ func main() {
 		routingExec.Recorder = executors.NewRouteNodeRecorder(fpSlots)
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
+		// 2026-06-26: configurable recent-session reuse window. Default
+		// is 5m (session.LastSystemSessionTTL). Operators can shorten it
+		// to reduce the chance of two unrelated clients being merged.
+		chatHandler.SetSessionReuseWindow(streaming.ParseSessionReuseWindow())
 		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
 		// Default 100 entries / 5 min TTL; override via env.
 		idempotentCap := 100
