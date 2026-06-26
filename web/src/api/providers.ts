@@ -228,7 +228,15 @@ export function getProviderCredentials(providerId: number) {
   return req<ProviderCredential[]>('GET', `/api/providers/${providerId}/credentials`)
 }
 
-export function addCredential(providerId: number, data: { api_key: string; label?: string }) {
+export function addCredential(
+  providerId: number,
+  data: {
+    api_key: string
+    label?: string
+    concurrency_limit?: number | null
+    fp_slot_limit?: number | null
+  },
+) {
   return req<{ id: number }>('POST', `/api/providers/${providerId}/credentials`, data)
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import {
   updateCredential, deleteCredential, checkCredential,
   addCredential,
@@ -10,6 +10,7 @@ import {
   getCredentialFpSlotStats, type FpSlotStats,
   type ProviderCredential, type CredentialStatus,
 } from '../../api'
+import { ApiError } from '../../api/_core'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 
 const props = defineProps<{
@@ -23,12 +24,86 @@ const saving = ref(false)
 const checking = ref(false)
 const saveMsg = ref('')
 const checkMsg = ref('')
+// saveMsgKind tags the latest saveMsg so the UI can apply a targeted
+// style (e.g. red row for constraint violations) without parsing the
+// message string. Set alongside saveMsg in formatCredentialError callers.
+const saveMsgKind = ref<string>('')
+// saveMsgRejectCtx holds the structured error.context from the latest
+// PATCH rejection so the "恢复到建议值" button can pre-fill the form
+// with the values the server says would have worked. Cleared on open
+// and after each successful save.
+const saveMsgRejectCtx = ref<{
+  attempted_concurrency?: number | null
+  attempted_fp_slot?: number | null
+  current_concurrency?: number | null
+  current_fp_slot?: number | null
+} | null>(null)
 
 const showAddCred = ref(false)
 const addCredKey = ref('')
 const addCredLabel = ref('')
+// Add-modal concurrency / fp-slot fields. Defaults mirror the server-side
+// handler (admin/provider_credential.go addCredential) and the
+// auto_set_fp_slot_limit trigger (migration 039) so the form shows a
+// usable starting point that satisfies credentials_fp_slot_vs_concurrency.
+const DEFAULT_CONCURRENCY = 10
+const DEFAULT_FP_SLOT = 20
+const addCredConcurrency = ref<number | null>(DEFAULT_CONCURRENCY)
+const addCredFpSlot = ref<number | null>(DEFAULT_FP_SLOT)
+// Set to true once the user manually edits the fp-slot input. While false,
+// the fp-slot value tracks the auto-computed default (max(1, floor(concurrency/4)))
+// so changing concurrency also updates fp-slot. Once the user has "taken
+// control" of the field, we respect their override and stop auto-syncing.
+const addCredFpSlotTouched = ref(false)
 const addCredSaving = ref(false)
 const addCredErr = ref('')
+const addCredErrKind = ref<string>('')
+// addCredRejectCtx captures the structured error.context from a
+// constraint-rejection 400, so the "恢复到建议值" button can pre-fill
+// the input with the values the server says would have worked. Cleared
+// whenever the user starts a new attempt.
+const addCredRejectCtx = ref<{
+  attempted_concurrency?: number | null
+  attempted_fp_slot?: number | null
+  current_concurrency?: number | null
+  current_fp_slot?: number | null
+} | null>(null)
+
+// Auto-computed fp-slot hint based on the current concurrency input. Mirrors
+// the auto_set_fp_slot_limit trigger: GREATEST(1, concurrency_limit / 4).
+function autoFpSlot(concurrency: number | null | undefined): number {
+  if (concurrency == null || concurrency <= 0) return DEFAULT_FP_SLOT
+  return Math.max(1, Math.floor(concurrency / 4))
+}
+const addCredFpSlotHint = computed(() => autoFpSlot(addCredConcurrency.value))
+
+// When the concurrency input changes, keep fp-slot in sync unless the user
+// has explicitly edited it. Watch deep to also catch clears-to-empty.
+watch(addCredConcurrency, () => {
+  if (!addCredFpSlotTouched.value) {
+    addCredFpSlot.value = addCredFpSlotHint.value
+  }
+})
+
+// Edit-side: same auto-suggest behavior for the credentials drawer. The
+// `selected` object is a deep-cloned ProviderCredential bound to many
+// fields, so we drive the auto-update with a per-credential touched flag
+// that resets whenever the drawer opens a different credential. While
+// untouched, changing concurrency also re-derives fp_slot_limit (even from
+// null/unlimited) so the form always shows a sensible value. The user can
+// override the field manually; once they do, the watcher stops syncing.
+const selectedFpSlotTouched = ref(false)
+const selectedFpSlotHint = computed(() =>
+  selected.value ? autoFpSlot(selected.value.concurrency_limit) : DEFAULT_FP_SLOT,
+)
+watch(
+  () => selected.value?.concurrency_limit,
+  () => {
+    if (selected.value && !selectedFpSlotTouched.value) {
+      selected.value.fp_slot_limit = selectedFpSlotHint.value
+    }
+  },
+)
 
 const fpSlotStats = ref<FpSlotStats | null>(null)
 const fpSlotStatsLoading = ref(false)
@@ -118,36 +193,62 @@ function tagsText(c: ProviderCredential) {
 
 function openDrawer(c: ProviderCredential) {
   selected.value = JSON.parse(JSON.stringify(c)) as ProviderCredential
+  // Reset the fp-slot override flag so the auto-suggest kicks in fresh
+  // for this credential. Subsequent edits to fp_slot_limit by the user
+  // will flip this back to true and stop the watcher from overwriting.
+  selectedFpSlotTouched.value = false
   saveMsg.value = ''
+  saveMsgKind.value = ''
+  saveMsgRejectCtx.value = null
   checkMsg.value = ''
 }
 
 function closeDrawer() {
   selected.value = null
   saveMsg.value = ''
+  saveMsgKind.value = ''
+  saveMsgRejectCtx.value = null
   checkMsg.value = ''
 }
 
 function openAddCred() {
   addCredKey.value = ''
   addCredLabel.value = ''
+  addCredConcurrency.value = DEFAULT_CONCURRENCY
+  addCredFpSlot.value = autoFpSlot(DEFAULT_CONCURRENCY)
+  addCredFpSlotTouched.value = false
   addCredErr.value = ''
+  addCredErrKind.value = ''
+  addCredRejectCtx.value = null
   showAddCred.value = true
 }
 
 async function submitAddCred() {
   if (!addCredKey.value) { addCredErr.value = '请输入 API Key'; return }
+  // Client-side pre-check for credentials_fp_slot_vs_concurrency so we
+  // surface a friendly 400 before round-tripping to the server. Empty
+  // fields are passed as null so the server trigger fills the default.
+  if (addCredConcurrency.value != null && addCredFpSlot.value != null
+      && addCredFpSlot.value > addCredConcurrency.value) {
+    addCredErr.value = `指纹槽 (${addCredFpSlot.value}) 不能超过并发上限 (${addCredConcurrency.value})`
+    return
+  }
   addCredSaving.value = true
   addCredErr.value = ''
   try {
     await addCredential(props.provider.id, {
       api_key: addCredKey.value,
       label: addCredLabel.value || undefined,
+      concurrency_limit: addCredConcurrency.value ?? null,
+      fp_slot_limit: addCredFpSlot.value ?? null,
     })
     showAddCred.value = false
     emit('refresh')
   } catch (e: unknown) {
-    addCredErr.value = e instanceof Error ? e.message : '添加失败'
+    const formatted = formatCredentialError(e, '添加失败')
+    addCredErr.value = formatted.message
+    addCredErrKind.value = formatted.kind
+    addCredRejectCtx.value = formatted.context
   } finally {
     addCredSaving.value = false
   }
@@ -156,6 +257,13 @@ async function submitAddCred() {
 async function saveSelected() {
   const c = selected.value
   if (!c) return
+  // Client-side pre-check for credentials_fp_slot_vs_concurrency so we
+  // surface a friendly 400 before round-tripping to the server.
+  if (c.concurrency_limit != null && c.fp_slot_limit != null
+      && (c.fp_slot_limit as number) > (c.concurrency_limit as number)) {
+    saveMsg.value = `指纹槽 (${c.fp_slot_limit}) 不能超过并发上限 (${c.concurrency_limit})`
+    return
+  }
   saving.value = true
   saveMsg.value = ''
   try {
@@ -172,10 +280,113 @@ async function saveSelected() {
     emit('refresh')
     closeDrawer()
   } catch (e: unknown) {
-    saveMsg.value = e instanceof Error ? e.message : '保存失败'
+    const formatted = formatCredentialError(e, '保存失败')
+    saveMsg.value = formatted.message
+    saveMsgKind.value = formatted.kind
+    saveMsgRejectCtx.value = formatted.context
   } finally {
     saving.value = false
   }
+}
+
+// formatCredentialError turns a thrown error from the credential API
+// into a user-friendly Chinese message plus a kind tag the UI can read
+// to apply a targeted style. When the server returns the structured
+// envelope (code = "fp_slot_exceeds_concurrency") we render the same
+// wording the client-side pre-check uses, so users see consistent copy
+// regardless of which side caught the violation.
+//
+// Returns { message, kind, context }. kind is:
+//   ''                     — generic error
+//   'fp_slot_exceeds_concurrency' — constraint violation
+// context is the structured payload from the server (or null when absent)
+// so the caller can render a "恢复到建议值" button.
+function formatCredentialError(e: unknown, fallback: string): {
+  message: string
+  kind: string
+  context: {
+    attempted_concurrency?: number | null
+    attempted_fp_slot?: number | null
+    current_concurrency?: number | null
+    current_fp_slot?: number | null
+  } | null
+} {
+  if (e instanceof ApiError && e.code === 'fp_slot_exceeds_concurrency') {
+    const ctx = (e.context && typeof e.context === 'object') ? e.context as any : null
+    const ac = ctx?.attempted_concurrency
+    const af = ctx?.attempted_fp_slot
+    if (ac != null && af != null) {
+      return {
+        message: `指纹槽 (${af}) 不能超过并发上限 (${ac})`,
+        kind: 'fp_slot_exceeds_concurrency',
+        context: ctx,
+      }
+    }
+    return { message: e.message, kind: 'fp_slot_exceeds_concurrency', context: ctx }
+  }
+  return {
+    message: e instanceof Error ? e.message : fallback,
+    kind: '',
+    context: null,
+  }
+}
+
+// Reset the edit-side fp_slot_limit to the auto-suggested value and
+// re-enable the watcher. Bound to the "恢复建议值" affordance shown when
+// the user has manually overridden the field.
+function resetSelectedFpSlot() {
+  if (!selected.value) return
+  selected.value.fp_slot_limit = selectedFpSlotHint.value
+  selectedFpSlotTouched.value = false
+}
+
+// recoverFromRejection is the "一键恢复到建议值" handler. The server's
+// structured 400 payload carries the *current* row values, which is the
+// best signal of "what would actually pass" — auto-computed from the
+// row's own concurrency_limit. We restore those into the form, drop
+// the touched flags so the watcher re-engages, and clear the rejection
+// banner so the user can re-submit. Falls back to the local autoFpSlot
+// helper if the server context is missing or invalid.
+function recoverFromRejection(side: 'edit' | 'add') {
+  const ctx = side === 'edit' ? saveMsgRejectCtx.value : addCredRejectCtx.value
+  // Prefer the server's current_* values; they reflect the row state at
+  // rejection time, which is more reliable than recomputing from a stale
+  // concurrency_limit input the user may have edited since.
+  const serverConcurrency = ctx?.current_concurrency ?? null
+  const serverFpSlot = ctx?.current_fp_slot ?? null
+
+  if (side === 'add') {
+    if (serverConcurrency != null) addCredConcurrency.value = serverConcurrency
+    if (serverFpSlot != null) {
+      addCredFpSlot.value = serverFpSlot
+    } else {
+      // The row had no fp_slot (unlimited). Reset to the auto value for
+      // the (possibly newly-set) concurrency so the user gets a usable
+      // starting point.
+      addCredFpSlot.value = autoFpSlot(addCredConcurrency.value)
+    }
+    addCredFpSlotTouched.value = false
+    addCredErr.value = ''
+    addCredErrKind.value = ''
+    addCredRejectCtx.value = null
+    return
+  }
+
+  // side === 'edit'
+  if (!selected.value) return
+  if (serverConcurrency != null) selected.value.concurrency_limit = serverConcurrency
+  if (serverFpSlot != null) {
+    selected.value.fp_slot_limit = serverFpSlot
+  } else {
+    selected.value.fp_slot_limit = selectedFpSlotHint.value
+  }
+  // Re-enable the auto-sync watcher so subsequent concurrency edits
+  // re-derive fp_slot; the user can still flip it back via the inline
+  // "恢复建议值" affordance next to the input.
+  selectedFpSlotTouched.value = false
+  saveMsg.value = ''
+  saveMsgKind.value = ''
+  saveMsgRejectCtx.value = null
 }
 
 async function checkSelected() {
@@ -553,11 +764,25 @@ function onTagsInput(ev: Event) {
                   v-model.number="selected.fp_slot_limit"
                   type="number"
                   min="1"
-                  :max="selected.concurrency_limit || 100"
+                  :max="selected.concurrency_limit && selected.concurrency_limit > 0 ? selected.concurrency_limit : 10000"
                   class="field-input"
-                  placeholder="例如: 25"
-                  :title="`范围 1 ~ ${selected.concurrency_limit || 100}`"
+                  :placeholder="`建议: ${selectedFpSlotHint}`"
+                  :title="`建议 ${selectedFpSlotHint}（并发÷4，至少 1）`"
+                  @input="selectedFpSlotTouched = true"
                 />
+                <div class="form-hint" style="display:flex;justify-content:space-between;align-items:center">
+                  <span>
+                    <template v-if="selectedFpSlotTouched">已手动设置；改动并发不会再自动调整</template>
+                    <template v-else>建议 {{ selectedFpSlotHint }}（并发÷4，向下取整，至少 1）</template>
+                  </span>
+                  <button
+                    v-if="selectedFpSlotTouched && selected.fp_slot_limit !== selectedFpSlotHint"
+                    class="btn btn-sm btn-ghost"
+                    type="button"
+                    @click="resetSelectedFpSlot"
+                    title="恢复到根据并发自动计算的建议值"
+                  >恢复建议值</button>
+                </div>
                 <div v-if="selected.fp_slot_limit != null" class="btn-row" style="margin-top:4px">
                   <button class="btn btn-sm btn-warning-outline" @click="resetFpSlots" title="清空所有占用的指纹槽">
                     复位槽位
@@ -566,7 +791,15 @@ function onTagsInput(ev: Event) {
                     {{ fpSlotStatsLoading ? '加载中…' : '查看详情' }}
                   </button>
                 </div>
-                <div v-if="saveMsg && saveMsg.includes('fp_slot_limit')" class="cell-sub cell-sub--danger">{{ saveMsg }}</div>
+                <div v-if="saveMsg && saveMsgKind === 'fp_slot_exceeds_concurrency'" class="cell-sub cell-sub--danger" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                  <span>{{ saveMsg }}</span>
+                  <button
+                    class="btn btn-sm btn-warning-outline"
+                    type="button"
+                    @click="recoverFromRejection('edit')"
+                    title="把并发和槽位恢复到服务器上一次接受的值"
+                  >恢复到建议值</button>
+                </div>
               </div>
             </div>
             <div class="field-grid" style="margin-top:8px">
@@ -646,7 +879,16 @@ function onTagsInput(ev: Event) {
     <div class="modal-overlay" v-if="showAddCred" @click.self="showAddCred = false">
       <div class="modal" style="max-width:400px" @click.stop>
         <h3>添加凭据 — {{ provider?.display_name }}</h3>
-        <div v-if="addCredErr" class="alert alert-danger">{{ addCredErr }}</div>
+        <div v-if="addCredErr" class="alert alert-danger" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span>{{ addCredErr }}</span>
+          <button
+            v-if="addCredErrKind === 'fp_slot_exceeds_concurrency'"
+            class="btn btn-sm btn-warning-outline"
+            type="button"
+            @click="recoverFromRejection('add')"
+            title="把表单恢复到服务器上一次接受的值"
+          >恢复到建议值</button>
+        </div>
         <div class="form-group">
           <label>API Key</label>
           <input v-model="addCredKey" type="password" placeholder="sk-…" autocomplete="off" />
@@ -654,6 +896,32 @@ function onTagsInput(ev: Event) {
         <div class="form-group">
           <label>标签（可选）</label>
           <input v-model="addCredLabel" placeholder="如: 生产密钥" />
+        </div>
+        <div class="form-group" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <label>并发上限（0=不限）</label>
+            <input
+              v-model.number="addCredConcurrency"
+              type="number"
+              min="0"
+              placeholder="如: 10"
+            />
+            <div class="form-hint">凭据同时能跑多少请求</div>
+          </div>
+          <div>
+            <label>指纹槽</label>
+            <input
+              v-model.number="addCredFpSlot"
+              type="number"
+              min="1"
+              :max="addCredConcurrency && addCredConcurrency > 0 ? addCredConcurrency : 10000"
+              :placeholder="`建议: ${addCredFpSlotHint}`"
+              @input="addCredFpSlotTouched = true"
+            />
+            <div class="form-hint">
+              建议 {{ addCredFpSlotHint }}（并发÷4，向下取整，至少 1）
+            </div>
+          </div>
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" @click="showAddCred = false">取消</button>
@@ -689,6 +957,11 @@ function onTagsInput(ev: Event) {
 }
 .cred-meta,
 .cell-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.form-hint {
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;

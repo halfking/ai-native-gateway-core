@@ -31,6 +31,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -63,9 +64,15 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.ConcurrencyLimit != nil {
 		concurrencyLimit = *req.ConcurrencyLimit
 	}
-	fpSlotLimit := 20 // 2026-06-24: 5 → 20, matches DefaultDefaultLimit
+	// When the request omits fp_slot_limit, pass NULL so the
+	// auto_set_fp_slot_limit trigger (migration 039) can compute the right
+	// ratio as GREATEST(1, concurrency_limit / 4). Sending a hard-coded
+	// value here would bypass the trigger and could violate the
+	// credentials_fp_slot_vs_concurrency CHECK constraint — e.g. the prior
+	// default of 20 paired with concurrency_limit=10 yields 20 > 10.
+	var fpSlotLimit *int
 	if req.FpSlotLimit != nil {
-		fpSlotLimit = *req.FpSlotLimit
+		fpSlotLimit = req.FpSlotLimit
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -310,6 +317,52 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// Pre-validate the credentials_fp_slot_vs_concurrency invariant before
+	// applying any UPDATE. The DB CHECK constraint enforces
+	// `fp_slot_limit <= concurrency_limit` (or NULL on either side), so
+	// when a PATCH changes one of the two we have to look at the *combined*
+	// post-update state — not just the value being written. Without this
+	// pre-check a PATCH that only lowers `concurrency_limit` would crash
+	// the UPDATE with SQLSTATE 23514 instead of returning a friendly 400.
+	// See migration 039 for the constraint definition.
+	if req.ConcurrencyLimit != nil || req.FpSlotLimit != nil {
+		var currentConcurrency, currentFpSlot sql.NullInt32
+		err := h.db.QueryRow(ctx,
+			`SELECT concurrency_limit, fp_slot_limit FROM credentials WHERE id = $1 AND provider_id = $2`,
+			credID, providerID,
+		).Scan(&currentConcurrency, &currentFpSlot)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to fetch credential: "+err.Error())
+			return
+		}
+		// Effective post-update values: incoming wins, otherwise the row's
+		// current value. Both ends may remain NULL (no constraint applies).
+		effConcurrency := effectiveInt(req.ConcurrencyLimit, currentConcurrency)
+		effFpSlot := effectiveInt(req.FpSlotLimit, currentFpSlot)
+		if err := validateFpSlotVsConcurrency(effConcurrency, effFpSlot); err != nil {
+			// Audit the rejected PATCH so an operator can later answer
+			// "did anyone try to lower concurrency below the slot pool?"
+			// without trawling request logs. Setting key carries both the
+			// attempted transition and the values that triggered the
+			// rejection; old/new are JSONB for downstream filtering.
+			settings.WriteAudit(ctx, h.db, settings.AuditEntry{
+				SettingKey:   fmt.Sprintf("credential:%d:rejected_constraint", credID),
+				Action:       "rejected_constraint",
+				OperatorUser: actorFromRequest(r),
+				OperatorRole: "admin",
+				ClientIP:     clientIPFromRequest(r),
+				OldValue:     jsonOrNull(currentConcurrency),
+				NewValue:     rejectedTransitionJSON(currentConcurrency, currentFpSlot, req.ConcurrencyLimit, req.FpSlotLimit),
+			})
+			// Return a structured 400 so callers can render a targeted
+			// message without string-parsing. The `error.detail` string
+			// stays human-readable; `error.code` and `error.context`
+			// carry machine-readable info for the UI.
+			writeConstraintError(w, err, req.ConcurrencyLimit, req.FpSlotLimit, currentConcurrency, currentFpSlot)
+			return
+		}
+	}
+
 	if req.Label != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET label = $1 WHERE id = $2 AND provider_id = $3`, *req.Label, credID, providerID)
@@ -324,23 +377,12 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 	if req.FpSlotLimit != nil {
 		newLimit := *req.FpSlotLimit
-		// Constraint: 1 <= fp_slot_limit <= concurrency_limit (or 100 if unlimited)
-		var currentConcurrency sql.NullInt32
-		err := h.db.QueryRow(ctx, `SELECT concurrency_limit FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&currentConcurrency)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to fetch credential: "+err.Error())
-			return
-		}
 		// System max from settings_kv
 		var sysMax sql.NullInt32
 		_ = h.db.QueryRow(ctx, `SELECT (value #>> '{}')::int4 FROM settings_kv WHERE key = 'llmgw_fp_slot_max_per_credential'`).Scan(&sysMax)
 		maxAllowed := 100
 		if sysMax.Valid {
 			maxAllowed = int(sysMax.Int32)
-		}
-		if currentConcurrency.Valid && newLimit > int(currentConcurrency.Int32) {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) cannot exceed concurrency_limit (%d)", newLimit, currentConcurrency.Int32))
-			return
 		}
 		if newLimit > maxAllowed {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("fp_slot_limit (%d) exceeds system max (%d)", newLimit, maxAllowed))
@@ -354,32 +396,26 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		var oldLimit sql.NullInt32
 		_ = h.db.QueryRow(ctx, `SELECT fp_slot_limit FROM credentials WHERE id = $1`, credID).Scan(&oldLimit)
 		//nolint:errcheck // best-effort exec, non-critical
-		_, err = h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, newLimit, credID, providerID)
+		_, err := h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, newLimit, credID, providerID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 			return
 		}
-		// Audit log (best-effort, no PII)
-		actor := "admin"
-		if v := r.Header.Get("X-Admin-User"); v != "" {
-			actor = v
-		}
-		oldVal := "null"
-		if oldLimit.Valid {
-			oldVal = strconv.Itoa(int(oldLimit.Int32))
-		}
-		//nolint:errcheck // audit log is best-effort
-		h.db.Exec(ctx, `
-			INSERT INTO settings_history (key, old_value, new_value, changed_by, source)
-			VALUES ($1, $2, $3, $4, 'api')`,
-			fmt.Sprintf("credential:%d:fp_slot_limit", credID),
-			oldVal,
-			strconv.Itoa(newLimit),
-			actor)
-	}
-	if req.FpSlotLimit != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE credentials SET fp_slot_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.FpSlotLimit, credID, providerID)
+		// Audit log (best-effort, no PII). Goes through settings.WriteAudit
+		// so we hit the real settings_audit table (migration 023) — the
+		// earlier hand-rolled INSERT targeted a non-existent
+		// `settings_history` table and silently failed.
+		oldJSON := jsonOrNull(oldLimit)
+		newJSON := jsonOrNull(sql.NullInt32{Int32: int32(newLimit), Valid: true})
+		settings.WriteAudit(ctx, h.db, settings.AuditEntry{
+			SettingKey:   fmt.Sprintf("credential:%d:fp_slot_limit", credID),
+			Action:       "update",
+			OperatorUser: actorFromRequest(r),
+			OperatorRole: "admin",
+			ClientIP:     clientIPFromRequest(r),
+			OldValue:     oldJSON,
+			NewValue:     newJSON,
+		})
 	}
 	if req.EffectiveAt != nil {
 		//nolint:errcheck // best-effort exec, non-critical
@@ -608,4 +644,131 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 		}
 	}
 	return result
+}
+
+// effectiveInt returns the post-update value of an integer column: the
+// incoming PATCH value wins, otherwise the row's current value. Returns
+// nil only when both sides are absent. Pulled out of updateCredential so
+// the constraint pre-check is testable without a live DB pool.
+func effectiveInt(incoming *int, current sql.NullInt32) *int {
+	if incoming != nil {
+		return incoming
+	}
+	if current.Valid {
+		v := int(current.Int32)
+		return &v
+	}
+	return nil
+}
+
+// validateFpSlotVsConcurrency mirrors the DB CHECK constraint
+// credentials_fp_slot_vs_concurrency (migration 039). Returns nil when
+// the pair is acceptable, or a descriptive error suitable for an HTTP 400
+// response. The constraint allows either side to be NULL.
+func validateFpSlotVsConcurrency(concurrency, fpSlot *int) error {
+	if concurrency == nil || fpSlot == nil {
+		return nil
+	}
+	if *fpSlot > *concurrency {
+		return fmt.Errorf(
+			"fp_slot_limit (%d) cannot exceed concurrency_limit (%d) after this update",
+			*fpSlot, *concurrency,
+		)
+	}
+	return nil
+}
+
+// actorFromRequest returns the X-Admin-User header value if set, else
+// "admin". Used as the operator_user field for settings_audit rows so
+// we can later attribute rejected / applied updates to a specific admin.
+func actorFromRequest(r *http.Request) string {
+	if v := r.Header.Get("X-Admin-User"); v != "" {
+		return v
+	}
+	return "admin"
+}
+
+// clientIPFromRequest — see admin/auth.go for the canonical impl.
+// (Reused here so audit entries written from updateCredential pick up
+// the same X-Forwarded-For / X-Real-IP / RemoteAddr priority order.)
+
+// jsonOrNull marshals a sql.NullInt32 to a JSON number, or returns
+// explicit JSON null when the value is absent. settings_audit stores
+// old/new_value as JSONB, so the audit reader gets a uniform shape.
+func jsonOrNull(v sql.NullInt32) json.RawMessage {
+	if !v.Valid {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(strconv.FormatInt(int64(v.Int32), 10))
+}
+
+// rejectedTransitionJSON builds the new_value payload for a constraint
+// rejection audit entry. We record the attempted post-update pair plus
+// the individual incoming values so an operator can see exactly which
+// PATCH triggered the 400 without re-running the request.
+//
+// Note: sql.NullInt32's default MarshalJSON emits {"Int32":N,"Valid":B},
+// which is awkward to query. We flatten each to either a JSON number or
+// JSON null via a custom struct so the audit log reads naturally.
+func rejectedTransitionJSON(
+	curConcurrency, curFpSlot sql.NullInt32,
+	incomingConcurrency, incomingFpSlot *int,
+) json.RawMessage {
+	payload := struct {
+		AttemptedConcurrency       *int `json:"attempted_concurrency"`
+		AttemptedFpSlot            *int `json:"attempted_fp_slot"`
+		CurrentConcurrency *int `json:"current_concurrency"`
+		CurrentFpSlot      *int `json:"current_fp_slot"`
+	}{
+		AttemptedConcurrency: incomingConcurrency,
+		AttemptedFpSlot:      incomingFpSlot,
+		CurrentConcurrency:   nullInt32ToPtr(curConcurrency),
+		CurrentFpSlot:        nullInt32ToPtr(curFpSlot),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return b
+}
+
+// nullInt32ToPtr turns a sql.NullInt32 into a *int for clean JSON
+// encoding: nil → JSON null, valid → JSON number. Avoids the awkward
+// {"Int32":N,"Valid":B} shape that NullInt32's default Marshal emits.
+func nullInt32ToPtr(v sql.NullInt32) *int {
+	if !v.Valid {
+		return nil
+	}
+	n := int(v.Int32)
+	return &n
+}
+
+// writeConstraintError emits a 400 with the same `{"error": {"detail":
+// "..."}}` envelope the rest of the admin handlers use, plus two extra
+// fields the UI can read without parsing the message string:
+//
+//	error.code     — machine-readable, e.g. "fp_slot_exceeds_concurrency"
+//	error.context  — { attempted_concurrency, attempted_fp_slot,
+//	                   current_concurrency, current_fp_slot }
+//
+// The original `detail` field is preserved so older clients and the
+// generic req() error extractor keep working unchanged.
+func writeConstraintError(
+	w http.ResponseWriter,
+	cause error,
+	attemptedConcurrency, attemptedFpSlot *int,
+	currentConcurrency, currentFpSlot sql.NullInt32,
+) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error": map[string]any{
+			"detail": cause.Error(),
+			"code":   "fp_slot_exceeds_concurrency",
+			"context": map[string]any{
+				"attempted_concurrency": attemptedConcurrency,
+				"attempted_fp_slot":      attemptedFpSlot,
+				"current_concurrency":    nullInt32ToPtr(currentConcurrency),
+				"current_fp_slot":        nullInt32ToPtr(currentFpSlot),
+			},
+		},
+	})
 }
