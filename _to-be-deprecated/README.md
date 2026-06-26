@@ -10,31 +10,36 @@
 
 ## 1. 当前状态
 
+> **2026-06-26 replacement audit update**: `_to-be-deprecated/` 本身就是待删除目录。
+> 当前不再把文件二次移动到新目录。删除候选按
+> `docs/architecture/legacy-replacement-audit-20260626.md` 维护。
+
 ### 1.1 已迁移 (本目录内)
 | 路径 | 原位置 | 性质 | 迁移日期 |
 |------|--------|------|----------|
 | `observability/siem/` | `observability/siem/` | NEW (2026-06-24) 但 0 外部 import, 未集成 | 2026-06-26 |
 | `orphan-tests/model-routing-test.go` | 顶层 `model-routing-test.go` | 顶层 package main 孤立测试运行器, 非测试文件但按测试用 | 2026-06-26 |
 
-### 1.2 待迁移 (R1.13 触发, 当前阻塞)
+### 1.2 待删除包状态 (R1.13 触发, 当前阻塞)
 | 老包 | 新位置 | 状态 | 外部 import 数 | 阻塞原因 |
 |------|--------|------|---------------|----------|
-| `audit/` | `domains/hooks/audit/` | ✅ 新包已上线 | **46** | cmd/gateway/main.go 大量使用 |
-| `auth/` | `domains/authentication/` | ✅ 新包已上线 | **19** | cmd/gateway/main.go 仍在用 |
-| `circuit/` | `domains/credential/breaker.go` | ✅ 重构完成 | **19** | cmd/gateway/main.go 仍在用 |
-| `compressor/` | `domains/hooks/compression/` | ✅ 新包已上线 (135+ 文件) | **6** | cmd/gateway/main.go 仍在用 |
-| `credentialstate/` | `domains/credential/writer.go` | ✅ 重构完成 | **6** | cmd/gateway/main.go 仍在用 |
-| `identity/` | `domains/identity/` | ✅ 新包已上线 | **18** | cmd/gateway/main.go 仍在用 |
-| `limiter/` | `domains/credential/limiter.go` | ✅ 重构完成 | **22** | cmd/gateway/main.go 仍在用 |
-| `memora/` | `domains/integration/` (部分) | ✅ 部分迁移 | **18** | cmd/gateway/main.go 仍在用 |
-| `relay/` | `domains/streaming/` + `domains/transformation/anthropic/` | ✅ 新包已上线 | **4** | cmd/gateway/main.go 仍在用 |
-| `routing/` | `domains/streaming/` + `domains/routing/` | ✅ 新包已上线 | **13** | cmd/gateway/main.go 仍在用 |
-| `sessions/` | `domains/session/` | ✅ 新包已上线 | **18** | cmd/gateway/main.go 仍在用 |
-| `telemetry/` | `domains/hooks/observability/telemetry/` | ✅ 重构完成 | **18** | cmd/gateway/main.go 仍在用 |
-| `transform/` | `domains/transformation/transform*.go` | ✅ 重构完成 | **24** | cmd/gateway/main.go 仍在用 |
-| `transport/` | `domains/transformation/transport*.go` | ✅ 重构完成 | **1** | cmd/gateway/main.go 仍在用 |
+| `audit/` | `domains/hooks/audit/` | ✅ 新包已上线 | **0** | 旧 `relay/routing/transport` 内部仍引用 |
+| `auth/` | `domains/authentication/` | ✅ 新包已上线 | **0** | 旧 `relay/sessions` 内部仍引用 |
+| `circuit/` | `domains/credential/breaker.go` | ✅ 重构完成 | **0** | 旧 `relay/routing` 内部仍引用 |
+| `compressor/` | `domains/hooks/compression/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
+| `credentialstate/` | `domains/credential/writer.go` | ✅ 重构完成 | **0** | 旧 `routing` 内部仍引用 |
+| `identity/` | `domains/identity/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
+| `limiter/` | `domains/credential/limiter.go` | ✅ 重构完成 | **0** | 旧 `relay/routing` 内部仍引用 |
+| `memora/` | `domains/integration/` (部分) | ✅ 部分迁移 | **0** | 旧 `compressor/routing` 内部仍引用 |
+| `relay/` | `domains/streaming/` + `domains/transformation/anthropic/` | ✅ 新包已上线 | **0** | 旧 `transport` 内部仍引用 |
+| `routing/` | `domains/streaming/` + `domains/routing/` | ✅ 新包已上线 | **0** | 旧 `relay` 内部仍引用 |
+| `sessions/` | `domains/session/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
+| `telemetry/` | `domains/hooks/observability/telemetry/` | ✅ 重构完成 | **0** | ✅ 可删除候选：无外部/内部反向引用 |
+| `transform/` | `domains/transformation/transform*.go` | ✅ 重构完成 | **0** | 旧 `compressor/relay/routing` 内部仍引用 |
+| `transport/` | `domains/transformation/transport*.go` | ✅ 重构完成 | **0** | ✅ 可删除候选：无外部/内部反向引用 |
 
-**汇总**: 14 个老包共 ~220 个 .go 文件 (含 ~150 测试文件), 等 R1.13 切流量后整体迁入本目录。
+**汇总**: 14 个老包已在 `_to-be-deprecated/` 待删除目录内。当前仅
+`telemetry/` 与 `transport/` 是可删除候选；其余老包仍被旧包内部依赖链引用。
 
 ---
 
