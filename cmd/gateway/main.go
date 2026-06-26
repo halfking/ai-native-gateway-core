@@ -25,16 +25,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/audit"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/auth"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/circuit"
-	oldcompressor "github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/limiter"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -44,11 +35,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
-	anthropictransform "github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -141,11 +136,11 @@ func main() {
 		}
 	}()
 
-	cm := circuit.NewManager()
-	lim := limiter.New()
+	cm := credential.NewManager()
+	lim := credential.NewLimiter()
 
-	matrixPath := transform.DefaultMatrixPath()
-	matrix := transform.New(matrixPath)
+	matrixPath := transformation.DefaultMatrixPath()
+	matrix := transformation.New(matrixPath)
 
 	resolver := resolve.NewResolver("", 120*time.Second)
 
@@ -162,14 +157,14 @@ func main() {
 
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
-	chatHandler := relay.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
-	healthHandler := relay.NewHealthHandler(cm, lim, upClient.Proxy())
+	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy())
 	modelsHandler := streaming.NewModelsHandler()
-	messagesHandler := relay.NewMessagesHandler(chatHandler)
-	responsesHandler := relay.NewResponsesHandler(chatHandler)
+	messagesHandler := streaming.NewMessagesHandler(chatHandler)
+	responsesHandler := streaming.NewResponsesHandler(chatHandler)
 
 	// ── Tenant model policy (Round 48, 2026-06-21) ─────────────────
-	// Single Checkerr singleton shared by relay.ChatHandler (hot
+	// Single Checkerr singleton shared by streaming.ChatHandler (hot
 	// path enforcement) and admin.Handler (write-path Invalidate).
 	// Pre-warm at startup so the first request doesn't pay the
 	// singleflight reload cost.
@@ -190,21 +185,21 @@ func main() {
 	}
 
 	// ── Redis (sessions + credential fp slots + pending response cache) ─
-	var sessionMgr *sessions.Manager
+	var sessionMgr *session.Manager
 	var fpSlotRedis *redis.Client
 	var pendingStore *pending.Store
-	var redisClientForCache *sessions.RedisClient
-	var routingExec *routing.Executor
-	var lastSystemSession *sessions.LastSystemSessionIndex
-	var sessionPref *sessions.SessionPreference
+	var redisClientForCache *session.RedisClient
+	var routingExec *executors.Executor
+	var lastSystemSession *session.LastSystemSessionIndex
+	var sessionPref *session.SessionPreference
 	if cfg.RedisAddr != "" {
-		redisClient := sessions.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		pingErr := redisClient.Ping(pingCtx)
 		pingCancel()
 		if pingErr == nil {
 			ttl := time.Duration(cfg.SessionTTLHours) * time.Hour
-			sessionMgr = sessions.NewManager(redisClient, ttl)
+			sessionMgr = session.NewManager(redisClient, ttl)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
 			fpSlotRedis = redis.NewClient(&redis.Options{
@@ -212,15 +207,9 @@ func main() {
 				Password: cfg.RedisPassword,
 				DB:       cfg.RedisDB,
 			})
-			// Track C (2026-06-18): pending response cache for client
-			// reconnect and vendor async retry. Uses the same Redis
-			// connection as fpSlotRedis (both are independent *redis.Client
-			// sharing the same backing server). nil is a valid state
-			// (Store becomes a no-op); explicit construction here so
-			// the GET endpoint is available whenever Redis is up.
 			pendingStore = pending.NewStore(fpSlotRedis, ttl)
-			lastSystemSession = sessions.NewLastSystemSessionIndex(fpSlotRedis)
-			sessionPref = sessions.NewSessionPreference(fpSlotRedis)
+			lastSystemSession = session.NewLastSystemSessionIndex(redisClient)
+			sessionPref = session.NewSessionPreference(redisClient)
 			slog.Info("session manager enabled", "redis", cfg.RedisAddr, "ttl_hours", cfg.SessionTTLHours)
 		} else {
 			slog.Warn("session manager: redis ping failed", "error", err)
@@ -249,7 +238,7 @@ func main() {
 	// Initialise the unified runtime-config registry. Specs registered here
 	// become readable via settings.Global.EffectiveValue(scope, key, tenantID).
 	// Order matters: must run BEFORE any code that calls LoadMode/LoadFraction
-	// (e.g. oldcompressor.NewCompressor).
+	// (e.g. compression.NewCompressor).
 	var providerSettingsResolver *settings.ProviderSettingsResolver
 	if dbConn != nil && dbConn.Enabled() {
 		settingsDB := settings.NewStoreDB(dbConn.Pool())
@@ -277,14 +266,14 @@ func main() {
 		resolver.SetDB(dbConn.Pool())
 	}
 	if providerClient.Enabled() {
-		stickyCache := routing.NewStickyCache()
+		stickyCache := executors.NewStickyCache()
 		if dbConn != nil && dbConn.Enabled() {
 			stickyCache.SetDB(dbConn.Pool())
 			if err := stickyCache.RestoreFromDB(context.Background()); err != nil {
 				slog.Warn("sticky restore from DB failed", "error", err)
 			}
 		}
-		router := routing.NewRouter(stickyCache, lim)
+		router := executors.NewRouter(stickyCache, lim)
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
@@ -308,134 +297,72 @@ func main() {
 			slog.Info("bandit_scoring", "enabled", true, "flush_interval", "10s", "batch_size", 100)
 		}
 
-		norm := relay.NewNormalizer()
-		routingExec = routing.NewExecutor(
+		norm := streaming.NewNormalizer()
+		routingExec = executors.NewExecutor(
 			router, cm, lim, pools, upClient,
 			norm.NormalizeChunk,
-			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc routing.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) routing.StreamOutcome {
-				// Track C C2 (2026-06-18): wrap the streaming hot path
-				// so a client that disconnects mid-stream can still
-				// recover the response via
-				// GET /v1/sessions/{id}/pending-response.
-				//
-				// Flow:
-				//   1. Build a capturer (1 MiB cap, in-memory)
-				//   2. Run the stream with the capturer attached
-				//   3. After the stream returns, write the captured
-				//      body to pending.Store so the GET endpoint can
-				//      replay it on reconnect
-				//
-				// Why this is safe: C1 decoupled the upstream
-				// context from the client context when the request
-				// carries a session id, so the read loop keeps going
-				// past a client disconnect. The capturer records
-				// every chunk regardless of client state. The
-				// write-back happens after the stream function
-				// returns, so it does not block the streaming hot
-				// path.
-				var pc *relay.PendingCapturer
-				if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
-					pc = relay.NewPendingCapturer(0)
+			func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, normFunc executors.NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) executors.StreamOutcome {
+				var pc *streaming.PendingCapturer
+				if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+					pc = streaming.NewPendingCapturer(0)
 				}
-				outcome := relay.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, relay.StripMinimaxFieldsBody, pc)
+				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, streaming.StripMinimaxFieldsBody, pc)
 				saveCapturedPending(pendingStore, pc, resp)
 				return outcome
 			},
 			auditSink,
 		)
 		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
-		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): wire
-		// the per-provider tool_call quality processor as a hook on the
-		// Executor. routing cannot import relay (relay imports routing)
-		// so the hook is a closure. The executor reads
-		// cand.QualityFixMode (loaded from providers.quality_fix_mode)
-		// and short-circuits when the value is empty/'off'.
-		//
-		// The streaming variant of the processor runs inside
-		// relay/stream.go directly via SetQualityFixModeOnContext +
-		// qualityFixModeFromContext, so it does not need a hook on
-		// the executor — the context value travels through the
-		// upstream http.Request and is read on every SSE line.
 		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
 		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
-		// Q4 streaming: Anthropic client → Anthropic upstream. Capturer-aware
-		// (Track C C5, 2026-06-21): builds a pending-store capturer per request
-		// when the upstream HTTP request carries a session id, so the body can
-		// be replayed via GET /v1/sessions/{id}/pending-response on client
-		// disconnect. Mirrors the OpenAI path wiring further below.
 		routingExec.AnthropicPassthroughStream = func(
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
-		) routing.StreamOutcome {
-			var pc *relay.PendingCapturer
-			if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
-				pc = relay.NewPendingCapturer(0)
+		) executors.StreamOutcome {
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
 			}
-			outcome := relay.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			outcome := streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-		routingExec.ChatToAnthropic = anthropictransform.ConvertChatRequestToAnthropic
+		routingExec.ChatToAnthropic = streaming.ConvertChatRequestToAnthropic
 		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
 
 		// Phase B (2026-06-22): IR-based protocol converter.
-		// When LLM_GATEWAY_IR_CONVERTER=true, use the new Parse→IR→Serialize
-		// pipeline instead of the 6 scattered callbacks. Reduces conversion
-		// complexity from O(N²) to O(N).
 		if os.Getenv("LLM_GATEWAY_IR_CONVERTER") == "true" {
 			routingExec.IR = &irAdapter{}
 			slog.Info("ir_converter", "enabled", true)
-
-			// Path-C wiring (2026-06-24): wrap the IR converter with the
-			// transport layer to enable ExtensionsBag lossless round-trip
-			// (non-standard fields survive OpenAI↔Anthropic conversion) and
-			// circuit-breaker fast-fail. Layered on top of irAdapter so the
-			// inner Parse/Serialize pipeline is unchanged.
-			//
-			// Two-stage rollout:
-			//   - LLM_GATEWAY_IR_CONVERTER=true            → enables IR pipeline
-			//   - LLM_GATEWAY_TRANSPORT_IR=true (additive) → wraps IR with transport
-			//
-			// Both must be true for transport to take effect. Turning off
-			// either reverts to plain irAdapter — no code change needed.
 			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
 		}
 
-		// Q3 streaming: openai client -> anthropic upstream. Translates
-		// Anthropic SSE chunks to OpenAI SSE chunks so the OpenAI parser
-		// doesn't choke on event: ... lines. Capturer-aware (Track C C5).
+		// Q3 streaming
 		routingExec.AnthropicToOpenAIStream = func(
 			w http.ResponseWriter,
 			resp *http.Response,
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
-		) routing.StreamOutcome {
-			var pc *relay.PendingCapturer
-			if pendingStore != nil && relay.ClientHasSessionID(w, resp) {
-				pc = relay.NewPendingCapturer(0)
+		) executors.StreamOutcome {
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
 			}
-			outcome := relay.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			outcome := streaming.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
-		// chat.completion JSON. Fixes the missing `content` field on
-		// minimax-M2.7 non-stream responses.
-		routingExec.AnthropicToChatResponse = anthropictransform.ConvertAnthropicResponseToChat
-		routingExec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
-		routingExec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
-		// Strip minimax-private fields (nvext, base_resp, input_sensitive*,
-		// output_sensitive*) from all non-stream chat responses before
-		// returning to the client. Wired into both executeOpenAI (non-stream
-		// path) and the StreamChat closure (stream path via stripFn).
-		routingExec.StripMinimaxFields = relay.StripMinimaxFieldsBody
+		routingExec.AnthropicToChatResponse = streaming.ConvertAnthropicResponseToChat
+		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
+		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
+		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
@@ -466,7 +393,7 @@ func main() {
 				mnfStreakCap = n
 			}
 		}
-		routingExec.MnfStreak = routing.NewMnfStreak(mnfStreakCap)
+		routingExec.MnfStreak = executors.NewMnfStreak(mnfStreakCap)
 		routingExec.MnfStickyBreakThreshold = 3
 		routingExec.MnfStreakEnabled = true
 		if v := os.Getenv("LLM_GATEWAY_MNF_STREAK_ENABLED"); v == "false" || v == "0" {
@@ -536,7 +463,7 @@ func main() {
 		// user Q1) and LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION (default=0.8).
 		// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
 		// misconfigured install degrades gracefully to ModeOff.
-		routingExec.Compressor = oldcompressor.NewCompressor()
+		routingExec.Compressor = compression.NewCompressor()
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
@@ -576,15 +503,15 @@ func main() {
 			slog.Info("memora context-compression oracle disabled (set LLM_GATEWAY_MEMORA_BASE_URL to enable)")
 		}
 		if dbConn != nil && dbConn.Enabled() {
-			routingExec.State = credentialstate.NewWriter(dbConn.Pool())
+			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
-			routingExec.HeaderProfiles = routing.NewHeaderProfileCache(dbConn.Pool())
+			routingExec.HeaderProfiles = executors.NewHeaderProfileCache(dbConn.Pool())
 		}
 		routingExec.FpSlots = fpSlots
 
 		// Health tracking (2026-06-22): sliding window recorder + concurrency tuner + continuous failure checker
 		if fpSlotRedis != nil && dbConn != nil {
-			healthTracker := routing.NewHealthTracker(
+			healthTracker := executors.NewHealthTracker(
 				fpSlotRedis,
 				dbConn.Pool(),
 				2*time.Hour, // window TTL
@@ -599,7 +526,7 @@ func main() {
 		// model, attempt) tuple so operators can see WHICH credentials
 		// failed in a sequence (request_logs only records the LAST one).
 		if dbConn != nil {
-			routingExec.FailureLogger = routing.NewCandidateFailureWriter(dbConn.Pool())
+			routingExec.FailureLogger = executors.NewCandidateFailureWriter(dbConn.Pool())
 			slog.Info("candidate_failure_logger initialized")
 		}
 
@@ -614,7 +541,7 @@ func main() {
 			slog.Info("disguise mode enabled")
 		}
 		// V3.1 (2026-06-26): wire route node recorder + session routing
-		routingExec.Recorder = routing.NewRouteNodeRecorder(fpSlots, sessionPref)
+		routingExec.Recorder = executors.NewRouteNodeRecorder(fpSlots)
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// Track C C5 (2026-06-18): wire the idempotent dedup cache.
@@ -631,7 +558,7 @@ func main() {
 				idempotentTTL = n
 			}
 		}
-		chatHandler.SetIdempotentCache(relay.NewIdempotentCache(idempotentCap, time.Duration(idempotentTTL)*time.Second))
+		chatHandler.SetIdempotentCache(streaming.NewIdempotentCache(idempotentCap, time.Duration(idempotentTTL)*time.Second))
 		slog.Info("idempotent_cache_enabled",
 			"cap", idempotentCap,
 			"ttl_seconds", idempotentTTL,
@@ -643,7 +570,7 @@ func main() {
 	}
 
 	// ── Auth + Rate Limiting ──────────────────────────────────────────────
-	keyVerifier := auth.NewKeyVerifier()
+	keyVerifier := authentication.NewKeyVerifier()
 	if dbConn != nil && dbConn.Enabled() {
 		keyVerifier.SetDB(dbConn.Pool(), cfg.SecretKey)
 	}
@@ -694,23 +621,20 @@ func main() {
 	// LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE so the deploy can roll back
 	// instantly without code change. Captures `exec` from the outer scope.
 	if redisClientForCache != nil && dbConn != nil && dbConn.Enabled() && telemetryClient.Enabled() && !compressorSessionDisabled() {
-		scCache := oldcompressor.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
-		scDeps := oldcompressor.SessionCompressorDeps{
+		scCache := compression.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
+		scDeps := compression.SessionCompressorDeps{
 			Cache:          scCache,
 			CompactionDeps: NewDependenciesFromExecutor(routingExec),
 		}
-		chatHandler.SetSessionCompressor(oldcompressor.NewSessionCompressor(scDeps))
+		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
 		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.
-		// Uses the same SessionCache for CutMarker persistence so that
-		// context_length_exceeded recovery results are cached for 30 minutes
-		// (Redis TTL), enabling incremental compression on the next request.
-		rcDeps := oldcompressor.RecoveryDeps{
+		rcDeps := compression.RecoveryDeps{
 			Cache:      scCache,
 			MaxRetries: 2,
 		}
-		routingExec.RecoveryCoord = oldcompressor.NewRecoveryCoordinator(rcDeps)
+		routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 		slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 	} else {
 		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
@@ -719,7 +643,7 @@ func main() {
 	// ── Phase 2: Meta-tools handler ─────────────────────────────────────
 	if dbConn != nil && dbConn.Enabled() {
 		metaHandler := metatools.NewHandler(dbConn.Pool())
-		interceptor := relay.NewMetaToolInterceptor(metaHandler)
+		interceptor := streaming.NewMetaToolInterceptor(metaHandler)
 		chatHandler.SetMetaToolInterceptor(interceptor)
 		slog.Info("Phase 2 meta-tools interceptor wired (list_categories, load_tools)")
 	} else {
@@ -1326,9 +1250,9 @@ func main() {
 	}
 
 	if sessionMgr != nil {
-		sessionHandler := sessions.NewHandler(sessionMgr)
+		sessionHandler := session.NewHandler(sessionMgr)
 		if keyVerifier.Enabled() {
-			sessionHandler.SetAuth(keyVerifier)
+			sessionHandler.SetAuth(sessionAuthAdapter{kv: keyVerifier})
 		}
 		// Track C (2026-06-18): wire the pending response cache.
 		// The adapter lives in main.go (the only place that can
@@ -1602,11 +1526,11 @@ func main() {
 // pending.Store where the Redis access is.
 type pendingStoreAdapter struct{ s *pending.Store }
 
-func newPendingStoreAdapter(s *pending.Store) sessions.PendingStore {
+func newPendingStoreAdapter(s *pending.Store) session.PendingStore {
 	return &pendingStoreAdapter{s: s}
 }
 
-func (a *pendingStoreAdapter) Get(ctx context.Context, sessionID, requestID string) (*sessions.PendingEntry, bool, error) {
+func (a *pendingStoreAdapter) Get(ctx context.Context, sessionID, requestID string) (*session.PendingEntry, bool, error) {
 	r, ok, err := a.s.Get(ctx, sessionID, requestID)
 	if err != nil || !ok {
 		return nil, false, err
@@ -1614,7 +1538,7 @@ func (a *pendingStoreAdapter) Get(ctx context.Context, sessionID, requestID stri
 	return a.toEntry(r), true, nil
 }
 
-func (a *pendingStoreAdapter) GetLatest(ctx context.Context, sessionID string) (*sessions.PendingEntry, string, bool, error) {
+func (a *pendingStoreAdapter) GetLatest(ctx context.Context, sessionID string) (*session.PendingEntry, string, bool, error) {
 	r, requestID, ok, err := a.s.GetLatest(ctx, sessionID)
 	if err != nil || !ok {
 		return nil, requestID, false, err
@@ -1622,11 +1546,11 @@ func (a *pendingStoreAdapter) GetLatest(ctx context.Context, sessionID string) (
 	return a.toEntry(r), requestID, true, nil
 }
 
-func (a *pendingStoreAdapter) toEntry(r *pending.Response) *sessions.PendingEntry {
+func (a *pendingStoreAdapter) toEntry(r *pending.Response) *session.PendingEntry {
 	if r == nil {
 		return nil
 	}
-	return &sessions.PendingEntry{
+	return &session.PendingEntry{
 		SessionID:    r.SessionID,
 		TenantID:     r.TenantID,
 		RequestID:    r.RequestID,
@@ -1641,15 +1565,28 @@ func (a *pendingStoreAdapter) toEntry(r *pending.Response) *sessions.PendingEntr
 	}
 }
 
+// sessionAuthAdapter bridges the live authentication.KeyVerifier
+// (which returns *authentication.KeyInfo) to the session.KeyVerifier
+// interface (which returns session.KeyInfo).
+type sessionAuthAdapter struct {
+	kv *authentication.KeyVerifier
+}
+
+func (a sessionAuthAdapter) Enabled() bool { return a.kv != nil && a.kv.Enabled() }
+func (a sessionAuthAdapter) Verify(ctx context.Context, rawKey string) (session.KeyInfo, error) {
+	ki, err := a.kv.Verify(ctx, rawKey)
+	if err != nil {
+		return session.KeyInfo{}, err
+	}
+	return session.KeyInfo{ID: ki.ID, TenantID: ki.TenantID}, nil
+}
+
 // saveCapturedPending persists the capturer's buffered SSE body to the
 // pending store so a client that disconnects mid-stream can pick up
 // the response via GET /v1/sessions/{id}/pending-response (Track C C5,
 // 2026-06-21). Shared by the OpenAI and both Anthropic (Q3 + Q4) stream
 // paths so all three contribute to the same pending store namespace.
-//
-// Best-effort: nil store or nil pc short-circuits; a save error is
-// logged at WARN and the streaming hot path is not affected.
-func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *http.Response) {
+func saveCapturedPending(store *pending.Store, pc *streaming.PendingCapturer, resp *http.Response) {
 	if pc == nil || store == nil {
 		return
 	}
@@ -1660,8 +1597,8 @@ func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer saveCancel()
 	if err := store.Save(saveCtx, &pending.Response{
-		SessionID:    relay.SessionIDFromResp(resp),
-		RequestID:    relay.RequestIDFromResp(resp),
+		SessionID:    streaming.SessionIDFromResp(resp),
+		RequestID:    streaming.RequestIDFromResp(resp),
 		Status:       pending.Status(state.Status),
 		Body:         string(body),
 		ContentType:  "text/event-stream",
@@ -1671,8 +1608,8 @@ func saveCapturedPending(store *pending.Store, pc *relay.PendingCapturer, resp *
 		ErrorMessage: state.ErrMessage,
 	}); err != nil {
 		slog.Warn("pending_save_failed",
-			"session_id", relay.SessionIDFromResp(resp),
-			"request_id", relay.RequestIDFromResp(resp),
+			"session_id", streaming.SessionIDFromResp(resp),
+			"request_id", streaming.RequestIDFromResp(resp),
 			"error", err,
 		)
 	}
