@@ -487,13 +487,13 @@ func main() {
 				SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
 				SmartSearchAPIKey:  os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_API_KEY"),
 			})
-			routingExec.Memora = memoraClient
+			routingExec.Memora = legacyMemoraReader{c: memoraClient}
 			// Async sink: fire-and-forget write buffer for L1 session
 			// memory persistence. 2 workers / 2048-deep queue is enough
 			// for the write volume (one enqueue per successful request).
 			memoraSink = memora.NewSink(memoraClient, 2, 2048)
 			memoraSink.Start()
-			routingExec.MemoraSink = memoraSink
+			routingExec.MemoraSink = legacyMemoraWriter{s: memoraSink}
 			smartSearchBase := os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL")
 			slog.Info("memora context-compression oracle enabled",
 				"base_url", memoraBase,

@@ -13,9 +13,12 @@ import (
 //   - task:    X-Gw-Task-Id > loaded session.TaskID
 func gwSessionTaskFromRequest(r *http.Request, session *session.Session) (sessionID, taskID string) {
 	if r != nil {
-		sessionID = strings.TrimSpace(r.Header.Get("X-Gw-Session-Id"))
+		sessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 		if sessionID == "" {
-			sessionID = strings.TrimSpace(r.Header.Get("X-Session-Id"))
+			legacy := strings.TrimSpace(r.Header.Get("X-Session-Id"))
+			if strings.HasPrefix(legacy, "gw_") {
+				sessionID = legacy
+			}
 		}
 		taskID = strings.TrimSpace(r.Header.Get("X-Gw-Task-Id"))
 	}
