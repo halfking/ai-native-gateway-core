@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 )
 
 type messagesRequestBody struct {
@@ -104,6 +104,14 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
 		}
 	}()
+
+	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
+	// Idempotent on existing X-Gw-Session-Id; otherwise generates a fresh
+	// gw_<uuid> so the safety-net failure row carries a session_id even
+	// for pre-keyInfo failures (method_not_allowed, missing_key, ...).
+	if gwID := h.chatHandler.ensureSessionID(r.Context(), r, nil); gwID != "" {
+		r.Header.Set("X-Gw-Session-Id", gwID)
+	}
 
 	if r.Method != http.MethodPost {
 		attemptErrCode = "method_not_allowed"
@@ -285,9 +293,33 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
-	sessionID := r.Header.Get("X-Gw-Session-Id")
+	sessionID := extractSessionIDFromHeaders(r)
 	if sessionID == "" {
-		sessionID = r.Header.Get("X-Session-Id")
+		sessionID = extractSessionIDFromBody(bodyBytes)
+	}
+	if sessionID == "" {
+		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, nil, clientProfileFromKey(keyInfo))
+		if assignErr != nil {
+			attemptErrCode = "session_assignment_failed"
+			attemptErrMsg = "failed to assign gateway session id"
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeAnthropicError(w, http.StatusInternalServerError, "internal_error", "failed to assign session id")
+			return
+		}
+		if assignment != nil && assignment.SessionID != "" {
+			sessionID = assignment.SessionID
+			r.Header.Set("X-Gw-Session-Id", sessionID)
+			if assignment.Resumed {
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Reused", "true")
+			}
+			if assignment.AutoCreated {
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Auto", "true")
+			}
+		}
 	}
 	var endUser string
 	if reqBody.Metadata != nil && reqBody.Metadata.UserID != "" {

@@ -222,6 +222,11 @@ type ChatHandler struct {
 	lastSystemSession *session.LastSystemSessionIndex
 	// sessionPref tracks session -> credential preference for model switch handling.
 	sessionPref *session.SessionPreference
+	// sessionReuseWindow (2026-06-26) is the look-back window for
+	// FindRecentGatewaySession. Defaults to 5 * time.Minute; can be
+	// overridden via LLM_GATEWAY_SESSION_REUSE_WINDOW env. 0 means
+	// "always create new" (no recent-session reuse).
+	sessionReuseWindow time.Duration
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -247,6 +252,29 @@ func (h *ChatHandler) SetExecutor(exec *executors.Executor, prov providerResolve
 func (h *ChatHandler) SetSessionRouting(lastSystemSession *session.LastSystemSessionIndex, sessionPref *session.SessionPreference) {
 	h.lastSystemSession = lastSystemSession
 	h.sessionPref = sessionPref
+}
+
+// SetSessionReuseWindow configures the look-back window used by
+// FindRecentGatewaySession. 0 disables recent-session reuse (every
+// request creates a new gw_<uuid>). Negative values are clamped to 0.
+func (h *ChatHandler) SetSessionReuseWindow(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	h.sessionReuseWindow = d
+}
+
+// sessionReuseWindowOrDefault returns the configured window, falling
+// back to session.LastSystemSessionTTL (5m) when the handler has not
+// been wired via SetSessionReuseWindow.
+func (h *ChatHandler) sessionReuseWindowOrDefault() time.Duration {
+	if h == nil {
+		return session.LastSystemSessionTTL
+	}
+	if h.sessionReuseWindow <= 0 {
+		return session.LastSystemSessionTTL
+	}
+	return h.sessionReuseWindow
 }
 
 // SetModelPolicy wires the tenant-scoped model denylist checker
@@ -402,6 +430,15 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logCtx = h.NewRequestLogContext(r, requestID, startTime)
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
+	}
+	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
+	// Even pre-keyInfo failures (missing_key, invalid_key, auth_unavailable)
+	// emit a request_log row via the safety net. Without a session_id here
+	// those rows would have empty gw_session_id, breaking /api/logs filtering
+	// and session-summary grouping. Call ensureSessionID before any failure
+	// path can fire; it is idempotent on existing X-Gw-Session-Id headers.
+	if gwID := h.ensureSessionID(r.Context(), r, nil); gwID != "" {
+		r.Header.Set("X-Gw-Session-Id", gwID)
 	}
 	defer func() {
 		slog.Info("safety_net_defer_fired",
