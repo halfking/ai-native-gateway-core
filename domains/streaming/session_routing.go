@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 
@@ -49,7 +48,14 @@ var defaultSessionFieldPriority = []string{
 var (
 	sessionFieldPriorityOnce sync.Once
 	sessionFieldPriority     []string
+	sessionBodyKeyOverrides  []string
 )
+
+func SetSessionIDBodyKeys(keys []string) {
+	sessionFieldPriorityOnce = sync.Once{}
+	sessionFieldPriority = nil
+	sessionBodyKeyOverrides = append([]string(nil), keys...)
+}
 
 func configuredSessionFieldPriority() []string {
 	sessionFieldPriorityOnce.Do(func() {
@@ -59,19 +65,16 @@ func configuredSessionFieldPriority() []string {
 			seen[key] = struct{}{}
 			merged = append(merged, key)
 		}
-		raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS"))
-		if raw != "" {
-			for _, item := range strings.Split(raw, ",") {
-				normalized := normalizeSessionFieldName(item)
-				if normalized == "" {
-					continue
-				}
-				if _, ok := seen[normalized]; ok {
-					continue
-				}
-				seen[normalized] = struct{}{}
-				merged = append(merged, normalized)
+		for _, item := range sessionBodyKeyOverrides {
+			normalized := normalizeSessionFieldName(item)
+			if normalized == "" {
+				continue
 			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			merged = append(merged, normalized)
 		}
 		sessionFieldPriority = merged
 	})

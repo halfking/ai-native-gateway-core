@@ -158,6 +158,9 @@ func main() {
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
+	if cfg.SessionIDBodyKeys != "" {
+		streaming.SetSessionIDBodyKeys(strings.Split(cfg.SessionIDBodyKeys, ","))
+	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy())
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)

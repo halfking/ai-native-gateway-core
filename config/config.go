@@ -24,7 +24,8 @@ type Config struct {
 	RedisDB       int    `yaml:"redis_db" env:"LLM_GATEWAY_REDIS_DB"`
 
 	// Sessions
-	SessionTTLHours int `yaml:"session_ttl_hours" env:"LLM_GATEWAY_SESSION_TTL_HOURS"`
+	SessionTTLHours   int    `yaml:"session_ttl_hours" env:"LLM_GATEWAY_SESSION_TTL_HOURS"`
+	SessionIDBodyKeys string `yaml:"session_id_body_keys" env:"LLM_GATEWAY_SESSION_ID_BODY_KEYS"`
 
 	// Server
 	Listen      string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
@@ -131,6 +132,7 @@ func Load() *Config {
 		FirstByteTimeout:                   30,
 		KeepaliveInterval:                  15,
 		SessionTTLHours:                    168,
+		SessionIDBodyKeys:                  os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS"),
 		StreamRetryThreshold:               5,   // Default: allow stream failover if < 5 chunks sent
 		PoolGracePeriod:                    180, // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency:       20,  // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
@@ -232,6 +234,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.Listen != "" && os.Getenv("LLM_GATEWAY_LISTEN") == "" {
 		cfg.Listen = other.Listen
+	}
+	if other.SessionIDBodyKeys != "" && os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS") == "" {
+		cfg.SessionIDBodyKeys = other.SessionIDBodyKeys
 	}
 	if other.LogLevel != "" && os.Getenv("LLM_GATEWAY_LOG_LEVEL") == "" {
 		cfg.LogLevel = other.LogLevel
