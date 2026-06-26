@@ -99,7 +99,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 )
 
 // v2DispatchConfig holds the feature-flag-driven configuration for the
@@ -169,8 +168,8 @@ type v2DispatchDeps struct {
 	// wrapper delegates the LLM call to it so the integration is
 	// real (not a parallel demo). The other 3 endpoints
 	// (/v1/messages, /v1/responses, /v1/completions) all funnel
-	// into ChatHandler internally (relay/messages.go etc.).
-	ChatHandler *relay.ChatHandler
+	// into ChatHandler internally (domains/streaming/messages.go etc.).
+	ChatHandler *streaming.ChatHandler
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -318,7 +317,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 // It only references the existing in-memory singletons from main.go's
 // scope. The Pipeline runs in-process; there is no DB/Redis fan-out
 // from here.
-func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *relay.ChatHandler) *v2DispatchDeps {
+func newV2DispatchDepsFromMain(cfg v2DispatchConfig, chatHandler *streaming.ChatHandler) *v2DispatchDeps {
 	// Always build deps (even if chatHandler is nil — e.g. test stubs
 	// or dev/smoke). The wrapping handler will pass through to the
 	// nil chatHandler if Pipeline hooks don't short-circuit, which
@@ -506,7 +505,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 //
 // Why a fresh sub-mux: keeps the v2 dispatch self-contained for tests
 // and avoids a single shared mutable mux. The chatHandler reference is
-// the production relay.ChatHandler — wrapping the LLM call through it
+// the production streaming.ChatHandler — wrapping the LLM call through it
 // is what makes the integration real (not a parallel demo).
 func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) (*http.ServeMux, *v2DispatchDeps, bool) {
 	cfg := loadV2DispatchConfig()
@@ -518,17 +517,17 @@ func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) 
 		return nil, nil, false
 	}
 
-	// The Pipeline wrapper needs a concrete *relay.ChatHandler so it
+	// The Pipeline wrapper needs a concrete *streaming.ChatHandler so it
 	// can read the executor / provider / etc. main.go's messages /
 	// responses handlers internally call chatHandler.ServeHTTP, so
 	// we only need to construct the wrapper for the chatHandler;
 	// messages / responses go through their own existing handlers
 	// with the Pipeline-wrapped chatHandler behind them.
-	var ch *relay.ChatHandler
-	if c, ok := chatHandler.(*relay.ChatHandler); ok {
+	var ch *streaming.ChatHandler
+	if c, ok := chatHandler.(*streaming.ChatHandler); ok {
 		ch = c
 	} else {
-		slog.Warn("v2 pipeline: chatHandler is not *relay.ChatHandler; using fallback passthrough",
+		slog.Warn("v2 pipeline: chatHandler is not *streaming.ChatHandler; using fallback passthrough",
 			"actual", fmt.Sprintf("%T", chatHandler))
 	}
 
