@@ -1,203 +1,265 @@
 -- ============================================================================
 -- llm-gateway-go 路由相关表结构
+-- Source of truth: 184 / llm_gateway / pg_dump --schema-only (2026-06-27)
+-- 说明:
+--   1. 本文件保留真实表结构、约束、索引
+--   2. 不包含依赖额外业务函数的非关键触发器，避免初始化阶段失败
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- Credentials 表 - API凭据（包含敏感信息，不导出数据）
+-- credentials
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.credentials (
-    id SERIAL PRIMARY KEY,
-    provider_id INT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    api_key TEXT NOT NULL,
-    api_secret TEXT,
-    extra JSONB,
-    base_url TEXT,
-    concurrency_limit INT NOT NULL DEFAULT 5,
-    concurrency_limit_auto INT,
-    fp_slot_limit INT NOT NULL DEFAULT 20,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    health_status VARCHAR(32) NOT NULL DEFAULT 'unknown'
-        CHECK (health_status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
-    last_health_check_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id bigint NOT NULL,
+    provider_id bigint NOT NULL,
+    tenant_id text DEFAULT 'default'::text NOT NULL,
+    label text NOT NULL,
+    secret_ciphertext bytea,
+    secret_kid text,
+    trust_level text DEFAULT 'trusted'::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    concurrency_limit integer,
+    effective_concurrency integer,
+    balance_usd numeric(14,6),
+    pricing_distrust boolean DEFAULT false NOT NULL,
+    relay_overhead_ms integer,
+    active_plan_id bigint,
+    plan_consumed_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    api_models_ok boolean,
+    api_models_last_checked_at timestamp with time zone,
+    api_models_error text,
+    last_used_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    circuit_state text DEFAULT 'closed'::text,
+    circuit_opened_at timestamp with time zone,
+    consecutive_failures integer DEFAULT 0,
+    cooling_until timestamp with time zone,
+    circuit_open_count_window integer DEFAULT 0,
+    circuit_window_started_at timestamp with time zone,
+    effective_at timestamp with time zone,
+    expires_at timestamp with time zone,
+    tags jsonb DEFAULT '[]'::jsonb,
+    notes text,
+    health_status text DEFAULT 'unknown'::text NOT NULL,
+    health_checked_at timestamp with time zone,
+    health_source text,
+    health_warning_code text,
+    health_error text,
+    health_latency_ms integer,
+    health_probe_model text,
+    lifecycle_status text DEFAULT 'active'::text NOT NULL,
+    availability_state text DEFAULT 'ready'::text NOT NULL,
+    quota_state text DEFAULT 'ok'::text NOT NULL,
+    state_reason_code text,
+    state_reason_detail text,
+    state_updated_at timestamp with time zone,
+    availability_recover_at timestamp with time zone,
+    quota_recover_at timestamp with time zone,
+    balance_currency text DEFAULT 'USD'::text,
+    balance_last_checked_at timestamp with time zone,
+    balance_check_endpoint text,
+    pool_group text,
+    acquisition_source text,
+    acquisition_detail text,
+    manual_disabled boolean DEFAULT false NOT NULL,
+    default_probe_model text,
+    default_probe_model_source text,
+    default_probe_model_picked_at timestamp with time zone,
+    concurrency_limit_auto integer,
+    fp_slot_limit integer NOT NULL,
+    CONSTRAINT chk_credentials_health_source CHECK ((health_source IS NULL) OR (health_source = ANY (ARRAY['models'::text, 'probe'::text, 'mixed'::text, 'none'::text, 'fast_reprobe'::text]))),
+    CONSTRAINT chk_credentials_health_status CHECK (health_status = ANY (ARRAY['unknown'::text, 'healthy'::text, 'warning'::text, 'unreachable'::text])),
+    CONSTRAINT credentials_availability_state_check CHECK (availability_state = ANY (ARRAY['ready'::text, 'cooling'::text, 'rate_limited'::text, 'auth_failed'::text, 'unreachable'::text, 'suspended'::text])),
+    CONSTRAINT credentials_circuit_state_chk CHECK (circuit_state = ANY (ARRAY['closed'::text, 'open'::text, 'half_open'::text])),
+    CONSTRAINT credentials_fp_slot_limit_check CHECK ((fp_slot_limit >= 0) AND (fp_slot_limit <= 10000)),
+    CONSTRAINT credentials_fp_slot_vs_concurrency CHECK ((concurrency_limit IS NULL) OR (fp_slot_limit IS NULL) OR (fp_slot_limit <= concurrency_limit)),
+    CONSTRAINT credentials_lifecycle_status_check CHECK (lifecycle_status = ANY (ARRAY['active'::text, 'disabled'::text, 'suspended'::text, 'retired'::text])),
+    CONSTRAINT credentials_status_check CHECK (status = ANY (ARRAY['active'::text, 'cooling'::text, 'degraded'::text, 'quarantine'::text, 'quota_expired'::text, 'disabled'::text]))
 );
-CREATE INDEX IF NOT EXISTS idx_credentials_provider ON credentials(provider_id);
-CREATE INDEX IF NOT EXISTS idx_credentials_enabled ON credentials(enabled) WHERE enabled = TRUE;
-CREATE INDEX IF NOT EXISTS idx_credentials_auto_limit ON credentials(concurrency_limit_auto) WHERE concurrency_limit_auto IS NOT NULL;
-
--- 凭据槽位限制 CHECK 约束
+CREATE SEQUENCE IF NOT EXISTS public.credentials_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
+ALTER TABLE ONLY public.credentials ALTER COLUMN id SET DEFAULT nextval('public.credentials_id_seq'::regclass);
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'credentials_fp_slot_limit_check'
-          AND conrelid = 'credentials'::regclass
-    ) THEN
-        ALTER TABLE credentials
-            ADD CONSTRAINT credentials_fp_slot_limit_check
-            CHECK (fp_slot_limit >= 0 AND fp_slot_limit <= 10000);
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'credentials_pkey' AND conrelid = 'public.credentials'::regclass) THEN
+        ALTER TABLE ONLY public.credentials ADD CONSTRAINT credentials_pkey PRIMARY KEY (id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'credentials_unique_provider_label' AND conrelid = 'public.credentials'::regclass) THEN
+        ALTER TABLE ONLY public.credentials ADD CONSTRAINT credentials_unique_provider_label UNIQUE (provider_id, tenant_id, label);
     END IF;
 END $$;
+CREATE INDEX IF NOT EXISTS idx_credentials_auto_limit ON public.credentials USING btree (concurrency_limit_auto) WHERE (concurrency_limit_auto IS NOT NULL);
 
 -- ----------------------------------------------------------------------------
--- Credential Model Bindings 表 - 凭据与模型的绑定关系
+-- credential_model_bindings
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.credential_model_bindings (
-    id SERIAL PRIMARY KEY,
-    credential_id INT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
-    provider_model_id INT NOT NULL REFERENCES provider_models(id) ON DELETE CASCADE,
-    available BOOLEAN NOT NULL DEFAULT TRUE,
-    available_reason TEXT,
-    unavailable_reason TEXT,
-    unavailable_at TIMESTAMPTZ,
-    unavailable_recover_at TIMESTAMPTZ,
-    weight NUMERIC(5,2) NOT NULL DEFAULT 1.0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT unique_cmb UNIQUE(credential_id, provider_model_id)
+    id bigint NOT NULL,
+    credential_id bigint NOT NULL,
+    provider_model_id bigint NOT NULL,
+    routing_tier smallint DEFAULT 2,
+    weight smallint DEFAULT 100,
+    manual_priority smallint DEFAULT 99,
+    success_rate numeric,
+    p95_latency_ms integer,
+    active_sessions integer DEFAULT 0,
+    consecutive_failures integer DEFAULT 0,
+    unit_price_in_per_1m numeric,
+    unit_price_out_per_1m numeric,
+    cache_read_price_per_1m numeric,
+    cache_write_price_per_1m numeric,
+    currency text DEFAULT 'USD'::text,
+    billing_mode text DEFAULT 'per_token'::text,
+    pricing_source text,
+    pricing_updated_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    available boolean DEFAULT true NOT NULL,
+    unavailable_reason text,
+    unavailable_at timestamp with time zone,
+    plan_meta jsonb DEFAULT '{}'::jsonb NOT NULL,
+    admin_protected boolean DEFAULT false NOT NULL,
+    unavailable_recover_at timestamp with time zone
 );
-CREATE INDEX IF NOT EXISTS idx_cmb_credential ON credential_model_bindings(credential_id);
-CREATE INDEX IF NOT EXISTS idx_cmb_available ON credential_model_bindings(available) WHERE available = FALSE;
-CREATE INDEX IF NOT EXISTS idx_cmb_unavailable_recover_at ON credential_model_bindings(unavailable_recover_at) WHERE available = FALSE;
+CREATE SEQUENCE IF NOT EXISTS public.credential_model_bindings_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.credential_model_bindings_id_seq OWNED BY public.credential_model_bindings.id;
+ALTER TABLE ONLY public.credential_model_bindings ALTER COLUMN id SET DEFAULT nextval('public.credential_model_bindings_id_seq'::regclass);
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cmb_unique_credential_model' AND conrelid = 'public.credential_model_bindings'::regclass) THEN
+        ALTER TABLE ONLY public.credential_model_bindings ADD CONSTRAINT cmb_unique_credential_model UNIQUE (credential_id, provider_model_id);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_cmb_unavailable_recover_at ON public.credential_model_bindings USING btree (unavailable_recover_at) WHERE (available = false);
 
 -- ----------------------------------------------------------------------------
--- Model Probe State 表 - 模型探测状态
+-- model_probe_state
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.model_probe_state (
-    credential_id INT NOT NULL,
-    raw_model_name TEXT NOT NULL,
-    state VARCHAR(32) NOT NULL DEFAULT 'idle'
-        CHECK (state IN ('idle', 'probing', 'recovering', 'healthy', 'broken_confirmed', 'manual_disabled')),
-    consecutive_failures INT NOT NULL DEFAULT 0,
-    last_check_at TIMESTAMPTZ,
-    next_retry_at TIMESTAMPTZ,
-    last_unavailable_reason TEXT,
-    last_err_code TEXT,
-    next_retry_at_override TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (credential_id, raw_model_name)
+    credential_id bigint NOT NULL,
+    raw_model_name text NOT NULL,
+    state text DEFAULT 'unknown'::text NOT NULL,
+    consecutive_successes integer DEFAULT 0 NOT NULL,
+    consecutive_failures integer DEFAULT 0 NOT NULL,
+    total_attempts integer DEFAULT 0 NOT NULL,
+    last_attempt_at timestamp with time zone,
+    next_retry_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_status text,
+    last_state_change_at timestamp with time zone,
+    last_state_change_run bigint,
+    last_unavailable_reason text,
+    last_err_code text,
+    next_retry_at_override timestamp with time zone
 );
-CREATE INDEX IF NOT EXISTS idx_model_probe_state_retry ON model_probe_state(state, next_retry_at) WHERE state = 'recovering';
-CREATE INDEX IF NOT EXISTS idx_mps_credential ON model_probe_state(credential_id);
-
--- 自动探测回退时间计算函数
-CREATE OR REPLACE FUNCTION model_probe_backoff(consecutive_failures INTEGER)
-    RETURNS INTERVAL
-    LANGUAGE SQL
-    IMMUTABLE
-AS $$
-    SELECT CASE
-        WHEN consecutive_failures <= 0 THEN INTERVAL '30 seconds'
-        WHEN consecutive_failures = 1  THEN INTERVAL '2 minutes'
-        WHEN consecutive_failures = 2  THEN INTERVAL '5 minutes'
-        ELSE                                  INTERVAL '15 minutes'
-    END;
-$$;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'model_probe_state_pkey' AND conrelid = 'public.model_probe_state'::regclass) THEN
+        ALTER TABLE ONLY public.model_probe_state ADD CONSTRAINT model_probe_state_pkey PRIMARY KEY (credential_id, raw_model_name);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_model_probe_state_retry ON public.model_probe_state USING btree (state, next_retry_at) WHERE (state = 'recovering'::text);
+CREATE INDEX IF NOT EXISTS idx_mps_due ON public.model_probe_state USING btree (next_retry_at) WHERE (state = ANY (ARRAY['unknown'::text, 'recovering'::text]));
 
 -- ----------------------------------------------------------------------------
--- Passive Probe State 表 - 被动探测状态（Layer 5）
+-- passive_probe_state
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.passive_probe_state (
-    credential_id INTEGER NOT NULL,
-    raw_model_name TEXT NOT NULL,
-    error_kind TEXT NOT NULL,
-    consecutive_count INTEGER NOT NULL DEFAULT 0,
-    total_recent_count INTEGER NOT NULL DEFAULT 0,
-    window_total_count INTEGER NOT NULL DEFAULT 0,
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    in_reviewing BOOLEAN NOT NULL DEFAULT FALSE,
-    reviewing_until TIMESTAMPTZ,
-    final_marked_at TIMESTAMPTZ,
-    unavailable_reason TEXT,
-    last_response_body_preview TEXT,
-    PRIMARY KEY (credential_id, raw_model_name, error_kind)
+    credential_id integer NOT NULL,
+    raw_model_name text NOT NULL,
+    error_kind text NOT NULL,
+    consecutive_count integer DEFAULT 0 NOT NULL,
+    total_recent_count integer DEFAULT 0 NOT NULL,
+    window_total_count integer DEFAULT 0 NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    in_reviewing boolean DEFAULT false NOT NULL,
+    reviewing_until timestamp with time zone,
+    final_marked_at timestamp with time zone,
+    unavailable_reason text,
+    last_response_body_preview text
 );
-CREATE INDEX IF NOT EXISTS idx_passive_probe_reviewing ON passive_probe_state(in_reviewing, reviewing_until) WHERE in_reviewing = TRUE;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'passive_probe_state_pkey' AND conrelid = 'public.passive_probe_state'::regclass) THEN
+        ALTER TABLE ONLY public.passive_probe_state ADD CONSTRAINT passive_probe_state_pkey PRIMARY KEY (credential_id, raw_model_name, error_kind);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_passive_probe_reviewing ON public.passive_probe_state USING btree (in_reviewing, reviewing_until) WHERE (in_reviewing = true);
 
 -- ----------------------------------------------------------------------------
--- Routing Overrides 表 - 路由覆盖（手动路由策略）
+-- routing_overrides
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.routing_overrides (
-    id BIGSERIAL PRIMARY KEY,
-    task_type TEXT NOT NULL,
-    profile TEXT NOT NULL DEFAULT '',
-    mode TEXT NOT NULL CHECK (mode IN ('pin', 'ban')),
-    model_chosen TEXT,
-    reason TEXT NOT NULL DEFAULT '',
-    created_by TEXT,
-    expires_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id bigint NOT NULL,
+    task_type text NOT NULL,
+    profile text DEFAULT ''::text NOT NULL,
+    mode text NOT NULL,
+    model_chosen text,
+    reason text DEFAULT ''::text NOT NULL,
+    created_by text,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT routing_overrides_mode_check CHECK (mode = ANY (ARRAY['pin'::text, 'ban'::text]))
 );
-CREATE INDEX IF NOT EXISTS idx_routing_overrides_task_profile ON routing_overrides(task_type, profile);
-CREATE INDEX IF NOT EXISTS idx_routing_overrides_expires ON routing_overrides(expires_at) WHERE expires_at IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_overrides_unique ON routing_overrides(task_type, profile, COALESCE(model_chosen, ''), mode);
+CREATE SEQUENCE IF NOT EXISTS public.routing_overrides_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.routing_overrides_id_seq OWNED BY public.routing_overrides.id;
+ALTER TABLE ONLY public.routing_overrides ALTER COLUMN id SET DEFAULT nextval('public.routing_overrides_id_seq'::regclass);
+CREATE INDEX IF NOT EXISTS idx_routing_overrides_task_profile ON public.routing_overrides USING btree (task_type, profile);
+CREATE INDEX IF NOT EXISTS idx_routing_overrides_expires ON public.routing_overrides USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_overrides_unique ON public.routing_overrides USING btree (task_type, profile, COALESCE(model_chosen, ''::text), mode);
 
 -- ----------------------------------------------------------------------------
--- Routing Overrides Audit 表 - 路由覆盖审计日志
+-- routing_overrides_audit
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.routing_overrides_audit (
-    id BIGSERIAL PRIMARY KEY,
-    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    action TEXT NOT NULL CHECK (action IN ('insert', 'update', 'delete')),
-    override_id BIGINT,
-    task_type TEXT,
-    profile TEXT,
-    mode TEXT,
-    model_chosen TEXT,
-    reason TEXT,
-    expires_at TIMESTAMPTZ,
-    old_expires_at TIMESTAMPTZ,
-    actor TEXT
+    id bigint NOT NULL,
+    ts timestamp with time zone DEFAULT now() NOT NULL,
+    action text NOT NULL,
+    override_id bigint,
+    task_type text,
+    profile text,
+    mode text,
+    model_chosen text,
+    reason text,
+    expires_at timestamp with time zone,
+    old_expires_at timestamp with time zone,
+    actor text,
+    CONSTRAINT routing_overrides_audit_action_check CHECK (action = ANY (ARRAY['insert'::text, 'update'::text, 'delete'::text]))
 );
-CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_ts ON routing_overrides_audit(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_actor_ts ON routing_overrides_audit(actor, ts DESC) WHERE actor IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_override_ts ON routing_overrides_audit(override_id, ts DESC) WHERE override_id IS NOT NULL;
+CREATE SEQUENCE IF NOT EXISTS public.routing_overrides_audit_id_seq START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1;
+ALTER SEQUENCE public.routing_overrides_audit_id_seq OWNED BY public.routing_overrides_audit.id;
+ALTER TABLE ONLY public.routing_overrides_audit ALTER COLUMN id SET DEFAULT nextval('public.routing_overrides_audit_id_seq'::regclass);
+CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_ts ON public.routing_overrides_audit USING btree (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_actor_ts ON public.routing_overrides_audit USING btree (actor, ts DESC) WHERE (actor IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_routing_overrides_audit_override_ts ON public.routing_overrides_audit USING btree (override_id, ts DESC) WHERE (override_id IS NOT NULL);
 
 -- ----------------------------------------------------------------------------
--- Routing Policy 表 - 路由策略
+-- routing_policy
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.routing_policy (
-    id SERIAL PRIMARY KEY,
-    policy_name TEXT NOT NULL,
-    task_type TEXT NOT NULL,
-    profile TEXT NOT NULL,
-    rules JSONB NOT NULL,
-    priority INT NOT NULL DEFAULT 0,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    id smallint DEFAULT 1 NOT NULL,
+    tenant_id text DEFAULT 'default'::text NOT NULL,
+    weights_json jsonb DEFAULT '{}'::jsonb NOT NULL,
+    sticky_ttl_seconds integer DEFAULT 1800 NOT NULL,
+    local_bonus numeric(4,3) DEFAULT 0.000 NOT NULL,
+    notes text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    algorithm_version smallint DEFAULT 2,
+    retry_per_credential smallint DEFAULT 1,
+    tier_fallback_max smallint DEFAULT 4,
+    slot_soft_limit_ratio numeric(3,2) DEFAULT 1.00,
+    slot_hard_limit_ratio numeric(3,2) DEFAULT 1.50,
+    slot_wait_max_ms smallint DEFAULT 200,
+    circuit_open_seconds integer DEFAULT 300,
+    circuit_failure_threshold smallint DEFAULT 5,
+    circuit_max_open_seconds integer DEFAULT 1800,
+    featured_models text[] DEFAULT ARRAY['gpt-4o'::text, 'gpt-4o-mini'::text, 'claude-3-5-sonnet-20241022'::text, 'claude-3-7-sonnet-20250219'::text, 'gemini-2.0-flash'::text, 'gemini-1.5-pro'::text, 'deepseek-chat'::text, 'qwen-plus'::text],
+    transient_fail_threshold integer DEFAULT 2 NOT NULL,
+    stats_window_minutes integer DEFAULT 10,
+    stats_update_interval_seconds integer DEFAULT 60,
+    scoring_weights_json jsonb DEFAULT '{"price": 10, "session_load": 5, "failure_penalty": 20, "default_price_cny": 5.0, "default_price_usd": 5.0}'::jsonb,
+    CONSTRAINT routing_policy_id_check CHECK (id = 1),
+    CONSTRAINT routing_policy_transient_fail_threshold_check CHECK ((transient_fail_threshold >= 0) AND (transient_fail_threshold <= 10))
 );
-CREATE INDEX IF NOT EXISTS idx_routing_policy_task_profile ON routing_policy(task_type, profile);
-CREATE INDEX IF NOT EXISTS idx_routing_policy_enabled ON routing_policy(enabled) WHERE enabled = TRUE;
-
--- ----------------------------------------------------------------------------
--- recent_success_rate 函数 - 计算凭据+模型最近的请求成功率
--- ----------------------------------------------------------------------------
-DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int);
-DROP FUNCTION IF EXISTS recent_success_rate(bigint, text, int, int);
-CREATE FUNCTION recent_success_rate(p_credential_id BIGINT,
-                                    p_raw_model TEXT,
-                                    p_sample_n INT DEFAULT 50,
-                                    p_window_hours INT DEFAULT 3)
-RETURNS TABLE(rate DOUBLE PRECISION, samples INT)
-LANGUAGE sql
-STABLE
-AS $$
-    WITH recent AS (
-        SELECT success
-        FROM request_logs
-        WHERE credential_id = p_credential_id
-          AND lower(COALESCE(outbound_model, client_model)) = lower(p_raw_model)
-          AND ts > NOW() - (p_window_hours || ' hours')::interval
-        ORDER BY ts DESC
-        LIMIT p_sample_n
-    )
-    SELECT AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END)::double precision,
-           COUNT(*)::int
-    FROM recent;
-$$;

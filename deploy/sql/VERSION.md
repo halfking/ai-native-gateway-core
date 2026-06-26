@@ -1,138 +1,86 @@
-# LLM Gateway 数据库 Schema 版本说明
+# LLM Gateway 数据库版本与环境对比
 
-## 版本信息
+## 导出基线
 
-| 项目 | 版本/信息 |
-|------|----------|
-| **源服务器** | __INTERNAL_PUBLIC_IP__ (184核心应用节点) |
-| **导出日期** | 2026-06-27 |
-| **数据库名** | llm_gateway |
-| **数据库版本** | PostgreSQL 15.3-1.pgdg120+1 |
+本目录中的拆分 SQL 以 `184` 节点上的 `llm_gateway` 数据库为基线整理。
 
-## 扩展组件
+- 节点: `__INTERNAL_PUBLIC_IP__`
+- 数据库: `llm_gateway`
+- PostgreSQL: `15.3 (Debian 15.3-1.pgdg120+1)`
 
-| 组件 | 说明 |
-|------|------|
-| **Citus** | 分布式数据库扩展 |
-| **Columnar** | 列式存储扩展（用于历史数据归档） |
+## 扩展情况
 
-## PostgreSQL 要求
+### 184
+- `btree_gist`
+- `citus_columnar`
+- `pg_trgm`
+- `pgcrypto`
+- `plpgsql`
 
-- **最低版本**: PostgreSQL 15.x
-- **推荐版本**: PostgreSQL 15.3 或更高
-- **必需扩展**: Citus, columnar
+### 71
+- `btree_gist`
+- `citus_columnar`
+- `pg_trgm`
+- `pgcrypto`
+- `plpgsql`
 
-### 安装扩展
+### 本地 llm_gateway
+- `btree_gist`
+- `citus`
+- `citus_columnar`
+- `pg_trgm`
+- `pgcrypto`
+- `plpgsql`
 
-```sql
--- 确保扩展已安装
-CREATE EXTENSION IF NOT EXISTS citus;
-CREATE EXTENSION IF NOT EXISTS columnar;
-```
+## 重要说明
 
-## Columnar 存储策略
+1. 184/71 真实使用的是 `citus_columnar`，不是独立名为 `columnar` 的扩展。
+2. 本地环境比 184/71 多一个 `citus` 扩展，这属于环境差异，不代表 184 导出错误。
+3. `request_logs_archive` 的历史分区使用列式存储；当前活跃 `request_logs` 分区仍是 heap。
 
-### 什么是 Columnar
+## request_logs 分区对比
 
-Columnar 是一种列式存储引擎，相比传统的行式存储（heap）：
-- **优势**: 压缩率高、聚合查询快、只读取需要的列
-- **适用场景**: 历史数据归档、分析型查询
-- **限制**: 不支持 UPDATE/DELETE（只支持 INSERT 和批量删除）
+### 184
+- `request_logs_2026_07`
+- `request_logs_2026_08`
+- `request_logs_default`
+- `request_logs_archive_2026_06`
+- `request_logs_archive_2026_07`
 
-### 本项目的 Columnar 使用
+### 71
+- `request_logs_2026_06`
+- `request_logs_2026_07`
+- `request_logs_2026_08`
+- `request_logs_default`
+- 无已挂载的 `request_logs_archive_YYYY_MM` 子分区
 
-| 表类型 | 存储方式 | 说明 |
-|--------|----------|------|
-| request_logs | heap | 当前月份数据，使用行式存储保证写入性能 |
-| request_logs_archive | columnar | 历史归档数据，使用列式存储节省空间 |
+### 本地 llm_gateway
+- `request_logs_2026_06`
+- `request_logs_2026_07`
+- `request_logs_2026_08`
+- `request_logs_default`
+- `request_logs_archive_2026_07`
 
-### 创建 Columnar 分区的示例
+## 初始化数据范围
 
-```sql
--- 创建按月分区的 columnar 表
-CREATE TABLE request_logs_archive_2026_06
-    PARTITION OF request_logs_archive
-    FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00')
-    USING columnar;
+保留：
+- `tenants`: 仅 `default`
+- `users`: 仅 `admin`
+- `applications`: 仅 `admin` / `applicant`
+- `providers`: 仅标准 provider 配置，不含 credentials，不含自定义业务 provider
+- `work_type_config` / `work_type_model_route`
 
--- 查看分区存储类型
-SELECT 
-    relname,
-    relkind,
-    CASE 
-        WHEN relstorage = 'c' THEN 'columnar'
-        WHEN relstorage = 'h' THEN 'heap'
-        WHEN relstorage = 'a' THEN 'append-optimized'
-        ELSE relstorage
-    END as storage_type
-FROM pg_class 
-WHERE relname LIKE 'request_logs%';
-```
+不保留：
+- `api_keys`
+- `credentials`
+- `request_logs*` 数据
+- `billing_orders`
+- `credit_ledger*` / `usage_ledger*` 数据
+- 详细审计、运营、业务明细数据
 
-## 分区表
+## 执行前提
 
-### 主分区表
-
-1. **request_logs** - 请求日志（按月分区）
-2. **request_logs_archive** - 请求日志归档（按月分区，columnar）
-3. **credit_ledger** - 积分账本（按月分区）
-4. **usage_ledger** - 使用量账本（按月分区）
-5. **tool_usage_stats** - 工具使用统计（按月分区）
-6. **request_wal** - 请求WAL日志（按月分区）
-
-### 分区命名规则
-
-```
-{表名}_{YYYY_MM}
-例如: request_logs_2026_07, usage_ledger_2026_06
-```
-
-## RLS（行级安全策略）
-
-所有租户相关表都启用了RLS，策略使用 `get_current_tenant()` 函数进行租户隔离。
-
-```sql
--- 查看当前租户
-SELECT get_current_tenant();
-
--- 设置会话租户
-SET app.current_tenant = 'default';
-```
-
-## 初始化数据说明
-
-### 保留的数据
-
-| 表 | 说明 |
-|----|------|
-| tenants | 仅 default 租户 |
-| users | 仅 default 租户的 admin 用户 |
-| applications | admin 和 applicant 应用 |
-| providers | 提供商配置（不含凭据） |
-| work_type_config | 工作类型配置 |
-
-### 不包含的数据
-
-- api_keys (API密钥)
-- credentials (凭据信息)
-- request_logs* (请求日志)
-- billing_orders (计费订单)
-- 其他业务明细数据
-
-## 环境变量
-
-```bash
-# 设置数据库连接
-export LLM_GATEWAY_DATABASE_URL="postgresql://user:pass@host:5432/llm_gateway"
-```
-
-## 部署检查清单
-
-- [ ] PostgreSQL 15.x 已安装
-- [ ] Citus 扩展已启用
-- [ ] Columnar 扩展已启用
-- [ ] 数据库用户权限已配置
-- [ ] 表结构已创建
-- [ ] 初始数据已导入
-- [ ] 分区表已创建
-- [ ] RLS 策略已生效
+建议环境：
+- PostgreSQL 15.x
+- 已安装 `citus_columnar`
+- 若本地需要完全复刻当前容器行为，可同时安装 `citus`

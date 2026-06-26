@@ -14,6 +14,11 @@ STABLE
 AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
 
 -- ----------------------------------------------------------------------------
+-- Request Logs 序列
+-- ----------------------------------------------------------------------------
+CREATE SEQUENCE IF NOT EXISTS public.request_logs_id_seq;
+
+-- ----------------------------------------------------------------------------
 -- Request Logs 分区父表（heap存储，当前月份数据）
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.request_logs (
@@ -106,9 +111,6 @@ CREATE TABLE IF NOT EXISTS public.request_logs (
     CONSTRAINT chk_compression_parent_single CHECK (parent_request_id IS NULL OR compression_reason IS NOT NULL),
     CONSTRAINT request_logs_strategy_used_check CHECK (strategy_used IS NULL OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text])))
 ) PARTITION BY RANGE (ts);
-
--- 序列（用于id自增）
-CREATE SEQUENCE IF NOT EXISTS public.request_logs_id_seq;
 
 -- ----------------------------------------------------------------------------
 -- Request Logs 分区表（heap存储，当前月份）
