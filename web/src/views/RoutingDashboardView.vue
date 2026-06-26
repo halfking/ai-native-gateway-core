@@ -695,80 +695,79 @@ onUnmounted(() => stopPoll())
       <div v-if="!analyticsEmpty" class="card compact-card flat-card">
         <AnalyticsKpiBar :audit="audit" />
       </div>
-        <div class="analytics-charts">
-          <div class="card compact-card chart-card" :style="{ minHeight: heatmapCardHeight + 'px' }">
-            <div class="card-toolbar">
-              <div class="toolbar-left">
-                <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
-              </div>
-              <div class="toolbar-filters">
-                <button
-                  v-for="rd in (['task_type', 'work_type'] as AnalyticsRowDim[])"
-                  :key="rd"
-                  class="profile-pill"
-                  :class="{ active: analyticsRowDim === rd }"
-                  @click="analyticsRowDim = rd"
-                >{{ rd === 'task_type' ? 'L1任务' : '工作类型' }}</button>
-                <span class="toolbar-divider" />
-                <button
-                  v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
-                  :key="w"
-                  class="profile-pill"
-                  :class="{ active: analyticsWindow === w }"
-                  @click="analyticsWindow = w"
-                >{{ w }}</button>
-                <span class="toolbar-divider" />
-                <button
-                  v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"
-                  :key="m"
-                  class="profile-pill"
-                  :class="{ active: analyticsMetric === m }"
-                  @click="analyticsMetric = m"
-                >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
-              </div>
-            </div>
-            <HeatmapMatrix
-              :data="matrixData"
-              :metric="analyticsMetric"
-              :row-aliases="matrixData?.meta?.row_aliases"
-              :loading="analyticsLoading"
-              :min-height="heatmapBodyMinHeight"
-              @cell-click="onMatrixCellClick"
-            />
-          </div>
-          <div class="card compact-card chart-card" :style="{ minHeight: sankeyCardHeight + 'px' }">
-            <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
-            <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgMinHeight" />
-          </div>
-        </div>
-
-        <div v-if="selectedHeatmapTask" class="card compact-card collapsible">
-          <div class="card-toolbar clickable" @click="showModelTaskIndex = !showModelTaskIndex">
+      <div class="analytics-charts">
+        <div class="card compact-card chart-card" :style="{ minHeight: heatmapCardHeight + 'px' }">
+          <div class="card-toolbar">
             <div class="toolbar-left">
-              <span class="toolbar-title">模型任务指数</span>
-              <span class="text-muted">{{ selectedHeatmapTask }}</span>
+              <span class="toolbar-title">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }} × 模型热力图</span>
             </div>
-            <span class="expand-icon">{{ showModelTaskIndex ? '▼' : '▶' }}</span>
+            <div class="toolbar-filters">
+              <button
+                v-for="rd in (['task_type', 'work_type'] as AnalyticsRowDim[])"
+                :key="rd"
+                class="profile-pill"
+                :class="{ active: analyticsRowDim === rd }"
+                @click="analyticsRowDim = rd"
+              >{{ rd === 'task_type' ? 'L1任务' : '工作类型' }}</button>
+              <span class="toolbar-divider" />
+              <button
+                v-for="w in (['7d', '24h'] as AnalyticsWindow[])"
+                :key="w"
+                class="profile-pill"
+                :class="{ active: analyticsWindow === w }"
+                @click="analyticsWindow = w"
+              >{{ w }}</button>
+              <span class="toolbar-divider" />
+              <button
+                v-for="m in (['count', 'success_rate', 'p95_ms', 'cost_usd'] as AnalyticsMetric[])"
+                :key="m"
+                class="profile-pill"
+                :class="{ active: analyticsMetric === m }"
+                @click="analyticsMetric = m"
+              >{{ m === 'count' ? '请求' : m === 'success_rate' ? '成功率' : m === 'p95_ms' ? 'P95' : '费用' }}</button>
+            </div>
           </div>
-          <ModelTaskIndexPanel v-if="showModelTaskIndex" :task-type="selectedHeatmapTask" :top="10" />
-        </div>
-
-        <div v-if="selectedHeatmapModel" class="card compact-card">
-          <div class="section-head tight">
-            <h3>L2 凭据漏斗</h3>
-            <span class="text-muted">{{ selectedHeatmapModel }} · {{ analyticsWindow }}</span>
-          </div>
-          <CredentialFunnel
-            :stages="funnelStages"
-            :model="selectedHeatmapModel"
-            :approximate="funnelApproximate"
-            :data-source="funnelDataSource"
-            :sample-n="funnelSampleN"
-            :confidence="funnelConfidence"
-            :confidence-hint="funnelConfidenceHint"
-            :loading="funnelLoading"
+          <HeatmapMatrix
+            :data="matrixData"
+            :metric="analyticsMetric"
+            :row-aliases="matrixData?.meta?.row_aliases"
+            :loading="analyticsLoading"
+            :min-height="heatmapBodyMinHeight"
+            @cell-click="onMatrixCellClick"
           />
         </div>
+        <div class="card compact-card chart-card" :style="{ minHeight: sankeyCardHeight + 'px' }">
+          <div class="section-head tight"><h3>路由流向</h3><span class="text-muted">任务 → 模型 → 供应商</span></div>
+          <RouteFlowSankey :data="flowData" :loading="analyticsLoading" :min-height="sankeySvgMinHeight" />
+        </div>
+      </div>
+
+      <div v-if="selectedHeatmapTask" class="card compact-card collapsible">
+        <div class="card-toolbar clickable" @click="showModelTaskIndex = !showModelTaskIndex">
+          <div class="toolbar-left">
+            <span class="toolbar-title">模型任务指数</span>
+            <span class="text-muted">{{ selectedHeatmapTask }}</span>
+          </div>
+          <span class="expand-icon">{{ showModelTaskIndex ? '▼' : '▶' }}</span>
+        </div>
+        <ModelTaskIndexPanel v-if="showModelTaskIndex" :task-type="selectedHeatmapTask" :top="10" />
+      </div>
+
+      <div v-if="selectedHeatmapModel" class="card compact-card">
+        <div class="section-head tight">
+          <h3>L2 凭据漏斗</h3>
+          <span class="text-muted">{{ selectedHeatmapModel }} · {{ analyticsWindow }}</span>
+        </div>
+        <CredentialFunnel
+          :stages="funnelStages"
+          :model="selectedHeatmapModel"
+          :approximate="funnelApproximate"
+          :data-source="funnelDataSource"
+          :sample-n="funnelSampleN"
+          :confidence="funnelConfidence"
+          :confidence-hint="funnelConfidenceHint"
+          :loading="funnelLoading"
+        />
       </div>
 
       <div v-if="cellModalOpen && cellPopup" class="modal-overlay" @click.self="closeCellModal">
