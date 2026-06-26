@@ -19,6 +19,7 @@ const currentValue = ref<any>(null)
 const currentSource = ref<string>('')
 const editBuffer = ref<string>('') // JSON text editor
 const filterCategory = ref<string>('')
+const tagInput = ref('')
 
 const categories = [
   { key: '',                   label: '全部',  icon: '📋' },
@@ -65,8 +66,51 @@ async function selectKey(key: string) {
     } else {
       editBuffer.value = JSON.stringify(resp.value ?? resp.spec.default, null, 2)
     }
+    tagInput.value = ''
   } catch (e: any) {
     error.value = e.message || '加载详情失败'
+  }
+}
+
+const isSessionAliasSetting = computed(() => selectedKey.value === 'session.id_body_keys')
+
+const sessionAliasTags = computed<string[]>(() => {
+  if (!isSessionAliasSetting.value) return []
+  return editBuffer.value
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+})
+
+function syncSessionAliasTags(tags: string[]) {
+  editBuffer.value = tags.join(',')
+}
+
+function addSessionAliasTag() {
+  if (!isSessionAliasSetting.value) return
+  const next = tagInput.value.trim()
+  if (!next) return
+  const tags = [...sessionAliasTags.value]
+  if (!tags.some(t => t.toLowerCase() === next.toLowerCase())) {
+    tags.push(next)
+    syncSessionAliasTags(tags)
+  }
+  tagInput.value = ''
+}
+
+function removeSessionAliasTag(tag: string) {
+  if (!isSessionAliasSetting.value) return
+  syncSessionAliasTags(sessionAliasTags.value.filter(t => t !== tag))
+}
+
+function onSessionAliasKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault()
+    addSessionAliasTag()
+  }
+  if (e.key === 'Backspace' && !tagInput.value && sessionAliasTags.value.length > 0) {
+    e.preventDefault()
+    removeSessionAliasTag(sessionAliasTags.value[sessionAliasTags.value.length - 1])
   }
 }
 
@@ -347,6 +391,25 @@ const filteredCount = computed(() => items.value.length)
             />
           </div>
           
+          <!-- Session alias string: tag editor -->
+          <div v-else-if="isSessionAliasSetting" class="editor-tags">
+            <div class="tag-editor-shell">
+              <span v-for="tag in sessionAliasTags" :key="tag" class="tag-chip">
+                <span>{{ tag }}</span>
+                <button type="button" class="tag-chip-remove" @click="removeSessionAliasTag(tag)">x</button>
+              </span>
+              <input
+                v-model="tagInput"
+                type="text"
+                class="tag-input"
+                placeholder="输入别名后回车"
+                @keydown="onSessionAliasKeydown"
+                @blur="addSessionAliasTag"
+              />
+            </div>
+            <div class="json-hint">将保存为逗号字符串，立即热更新到会话别名提取。</div>
+          </div>
+
           <!-- String type: Text input -->
           <div v-else-if="selected.type === 'string'" class="editor-string">
             <input 
@@ -704,7 +767,7 @@ const filteredCount = computed(() => items.value.length)
   color: var(--text);
 }
 
-.editor-select, .editor-number, .editor-string, .editor-json {
+.editor-select, .editor-number, .editor-string, .editor-json, .editor-tags {
   margin: 12px 0;
 }
 
@@ -723,6 +786,47 @@ const filteredCount = computed(() => items.value.length)
   outline: none;
   border-color: var(--primary, #3b82f6);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.tag-editor-shell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.14);
+  color: var(--accent-h, #818cf8);
+  font-size: 12px;
+}
+
+.tag-chip-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+
+.tag-input {
+  flex: 1 1 180px;
+  min-width: 140px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
 }
 
 .select-hint {
