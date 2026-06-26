@@ -1,0 +1,24 @@
+-- ============================================================
+-- Phase 21 Schema Reconciliation — Master Sync Script
+-- Generated: 2026-06-26
+-- Source: 184 production (via 71 stream replica)
+-- Target: Local dev environment
+--
+-- Tables missing in local: 212
+-- Indexes missing in local: 414
+--
+-- Strategy:
+--   1. Run per-DB sync files in dependency order
+--   2. Tables created first, then indexes
+--   3. All scripts are idempotent (IF NOT EXISTS where possible)
+--
+-- Usage:
+--   psql -U kxuser -d postgres -f 00-RUN-ALL.sql
+--   OR
+--   for f in *-sync-from-184.sql *-indexes-sync-from-184.sql; do
+--     echo "Running $f"
+--     psql -U kxuser -d <dbname> -f "$f"
+--   done
+--
+-- Rollback: DROP statements are NOT included. To rollback, manually drop tables/indexes listed.
+-- ============================================================
