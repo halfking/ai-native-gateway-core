@@ -3,6 +3,8 @@ package autoroute
 import (
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // CachedIntent stores the auto-route decision for a session so that
@@ -57,6 +59,14 @@ func NewSessionIntentCache(ttl time.Duration) *SessionIntentCache {
 		ttl:     ttl,
 		now:     time.Now,
 	}
+}
+
+// NewRedisSessionIntentCache is a compatibility constructor for call sites
+// that want a Redis-backed cache. The current implementation still uses the
+// in-process cache semantics; Redis is accepted so startup wiring compiles
+// while the distributed cache implementation lands separately.
+func NewRedisSessionIntentCache(_ *redis.Client, ttl time.Duration) *SessionIntentCache {
+	return NewSessionIntentCache(ttl)
 }
 
 // Get returns the cached intent for sessionID, or (zero, false) if
