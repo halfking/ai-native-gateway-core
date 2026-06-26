@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 var SessionHeadersPriority = []string{
@@ -45,40 +45,73 @@ var defaultSessionFieldPriority = []string{
 	"threadid",
 }
 
-var (
-	sessionFieldPriorityOnce sync.Once
-	sessionFieldPriority     []string
-	sessionBodyKeyOverrides  []string
-)
+var sessionBodyKeyOverrides []string
 
 func SetSessionIDBodyKeys(keys []string) {
-	sessionFieldPriorityOnce = sync.Once{}
-	sessionFieldPriority = nil
 	sessionBodyKeyOverrides = append([]string(nil), keys...)
 }
 
 func configuredSessionFieldPriority() []string {
-	sessionFieldPriorityOnce.Do(func() {
-		seen := make(map[string]struct{}, len(defaultSessionFieldPriority))
-		merged := make([]string, 0, len(defaultSessionFieldPriority)+4)
-		for _, key := range defaultSessionFieldPriority {
-			seen[key] = struct{}{}
-			merged = append(merged, key)
+	seen := make(map[string]struct{}, len(defaultSessionFieldPriority))
+	merged := make([]string, 0, len(defaultSessionFieldPriority)+4)
+	for _, key := range defaultSessionFieldPriority {
+		seen[key] = struct{}{}
+		merged = append(merged, key)
+	}
+	for _, item := range sessionBodyKeyOverrides {
+		appendSessionFieldAlias(&merged, seen, item)
+	}
+	for _, item := range sessionBodyKeySettings() {
+		appendSessionFieldAlias(&merged, seen, item)
+	}
+	return merged
+}
+
+func appendSessionFieldAlias(target *[]string, seen map[string]struct{}, item string) {
+	normalized := normalizeSessionFieldName(item)
+	if normalized == "" {
+		return
+	}
+	if _, ok := seen[normalized]; ok {
+		return
+	}
+	seen[normalized] = struct{}{}
+	*target = append(*target, normalized)
+}
+
+func sessionBodyKeySettings() []string {
+	if settings.Global == nil {
+		return nil
+	}
+	raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, "session.id_body_keys", "")
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return splitSessionFieldList(single)
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return list
+	}
+	return nil
+}
+
+func splitSessionFieldList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
 		}
-		for _, item := range sessionBodyKeyOverrides {
-			normalized := normalizeSessionFieldName(item)
-			if normalized == "" {
-				continue
-			}
-			if _, ok := seen[normalized]; ok {
-				continue
-			}
-			seen[normalized] = struct{}{}
-			merged = append(merged, normalized)
-		}
-		sessionFieldPriority = merged
-	})
-	return sessionFieldPriority
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func extractSessionIDFromRequest(r *http.Request, body []byte) string {
