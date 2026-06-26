@@ -47,20 +47,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
-// MemoraClient is the subset of *memora.Client that the compaction flow
+// MemoraClient is the subset of a memory reader that the compaction flow
 // needs. We declare it as an interface here (instead of importing the
 // concrete type) so tests can inject a fake without spinning up Memora.
 type MemoraClient interface {
 	Disabled() bool
-	Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 	// SmartSearch is the M1 (2026-06-19) high-recall retrieval entry point.
 	// Today it safely delegates to user-scoped single-vector search; it is
 	// future-ready for the Dashboard RRF+MMR pipeline once that endpoint
 	// supports user_id filtering (see memora/client.go).
-	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 }
 
 // ProviderClient is the subset of *provider.Client that pickCompactionCandidates
@@ -370,7 +370,7 @@ func tryMemoraCompression(ctx context.Context, deps *Dependencies, tenantID stri
 	if taskID == "" {
 		return nil, false
 	}
-	userID := memora.UserID(tenantID, apiKeyID, taskID)
+	userID := memory.UserID(tenantID, apiKeyID, taskID)
 	if userID == "" {
 		return nil, false
 	}
@@ -403,8 +403,8 @@ func tryMemoraCompression(ctx context.Context, deps *Dependencies, tenantID stri
 
 	// Use the rebuilder (T6) to splice the snippets into a fresh
 	// dynamic_context user message. RebuildBodyWithMemoraSnippets is in
-	// the memora package (existing implementation).
-	newBody, ok := memora.RebuildBodyWithMemoraSnippets(body, snippets, 2)
+	// the memory package (extracted implementation).
+	newBody, ok := memory.RebuildBodyWithMemoraSnippets(body, snippets, 2)
 	if !ok {
 		return nil, false
 	}
