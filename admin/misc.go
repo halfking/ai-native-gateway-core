@@ -331,7 +331,11 @@ func deploySeqFileCandidates() []string {
 }
 
 func parseVersionString(raw string) map[string]any {
-	parts := strings.SplitN(raw, "-", 3)
+	// VERSION file is <semver>-<8char-sha>-<YYYY-MM-DD>-<seq> (4 segments
+	// separated by '-', per Dockerfile line 88). Split into 4 so the build_date
+	// segment keeps its own embedded dashes (2026-06-26) and the trailing
+	// build_seq number doesn't get concatenated onto build_date.
+	parts := strings.SplitN(raw, "-", 4)
 	version := parts[0]
 	gitSHA := ""
 	buildDate := ""
