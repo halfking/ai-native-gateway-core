@@ -1,0 +1,152 @@
+package streaming
+
+import "encoding/json"
+
+func NormalizeOpenAIToolDefinitions(tools []any) []any {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]any, 0, len(tools))
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if fn, ok := tool["function"].(map[string]any); ok {
+			if name, _ := fn["name"].(string); name != "" {
+				out = append(out, map[string]any{
+					"type":     "function",
+					"function": fn,
+				})
+				continue
+			}
+		}
+		if name, _ := tool["name"].(string); name != "" {
+			if schema, hasSchema := tool["input_schema"]; hasSchema {
+				fn := map[string]any{"name": name}
+				if d, ok := tool["description"].(string); ok && d != "" {
+					fn["description"] = d
+				}
+				if schema != nil {
+					fn["parameters"] = schema
+				}
+				out = append(out, map[string]any{"type": "function", "function": fn})
+				continue
+			}
+			if _, hasParams := tool["parameters"]; hasParams || tool["type"] == "function" {
+				fn := map[string]any{"name": name}
+				if d, ok := tool["description"].(string); ok && d != "" {
+					fn["description"] = d
+				}
+				if p, ok := tool["parameters"]; ok {
+					fn["parameters"] = p
+				} else {
+					fn["parameters"] = map[string]any{}
+				}
+				out = append(out, map[string]any{"type": "function", "function": fn})
+				continue
+			}
+		}
+		out = append(out, tool)
+	}
+	return out
+}
+
+func OpenAIToolToAnthropic(tool map[string]any) (map[string]any, bool) {
+	normalized := NormalizeOpenAIToolDefinitions([]any{tool})
+	if len(normalized) != 1 {
+		return nil, false
+	}
+	tm, ok := normalized[0].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	fn, _ := tm["function"].(map[string]any)
+	if fn == nil {
+		return nil, false
+	}
+	name, _ := fn["name"].(string)
+	if name == "" {
+		return nil, false
+	}
+	anth := map[string]any{"name": name}
+	if d, ok := fn["description"].(string); ok && d != "" {
+		anth["description"] = d
+	}
+	if p, ok := fn["parameters"]; ok {
+		anth["input_schema"] = p
+	} else {
+		anth["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	return anth, true
+}
+
+func SanitizeAnthropicToolDefinitions(tools []any) []any {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]any, 0, len(tools))
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if anth, ok := OpenAIToolToAnthropic(tool); ok {
+			out = append(out, anth)
+			continue
+		}
+		if name, _ := tool["name"].(string); name != "" {
+			anth := map[string]any{"name": name}
+			if d, ok := tool["description"].(string); ok && d != "" {
+				anth["description"] = d
+			}
+			if s, ok := tool["input_schema"]; ok {
+				anth["input_schema"] = s
+			} else if p, ok := tool["parameters"]; ok {
+				anth["input_schema"] = p
+			}
+			out = append(out, anth)
+		}
+	}
+	return out
+}
+
+func normalizeToolsInBody(body []byte, normalize func([]any) []any) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	raw, ok := obj["tools"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return body
+	}
+	var tools []any
+	if json.Unmarshal(raw, &tools) != nil || len(tools) == 0 {
+		return body
+	}
+	normalized := normalize(tools)
+	if len(normalized) == 0 {
+		delete(obj, "tools")
+	} else {
+		b, err := json.Marshal(normalized)
+		if err != nil {
+			return body
+		}
+		obj["tools"] = b
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func NormalizeToolsInChatBody(body []byte) []byte {
+	return normalizeToolsInBody(body, NormalizeOpenAIToolDefinitions)
+}
+
+func SanitizeAnthropicToolsInBody(body []byte) []byte {
+	return normalizeToolsInBody(body, SanitizeAnthropicToolDefinitions)
+}
