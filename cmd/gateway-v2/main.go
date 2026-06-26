@@ -253,7 +253,7 @@ func newDeps(cfg *v2Config) *v2Deps {
 
 	// 预置一个默认 credential 供 demo 使用
 	_ = credStore.Save(&credential.Credential{
-		ID: "default-cred", TenantID: "default", ProviderID: "default-openai", Model: "gpt-4",
+		ID: "default-cred", TenantID: "default", ProviderID: "default-openai", Model: "gpt-4o",
 		EncryptedKey:  []byte("demo-encrypted-key"),
 		Priority:      50,
 		Status:        credential.StatusActive,
@@ -263,7 +263,7 @@ func newDeps(cfg *v2Config) *v2Deps {
 	provStore := provider.NewInMemoryStore()
 	provProber := provider.NewProber(provStore)
 
-	// 预置一个默认 provider（gpt-4）供 demo 使用
+	// 预置一个默认 provider（gpt-4o）供 demo 使用
 	_ = provStore.Save(&provider.Provider{
 		ID:       "default-openai",
 		Name:     "OpenAI",
@@ -271,6 +271,7 @@ func newDeps(cfg *v2Config) *v2Deps {
 		Protocol: provider.ProtocolOpenAI,
 		AuthType: "bearer",
 		Models: []provider.ModelSpec{
+			{Name: "gpt-4o", MaxContextTokens: 128000, SupportsStream: true, SupportsTools: true},
 			{Name: "gpt-4", MaxContextTokens: 8192, SupportsStream: true, SupportsTools: true},
 			{Name: "gpt-3.5-turbo", MaxContextTokens: 4096, SupportsStream: true},
 		},
