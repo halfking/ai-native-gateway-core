@@ -1,6 +1,11 @@
 -- Pre-Migration Check for Request Logs Fix
 -- Date: 2026-06-26
 -- Purpose: Analyze current state before applying migration 301
+--
+-- Run this BEFORE running db/migrations/301_request_logs_unique_request_id_only.sql
+-- to estimate impact (duplicate row counts, table size) and decide whether the
+-- migration is worth running. The migration itself is idempotent, so re-running
+-- it is always safe; this script is informational only.
 
 -- ============================================================================
 -- SECTION 1: Check Current Index Structure

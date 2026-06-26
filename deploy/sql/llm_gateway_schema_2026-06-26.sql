@@ -127,6 +127,7 @@ DROP INDEX IF EXISTS public.idx_request_logs_tenant_task_ts;
 DROP INDEX IF EXISTS public.idx_request_logs_status_ts;
 DROP INDEX IF EXISTS public.idx_request_logs_session_outbound;
 DROP INDEX IF EXISTS public.idx_request_logs_request_id_ts_unique;
+DROP INDEX IF EXISTS public.idx_request_logs_request_id_unique;
 DROP INDEX IF EXISTS public.idx_request_logs_quality_flags;
 DROP INDEX IF EXISTS public.idx_request_logs_provider_tool_calls;
 DROP INDEX IF EXISTS public.idx_request_logs_provider_quality;
@@ -8105,10 +8106,10 @@ CREATE INDEX idx_request_logs_quality_flags ON ONLY public.request_logs USING gi
 
 
 --
--- Name: idx_request_logs_request_id_ts_unique; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_request_logs_request_id_unique; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX idx_request_logs_request_id_ts_unique ON ONLY public.request_logs USING btree (request_id, ts);
+CREATE UNIQUE INDEX idx_request_logs_request_id_unique ON ONLY public.request_logs USING btree (request_id);
 
 
 --
@@ -8651,10 +8652,10 @@ CREATE INDEX request_logs_2026_06_quality_flags_idx ON public.request_logs_2026_
 
 
 --
--- Name: request_logs_2026_06_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: request_logs_2026_06_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX request_logs_2026_06_request_id_ts_idx ON public.request_logs_2026_06 USING btree (request_id, ts);
+CREATE UNIQUE INDEX request_logs_2026_06_request_id_idx ON public.request_logs_2026_06 USING btree (request_id);
 
 
 --
@@ -8756,10 +8757,10 @@ CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_
 
 
 --
--- Name: request_logs_2026_07_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: request_logs_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX request_logs_2026_07_request_id_ts_idx ON public.request_logs_2026_07 USING btree (request_id, ts);
+CREATE UNIQUE INDEX request_logs_2026_07_request_id_idx ON public.request_logs_2026_07 USING btree (request_id);
 
 
 --
@@ -8861,10 +8862,10 @@ CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_
 
 
 --
--- Name: request_logs_2026_08_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: request_logs_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX request_logs_2026_08_request_id_ts_idx ON public.request_logs_2026_08 USING btree (request_id, ts);
+CREATE UNIQUE INDEX request_logs_2026_08_request_id_idx ON public.request_logs_2026_08 USING btree (request_id);
 
 
 --
@@ -8966,10 +8967,10 @@ CREATE INDEX request_logs_default_quality_flags_idx ON public.request_logs_defau
 
 
 --
--- Name: request_logs_default_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: request_logs_default_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX request_logs_default_request_id_ts_idx ON public.request_logs_default USING btree (request_id, ts);
+CREATE UNIQUE INDEX request_logs_default_request_id_idx ON public.request_logs_default USING btree (request_id);
 
 
 --
@@ -9372,10 +9373,10 @@ ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.reques
 
 
 --
--- Name: request_logs_2026_06_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: request_logs_2026_06_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_2026_06_request_id_ts_idx;
+ALTER INDEX public.idx_request_logs_request_id_unique ATTACH PARTITION public.request_logs_2026_06_request_id_idx;
 
 
 --
@@ -9477,10 +9478,10 @@ ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.reques
 
 
 --
--- Name: request_logs_2026_07_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: request_logs_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_2026_07_request_id_ts_idx;
+ALTER INDEX public.idx_request_logs_request_id_unique ATTACH PARTITION public.request_logs_2026_07_request_id_idx;
 
 
 --
@@ -9582,10 +9583,10 @@ ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.reques
 
 
 --
--- Name: request_logs_2026_08_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: request_logs_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_2026_08_request_id_ts_idx;
+ALTER INDEX public.idx_request_logs_request_id_unique ATTACH PARTITION public.request_logs_2026_08_request_id_idx;
 
 
 --
@@ -9687,10 +9688,10 @@ ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.reques
 
 
 --
--- Name: request_logs_default_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: request_logs_default_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_default_request_id_ts_idx;
+ALTER INDEX public.idx_request_logs_request_id_unique ATTACH PARTITION public.request_logs_default_request_id_idx;
 
 
 --

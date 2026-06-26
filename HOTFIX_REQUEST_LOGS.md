@@ -1,6 +1,18 @@
 # Request Logs 写入失败修复
 
-## 问题描述
+> **2026-06-26 重要更新 — 重复行 bug 已修复！**
+>
+> 之前版本的 fix 解决了**写入失败**的问题，但遗留了一个**重复行**的 bug：
+> glm-5.1 等模型在重试时会产生多行 request_logs（共享同一个 request_id），
+> 然后被 UPDATE 全部改写。
+>
+> 完整修复见 [`CHANGELOG_request_logs_unique_id.md`](./CHANGELOG_request_logs_unique_id.md)。
+> 部署脚本见 `scripts/deploy_request_logs_unique_id.sh`（部署）和
+> `scripts/rollback_request_logs_unique_id.sh`（回滚）。
+>
+> 本文档保留历史记录。
+
+## 问题描述（2026-06-22 历史版本）
 
 **症状**：
 - Gateway audit 日志显示请求成功，但 `request_logs` 表没有新记录

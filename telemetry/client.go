@@ -495,10 +495,13 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$65,
 		CAST($66 AS jsonb)
 	)
-	-- 2026-06-26: Removed ON CONFLICT clause because the unique constraint is
-	-- (request_id, ts) where ts=now() differs each INSERT, so UPSERT never matches.
-	-- The first INSERT creates the initial row, subsequent updates use
-	-- updateRequestLog() which targets the earliest row by (request_id) only.
+	-- 2026-06-26 P0 hotfix: ON CONFLICT now uses (request_id) only.
+	-- The unique constraint changed from (request_id, ts) to (request_id) only
+	-- so a single INSERT per request_id is enforced at the DB layer. If the
+	-- application path accidentally issues a second INSERT (e.g. from a retry
+	-- storm that bypassed the initial-record path), DO NOTHING prevents
+	-- duplicates. Subsequent updates still go through updateRequestLog().
+	ON CONFLICT (request_id) DO NOTHING
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -986,7 +989,7 @@ func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
 			COALESCE(NULLIF($48, ''), NULL), $49,
 			COALESCE(NULLIF($50, ''), NULL)
 		)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
+		ON CONFLICT (request_id) DO UPDATE SET
 			success = CASE
 				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.success
 				ELSE request_logs.success

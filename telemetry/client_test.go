@@ -227,3 +227,10 @@ func TestMergeRequestLogBatch_MultipleUpdatesCoalesce(t *testing.T) {
 // strPtrT is a small helper to avoid pulling strings package
 // indirection into this section.
 func strPtrT(s string) *string { return &s }
+
+// SQL contract test is intentionally deferred to client_live_test.go
+// (TestRequestLogUniqueRequestID) because dbPool is a concrete
+// *pgxpool.Pool rather than an interface, and the test depends on
+// the actual SQL hitting the (request_id)-only unique constraint
+// added by migration 301 / db/db.go ensureRequestLogsUniqueIndex.
+// See CHANGELOG_request_logs_unique_id.md for context.

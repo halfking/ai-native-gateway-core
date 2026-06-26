@@ -10,6 +10,12 @@
 --
 -- This migration creates the index on (request_id, ts) — same shape as the
 -- ON CONFLICT clause in telemetry/client.go: ON CONFLICT (request_id, ts).
+--
+-- 2026-06-26 SUPERSEDED by migration 301_request_logs_unique_request_id_only.sql.
+-- The (request_id, ts) constraint allowed ts=now() to differ per INSERT,
+-- producing duplicate rows under retry storms. Migration 301 replaces this
+-- with UNIQUE (request_id) only after confirming partitioned-table support
+-- works on the production Postgres 15.3 cluster. See CHANGELOG_*.md.
 
 -- Step 1: Clean up any existing duplicates (keep the latest row per request_id)
 -- This DELETE targets only recent duplicates to minimize lock time.

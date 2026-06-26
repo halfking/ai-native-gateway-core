@@ -200,3 +200,316 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 
 	_ = strings.Contains // keep import for future use
 }
+
+// TestRequestLogUniqueRequestID is the regression test for the 2026-06-26
+// duplicate-row bug (kaixuan's report). Symptom: a glm-5.1 request that
+// retried 智谱 3 times before succeeding on nvidia nim produced 4 rows in
+// request_logs, all subsequently updated to "nvidia nim success".
+//
+// Root cause: the unique constraint was (request_id, ts). Because
+// insertRequestLog uses ts=now() each call, a retry storm produced
+// multiple rows. The UPDATE ... WHERE request_id=$1 then matched all of
+// them.
+//
+// Fix: enforce UNIQUE (request_id) only via db/db.go::ensureRequestLogsUniqueIndex
+// (mirror of db/migrations/301_request_logs_unique_request_id_only.sql).
+// insertRequestLog now has ON CONFLICT (request_id) DO NOTHING so any
+// racing INSERT is a no-op.
+//
+// This test simulates the exact bug scenario: initial INSERT → 3 failed
+// candidate UPDATEs → 1 successful UPDATE → fallback INSERT path.
+// It asserts SELECT COUNT(*) FROM request_logs WHERE request_id = $1
+// returns 1.
+//
+// Skip unless LLM_GATEWAY_PG_TEST_URL is set.
+func TestRequestLogUniqueRequestID(t *testing.T) {
+	dsn := os.Getenv("LLM_GATEWAY_PG_TEST_URL")
+	if dsn == "" {
+		t.Skip("LLM_GATEWAY_PG_TEST_URL not set; skipping live DB test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	// Schema precondition: the new (request_id)-only unique index must exist.
+	// If this fails, the test is correctly catching the schema gap; the
+	// operator must apply migration 301 or wait for db.Open() to apply it.
+	var hasNewIdx bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public'
+			  AND tablename = 'request_logs'
+			  AND indexname = 'idx_request_logs_request_id_unique'
+		)
+	`).Scan(&hasNewIdx); err != nil {
+		t.Fatalf("pg_indexes check: %v", err)
+	}
+	if !hasNewIdx {
+		t.Fatal("idx_request_logs_request_id_unique index missing; run db/migrations/301_request_logs_unique_request_id_only.sql or restart the gateway so db.Open() applies ensureRequestLogsUniqueIndex")
+	}
+
+	requestID := "test-unique-rid-" + time.Now().UTC().Format("20060102T150405.000000")
+
+	// Cleanup guard.
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM request_logs WHERE request_id = $1`, requestID)
+	}()
+
+	intPtr := func(v int) *int { return &v }
+	strPtr := func(v string) *string { return &v }
+
+	cl := NewClient()
+	cl.SetDB(pool)
+	if !cl.Enabled() {
+		t.Fatal("client should be enabled when DB is set")
+	}
+
+	// Step 1: Initial INSERT (mimics recordInitialRequestLog).
+	inProgress := RequestStatusInProgress
+	initial := &RequestLogEntry{
+		Op:            RequestLogInsert,
+		RequestID:     requestID,
+		TenantID:      "default",
+		ClientModel:   strPtr("glm-5.1"),
+		OutboundModel: strPtr("glm-5"),
+		Success:       false,
+		RequestStatus: &inProgress,
+	}
+	if err := cl.persistRequestLog(initial); err != nil {
+		t.Fatalf("initial INSERT: %v", err)
+	}
+
+	// Step 2: 智谱 failed 3 times (mimics Execute → candidate_failure_logs path,
+	// then EmitRequestLogUpdate for the request_logs row).
+	for i := 1; i <= 3; i++ {
+		failureKind := "transient"
+		failed := &RequestLogEntry{
+			Op:            RequestLogUpdate,
+			RequestID:     requestID,
+			TenantID:      "default",
+			ClientModel:   strPtr("glm-5.1"),
+			OutboundModel: strPtr("glm-5"),
+			CredentialID:  intPtr(11 + i), // 智谱 creds
+			ProviderID:    intPtr(11 + i),
+			Success:       false,
+			RequestStatus: strPtr(RequestStatusFailure),
+			ErrorKind:     &failureKind,
+		}
+		if err := cl.persistRequestLog(failed); err != nil {
+			t.Fatalf("failure UPDATE %d: %v", i, err)
+		}
+	}
+
+	// Step 3: nvidia nim success (mimics emitTelemetry happy path).
+	emptyKind := ""
+	success := &RequestLogEntry{
+		Op:             RequestLogUpdate,
+		RequestID:      requestID,
+		TenantID:       "default",
+		ClientModel:    strPtr("glm-5.1"),
+		OutboundModel:  strPtr("glm-5"),
+		CredentialID:   intPtr(18),
+		ProviderID:     intPtr(18),
+		Success:        true,
+		RequestStatus:  strPtr(RequestStatusSuccess),
+		ErrorKind:      &emptyKind, // explicit clear
+		PromptTokens:   intPtr(100),
+		CompletionTokens: intPtr(50),
+	}
+	if err := cl.persistRequestLog(success); err != nil {
+		t.Fatalf("success UPDATE: %v", err)
+	}
+
+	// Step 4: simulate the fallback INSERT path (originally a separate
+	// INSERT with new ts that would create a duplicate row under the
+	// OLD schema). With the fix, ON CONFLICT (request_id) DO NOTHING
+	// collapses this to the existing row.
+	fallback := &RequestLogEntry{
+		Op:            RequestLogInsert,
+		RequestID:     requestID,
+		TenantID:      "default",
+		ClientModel:   strPtr("glm-5.1"),
+		OutboundModel: strPtr("glm-5"),
+		CredentialID:   intPtr(18),
+		ProviderID:     intPtr(18),
+		Success:        true,
+		RequestStatus:  strPtr(RequestStatusSuccess),
+	}
+	if err := cl.persistRequestLog(fallback); err != nil {
+		t.Fatalf("fallback INSERT (would have created dup row pre-fix): %v", err)
+	}
+
+	// ASSERT 1: exactly 1 row exists.
+	var rowCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM request_logs WHERE request_id = $1
+	`, requestID).Scan(&rowCount); err != nil {
+		t.Fatalf("row count: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 row in request_logs, got %d (request_id=%s).\n"+
+			"This is the exact regression: a retry storm with INSERTs and UPDATEs\n"+
+			"must collapse to a single row under the (request_id)-only unique constraint.",
+			rowCount, requestID)
+	}
+
+	// ASSERT 2: final state shows nvidia nim (provider 18) success.
+	var (
+		gotSuccess   bool
+		gotProvider  *int
+		gotRequestStatus *string
+		gotErrorKind *string
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT success, provider_id, request_status, error_kind
+		FROM request_logs WHERE request_id = $1
+	`, requestID).Scan(&gotSuccess, &gotProvider, &gotRequestStatus, &gotErrorKind); err != nil {
+		t.Fatalf("final state query: %v", err)
+	}
+	if !gotSuccess {
+		t.Errorf("final state success = false, want true")
+	}
+	if gotProvider == nil || *gotProvider != 18 {
+		t.Errorf("final state provider_id = %v, want 18 (nvidia nim)", gotProvider)
+	}
+	if gotRequestStatus == nil || *gotRequestStatus != RequestStatusSuccess {
+		t.Errorf("final state request_status = %v, want %q", gotRequestStatus, RequestStatusSuccess)
+	}
+	if gotErrorKind != nil && *gotErrorKind != "" {
+		t.Errorf("final state error_kind = %q, want NULL or empty (cleared on success)", *gotErrorKind)
+	}
+
+	// ASSERT 3: token counts survived.
+	var (
+		gotPrompt *int
+		gotCompletion *int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT prompt_tokens, completion_tokens
+		FROM request_logs WHERE request_id = $1
+	`, requestID).Scan(&gotPrompt, &gotCompletion); err != nil {
+		t.Fatalf("token query: %v", err)
+	}
+	if gotPrompt == nil || *gotPrompt != 100 {
+		t.Errorf("final state prompt_tokens = %v, want 100", gotPrompt)
+	}
+	if gotCompletion == nil || *gotCompletion != 50 {
+		t.Errorf("final state completion_tokens = %v, want 50", gotCompletion)
+	}
+}
+
+// TestRequestLogFallbackUpsert exercises upsertRequestLogFallback directly.
+// This is the path that fires when an UPDATE matches 0 rows (no initial
+// record was ever written — e.g. panic before recordInitialRequestLog,
+// or async fallback path on a fresh gateway). Under the OLD schema with
+// (request_id, ts) constraint and ON CONFLICT (request_id, ts), each call
+// would create a NEW row (because ts=now() differs). Under the fix, the
+// constraint is (request_id) only, so subsequent calls update the same row.
+//
+// Skip unless LLM_GATEWAY_PG_TEST_URL is set.
+func TestRequestLogFallbackUpsert(t *testing.T) {
+	dsn := os.Getenv("LLM_GATEWAY_PG_TEST_URL")
+	if dsn == "" {
+		t.Skip("LLM_GATEWAY_PG_TEST_URL not set; skipping live DB test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+
+	// Schema precondition (same as TestRequestLogUniqueRequestID).
+	var hasNewIdx bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = 'public'
+			  AND tablename = 'request_logs'
+			  AND indexname = 'idx_request_logs_request_id_unique'
+		)
+	`).Scan(&hasNewIdx); err != nil {
+		t.Fatalf("pg_indexes check: %v", err)
+	}
+	if !hasNewIdx {
+		t.Fatal("idx_request_logs_request_id_unique index missing")
+	}
+
+	requestID := "test-fallback-upsert-" + time.Now().UTC().Format("20060102T150405.000000")
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM request_logs WHERE request_id = $1`, requestID)
+	}()
+
+	intPtr := func(v int) *int { return &v }
+	strPtr := func(v string) *string { return &v }
+
+	cl := NewClient()
+	cl.SetDB(pool)
+
+	// Simulate 3 fallback INSERT attempts (e.g. concurrent retries on
+	// a fresh gateway that never wrote an initial record). With the
+	// fix, all 3 collapse to a single row.
+	for i := 1; i <= 3; i++ {
+		entry := &RequestLogEntry{
+			Op:             RequestLogUpdate,
+			RequestID:      requestID,
+			TenantID:       "default",
+			ClientModel:    strPtr("gpt-4o"),
+			OutboundModel:  strPtr("gpt-4o"),
+			CredentialID:   intPtr(i),
+			ProviderID:     intPtr(i),
+			Success:        i == 3, // last call wins
+			RequestStatus:  strPtr(RequestStatusSuccess),
+			PromptTokens:   intPtr(10 * i),
+			CompletionTokens: intPtr(5 * i),
+		}
+		_ = intPtr
+		_ = strPtr
+		if err := cl.persistRequestLog(entry); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+	}
+
+	// ASSERT: exactly 1 row.
+	var rowCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM request_logs WHERE request_id = $1
+	`, requestID).Scan(&rowCount); err != nil {
+		t.Fatalf("row count: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 row after 3 fallback upserts, got %d", rowCount)
+	}
+
+	// ASSERT: last value wins (cred 3, provider 3, prompt=30, completion=15).
+	var (
+		gotProvider *int
+		gotPrompt *int
+		gotCompletion *int
+	)
+	if err := pool.QueryRow(ctx, `
+		SELECT provider_id, prompt_tokens, completion_tokens
+		FROM request_logs WHERE request_id = $1
+	`, requestID).Scan(&gotProvider, &gotPrompt, &gotCompletion); err != nil {
+		t.Fatalf("state query: %v", err)
+	}
+	if gotProvider == nil || *gotProvider != 3 {
+		t.Errorf("provider_id = %v, want 3 (last update wins)", gotProvider)
+	}
+	if gotPrompt == nil || *gotPrompt != 30 {
+		t.Errorf("prompt_tokens = %v, want 30", gotPrompt)
+	}
+	if gotCompletion == nil || *gotCompletion != 15 {
+		t.Errorf("completion_tokens = %v, want 15", gotCompletion)
+	}
+}
