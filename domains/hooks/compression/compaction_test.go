@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 // fakeMemoraClient records which retrieval method was called so we can
@@ -14,18 +14,18 @@ import (
 type fakeMemoraClient struct {
 	searchCalls      int
 	smartSearchCalls int
-	probeResult      []memora.Memory // returned by warm-up Search("*", 1)
-	smartResult      []memora.Memory // returned by SmartSearch(query, 8)
+	probeResult      []memory.Memory // returned by warm-up Search("*", 1)
+	smartResult      []memory.Memory // returned by SmartSearch(query, 8)
 }
 
 func (f *fakeMemoraClient) Disabled() bool { return false }
 
-func (f *fakeMemoraClient) Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+func (f *fakeMemoraClient) Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
 	f.searchCalls++
 	return f.probeResult, nil
 }
 
-func (f *fakeMemoraClient) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
+func (f *fakeMemoraClient) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
 	f.smartSearchCalls++
 	return f.smartResult, nil
 }
@@ -35,8 +35,8 @@ func (f *fakeMemoraClient) SmartSearch(ctx context.Context, userID, query string
 // uses SmartSearch.
 func TestTryMemoraCompression_UsesSmartSearch(t *testing.T) {
 	fake := &fakeMemoraClient{
-		probeResult: []memora.Memory{{Text: "f1"}, {Text: "f2"}, {Text: "f3"}, {Text: "f4"}},
-		smartResult: []memora.Memory{{Text: "relevant fact A"}, {Text: "relevant fact B"}},
+		probeResult: []memory.Memory{{Text: "f1"}, {Text: "f2"}, {Text: "f3"}, {Text: "f4"}},
+		smartResult: []memory.Memory{{Text: "relevant fact A"}, {Text: "relevant fact B"}},
 	}
 	deps := &Dependencies{Memora: fake}
 	body := []byte(`{"messages":[{"role":"user","content":"how do I configure port 8080?"}]}`)
