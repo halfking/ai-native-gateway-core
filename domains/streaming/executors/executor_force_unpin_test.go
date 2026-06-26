@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/redis/go-redis/v9"
 )
 
 // pinStillSurvives returns true iff the holder's pin for the credential
@@ -43,7 +45,9 @@ func TestForceUnpinOnFatalKind_FatalKinds(t *testing.T) {
 	for _, kind := range fatalKinds {
 		kind := kind
 		t.Run(string(kind), func(t *testing.T) {
-			m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, nil)
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, client)
 			ctx := context.Background()
 
 			lease, ok := m.Acquire(ctx, 42, nil, "sess-z", "default")
@@ -111,9 +115,10 @@ func TestForceUnpinOnFatalKind_BlipKindsKeepsPin(t *testing.T) {
 	for _, kind := range nonFatalKinds {
 		kind := kind
 		t.Run(string(kind), func(t *testing.T) {
-			m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, nil)
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, client)
 			ctx := context.Background()
-
 			lease, ok := m.Acquire(ctx, 43, nil, "sess-b", "default")
 			if !ok || lease == nil {
 				t.Fatal("expected lease")
@@ -144,9 +149,10 @@ func TestForceUnpinOnFatalKind_NilFpSlotsNoPanic(t *testing.T) {
 // StickyKey and X-Request-Id are both missing) is a degenerate state;
 // helper should not crash and should not touch any pin.
 func TestForceUnpinOnFatalKind_EmptyHolderNoOp(t *testing.T) {
-	m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, nil)
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	m := credentialfpslot.New(credentialfpslot.Config{DefaultLimit: 5, Enabled: true}, client)
 	ctx := context.Background()
-
 	lease, ok := m.Acquire(ctx, 44, nil, "sess-q", "default")
 	if !ok || lease == nil {
 		t.Fatal("expected lease")
