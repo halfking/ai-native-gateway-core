@@ -8,7 +8,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, "postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@__INTERNAL_K8S_HOST__:5432/llm_gateway?sslmode=disable")
+	pool, err := pgxpool.New(ctx, "postgres://kxuser:CGpGfdG9De502%2FbdQYXD0Cr4akCVXaJ3@localhost:5434/llm_gateway?sslmode=disable")
 	if err != nil {
 		fmt.Printf("Pool error: %v\n", err)
 		return
