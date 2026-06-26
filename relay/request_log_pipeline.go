@@ -187,6 +187,10 @@ func applyAutoRouteFields(entry *telemetry.RequestLogEntry, c *RequestLogContext
 	}
 	applyWorkTypeField(entry, c)
 	if !c.IsAutoRequest {
+		// Fix: explicitly set is_auto_request=false for non-auto requests
+		// so analytics queries can distinguish them from NULL (未知状态).
+		// Without this, SQL `is_auto_request = FALSE` won't match NULL rows.
+		entry.IsAutoRequest = boolPtr(false)
 		return
 	}
 	entry.IsAutoRequest = boolPtr(true)

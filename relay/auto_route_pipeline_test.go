@@ -54,10 +54,14 @@ func TestApplyAutoRouteFields_SkipsWhenNotAutoRequest(t *testing.T) {
 	entry := &telemetry.RequestLogEntry{}
 	applyAutoRouteFields(entry, c)
 
-	// When IsAutoRequest is false, none of the auto fields are set
-	if entry.IsAutoRequest != nil {
-		t.Error("IsAutoRequest should be nil when c.IsAutoRequest=false")
+	// When IsAutoRequest is false, IsAutoRequest field is explicitly set to false
+	// (2026-06-26 fix: was nil before, causing analytics queries to miss these rows)
+	if entry.IsAutoRequest == nil {
+		t.Error("IsAutoRequest should be explicitly set to false, got nil")
+	} else if *entry.IsAutoRequest != false {
+		t.Errorf("IsAutoRequest = %v, want false for non-auto request", *entry.IsAutoRequest)
 	}
+	// Auto-specific fields should not be set
 	if entry.TaskTypeChosen != nil {
 		t.Errorf("TaskTypeChosen = %v, should be nil for non-auto", entry.TaskTypeChosen)
 	}
