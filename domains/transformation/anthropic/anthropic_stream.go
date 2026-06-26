@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -28,7 +27,7 @@ import (
 //
 // Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
 // Anthropic uses content[] blocks, not choices[].
-func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome relay.StreamOutcome) {
+func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -55,7 +54,7 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return relay.StreamOutcome{}
+		return StreamOutcome{}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

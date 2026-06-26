@@ -8,9 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/relay"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 )
 
@@ -58,7 +57,7 @@ func (t *LegacyTransport) Convert(ctx context.Context, envelope *domain.RequestE
 
 	// Q3: OpenAI → Anthropic
 	if isOpenAI(tc.ClientProtocol) && isAnthropic(tc.UpstreamProtocol) {
-		converted, err := relay.ConvertChatRequestToAnthropic(tc.BodyBytes)
+		converted, err := anthropic.ConvertChatRequestToAnthropic(tc.BodyBytes)
 		if err != nil {
 			conversionErrors.WithLabelValues("legacy", "request").Inc()
 			return nil, fmt.Errorf("legacy_transport: openai→anthropic: %w", err)

@@ -35,7 +35,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transport"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -48,6 +47,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	anthropictransform "github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -125,7 +126,7 @@ func main() {
 	}
 
 	cfgStore := config.NewStore(cfg)
-	relay.SetConfigStore(cfgStore)
+	streaming.SetConfigStore(cfgStore)
 	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel)
 
 	// ── Dependencies ──────────────────────────────────────────────────────
@@ -342,7 +343,7 @@ func main() {
 			},
 			auditSink,
 		)
-		routingExec.XMLCoerceNonStream = relay.CoerceXMLToolCallsInChatResponse
+		routingExec.XMLCoerceNonStream = streaming.CoerceXMLToolCallsInChatResponse
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): wire
 		// the per-provider tool_call quality processor as a hook on the
 		// Executor. routing cannot import relay (relay imports routing)
@@ -355,8 +356,8 @@ func main() {
 		// qualityFixModeFromContext, so it does not need a hook on
 		// the executor — the context value travels through the
 		// upstream http.Request and is read on every SSE line.
-		routingExec.QualityProcessNonStream = relay.WrapQualityProcessNonStream()
-		routingExec.QualitySetMode = relay.WrapSetQualityFixModeOnContext()
+		routingExec.QualityProcessNonStream = streaming.WrapQualityProcessNonStream()
+		routingExec.QualitySetMode = streaming.WrapSetQualityFixModeOnContext()
 		// Q4 streaming: Anthropic client → Anthropic upstream. Capturer-aware
 		// (Track C C5, 2026-06-21): builds a pending-store capturer per request
 		// when the upstream HTTP request carries a session id, so the body can
@@ -377,8 +378,8 @@ func main() {
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
-		routingExec.ChatToAnthropic = relay.ConvertChatRequestToAnthropic
-		routingExec.AnthropicToOpenAI = relay.ConvertAnthropicBodyToOpenAI
+		routingExec.ChatToAnthropic = anthropictransform.ConvertChatRequestToAnthropic
+		routingExec.AnthropicToOpenAI = streaming.ConvertAnthropicBodyToOpenAI
 
 		// Phase B (2026-06-22): IR-based protocol converter.
 		// When LLM_GATEWAY_IR_CONVERTER=true, use the new Parse→IR→Serialize
@@ -401,7 +402,7 @@ func main() {
 			// Both must be true for transport to take effect. Turning off
 			// either reverts to plain irAdapter — no code change needed.
 			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
-				routingExec.IR = transport.NewTransportIRConverter(&irAdapter{})
+				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
 			}
 		}
@@ -427,7 +428,7 @@ func main() {
 		// Q3 non-stream: convert Anthropic Messages JSON to OpenAI
 		// chat.completion JSON. Fixes the missing `content` field on
 		// minimax-M2.7 non-stream responses.
-		routingExec.AnthropicToChatResponse = relay.ConvertAnthropicResponseToChat
+		routingExec.AnthropicToChatResponse = anthropictransform.ConvertAnthropicResponseToChat
 		routingExec.SanitizeAnthropicTools = relay.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = relay.NormalizeToolsInChatBody
 		// Strip minimax-private fields (nvext, base_resp, input_sensitive*,

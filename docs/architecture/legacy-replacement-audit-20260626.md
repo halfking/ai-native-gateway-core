@@ -11,6 +11,7 @@ Key findings:
 - `go test ./...` does not cover `_to-be-deprecated/` because Go skips wildcard traversal into underscore-prefixed directories.
 - Explicit tests for all first-level `_to-be-deprecated` Go packages pass.
 - `telemetry/` and `transport/` inside `_to-be-deprecated/` currently have no external imports and no internal `_to-be-deprecated` reverse imports.
+- New domain code no longer imports `_to-be-deprecated/relay`, `_to-be-deprecated/transform`, or `_to-be-deprecated/transport`; remaining domain-level legacy dependency is `_to-be-deprecated/memora` only.
 - `cache/` remains top-level and has no external imports, but it is not fully replaced by `domains/hooks/cache`; old `cache/prefix` and `cache/semantic` contain concrete prefix/semantic cache logic while the new domain package is a Hook abstraction and in-memory store.
 - `security/armor` remains top-level and is still imported by `cmd/gateway/main.go` and `domains/streaming/handler.go`; it is not safe to move.
 
@@ -34,6 +35,17 @@ Key findings:
 | `transport/` | `_to-be-deprecated/transport` | 0 | 0 | New transformation transport domain exists | Ready-to-delete candidate after final owner approval |
 | `cache/` | top-level `cache/` | 0 | 0 | Not fully equivalent | Do not move/delete; prefix/semantic logic is not in domain cache |
 | `security/armor` | top-level `security/armor` | 2 | 0 | Not fully equivalent | Do not move/delete; still imported by production code |
+
+## Remaining Direct Legacy Imports
+
+After this round of cleanup, direct legacy imports are narrowed to:
+
+- `cmd/gateway/main.go` → `_to-be-deprecated/relay`, `_to-be-deprecated/transform`
+- `domains/hooks/compression/compaction.go` → `_to-be-deprecated/memora`
+- `domains/streaming/executors/executor.go` → `_to-be-deprecated/memora`
+- `domains/streaming/executors/context_summarize.go` → `_to-be-deprecated/memora`
+
+That means `transport` has been fully removed from the production gateway entrypoint, and `relay/transform` are no longer imported anywhere under `domains/`.
 
 ## Tests Run
 
