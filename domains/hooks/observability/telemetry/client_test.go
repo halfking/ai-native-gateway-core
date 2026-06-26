@@ -173,6 +173,16 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	}
 }
 
+func TestInsertUpsertSQL_DoesNotReferenceUndefinedRLAlias(t *testing.T) {
+	const upsertTail = `
+		ON CONFLICT (request_id, ts) DO UPDATE SET
+			client_request_id = COALESCE(EXCLUDED.client_request_id, client_request_id)
+	`
+	if strings.Contains(upsertTail, "rl.client_request_id") {
+		t.Fatal("upsert tail must not reference undefined rl alias")
+	}
+}
+
 func TestNormalizeRequestStatus(t *testing.T) {
 	entry := &RequestLogEntry{Op: RequestLogInsert, Success: false}
 	normalizeRequestStatus(entry)
