@@ -495,13 +495,66 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$65,
 		CAST($66 AS jsonb)
 	)
-	-- 2026-06-26 P0 hotfix: ON CONFLICT now uses (request_id) only.
-	-- The unique constraint changed from (request_id, ts) to (request_id) only
-	-- so a single INSERT per request_id is enforced at the DB layer. If the
-	-- application path accidentally issues a second INSERT (e.g. from a retry
-	-- storm that bypassed the initial-record path), DO NOTHING prevents
-	-- duplicates. Subsequent updates still go through updateRequestLog().
-	ON CONFLICT (request_id) DO NOTHING
+	-- 2026-06-27 REVERT P0 hotfix: ON CONFLICT back to (request_id, ts).
+	-- The (request_id)-only constraint from d16131ad fails on partitioned
+	-- tables (PostgreSQL requires partition key in unique indexes).
+	-- request_logs is PARTITION BY RANGE (ts), so UNIQUE (request_id)
+	-- → SQLSTATE 0A000 → ensureRequestLogsUniqueIndex disabled → no
+	-- matching constraint → INSERT fails with ON CONFLICT error.
+	-- Reverting to (request_id, ts) restores write functionality.
+	ON CONFLICT (request_id, ts) DO UPDATE SET
+		outbound_model = EXCLUDED.outbound_model,
+		credential_id = EXCLUDED.credential_id,
+		provider_id = EXCLUDED.provider_id,
+		canonical_id = EXCLUDED.canonical_id,
+		prompt_tokens = EXCLUDED.prompt_tokens,
+		completion_tokens = EXCLUDED.completion_tokens,
+		cache_read_tokens = EXCLUDED.cache_read_tokens,
+		cache_write_tokens = EXCLUDED.cache_write_tokens,
+		total_tokens = EXCLUDED.total_tokens,
+		cost_usd = EXCLUDED.cost_usd,
+		cost_display = EXCLUDED.cost_display,
+		cost_currency = EXCLUDED.cost_currency,
+		latency_ms = EXCLUDED.latency_ms,
+		success = EXCLUDED.success,
+		request_status = EXCLUDED.request_status,
+		error_kind = EXCLUDED.error_kind,
+		identity_hash = EXCLUDED.identity_hash,
+		response_checksum = EXCLUDED.response_checksum,
+		transform_rule_id = EXCLUDED.transform_rule_id,
+		egress_protocol = EXCLUDED.egress_protocol,
+		failure_stage = EXCLUDED.failure_stage,
+		failure_detail_code = EXCLUDED.failure_detail_code,
+		request_preview = EXCLUDED.request_preview,
+		transform_summary = EXCLUDED.transform_summary,
+		response_preview = EXCLUDED.response_preview,
+		request_body = EXCLUDED.request_body,
+		response_body = EXCLUDED.response_body,
+		stream_first_chunk_ms = EXCLUDED.stream_first_chunk_ms,
+		stream_chunk_count = EXCLUDED.stream_chunk_count,
+		stream_done_received = EXCLUDED.stream_done_received,
+		stream_interrupted = EXCLUDED.stream_interrupted,
+		usage_source = EXCLUDED.usage_source,
+		is_auto_request = EXCLUDED.is_auto_request,
+		task_type = EXCLUDED.task_type,
+		auto_profile = EXCLUDED.auto_profile,
+		auto_decision = EXCLUDED.auto_decision,
+		auto_confidence = EXCLUDED.auto_confidence,
+		work_type = EXCLUDED.work_type,
+		credits_charged = EXCLUDED.credits_charged,
+		parent_request_id = EXCLUDED.parent_request_id,
+		compression_reason = EXCLUDED.compression_reason,
+		compression_strategy = EXCLUDED.compression_strategy,
+		compression_meta = EXCLUDED.compression_meta,
+		outbound_body = EXCLUDED.outbound_body,
+		outbound_msg_count = EXCLUDED.outbound_msg_count,
+		outbound_token_est = EXCLUDED.outbound_token_est,
+		outbound_msg_hashes = EXCLUDED.outbound_msg_hashes,
+		quality_flags = EXCLUDED.quality_flags,
+		quality_fix_actions = EXCLUDED.quality_fix_actions,
+		quality_score = EXCLUDED.quality_score,
+		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
+		tool_calls = EXCLUDED.tool_calls
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -989,7 +1042,8 @@ func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
 			COALESCE(NULLIF($48, ''), NULL), $49,
 			COALESCE(NULLIF($50, ''), NULL)
 		)
-		ON CONFLICT (request_id) DO UPDATE SET
+		-- 2026-06-27 REVERT: ON CONFLICT back to (request_id, ts) for partitioned table compatibility
+		ON CONFLICT (request_id, ts) DO UPDATE SET
 			success = CASE
 				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.success
 				ELSE request_logs.success
