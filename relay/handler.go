@@ -624,30 +624,12 @@ func (h *ChatHandler) serveWithExecutor(
 		sessionID = r.Header.Get("X-Thread-Id")
 	}
 
-	// V2: 5-minute reuse — when no client header provided and we have a
-	// recent system-assigned session for this client, resume it. This
-	// makes "no-id" requests within a 5-minute window part of the same
-	// conversation instead of fragmenting into one session per request.
-	if sessionID == "" && h.lastSystemSessionIndex != nil && keyInfo != nil {
-		if entry, found, err := h.lastSystemSessionIndex.Get(ctx, keyInfo.ID); err == nil && found && entry != nil {
-			// Verify the indexed session still exists in Redis (TTL may
-			// have expired between Set and Get under edge cases).
-			if si, gerr := h.sessionGetter.Get(ctx, entry.SessionID); gerr == nil {
-				sessionID = si.SessionID
-				sessionInfo = si
-				logCtx.SetSession(si)
-				ctx = sessions.SessionFromContextWith(ctx, si)
-				w.Header().Set("X-Gw-Session-Id-Resume", si.SessionID)
-				w.Header().Set("X-Gw-Session-Reused", "true")
-				// Refresh the index TTL so the 5-minute window extends
-				// from this reuse. Best-effort; ignore errors.
-				_ = h.lastSystemSessionIndex.Touch(ctx, keyInfo.ID)
-				slog.Info("session reused from last_system_session index",
-					"client_id", keyInfo.ID,
-					"session_id", si.SessionID,
-				)
-			}
-		}
+	// V2: Defer session reuse logic until after body parsing.
+	// We need to check message count to determine if this is a new conversation.
+	// If client provided session ID, use it. Otherwise mark for later resolution.
+	var needSessionResolution bool
+	if sessionID == "" {
+		needSessionResolution = true
 	}
 
 	if sessionID != "" && h.sessionGetter != nil {
@@ -817,6 +799,50 @@ func (h *ChatHandler) serveWithExecutor(
 
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
+
+	// ── Session resolution (deferred from header parsing) ──────────────
+	// If client didn't provide a session ID, resolve it now based on message count.
+	// Logic: 
+	//  - Single message (new conversation) → create new session
+	//  - Multiple messages (continuing conversation) → reuse recent session or create new
+	if needSessionResolution && h.lastSystemSessionIndex != nil && keyInfo != nil {
+		isNewConversation := true
+		messageCount := 0
+		if len(reqBody.Messages) > 0 {
+			// Parse messages to count them
+			var messages []map[string]any
+			if err := json.Unmarshal(reqBody.Messages, &messages); err == nil {
+				messageCount = len(messages)
+				isNewConversation = messageCount <= 1
+			}
+		}
+
+		if !isNewConversation {
+			// Multi-message request: try to reuse recent gateway-created session
+			if entry, found, err := h.lastSystemSessionIndex.Get(ctx, keyInfo.ID); err == nil && found && entry != nil {
+				if si, gerr := h.sessionGetter.Get(ctx, entry.SessionID); gerr == nil {
+					sessionID = si.SessionID
+					sessionInfo = si
+					logCtx.SetSession(si)
+					ctx = sessions.SessionFromContextWith(ctx, si)
+					w.Header().Set("X-Gw-Session-Id-Resume", si.SessionID)
+					w.Header().Set("X-Gw-Session-Reused", "true")
+					_ = h.lastSystemSessionIndex.Touch(ctx, keyInfo.ID)
+					slog.Info("session reused (multi-message continuation)",
+						"client_id", keyInfo.ID,
+						"session_id", si.SessionID,
+						"message_count", messageCount,
+					)
+					needSessionResolution = false
+				}
+			}
+		} else {
+			slog.Debug("new conversation detected (single message), will create new session",
+				"client_id", keyInfo.ID,
+				"message_count", messageCount,
+			)
+		}
+	}
 
 	// ── Tenant model policy — pre-auto check (Round 48, 2026-06-21) ──
 	// Must run BEFORE auto_route + GetCandidates so a denied request
