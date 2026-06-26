@@ -3,11 +3,19 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
 type responsesRequestBody struct {
@@ -49,6 +57,343 @@ type ResponsesHandler struct {
 
 func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
 	return &ResponsesHandler{chatHandler: ch}
+}
+
+func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var (
+		attemptLoggedFlag   bool
+		attemptKeyInfo      *authentication.KeyInfo
+		attemptClientModel  string
+		attemptErrCode      string
+		attemptErrMsg       string
+		attemptProviderID   *int
+		attemptCredentialID *int
+		attemptRequestBody  []byte
+	)
+	attemptLogged := &attemptLoggedFlag
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = uuid.NewString()
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	startTime := time.Now()
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("responses handler panic", "panic", rec, "request_id", requestID)
+			attemptErrCode = "internal_panic"
+			attemptErrMsg = "internal server error"
+			if len(attemptRequestBody) == 0 {
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			}
+			if attemptClientModel == "" {
+				attemptClientModel = "<unknown>"
+			}
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+			if !*attemptLogged {
+				writeResponsesError(w, http.StatusInternalServerError, "internal server error", "api_error", "internal_panic")
+			}
+			return
+		}
+		if attemptErrCode != "" && !*attemptLogged {
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, attemptClientModel, "",
+				attemptProviderID, attemptCredentialID,
+				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
+		}
+	}()
+
+	if r.Method != http.MethodPost {
+		attemptErrCode = "method_not_allowed"
+		attemptErrMsg = "method not allowed"
+		writeResponsesError(w, http.StatusMethodNotAllowed, "Method not allowed", "invalid_request", "method_not_allowed")
+		return
+	}
+
+	_ = ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel)
+
+	var keyInfo *authentication.KeyInfo
+	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {
+		rawKey := extractBearerToken(r)
+		if rawKey == "" {
+			attemptErrCode = "missing_key"
+			attemptErrMsg = "missing api key"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			writeResponsesError(w, http.StatusUnauthorized, "Missing API key", "authentication_error", "missing_key")
+			return
+		}
+		ki, verifyErr := h.chatHandler.keyVerifier.Verify(r.Context(), rawKey)
+		if verifyErr != nil {
+			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
+				attemptErrCode = "invalid_key"
+				attemptErrMsg = "invalid or expired api key"
+				captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+				writeResponsesError(w, http.StatusUnauthorized, "Invalid or expired API key", "authentication_error", "invalid_key")
+				return
+			}
+			attemptErrCode = "auth_unavailable"
+			attemptErrMsg = "authentication service temporarily unavailable"
+			captureAttemptBody(r, &attemptRequestBody, &attemptClientModel)
+			slog.Warn("responses: key verification RPC failed", "error", verifyErr)
+			writeResponsesError(w, http.StatusServiceUnavailable, "Authentication service temporarily unavailable", "api_error", "auth_unavailable")
+			return
+		}
+		keyInfo = ki
+		attemptKeyInfo = ki
+	}
+
+	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+			if len(peeked) > maxBodySize {
+				peeked = peeked[:maxBodySize]
+			}
+			if len(peeked) > 0 {
+				attemptRequestBody = peeked
+				if attemptClientModel == "" {
+					attemptClientModel = extractModelFromBody(peeked)
+				}
+			}
+			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
+			return
+		}
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
+	if err != nil {
+		if len(bodyBytes) > 0 {
+			attemptRequestBody = bodyBytes
+			if attemptClientModel == "" {
+				attemptClientModel = extractModelFromBody(bodyBytes)
+			}
+		}
+		attemptErrCode = "body_read_error"
+		attemptErrMsg = fmt.Sprintf("failed to read request body: %v", err)
+		slog.Warn("responses request body read failed",
+			"request_id", requestID,
+			"error", err,
+			"content_length", r.ContentLength,
+			"partial_bytes", len(bodyBytes),
+			"client_model", attemptClientModel,
+		)
+		writeResponsesError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request", "body_read_error")
+		return
+	}
+	if len(bodyBytes) > 0 {
+		attemptRequestBody = bodyBytes
+	}
+	if len(bodyBytes) > maxBodySize {
+		attemptErrCode = "body_too_large"
+		attemptErrMsg = "request body too large"
+		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
+		return
+	}
+
+	var reqBody responsesRequestBody
+	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		attemptErrCode = "json_parse_error"
+		attemptErrMsg = "invalid JSON in request body"
+		writeResponsesError(w, http.StatusBadRequest, "Invalid JSON in request body", "invalid_request", "json_parse_error")
+		return
+	}
+	if reqBody.Model == "" {
+		attemptErrCode = "missing_model"
+		attemptErrMsg = "model is required"
+		attemptClientModel = "<unknown>"
+		writeResponsesError(w, http.StatusBadRequest, "model is required", "invalid_request", "missing_model")
+		return
+	}
+
+	chatBody := convertResponsesToChatBody(&reqBody)
+	chatBodyBytes, err := json.Marshal(chatBody)
+	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
+		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
+		return
+	}
+	attemptClientModel = reqBody.Model
+
+	clientModel := reqBody.Model
+
+	if keyInfo != nil {
+		profile := clientProfileFromKey(keyInfo)
+		denied, canonical, _ := enforceTenantModelPolicy(
+			r.Context(), clientModel, keyInfo, h.chatHandler.modelPolicy, h.chatHandler.resolver, profile,
+		)
+		if denied {
+			attemptErrCode = "model_forbidden"
+			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
+			attemptClientModel = canonical
+			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
+				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusForbidden,
+				fmt.Sprintf("Model '%s' is not available for your account", canonical),
+				"permission_error", "model_forbidden")
+			return
+		}
+	}
+
+	isStream := reqBody.Stream
+	sessionID := r.Header.Get("X-Gw-Session-Id")
+	if sessionID == "" {
+		sessionID = r.Header.Get("X-Session-Id")
+	}
+	endUser := extractEndUser(r)
+	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
+
+	auditBuilder := newAuditEvent(requestID).
+		ClientModel(clientModel).
+		IdentityHash(clientID.ShortID()).
+		ClientProfile(clientID.Fingerprint.ClientProfile).
+		Stream(isStream).
+		RequestChecksum(bodyBytes)
+
+	var streamCapture *audit.StreamCapture
+	if isStream {
+		streamCapture = audit.NewStreamCapture()
+	}
+	defer func() {
+		if streamCapture != nil {
+			auditBuilder.StreamMetrics(streamCapture)
+		}
+		h.chatHandler.auditor.Emit(r.Context(), auditBuilder.Build())
+	}()
+
+	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	if candErr != nil || len(candidates) == 0 {
+		attemptErrCode = "no_candidate"
+		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+		*attemptLogged = true
+		writeResponsesError(w, http.StatusServiceUnavailable, fmt.Sprintf("No available provider for model '%s'", clientModel), "server_error", "no_candidate")
+		return
+	}
+	if len(candidates) > 0 {
+		pid := candidates[0].ProviderID
+		cid := candidates[0].CredentialID
+		attemptProviderID = &pid
+		attemptCredentialID = &cid
+	}
+
+	var modelResolution *resolve.Resolution
+	if h.chatHandler.resolver != nil {
+		modelResolution = h.chatHandler.resolver.Resolve(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	}
+
+	var txResult *transformation.TransformResult
+	tCtx := &transformation.TransformContext{
+		RequestMode:   "responses",
+		ClientProfile: clientID.Fingerprint.ClientProfile,
+		ClientModel:   clientModel,
+	}
+	if modelResolution != nil && modelResolution.CanonicalName != nil {
+		tCtx.CanonicalName = *modelResolution.CanonicalName
+	}
+	if h.chatHandler.matrix != nil {
+		txResult = h.chatHandler.matrix.Resolve(tCtx)
+	}
+	explicitOutbound := ""
+	if len(candidates) > 0 {
+		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
+	}
+
+	egressProtocol := ""
+	if len(candidates) > 0 {
+		egressProtocol = candidates[0].Protocol
+	}
+	var canonicalID *int
+	if modelResolution != nil {
+		canonicalID = modelResolution.CanonicalID
+	}
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, session.SessionFromContext(r.Context()))
+	outboundForLog := explicitOutbound
+	if len(candidates) > 0 {
+		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
+	}
+	h.chatHandler.recordInitialRequestLog(
+		requestID, clientModel, outboundForLog, endUser, "responses", keyInfo,
+		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
+		attemptProviderID, attemptCredentialID, canonicalID,
+		bodyBytes, txResult, egressProtocol, isStream,
+		gwSessionID, gwTaskID,
+		nil,
+	)
+
+	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
+		W:                    w,
+		R:                    r,
+		BodyBytes:            chatBodyBytes,
+		IsStream:             isStream,
+		SuppressSuccessWrite: !isStream,
+		ClientProtocol:       "openai-completions",
+		ClientModel:          clientModel,
+		OutboundModel:        outboundForLog,
+		ClientID:             clientID,
+		Transform:            txResult,
+		Resolution:           modelResolution,
+		Candidates:           candidates,
+		Policy:               policy,
+		AuditBuilder:         auditBuilder,
+		Capture:              streamCapture,
+		ToolsRequested:       false,
+		StreamWrapper:        responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
+		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		KeyID: func() int {
+			if keyInfo != nil {
+				return keyInfo.ID
+			}
+			return 0
+		}(),
+		KeyConcurrentLimit: func() int {
+			if keyInfo != nil {
+				return keyInfo.EffectiveConcurrent()
+			}
+			return 0
+		}(),
+	})
+
+	if execErr != nil {
+		errCode := "provider_error"
+		errMsg := execErr.Error()
+		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
+			errCode = "model_not_found"
+			errMsg = "all providers unavailable"
+		}
+		attemptErrCode = errCode
+		attemptErrMsg = errMsg
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
+			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo, r)
+		*attemptLogged = true
+		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
+			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			return
+		}
+		writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		return
+	}
+
+	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
+
+	var responseBody []byte
+	if !isStream {
+		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
+	}
+
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.InboundBody, responseBody, nil)
+	*attemptLogged = true
 }
 
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
