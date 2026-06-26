@@ -202,6 +202,34 @@ func (m legacyMemoraReader) Disabled() bool {
 	return m.c.Disabled()
 }
 
+func (m legacyMemoraReader) Ping(ctx context.Context) error {
+	if m.c == nil {
+		return nil
+	}
+	return m.c.Ping(ctx)
+}
+
+func (m legacyMemoraReader) BaseURL() string {
+	if m.c == nil {
+		return ""
+	}
+	return m.c.BaseURL()
+}
+
+func (m legacyMemoraReader) AddMessage(ctx context.Context, userID string, messages []memory.Message, info map[string]any) error {
+	if m.c == nil {
+		return nil
+	}
+	legacyMessages := make([]memora.Message, 0, len(messages))
+	for i := range messages {
+		legacyMessages = append(legacyMessages, memora.Message{
+			Role:    messages[i].Role,
+			Content: messages[i].Content,
+		})
+	}
+	return m.c.AddMessage(ctx, userID, legacyMessages, info)
+}
+
 func (m legacyMemoraReader) Search(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error) {
 	if m.c == nil {
 		return nil, nil
@@ -261,6 +289,37 @@ func (w legacyMemoraWriter) Enqueue(op memory.WriteOp) {
 		Source:   op.Source,
 		Messages: msgs,
 	})
+}
+
+func (w legacyMemoraWriter) Stats() memory.Stats {
+	if w.s == nil {
+		return memory.Stats{}
+	}
+	stats := w.s.Stats()
+	return memory.Stats{
+		Enqueued:          stats.Enqueued,
+		Dropped:           stats.Dropped,
+		Processed:         stats.Processed,
+		Errored:           stats.Errored,
+		QueueLen:          stats.QueueLen,
+		QueueCap:          stats.QueueCap,
+		ConsecutiveErrors: stats.ConsecutiveErrors,
+		LastError:         stats.LastError,
+		LastErrorAt:       stats.LastErrorAt,
+		Paused:            stats.Paused,
+	}
+}
+
+func (w legacyMemoraWriter) Pause() {
+	if w.s != nil {
+		w.s.Pause()
+	}
+}
+
+func (w legacyMemoraWriter) Resume() {
+	if w.s != nil {
+		w.s.Resume()
+	}
 }
 
 // providerClientAdapter bridges executors providerResolver to compression.ProviderClient.

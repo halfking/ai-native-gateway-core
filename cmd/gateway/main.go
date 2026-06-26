@@ -158,8 +158,8 @@ func main() {
 	pools := pool.NewPoolManager(upClient.Proxy().ProxyFunc())
 
 	chatHandler := streaming.NewChatHandler(cm, lim, matrix, pools, resolver, auditSink)
-	if cfg.SessionIDBodyKeys != "" {
-		streaming.SetSessionIDBodyKeys(strings.Split(cfg.SessionIDBodyKeys, ","))
+	if len(cfg.SessionIDBodyKeys) > 0 {
+		streaming.SetSessionIDBodyKeys(cfg.SessionIDBodyKeys)
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy())
 	modelsHandler := streaming.NewModelsHandler()
@@ -1118,7 +1118,7 @@ func main() {
 		}
 		slog.Info("CHECKPOINT: before memoraClient check")
 		if memoraClient != nil {
-			adminHandler.SetMemoraServices(memoraClient, memoraSink)
+			adminHandler.SetMemoraServices(legacyMemoraReader{c: memoraClient}, legacyMemoraWriter{s: memoraSink})
 		}
 
 		slog.Info("CHECKPOINT: before autoIndexRefresher check")
