@@ -9,17 +9,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 const (
-	memoraPreviewMaxLen      = 120
-	memoraSearchTopK         = 100
-	memoraPreviewSearchK     = 5
-	memoraBatchConcurrency   = 4
-	memoraPreviewMaxRows     = 8
-	memoraPreviewTimeout     = 800 * time.Millisecond
-	memoraBatchMaxDuration   = 2 * time.Second
+	memoraPreviewMaxLen    = 120
+	memoraSearchTopK       = 100
+	memoraPreviewSearchK   = 5
+	memoraBatchConcurrency = 4
+	memoraPreviewMaxRows   = 8
+	memoraPreviewTimeout   = 800 * time.Millisecond
+	memoraBatchMaxDuration = 2 * time.Second
 )
 
 // readableBlock is a Memora fact formatted for human/agent consumption.
@@ -34,7 +34,7 @@ type readableBlock struct {
 
 type memoraSearchClient interface {
 	Disabled() bool
-	SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error)
+	SearchAdmin(ctx context.Context, userID, query string, topK int) ([]memory.Memory, error)
 }
 
 type memoraPingClient interface {
@@ -61,7 +61,7 @@ func formatReadableBlock(text string) (kind, display string) {
 	return "text", text
 }
 
-func memoryToReadableBlock(m memora.Memory, source string) readableBlock {
+func memoryToReadableBlock(m memory.Memory, source string) readableBlock {
 	kind, display := formatReadableBlock(m.Text)
 	return readableBlock{
 		ID:     m.ID,
@@ -73,9 +73,9 @@ func memoryToReadableBlock(m memora.Memory, source string) readableBlock {
 	}
 }
 
-func dedupeMemories(memories []memora.Memory) []memora.Memory {
+func dedupeMemories(memories []memory.Memory) []memory.Memory {
 	seen := make(map[string]struct{}, len(memories))
-	out := make([]memora.Memory, 0, len(memories))
+	out := make([]memory.Memory, 0, len(memories))
 	for _, m := range memories {
 		key := normalizeReadableKey(m.Text)
 		if key == "" {
@@ -105,7 +105,7 @@ func normalizeReadableKey(s string) string {
 	return b.String()
 }
 
-func searchMemoraFacts(ctx context.Context, client memoraSearchClient, userID string, topK int) ([]memora.Memory, error) {
+func searchMemoraFacts(ctx context.Context, client memoraSearchClient, userID string, topK int) ([]memory.Memory, error) {
 	if client == nil || client.Disabled() || userID == "" {
 		return nil, nil
 	}
@@ -121,9 +121,9 @@ func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID 
 		topK = memoraSearchTopK
 	}
 
-	var merged []memora.Memory
+	var merged []memory.Memory
 
-	taskUserID := memora.UserID(tenantID, apiKeyID, taskID)
+	taskUserID := memory.UserID(tenantID, apiKeyID, taskID)
 	taskMem, err := searchMemoraFacts(ctx, client, taskUserID, topK)
 	if err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func searchMergedFacts(ctx context.Context, client memoraSearchClient, tenantID 
 
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID != "" && sessionID != "[空]" {
-		gwUserID := memora.UserID(tenantID, apiKeyID, "gw-session:"+sessionID)
+		gwUserID := memory.UserID(tenantID, apiKeyID, "gw-session:"+sessionID)
 		gwMem, gwErr := searchMemoraFacts(ctx, client, gwUserID, topK)
 		if gwErr != nil {
 			if len(merged) == 0 {

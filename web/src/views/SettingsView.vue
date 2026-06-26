@@ -248,6 +248,10 @@ function switchCategory(key: string) {
 }
 
 const filteredCount = computed(() => items.value.length)
+
+onMounted(() => {
+  loadList()
+})
 </script>
 
 <template>
