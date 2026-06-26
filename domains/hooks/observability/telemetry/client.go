@@ -607,7 +607,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
-		client_request_id = COALESCE(EXCLUDED.client_request_id, client_request_id)
+		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id)
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
