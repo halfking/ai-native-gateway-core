@@ -73,6 +73,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptRequestBody  []byte
 	)
 	attemptLogged := &attemptLoggedFlag
+	// 2026-06-26: ALWAYS generate a server-side UUID. The
+	// RequestIDMiddleware already overwrites X-Request-Id with a fresh
+	// value when the request enters the chain, so r.Header.Get reads
+	// the server value here. The defensive uuid.NewString fallback
+	// covers direct unit-test invocations that bypass the middleware.
 	requestID := r.Header.Get("X-Request-Id")
 	if requestID == "" {
 		requestID = uuid.NewString()
