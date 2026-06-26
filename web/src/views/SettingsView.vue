@@ -114,6 +114,23 @@ function onSessionAliasKeydown(e: KeyboardEvent) {
   }
 }
 
+const sessionAliasPreviewExamples = computed(() => {
+  if (!isSessionAliasSetting.value) return [] as Array<{ key: string; body: string; label: string }>
+  return sessionAliasTags.value.slice(0, 4).map((key, index) => {
+    const body = JSON.stringify({
+      metadata: {
+        [key]: `demo-session-${index + 1}`,
+      },
+      messages: [{ role: 'user', content: 'hello' }],
+    }, null, 2)
+    return {
+      key,
+      label: `识别字段 ${key}`,
+      body,
+    }
+  })
+})
+
 async function save() {
   if (!selectedKey.value || !selected.value) return
   saving.value = true
@@ -412,6 +429,15 @@ onMounted(() => {
               />
             </div>
             <div class="json-hint">将保存为逗号字符串，立即热更新到会话别名提取。</div>
+            <div class="alias-preview">
+              <div class="alias-preview-title">示例请求预览</div>
+              <div class="alias-preview-list">
+                <div v-for="example in sessionAliasPreviewExamples" :key="example.key" class="alias-preview-card">
+                  <div class="alias-preview-label">{{ example.label }}</div>
+                  <pre class="alias-preview-code">{{ example.body }}</pre>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- String type: Text input -->
@@ -851,6 +877,49 @@ onMounted(() => {
   margin-top: 6px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.alias-preview {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.alias-preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.alias-preview-list {
+  display: grid;
+  gap: 10px;
+}
+
+.alias-preview-card {
+  border: 1px solid rgba(99, 102, 241, 0.14);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.alias-preview-label {
+  font-size: 12px;
+  color: var(--accent-h, #818cf8);
+  margin-bottom: 6px;
+}
+
+.alias-preview-code {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary, #8b949e);
+  font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 /* === Documentation Section === */
