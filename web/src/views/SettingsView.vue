@@ -115,7 +115,7 @@ function onSessionAliasKeydown(e: KeyboardEvent) {
 }
 
 const sessionAliasPreviewExamples = computed(() => {
-  if (!isSessionAliasSetting.value) return [] as Array<{ key: string; body: string; label: string }>
+  if (!isSessionAliasSetting.value) return [] as Array<{ key: string; body: string; label: string; mapping: string }>
   return sessionAliasTags.value.slice(0, 4).map((key, index) => {
     const body = JSON.stringify({
       metadata: {
@@ -126,6 +126,7 @@ const sessionAliasPreviewExamples = computed(() => {
     return {
       key,
       label: `识别字段 ${key}`,
+      mapping: `metadata.${key} -> session_id`,
       body,
     }
   })
@@ -434,6 +435,7 @@ onMounted(() => {
               <div class="alias-preview-list">
                 <div v-for="example in sessionAliasPreviewExamples" :key="example.key" class="alias-preview-card">
                   <div class="alias-preview-label">{{ example.label }}</div>
+                  <div class="alias-preview-mapping">{{ example.mapping }}</div>
                   <pre class="alias-preview-code">{{ example.body }}</pre>
                 </div>
               </div>
@@ -910,6 +912,12 @@ onMounted(() => {
   font-size: 12px;
   color: var(--accent-h, #818cf8);
   margin-bottom: 6px;
+}
+
+.alias-preview-mapping {
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 8px;
 }
 
 .alias-preview-code {
