@@ -1,65 +1,34 @@
-# LLM Gateway 数据库版本与环境对比
+# LLM Gateway 数据库版本与初始化前提
 
-## 导出基线
+## 目标
 
-本目录中的拆分 SQL 以 `184` 节点上的 `llm_gateway` 数据库为基线整理。
+本目录下的 SQL 假定用于单机服务器上的单个目标数据库初始化，不依赖多节点操作说明。
 
-- 节点: `__INTERNAL_PUBLIC_IP__`
-- 数据库: `llm_gateway`
-- PostgreSQL: `15.3 (Debian 15.3-1.pgdg120+1)`
+## 数据库版本
 
-## 扩展情况
+建议环境：
+- PostgreSQL `15.x`
+- 推荐版本：`15.3` 或兼容版本
 
-### 184
-- `btree_gist`
-- `citus_columnar`
+## 扩展要求
+
+必需扩展：
 - `pg_trgm`
-- `pgcrypto`
-- `plpgsql`
-
-### 71
-- `btree_gist`
 - `citus_columnar`
-- `pg_trgm`
-- `pgcrypto`
-- `plpgsql`
 
-### 本地 llm_gateway
-- `btree_gist`
+可选扩展：
 - `citus`
-- `citus_columnar`
-- `pg_trgm`
-- `pgcrypto`
-- `plpgsql`
 
-## 重要说明
+说明：
+1. 历史归档分区使用的是 `citus_columnar`。
+2. 如果运行环境同时安装了 `citus`，不影响本目录 SQL 的执行。
+3. 若目标环境未启用列式存储能力，则 `request_logs_archive` 的 columnar 分区语句需要同步调整。
 
-1. 184/71 真实使用的是 `citus_columnar`，不是独立名为 `columnar` 的扩展。
-2. 本地环境比 184/71 多一个 `citus` 扩展，这属于环境差异，不代表 184 导出错误。
-3. `request_logs_archive` 的历史分区使用列式存储；当前活跃 `request_logs` 分区仍是 heap。
+## request_logs / archive 说明
 
-## request_logs 分区对比
-
-### 184
-- `request_logs_2026_07`
-- `request_logs_2026_08`
-- `request_logs_default`
-- `request_logs_archive_2026_06`
-- `request_logs_archive_2026_07`
-
-### 71
-- `request_logs_2026_06`
-- `request_logs_2026_07`
-- `request_logs_2026_08`
-- `request_logs_default`
-- 无已挂载的 `request_logs_archive_YYYY_MM` 子分区
-
-### 本地 llm_gateway
-- `request_logs_2026_06`
-- `request_logs_2026_07`
-- `request_logs_2026_08`
-- `request_logs_default`
-- `request_logs_archive_2026_07`
+- `request_logs`：当前活跃请求日志，按月分区，使用 heap。
+- `request_logs_archive`：历史归档日志，按月分区，使用 `citus_columnar`。
+- `request_logs_default`：默认分区，用于兜底接收未命中月份分区的数据。
 
 ## 初始化数据范围
 
@@ -67,20 +36,40 @@
 - `tenants`: 仅 `default`
 - `users`: 仅 `admin`
 - `applications`: 仅 `admin` / `applicant`
-- `providers`: 仅标准 provider 配置，不含 credentials，不含自定义业务 provider
+- `providers`: 标准 provider 配置，不含 credentials
 - `work_type_config` / `work_type_model_route`
 
 不保留：
 - `api_keys`
 - `credentials`
 - `request_logs*` 数据
+- `request_wal*` 数据
 - `billing_orders`
 - `credit_ledger*` / `usage_ledger*` 数据
 - 详细审计、运营、业务明细数据
 
-## 执行前提
+## 分区管理建议
 
-建议环境：
-- PostgreSQL 15.x
-- 已安装 `citus_columnar`
-- 若本地需要完全复刻当前容器行为，可同时安装 `citus`
+月度分区应由初始化脚本、运维脚本或数据库定时任务按实际时间窗口创建。
+
+示例：
+
+```sql
+CREATE TABLE request_logs_2026_09
+    PARTITION OF request_logs
+    FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00');
+
+CREATE TABLE request_logs_archive_2026_09
+    PARTITION OF request_logs_archive
+    FOR VALUES FROM ('2026-09-01 00:00:00+00') TO ('2026-10-01 00:00:00+00')
+    USING columnar;
+```
+
+## 执行前检查清单
+
+- [ ] PostgreSQL 15.x 已安装
+- [ ] `pg_trgm` 已安装
+- [ ] `citus_columnar` 已安装
+- [ ] 目标数据库已创建
+- [ ] 初始化执行顺序按 README 中的顺序进行
+- [ ] 如使用列式归档，目标环境支持 `USING columnar`

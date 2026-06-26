@@ -1,17 +1,18 @@
 # LLM Gateway 数据库结构与初始化数据
 
-本目录保存 `llm_gateway` 的数据库结构和最小初始化数据。
-当前拆分 SQL 以 `184` 节点真实数据库为基线整理，并已额外核对 `71` 与本地 `llm_gateway` 容器环境。
+本目录保存 `llm_gateway` 的数据库结构和最小初始化数据，面向单机目标库初始化。
 
-## 基线与校验
+## 校验说明
 
-- 基线环境：`184 / llm_gateway / PostgreSQL 15.3`
-- 对比环境：`71 / llm_gateway`、本地 `local-main-pg / llm_gateway`
-- 已完成本地临时库整套回放验证：
-  - `00_schema/*.sql`
-  - `01_functions/functions.sql`
-  - `02_seed_data/*.sql`
-- 回放验证依赖扩展：`pg_trgm`、`citus_columnar`；本地容器同时启用了 `citus`
+这批拆分 SQL 已完成一次完整回放验证，验证范围包括：
+- `00_schema/*.sql`
+- `01_functions/functions.sql`
+- `02_seed_data/*.sql`
+
+回放验证依赖的扩展能力：
+- `pg_trgm`
+- `citus_columnar`
+- 如运行环境启用了 `citus`，不影响本目录下 SQL 的使用
 
 ## 目录结构
 
@@ -46,7 +47,7 @@ deploy/sql/
 
 - 当前活跃请求日志表 `request_logs` 使用 heap 分区。
 - 历史归档表 `request_logs_archive` 使用 `citus_columnar` 列式分区。
-- `184`、`71`、本地在具体月份分区上并不完全一致，详见 [VERSION.md](__DEV_HOME__/workspace/llm-gateway-go-2/deploy/sql/VERSION.md)。
+- 月度分区需要根据实际时间窗口创建或预创建，详见 [VERSION.md](__DEV_HOME__/workspace/llm-gateway-go-2/deploy/sql/VERSION.md)。
 
 ## 初始化顺序
 
@@ -67,6 +68,6 @@ psql -h <host> -U <user> -d <db> -f deploy/sql/02_seed_data/003_work_types.sql
 
 ## 使用边界
 
-这批文件是“以 184 为部署基线的可执行整理版”，目标是满足新环境初始化，而不是保留完整生产业务数据镜像。
+这批文件用于单机目标库初始化，目标是提供可执行的结构和最小初始化数据，而不是保留完整生产业务数据镜像。
 
-如果后续需要继续追求“与 184 当前实库一比一完全等价”，优先方式仍然是基于 `pg_dump --schema-only` 继续精确覆盖，而不是再手工扩写结构。
+如果后续需要继续追求“与某一时点实库一比一完全等价”，优先方式仍然是基于 `pg_dump --schema-only` 继续精确覆盖，而不是再手工扩写结构。
