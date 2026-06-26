@@ -691,14 +691,10 @@ onUnmounted(() => stopPoll())
 
     <!-- ═══ Tab: Analytics ═══ -->
     <div v-if="activeTab === 'analytics'" class="tab-content">
-      <div v-if="analyticsEmpty" class="card compact-card empty-state">
-        <p>暂无 Auto 路由数据 — 请前往 <button class="link-btn" @click="activeTab = 'live'">实时决策</button> Tab 使用模拟器产生请求，或等待生产流量写入。</p>
+      <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
+      <div v-if="!analyticsEmpty" class="card compact-card flat-card">
+        <AnalyticsKpiBar :audit="audit" />
       </div>
-      <template v-else>
-        <p class="analytics-hint text-muted">{{ analyticsRowDim === 'work_type' ? '工作类型' : '任务' }}×模型匹配统计 · 点击单元格查看决策明细与 L2 漏斗</p>
-        <div class="card compact-card flat-card">
-          <AnalyticsKpiBar :audit="audit" />
-        </div>
         <div class="analytics-charts">
           <div class="card compact-card chart-card" :style="{ minHeight: heatmapCardHeight + 'px' }">
             <div class="card-toolbar">
@@ -773,7 +769,7 @@ onUnmounted(() => stopPoll())
             :loading="funnelLoading"
           />
         </div>
-      </template>
+      </div>
 
       <div v-if="cellModalOpen && cellPopup" class="modal-overlay" @click.self="closeCellModal">
         <div class="modal-panel card compact-card">

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Request Logs API 测试</title>
+    <style>
+        body { font-family: monospace; margin: 20px; }
+        .section { margin: 20px 0; padding: 10px; border: 1px solid #ccc; }
+        button { padding: 10px; margin: 5px; cursor: pointer; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+        .success { color: green; }
+        .error { color: red; }
+        input { padding: 5px; margin: 5px; width: 300px; }
+    </style>
+</head>
+<body>
+    <h1>Request Logs API 测试工具</h1>
+    
+    <div class="section">
+        <h2>1. 配置</h2>
+        <label>API Base URL: 
+            <input type="text" id="baseUrl" value="https://llmgateway.internal.example.com" />
+        </label><br/>
+        <label>Auth Token (可选): 
+            <input type="text" id="authToken" placeholder="Bearer token or leave empty" />
+        </label>
+    </div>
+
+    <div class="section">
+        <h2>2. 测试 API</h2>
+        <button onclick="testHealth()">测试健康检查</button>
+        <button onclick="testLogsAPI()">测试 /api/logs (无认证)</button>
+        <button onclick="testLogsAPIWithAuth()">测试 /api/logs (带认证)</button>
+        <button onclick="testLogsAPI24h()">测试最近 24 小时</button>
+        <button onclick="testLogsAPI7d()">测试最近 7 天</button>
+        <div id="result"></div>
+    </div>
+
+    <div class="section">
+        <h2>3. 数据库直连测试（如果可用）</h2>
+        <button onclick="showDBInstructions()">显示数据库检查指令</button>
+        <div id="dbInstructions"></div>
+    </div>
+
+    <script>
+        function getBaseUrl() {
+            return document.getElementById('baseUrl').value.trim();
+        }
+
+        function getAuthToken() {
+            return document.getElementById('authToken').value.trim();
+        }
+
+        function showResult(title, data, isError = false) {
+            const div = document.getElementById('result');
+            const color = isError ? 'error' : 'success';
+            div.innerHTML = `
+                <h3 class="${color}">${title}</h3>
+                <pre>${JSON.stringify(data, null, 2)}</pre>
+            `;
+        }
+
+        async function testHealth() {
+            try {
+                const url = `${getBaseUrl()}/health`;
+                showResult('正在测试...', { url });
+                const response = await fetch(url);
+                const data = await response.text();
+                showResult('健康检查响应', {
+                    status: response.status,
+                    statusText: response.statusText,
+                    body: data.substring(0, 500)
+                });
+            } catch (e) {
+                showResult('健康检查失败', { error: e.message }, true);
+            }
+        }
+
+        async function testLogsAPI() {
+            try {
+                const url = `${getBaseUrl()}/api/logs?page=1&page_size=10`;
+                showResult('正在测试...', { url });
+                const response = await fetch(url);
+                const data = await response.json();
+                showResult('/api/logs 响应', {
+                    status: response.status,
+                    data
+                }, response.status !== 200);
+            } catch (e) {
+                showResult('API 请求失败', { error: e.message }, true);
+            }
+        }
+
+        async function testLogsAPIWithAuth() {
+            try {
+                const token = getAuthToken();
+                if (!token) {
+                    showResult('错误', { error: '请先填写 Auth Token' }, true);
+                    return;
+                }
+                
+                const url = `${getBaseUrl()}/api/logs?page=1&page_size=10`;
+                showResult('正在测试...', { url, hasToken: !!token });
+                
+                const headers = {
+                    'Authorization': token.startsWith('Bearer ') ? token : `Bearer ${token}`
+                };
+                
+                const response = await fetch(url, { headers });
+                const data = await response.json();
+                
+                showResult('/api/logs (带认证) 响应', {
+                    status: response.status,
+                    count: data.count,
+                    items_length: data.items ? data.items.length : 0,
+                    first_item: data.items && data.items[0] ? {
+                        request_id: data.items[0].request_id,
+                        ts: data.items[0].ts,
+                        client_model: data.items[0].client_model,
+                        success: data.items[0].success
+                    } : null,
+                    error: data.error
+                }, response.status !== 200);
+            } catch (e) {
+                showResult('API 请求失败', { error: e.message }, true);
+            }
+        }
+
+        async function testLogsAPI24h() {
+            try {
+                const token = getAuthToken();
+                if (!token) {
+                    showResult('错误', { error: '请先填写 Auth Token' }, true);
+                    return;
+                }
+                
+                const now = new Date();
+                const from = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+                const to = now.toISOString();
+                
+                const url = `${getBaseUrl()}/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&page=1&page_size=10`;
+                showResult('正在测试...', { url, from, to });
+                
+                const headers = {
+                    'Authorization': token.startsWith('Bearer ') ? token : `Bearer ${token}`
+                };
+                
+                const response = await fetch(url, { headers });
+                const data = await response.json();
+                
+                showResult('最近 24 小时响应', {
+                    status: response.status,
+                    time_range: { from, to },
+                    count: data.count,
+                    items_length: data.items ? data.items.length : 0,
+                    sample_items: data.items ? data.items.slice(0, 3).map(item => ({
+                        request_id: item.request_id,
+                        ts: item.ts,
+                        client_model: item.client_model,
+                        success: item.success
+                    })) : null,
+                    error: data.error
+                }, response.status !== 200);
+            } catch (e) {
+                showResult('API 请求失败', { error: e.message }, true);
+            }
+        }
+
+        async function testLogsAPI7d() {
+            try {
+                const token = getAuthToken();
+                if (!token) {
+                    showResult('错误', { error: '请先填写 Auth Token' }, true);
+                    return;
+                }
+                
+                const now = new Date();
+                const from = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+                const to = now.toISOString();
+                
+                const url = `${getBaseUrl()}/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&page=1&page_size=10`;
+                showResult('正在测试...', { url, from, to });
+                
+                const headers = {
+                    'Authorization': token.startsWith('Bearer ') ? token : `Bearer ${token}`
+                };
+                
+                const response = await fetch(url, { headers });
+                const data = await response.json();
+                
+                showResult('最近 7 天响应', {
+                    status: response.status,
+                    time_range: { from, to },
+                    count: data.count,
+                    items_length: data.items ? data.items.length : 0,
+                    error: data.error
+                }, response.status !== 200);
+            } catch (e) {
+                showResult('API 请求失败', { error: e.message }, true);
+            }
+        }
+
+        function showDBInstructions() {
+            const div = document.getElementById('dbInstructions');
+            div.innerHTML = `
+                <h4>在服务器上执行以下命令：</h4>
+                <pre>
+# 检查最近 24 小时的数据
+docker exec r112_postgres psql -U kxuser -d llm_gateway -c "
+SELECT 
+    COUNT(*) AS total_24h,
+    MIN(ts) AS earliest,
+    MAX(ts) AS latest
+FROM request_logs
+WHERE ts > now() - interval '24 hours';
+"
+
+# 查看最近 10 条记录
+docker exec r112_postgres psql -U kxuser -d llm_gateway -c "
+SELECT 
+    to_char(ts, 'YYYY-MM-DD HH24:MI:SS') AS time,
+    client_model,
+    request_status,
+    success
+FROM request_logs
+ORDER BY ts DESC
+LIMIT 10;
+"
+                </pre>
+            `;
+        }
+
+        // 页面加载时的说明
+        window.onload = function() {
+            console.log('Request Logs API 测试工具已加载');
+            console.log('步骤：');
+            console.log('1. 如果需要，修改 API Base URL');
+            console.log('2. 从浏览器 Cookie 或登录响应中获取 Auth Token');
+            console.log('3. 点击相应按钮测试');
+        };
+    </script>
+
+    <div class="section">
+        <h2>使用说明</h2>
+        <ol>
+            <li>确认 API Base URL 是否正确（默认 https://llmgateway.internal.example.com）</li>
+            <li>获取 Auth Token：
+                <ul>
+                    <li>方法 1: 在浏览器访问 https://llmgateway.internal.example.com，F12 打开 DevTools → Application → Cookies，找到 auth token</li>
+                    <li>方法 2: 使用登录 API 获取 token</li>
+                </ul>
+            </li>
+            <li>填写 Auth Token 到输入框</li>
+            <li>点击"测试 /api/logs (带认证)"按钮</li>
+            <li>查看响应结果</li>
+        </ol>
+    </div>
+</body>
+</html>
