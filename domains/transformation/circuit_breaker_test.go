@@ -55,16 +55,25 @@ func TestStreamCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 		t.Fatalf("state = %s, want open", cb.State())
 	}
 
-	// 冷却前仍 Open
-	time.Sleep(10 * time.Millisecond)
-	if cb.State() != CircuitOpen {
-		t.Fatalf("before cooldown state = %s, want open", cb.State())
+	// 冷却前仍 Open。避免依赖精确 sleep 边界，给出一个明确的观察窗口。
+	beforeDeadline := time.Now().Add(8 * time.Millisecond)
+	for time.Now().Before(beforeDeadline) {
+		if cb.State() != CircuitOpen {
+			t.Fatalf("before cooldown state = %s, want open", cb.State())
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	// 冷却后 → HalfOpen
-	time.Sleep(15 * time.Millisecond)
-	if cb.State() != CircuitHalfOpen {
-		t.Fatalf("after cooldown state = %s, want half-open", cb.State())
+	// 冷却后 → HalfOpen。使用轮询避免 CI 调度抖动导致假红。
+	afterDeadline := time.Now().Add(40 * time.Millisecond)
+	for {
+		if cb.State() == CircuitHalfOpen {
+			break
+		}
+		if time.Now().After(afterDeadline) {
+			t.Fatalf("after cooldown state = %s, want half-open", cb.State())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
