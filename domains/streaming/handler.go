@@ -642,22 +642,6 @@ func (h *ChatHandler) serveWithExecutor(
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
-	if sessionID == "" && h.lastSystemSession != nil && keyInfo != nil && h.sessionGetter != nil {
-		entry, found := h.lastSystemSession.Get(ctx, keyInfo.ID)
-		if found {
-			si, err := h.sessionGetter.Get(ctx, entry.SessionID)
-			if err == nil && si != nil {
-				sessionID = entry.SessionID
-				sessionInfo = si
-				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
-				w.Header().Set("X-Gw-Session-Reused", "true")
-				slog.Debug("session reused from LastSystemSessionIndex",
-					"api_key_id", keyInfo.ID,
-					"session_id", sessionID,
-				)
-			}
-		}
-	}
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
@@ -788,6 +772,46 @@ func (h *ChatHandler) serveWithExecutor(
 
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
+	if sessionID == "" {
+		assignment, assignErr := h.assignGatewaySession(ctx, bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
+		if assignErr != nil {
+			slog.Error("session assignment failed", "error", assignErr)
+			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil)
+			writeErrorJSON(w, http.StatusInternalServerError, requestID, "failed to assign session id", "session_error", "SESSION_ASSIGN_FAILED")
+			return
+		}
+		if assignment != nil && assignment.SessionID != "" {
+			sessionID = assignment.SessionID
+			sessionInfo = assignment.SessionInfo
+			r.Header.Set("X-Gw-Session-Id", sessionID)
+			if sessionInfo != nil {
+				logCtx.SetSession(sessionInfo)
+				ctx = session.SessionFromContextWith(ctx, sessionInfo)
+				r = r.WithContext(ctx)
+			}
+			if assignment.Resumed {
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Reused", "true")
+			}
+			if assignment.AutoCreated {
+				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
+				w.Header().Set("X-Gw-Session-Auto", "true")
+			}
+			if assignment.ShouldPersist && h.lastSystemSession != nil && keyInfo != nil {
+				lsEntry := &session.LastSystemSessionEntry{
+					SessionID:  sessionID,
+					DeviceSeed: r.Header.Get("X-Device-Seed"),
+					TaskID:     r.Header.Get("X-Gw-Task-Id"),
+				}
+				if lsEntry.DeviceSeed == "" {
+					lsEntry.DeviceSeed = r.Header.Get("X-Machine-Id")
+				}
+				if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
+					slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+				}
+			}
+		}
+	}
 	if sessionID != "" && h.sessionPref != nil {
 		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
 		if modelChanged {
