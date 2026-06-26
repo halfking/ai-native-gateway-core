@@ -13,6 +13,11 @@
 | 涉及外部文件 (除 main.go) | 11+ |
 | 估计工作量 | 4-6h (自动化 sed + 手工调整 + 测试) |
 
+> **2026-06-26 audit correction**: 14 个老包当前已经位于 `_to-be-deprecated/`
+> 待删除目录。`go test ./...` 不会遍历下划线目录，必须显式测试
+> `./_to-be-deprecated/<pkg>`。最新替代性审计见
+> `docs/architecture/legacy-replacement-audit-20260626.md`。
+
 ## 2. 详细映射
 
 ### 2.1 audit/ → domains/hooks/audit/
@@ -222,7 +227,29 @@ llmgw::verify_chain
    - 错误恢复
    - 审计/可观测性
 
-## 5. 当前已迁移文件 (5 个 + 1 个)
+## 5. 当前可删除候选与阻塞
+
+### 5.1 可删除候选 (需 owner 最终授权)
+
+| 路径 | 原因 |
+|------|------|
+| `_to-be-deprecated/telemetry/` | 新 `domains/hooks/observability/telemetry/` 已存在；无外部 import；无旧包内部反向引用 |
+| `_to-be-deprecated/transport/` | 新 `domains/transformation/` 已存在；无外部 import；无旧包内部反向引用 |
+
+### 5.2 暂不可删除
+
+其余 `_to-be-deprecated/*` 老包仍被旧包内部依赖链引用，尤其是
+`relay/`、`routing/`、`compressor/` 之间的依赖链。删除这些包前必须先完成
+旧链路整体切断或继续重写内部 imports。
+
+### 5.3 仍在顶层但不是删除候选
+
+| 路径 | 状态 |
+|------|------|
+| `cache/` | 0 外部 import，但 `cache/prefix` 与 `cache/semantic` 具体逻辑尚未等价迁入 `domains/hooks/cache` |
+| `security/armor` | 仍被 `cmd/gateway/main.go` 与 `domains/streaming/handler.go` 引用 |
+
+## 6. 当前已迁移文件 (5 个 + 1 个)
 
 详见 `_to-be-deprecated/README.md` §4。
 
