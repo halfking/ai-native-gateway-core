@@ -179,7 +179,13 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		    ADD COLUMN IF NOT EXISTS outbound_body       JSONB,
 		    ADD COLUMN IF NOT EXISTS outbound_msg_count  INT,
 		    ADD COLUMN IF NOT EXISTS outbound_token_est  INT,
-		    ADD COLUMN IF NOT EXISTS outbound_msg_hashes JSONB;
+		    ADD COLUMN IF NOT EXISTS outbound_msg_hashes JSONB,
+		    -- 2026-06-26: client-provided X-Request-Id is preserved here
+		    -- for debug / cross-system tracing. Mirror of submodule's
+		    -- db/db.go change so the schema is identical across both
+		    build paths (184 k3s submodule + 71 host-docker fork).
+		    See db/migrations/054_request_logs_client_request_id.sql.
+		    ADD COLUMN IF NOT EXISTS client_request_id TEXT;
 		CREATE INDEX IF NOT EXISTS idx_request_logs_gw_session_ts
 		    ON request_logs (gw_session_id, ts DESC)
 		    WHERE gw_session_id IS NOT NULL AND gw_session_id <> '';
@@ -192,6 +198,10 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_request_logs_parent_ts
 		    ON request_logs (parent_request_id, ts DESC)
 		    WHERE parent_request_id IS NOT NULL;
+		-- 2026-06-26: lookup by client-provided X-Request-Id (debug).
+		CREATE INDEX IF NOT EXISTS idx_request_logs_client_request_id
+		    ON request_logs (client_request_id, ts DESC)
+		    WHERE client_request_id IS NOT NULL;
 		-- v3 T23: session outbound lookup (used by SessionCache L3 fallback).
 		CREATE INDEX IF NOT EXISTS idx_request_logs_session_outbound
 		    ON public.request_logs (gw_session_id, ts DESC)
@@ -236,7 +246,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score)")
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id)")
 	return nil
 }
 
