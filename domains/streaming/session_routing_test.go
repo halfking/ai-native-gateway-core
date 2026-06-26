@@ -1,7 +1,6 @@
 package streaming
 
 import (
-	"os"
 	"sync"
 	"testing"
 )
@@ -9,7 +8,6 @@ import (
 func TestExtractSessionIDFromBody(t *testing.T) {
 	resetSessionFieldPriorityForTest()
 	defer resetSessionFieldPriorityForTest()
-	_ = os.Unsetenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")
 
 	tests := []struct {
 		name string
@@ -36,7 +34,7 @@ func TestExtractSessionIDFromBody(t *testing.T) {
 func TestExtractSessionIDFromBody_UsesConfiguredAliases(t *testing.T) {
 	resetSessionFieldPriorityForTest()
 	defer resetSessionFieldPriorityForTest()
-	t.Setenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS", "workspaceId,room_session_key")
+	SetSessionIDBodyKeys([]string{"workspaceId", "room_session_key"})
 
 	if got := extractSessionIDFromBody([]byte(`{"metadata":{"workspaceId":"ws-1"}}`)); got != "ws-1" {
 		t.Fatalf("extractSessionIDFromBody(workspaceId) = %q, want ws-1", got)
@@ -49,4 +47,5 @@ func TestExtractSessionIDFromBody_UsesConfiguredAliases(t *testing.T) {
 func resetSessionFieldPriorityForTest() {
 	sessionFieldPriorityOnce = sync.Once{}
 	sessionFieldPriority = nil
+	sessionBodyKeyOverrides = nil
 }
