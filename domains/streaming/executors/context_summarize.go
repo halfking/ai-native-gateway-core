@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/transform"
 )
 
 const (
@@ -1025,9 +1025,9 @@ func (e *Executor) handleContextLengthRecovery(
 		st.mechanicalAttempted = true
 		mechanicalFn := func(b []byte) []byte {
 			if params.ClientProtocol == "anthropic-messages" {
-				return transform.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
+				return transformation.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
 			}
-			return transform.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
+			return transformation.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
