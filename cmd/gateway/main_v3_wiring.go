@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
-	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/sessions"
 )
 
 // compressorSessionDisabled returns true when the v3 session compressor is
@@ -30,14 +30,14 @@ func compressorSessionDisabled() bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Redis backend adapter (sessions.RedisClient → compressor.SessionCacheBackend)
+// Redis backend adapter (session.RedisClient → compression.SessionCacheBackend)
 // ──────────────────────────────────────────────────────────────────────────────
 
 type redisBackendAdapter struct {
-	c *sessions.RedisClient
+	c *session.RedisClient
 }
 
-func redisBackendFromClient(c *sessions.RedisClient) compressor.SessionCacheBackend {
+func redisBackendFromClient(c *session.RedisClient) compression.SessionCacheBackend {
 	if c == nil {
 		return nil
 	}
@@ -69,14 +69,14 @@ func (a *redisBackendAdapter) Del(ctx context.Context, key string) error {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Postgres backend adapter (*db.DB → compressor.SessionCacheDB)
+// Postgres backend adapter (*db.DB → compression.SessionCacheDB)
 // ──────────────────────────────────────────────────────────────────────────────
 
 type pgBackendAdapter struct {
 	dbConn *db.DB
 }
 
-func dbBackendFromPool(dbConn *db.DB) compressor.SessionCacheDB {
+func dbBackendFromPool(dbConn *db.DB) compression.SessionCacheDB {
 	if dbConn == nil || !dbConn.Enabled() {
 		return nil
 	}
@@ -84,7 +84,7 @@ func dbBackendFromPool(dbConn *db.DB) compressor.SessionCacheDB {
 }
 
 // LastOutboundForSession runs the L3 cold-start fallback query.
-func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID, gwSessionID string) (*compressor.LastOutboundRow, error) {
+func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID, gwSessionID string) (*compression.LastOutboundRow, error) {
 	if a.dbConn == nil {
 		return nil, fmt.Errorf("db pool not configured")
 	}
@@ -103,7 +103,7 @@ func (a *pgBackendAdapter) LastOutboundForSession(ctx context.Context, tenantID,
 	return scanLastOutboundRow(row)
 }
 
-func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compressor.LastOutboundRow, error) {
+func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compression.LastOutboundRow, error) {
 	var (
 		ob     []byte
 		mc     *int
@@ -114,7 +114,7 @@ func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compressor.
 	if err := row.Scan(&ob, &mc, &te, &hashes, &meta); err != nil {
 		return nil, err
 	}
-	out := &compressor.LastOutboundRow{}
+	out := &compression.LastOutboundRow{}
 	if ob != nil {
 		out.OutboundBody = json.RawMessage(ob)
 	}
@@ -134,18 +134,18 @@ func scanLastOutboundRow(row interface{ Scan(dest ...any) error }) (*compressor.
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Executor → compressor.Dependencies
+// Executor → compression.Dependencies
 // ──────────────────────────────────────────────────────────────────────────────
 
-// NewDependenciesFromExecutor wires the existing v7 executor's Memora and
-// Provider clients into the compressor.Dependencies struct. Returns nil
+// NewDependenciesFromExecutor wires the existing executor's Memora and
+// Provider clients into the compression.Dependencies struct. Returns nil
 // when either client is missing (LLM summary then degrades to mechanical
-// trim — see compressor.SessionCompressor).
-func NewDependenciesFromExecutor(exec *routing.Executor) *compressor.Dependencies {
+// trim — see compression.SessionCompressor).
+func NewDependenciesFromExecutor(exec *executors.Executor) *compression.Dependencies {
 	if exec == nil {
 		return nil
 	}
-	deps := &compressor.Dependencies{}
+	deps := &compression.Dependencies{}
 	if exec.Memora != nil {
 		deps.Memora = memoraClientAdapter{c: exec.Memora}
 	}
@@ -155,7 +155,7 @@ func NewDependenciesFromExecutor(exec *routing.Executor) *compressor.Dependencie
 	return deps
 }
 
-// memoraClientAdapter bridges *memora.Client to the compressor.MemoraClient
+// memoraClientAdapter bridges *memora.Client to the compression.MemoraClient
 // interface (Disabled + Search).
 type memoraClientAdapter struct {
 	c *memora.Client
@@ -169,28 +169,22 @@ func (m memoraClientAdapter) Disabled() bool {
 }
 
 func (m memoraClientAdapter) Search(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
-	if m.c == nil {
-		return nil, fmt.Errorf("memora client nil")
-	}
 	return m.c.Search(ctx, userID, query, topK)
 }
 
 func (m memoraClientAdapter) SmartSearch(ctx context.Context, userID, query string, topK int) ([]memora.Memory, error) {
-	if m.c == nil {
-		return nil, fmt.Errorf("memora client nil")
-	}
 	return m.c.SmartSearch(ctx, userID, query, topK)
 }
 
-// providerClientAdapter bridges routing.providerResolver to compressor.ProviderClient.
-// The adapter discards the *provider.Policy return value because the compressor
-// only needs the candidate list.
+// providerClientAdapter bridges executors providerResolver to compression.ProviderClient.
+// The adapter discards the *provider.Policy return value because the
+// compression only needs the candidate list.
 type providerClientAdapter struct {
 	r routingProviderResolver
 }
 
-// routingProviderResolver is the minimal subset of routing.providerResolver
-// we depend on. Re-declared here to avoid importing routing into the
+// routingProviderResolver is the minimal subset of executors providerResolver
+// we depend on. Re-declared here to avoid importing executors into the
 // interface signature (which would create a circular type reference).
 type routingProviderResolver interface {
 	Enabled() bool
@@ -204,7 +198,7 @@ func (p providerClientAdapter) Enabled() bool {
 	return p.r.Enabled()
 }
 
-func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile string) ([]compressor.ProviderCandidate, error) {
+func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile string) ([]compression.ProviderCandidate, error) {
 	if p.r == nil {
 		return nil, fmt.Errorf("provider resolver nil")
 	}
@@ -212,16 +206,16 @@ func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile
 	if err != nil {
 		return nil, err
 	}
-	out := make([]compressor.ProviderCandidate, 0, len(raw))
+	out := make([]compression.ProviderCandidate, 0, len(raw))
 	for i := range raw {
-		out = append(out, compressor.ProviderCandidate{
+		out = append(out, compression.ProviderCandidate{
 			CredentialID:  raw[i].CredentialID,
 			ProviderID:    raw[i].ProviderID,
 			RawModel:      raw[i].RawModel,
 			BaseURL:       raw[i].BaseURL,
 			APIKey:        raw[i].APIKey,
 			Protocol:      raw[i].Protocol,
-			ContextWindow: nil, // provider.Candidate does not carry context window; compressor falls back to default heuristic
+			ContextWindow: nil, // provider.Candidate does not carry context window; compression falls back to default heuristic
 			Available:     raw[i].Routable,
 		})
 	}
