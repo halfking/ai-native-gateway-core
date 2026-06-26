@@ -1,8 +1,9 @@
 package streaming
 
 import (
-	"sync"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func TestExtractSessionIDFromBody(t *testing.T) {
@@ -44,8 +45,47 @@ func TestExtractSessionIDFromBody_UsesConfiguredAliases(t *testing.T) {
 	}
 }
 
+func TestExtractSessionIDFromBody_UsesSettingsAliases(t *testing.T) {
+	resetSessionFieldPriorityForTest()
+	defer resetSessionFieldPriorityForTest()
+	oldGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = oldGlobal })
+
+	r := settings.NewRegistry()
+	r.MustRegisterSpec(settings.SessionSpecs()[0])
+	r.RegisterBackend(settings.ScopePlatform, fakeSettingsBackend{store: map[string][]byte{
+		"session.id_body_keys": []byte(`"workspaceId,room_session_key"`),
+	}})
+	settings.Global = r
+
+	if got := extractSessionIDFromBody([]byte(`{"metadata":{"workspaceId":"ws-1"}}`)); got != "ws-1" {
+		t.Fatalf("extractSessionIDFromBody(settings workspaceId) = %q, want ws-1", got)
+	}
+	if got := extractSessionIDFromBody([]byte(`{"extra":{"room_session_key":"room-2"}}`)); got != "room-2" {
+		t.Fatalf("extractSessionIDFromBody(settings room_session_key) = %q, want room-2", got)
+	}
+}
+
 func resetSessionFieldPriorityForTest() {
-	sessionFieldPriorityOnce = sync.Once{}
-	sessionFieldPriority = nil
-	sessionBodyKeyOverrides = nil
+	SetSessionIDBodyKeys(nil)
+}
+
+type fakeSettingsBackend struct {
+	store map[string][]byte
+}
+
+func (f fakeSettingsBackend) Get(_ settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+
+func (f fakeSettingsBackend) Set(_ settings.Scope, _ string, _ any) ([]byte, error) {
+	return nil, nil
+}
+
+func (f fakeSettingsBackend) GetTenant(_, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+
+func (f fakeSettingsBackend) SetTenant(_, _ string, _ any) ([]byte, error) {
+	return nil, nil
 }
