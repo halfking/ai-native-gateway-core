@@ -728,7 +728,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       is_auto_request = COALESCE($44, is_auto_request),
 		       task_type = COALESCE($45, task_type),
 		       auto_profile = COALESCE($46, auto_profile),
-		       auto_decision = COALESCE($47, auto_decision),
+		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
 		       auto_confidence = COALESCE($48, auto_confidence),
 		       work_type = COALESCE($49, work_type),
 		       credits_charged = COALESCE($50, credits_charged),
@@ -982,7 +982,7 @@ func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
 			COALESCE(NULLIF($38, ''), NULL), COALESCE(NULLIF($39, ''), NULL),
 			COALESCE(NULLIF($40, ''), NULL), COALESCE(NULLIF($41, ''), NULL), COALESCE(NULLIF($42, ''), NULL),
 			$43, COALESCE(NULLIF($44, ''), NULL), COALESCE(NULLIF($45, ''), NULL),
-			COALESCE(NULLIF($46, ''), NULL), $47,
+			CAST(NULLIF($46, '') AS jsonb), $47,
 			COALESCE(NULLIF($48, ''), NULL), $49,
 			COALESCE(NULLIF($50, ''), NULL)
 		)
