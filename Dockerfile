@@ -88,7 +88,14 @@ USER root
 # Display format: <semver>-<8char-sha>-<YYYYMMDD>-<seq>
 #   e.g. 2.0.5-e80322f1-20260622-495
 RUN chown -R appuser:appuser /opt/llm-gateway-go && \
-    SEMVER="${GIT_TAG:-v0.0.0}"; SEMVER="${SEMVER#v}"; \
+    # GIT_TAG may be a git describe output like "V2.2.0-44-g23ff2897" which is
+    # great for display but breaks the canonical 4-segment VERSION format
+    # (semver-sha-date-seq) that the runtime's parseVersionString in
+    # admin/misc.go splits on. Strip the "-N-g<sha>" suffix here so the
+    # resulting VERSION stays 4 segments and the API returns the right
+    # git_sha / build_date / build_seq.
+    SEMVER_RAW="${GIT_TAG:-v0.0.0}"; SEMVER_RAW="${SEMVER_RAW#v}"; \
+    SEMVER="${SEMVER_RAW%%-*}"; \
     echo "${SEMVER}-${GIT_SHA:-unknown}-${BUILD_DATE:-$(date -u +%Y%m%d)}-${BUILD_SEQ:-0}" > /opt/llm-gateway-go/VERSION && \
     echo "${BUILD_SEQ:-0}" > /opt/llm-gateway-go/.deploy_seq && \
     printf '%s\n' "${BUILD_SEQ:-0}" > /.deploy_seq && \
