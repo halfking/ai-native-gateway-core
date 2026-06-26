@@ -324,8 +324,10 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 				idx := i + 1
 				fn, _ := tcMap["function"].(map[string]any)
 				fnName := ""
+				var fnArgs string
 				if fn != nil {
 					fnName, _ = fn["name"].(string)
+					fnArgs, _ = fn["arguments"].(string)
 				}
 				tcID, _ := tcMap["id"].(string)
 
@@ -353,6 +355,30 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 					}
 				}
 				lastSend = time.Now()
+
+				// 2026-06-26: Feed tool_call data into the IR-based audit capture
+				// so that:
+				//   1. capture.ToolCalls is populated for request_logs.tool_calls (was empty before)
+				//   2. capture.finalFinish gets set if the upstream's last choice has finish_reason="tool_calls"
+				//   3. detectEmptyStreamResponse's m["tool_calls"] short-circuit fires for tool-call-only responses
+				// Without this call, an Anthropic-format tool_call response was silently
+				// dropped from the capture, leading to false-positive empty_response
+				// classifications.
+				if capture != nil {
+					capture.ObserveChunk(&ir.StreamChunk{
+						Type: ir.ChunkTypeDelta,
+						Delta: &ir.StreamDelta{
+							ToolCalls: []ir.StreamToolCallDelta{{
+								Index:     idx,
+								ID:        tcID,
+								Type:      "function",
+								Name:      fnName,
+								Arguments: fnArgs,
+							}},
+						},
+						SourceProtocol: ir.ProtocolOpenAIChat,
+					})
+				}
 			}
 		}
 	}

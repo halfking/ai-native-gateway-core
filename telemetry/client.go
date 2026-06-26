@@ -728,7 +728,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       is_auto_request = COALESCE($44, is_auto_request),
 		       task_type = COALESCE($45, task_type),
 		       auto_profile = COALESCE($46, auto_profile),
-		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
+		       auto_decision = COALESCE($47, auto_decision),
 		       auto_confidence = COALESCE($48, auto_confidence),
 		       work_type = COALESCE($49, work_type),
 		       credits_charged = COALESCE($50, credits_charged),
@@ -986,7 +986,7 @@ func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
 			COALESCE(NULLIF($48, ''), NULL), $49,
 			COALESCE(NULLIF($50, ''), NULL)
 		)
-		ON CONFLICT (request_id) DO UPDATE SET
+		ON CONFLICT (request_id, ts) DO UPDATE SET
 			success = CASE
 				WHEN request_logs.request_status = 'in_progress' THEN EXCLUDED.success
 				ELSE request_logs.success

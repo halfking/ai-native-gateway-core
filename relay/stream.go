@@ -379,10 +379,36 @@ func StreamChatWithPendingCapture(
 		}
 
 		payload := extractPayload(line)
-		if payload != "" && capture != nil {
-			if payload == "[DONE]" {
-				upstreamDoneReceived = true
+		if payload == "[DONE]" {
+			upstreamDoneReceived = true
+		}
+
+		// 2026-06-22 fix: Filter empty choices blocks from OpenAI streams.
+		// Some upstreams (e.g. glm-5.2 at https://api.supxh.xin) send
+		// {"choices":[],"usage":{...}} blocks at stream end, which crash
+		// OpenAI clients that assume choices[0] exists. Drop these blocks
+		// before writing to the client.
+		//
+		// 2026-06-26: this check now ALSO runs before the audit capture's
+		// ObserveChunk call. Previously the empty-choices trailer was
+		// observed (chunkCount++) and then dropped, which inflated
+		// chunkCount for no real content. Now we drop first, observe only
+		// the chunks the client actually receives.
+		dropEmptyChoices := false
+		if payload != "" && payload != "[DONE]" {
+			if isOpenAIFormatData([]byte(payload)) {
+				if strings.Contains(payload, `"choices":[]`) {
+					slog.Warn("relay: dropping empty choices block",
+						"payload_preview", truncateForLog(payload, 100))
+					dropEmptyChoices = true
+				}
 			}
+		}
+		if dropEmptyChoices {
+			continue
+		}
+
+		if payload != "" && capture != nil {
 			// IR-based audit: parse to chunk and observe
 			if chunk, err := ir.ParseOpenAIStreamChunk(line); err == nil {
 				capture.ObserveChunk(chunk)
@@ -399,23 +425,6 @@ func StreamChatWithPendingCapture(
 		// upstream cannot OOM the gateway.
 		if pc != nil {
 			pc.append(line)
-		}
-
-		// 2026-06-22 fix: Filter empty choices blocks from OpenAI streams.
-		// Some upstreams (e.g. glm-5.2 at https://api.supxh.xin) send
-		// {"choices":[],"usage":{...}} blocks at stream end, which crash
-		// OpenAI clients that assume choices[0] exists. Drop these blocks
-		// before writing to the client.
-		checkPayload := extractPayload(line)
-		if checkPayload != "" && checkPayload != "[DONE]" {
-			if isOpenAIFormatData([]byte(checkPayload)) {
-				// Check if it has empty choices array
-				if strings.Contains(checkPayload, `"choices":[]`) {
-					slog.Warn("relay: dropping empty choices block",
-						"payload_preview", truncateForLog(checkPayload, 100))
-					continue // Skip this chunk
-				}
-			}
 		}
 
 		safeWriteSSE(w, line)

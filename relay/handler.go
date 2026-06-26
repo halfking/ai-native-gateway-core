@@ -973,6 +973,18 @@ func (h *ChatHandler) serveWithExecutor(
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
+		// Also create a request_wal entry so the no_candidate case is visible in WAL.
+		if h.requestLogger != nil {
+			walReq := &telemetry.InitialRequest{
+				RequestID:   requestID,
+				TenantID:    "default",
+				SessionID:   "",
+				ClientModel: clientModel,
+			}
+			if werr := h.requestLogger.CreateInitial(r.Context(), walReq); werr != nil {
+				slog.Warn("request_logger: CreateInitial (no_candidate path) failed", "request_id", requestID, "error", werr)
+			}
+		}
 		markLogged()
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
 		return
@@ -3031,7 +3043,62 @@ func resolveGatewayVersion() string {
 //
 // This pattern indicates the upstream returned no actual content despite sending [DONE].
 // Seen with Provider 18 (NVIDIA NIM) on large inputs (160k+ tokens).
+// detectEmptyStreamResponse decides whether a successful streaming response
+// (currently flagged as success=true) is actually empty — i.e. the upstream
+// closed the stream without producing meaningful content.
+//
+// 2026-06-26: previously this function read reqLog.UpstreamFinishReason for
+// "no upstream finish_reason" check, but at this call site (relay/handler.go
+// emitTelemetry, line ~1749) that field is still nil — it is only populated
+// a few lines below. The result was that check 4 was effectively dead, so
+// any successful response with ≤3 chunks, 0 tokens, and no preview was
+// misclassified as empty_response. That covered legitimate tool-call-only
+// responses, benign eof_without_done interruptions with empty delta chunks,
+// reasoning models that hit max_tokens without producing reasoning text,
+// and a few other false-positive classes.
+//
+// The fix reads upstream_finish_reason from the capture summary map (which
+// is already populated by SummaryAsMap before this check runs) and adds
+// short-circuits for tool_calls and stream_interrupted so legitimate
+// responses never get re-tagged here.
 func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEntry) bool {
+	// Short-circuit 1: stream was interrupted — the stream_interrupted branch
+	// (relay/handler.go ~1722-1736) already classifies genuine interruptions
+	// (timeout / client cancel / read error / eof_without_done) as
+	// stream_error with the right failure_detail_code. We must not stomp
+	// that classification with a generic empty_response label.
+	if v, ok := m["stream_interrupted"].(bool); ok && v {
+		return false
+	}
+
+	// Short-circuit 2: structured tool_calls present. The capture populates
+	// m["tool_calls"] when ANY tool call data flowed through, regardless of
+	// whether delta.content was ever non-empty. A tool-call response is a
+	// legitimate completion — never classify it as empty.
+	if v, ok := m["tool_calls"]; ok && v != nil {
+		// m["tool_calls"] is []map[string]any or similar; check len via
+		// reflection-free interface assertion.
+		switch arr := v.(type) {
+		case []map[string]any:
+			if len(arr) > 0 {
+				return false
+			}
+		case []any:
+			if len(arr) > 0 {
+				return false
+			}
+		}
+	}
+
+	// Short-circuit 3: upstream finish_reason is set to a known normal value.
+	// SummaryAsMap (audit/audit.go) populates m["upstream_finish_reason"]
+	// from sc.finalFinish, which is written by MarkInterruptedWithReason
+	// (for genuine interruptions) and by the delta/done chunks for normal
+	// completions. If it's set, the upstream reached a clean termination.
+	if v, ok := m["upstream_finish_reason"].(string); ok && v != "" {
+		return false
+	}
+
 	// Check 1: Few chunks (<= 3, tightened threshold)
 	chunkCount, ok := m["stream_chunk_count"].(int)
 	if !ok || chunkCount > 3 {
@@ -3058,8 +3125,11 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 		return false // Has text content means not empty
 	}
 
-	// Check 4: No upstream finish_reason
-	// Normal successful completion should have "stop" or "length"
+	// Check 4: reqLog.UpstreamFinishReason — kept as a defensive fallback for
+	// callers that pre-populate this field before calling. In the production
+	// emit path it is still nil at this point (filled ~25 lines later), so
+	// the upstream_finish_reason short-circuit above (check 3) is what
+	// actually protects against false positives here.
 	hasFinishReason := reqLog.UpstreamFinishReason != nil && *reqLog.UpstreamFinishReason != ""
 	if hasFinishReason {
 		return false // Normal finish means not empty
