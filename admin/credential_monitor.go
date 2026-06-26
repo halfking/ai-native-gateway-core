@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -106,6 +107,9 @@ type CredentialMonitorSummary struct {
 	StateReasonDetail     *string `json:"state_reason_detail"`
 	HealthCheckedAt       *string `json:"health_checked_at"`
 	TotalRequests         int64   `json:"total_requests"`
+	ModelTotal            int     `json:"model_total,omitempty"`
+	ModelAvailable        int     `json:"model_available,omitempty"`
+	BrokenModelCount      int     `json:"broken_model_count,omitempty"`
 	// Models is the per-(credential, model) availability breakdown. Replaces the
 	// single-model recent_window_stats field (2026-06-22). Each entry carries
 	// the probe state, offer/binding availability and the live last-N success
@@ -129,11 +133,11 @@ type CredentialModelStatus struct {
 	BindingAvailable         bool    `json:"binding_available"`
 	BindingUnavailableReason *string `json:"binding_unavailable_reason,omitempty"`
 	// ProbeState: 'broken_confirmed' | 'healthy_confirmed' | 'recovering' | 'unknown' (no row).
-	ProbeState         string  `json:"probe_state"`
-	ProbeLastStatus    *string `json:"probe_last_status,omitempty"`
-	ProbeLastAttemptAt *string `json:"probe_last_attempt_at,omitempty"`
+	ProbeState         string   `json:"probe_state"`
+	ProbeLastStatus    *string  `json:"probe_last_status,omitempty"`
+	ProbeLastAttemptAt *string  `json:"probe_last_attempt_at,omitempty"`
 	RecentSuccessRate  *float64 `json:"recent_success_rate,omitempty"`
-	RecentSamples      int     `json:"recent_samples"`
+	RecentSamples      int      `json:"recent_samples"`
 	// 🆕 2026-06-23 credentials 详情页 4-tab 重构。
 	// P95LatencyMs: 优先 bg_rollup (5min), live_recent (3h) 兜底; no_data 时为 nil.
 	// P95Source: 标注 P95 计算来源,前端据此显示 "bg / live / N/A".
@@ -142,21 +146,21 @@ type CredentialModelStatus struct {
 	// TotalCalls: 24h 内调用次数.
 	// EffectiveState: 派生 5 状态,优先级 manual_disabled > probe_broken > offer_missing > binding_missing > available.
 	// ModelDisabledReason: 人类可读的禁用原因 (manual / probe / offer / binding).
-	P95LatencyMs   *int   `json:"p95_latency_ms,omitempty"`
-	AvgLatencyMs   *int   `json:"avg_latency_ms,omitempty"`
-	P95Source      string `json:"p95_source"`
-	DataSource     string `json:"data_source"`
-	LastUsedAt     *string `json:"last_used_at,omitempty"`
-	TotalCalls     int64  `json:"total_calls"`
-	EffectiveState string `json:"effective_state"`
-	ModelDisabledReason string `json:"model_disabled_reason,omitempty"`
+	P95LatencyMs        *int    `json:"p95_latency_ms,omitempty"`
+	AvgLatencyMs        *int    `json:"avg_latency_ms,omitempty"`
+	P95Source           string  `json:"p95_source"`
+	DataSource          string  `json:"data_source"`
+	LastUsedAt          *string `json:"last_used_at,omitempty"`
+	TotalCalls          int64   `json:"total_calls"`
+	EffectiveState      string  `json:"effective_state"`
+	ModelDisabledReason string  `json:"model_disabled_reason,omitempty"`
 }
 
 // monitorSummarySchemaVersion is bumped whenever the monitor-summary response
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 4
+const monitorSummarySchemaVersion = 5
 
 // WindowStats aggregates recent sliding window data.
 type WindowStats struct {
@@ -169,7 +173,7 @@ type WindowStats struct {
 }
 
 // handleMonitorSummary returns all credentials with their monitoring state.
-// GET /api/credentials/monitor-summary?provider_id=X
+// GET /api/credentials/monitor-summary?provider_id=X&credential_id=Y
 //
 // 2026-06-22: rewritten to return a per-(credential, model) breakdown in the
 // `models` array instead of the single most-common-model `recent_window_stats`.
@@ -187,22 +191,21 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	defer cancel()
 
 	providerID := queryInt(r, "provider_id", 0)
+	credentialID := queryInt(r, "credential_id", 0)
+	detailMode := credentialID > 0
 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
 	// LATERAL success-rate join is the heaviest part. Cache key excludes
 	// nothing but provider_id (the only variable input).
-	cacheKey := fmt.Sprintf("p%d:v%d", providerID, monitorSummarySchemaVersion)
+	cacheKey := fmt.Sprintf("p%d:c%d:d%t:v%d", providerID, credentialID, detailMode, monitorSummarySchemaVersion)
 	if cached, ok := monitorSummaryCache.get(cacheKey); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
 	}
 
-	// Single query: one row per credential, with models[] built via a
-	// correlated LATERAL subquery that enumerates model_offers and computes
-	// each model's live success rate + probe state + binding availability.
-	// COALESCE(recent_success_rate(...)) is STABLE and uses
-	// idx_request_logs_credential_ts, so the per-model cost is a 50-row index
-	// descent.
+	// Summary mode keeps the list light: it returns only aggregate counts and
+	// the worst recent success rate, without materializing models[]. Detail mode
+	// reuses the same row shape but also includes the per-model JSON payload.
 	query := `
 		SELECT
 			c.id, c.provider_id,
@@ -222,7 +225,38 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			c.state_reason_detail,
 			c.health_checked_at,
 			COALESCE((SELECT COUNT(*) FROM request_logs rl WHERE rl.credential_id = c.id), 0) AS total_requests,
-			COALESCE((
+			COALESCE(ms.model_total, 0) AS model_total,
+			COALESCE(ms.model_available, 0) AS model_available,
+			COALESCE(ms.broken_model_count, 0) AS broken_model_count,
+			ms.aggregated_success_rate AS aggregated_success_rate,
+			%s
+		FROM credentials c
+		LEFT JOIN providers p ON c.provider_id = p.id
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) AS model_total,
+				COUNT(*) FILTER (WHERE COALESCE(mo.available, TRUE) AND COALESCE(cmb.available, TRUE)) AS model_available,
+				COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
+				MIN(rsr.rate) AS aggregated_success_rate
+			FROM model_offers mo
+			LEFT JOIN credential_model_bindings cmb
+				ON cmb.credential_id = mo.credential_id
+			   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
+			LEFT JOIN model_probe_state mps
+				ON mps.credential_id = mo.credential_id
+			   AND mps.raw_model_name = mo.raw_model_name
+			CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+			WHERE mo.credential_id = c.id
+		) ms ON true
+		WHERE ($1 = 0 OR c.provider_id = $1)
+		  AND ($2 = 0 OR c.id = $2)
+		  AND c.lifecycle_status != 'retired'
+		ORDER BY c.provider_id, c.id
+	`
+
+	modelsSelect := `NULL::json AS models`
+	if detailMode {
+		modelsSelect = `COALESCE((
 				SELECT json_agg(row_to_json(t))
 				FROM (
 					SELECT
@@ -295,15 +329,11 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 					WHERE mo.credential_id = c.id
 					ORDER BY COALESCE(rsr.samples, 0) DESC, mo.raw_model_name
 				) t
-			), '[]'::json) AS models
-		FROM credentials c
-		LEFT JOIN providers p ON c.provider_id = p.id
-		WHERE ($1 = 0 OR c.provider_id = $1)
-		  AND c.lifecycle_status != 'retired'
-		ORDER BY c.provider_id, c.id
-	`
+				), '[]'::json) AS models`
+	}
+	query = fmt.Sprintf(query, modelsSelect)
 
-	rows, err := m.h.db.Query(ctx, query, providerID)
+	rows, err := m.h.db.Query(ctx, query, providerID, credentialID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return
@@ -314,6 +344,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	for rows.Next() {
 		var s CredentialMonitorSummary
 		var recoverAt, checkedAt *time.Time
+		var successRate sql.NullFloat64
 		var modelsJSON []byte
 		if err := rows.Scan(
 			&s.ID, &s.ProviderID, &s.ProviderName, &s.Label,
@@ -321,7 +352,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			&s.ConcurrencyLimit, &s.ConcurrencyLimitAuto, &s.EffectiveConcurrency,
 			&s.ManualDisabled, &s.ConsecutiveFailures,
 			&recoverAt, &s.StateReasonCode, &s.StateReasonDetail,
-			&checkedAt, &s.TotalRequests, &modelsJSON,
+			&checkedAt, &s.TotalRequests, &s.ModelTotal, &s.ModelAvailable, &s.BrokenModelCount, &successRate, &modelsJSON,
 		); err != nil {
 			continue
 		}
@@ -334,38 +365,23 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			t := checkedAt.Format(time.RFC3339)
 			s.HealthCheckedAt = &t
 		}
+		if successRate.Valid {
+			r := successRate.Float64
+			s.AggregatedSuccessRate = &r
+		}
 
-		// Decode the models JSON array into typed structs and compute the
-		// aggregated (min) success rate across routable models.
-		// Initialize as a non-nil slice so the JSON response always serializes
-		// to "models":[] (never null). The SQL COALESCE(...,'[]'::json) already
-		// prevents null, but this is belt-and-braces in case of future schema
-		// drift.
-		models := make([]CredentialModelStatus, 0)
-		if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
-			_ = json.Unmarshal(modelsJSON, &models)
-		}
-		s.Models = models
-		var minRate *float64
-		for i := range models {
-			ms := &models[i]
-			// Parse probe timestamps back to RFC3339 strings for the API.
-			if ms.RecentSuccessRate != nil {
-				if minRate == nil || *ms.RecentSuccessRate < *minRate {
-					r := *ms.RecentSuccessRate
-					minRate = &r
-				}
+		if detailMode {
+			models := make([]CredentialModelStatus, 0)
+			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
+				_ = json.Unmarshal(modelsJSON, &models)
 			}
-			// probe_last_attempt_at comes through as a string in the JSON; keep as-is.
-			// 🆕 2026-06-23: 派生 effective_state (5 状态) + model_disabled_reason.
-			ms.EffectiveState = deriveModelEffectiveState(ms, s.ManualDisabled)
-			ms.ModelDisabledReason = humanizeDisabledReason(ms)
-			// 把 last_used_at 标准化成 RFC3339 字符串 (PG TIMESTAMPTZ 进来是 string, 但要稳).
-			if ms.LastUsedAt != nil && *ms.LastUsedAt != "" {
-				// pgx 已经把 timestamptz scan 成 RFC3339Nano, 直接保留.
+			s.Models = models
+			for i := range models {
+				ms := &models[i]
+				ms.EffectiveState = deriveModelEffectiveState(ms, s.ManualDisabled)
+				ms.ModelDisabledReason = humanizeDisabledReason(ms)
 			}
 		}
-		s.AggregatedSuccessRate = minRate
 
 		summaries = append(summaries, s)
 	}
@@ -1357,16 +1373,16 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 
 // deriveModelEffectiveState computes the 5-state effective_state for a model
 // row in monitor-summary. Priority (first match wins):
-//   1. credentialManualDisabled || (binding_unavailable_reason == 'manual_offline')
-//      → "manual_disabled"
-//   2. probe_state == "broken_confirmed"
-//      → "probe_broken"
-//   3. offer_available == false
-//      → "offer_missing"
-//   4. binding_available == false
-//      → "binding_missing"
-//   5. default
-//      → "available"
+//  1. credentialManualDisabled || (binding_unavailable_reason == 'manual_offline')
+//     → "manual_disabled"
+//  2. probe_state == "broken_confirmed"
+//     → "probe_broken"
+//  3. offer_available == false
+//     → "offer_missing"
+//  4. binding_available == false
+//     → "binding_missing"
+//  5. default
+//     → "available"
 //
 // 🆕 2026-06-23 credentials 详情页 4-tab 重构: 详情页模型可用性表用此值显示
 // 统一 status badge,避免前端重复拼装状态机。

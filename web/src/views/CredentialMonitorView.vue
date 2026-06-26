@@ -9,6 +9,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 Chart.register(...registerables)
 
 const loading = ref(false)
+const detailLoading = ref(false)
 const credentials = ref<CredentialMonitorSummary[]>([])
 const selectedCred = ref<CredentialMonitorSummary | null>(null)
 const selectedModel = ref('')
@@ -191,14 +192,30 @@ async function submitSetManualDisabled() {
 // Refresh detail drawer content (2026-06-23)
 async function refreshDetailDrawer() {
   if (!selectedCred.value) return
-  // Reload summary to update selectedCred
+  const currentId = selectedCred.value.id
+  detailLoading.value = true
+  // Reload summary list first so cards / table stay fresh
   await load()
-  const updatedCred = credentials.value.find(c => c.id === selectedCred.value?.id)
-  if (updatedCred) {
-    selectedCred.value = updatedCred
+  try {
+    const res = await getCredentialMonitorSummary({ credential_id: currentId })
+    const detail = res.credentials[0]
+    if (detail) {
+      selectedCred.value = detail
+      if (selectedModel.value) {
+        const stillExists = (detail.models || []).some((m) => m.raw_model_name === selectedModel.value)
+        if (!stillExists) {
+          const firstModel = (detail.models || [])[0]
+          selectedModel.value = firstModel?.raw_model_name || ''
+        }
+      }
+    }
+  } catch (e) {
+    console.error('detail refresh failed', e)
+  } finally {
+    detailLoading.value = false
   }
   // Reload all drawer sections
-  if (selectedModel.value) {
+  if (selectedCred.value && selectedModel.value) {
     await Promise.all([
       loadSlidingWindow(selectedCred.value.id, selectedModel.value),
       loadHistory(),
@@ -248,12 +265,26 @@ const batchHours = ref(2)
 // Error pie chart
 let errorPieChart: Chart | null = null
 
+interface CredentialRow extends CredentialMonitorSummary {
+  modelTotal: number
+  modelAvailable: number
+}
+
+const displayCreds = computed<CredentialRow[]>(() =>
+  filteredCreds.value.map((c) => {
+    return {
+      ...c,
+      modelTotal: c.model_total ?? 0,
+      modelAvailable: c.model_available ?? 0,
+    }
+  }),
+)
+
 async function load() {
   loading.value = true
   try {
     const res = await getCredentialMonitorSummary({
       provider_id: providerFilter.value || undefined,
-      include_window_stats: true,
     })
     credentials.value = res.credentials
   } catch (e) {
@@ -271,12 +302,7 @@ const summary = computed(() => {
   const abnormal = all.filter(c =>
     ['unreachable', 'cooling', 'rate_limited', 'auth_failed', 'suspended'].includes(c.availability_state)
   ).length
-  let brokenModels = 0
-  for (const c of all) {
-    for (const m of c.models || []) {
-      if (m.probe_state === 'broken_confirmed') brokenModels++
-    }
-  }
+  const brokenModels = all.reduce((sum, c) => sum + (c.broken_model_count ?? 0), 0)
   return { total, ready, abnormal, brokenModels }
 })
 
@@ -289,7 +315,7 @@ const filteredCreds = computed(() => {
     result = result.filter(c => c.health_status === healthFilter.value)
   }
   if (quickFilter.value === 'broken') {
-    result = result.filter(c => (c.models || []).some(m => m.probe_state === 'broken_confirmed'))
+    result = result.filter(c => (c.broken_model_count ?? 0) > 0)
   }
   if (quickFilter.value === 'low-rate') {
     result = result.filter(c => c.aggregated_success_rate != null && c.aggregated_success_rate < 0.5)
@@ -317,42 +343,36 @@ function toggleSelect(id: number) {
   }
 }
 
-// ── Per-credential model helpers ───────────────────────────────────────
-function modelCount(c: CredentialMonitorSummary) {
-  const models = c.models || []
-  const total = models.length
-  const avail = models.filter(m => m.offer_available && m.binding_available).length
-  return { avail, total }
-}
-
-function brokenModels(c: CredentialMonitorSummary): CredentialModelStatus[] {
-  return (c.models || []).filter(m => m.probe_state === 'broken_confirmed')
-}
-
-// First 3 broken model names for the table cell (the rest are hidden behind an
-// ellipsis to keep the row readable when a credential has many broken models;
-// the drawer shows the full list).
-function brokenPreview(c: CredentialMonitorSummary): string[] {
-  return brokenModels(c).slice(0, 3).map(m => m.raw_model_name)
-}
-
-function openDetail(cred: CredentialMonitorSummary) {
+async function openDetail(cred: CredentialMonitorSummary) {
   selectedCred.value = cred
-  // default the window to the first broken model, else the lowest-rate model
-  const models = cred.models || []
-  const broken = models.find(m => m.probe_state === 'broken_confirmed')
-  const pick = broken || models.slice().sort((a, b) => (a.recent_success_rate ?? 1) - (b.recent_success_rate ?? 1))[0]
-  selectedModel.value = pick?.raw_model_name || ''
-  if (selectedModel.value) {
-    loadSlidingWindow(cred.id, selectedModel.value)
-    loadHistory()
-  } else {
-    windowEntries.value = []
-    historyEvents.value = []
+  detailLoading.value = true
+  selectedModel.value = ''
+  windowEntries.value = []
+  historyEvents.value = []
+  try {
+    const res = await getCredentialMonitorSummary({ credential_id: cred.id })
+    const detail = res.credentials[0]
+    if (!detail) return
+    selectedCred.value = detail
+    const models = detail.models || []
+    const broken = models.find(m => m.probe_state === 'broken_confirmed')
+    const pick = broken || models.slice().sort((a, b) => (a.recent_success_rate ?? 1) - (b.recent_success_rate ?? 1))[0]
+    selectedModel.value = pick?.raw_model_name || ''
+    if (selectedModel.value) {
+      await Promise.all([
+        loadSlidingWindow(detail.id, selectedModel.value),
+        loadHistory(),
+      ])
+    }
+    await Promise.all([
+      loadCredentialDecisions(),
+      loadFpSlotStats(),
+    ])
+  } catch (e) {
+    console.error('detail load failed', e)
+  } finally {
+    detailLoading.value = false
   }
-  // Load additional drawer data (2026-06-23)
-  loadCredentialDecisions()
-  loadFpSlotStats()
 }
 
 async function loadSlidingWindow(credId: number, model: string) {
@@ -816,7 +836,7 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filteredCreds" :key="c.id" class="clickable-row" @click="openDetail(c)">
+          <tr v-for="c in displayCreds" :key="c.id" class="clickable-row" @click="openDetail(c)">
             <td @click.stop>
               <input type="checkbox" :checked="selectedIds.has(c.id)" @change="toggleSelect(c.id)" />
             </td>
@@ -833,8 +853,8 @@ onUnmounted(() => {
               <span class="badge" :class="healthBadge(c.health_status)">{{ c.health_status }}</span>
             </td>
             <td>
-              <span :class="modelCount(c).avail < modelCount(c).total ? 'rate-warn' : ''">
-                {{ modelCount(c).avail }}/{{ modelCount(c).total }}
+              <span :class="c.modelAvailable < c.modelTotal ? 'rate-warn' : ''">
+                {{ c.modelAvailable }}/{{ c.modelTotal }}
               </span>
             </td>
             <td>
@@ -843,13 +863,8 @@ onUnmounted(() => {
               </span>
             </td>
             <td>
-              <span v-if="brokenModels(c).length === 0" class="cell-muted">—</span>
-              <div v-else style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
-                <span v-for="name in brokenPreview(c)" :key="name" class="badge badge-red model-badge">{{ name }}</span>
-                <span v-if="brokenModels(c).length > 3" class="badge badge-gray model-badge" :title="brokenModels(c).map(m => m.raw_model_name).join(', ')">
-                  +{{ brokenModels(c).length - 3 }}
-                </span>
-              </div>
+              <span v-if="(c.broken_model_count ?? 0) === 0" class="cell-muted">—</span>
+              <span v-else class="badge badge-red model-badge">{{ c.broken_model_count }}</span>
             </td>
             <td>
               <div>手动: {{ c.concurrency_limit || '—' }}</div>
@@ -1535,10 +1550,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   font-size: 11px;
   color: var(--muted);
 }
+.top-bar > * { flex-shrink: 0; }
 .top-bar h1 {
   margin: 0;
   font-size: 15px;
@@ -1577,7 +1594,7 @@ onUnmounted(() => {
 .top-bar .field-input { font-size: 11px; padding: 2px 6px; }
 .top-bar .spacer { flex: 1; }
 .top-bar .btn-sm { font-size: 11px; padding: 2px 8px; }
-.top-bar .quick-filter-group { display: inline-flex; gap: 4px; }
+.top-bar .quick-filter-group { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
 
 /* Page header kept for backward compat in case anything still references it */
 .page-header {
