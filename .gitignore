@@ -10,6 +10,7 @@
 
 # Build artifacts
 /gateway
+/gateway-v2
 bin/
 dist/
 build/
