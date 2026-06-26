@@ -638,10 +638,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Session validation (if X-Gw-Session-Id or X-Session-Id provided) ──
 	var sessionInfo *session.Session
-	sessionID := sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
-	if sessionID == "" {
-		sessionID = r.Header.Get("X-Session-Id")
-	}
+	sessionID := extractSessionIDFromHeaders(r)
 	if sessionID != "" && h.sessionGetter != nil {
 		si, err := h.sessionGetter.Get(ctx, sessionID)
 		if err != nil {
@@ -772,6 +769,9 @@ func (h *ChatHandler) serveWithExecutor(
 
 	clientModel := reqBody.Model
 	logCtx.SetClientModel(clientModel)
+	if sessionID == "" {
+		sessionID = extractSessionIDFromBody(bodyBytes)
+	}
 	if sessionID == "" {
 		assignment, assignErr := h.assignGatewaySession(ctx, bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {

@@ -79,6 +79,29 @@ func TestCountRequestMessages(t *testing.T) {
 	}
 }
 
+func TestExtractSessionIDFromBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "sessionId root", body: `{"sessionId":"client-1"}`, want: "client-1"},
+		{name: "session_id nested metadata", body: `{"metadata":{"session_id":"client-2"}}`, want: "client-2"},
+		{name: "conversationId nested info", body: `{"info":{"conversationId":"conv-1"}}`, want: "conv-1"},
+		{name: "thread-id nested extra", body: `{"extra":{"thread-id":"thread-1"}}`, want: "thread-1"},
+		{name: "gw session normalized", body: `{"frontend":{"gwSessionId":"gw_12345678-1234-1234-1234-123456789abc"}}`, want: "gw_12345678-1234-1234-1234-123456789abc"},
+		{name: "missing", body: `{"messages":[]}`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractSessionIDFromBody([]byte(tt.body)); got != tt.want {
+				t.Fatalf("extractSessionIDFromBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAssignGatewaySession_CreatesForSingleMessage(t *testing.T) {
 	h := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	getter := &stubSessionGetter{}
