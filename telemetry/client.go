@@ -412,7 +412,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			$12, $13,
 			$14, $15, $16, $17, $18
 		)
-		ON CONFLICT (request_id) DO NOTHING
+		ON CONFLICT (request_id, ts) DO NOTHING
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -707,7 +707,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       request_preview = COALESCE($29, request_preview),
 		       transform_summary = COALESCE($30, transform_summary),
 		       request_body = COALESCE(CAST($31 AS jsonb), request_body),
-		       usage_source = COALESCE(NULLIF($32, ''), usage_source),
+		       usage_source = COALESCE(NULLIF($32, ''), usage_source, 'llm'),
 		       success = COALESCE($33, success),
 		       request_status = COALESCE($34, request_status),
 		       -- 2026-06-20: clear error_kind on success to prevent
@@ -978,7 +978,7 @@ func (c *Client) upsertRequestLogFallback(entry *RequestLogEntry) error {
 			CAST(NULLIF($31, '') AS jsonb), CAST(NULLIF($32, '') AS jsonb),
 			$33, $34,
 			$35, $36,
-			COALESCE(NULLIF($37, ''), NULL),
+			COALESCE(NULLIF($37, ''), 'llm'),
 			COALESCE(NULLIF($38, ''), NULL), COALESCE(NULLIF($39, ''), NULL),
 			COALESCE(NULLIF($40, ''), NULL), COALESCE(NULLIF($41, ''), NULL), COALESCE(NULLIF($42, ''), NULL),
 			$43, COALESCE(NULLIF($44, ''), NULL), COALESCE(NULLIF($45, ''), NULL),
