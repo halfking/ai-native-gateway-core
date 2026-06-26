@@ -29,29 +29,42 @@ type summaryCache struct {
 
 type summaryCacheEntry struct {
 	value   map[string]any
+	created time.Time
 	expires time.Time
 }
 
-func (c *summaryCache) get(key string) (map[string]any, bool) {
+func cloneSummaryResponse(src map[string]any) map[string]any {
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func (c *summaryCache) get(key string) (map[string]any, time.Time, time.Time, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.entries == nil {
-		return nil, false
+		return nil, time.Time{}, time.Time{}, false
 	}
 	e, ok := c.entries[key]
 	if !ok || time.Now().After(e.expires) {
-		return nil, false
+		return nil, time.Time{}, time.Time{}, false
 	}
-	return e.value, true
+	return cloneSummaryResponse(e.value), e.created, e.expires, true
 }
 
-func (c *summaryCache) set(key string, value map[string]any) {
+func (c *summaryCache) set(key string, value map[string]any, created time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
 		c.entries = make(map[string]summaryCacheEntry)
 	}
-	c.entries[key] = summaryCacheEntry{value: value, expires: time.Now().Add(c.ttl)}
+	c.entries[key] = summaryCacheEntry{value: cloneSummaryResponse(value), created: created, expires: created.Add(c.ttl)}
+}
+
+func (c *summaryCache) ttlSeconds() int {
+	return int(c.ttl / time.Second)
 }
 
 // CredentialMonitorHandlers provides credential monitoring and manual promotion/demotion endpoints.
@@ -160,7 +173,17 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 5
+const monitorSummarySchemaVersion = 6
+
+func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuration time.Duration) map[string]any {
+	return map[string]any{
+		"cache_hit":          cacheHit,
+		"generated_at":       created.Format(time.RFC3339),
+		"expires_at":         expires.Format(time.RFC3339),
+		"ttl_seconds":        monitorSummaryCache.ttlSeconds(),
+		"server_duration_ms": serverDuration.Milliseconds(),
+	}
+}
 
 // WindowStats aggregates recent sliding window data.
 type WindowStats struct {
@@ -193,12 +216,14 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	providerID := queryInt(r, "provider_id", 0)
 	credentialID := queryInt(r, "credential_id", 0)
 	detailMode := credentialID > 0
+	startedAt := time.Now()
 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
 	// LATERAL success-rate join is the heaviest part. Cache key excludes
 	// nothing but provider_id (the only variable input).
 	cacheKey := fmt.Sprintf("p%d:c%d:d%t:v%d", providerID, credentialID, detailMode, monitorSummarySchemaVersion)
-	if cached, ok := monitorSummaryCache.get(cacheKey); ok {
+	if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
+		cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
 		writeJSON(w, http.StatusOK, cached)
 		return
 	}
@@ -390,7 +415,10 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		"credentials": summaries,
 		"count":       len(summaries),
 	}
-	monitorSummaryCache.set(cacheKey, resp)
+	generatedAt := time.Now()
+	expiresAt := generatedAt.Add(monitorSummaryCache.ttl)
+	resp["meta"] = monitorSummaryMeta(generatedAt, expiresAt, false, time.Since(startedAt))
+	monitorSummaryCache.set(cacheKey, resp, generatedAt)
 	writeJSON(w, http.StatusOK, resp)
 }
 
