@@ -116,7 +116,7 @@ watch(providerId, () => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center">
       <div style="display:flex;align-items:center;gap:12px">
-        <button class="btn btn-ghost" @click="back">&larr; 返回</button>
+        <button class="btn btn-ghost" @click="back">&larr; 返回供应商列表</button>
         <h2 style="margin:0">{{ provider?.display_name || '...' }}</h2>
         <span v-if="provider?.manual_disabled" class="badge badge-red" title="提供商级手工禁用 — 整个 provider 不可路由">🔒 手工已禁用</span>
         <span v-else-if="!provider?.enabled" class="badge badge-gray">已禁用</span>

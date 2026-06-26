@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
-import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision } from '../api'
+import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
@@ -10,6 +10,10 @@ Chart.register(...registerables)
 
 const loading = ref(false)
 const detailLoading = ref(false)
+const lastListRefreshAt = ref<Date | null>(null)
+const lastDetailRefreshAt = ref<Date | null>(null)
+const listMeta = ref<CredentialMonitorMeta | null>(null)
+const detailMeta = ref<CredentialMonitorMeta | null>(null)
 const credentials = ref<CredentialMonitorSummary[]>([])
 const selectedCred = ref<CredentialMonitorSummary | null>(null)
 const selectedModel = ref('')
@@ -111,6 +115,11 @@ let refreshTimer: number | null = null
 const detailAutoRefresh = ref(false)
 const detailRefreshInterval = ref(5) // seconds
 let detailRefreshTimer: number | null = null
+let listRequestSeq = 0
+let detailRequestSeq = 0
+let modelRequestSeq = 0
+let decisionRequestSeq = 0
+let fpSlotRequestSeq = 0
 
 // Routing decisions for credential (2026-06-23)
 const credentialDecisions = ref<CredentialRoutingDecision[]>([])
@@ -125,6 +134,22 @@ async function loadCredentialDecisions() {
     console.error('credential decisions load failed', e)
   } finally {
     credentialDecisionsLoading.value = false
+  }
+}
+
+async function loadCredentialDecisionsFor(credentialId: number) {
+  const requestSeq = ++decisionRequestSeq
+  credentialDecisionsLoading.value = true
+  try {
+    const res = await getCredentialDecisions(credentialId, 50)
+    if (requestSeq !== decisionRequestSeq || selectedCred.value?.id !== credentialId) return
+    credentialDecisions.value = res.decisions
+  } catch (e) {
+    console.error('credential decisions load failed', e)
+  } finally {
+    if (requestSeq === decisionRequestSeq) {
+      credentialDecisionsLoading.value = false
+    }
   }
 }
 
@@ -143,6 +168,22 @@ async function loadFpSlotStats() {
     console.error('fp slot stats load failed', e)
   } finally {
     fpSlotStatsLoading.value = false
+  }
+}
+
+async function loadFpSlotStatsFor(providerId: number, credentialId: number) {
+  const requestSeq = ++fpSlotRequestSeq
+  fpSlotStatsLoading.value = true
+  try {
+    const stats = await getCredentialFpSlotStats(providerId, credentialId)
+    if (requestSeq !== fpSlotRequestSeq || selectedCred.value?.id !== credentialId) return
+    fpSlotStats.value = stats
+  } catch (e) {
+    console.error('fp slot stats load failed', e)
+  } finally {
+    if (requestSeq === fpSlotRequestSeq) {
+      fpSlotStatsLoading.value = false
+    }
   }
 }
 
@@ -193,14 +234,22 @@ async function submitSetManualDisabled() {
 async function refreshDetailDrawer() {
   if (!selectedCred.value) return
   const currentId = selectedCred.value.id
+  const currentProviderId = selectedCred.value.provider_id
+  const requestSeq = ++detailRequestSeq
   detailLoading.value = true
-  // Reload summary list first so cards / table stay fresh
-  await load()
   try {
-    const res = await getCredentialMonitorSummary({ credential_id: currentId })
+    const [_, res] = await Promise.all([
+      load(),
+      getCredentialMonitorSummary({ credential_id: currentId }),
+      loadCredentialDecisionsFor(currentId),
+      loadFpSlotStatsFor(currentProviderId, currentId),
+    ])
+    if (requestSeq !== detailRequestSeq || selectedCred.value?.id !== currentId) return
     const detail = res.credentials[0]
     if (detail) {
       selectedCred.value = detail
+      detailMeta.value = res.meta || null
+      lastDetailRefreshAt.value = new Date()
       if (selectedModel.value) {
         const stillExists = (detail.models || []).some((m) => m.raw_model_name === selectedModel.value)
         if (!stillExists) {
@@ -212,20 +261,16 @@ async function refreshDetailDrawer() {
   } catch (e) {
     console.error('detail refresh failed', e)
   } finally {
-    detailLoading.value = false
+    if (requestSeq === detailRequestSeq) {
+      detailLoading.value = false
+    }
   }
-  // Reload all drawer sections
+  // Reload model-scoped sections after the detail payload picks the active model.
   if (selectedCred.value && selectedModel.value) {
+    const modelSeq = ++modelRequestSeq
     await Promise.all([
-      loadSlidingWindow(selectedCred.value.id, selectedModel.value),
-      loadHistory(),
-      loadCredentialDecisions(),
-      loadFpSlotStats(),
-    ])
-  } else {
-    await Promise.all([
-      loadCredentialDecisions(),
-      loadFpSlotStats(),
+      loadSlidingWindow(selectedCred.value.id, selectedModel.value, modelSeq),
+      loadHistory(modelSeq),
     ])
   }
 }
@@ -281,16 +326,22 @@ const displayCreds = computed<CredentialRow[]>(() =>
 )
 
 async function load() {
+  const requestSeq = ++listRequestSeq
   loading.value = true
   try {
     const res = await getCredentialMonitorSummary({
       provider_id: providerFilter.value || undefined,
     })
+    if (requestSeq !== listRequestSeq) return
     credentials.value = res.credentials
+    listMeta.value = res.meta || null
+    lastListRefreshAt.value = new Date()
   } catch (e) {
     console.error('load failed', e)
   } finally {
-    loading.value = false
+    if (requestSeq === listRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -344,57 +395,73 @@ function toggleSelect(id: number) {
 }
 
 async function openDetail(cred: CredentialMonitorSummary) {
+  const requestSeq = ++detailRequestSeq
   selectedCred.value = cred
   detailLoading.value = true
   selectedModel.value = ''
   windowEntries.value = []
   historyEvents.value = []
   try {
-    const res = await getCredentialMonitorSummary({ credential_id: cred.id })
+    const [res] = await Promise.all([
+      getCredentialMonitorSummary({ credential_id: cred.id }),
+      loadCredentialDecisionsFor(cred.id),
+      loadFpSlotStatsFor(cred.provider_id, cred.id),
+    ])
+    if (requestSeq !== detailRequestSeq || selectedCred.value?.id !== cred.id) return
     const detail = res.credentials[0]
     if (!detail) return
     selectedCred.value = detail
+    detailMeta.value = res.meta || null
+    lastDetailRefreshAt.value = new Date()
     const models = detail.models || []
     const broken = models.find(m => m.probe_state === 'broken_confirmed')
     const pick = broken || models.slice().sort((a, b) => (a.recent_success_rate ?? 1) - (b.recent_success_rate ?? 1))[0]
     selectedModel.value = pick?.raw_model_name || ''
     if (selectedModel.value) {
+      const modelSeq = ++modelRequestSeq
       await Promise.all([
-        loadSlidingWindow(detail.id, selectedModel.value),
-        loadHistory(),
+        loadSlidingWindow(detail.id, selectedModel.value, modelSeq),
+        loadHistory(modelSeq),
       ])
     }
-    await Promise.all([
-      loadCredentialDecisions(),
-      loadFpSlotStats(),
-    ])
   } catch (e) {
     console.error('detail load failed', e)
   } finally {
-    detailLoading.value = false
+    if (requestSeq === detailRequestSeq) {
+      detailLoading.value = false
+    }
   }
 }
 
-async function loadSlidingWindow(credId: number, model: string) {
+async function loadSlidingWindow(credId: number, model: string, requestSeq = ++modelRequestSeq) {
   if (!model) return
   windowLoading.value = true
   try {
     const res = await getSlidingWindow(credId, model, 60)
+    if (requestSeq !== modelRequestSeq || selectedCred.value?.id !== credId || selectedModel.value !== model) return
     windowEntries.value = res.entries
     windowSource.value = res.source
     setTimeout(() => renderErrorPieChart(res.stats.error_kinds), 100)
   } catch (e) {
     console.error('sliding window failed', e)
   } finally {
-    windowLoading.value = false
+    if (requestSeq === modelRequestSeq) {
+      windowLoading.value = false
+    }
   }
 }
 
 function selectModel(model: string) {
   if (!selectedCred.value || model === selectedModel.value) return
   selectedModel.value = model
-  loadSlidingWindow(selectedCred.value.id, model)
-  loadHistory()
+  const requestSeq = ++modelRequestSeq
+  loadSlidingWindow(selectedCred.value.id, model, requestSeq)
+  loadHistory(requestSeq)
+}
+
+function refreshSelectedModelHistory() {
+  const requestSeq = ++modelRequestSeq
+  loadHistory(requestSeq)
 }
 
 // 🆕 2026-06-25: 当前选中模型对象 + 手工控制状态派生
@@ -657,20 +724,27 @@ async function submitToggle() {
   }
 }
 
-async function loadHistory() {
+async function loadHistory(requestSeq = modelRequestSeq) {
   if (!selectedCred.value || !selectedModel.value) {
     historyEvents.value = []
     return
   }
+  const currentCredId = selectedCred.value.id
+  const currentModel = selectedModel.value
   historyLoading.value = true
   try {
-    const res = await getModelHistory(selectedCred.value.id, selectedModel.value, 50)
+    const res = await getModelHistory(currentCredId, currentModel, 50)
+    if (requestSeq !== modelRequestSeq || selectedCred.value?.id !== currentCredId || selectedModel.value !== currentModel) return
     historyEvents.value = res.events
   } catch (e) {
     console.error('history failed', e)
-    historyEvents.value = []
+    if (requestSeq === modelRequestSeq) {
+      historyEvents.value = []
+    }
   } finally {
-    historyLoading.value = false
+    if (requestSeq === modelRequestSeq) {
+      historyLoading.value = false
+    }
   }
 }
 
@@ -683,6 +757,21 @@ function formatTs(ts: string) {
   const h = String(d.getHours()).padStart(2, '0')
   const min = String(d.getMinutes()).padStart(2, '0')
   return `${m}-${day} ${h}:${min}`
+}
+
+function formatRefreshAt(d: Date | null): string {
+  if (!d) return '尚未刷新'
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hour = String(d.getHours()).padStart(2, '0')
+  const minute = String(d.getMinutes()).padStart(2, '0')
+  const second = String(d.getSeconds()).padStart(2, '0')
+  return `${month}-${day} ${hour}:${minute}:${second}`
+}
+
+function formatCacheMeta(meta: CredentialMonitorMeta | null): string {
+  if (!meta) return '缓存状态未知'
+  return `${meta.cache_hit ? '缓存命中' : '实时生成'} · 服务端 ${meta.server_duration_ms}ms · 过期 ${formatTs(meta.expires_at)}`
 }
 
 // ── Badge / color helpers ──────────────────────────────────────────────
@@ -750,6 +839,7 @@ onUnmounted(() => {
          area is top-left aligned and stretches across the full available
          width instead of being centered with a 1200px cap. -->
     <div class="top-bar">
+      <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
       <h1>凭据监控</h1>
       <div class="refresh-group">
         <label>
@@ -762,6 +852,8 @@ onUnmounted(() => {
           <option :value="60">60秒</option>
         </select>
         <button class="btn btn-primary btn-sm" @click="load">手动刷新</button>
+        <span class="refresh-meta">列表 {{ loading ? '刷新中...' : formatRefreshAt(lastListRefreshAt) }}</span>
+        <span class="refresh-meta">{{ formatCacheMeta(listMeta) }}</span>
       </div>
       <span class="tb-sep" aria-hidden="true"></span>
       <span class="label">可用性</span>
@@ -918,6 +1010,12 @@ onUnmounted(() => {
         <div style="padding:8px 16px 0;display:flex;align-items:center;gap:8px">
           <SegTabs v-model="detailActiveTab" :tabs="detailTabs" />
           <span class="cell-sub" style="margin-left:auto">
+            详情 {{ detailLoading ? '刷新中...' : formatRefreshAt(lastDetailRefreshAt) }}
+          </span>
+          <span class="cell-sub">
+            {{ formatCacheMeta(detailMeta) }}
+          </span>
+          <span class="cell-sub">
             凭据 ID: <code class="mono-sm">{{ selectedCred.id }}</code>
           </span>
         </div>
@@ -1275,7 +1373,7 @@ onUnmounted(() => {
                   class="btn btn-xs btn-ghost"
                   :disabled="historyLoading || !selectedModel"
                   style="margin-left:auto"
-                  @click="loadHistory"
+                  @click="refreshSelectedModelHistory"
                 >↻ 刷新</button>
               </div>
               <div v-if="!selectedModel" class="cell-muted">点击「模型可用性」tab 中的模型查看</div>
@@ -1569,6 +1667,12 @@ onUnmounted(() => {
   color: var(--muted);
 }
 .top-bar > * { flex-shrink: 0; }
+.back-link {
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.back-link:hover { color: var(--accent-h); }
 .top-bar h1 {
   margin: 0;
   font-size: 15px;
@@ -1593,6 +1697,11 @@ onUnmounted(() => {
   width: auto;
   font-size: 11px;
   padding: 2px 6px;
+}
+.top-bar .refresh-meta {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .top-bar .tb-sep {
   width: 1px;
@@ -2212,10 +2321,15 @@ onUnmounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .pane-anim .pane-left,
   .pane-anim .pane-right { animation: none; }
+  .skeleton { animation: none; }
 }
 
 /* ═══ 响应式: 屏幕窄于 700px 强制 list-full (老板视觉验收点) ═══ */
 @media (max-width: 700px) {
+  .detail-skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+
   .models-grid-split,
   .models-grid-monitor-full {
     grid-template-columns: 1fr;
