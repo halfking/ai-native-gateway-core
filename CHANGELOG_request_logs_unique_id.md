@@ -242,3 +242,20 @@ To be explicit about scope:
 - 2026-06-26: kaixuan's report surfaced the residual bug for a specific
   retry pattern (智谱 3 fails → nvidia nim success) that the previous
   fixes didn't cover.
+- 2026-06-27: Follow-up commit `86eaab47` adds `client_request_id` column
+  (migration 054) to preserve client's original `X-Request-Id` for
+  debug/tracing. The column is added to the schema but not yet wired
+  through INSERT/UPDATE SQL (will be NULL for now).
+
+---
+
+## Appendix — Evolution of the fix (3 commits)
+
+| Commit | What it did |
+|---|---|
+| `d16131ad` | **Schema-level fix**: `UNIQUE (request_id, ts)` → `UNIQUE (request_id)` only. Added `ensureRequestLogsUniqueIndex()`, updated `telemetry/client.go` ON CONFLICT clauses, migration 301. |
+| `1d7ddd79` | **Deployment tooling**: `deploy_request_logs_unique_id.sh`, `rollback_request_logs_unique_id.sh`, `verify_request_logs_unique.sql`, and this CHANGELOG. |
+| `86eaab47` | **Schema addition**: Added `client_request_id TEXT` column + partial index (migration 054). Schema-level constraint from `d16131ad` remains active. Column wiring through SQL deferred to follow-up. |
+
+**Current state**: DB enforces one row per `request_id`. The `client_request_id` column exists but is not yet populated by application code.
+

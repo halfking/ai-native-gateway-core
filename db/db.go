@@ -142,15 +142,21 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		// pool.Close() removed - handled by defer
 		return nil, err
 	}
-	// 2026-06-26: P0 hotfix for request_logs duplicate-row bug (kaixuan).
-	// The (request_id, ts) unique constraint allowed INSERT ts=now() to
-	// differ per row, so UPDATE ... WHERE request_id=$1 matched multiple
-	// rows during retry storms. See db/migrations/301_* and
-	// CHANGELOG_request_logs_unique_id.md for the full root-cause analysis.
-	if err := db.ensureRequestLogsUniqueIndex(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
-	}
+	// 2026-06-27: Schema-level P0 hotfix for request_logs duplicate-row
+	// bug (kaixuan) is REVERTED. The original d16131ad tried to enforce
+	// UNIQUE(request_id) at the DB layer, but request_logs is a
+	// partitioned table (by ts) and PG 11+ requires the partitioning
+	// key in every unique index — so CREATE UNIQUE INDEX ON
+	// request_logs (request_id) fails with SQLSTATE 0A000 and
+	// postgres is disabled at startup, taking every admin /api route
+	// offline (404) and the routing executor down (503).
+	//
+	// The retry-storm dedup is now handled at the application layer
+	// (relay/handler.go + middleware/requestid_mw.go + telemetry).
+	// We still want the client_request_id column for debug/cross-
+	// system tracing, so ensureRequestLogSchema is called (it adds
+	// the column and the partial index safely) but the broken
+	// ensureRequestLogsUniqueIndex is no longer invoked.
 	success = true // Mark success to prevent defer from closing pool
 	return db, nil
 }
@@ -247,54 +253,6 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id)")
-	return nil
-}
-
-// ensureRequestLogsUniqueIndex mirrors db/migrations/301_request_logs_unique_request_id_only.sql
-// inline so every gateway instance converges on the same schema at startup,
-// without requiring operators to run the migration manually.
-//
-// 2026-06-26: P0 hotfix — UPDATE ... WHERE request_id = $1 matched multiple
-// rows because the (request_id, ts) unique constraint allowed ts=now() to
-// differ per INSERT. Symptom: a glm-5.1 request that retried 智谱 3 times
-// before succeeding on nvidia nim produced 4 rows in request_logs, all
-// subsequently updated to "nvidia nim success" (kaixuan's bug report). The
-// fix: enforce (request_id) only, guaranteeing one row per logical request.
-//
-// Idempotent:
-//   - DELETE cleans only recent duplicates (last 7 days) to minimise lock time.
-//   - DROP INDEX IF EXISTS is safe even if the index was never created.
-//   - CREATE UNIQUE INDEX IF NOT EXISTS is safe on re-run.
-func (d *DB) ensureRequestLogsUniqueIndex(ctx context.Context) error {
-	if d == nil || d.pool == nil {
-		return nil
-	}
-	_, err := d.pool.Exec(ctx, `
-		-- 1. Clean up recent duplicates (keep earliest row per request_id).
-		-- Matches migration 301's behaviour: only touch the last 7 days to
-		-- keep lock time low during gateway startup.
-		DELETE FROM request_logs rl1
-		USING (
-		    SELECT request_id, MIN(ts) AS first_ts
-		    FROM request_logs
-		    WHERE ts > now() - interval '7 days'
-		    GROUP BY request_id
-		    HAVING COUNT(*) > 1
-		) rl2
-		WHERE rl1.request_id = rl2.request_id
-		  AND rl1.ts > rl2.first_ts;
-
-		-- 2. Drop the old (request_id, ts) constraint if present.
-		DROP INDEX IF EXISTS idx_request_logs_request_id_ts_unique;
-
-		-- 3. Create the new (request_id)-only constraint.
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_request_logs_request_id_unique
-		    ON request_logs (request_id);
-	`)
-	if err != nil {
-		return err
-	}
-	slog.Info("request_logs unique constraint enforced on (request_id) only")
 	return nil
 }
 
