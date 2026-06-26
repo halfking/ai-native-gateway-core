@@ -38,6 +38,8 @@ func TestLastSystemSessionIndex_GetSet(t *testing.T) {
 	ctx := context.Background()
 
 	const apiKeyID = 99001
+	// 先清理可能残留的 key，确保初始状态干净（避免上次运行残留导致 flaky）
+	_ = idx.Delete(ctx, apiKeyID)
 	t.Cleanup(func() {
 		_ = idx.Delete(ctx, apiKeyID)
 	})
@@ -83,6 +85,7 @@ func TestLastSystemSessionIndex_TTLExpiry(t *testing.T) {
 	ctx := context.Background()
 
 	const apiKeyID = 99002
+	_ = idx.Delete(ctx, apiKeyID)
 	t.Cleanup(func() {
 		_ = idx.Delete(ctx, apiKeyID)
 	})
@@ -113,6 +116,7 @@ func TestLastSystemSessionIndex_StaleTimestampRejected(t *testing.T) {
 	ctx := context.Background()
 
 	const apiKeyID = 99003
+	_ = idx.Delete(ctx, apiKeyID)
 	t.Cleanup(func() {
 		_ = idx.Delete(ctx, apiKeyID)
 	})
@@ -143,6 +147,7 @@ func TestLastSystemSessionIndex_Touch(t *testing.T) {
 	ctx := context.Background()
 
 	const apiKeyID = 99004
+	_ = idx.Delete(ctx, apiKeyID)
 	t.Cleanup(func() {
 		_ = idx.Delete(ctx, apiKeyID)
 	})
@@ -169,6 +174,7 @@ func TestLastSystemSessionIndex_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	const apiKeyID = 99005
+	_ = idx.Delete(ctx, apiKeyID)
 	_ = idx.Set(ctx, apiKeyID, &LastSystemSessionEntry{SessionID: "gw_del"})
 
 	if err := idx.Delete(ctx, apiKeyID); err != nil {
@@ -188,6 +194,8 @@ func TestLastSystemSessionIndex_DifferentClients(t *testing.T) {
 
 	const clientA = 99100
 	const clientB = 99101
+	_ = idx.Delete(ctx, clientA)
+	_ = idx.Delete(ctx, clientB)
 	t.Cleanup(func() {
 		_ = idx.Delete(ctx, clientA)
 		_ = idx.Delete(ctx, clientB)
