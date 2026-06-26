@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
@@ -19,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -310,12 +310,12 @@ type Executor struct {
 	// Memora for later retrieval, and (b) on context-length overflow,
 	// queries Memora for L1 session facts and rebuilds the body before
 	// retrying. Nil means the entire Memora path is a no-op.
-	Memora *memora.Client
+	Memora memory.Reader
 	// MemoraSink is the async write buffer for Memora persistence.
 	// When nil (or when Memora is disabled), enqueue calls are no-ops.
 	// Wired from main.go alongside Memora; the sink owns its own worker
 	// goroutines and graceful-shutdown lifecycle.
-	MemoraSink *memora.Sink
+	MemoraSink memory.Writer
 
 	// PendingStore (Track C, 2026-06-18) is the durable cache for
 	// client reconnect and vendor async retry. When set, the

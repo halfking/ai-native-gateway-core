@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -170,12 +170,12 @@ func (e *Executor) tryMemoraCompression(
 		return nil, false
 	}
 	apiKeyID := extractAPIKeyID(params.R, params.ClientID)
-	taskID := memora.TaskID(params.R, sourceBody, apiKeyID)
+	taskID := memory.TaskID(params.R, sourceBody, apiKeyID)
 	if taskID == "" {
 		return nil, false
 	}
 	// Round 47 compression v7 T13: tenant-namespaced user_id.
-	userID := memora.UserID(params.TenantID, apiKeyID, taskID)
+	userID := memory.UserID(params.TenantID, apiKeyID, taskID)
 	if userID == "" {
 		return nil, false
 	}
@@ -190,7 +190,7 @@ func (e *Executor) tryMemoraCompression(
 	if err != nil || len(snippets) == 0 {
 		return nil, false
 	}
-	newBody, ok := memora.RebuildBodyWithMemoraSnippets(sourceBody, snippets, 2)
+	newBody, ok := memory.RebuildBodyWithMemoraSnippets(sourceBody, snippets, 2)
 	if !ok {
 		return nil, false
 	}
@@ -1234,12 +1234,12 @@ func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody [
 		return
 	}
 	apiKeyID := extractAPIKeyID(params.R, params.ClientID)
-	taskID := memora.TaskID(params.R, sourceBody, apiKeyID)
+	taskID := memory.TaskID(params.R, sourceBody, apiKeyID)
 	if taskID == "" {
 		return
 	}
 	// Round 47 compression v7 T13: tenant-namespaced user_id.
-	userID := memora.UserID(params.TenantID, apiKeyID, taskID)
+	userID := memory.UserID(params.TenantID, apiKeyID, taskID)
 	if userID == "" {
 		return
 	}
@@ -1247,7 +1247,7 @@ func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody [
 	if len(msgs) == 0 {
 		return
 	}
-	e.MemoraSink.Enqueue(memora.WriteOp{
+	e.MemoraSink.Enqueue(memory.WriteOp{
 		UserID:   userID,
 		Messages: msgs,
 		// Round 47 compression v7 T14: align with Memora MCP ingest_session
@@ -1263,26 +1263,26 @@ func (e *Executor) enqueueMemoraWrite(params *ExecParams, sourceBody, respBody [
 }
 
 // extractMemoraMessages turns a wire body (+ optional response body)
-// into memora.Message pairs for /product/add. We keep the extraction
+// into memory.Message pairs for /product/add. We keep the extraction
 // minimal: only role + plain-text content, no tool_call args — Memora
 // cares about the semantic conversation, not the tool plumbing.
-func extractMemoraMessages(body []byte, protocol string, respBody []byte) []memora.Message {
+func extractMemoraMessages(body []byte, protocol string, respBody []byte) []memory.Message {
 	text, err := extractConversationText(body, protocol)
 	if err != nil || strings.TrimSpace(text) == "" {
 		return nil
 	}
 	// Split the extracted "[role]\n...\n\n" blocks back into messages.
-	var out []memora.Message
+	var out []memory.Message
 	for _, block := range splitConversationBlocks(text) {
 		if block.role == "" || block.text == "" {
 			continue
 		}
-		out = append(out, memora.Message{Role: block.role, Content: block.text})
+		out = append(out, memory.Message{Role: block.role, Content: block.text})
 	}
 	// Append the assistant response when we have it (non-stream path).
 	if len(respBody) > 0 {
 		if respText := extractAssistantReplyText(respBody, protocol); respText != "" {
-			out = append(out, memora.Message{Role: "assistant", Content: respText})
+			out = append(out, memory.Message{Role: "assistant", Content: respText})
 		}
 	}
 	return out
