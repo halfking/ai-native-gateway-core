@@ -15,11 +15,11 @@ import (
 
 // Pool is a thread-safe rotating pool of header values.
 type Pool struct {
-	mu            sync.RWMutex
-	agents        []string
-	languages     []string
-	lastRotate    time.Time
-	rotateEvery   time.Duration
+	mu          sync.RWMutex
+	agents      []string
+	languages   []string
+	lastRotate  time.Time
+	rotateEvery time.Duration
 }
 
 // DefaultPool is the package-level pool used by main.go.
@@ -43,6 +43,18 @@ func NewPool(rotateInterval time.Duration) *Pool {
 		lastRotate:  time.Now(),
 		rotateEvery: rotateInterval,
 	}
+}
+
+// NewRedisPool is a compatibility constructor for the gateway wiring.
+//
+// The current disguise implementation is process-local: it exposes a
+// deterministic slot -> headers mapping plus periodic reshuffle, but it
+// does not need Redis to function correctly. main.go may still pass the
+// shared redis client so future implementations can persist pool state.
+// For now we intentionally ignore the client and return a normal in-memory
+// pool with the requested rotation interval.
+func NewRedisPool(_ any, rotateInterval time.Duration) *Pool {
+	return NewPool(rotateInterval)
 }
 
 // Headers returns a snapshot of "User-Agent" and "Accept-Language"
