@@ -74,6 +74,7 @@ describe('SettingsView session alias editor', () => {
     expect(wrapper.findAll('.tag-chip')).toHaveLength(3)
     expect(wrapper.text()).toContain('示例请求预览')
     expect(wrapper.text()).toContain('chatRoomId')
+    expect(wrapper.text()).toContain('metadata.chatRoomId -> session_id')
 
     await wrapper.findAll('.tag-chip-remove')[0].trigger('click')
     await flushPromises()
