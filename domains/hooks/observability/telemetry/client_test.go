@@ -176,10 +176,13 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 func TestInsertUpsertSQL_DoesNotReferenceUndefinedRLAlias(t *testing.T) {
 	const upsertTail = `
 		ON CONFLICT (request_id, ts) DO UPDATE SET
-			client_request_id = COALESCE(EXCLUDED.client_request_id, client_request_id)
+			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id)
 	`
 	if strings.Contains(upsertTail, "rl.client_request_id") {
 		t.Fatal("upsert tail must not reference undefined rl alias")
+	}
+	if !strings.Contains(upsertTail, "request_logs.client_request_id") {
+		t.Fatal("upsert tail must qualify the existing column with the request_logs table name to avoid ambiguity")
 	}
 }
 
