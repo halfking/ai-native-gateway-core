@@ -66,6 +66,14 @@ export interface CredentialModelStatus {
   model_disabled_reason?: string
 }
 
+export interface CredentialMonitorMeta {
+  cache_hit: boolean
+  generated_at: string
+  expires_at: string
+  ttl_seconds: number
+  server_duration_ms: number
+}
+
 export type ModelEffectiveState =
   | 'available'
   | 'manual_disabled'
@@ -95,7 +103,7 @@ export function getCredentialMonitorSummary(opts?: { provider_id?: number; crede
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
   if (opts?.credential_id) params.set('credential_id', String(opts.credential_id))
   const qs = params.toString()
-  return req<{ credentials: CredentialMonitorSummary[]; count: number }>(
+  return req<{ credentials: CredentialMonitorSummary[]; count: number; meta?: CredentialMonitorMeta }>(
     'GET',
     `/api/credentials/monitor-summary${qs ? `?${qs}` : ''}`
   )
