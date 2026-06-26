@@ -346,6 +346,46 @@ func httpHandler(deps *v2Deps) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// /v1/models — OpenAI 兼容的模型列表端点（2026-06-26 端点补全第一步）
+	// 返回所有活跃 provider 的 model 列表，按 OpenAI API 格式:
+	//   { "object": "list", "data": [{ "id": "...", "object": "model", ... }] }
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		providers, err := deps.ProviderStore.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		type openAIModel struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		}
+
+		data := make([]openAIModel, 0)
+		now := time.Now().Unix()
+		for _, p := range providers {
+			if p.Disabled {
+				continue
+			}
+			for _, m := range p.Models {
+				data = append(data, openAIModel{
+					ID:      m.Name,
+					Object:  "model",
+					Created: now,
+					OwnedBy: p.Name,
+				})
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data":   data,
+		})
+	})
+
 	return mux
 }
 

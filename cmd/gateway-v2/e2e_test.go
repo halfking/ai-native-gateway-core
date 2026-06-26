@@ -11,6 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
+	"github.com/kaixuan/llm-gateway-go/domains/provider"
 )
 
 // TestE2E_PipelineExecutes 端到端测试：HTTP 请求 → Pipeline → 响应
@@ -117,10 +118,10 @@ func TestE2E_ConfigFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &v2Config{
-				EnableSecurity: tt.enableSecurity,
-				EnableAudit:    tt.enableAudit,
-				EnableCache:    false,
-				EnableObserv:   false,
+				EnableSecurity:  tt.enableSecurity,
+				EnableAudit:     tt.enableAudit,
+				EnableCache:     false,
+				EnableObserv:    false,
 				EnableStreaming: false,
 			}
 			deps := newDeps(cfg)
@@ -238,4 +239,91 @@ func TestE2E_NoMemoryLeak(t *testing.T) {
 	_ = context.Background()
 	_ = time.Now()
 	_ = cache.NewInMemoryStore()
+}
+
+// TestE2E_ModelsEndpoint 验证 /v1/models 端点（OpenAI 兼容格式）
+func TestE2E_ModelsEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("list_all", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID      string `json:"id"`
+				Object  string `json:"object"`
+				OwnedBy string `json:"owned_by"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+
+		if resp.Object != "list" {
+			t.Errorf("expected object='list', got %q", resp.Object)
+		}
+		if len(resp.Data) == 0 {
+			t.Error("expected at least 1 model, got 0")
+		}
+		// 验证 default-cred 包含 gpt-4o (2026-06-26 升级)
+		hasGpt4o := false
+		for _, m := range resp.Data {
+			if m.ID == "gpt-4o" {
+				hasGpt4o = true
+				if m.Object != "model" {
+					t.Errorf("expected object='model', got %q", m.Object)
+				}
+			}
+		}
+		if !hasGpt4o {
+			t.Error("expected gpt-4o in model list (default-cred provider)")
+		}
+	})
+
+	t.Run("empty_provider_store", func(t *testing.T) {
+		// 用全新 store 验证空列表仍能正确响应
+		emptyDeps := &v2Deps{
+			ProviderStore: newEmptyProviderStore(),
+		}
+		// httpHandler 期望 Pipeline 存在，加一个最小 pipeline
+		emptyDeps.Pipeline = buildPipeline(&v2Deps{
+			Config:     cfg,
+			CacheStore: cache.NewInMemoryStore(),
+		})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		httpHandler(emptyDeps).ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var resp struct {
+			Object string `json:"object"`
+			Data   []any  `json:"data"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.Object != "list" {
+			t.Errorf("expected object='list', got %q", resp.Object)
+		}
+		if len(resp.Data) != 0 {
+			t.Errorf("expected 0 models, got %d", len(resp.Data))
+		}
+	})
+}
+
+// newEmptyProviderStore 创建一个空的 provider store（用于测试边界情况）
+func newEmptyProviderStore() *provider.InMemoryStore {
+	return provider.NewInMemoryStore()
 }
