@@ -46,23 +46,23 @@ import (
 
 // requestRow is one row from request_logs that we replay.
 type requestRow struct {
-	RequestID     string
-	TaskType      string
-	ChosenModel   string
-	Success       bool
-	LatencyMs     int
-	PromptTokens  int
-	RequestBody   []byte // raw JSONB
+	RequestID      string
+	TaskType       string
+	ChosenModel    string
+	Success        bool
+	LatencyMs      int
+	PromptTokens   int
+	RequestBody    []byte // raw JSONB
 	RequestPreview string
 }
 
 // replayResult is one (old → new) divergence.
 type replayResult struct {
-	From         string
-	To           string
-	Count        int
-	OrigSuccess  float64
-	NewEstimate  string // "n/a — model not run through new pipeline"
+	From        string
+	To          string
+	Count       int
+	OrigSuccess float64
+	NewEstimate string // "n/a — model not run through new pipeline"
 }
 
 func main() {
@@ -185,6 +185,7 @@ func buildPipeline(ctx context.Context, db *sql.DB, withLLM bool) (*autoroute.De
 
 	// Profile store: nil (no sticky writes during replay)
 	decider := autoroute.NewDecider(classifier, fallback, idx, nil)
+	decider.SetIntentCache(nil) // traffic-replay 不需要 session cache
 
 	// Override store: empty by default; admin can populate via DB
 	overrideStore := autoroute.NewOverrideStore(nil)
@@ -381,9 +382,10 @@ func isCrossFamily(a, b string) bool {
 //
 // Algorithm: strip everything from the first digit onward,
 // then strip a trailing dash. Examples:
-//   gpt-4o, gpt-4o-2024-08-06, gpt-4o-mini  →  all "gpt"
-//   claude-3-5-sonnet, claude-3-5-sonnet-20241022  →  both "claude"
-//   gemini-pro  →  "gemini" (no digit, no trimming)
+//
+//	gpt-4o, gpt-4o-2024-08-06, gpt-4o-mini  →  all "gpt"
+//	claude-3-5-sonnet, claude-3-5-sonnet-20241022  →  both "claude"
+//	gemini-pro  →  "gemini" (no digit, no trimming)
 func family(name string) string {
 	// Strip everything from the first digit onward
 	for i := 0; i < len(name); i++ {

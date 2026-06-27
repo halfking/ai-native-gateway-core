@@ -200,7 +200,7 @@ func (m *Manager) reclaimLoopRun(ctx context.Context, cfg reclaimConfig) {
 // whose holder has been silent for at least idleAfter.
 func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int, error) {
 	if m.client == nil {
-		return m.reclaimIdleSlotsMemory(ctx, cfg)
+		return 0, nil
 	}
 
 	totalReclaimed := 0
@@ -223,49 +223,6 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 	if err := iter.Err(); err != nil {
 		return totalReclaimed, err
 	}
-	return totalReclaimed, nil
-}
-
-// reclaimIdleSlotsMemory is the in-memory fallback (used when Redis is
-// unavailable, e.g., in unit tests). It walks memSlots and drops entries
-// that have been idle for at least idleAfter.
-func (m *Manager) reclaimIdleSlotsMemory(ctx context.Context, cfg reclaimConfig) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	now := time.Now()
-	cutoff := cfg.idleAfter
-	totalReclaimed := 0
-
-	// A slot is "idle" if its expiry is older than (now - cutoff).
-	// In memory mode, exp is the absolute expiry; an entry that was
-	// refreshed at time T has exp = T + slotTTLSeconds.
-	// So idle duration = (now - (exp - slotTTLSeconds)) = now - (last refresh).
-	// We approximate by checking if (slotTTL - remaining) > cutoff.
-	slotTTL := m.slotTTLSeconds()
-	for k, e := range m.memSlots {
-		lastRefresh := e.exp.Add(-time.Duration(slotTTL) * time.Second)
-		if now.Sub(lastRefresh) > cutoff {
-			delete(m.memSlots, k)
-			totalReclaimed++
-		}
-	}
-
-	// Also drop pins older than idleAfter (mirror of slot reclaim).
-	// A pin is expired when: now > exp (absolute expiry passed)
-	// We want: last activity (exp - pinTTL) was > cutoff ago
-	// So: now - (exp - pinTTL) > cutoff
-	// Which means: exp < now - cutoff + pinTTL
-	// But pins have same TTL as slots in this implementation, so we just check absolute expiry.
-	for k, e := range m.memPins {
-		if now.Before(e.exp) {
-			// pin still fresh (exp is in the future)
-			continue
-		}
-		// Pin has expired (now >= exp), delete it
-		delete(m.memPins, k)
-	}
-
 	return totalReclaimed, nil
 }
 

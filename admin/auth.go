@@ -5,17 +5,20 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
-	"strings"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
+
+var errPasswordChangeRequired = errors.New("password change required before accessing other APIs")
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -74,12 +77,17 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
 				authReq := SetAuthContext(r, &AuthContext{
-					UserID:   claims.UserID,
-					TenantID: claims.TenantID,
-					Username: claims.Username,
-					Role:     claims.Role,
-					IsJWT:    true,
+					UserID:             claims.UserID,
+					TenantID:           claims.TenantID,
+					Username:           claims.Username,
+					Role:               claims.Role,
+					IsJWT:              true,
+					MustChangePassword: claims.MustChangePassword,
 				})
+				if claims.MustChangePassword && !isPasswordChangeAllowedPath(r.URL.Path) {
+					writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
+					return
+				}
 				next(w, authReq)
 				return
 			}
@@ -104,6 +112,10 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 		// No valid JWT and no valid API key → 401
 		writeError(w, http.StatusUnauthorized, "authentication required")
 	}
+}
+
+func isPasswordChangeAllowedPath(path string) bool {
+	return path == "/api/auth/me" || path == "/api/auth/change-password"
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -136,18 +148,20 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		var u struct {
-			ID           int
-			TenantID     string
-			Username     string
-			PasswordHash string
-			DisplayName  string
-			Role         string
-			Enabled      bool
+			ID                 int
+			TenantID           string
+			Username           string
+			PasswordHash       string
+			DisplayName        string
+			Email              string
+			Role               string
+			Enabled            bool
+			MustChangePassword bool
 		}
 		err := h.db.QueryRow(ctx, `
-			SELECT id, tenant_id, username, password_hash, display_name, role, enabled
+			SELECT id, tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password
 			FROM users WHERE username = $1
-		`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Role, &u.Enabled)
+		`, req.Username).Scan(&u.ID, &u.TenantID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword)
 
 		if err == nil && u.Enabled {
 			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(req.Password)) == nil {
@@ -165,7 +179,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				//nolint:errcheck // best-effort exec, non-critical
 				h.db.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, u.ID)
 
-				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret)
+				token, expiresAt, signErr := SignToken(u.ID, u.TenantID, u.Username, u.Role, h.secret, u.MustChangePassword)
 				if signErr != nil {
 					slog.Error("handleLogin: sign jwt failed", "error", signErr)
 					writeError(w, http.StatusInternalServerError, "token generation failed")
@@ -178,12 +192,14 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 					"token_type":   "Bearer",
 					"expires_at":   expiresAt.Format(time.RFC3339),
 					"user": map[string]any{
-						"id":           u.ID,
-						"tenant_id":    u.TenantID,
-						"username":     u.Username,
-						"display_name": u.DisplayName,
-						"role":         u.Role,
-						"enabled":      u.Enabled,
+						"id":                   u.ID,
+						"tenant_id":            u.TenantID,
+						"username":             u.Username,
+						"display_name":         u.DisplayName,
+						"email":                u.Email,
+						"role":                 u.Role,
+						"enabled":              u.Enabled,
+						"must_change_password": u.MustChangePassword,
 					},
 				})
 				return

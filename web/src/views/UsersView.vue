@@ -2,9 +2,14 @@
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
-import { store, isReadOnlyMode } from '../store'
+import { store, isReadOnlyMode, isTenantAdmin } from '../store'
+import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
 
 const readOnly = computed(() => isReadOnlyMode())
+const tenantAdmin = computed(() => isTenantAdmin())
+const canCreateUsers = computed(() => !readOnly.value)
+const canResetPasswords = computed(() => !readOnly.value || tenantAdmin.value)
+const canDeleteUsers = computed(() => !readOnly.value)
 
 interface User {
   id: number
@@ -27,6 +32,12 @@ const resetPwdUser = ref<User | null>(null)
 const filterTenant = ref<string>('')
 const allTenants = ref<Tenant[]>([])
 const newPwd = ref('')
+const createConfirmPwd = ref('')
+const resetConfirmPwd = ref('')
+const createPasswordPolicy = computed(() => checkPasswordPolicy(form.value.password))
+const resetPasswordPolicy = computed(() => checkPasswordPolicy(newPwd.value))
+const createPasswordsMatch = computed(() => !createConfirmPwd.value || passwordsMatch(form.value.password, createConfirmPwd.value))
+const resetPasswordsMatch = computed(() => !resetConfirmPwd.value || passwordsMatch(newPwd.value, resetConfirmPwd.value))
 
 // Create form
 const form = ref({
@@ -59,6 +70,14 @@ async function handleCreate() {
     error.value = '用户名和密码不能为空'
     return
   }
+  if (!passwordsMatch(form.value.password, createConfirmPwd.value)) {
+    error.value = '新用户两次输入的密码不一致'
+    return
+  }
+  if (!createPasswordPolicy.value.valid) {
+    error.value = '新用户密码不符合复杂度要求'
+    return
+  }
   try {
     await createUser(form.value)
     showCreate.value = false
@@ -89,8 +108,12 @@ async function handleDelete(u: User) {
 }
 
 async function handleResetPwd() {
-  if (!resetPwdUser.value || newPwd.value.length < 8) {
-    error.value = '密码至少8个字符'
+  if (!resetPwdUser.value || !resetPasswordPolicy.value.valid) {
+    error.value = '密码不符合复杂度要求'
+    return
+  }
+  if (!passwordsMatch(newPwd.value, resetConfirmPwd.value)) {
+    error.value = '两次输入的新密码不一致'
     return
   }
   try {
@@ -111,6 +134,18 @@ function fmtDate(s: string | null) {
   return new Date(s).toLocaleString('zh-CN')
 }
 
+function closeCreateModal() {
+  showCreate.value = false
+  form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
+  createConfirmPwd.value = ''
+}
+
+function closeResetModal() {
+  resetPwdUser.value = null
+  newPwd.value = ''
+  resetConfirmPwd.value = ''
+}
+
 async function loadTenants() {
   try {
     allTenants.value = await getTenantsAdmin()
@@ -123,11 +158,11 @@ onMounted(() => { load(); loadTenants() })
   <div class="users-page">
     <div class="page-header">
       <h1>👤 用户管理</h1>
-      <button v-if="!readOnly" class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
+      <button v-if="canCreateUsers" class="btn btn-primary" @click="showCreate = true">+ 新建用户</button>
     </div>
 
     <div v-if="readOnly" class="alert alert-info" style="margin-bottom:12px">
-      📖 您是租户管理员，当前为只读模式。用户管理仅限查看，不能创建、编辑或删除用户。
+      📖 您是租户管理员，当前仅开放查看和重置本租户用户密码；创建、编辑、删除仍禁用。
     </div>
 
     <div class="filters">
@@ -176,8 +211,8 @@ onMounted(() => { load(); loadTenants() })
           </td>
           <td>{{ fmtDate(u.last_login_at) }}</td>
           <td>
-            <button v-if="!readOnly" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''">重置密码</button>
-            <button v-if="!readOnly && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">删除</button>
+            <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">重置密码</button>
+            <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">删除</button>
             <span v-else-if="readOnly" class="text-muted" style="font-size:12px;color:var(--muted)">—</span>
           </td>
         </tr>
@@ -185,7 +220,7 @@ onMounted(() => { load(); loadTenants() })
     </table>
 
     <!-- Create Modal -->
-    <div v-if="showCreate" class="modal-backdrop" @click.self="showCreate = false">
+    <div v-if="showCreate" class="modal-backdrop" @click.self="closeCreateModal">
       <div class="modal-card">
         <h3>新建用户</h3>
         <div class="form-group">
@@ -195,6 +230,23 @@ onMounted(() => { load(); loadTenants() })
         <div class="form-group">
           <label>密码 *</label>
           <input v-model="form.password" type="password" placeholder="至少8位" />
+          <div class="password-policy">
+            <div
+              v-for="item in createPasswordPolicy.requirements"
+              :key="item.key"
+              class="password-policy__item"
+              :class="item.passed ? 'is-pass' : 'is-pending'"
+            >
+              {{ item.passed ? '✓' : '○' }} {{ item.label }}
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>确认密码 *</label>
+          <input v-model="createConfirmPwd" type="password" placeholder="再次输入密码" />
+          <div v-if="createConfirmPwd" class="password-confirm" :class="createPasswordsMatch ? 'is-pass' : 'is-error'">
+            {{ createPasswordsMatch ? '✓ 两次输入一致' : '✕ 两次输入的密码不一致' }}
+          </div>
         </div>
         <div class="form-group">
           <label>显示名</label>
@@ -220,23 +272,40 @@ onMounted(() => { load(); loadTenants() })
           </select>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-primary" @click="handleCreate">创建</button>
-          <button class="btn btn-ghost" @click="showCreate = false">取消</button>
+          <button class="btn btn-primary" :disabled="!form.username || !createPasswordPolicy.valid || !passwordsMatch(form.password, createConfirmPwd)" @click="handleCreate">创建</button>
+          <button class="btn btn-ghost" @click="closeCreateModal">取消</button>
         </div>
       </div>
     </div>
 
     <!-- Reset Password Modal -->
-    <div v-if="resetPwdUser" class="modal-backdrop" @click.self="resetPwdUser = null">
+    <div v-if="resetPwdUser" class="modal-backdrop" @click.self="closeResetModal">
       <div class="modal-card">
         <h3>重置密码 — {{ resetPwdUser.username }}</h3>
         <div class="form-group">
           <label>新密码</label>
           <input v-model="newPwd" type="password" placeholder="至少8位" />
+          <div class="password-policy">
+            <div
+              v-for="item in resetPasswordPolicy.requirements"
+              :key="item.key"
+              class="password-policy__item"
+              :class="item.passed ? 'is-pass' : 'is-pending'"
+            >
+              {{ item.passed ? '✓' : '○' }} {{ item.label }}
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>确认新密码</label>
+          <input v-model="resetConfirmPwd" type="password" placeholder="再次输入新密码" />
+          <div v-if="resetConfirmPwd" class="password-confirm" :class="resetPasswordsMatch ? 'is-pass' : 'is-error'">
+            {{ resetPasswordsMatch ? '✓ 两次输入一致' : '✕ 两次输入的新密码不一致' }}
+          </div>
         </div>
         <div class="modal-actions">
-          <button class="btn btn-primary" @click="handleResetPwd">确认</button>
-          <button class="btn btn-ghost" @click="resetPwdUser = null">取消</button>
+          <button class="btn btn-primary" :disabled="!resetPasswordPolicy.valid || !passwordsMatch(newPwd, resetConfirmPwd)" @click="handleResetPwd">确认</button>
+          <button class="btn btn-ghost" @click="closeResetModal">取消</button>
         </div>
       </div>
     </div>
@@ -277,4 +346,33 @@ onMounted(() => { load(); loadTenants() })
 }
 .modal-card h3 { margin: 0 0 16px; font-size: 16px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+.password-policy {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.password-policy__item {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.password-confirm {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.is-pass {
+  color: #4ade80;
+}
+
+.is-pending {
+  color: var(--muted);
+}
+
+.is-error {
+  color: #f87171;
+}
 </style>

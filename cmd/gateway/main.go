@@ -40,6 +40,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
@@ -61,6 +62,24 @@ import (
 	upstream "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/redis/go-redis/v9"
 )
+
+// sessionAuditApprovalTimeoutFromEnv 读取 SESSION_AUDIT_APPROVAL_TIMEOUT
+// 环境变量并解析为 time.Duration。支持 "30s" / "15m" / "1h" 格式。
+// 无效输入或缺失时退化为 15m。2026-06-27 audit fix。
+func sessionAuditApprovalTimeoutFromEnv() time.Duration {
+	const def = 15 * time.Minute
+	v := os.Getenv("SESSION_AUDIT_APPROVAL_TIMEOUT")
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid SESSION_AUDIT_APPROVAL_TIMEOUT, using default",
+			"value", v, "default", def.String())
+		return def
+	}
+	return d
+}
 
 func main() {
 	// Round 39 (2026-06-16) — initialize OTel tracer.
@@ -721,6 +740,16 @@ func main() {
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
+
+		// 2026-06-27 session-audit: wire the approval manager so
+		// /api/admin/session-{audit,approvals}/* endpoints can serve
+		// queries and approve/reject decisions through the audit hook
+		// pipeline (ApprovalGateHook → approval_queue).
+		approvalTimeout := sessionAuditApprovalTimeoutFromEnv()
+		approvalMgr := sessionaudit.NewApprovalManager(dbConn.Pool(), approvalTimeout)
+		adminHandler.SetApprovalManager(approvalMgr)
+		slog.Info("session audit approval manager wired",
+			"timeout", approvalTimeout.String())
 		// settings-management: inject the DB-backed settings store so the
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
@@ -787,9 +816,10 @@ func main() {
 	var callHistoryAggregator *bg.CallHistoryAggregator
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
-	var modelProbe *bg.ModelProbeRunner
-	var passiveProbe *bg.PassiveProbeListener
-	var stickyCleaner *bg.StickyCleaner
+		var modelProbe *bg.ModelProbeRunner
+		var suspiciousProbe *bg.SuspiciousProbeRunner
+		var passiveProbe *bg.PassiveProbeListener
+		var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
 	var taxonomySync *bg.TaxonomySync
@@ -883,11 +913,24 @@ func main() {
 			if keyring != nil {
 				modelProbe.SetKeyring(keyring)
 			}
-			slog.Info("CHECKPOINT: before modelProbe.Start")
-			modelProbe.Start(context.Background())
-			slog.Info("CHECKPOINT: after modelProbe.Start")
+				slog.Info("CHECKPOINT: before modelProbe.Start")
+				modelProbe.Start(context.Background())
+				slog.Info("CHECKPOINT: after modelProbe.Start")
 
-			// v6 (2026-06-22): Layer 5 passive probe observer.
+				// 2026-06-28: Suspicious state auto-expiry probe runner.
+				// Manages the 2-hour state expiry lifecycle: marks available/
+				// unavailable states as suspicious after 2 hours, then probes
+				// them asynchronously with per-credential concurrency limit (2).
+				slog.Info("CHECKPOINT: before NewSuspiciousProbeRunner")
+				suspiciousProbe = bg.NewSuspiciousProbeRunner(dbConn.Pool(), fernetKey)
+				if keyring != nil {
+					suspiciousProbe.SetKeyring(keyring)
+				}
+				slog.Info("CHECKPOINT: before suspiciousProbe.Start")
+				suspiciousProbe.Start(context.Background())
+				slog.Info("CHECKPOINT: after suspiciousProbe.Start")
+
+				// v6 (2026-06-22): Layer 5 passive probe observer.
 			// Scans request_logs every 30s for failures, promotes to
 			// reviewing, and after the 5-min observation window resolves:
 			// still-failing → mark unreachable; recovered → clear.
@@ -1479,10 +1522,13 @@ func main() {
 	if credCycler != nil {
 		credCycler.Stop()
 	}
-	if modelProbe != nil {
-		modelProbe.Stop()
-	}
-	if passiveProbe != nil {
+		if modelProbe != nil {
+			modelProbe.Stop()
+		}
+		if suspiciousProbe != nil {
+			suspiciousProbe.Stop()
+		}
+		if passiveProbe != nil {
 		passiveProbe.Stop()
 	}
 	if taxonomySync != nil {
