@@ -18,12 +18,13 @@ import (
 // (JWT role check) which is the new critical path.
 func TestSuperAdminMiddleware_RejectsTenantAdminJWT(t *testing.T) {
 	// Build a JWT with role=tenant_admin and a known secret
-	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret")
+	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret", false)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
 
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 		w.WriteHeader(http.StatusOK)
@@ -44,12 +45,13 @@ func TestSuperAdminMiddleware_RejectsTenantAdminJWT(t *testing.T) {
 }
 
 func TestSuperAdminMiddleware_AllowsSuperAdminJWT(t *testing.T) {
-	token, _, err := SignToken(1, "default", "admin", "super_admin", "test-secret")
+	token, _, err := SignToken(1, "default", "admin", "super_admin", "test-secret", false)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
 
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 		w.WriteHeader(http.StatusOK)
@@ -70,7 +72,8 @@ func TestSuperAdminMiddleware_AllowsSuperAdminJWT(t *testing.T) {
 }
 
 func TestSuperAdminMiddleware_RejectsInvalidJWT(t *testing.T) {
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 	})
@@ -91,7 +94,8 @@ func TestSuperAdminMiddleware_RejectsInvalidJWT(t *testing.T) {
 }
 
 func TestSuperAdminMiddleware_RejectsNoAuth(t *testing.T) {
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 	})
@@ -107,12 +111,13 @@ func TestSuperAdminMiddleware_RejectsNoAuth(t *testing.T) {
 }
 
 func TestAdminMiddleware_AllowsTenantAdminJWT(t *testing.T) {
-	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret")
+	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret", false)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
 
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 	})
@@ -138,14 +143,15 @@ func TestAdminMiddleware_RejectsExpiredJWT(t *testing.T) {
 	//nolint:errcheck // test env, non-critical
 	defer os.Unsetenv("LLM_GATEWAY_JWT_EXPIRY")
 
-	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret")
+	token, _, err := SignToken(42, "default", "testuser", "tenant_admin", "test-secret", false)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
 	// Sleep so the token expires
 	time.Sleep(10 * time.Millisecond)
 
-	var nextCalled bool; _ = nextCalled
+	var nextCalled bool
+	_ = nextCalled
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
 	})

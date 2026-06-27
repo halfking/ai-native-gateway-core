@@ -311,10 +311,12 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(256) NOT NULL DEFAULT '',
     role VARCHAR(32) NOT NULL DEFAULT 'tenant_admin',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
     last_login_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;

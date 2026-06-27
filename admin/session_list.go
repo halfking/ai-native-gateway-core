@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"time"
 
@@ -27,12 +26,12 @@ type SessionSummary struct {
 	TimeEnd   string `json:"time_end"`
 	Duration  string `json:"duration"`
 
-	IsCompressed bool   `json:"is_compressed"`
+	IsCompressed        bool   `json:"is_compressed"`
 	CompressionStrategy string `json:"compression_strategy,omitempty"`
 
-	FirstUserMsg string `json:"first_user_msg,omitempty"`
-	LastResponse string `json:"last_response,omitempty"`
-	ErrorCount   int    `json:"error_count"`
+	FirstUserMsg string  `json:"first_user_msg,omitempty"`
+	LastResponse string  `json:"last_response,omitempty"`
+	ErrorCount   int     `json:"error_count"`
 	SuccessRate  float64 `json:"success_rate"`
 }
 
@@ -88,7 +87,7 @@ func (api *SessionListAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"status": "error",
+			"status":  "error",
 			"message": "Failed to load sessions",
 			"error":   err.Error(),
 		})
@@ -161,11 +160,11 @@ func (api *SessionListAPI) loadSessions(
 	sessions := make([]SessionSummary, 0, size)
 	for rows.Next() {
 		var (
-			sessionID                     string
-			reqCount, errCount            int
-			compressed                    bool
-			startTime, endTime            time.Time
-			model                         *string
+			sessionID          string
+			reqCount, errCount int
+			compressed         bool
+			startTime, endTime time.Time
+			model              *string
 		)
 		if err := rows.Scan(&sessionID, &reqCount, &errCount, &compressed, &startTime, &endTime, &model); err != nil {
 			continue
@@ -186,16 +185,16 @@ func (api *SessionListAPI) loadSessions(
 		durStr := formatDuration(duration)
 
 		sessions = append(sessions, SessionSummary{
-			SessionID:     sessionID,
-			TenantID:      tenantID,
-			RequestCount:  reqCount,
-			ErrorCount:    errCount,
-			SuccessRate:   successRate,
-			IsCompressed:  compressed,
-			ModelUsed:     modelUsed,
-			TimeStart:     startTime.Format("2006-01-02 15:04:05"),
-			TimeEnd:       endTime.Format("2006-01-02 15:04:05"),
-			Duration:      durStr,
+			SessionID:    sessionID,
+			TenantID:     tenantID,
+			RequestCount: reqCount,
+			ErrorCount:   errCount,
+			SuccessRate:  successRate,
+			IsCompressed: compressed,
+			ModelUsed:    modelUsed,
+			TimeStart:    startTime.Format("2006-01-02 15:04:05"),
+			TimeEnd:      endTime.Format("2006-01-02 15:04:05"),
+			Duration:     durStr,
 		})
 	}
 
@@ -221,26 +220,8 @@ func parseIntParam(s string, def int) int {
 	return v
 }
 
-func formatDuration(d time.Duration) string {
-	// Audit P2 fix (2026-06-22): use round-to-nearest-day instead of
-	// floor division so 23h59m -> "1d" (was "24h" because
-	// 23.98/24 = 0.99 floor 0, falling through to hours branch).
-	// Use math.Round to round to nearest whole day.
-	if d.Hours() >= 24 {
-		days := int(math.Round(d.Hours() / 24))
-		if days < 1 {
-			days = 1
-		}
-		return fmt.Sprintf("%dd", days)
-	}
-	if d.Hours() >= 1 {
-		return fmt.Sprintf("%.0fh", d.Hours())
-	}
-	if d.Minutes() >= 1 {
-		return fmt.Sprintf("%.0fm", d.Minutes())
-	}
-	return fmt.Sprintf("%.0fs", d.Seconds())
-}
+// formatDuration 已被提取到 admin/helpers.go，避免与 session_approval.go
+// 的同名定义冲突（2026-06-27 audit fix）。
 
 // ── Session Detail API (v4, 2026-06-21) ────────────────────────────────
 // GET /api/admin/sessions/:id/detail?tenant_id=default
@@ -252,15 +233,15 @@ type SessionDetail struct {
 }
 
 type RequestLogBrief struct {
-	RequestID      string `json:"request_id"`
-	Time           string `json:"time"`
-	ClientModel    string `json:"client_model"`
-	OutboundModel  string `json:"outbound_model"`
-	Success        bool   `json:"success"`
-	PromptTokens   int    `json:"prompt_tokens"`
-	CompletionTokens int  `json:"completion_tokens"`
-	TotalTokens    int    `json:"total_tokens"`
-	LatencyMs      int    `json:"latency_ms"`
+	RequestID           string `json:"request_id"`
+	Time                string `json:"time"`
+	ClientModel         string `json:"client_model"`
+	OutboundModel       string `json:"outbound_model"`
+	Success             bool   `json:"success"`
+	PromptTokens        int    `json:"prompt_tokens"`
+	CompletionTokens    int    `json:"completion_tokens"`
+	TotalTokens         int    `json:"total_tokens"`
+	LatencyMs           int    `json:"latency_ms"`
 	CompressionStrategy string `json:"compression_strategy,omitempty"`
 }
 
@@ -301,8 +282,8 @@ func (api *SessionListAPI) HandleDetail(w http.ResponseWriter, r *http.Request) 
 	}
 	if detail == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
-			"status":    "error",
-			"message":   "Session not found",
+			"status":     "error",
+			"message":    "Session not found",
 			"session_id": sessionID,
 		})
 		return
@@ -394,11 +375,11 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 	logs := make([]RequestLogBrief, 0)
 	for rows.Next() {
 		var (
-			rid, cModel, oModel string
-			ts                  time.Time
-			ok                  bool
+			rid, cModel, oModel                string
+			ts                                 time.Time
+			ok                                 bool
 			pTokens, cTokens, totalTokens, lat int
-			cs                  *string
+			cs                                 *string
 		)
 		if err := rows.Scan(&rid, &ts, &cModel, &oModel, &ok,
 			&pTokens, &cTokens, &totalTokens, &lat, &cs); err != nil {
@@ -409,15 +390,15 @@ func (api *SessionListAPI) loadSessionDetail(ctx context.Context, q pgx.Tx, sess
 			csStr = *cs
 		}
 		logs = append(logs, RequestLogBrief{
-			RequestID:      rid,
-			Time:           ts.Format("2006-01-02 15:04:05"),
-			ClientModel:    cModel,
-			OutboundModel:  oModel,
-			Success:        ok,
-			PromptTokens:   pTokens,
-			CompletionTokens: cTokens,
-			TotalTokens:    totalTokens,
-			LatencyMs:      lat,
+			RequestID:           rid,
+			Time:                ts.Format("2006-01-02 15:04:05"),
+			ClientModel:         cModel,
+			OutboundModel:       oModel,
+			Success:             ok,
+			PromptTokens:        pTokens,
+			CompletionTokens:    cTokens,
+			TotalTokens:         totalTokens,
+			LatencyMs:           lat,
 			CompressionStrategy: csStr,
 		})
 	}

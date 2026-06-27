@@ -14,6 +14,7 @@
 | [phase1.5-revised-plan-20260625.md](./phase1.5-revised-plan-20260625.md) | Phase 1.5 修订计划 R1.1-R1.13 | ✅ 已完成 |
 | [phase1-execution-audit-v2-revised-20260625.md](./phase1-execution-audit-v2-revised-20260625.md) | 执行审计 v2 | ✅ 已完成 |
 | [phase2-r112-local-test-plan.md](./phase2-r112-local-test-plan.md) | R1.12 本地测试方案 | ✅ 已完成 |
+| [../../../../docs/architecture/2026-06-27-routing-cache-audit-fix-checklist.md](../../../../docs/architecture/2026-06-27-routing-cache-audit-fix-checklist.md) | Routing Cache 审计修正执行清单 | 🆕 待执行 |
 | [_to-be-deprecated/README.md](../../_to-be-deprecated/README.md) | R1.13 待删除代码迁移说明 | ✅ 已完成 |
 | [_to-be-deprecated/MIGRATION-MANIFEST.md](../../_to-be-deprecated/MIGRATION-MANIFEST.md) | 14 个老包详细迁移清单 | ✅ 已完成 |
 

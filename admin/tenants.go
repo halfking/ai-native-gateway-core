@@ -20,13 +20,13 @@ type tenantInfo struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 
 	// Aggregate stats (populated for list/detail)
-	UserCount       int     `json:"user_count,omitempty"`
-	APIKeyCount     int     `json:"api_key_count,omitempty"`
-	Requests7d      int64   `json:"requests_7d,omitempty"`
-	Tokens7d        int64   `json:"tokens_7d,omitempty"`
-	Credits7d       int64   `json:"credits_7d,omitempty"`
-	Cost7d          float64 `json:"cost_7d_usd,omitempty"`
-	TotalRequests   int64   `json:"total_requests,omitempty"`
+	UserCount     int     `json:"user_count,omitempty"`
+	APIKeyCount   int     `json:"api_key_count,omitempty"`
+	Requests7d    int64   `json:"requests_7d,omitempty"`
+	Tokens7d      int64   `json:"tokens_7d,omitempty"`
+	Credits7d     int64   `json:"credits_7d,omitempty"`
+	Cost7d        float64 `json:"cost_7d_usd,omitempty"`
+	TotalRequests int64   `json:"total_requests,omitempty"`
 }
 
 type createTenantRequest struct {
@@ -367,12 +367,12 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 	}
 	var admin userInfo
 	err = tx.QueryRow(ctx, `
-		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, enabled)
-		VALUES ($1, $2, $3, $4, $5, 'tenant_admin', TRUE)
-		RETURNING id, tenant_id, username, display_name, email, role, enabled, created_at
+		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, enabled, must_change_password)
+		VALUES ($1, $2, $3, $4, $5, 'tenant_admin', TRUE, TRUE)
+		RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, created_at
 	`, req.Code, adminUsername, string(hash), displayName, req.ContactEmail).Scan(
 		&admin.ID, &admin.TenantID, &admin.Username, &admin.DisplayName, &admin.Email,
-		&admin.Role, &admin.Enabled, &admin.CreatedAt,
+		&admin.Role, &admin.Enabled, &admin.MustChangePassword, &admin.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -390,10 +390,10 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 
 	t.UserCount = 1
 	h.auditLog(getActorFromRequest(r), "tenant.create", "tenant", 0, map[string]any{
-		"code":           t.Code,
-		"name":           t.Name,
-		"status":         t.Status,
-		"default_admin":  admin.Username,
+		"code":          t.Code,
+		"name":          t.Name,
+		"status":        t.Status,
+		"default_admin": admin.Username,
 	})
 	h.auditLog(getActorFromRequest(r), "user.create", "user", admin.ID, map[string]any{
 		"username": admin.Username,
@@ -526,9 +526,9 @@ func (h *Handler) updateTenant(w http.ResponseWriter, r *http.Request, code stri
 		}
 	}
 	h.auditLog(getActorFromRequest(r), action, "tenant", 0, map[string]any{
-		"code":         t.Code,
-		"new_status":   t.Status,
-		"update_keys":  sets,
+		"code":        t.Code,
+		"new_status":  t.Status,
+		"update_keys": sets,
 	})
 	writeJSON(w, http.StatusOK, t)
 }
@@ -548,7 +548,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 	}
 
 	rows, err := h.db.Query(ctx, `
-		SELECT id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at
+		SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at
 		FROM users WHERE tenant_id = $1 ORDER BY id
 	`, code)
 	if err != nil {
@@ -561,7 +561,7 @@ func (h *Handler) listTenantUsers(w http.ResponseWriter, r *http.Request, code s
 	for rows.Next() {
 		var u userInfo
 		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email,
-			&u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			&u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
 			continue
 		}
 		users = append(users, u)
@@ -603,19 +603,19 @@ func (h *Handler) listTenantKeys(w http.ResponseWriter, r *http.Request, code st
 	defer rows.Close()
 
 	type tenantKeyInfo struct {
-		ID         int     `json:"id"`
-		TenantID   string  `json:"tenant_id"`
-		KeyPrefix  string  `json:"key_prefix"`
-		KeyAlias   string  `json:"key_alias"`
-		OwnerUser  string  `json:"owner_user"`
-		Enabled    bool    `json:"enabled"`
-		Status     string  `json:"status"`
-		AppID      int     `json:"application_id"`
-		AppCode    string  `json:"application_code"`
-		TotalReqs  int64   `json:"total_requests"`
-		TotalCost  float64 `json:"total_cost_usd"`
-		ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-		CreatedAt  time.Time `json:"created_at"`
+		ID        int        `json:"id"`
+		TenantID  string     `json:"tenant_id"`
+		KeyPrefix string     `json:"key_prefix"`
+		KeyAlias  string     `json:"key_alias"`
+		OwnerUser string     `json:"owner_user"`
+		Enabled   bool       `json:"enabled"`
+		Status    string     `json:"status"`
+		AppID     int        `json:"application_id"`
+		AppCode   string     `json:"application_code"`
+		TotalReqs int64      `json:"total_requests"`
+		TotalCost float64    `json:"total_cost_usd"`
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+		CreatedAt time.Time  `json:"created_at"`
 	}
 
 	keys := make([]tenantKeyInfo, 0)
@@ -660,18 +660,17 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	}
 
 	type tenantStats struct {
-		Days            int                    `json:"days"`
-		TotalRequests   int64                  `json:"total_requests"`
-		TotalTokens     int64                  `json:"total_tokens"`
-		TotalCredits    int64                  `json:"total_credits"`
-		TotalCost       float64                `json:"total_cost_usd"`
-		UniqueKeys      int                    `json:"unique_keys"`
-		UniqueModels    int                    `json:"unique_models"`
-		UniqueApps      int                    `json:"unique_apps"`
-		ByModel         []tenantModelBreakdown `json:"by_model"`
-		ByApplication   []tenantAppBreakdown   `json:"by_application"`
+		Days          int                    `json:"days"`
+		TotalRequests int64                  `json:"total_requests"`
+		TotalTokens   int64                  `json:"total_tokens"`
+		TotalCredits  int64                  `json:"total_credits"`
+		TotalCost     float64                `json:"total_cost_usd"`
+		UniqueKeys    int                    `json:"unique_keys"`
+		UniqueModels  int                    `json:"unique_models"`
+		UniqueApps    int                    `json:"unique_apps"`
+		ByModel       []tenantModelBreakdown `json:"by_model"`
+		ByApplication []tenantAppBreakdown   `json:"by_application"`
 	}
-
 
 	var s tenantStats
 	s.Days = days

@@ -80,49 +80,38 @@ func nodeKey(credentialID int, model string) string {
 // GetNodeState reads node health state from Redis.
 // Returns a zero-value state (never nil) when no key exists.
 func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model string) (*NodeState, error) {
-	if m.client != nil {
-		key := nodeKey(credentialID, model)
-		data, err := m.client.Get(ctx, key).Result()
-		if err == redis.Nil {
-			return newZeroNodeState(credentialID, model), nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("get node state: %w", err)
-		}
+	if m.client == nil {
+		return newZeroNodeState(credentialID, model), nil
+	}
+	key := nodeKey(credentialID, model)
+	data, err := m.client.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return newZeroNodeState(credentialID, model), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get node state: %w", err)
+	}
 
-		var state NodeState
-		if err := json.Unmarshal([]byte(data), &state); err != nil {
-			return nil, fmt.Errorf("unmarshal node state: %w", err)
-		}
-		if state.CredentialID == 0 {
-			state.CredentialID = credentialID
-		}
-		if state.Model == "" {
-			state.Model = model
-		}
-		if state.Disabled {
-			before := state.Disabled
-			state.recoverIfCooldownExpired(time.Now().Unix())
-			if before && !state.Disabled {
-				if err := m.SetNodeState(ctx, &state); err != nil {
-					return nil, err
-				}
+	var state NodeState
+	if err := json.Unmarshal([]byte(data), &state); err != nil {
+		return nil, fmt.Errorf("unmarshal node state: %w", err)
+	}
+	if state.CredentialID == 0 {
+		state.CredentialID = credentialID
+	}
+	if state.Model == "" {
+		state.Model = model
+	}
+	if state.Disabled {
+		before := state.Disabled
+		state.recoverIfCooldownExpired(time.Now().Unix())
+		if before && !state.Disabled {
+			if err := m.SetNodeState(ctx, &state); err != nil {
+				return nil, err
 			}
 		}
-		return &state, nil
 	}
-
-	// Memory fallback
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if entry, ok := m.memNodeStates[nodeMemKey{credentialID, model}]; ok {
-		if entry.Disabled {
-			entry.recoverIfCooldownExpired(time.Now().Unix())
-			m.memNodeStates[nodeMemKey{credentialID, model}] = entry
-		}
-		return &entry, nil
-	}
-	return newZeroNodeState(credentialID, model), nil
+	return &state, nil
 }
 
 // SetNodeState stores node health state directly.
@@ -131,23 +120,16 @@ func (m *Manager) SetNodeState(ctx context.Context, state *NodeState) error {
 	if state == nil {
 		return nil
 	}
-	if m.client != nil {
-		data, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("marshal node state: %w", err)
-		}
-		if err := m.client.Set(ctx, nodeKey(state.CredentialID, state.Model), data, time.Duration(nodeStateTTLSec)*time.Second).Err(); err != nil {
-			return fmt.Errorf("set node state: %w", err)
-		}
+	if m.client == nil {
 		return nil
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.memNodeStates == nil {
-		m.memNodeStates = make(map[nodeMemKey]NodeState)
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal node state: %w", err)
 	}
-	m.memNodeStates[nodeMemKey{credentialID: state.CredentialID, model: state.Model}] = *state
+	if err := m.client.Set(ctx, nodeKey(state.CredentialID, state.Model), data, time.Duration(nodeStateTTLSec)*time.Second).Err(); err != nil {
+		return fmt.Errorf("set node state: %w", err)
+	}
 	return nil
 }
 
@@ -165,31 +147,24 @@ func (m *Manager) recordNodeOutcome(ctx context.Context, credentialID int, model
 	if !m.Enabled() {
 		return nil
 	}
-	if m.client != nil {
-		key := nodeKey(credentialID, model)
-		now := time.Now().Unix()
-		_, err := recordNodeOutcomeScript.Run(ctx, m.client,
-			[]string{key},
-			kind,
-			requestID,
-			errorKind,
-			now,
-			nodeWindowSeconds,
-			nodeFailStreakLimit,
-			nodeDisabledCooldownSec,
-		).Result()
-		if err != nil {
-			return fmt.Errorf("record node outcome: %w", err)
-		}
+	if m.client == nil {
 		return nil
 	}
-
-	// Memory fallback
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	state := m.getOrCreateMemNodeStateLocked(credentialID, model)
-	state.recordOutcome(kind, requestID, errorKind, time.Now())
-	m.memNodeStates[nodeMemKey{credentialID: credentialID, model: model}] = *state
+	key := nodeKey(credentialID, model)
+	now := time.Now().Unix()
+	_, err := recordNodeOutcomeScript.Run(ctx, m.client,
+		[]string{key},
+		kind,
+		requestID,
+		errorKind,
+		now,
+		nodeWindowSeconds,
+		nodeFailStreakLimit,
+		nodeDisabledCooldownSec,
+	).Result()
+	if err != nil {
+		return fmt.Errorf("record node outcome: %w", err)
+	}
 	return nil
 }
 
@@ -199,48 +174,6 @@ func newZeroNodeState(credentialID int, model string) *NodeState {
 		Model:        model,
 		SlideWindow:  []NodeRecord{},
 	}
-}
-
-// recordOutcome is the Go-side equivalent of the Lua script logic,
-// used by the memory fallback path.
-func (n *NodeState) recordOutcome(kind, requestID, errorKind string, now time.Time) {
-	nowUnix := now.Unix()
-	n.pruneWindow(nowUnix)
-
-	rec := NodeRecord{
-		RequestID: requestID,
-		Success:   kind == "success",
-		Timestamp: nowUnix,
-	}
-	if errorKind != "" {
-		rec.ErrorKind = errorKind
-	}
-	n.SlideWindow = append(n.SlideWindow, rec)
-
-	if kind == "success" {
-		n.SuccessCount++
-		n.LastSuccessAt = nowUnix
-	} else {
-		n.FailureCount++
-		n.LastFailureAt = nowUnix
-	}
-
-	streak := 0
-	for i := len(n.SlideWindow) - 1; i >= 0; i-- {
-		if !n.SlideWindow[i].Success {
-			streak++
-		} else {
-			break
-		}
-	}
-
-	if streak >= nodeFailStreakLimit && !n.Disabled {
-		n.Disabled = true
-		n.DisabledUntil = nowUnix + nodeDisabledCooldownSec
-		n.DisabledReason = fmt.Sprintf("consecutive %d failures", nodeFailStreakLimit)
-	}
-
-	n.recoverIfCooldownExpired(nowUnix)
 }
 
 func (n *NodeState) pruneWindow(nowUnix int64) {
@@ -262,28 +195,6 @@ func (n *NodeState) recoverIfCooldownExpired(nowUnix int64) {
 		n.DisabledUntil = 0
 		n.DisabledReason = ""
 	}
-}
-
-// nodeMemKey identifies a node state in the memory map.
-type nodeMemKey struct {
-	credentialID int
-	model        string
-}
-
-// getOrCreateMemNodeStateLocked returns existing or zero-value node state.
-// Caller must hold m.mu.
-func (m *Manager) getOrCreateMemNodeStateLocked(credentialID int, model string) *NodeState {
-	if m.memNodeStates == nil {
-		m.memNodeStates = make(map[nodeMemKey]NodeState)
-	}
-	key := nodeMemKey{credentialID, model}
-	state, ok := m.memNodeStates[key]
-	if !ok {
-		state = *newZeroNodeState(credentialID, model)
-	}
-	state.CredentialID = credentialID
-	state.Model = model
-	return &state
 }
 
 const (

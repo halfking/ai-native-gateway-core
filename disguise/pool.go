@@ -8,19 +8,29 @@
 package disguise
 
 import (
+	"context"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Pool is a thread-safe rotating pool of header values.
 type Pool struct {
-	mu          sync.RWMutex
-	agents      []string
-	languages   []string
-	lastRotate  time.Time
-	rotateEvery time.Duration
+	redis       *redis.Client // redis: disguise:ua / disguise:lang / disguise:last_rotate
+	mu          sync.RWMutex  // config: protects local seed fallback snapshots
+	agents      []string      // config: local seed UA pool when Redis is unavailable
+	languages   []string      // config: local seed language pool when Redis is unavailable
+	lastRotate  time.Time     // config: local fallback rotate timestamp
+	rotateEvery time.Duration // config: rotation interval
 }
+
+const (
+	redisUAKey         = "llmgw:disguise:ua:active"
+	redisLanguageKey   = "llmgw:disguise:lang:active"
+	redisLastRotateKey = "llmgw:disguise:meta:last_rotate"
+)
 
 // DefaultPool is the package-level pool used by main.go.
 //
@@ -45,16 +55,11 @@ func NewPool(rotateInterval time.Duration) *Pool {
 	}
 }
 
-// NewRedisPool is a compatibility constructor for the gateway wiring.
-//
-// The current disguise implementation is process-local: it exposes a
-// deterministic slot -> headers mapping plus periodic reshuffle, but it
-// does not need Redis to function correctly. main.go may still pass the
-// shared redis client so future implementations can persist pool state.
-// For now we intentionally ignore the client and return a normal in-memory
-// pool with the requested rotation interval.
-func NewRedisPool(_ any, rotateInterval time.Duration) *Pool {
-	return NewPool(rotateInterval)
+func NewRedisPool(client *redis.Client, rotateInterval time.Duration) *Pool {
+	p := NewPool(rotateInterval)
+	p.redis = client
+	p.ensureRedisSeeded(context.Background())
+	return p
 }
 
 // Headers returns a snapshot of "User-Agent" and "Accept-Language"
@@ -71,6 +76,9 @@ func (p *Pool) Headers() map[string]string {
 			"User-Agent":      "",
 			"Accept-Language": "",
 		}
+	}
+	if headers, ok := p.redisHeadersForSlot(context.Background(), -1); ok {
+		return headers
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -99,6 +107,9 @@ func (p *Pool) HeadersForSlot(slot int) map[string]string {
 			"Accept-Language": "",
 		}
 	}
+	if headers, ok := p.redisHeadersForSlot(context.Background(), slot); ok {
+		return headers
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if slot < 0 {
@@ -117,6 +128,9 @@ func (p *Pool) HeadersForSlot(slot int) map[string]string {
 // passed since the last rotation.
 func (p *Pool) MaybeRotate() {
 	if p == nil {
+		return
+	}
+	if p.redisMaybeRotate(context.Background()) {
 		return
 	}
 	p.mu.RLock()
@@ -144,6 +158,9 @@ func (p *Pool) Stats() map[string]interface{} {
 	if p == nil {
 		return map[string]interface{}{"enabled": false}
 	}
+	if stats, ok := p.redisStats(context.Background()); ok {
+		return stats
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return map[string]interface{}{
@@ -153,6 +170,120 @@ func (p *Pool) Stats() map[string]interface{} {
 		"last_rotate":     p.lastRotate.Format(time.RFC3339),
 		"rotate_interval": p.rotateEvery.String(),
 	}
+}
+
+func (p *Pool) ensureRedisSeeded(ctx context.Context) {
+	if p == nil || p.redis == nil {
+		return
+	}
+	if n, err := p.redis.LLen(ctx, redisUAKey).Result(); err == nil && n > 0 {
+		return
+	}
+	pipe := p.redis.TxPipeline()
+	pipe.Del(ctx, redisUAKey, redisLanguageKey)
+	uaValues := make([]interface{}, 0, len(defaultUserAgents))
+	for _, ua := range defaultUserAgents {
+		uaValues = append(uaValues, ua)
+	}
+	langValues := make([]interface{}, 0, len(defaultAcceptLanguages))
+	for _, lang := range defaultAcceptLanguages {
+		langValues = append(langValues, lang)
+	}
+	if len(uaValues) > 0 {
+		pipe.RPush(ctx, redisUAKey, uaValues...)
+	}
+	if len(langValues) > 0 {
+		pipe.RPush(ctx, redisLanguageKey, langValues...)
+	}
+	pipe.Set(ctx, redisLastRotateKey, time.Now().UTC().Format(time.RFC3339), 0)
+	_, _ = pipe.Exec(ctx)
+}
+
+func (p *Pool) redisHeadersForSlot(ctx context.Context, slot int) (map[string]string, bool) {
+	if p == nil || p.redis == nil {
+		return nil, false
+	}
+	p.ensureRedisSeeded(ctx)
+	uaCount, err := p.redis.LLen(ctx, redisUAKey).Result()
+	if err != nil || uaCount <= 0 {
+		return nil, false
+	}
+	langCount, err := p.redis.LLen(ctx, redisLanguageKey).Result()
+	if err != nil || langCount <= 0 {
+		return nil, false
+	}
+	if slot < 0 {
+		slot = rand.Intn(int(uaCount))
+	}
+	ua, err := p.redis.LIndex(ctx, redisUAKey, int64(slot)%uaCount).Result()
+	if err != nil {
+		return nil, false
+	}
+	lang, err := p.redis.LIndex(ctx, redisLanguageKey, int64(slot)%langCount).Result()
+	if err != nil {
+		return nil, false
+	}
+	return map[string]string{
+		"User-Agent":      ua,
+		"Accept-Language": lang,
+	}, true
+}
+
+func (p *Pool) redisMaybeRotate(ctx context.Context) bool {
+	if p == nil || p.redis == nil {
+		return false
+	}
+	p.ensureRedisSeeded(ctx)
+	lastRotateRaw, err := p.redis.Get(ctx, redisLastRotateKey).Result()
+	if err != nil && err != redis.Nil {
+		return false
+	}
+	if lastRotateRaw != "" {
+		if lastRotate, parseErr := time.Parse(time.RFC3339, lastRotateRaw); parseErr == nil {
+			if time.Since(lastRotate) < p.rotateEvery {
+				return true
+			}
+		}
+	}
+	rotateScript := redis.NewScript(`
+		local uaKey = KEYS[1]
+		local langKey = KEYS[2]
+		local rotateKey = KEYS[3]
+		local now = ARGV[1]
+		local ua = redis.call('RPOP', uaKey)
+		if ua then redis.call('LPUSH', uaKey, ua) end
+		local lang = redis.call('RPOP', langKey)
+		if lang then redis.call('LPUSH', langKey, lang) end
+		redis.call('SET', rotateKey, now)
+		return 1
+	`)
+	if _, err := rotateScript.Run(ctx, p.redis, []string{redisUAKey, redisLanguageKey, redisLastRotateKey}, time.Now().UTC().Format(time.RFC3339)).Result(); err != nil {
+		return false
+	}
+	return true
+}
+
+func (p *Pool) redisStats(ctx context.Context) (map[string]interface{}, bool) {
+	if p == nil || p.redis == nil {
+		return nil, false
+	}
+	p.ensureRedisSeeded(ctx)
+	uaCount, err := p.redis.LLen(ctx, redisUAKey).Result()
+	if err != nil {
+		return nil, false
+	}
+	langCount, err := p.redis.LLen(ctx, redisLanguageKey).Result()
+	if err != nil {
+		return nil, false
+	}
+	lastRotate, _ := p.redis.Get(ctx, redisLastRotateKey).Result()
+	return map[string]interface{}{
+		"enabled":         true,
+		"agent_count":     int(uaCount),
+		"language_count":  int(langCount),
+		"last_rotate":     lastRotate,
+		"rotate_interval": p.rotateEvery.String(),
+	}, true
 }
 
 // defaultUserAgents — 50+ real browser UA strings, no impersonation.
