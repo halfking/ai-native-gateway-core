@@ -13,6 +13,7 @@ export interface UserInfo {
   email: string
   role: string
   enabled: boolean
+  must_change_password?: boolean
 }
 
 export const store = reactive({
@@ -76,6 +77,14 @@ export function setUserInfo(user: UserInfo | null) {
   } else {
     localStorage.removeItem(USER_KEY)
   }
+}
+
+export function clearMustChangePasswordFlag() {
+  if (!store.userInfo) return
+  setUserInfo({
+    ...store.userInfo,
+    must_change_password: false,
+  })
 }
 
 export function clearJwt() {

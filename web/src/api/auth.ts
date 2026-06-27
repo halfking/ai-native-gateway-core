@@ -14,12 +14,12 @@ import type { UserInfo } from './_core'
 export interface LoginResponse {
   access_token?: string
   token_type?: string
-  expires_in?: number
+  expires_at?: string
   user?: UserInfo
 
-  api_key: string
-  key_prefix: string
-  message: string
+  api_key?: string
+  key_prefix?: string
+  message?: string
 }
 
 export function login(username: string, password: string) {

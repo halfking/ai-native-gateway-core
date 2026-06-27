@@ -59,7 +59,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '租户用户',
     items: [
       { path: '/tenants', label: '租户管理', icon: '🏢', super: true, hideForTenant: true },
-      { path: '/users', label: '用户管理', icon: '👤', platformOps: true, hideForTenant: true },
+      { path: '/users', label: '用户管理', icon: '👤' },
       { path: '/keys', label: 'API 密钥', icon: '🔑' },
       { path: '/key-applications', label: '密钥申请', icon: '📬', super: true, hideForTenant: true },
       { path: '/audit-logs', label: '审计日志', icon: '📋', super: true, hideForTenant: true },

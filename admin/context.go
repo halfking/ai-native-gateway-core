@@ -10,11 +10,12 @@ type authContextKey struct{}
 
 // AuthContext holds the authenticated identity for the current request.
 type AuthContext struct {
-	UserID   int    // 0 for legacy admin key auth
-	TenantID string // tenant_id from JWT or "default" for legacy
-	Username string // username from JWT or "admin" for legacy
-	Role     string // super_admin | tenant_admin | admin_key
-	IsJWT    bool   // true if authenticated via JWT
+	UserID             int    // 0 for legacy admin key auth
+	TenantID           string // tenant_id from JWT or "default" for legacy
+	Username           string // username from JWT or "admin" for legacy
+	Role               string // super_admin | tenant_admin | admin_key
+	IsJWT              bool   // true if authenticated via JWT
+	MustChangePassword bool
 }
 
 // SetAuthContext stores the AuthContext in the request context.
@@ -81,4 +82,18 @@ func RequireSuperAdminForWrite(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+// ApprovalCallerTenantID（2026-06-27 audit fix）返回传给 ApprovalManager
+// 的 tenant_id 参数，用于决定是否触发跨租户 RLS bypass：
+//   - tenant_admin → 返回自己 tenant_id，触发 RLS 兜底
+//   - super_admin / admin_key → 返回空字符串，让 ApprovalManager 跳过
+//     应用层 tenant 校验（事务内不设 GUC，RLS 也不限制）
+//
+// 这样 superadmin 才能跨租户审批，tenant_admin 仍被自己 tenant 锁住。
+func ApprovalCallerTenantID(r *http.Request) string {
+	if IsSuperAdminOrLegacy(r) {
+		return "" // 不传 tenant → ApprovalManager 内部无 RLS 过滤
+	}
+	return GetTenantID(r)
 }

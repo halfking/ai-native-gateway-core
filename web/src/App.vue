@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { store, clearAll, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
+import { store, clearAll, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
 import LoginModal from './components/LoginModal.vue'
+import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
@@ -12,6 +13,9 @@ const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
 const { collapsed, toggleSidebar } = useSidebar()
+const showChangePassword = ref(false)
+const passwordSuccessMessage = ref('')
+const mustChangePassword = computed(() => !!store.jwtToken && !!store.userInfo?.must_change_password)
 
 const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey))
 const isSuperAdmin = computed(() => checkSuperAdmin())
@@ -79,6 +83,17 @@ watch(
 )
 
 watch(
+  mustChangePassword,
+  (required) => {
+    if (required) {
+      passwordSuccessMessage.value = ''
+      showChangePassword.value = true
+    }
+  },
+  { immediate: true },
+)
+
+watch(
   () => route.query.login,
   (login) => {
     if (login && !isLoggedIn.value) openLogin()
@@ -89,6 +104,17 @@ watch(
 function logout() {
   clearAll()
   router.push('/')
+}
+
+function openChangePassword() {
+  passwordSuccessMessage.value = ''
+  showChangePassword.value = true
+}
+
+function handleChangePasswordSuccess() {
+  clearMustChangePasswordFlag()
+  showChangePassword.value = false
+  passwordSuccessMessage.value = '密码修改成功'
 }
 </script>
 
@@ -187,6 +213,7 @@ function logout() {
           {{ collapsed ? '»' : '«' }}
         </button>
         <div class="main-header-right">
+          <div v-if="passwordSuccessMessage" class="alert alert-success header-alert">{{ passwordSuccessMessage }}</div>
           <div class="header-meta">
             <template v-if="store.userInfo">
               <span class="user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
@@ -202,6 +229,7 @@ function logout() {
               </template>
             </template>
           </div>
+          <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">修改密码</button>
           <button class="btn btn-ghost btn-sm" @click="logout">退出</button>
         </div>
       </header>
@@ -236,6 +264,7 @@ function logout() {
     </main>
     <LoginModal v-model="showLoginModal" />
   </div>
+  <ChangePasswordDialog v-model="showChangePassword" :forced="mustChangePassword" @success="handleChangePasswordSuccess" />
 </template>
 
 <style scoped>
@@ -253,6 +282,12 @@ function logout() {
   display: flex;
   flex-direction: column;
   transition: width 0.2s ease;
+}
+
+.header-alert {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .app-layout.sidebar-collapsed .sidebar {
@@ -517,8 +552,8 @@ function logout() {
 .main-header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: nowrap;
+  gap: 12px;
+  flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
   margin-left: auto;

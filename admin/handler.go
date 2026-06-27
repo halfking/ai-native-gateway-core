@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -96,15 +97,17 @@ type Handler struct {
 	redisClient  interface{}         // Redis client for sliding window access
 	autoTitleGen *AutoTitleGenerator // Auto session title generator (2026-06-22)
 
-	// identityPool is the Layer 0 cap on total distinct end-user fingerprints
-	// (see identitypool package). nil when the global cap feature is disabled.
+	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
+	// nil when the global cap feature is disabled.
 	// Wired from cmd/gateway/main.go.
-	// Defined as an interface here to avoid an import cycle (admin -> identitypool
-	// would be a problem if identitypool imports admin in the future).
+	// Defined as an interface here to avoid a direct package dependency.
 	identityPool interface {
 		Stats(ctx context.Context) interface{}
 		SetMaxIdentities(n int)
 	}
+
+	// approvalMgr (2026-06-27) 会话审批管理器，用于审批高风险会话
+	approvalMgr *sessionaudit.ApprovalManager
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -195,6 +198,11 @@ func (h *Handler) decryptCredStr(ciphertext string) (string, error) {
 
 func (h *Handler) SetDiscoveryService(svc *discovery.Service) {
 	h.discSvc = svc
+}
+
+// SetApprovalManager (2026-06-27) 注入审批管理器
+func (h *Handler) SetApprovalManager(mgr *sessionaudit.ApprovalManager) {
+	h.approvalMgr = mgr
 }
 
 func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRecov *bg.CredentialRecovery, envCleaner *bg.EnvelopeCleaner, stickyClean *bg.StickyCleaner, taxSync *bg.TaxonomySync) {
@@ -329,6 +337,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)
+
+	// 2026-06-27 Session audit & approval queue endpoints (sessionaudit domain).
+	// All require JWT/admin-key auth (h.admin wrap). Approve/Reject endpoints
+	// additionally enforce tenant_id comparison in handler (cross-tenant 403).
+	mux.HandleFunc("/api/admin/session-audit", admin(h.handleSessionAuditList))
+	mux.HandleFunc("/api/admin/session-audit/", admin(h.handleSessionAuditGet))
+	mux.HandleFunc("/api/admin/session-audit/stats", admin(h.handleSessionAuditStats))
+	mux.HandleFunc("/api/admin/session-approvals", admin(h.handleApprovalList))
+	mux.HandleFunc("/api/admin/session-approvals/", admin(h.handleApprovalSubrouter))
+	// Public polling endpoint (no auth) — clients poll this to learn whether
+	// their pending approval was approved/rejected/timeout. Cross-tenant
+	// protection via optional X-Tenant-ID header (see handler docstring).
+	mux.HandleFunc("/v1/approvals/", h.handleApprovalStatus)
 
 	// Identity pool (Layer 0 cap) — admin can inspect live stats and
 	// update the global max-identities setting. superAdmin-only because

@@ -35,6 +35,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/security"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/integration"
@@ -42,6 +43,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/provider"
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
@@ -93,6 +95,10 @@ type v2Deps struct {
 	CredentialLimit  *credential.Limiter
 	ProviderStore    *provider.InMemoryStore
 	ProviderProber   *provider.Prober
+	// 2026-06-27: SessionAudit Hook（sessionaudit domain）
+	AuditDetector *sessionaudit.FastDetector
+	AuditHook     *sessionaudithook.SessionAuditHook
+	GateHook      *sessionaudithook.ApprovalGateHook
 }
 
 // buildPipeline 组装完整的 Pipeline（包含所有横切 + 核心 Hook）
@@ -104,6 +110,25 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "tracing", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{observability.NewTracingHook(deps.Tracer)},
+		})
+	}
+
+	// === Phase: Session Audit (PreRouting, priority 100) ===
+	// 2026-06-27: 实时安全检测（敏感词 / PII / jailbreak / injection）。
+	// 命中 NeedApproval 时由 ApprovalGateHook (priority 105) 拦截。
+	if deps.Config.EnableSecurity && deps.AuditHook != nil {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "session_audit", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{deps.AuditHook},
+		})
+	}
+
+	// === Phase: Approval Gate (PreRouting, priority 105) ===
+	// 在 SessionAuditHook 之后；如需审批，返回 202 + approval_id。
+	if deps.Config.EnableSecurity && deps.GateHook != nil {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "session_approval_gate", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{deps.GateHook},
 		})
 	}
 
@@ -278,6 +303,15 @@ func newDeps(cfg *v2Config) *v2Deps {
 		TimeoutSec: 60,
 	})
 
+	// 2026-06-27 session audit: 初始化检测器并构造 Hook。
+	// v2 demo 无 DB → ApprovalGateHook 的 mgr=nil；hook 仍能注册但
+	// 审批创建会降级（仅日志，不阻断主流程）。生产用 cmd/gateway/main.go
+	// 走真实 PG + Redis。
+	auditDetector := sessionaudit.NewFastDetector(sessionaudit.DefaultDetectorConfig())
+	eventBus := eventbus.NewMemoryBus(100)
+	auditHook := sessionaudithook.NewSessionAuditHook(auditDetector, eventBus)
+	gateHook := sessionaudithook.NewApprovalGateHook(nil, nil, eventBus)
+
 	return &v2Deps{
 		Config:           cfg,
 		CacheStore:       cacheStore,
@@ -291,7 +325,10 @@ func newDeps(cfg *v2Config) *v2Deps {
 		CredentialLimit:  credLimiter,
 		ProviderStore:    provStore,
 		ProviderProber:   provProber,
-		EventBus:         eventbus.NewMemoryBus(100),
+		EventBus:         eventBus,
+		AuditDetector:    auditDetector,
+		AuditHook:        auditHook,
+		GateHook:         gateHook,
 	}
 }
 

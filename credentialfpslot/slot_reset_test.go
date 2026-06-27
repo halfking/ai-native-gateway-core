@@ -64,54 +64,17 @@ func TestResetSlots_Redis(t *testing.T) {
 	}
 }
 
-func TestResetSlots_Memory(t *testing.T) {
+func TestResetSlots_RequiresRedis(t *testing.T) {
 	cfg := Config{Enabled: true, DefaultLimit: 5}
-	m := New(cfg, nil) // nil client = memory fallback
+	m := New(cfg, nil)
 	ctx := context.Background()
 
 	credentialID := 456
 	limit := 4
 
-	// Acquire 4 slots
-	holders := []string{"h1", "h2", "h3", "h4"}
-	for _, holder := range holders {
-		lease, ok := m.Acquire(ctx, credentialID, &limit, holder, "tenant-2")
-		if !ok {
-			t.Fatalf("failed to acquire slot for %s", holder)
-		}
-		if lease.SlotIndex < 0 || lease.SlotIndex >= limit {
-			t.Errorf("invalid slot index %d", lease.SlotIndex)
-		}
-	}
-
-	// Verify slots occupied
-	avail, err := m.AvailableCount(ctx, credentialID, &limit)
-	if err != nil {
-		t.Fatalf("AvailableCount failed: %v", err)
-	}
-	if avail != 0 {
-		t.Errorf("expected 0 available, got %d", avail)
-	}
-
-	// Reset
 	deletedSlots, deletedPins, err := m.ResetSlots(ctx, credentialID, &limit)
-	if err != nil {
-		t.Fatalf("ResetSlots failed: %v", err)
-	}
-	if deletedSlots != 4 {
-		t.Errorf("expected 4 deleted slots, got %d", deletedSlots)
-	}
-	if deletedPins != 4 {
-		t.Errorf("expected 4 deleted pins, got %d", deletedPins)
-	}
-
-	// Verify all free
-	avail, err = m.AvailableCount(ctx, credentialID, &limit)
-	if err != nil {
-		t.Fatalf("AvailableCount after reset failed: %v", err)
-	}
-	if avail != limit {
-		t.Errorf("expected %d available after reset, got %d", limit, avail)
+	if err != ErrRedisRequired {
+		t.Fatalf("expected ErrRedisRequired, got slots=%d pins=%d err=%v", deletedSlots, deletedPins, err)
 	}
 }
 

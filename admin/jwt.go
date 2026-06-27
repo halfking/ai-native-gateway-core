@@ -10,10 +10,11 @@ import (
 
 // JWTClaims extends the standard JWT claims with tenant/user info.
 type JWTClaims struct {
-	UserID   int    `json:"user_id"`
-	TenantID string `json:"tenant_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID             int    `json:"user_id"`
+	TenantID           string `json:"tenant_id"`
+	Username           string `json:"username"`
+	Role               string `json:"role"`
+	MustChangePassword bool   `json:"must_change_password,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -37,15 +38,16 @@ func jwtExpiry() time.Duration {
 }
 
 // SignToken creates a signed JWT string for the given user.
-func SignToken(userID int, tenantID, username, role, secretKey string) (string, time.Time, error) {
+func SignToken(userID int, tenantID, username, role, secretKey string, mustChangePassword bool) (string, time.Time, error) {
 	expiry := jwtExpiry()
 	expiresAt := time.Now().Add(expiry)
 
 	claims := JWTClaims{
-		UserID:   userID,
-		TenantID: tenantID,
-		Username: username,
-		Role:     role,
+		UserID:             userID,
+		TenantID:           tenantID,
+		Username:           username,
+		Role:               role,
+		MustChangePassword: mustChangePassword,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

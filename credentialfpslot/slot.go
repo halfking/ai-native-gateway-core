@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/redis/go-redis/v9"
@@ -117,34 +116,14 @@ func (c Config) resolveReclaimIdleSeconds() int {
 
 // Manager owns slot acquisition against Redis (or in-memory fallback).
 type Manager struct {
-	cfg      Config
-	client   *redis.Client
-	mu       sync.Mutex
-	memSlots map[slotKey]memEntry
-	memPins  map[string]memPinEntry
-	// memNodeStates is the in-memory fallback for node health tracking.
-	// Used when Redis is unavailable (m.client == nil).
-	memNodeStates map[nodeMemKey]NodeState
+	cfg    Config
+	client *redis.Client
+	mu     sync.Mutex
 
 	// reclaimLoop / reclaimLoopMu track the background goroutine that
 	// reclaims idle slots. See reclaim.go for the implementation.
 	reclaimLoopMu sync.Mutex
 	reclaimLoop   reclaimLoop
-}
-
-type slotKey struct {
-	credentialID int
-	slotIndex    int
-}
-
-type memEntry struct {
-	holder string
-	exp    time.Time
-}
-
-type memPinEntry struct {
-	slot int
-	exp  time.Time
 }
 
 var ErrRedisRequired = errors.New("credentialfpslot requires redis client")
@@ -170,11 +149,8 @@ func New(cfg Config, client *redis.Client) *Manager {
 		cfg.ReclaimIdleSeconds = DefaultReclaimIdleSeconds
 	}
 	return &Manager{
-		cfg:           cfg,
-		client:        client,
-		memSlots:      make(map[slotKey]memEntry),
-		memPins:       make(map[string]memPinEntry),
-		memNodeStates: make(map[nodeMemKey]NodeState),
+		cfg:    cfg,
+		client: client,
 	}
 }
 

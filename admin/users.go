@@ -18,15 +18,16 @@ import (
 )
 
 type userInfo struct {
-	ID          int        `json:"id"`
-	TenantID    string     `json:"tenant_id"`
-	Username    string     `json:"username"`
-	DisplayName string     `json:"display_name"`
-	Email       string     `json:"email"`
-	Role        string     `json:"role"`
-	Enabled     bool       `json:"enabled"`
-	LastLoginAt *time.Time `json:"last_login_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID                 int        `json:"id"`
+	TenantID           string     `json:"tenant_id"`
+	Username           string     `json:"username"`
+	DisplayName        string     `json:"display_name"`
+	Email              string     `json:"email"`
+	Role               string     `json:"role"`
+	Enabled            bool       `json:"enabled"`
+	MustChangePassword bool       `json:"must_change_password"`
+	LastLoginAt        *time.Time `json:"last_login_at"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type createUserRequest struct {
@@ -45,7 +46,6 @@ type updateUserRequest struct {
 	Enabled     *bool   `json:"enabled"`
 	Password    *string `json:"password"`
 }
-
 
 // writeAuditLog inserts a row into routing_audit_log using r's AuthContext (best-effort, async).
 func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details string) {
@@ -125,8 +125,8 @@ func EnsureSeedAdmin(pool *pgxpool.Pool) {
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO users (tenant_id, username, password_hash, display_name, role, enabled)
-		VALUES ('default', 'admin', $1, '系统管理员', 'super_admin', TRUE)
+		INSERT INTO users (tenant_id, username, password_hash, display_name, role, enabled, must_change_password)
+		VALUES ('default', 'admin', $1, '系统管理员', 'super_admin', TRUE, TRUE)
 		ON CONFLICT (username) DO NOTHING
 	`, string(hash))
 	if err != nil {
@@ -186,7 +186,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	// tenant_admin can only list users in their own tenant
-	query := `SELECT id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at FROM users`
+	query := `SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at FROM users`
 	args := []any{}
 	if IsTenantAdmin(r) {
 		query += ` WHERE tenant_id = $1`
@@ -202,7 +202,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	var users []userInfo
 	for rows.Next() {
 		var u userInfo
-		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
 			continue
 		}
 		users = append(users, u)
@@ -274,11 +274,11 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var u userInfo
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, tenant_id, username, display_name, email, role, enabled, created_at
+		INSERT INTO users (tenant_id, username, password_hash, display_name, email, role, must_change_password)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+		RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, created_at
 	`, req.TenantID, req.Username, string(hash), req.DisplayName, req.Email, req.Role).Scan(
-		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.CreatedAt,
+		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.CreatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -361,7 +361,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 			writeError(w, http.StatusInternalServerError, "password hash failed")
 			return
 		}
-		sets = append(sets, "password_hash = $"+strconv.Itoa(argIdx))
+		sets = append(sets, "password_hash = $"+strconv.Itoa(argIdx), "must_change_password = TRUE")
 		args = append(args, string(hash))
 		argIdx++
 	}
@@ -372,10 +372,10 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request, id int) {
 	sets = append(sets, "updated_at = now()")
 	args = append(args, id)
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = $" + strconv.Itoa(argIdx) +
-		" RETURNING id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at"
+		" RETURNING id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at"
 	var u userInfo
 	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt,
+		&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt,
 	)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
@@ -469,7 +469,7 @@ func (h *Handler) resetUserPassword(w http.ResponseWriter, r *http.Request, id i
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tag, err := h.db.Exec(ctx, `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, string(hash), id)
+	tag, err := h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = TRUE, updated_at = now() WHERE id = $2`, string(hash), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
@@ -503,9 +503,9 @@ func (h *Handler) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var u userInfo
 	err := h.db.QueryRow(ctx, `
-		SELECT id, tenant_id, username, display_name, email, role, enabled, last_login_at, created_at
+		SELECT id, tenant_id, username, display_name, email, role, enabled, must_change_password, last_login_at, created_at
 		FROM users WHERE id = $1
-	`, auth.UserID).Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.LastLoginAt, &u.CreatedAt)
+	`, auth.UserID).Scan(&u.ID, &u.TenantID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &u.Enabled, &u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -549,7 +549,7 @@ func (h *Handler) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "password hash failed")
 		return
 	}
-	_, err = h.db.Exec(ctx, `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, string(newHash), auth.UserID)
+	_, err = h.db.Exec(ctx, `UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = now() WHERE id = $2`, string(newHash), auth.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return

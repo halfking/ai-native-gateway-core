@@ -8,8 +8,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func TestDetailedStats_Memory(t *testing.T) {
-	m := New(Config{DefaultLimit: 3, Enabled: true}, nil)
+func TestDetailedStats_Empty(t *testing.T) {
+	m, _ := newTestManager(t, Config{DefaultLimit: 3, Enabled: true})
 	ctx := context.Background()
 	credID := 100
 	limit := 3
@@ -72,7 +72,7 @@ func TestDetailedStats_Redis(t *testing.T) {
 }
 
 func TestDetailedStats_Unlimited(t *testing.T) {
-	m := New(Config{DefaultLimit: 5, Enabled: true}, nil)
+	m, _ := newTestManager(t, Config{DefaultLimit: 5, Enabled: true})
 	ctx := context.Background()
 	credID := 300
 
@@ -84,7 +84,7 @@ func TestDetailedStats_Unlimited(t *testing.T) {
 }
 
 func TestDetailedStats_Disabled(t *testing.T) {
-	m := New(Config{DefaultLimit: 5, Enabled: false}, nil)
+	m, _ := newTestManager(t, Config{DefaultLimit: 5, Enabled: false})
 	ctx := context.Background()
 	credID := 400
 	limit := 5
