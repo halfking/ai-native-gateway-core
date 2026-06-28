@@ -444,6 +444,7 @@ func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID 
 //   - 否则：用 fallback 补足，对 fallback 的 composite 施加 demotion
 //   - 主渠道未饱和 → 0.5
 //   - 主渠道饱和     → 0.85
+//   - 没有 Preferred 池（冷启动 / 全 fallback）→ 1.0（无 demotion）
 //   - 重新按 composite 排序后取 topN
 //
 // 注：demotion 只影响 composite，不修改 ChannelQuality/Reliability 等
@@ -458,6 +459,16 @@ func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
 	if len(preferred) >= topN {
 		sortScoredByCompositeReliabilityPrice(preferred)
 		return preferred[:topN]
+	}
+
+	// 没有 Preferred 池 → 不施加 demotion（冷启动 / 全 fallback 时
+	// 没有"主渠道"需要保护）。这是对 BUG #2 修复后的语义。
+	if len(preferred) == 0 {
+		sortScoredByCompositeReliabilityPrice(fallback)
+		if len(fallback) > topN {
+			fallback = fallback[:topN]
+		}
+		return fallback
 	}
 
 	// 主渠道饱和？决定 demotion 系数
