@@ -48,6 +48,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/models', label: '模型与目录', icon: '🏷️', platformOps: true, hideForTenant: true },
       { path: '/routing-v2', label: '路由全景', icon: '🗺️', super: true, hideForTenant: true, exact: true },
       { path: '/routing-v2/credentials', label: '凭据监控', icon: '📊', super: true, hideForTenant: true },
+      { path: '/probe-health', label: '探测健康度', icon: '🔍', super: true, hideForTenant: true },
       { path: '/providers', label: '供应商', icon: '🔌', super: true, hideForTenant: true },
       { path: '/pricing', label: '成本价格', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', icon: '💰', platformOps: true, hideForTenant: true },
@@ -82,6 +83,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { path: '/admin/settings', label: '系统设置', icon: '⚙️', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', icon: '💾', platformOps: true, hideForTenant: true },
+      { path: '/format-anomalies', label: '格式异常监控', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/admin/agents', label: 'Agent Registry', icon: '🧩', super: true, hideForTenant: true },
     ],
   },
