@@ -604,6 +604,13 @@ type CacheStateEntry struct {
 // Useful for diagnosing "is the cache populated" / "is the writer doing
 // its job" without touching the PostgreSQL tables.  Designed to remain
 // available even when the DB is degraded — it talks to Redis only.
+//
+// Optional ?format=prom returns the snapshot in Prometheus text
+// exposition format (key=value lines with HELP/TYPE headers) so
+// operators can `curl /api/admin/probe/cache-state?format=prom |
+// promtool check metrics` to pull a one-off scrape without touching
+// the gateway's /metrics endpoint.  The metric family names are
+// distinct from the live /metrics series to avoid scrape collisions.
 func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -670,14 +677,85 @@ func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"reader":        "redis",
-		"key_prefix":    "llmgw:avail",
-		"credential_id": credID,
-		"model":         modelRaw,
-		"count":         len(entries),
-		"entries":       entries,
-	})
+	switch query.Get("format") {
+	case "prom", "prometheus":
+		writeCacheStateProm(w, entries)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"reader":        "redis",
+			"key_prefix":    "llmgw:avail",
+			"credential_id": credID,
+			"model":         modelRaw,
+			"count":         len(entries),
+			"entries":       entries,
+		})
+	}
+}
+
+// writeCacheStateProm renders the cache snapshot in Prometheus text
+// exposition format.  We emit one metric family per logical
+// attribute:
+//
+//	llmgw_availability_cache_snapshot_info{credential_id="11",raw_model="glm-5.2",state="healthy_confirmed",source="model_probe"} 1
+//	llmgw_availability_cache_available{credential_id="11",raw_model="glm-5.2"} 1
+//	llmgw_availability_cache_consecutive_successes{credential_id="11",raw_model="glm-5.2"} 3
+//	llmgw_availability_cache_consecutive_failures{credential_id="11",raw_model="glm-5.2"} 0
+//	llmgw_availability_cache_next_retry_at{credential_id="11",raw_model="glm-5.2"} 1.7e+09
+//	llmgw_availability_cache_updated_at{credential_id="11",raw_model="glm-5.2"} 1.7e+09
+//
+// The metric names are intentionally distinct from the
+// /metrics series (which expose writer/reader counters and the
+// key counter as `llmgw_availability_*`) so a `promtool check
+// metrics` pass on the live /metrics scrape does not collide with a
+// one-off curl to /cache-state.
+func writeCacheStateProm(w http.ResponseWriter, entries []CacheStateEntry) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_snapshot_info Per-(credential, model) cache snapshot, one series per entry.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_snapshot_info gauge")
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_available 1 if the cached state is available for routing, 0 otherwise.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_available gauge")
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_consecutive_successes Cached consecutive success count from the most recent probe.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_consecutive_successes gauge")
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_consecutive_failures Cached consecutive failure count from the most recent probe.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_consecutive_failures gauge")
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_updated_at Unix timestamp of the most recent cache write for this entry.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_updated_at gauge")
+	fmt.Fprintln(w, "# HELP llmgw_availability_cache_next_retry_at Unix timestamp by which the probe worker plans to revisit this entry.")
+	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_next_retry_at gauge")
+
+	now := time.Now().Unix()
+	for _, e := range entries {
+		base := fmt.Sprintf(`credential_id=%q,raw_model=%q,state=%q,source=%q`,
+			strconv.Itoa(e.CredentialID), e.RawModel, e.State, e.Source)
+		fmt.Fprintf(w, "llmgw_availability_cache_snapshot_info{%s} 1\n", base)
+		avail := 0
+		if e.Available {
+			avail = 1
+		}
+		fmt.Fprintf(w, "llmgw_availability_cache_available{credential_id=%q,raw_model=%q} %d\n",
+			strconv.Itoa(e.CredentialID), e.RawModel, avail)
+		fmt.Fprintf(w, "llmgw_availability_cache_consecutive_successes{credential_id=%q,raw_model=%q} %d\n",
+			strconv.Itoa(e.CredentialID), e.RawModel, e.ConsecutiveSuccesses)
+		fmt.Fprintf(w, "llmgw_availability_cache_consecutive_failures{credential_id=%q,raw_model=%q} %d\n",
+			strconv.Itoa(e.CredentialID), e.RawModel, e.ConsecutiveFailures)
+		if e.UpdatedAt != nil {
+			ts := e.UpdatedAt.Unix()
+			if ts < 0 || ts == 0 {
+				ts = now
+			}
+			fmt.Fprintf(w, "llmgw_availability_cache_updated_at{credential_id=%q,raw_model=%q} %d\n",
+				strconv.Itoa(e.CredentialID), e.RawModel, ts)
+		}
+		if e.NextRetryAt != nil {
+			ts := e.NextRetryAt.Unix()
+			if ts < 0 || ts == 0 {
+				ts = now
+			}
+			fmt.Fprintf(w, "llmgw_availability_cache_next_retry_at{credential_id=%q,raw_model=%q} %d\n",
+				strconv.Itoa(e.CredentialID), e.RawModel, ts)
+		}
+	}
 }
 
 func toCacheStateEntry(credentialID int, rawModel string, snap bg.ModelAvailabilitySnapshot) CacheStateEntry {
