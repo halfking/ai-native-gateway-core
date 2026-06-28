@@ -136,8 +136,14 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		// pool.Close() removed - handled by defer
 		return nil, err
 	}
+	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
+		return nil, err
+	}
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
 		// pool.Close() removed - handled by defer
+		return nil, err
+	}
+	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
 		return nil, err
 	}
 	if err := db.ensureSupplementalRLS(migCtx); err != nil {
@@ -845,6 +851,76 @@ func (d *DB) ensureRoutingOverridesAudit(ctx context.Context) error {
 // Without this startup apply, the PassiveProbeListener worker logs
 // "relation does not exist" errors every 30s and the /api/routing/
 // recent-model-failures endpoint returns 500.
+func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS response_format_anomalies (
+			id BIGSERIAL PRIMARY KEY,
+			detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			request_id TEXT NOT NULL,
+			provider_id INT,
+			provider_code TEXT,
+			client_model TEXT,
+			outbound_model TEXT,
+			anomaly_type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'medium',
+			usage_source TEXT,
+			expected_tokens INT,
+			actual_tokens INT,
+			content_size_bytes INT,
+			response_structure JSONB,
+			response_sample TEXT,
+			resolved BOOLEAN NOT NULL DEFAULT false,
+			resolved_at TIMESTAMPTZ,
+			resolution_notes TEXT,
+			tenant_id TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_detected_at
+			ON response_format_anomalies(detected_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_request_id
+			ON response_format_anomalies(request_id);
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_provider
+			ON response_format_anomalies(provider_code, client_model)
+			WHERE provider_code IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_type
+			ON response_format_anomalies(anomaly_type, detected_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_unresolved
+			ON response_format_anomalies(detected_at DESC)
+			WHERE NOT resolved;
+		ALTER TABLE response_format_anomalies ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS response_format_anomalies_tenant_isolation ON public.response_format_anomalies;
+		CREATE POLICY response_format_anomalies_tenant_isolation ON public.response_format_anomalies
+			USING (tenant_id IS NULL OR tenant_id = public.get_current_tenant());
+		DROP POLICY IF EXISTS response_format_anomalies_super_admin ON public.response_format_anomalies;
+		CREATE POLICY response_format_anomalies_super_admin ON public.response_format_anomalies
+			USING (current_setting('app.bypass_rls', true) = 'true');
+		CREATE OR REPLACE VIEW v_format_anomaly_summary AS
+		SELECT
+			DATE_TRUNC('hour', detected_at) AS hour,
+			provider_code,
+			client_model,
+			anomaly_type,
+			severity,
+			COUNT(*) AS anomaly_count,
+			COUNT(DISTINCT request_id) AS affected_requests,
+			AVG(content_size_bytes) AS avg_content_size,
+			AVG(expected_tokens) AS avg_expected_tokens,
+			AVG(actual_tokens) AS avg_actual_tokens,
+			COUNT(*) FILTER (WHERE resolved) AS resolved_count
+		FROM response_format_anomalies
+		WHERE detected_at > NOW() - INTERVAL '7 days'
+		GROUP BY 1, 2, 3, 4, 5;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("response_format_anomalies schema ensured")
+	return nil
+}
+
 func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -893,6 +969,245 @@ func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("passive_probe_state schema ensured (table + 1 index + 3 model_probe_state columns)")
+	return nil
+}
+
+// ensureProbeStateFunctionFixes patches probe state SQL functions from 301/302
+// so they update the correct binding without raw_model_name-only LIMIT 1 lookups.
+func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION model_probe_mark_available(
+		    p_credential_id BIGINT,
+		    p_raw_model_name TEXT,
+		    p_latency_ms INTEGER DEFAULT 0
+		)
+		RETURNS VOID
+		LANGUAGE plpgsql
+		AS $$
+		BEGIN
+		    INSERT INTO model_probe_state
+		        (credential_id, raw_model_name, state,
+		         consecutive_successes, consecutive_failures,
+		         last_attempt_at, next_retry_at, last_status,
+		         state_expires_at, marked_suspicious_at)
+		    VALUES
+		        (p_credential_id, p_raw_model_name, 'available',
+		         1, 0,
+		         NOW(), NOW() + INTERVAL '2 hours', 'ok',
+		         NOW() + INTERVAL '2 hours', NULL)
+		    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		        state = 'available',
+		        consecutive_successes = model_probe_state.consecutive_successes + 1,
+		        consecutive_failures = 0,
+		        last_attempt_at = NOW(),
+		        next_retry_at = NOW() + INTERVAL '2 hours',
+		        last_status = 'ok',
+		        state_expires_at = NOW() + INTERVAL '2 hours',
+		        marked_suspicious_at = NULL,
+		        probing_started_at = NULL;
+
+		    UPDATE credential_model_bindings cmb
+		    SET available = TRUE,
+		        unavailable_reason = NULL,
+		        unavailable_at = NULL,
+		        unavailable_recover_at = NULL,
+		        updated_at = NOW()
+		    FROM provider_models pm
+		    WHERE cmb.provider_model_id = pm.id
+		      AND cmb.credential_id = p_credential_id
+		      AND pm.raw_model_name = p_raw_model_name
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		END;
+		$$;
+
+		CREATE OR REPLACE FUNCTION model_probe_mark_unavailable(
+		    p_credential_id BIGINT,
+		    p_raw_model_name TEXT,
+		    p_error_code TEXT,
+		    p_error_message TEXT DEFAULT ''
+		)
+		RETURNS VOID
+		LANGUAGE plpgsql
+		AS $$
+		BEGIN
+		    INSERT INTO model_probe_state
+		        (credential_id, raw_model_name, state,
+		         consecutive_successes, consecutive_failures,
+		         last_attempt_at, next_retry_at, last_status,
+		         state_expires_at, marked_suspicious_at,
+		         last_unavailable_reason, last_err_code)
+		    VALUES
+		        (p_credential_id, p_raw_model_name, 'unavailable',
+		         0, 1,
+		         NOW(), NOW() + INTERVAL '2 hours', 'http_4xx',
+		         NOW() + INTERVAL '2 hours', NULL,
+		         p_error_message, p_error_code)
+		    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		        state = 'unavailable',
+		        consecutive_successes = 0,
+		        consecutive_failures = model_probe_state.consecutive_failures + 1,
+		        last_attempt_at = NOW(),
+		        next_retry_at = NOW() + INTERVAL '2 hours',
+		        last_status = 'http_4xx',
+		        state_expires_at = NOW() + INTERVAL '2 hours',
+		        marked_suspicious_at = NULL,
+		        probing_started_at = NULL,
+		        last_unavailable_reason = p_error_message,
+		        last_err_code = p_error_code;
+
+		    UPDATE credential_model_bindings cmb
+		    SET available = FALSE,
+		        unavailable_reason = 'probe_' || p_error_code,
+		        unavailable_at = NOW(),
+		        unavailable_recover_at = NOW() + INTERVAL '2 hours',
+		        updated_at = NOW()
+		    FROM provider_models pm
+		    WHERE cmb.provider_model_id = pm.id
+		      AND cmb.credential_id = p_credential_id
+		      AND pm.raw_model_name = p_raw_model_name
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		END;
+		$$;
+
+		CREATE OR REPLACE FUNCTION unified_probe_mark_healthy(
+		    p_credential_id BIGINT,
+		    p_raw_model_name TEXT,
+		    p_latency_ms INTEGER DEFAULT 0
+		)
+		RETURNS VOID
+		LANGUAGE plpgsql
+		AS $$
+		DECLARE
+		    new_interval INTERVAL;
+		BEGIN
+		    SELECT CASE
+		        WHEN consecutive_watchdog_successes >= 10 THEN '8 hours'::INTERVAL
+		        WHEN consecutive_watchdog_successes >= 5 THEN '6 hours'::INTERVAL
+		        WHEN consecutive_watchdog_successes >= 2 THEN '4 hours'::INTERVAL
+		        ELSE '2 hours'::INTERVAL
+		    END INTO new_interval
+		    FROM model_probe_state
+		    WHERE credential_id = p_credential_id
+		      AND raw_model_name = p_raw_model_name;
+
+		    INSERT INTO model_probe_state
+		        (credential_id, raw_model_name, state,
+		         consecutive_successes, consecutive_failures,
+		         last_attempt_at, last_verified_at, next_retry_at,
+		         probe_priority, verification_interval,
+		         consecutive_watchdog_successes,
+		         last_status, probing_started_at)
+		    VALUES
+		        (p_credential_id, p_raw_model_name, 'healthy',
+		         1, 0,
+		         NOW(), NOW(), NOW() + COALESCE(new_interval, '4 hours'::INTERVAL),
+		         'watchdog', COALESCE(new_interval, '4 hours'::INTERVAL),
+		         1,
+		         'ok', NULL)
+		    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		        state = 'healthy',
+		        consecutive_successes = model_probe_state.consecutive_successes + 1,
+		        consecutive_failures = 0,
+		        last_attempt_at = NOW(),
+		        last_verified_at = NOW(),
+		        next_retry_at = NOW() + COALESCE(new_interval, model_probe_state.verification_interval, '4 hours'::INTERVAL),
+		        probe_priority = 'watchdog',
+		        verification_interval = COALESCE(new_interval, model_probe_state.verification_interval),
+		        consecutive_watchdog_successes = CASE
+		            WHEN model_probe_state.probe_priority = 'watchdog' THEN model_probe_state.consecutive_watchdog_successes + 1
+		            ELSE 1
+		        END,
+		        last_status = 'ok',
+		        probing_started_at = NULL,
+		        state_expires_at = NULL,
+		        marked_suspicious_at = NULL;
+
+		    UPDATE credential_model_bindings cmb
+		    SET available = TRUE,
+		        unavailable_reason = NULL,
+		        unavailable_at = NULL,
+		        unavailable_recover_at = NULL,
+		        updated_at = NOW()
+		    FROM provider_models pm
+		    WHERE cmb.provider_model_id = pm.id
+		      AND cmb.credential_id = p_credential_id
+		      AND pm.raw_model_name = p_raw_model_name
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		END;
+		$$;
+
+		CREATE OR REPLACE FUNCTION unified_probe_mark_failing(
+		    p_credential_id BIGINT,
+		    p_raw_model_name TEXT,
+		    p_error_code TEXT,
+		    p_error_message TEXT DEFAULT '',
+		    p_retry_after_seconds INTEGER DEFAULT 60
+		)
+		RETURNS VOID
+		LANGUAGE plpgsql
+		AS $$
+		DECLARE
+		    current_failures INTEGER;
+		    backoff_seconds INTEGER;
+		BEGIN
+		    SELECT COALESCE(consecutive_failures, 0) INTO current_failures
+		    FROM model_probe_state
+		    WHERE credential_id = p_credential_id
+		      AND raw_model_name = p_raw_model_name;
+
+		    backoff_seconds := LEAST(
+		        p_retry_after_seconds * POWER(2, LEAST(current_failures, 6)),
+		        3600
+		    );
+
+		    INSERT INTO model_probe_state
+		        (credential_id, raw_model_name, state,
+		         consecutive_successes, consecutive_failures,
+		         last_attempt_at, next_retry_at,
+		         probe_priority, last_status,
+		         last_unavailable_reason, last_err_code,
+		         probing_started_at, consecutive_watchdog_successes)
+		    VALUES
+		        (p_credential_id, p_raw_model_name, 'failing',
+		         0, 1,
+		         NOW(), NOW() + (backoff_seconds || ' seconds')::INTERVAL,
+		         'failing', 'http_error',
+		         p_error_message, p_error_code,
+		         NULL, 0)
+		    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+		        state = 'failing',
+		        consecutive_successes = 0,
+		        consecutive_failures = model_probe_state.consecutive_failures + 1,
+		        last_attempt_at = NOW(),
+		        next_retry_at = NOW() + (backoff_seconds || ' seconds')::INTERVAL,
+		        probe_priority = 'failing',
+		        last_status = 'http_error',
+		        last_unavailable_reason = p_error_message,
+		        last_err_code = p_error_code,
+		        probing_started_at = NULL,
+		        consecutive_watchdog_successes = 0,
+		        state_expires_at = NULL;
+
+		    UPDATE credential_model_bindings cmb
+		    SET available = FALSE,
+		        unavailable_reason = 'probe_' || p_error_code,
+		        unavailable_at = NOW(),
+		        updated_at = NOW()
+		    FROM provider_models pm
+		    WHERE cmb.provider_model_id = pm.id
+		      AND cmb.credential_id = p_credential_id
+		      AND pm.raw_model_name = p_raw_model_name
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		END;
+		$$;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("probe state function fixes ensured (raw_model-only binding updates removed)")
 	return nil
 }
 
