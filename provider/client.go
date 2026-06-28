@@ -31,9 +31,20 @@ import (
 //	"cache_error"  — DB UPDATE succeeded, but the cache re-write failed.
 //	"no_writer"    — Redis matched suspicious but the async hook was nil
 //	                 (test-only path).
+//
+// suspiciousExitDBDurationSeconds is a histogram of the synchronous DB
+// UPDATE inside the async goroutine. The bucket layout is tuned for the
+// observed working envelope (50ms p99 target, 1s hard timeout):
+//
+//	5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s
+//
+// Operators should alert on p99 > 250ms for sustained periods — anything
+// beyond that means the async DB UPDATE is in danger of hitting the 1s
+// hard timeout and missing the suspicious→recovering transition.
 var (
-	suspiciousExitOnce sync.Once
-	suspiciousExits    *prometheus.CounterVec
+	suspiciousExitOnce       sync.Once
+	suspiciousExits          *prometheus.CounterVec
+	suspiciousExitDBDuration prometheus.Histogram
 )
 
 func registerSuspiciousExitMetrics() {
@@ -45,7 +56,16 @@ func registerSuspiciousExitMetrics() {
 			},
 			[]string{"outcome"},
 		)
-		prometheus.MustRegister(suspiciousExits)
+		suspiciousExitDBDuration = prometheus.NewHistogram(
+			prometheus.HistogramOpts{
+				Name: "llmgw_suspicious_exit_db_duration_seconds",
+				Help: "Wall-clock duration of the async model_probe_state UPDATE during suspicious-exit dispatch.",
+				Buckets: []float64{
+					0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
+				},
+			},
+		)
+		prometheus.MustRegister(suspiciousExits, suspiciousExitDBDuration)
 	})
 }
 
@@ -56,6 +76,13 @@ func recordSuspiciousExit(outcome string) {
 		return
 	}
 	suspiciousExits.WithLabelValues(outcome).Inc()
+}
+
+func recordSuspiciousExitDBDuration(seconds float64) {
+	if suspiciousExitDBDuration == nil {
+		return
+	}
+	suspiciousExitDBDuration.Observe(seconds)
 }
 
 type Candidate struct {
@@ -1043,6 +1070,7 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 	go func() {
 		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
 		defer bgCancel()
+		dbStart := time.Now()
 		_, err := c.dbPool.Exec(bgCtx, `
 			UPDATE model_probe_state
 			SET state = 'recovering',
@@ -1054,6 +1082,7 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 			  AND raw_model_name = $2
 			  AND state = 'suspicious'
 		`, credentialID, rawModel)
+		recordSuspiciousExitDBDuration(time.Since(dbStart).Seconds())
 		if err != nil {
 			slog.Warn("provider: maybeExitSuspicious db update failed",
 				"credential_id", credentialID,

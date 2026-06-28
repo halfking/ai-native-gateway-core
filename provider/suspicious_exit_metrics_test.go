@@ -133,3 +133,46 @@ func TestSuspiciousExitMetric_NoopWithoutRedisClient(t *testing.T) {
 
 // kept alive so the import set stays stable when we tweak test cases.
 var _ = prometheus.NewCounterVec
+
+func TestSuspiciousExitDBDurationHistogramObservesSamples(t *testing.T) {
+	if suspiciousExitDBDuration == nil {
+		t.Fatal("histogram not initialised")
+	}
+
+	// Capture pre-test sample count via the cumulative bucket counter for
+	// the largest bucket (always >= any observation).
+	m := &dto.Metric{}
+	if err := suspiciousExitDBDuration.Write(m); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	preCount := m.Histogram.GetSampleCount()
+
+	// Feed three samples across the bucket layout.
+	for _, d := range []float64{0.001, 0.04, 0.6} {
+		recordSuspiciousExitDBDuration(d)
+	}
+
+	after := &dto.Metric{}
+	if err := suspiciousExitDBDuration.Write(after); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if got := after.Histogram.GetSampleCount() - preCount; got != 3 {
+		t.Fatalf("sample count delta = %v, want 3", got)
+	}
+
+	// At least one bucket should have non-zero cumulative count.
+	buckets := after.Histogram.GetBucket()
+	if len(buckets) == 0 {
+		t.Fatal("histogram has no buckets")
+	}
+	hit := false
+	for _, b := range buckets {
+		if b.GetCumulativeCount() > 0 {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		t.Fatal("no bucket observed any samples")
+	}
+}
