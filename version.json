@@ -1,8 +1,8 @@
 {
-  "version": "phase1.5-pre-r113-20260626-61-ga9daf246",
-  "git_tag": "phase1.5-pre-r113-20260626-61-ga9daf246",
-  "git_sha": "a9daf246",
-  "build_seq": 717,
+  "version": "phase1.5-pre-r113-20260626-91-g24d56b19",
+  "git_tag": "phase1.5-pre-r113-20260626-91-g24d56b19",
+  "git_sha": "24d56b19",
+  "build_seq": 722,
   "build_date": "2026-06-28",
   "module": "llm-gateway-go"
 }

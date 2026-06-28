@@ -91,12 +91,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/security"
+	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
+	"github.com/kaixuan/llm-gateway-go/domains/interception"
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
 	"github.com/kaixuan/llm-gateway-go/domains/provider"
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
+	"github.com/kaixuan/llm-gateway-go/domains/security"
+	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 )
@@ -192,9 +195,9 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "security", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{
-				security.NewSecurityHook(
-					security.NewIntentAnalyzer(0.5),
-					security.NewThreatDetector(7),
+				legacysec.NewSecurityHook(
+					legacysec.NewIntentAnalyzer(0.5),
+					legacysec.NewThreatDetector(7),
 				),
 			},
 		})
@@ -258,6 +261,34 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 			Hooks: []pipeline.Hook{credential.NewLimiterHook(deps.CredentialLimit)},
 		})
 	}
+
+	// V4 governance stage (PR-V4-02). PR-V4-03 wires the security plugin
+	// registry here; older SecurityHook in domains/hooks/security still
+	// runs at PreRouting as a coarse pre-filter (dual-path during
+	// migration; consolidated in a later PR).
+	secRegistry := security.NewRegistry()
+	secRegistry.MustRegister(securityplugins.NewPromptInjectionChecker())
+	secRegistry.MustRegister(securityplugins.NewSensitiveInputChecker())
+	secRegistry.MustRegister(securityplugins.NewSensitiveOutputChecker())
+	secRegistry.MustRegister(securityplugins.NewPolicyComplianceChecker())
+	secRegistry.MustRegister(securityplugins.NewToolRiskChecker())
+	secRegistry.MustRegister(securityplugins.NewDataExfiltrationChecker())
+
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "governance_security", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
+	})
+
+	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
+	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
+	interceptEngine := interception.NewEngine(interception.EngineConfig{
+		BlockThreshold:    2,
+		SuspendOnCritical: false,
+	})
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "governance_interception", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{interception.NewInterceptionHook(interceptEngine)},
+	})
 
 	// Transform stage placeholder (transformation package omitted for
 	// the same reason as main_v2_pipeline.go — see its file header).
@@ -486,6 +517,25 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			env.Metadata["v2_pipeline_error"] = perr.Error()
 		}
 		env.Metadata["v2_pipeline_latency_ms"] = time.Since(pipeStart).Milliseconds()
+
+		// V4 dispatch gate (PR-V4-05): pipeline 写入的 Decision 在此生效。
+		// Block / Suspend / Terminate → 直接写响应并 short-circuit；
+		// Continue / Mutate → 继续交给 fallback handler。
+		if interception.InspectDecision(env) == interception.DispatchShortCircuit {
+			code, body := interception.WriteDecisionResponse(env)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(code)
+			if len(body) > 0 {
+				_, _ = w.Write(body)
+			}
+			slog.Info("v2 dispatch gate: short-circuit",
+				"request_id", requestID,
+				"path", r.URL.Path,
+				"status", code,
+				"decision_kind", env.Governance.Decision.Kind,
+			)
+			return
+		}
 
 		// Forward to the v1 chatHandler. The chatHandler writes the
 		// response (including SSE stream) to w and we just observe.

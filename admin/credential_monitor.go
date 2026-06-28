@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
@@ -1413,6 +1413,14 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	})
 }
 
+// dbExec is the minimal interface needed by invalidateRoutingCaches.
+// Both *pgxpool.Pool (production) and pgxmock.PgxPoolIface (tests)
+// satisfy it; declaring it here keeps the helper mockable without
+// leaking test types into production code.
+type dbExec interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // invalidateRoutingCaches is the wakeup shortcut for the manual_disabled
 // toggles in this file (handleSetManualDisabled / handleClearManualDisabled).
 //
@@ -1434,7 +1442,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 // "providers:N"). Best-effort: any error is logged and swallowed — the
 // admin UI already returned success to the operator and the periodic
 // refresh is the ultimate fallback.
-func invalidateRoutingCaches(ctx context.Context, db *pgxpool.Pool, entityKind string, entityID int) {
+func invalidateRoutingCaches(ctx context.Context, db dbExec, entityKind string, entityID int) {
 	if db == nil || entityID <= 0 {
 		return
 	}
