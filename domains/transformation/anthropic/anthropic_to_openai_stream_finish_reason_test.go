@@ -202,6 +202,63 @@ data: {"type":"message_stop"}
 	}
 }
 
+func TestAnthropicToOpenAIStream_FinishReasonPreservedWhenOutputTokensZero(t *testing.T) {
+	anthropicSSE := `event: message_start
+data: {"type":"message_start","message":{"id":"msg_123","type":"message","role":"assistant","content":[],"model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(anthropicSSE))
+	}))
+	defer upstream.Close()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", upstream.URL, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to get upstream response: %v", err)
+	}
+
+	outcome := StreamAnthropicSSEToOpenAI(
+		w,
+		resp,
+		"claude-opus-4-8",
+		"claude-opus-4-8",
+		"test-request-id",
+		nil,
+		nil,
+	)
+
+	if outcome.Interrupted {
+		t.Fatalf("stream was interrupted: %s", outcome.Reason)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("expected finish_reason stop in response, got:\n%s", body)
+	}
+	if strings.Contains(body, `"finish_reason":"end_turn"`) {
+		t.Fatalf("found unmapped Anthropic stop_reason in response:\n%s", body)
+	}
+}
+
 // TestMapAnthropicFinishReasonToChat tests the mapping function directly
 func TestMapAnthropicFinishReasonToChat(t *testing.T) {
 	tests := []struct {

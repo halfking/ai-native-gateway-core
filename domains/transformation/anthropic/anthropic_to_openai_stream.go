@@ -300,6 +300,11 @@ func StreamAnthropicSSEToOpenAI(
 			}
 
 		case ir.ChunkTypeDelta:
+			if chunk.FinishReason != "" {
+				fr := chunk.FinishReason
+				finishReason = &fr
+			}
+
 			// Determine which Anthropic event this came from by re-checking
 			// (the IR chunk doesn't preserve the original event name)
 			var baseCheck struct {
@@ -417,7 +422,8 @@ func StreamAnthropicSSEToOpenAI(
 					initialArgsSent = false
 
 				case "message_start", "message_delta":
-					// Already handled in ChunkTypeUsage
+					// message_delta with output_tokens=0 is parsed as ChunkTypeDelta,
+					// so the finish_reason must already have been copied above.
 				}
 			}
 
