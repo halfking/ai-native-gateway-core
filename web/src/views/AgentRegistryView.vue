@@ -257,37 +257,30 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="compact-filter-bar compact-filter-bar--stacked">
-      <div class="cf-row">
-        <select v-model="kindFilter" class="cf-select cf-kind" title="类型" @change="resetPageAndLoad">
-          <option v-for="opt in KIND_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-        </select>
-        <select
-          v-if="canFilterByTenant"
-          v-model="tenantFilter"
-          class="cf-select cf-tenant"
-          title="租户"
-          @change="resetPageAndLoad"
-        >
-          <option value="">默认租户</option>
-          <option value="default">default</option>
-        </select>
-        <span class="cf-meta">共 {{ total }} 个</span>
-      </div>
-      <div class="cf-row cf-row--secondary">
-        <div class="cf-field cf-field--grow">
-          <span class="cf-label">搜索</span>
-          <input
-            v-model="search"
-            type="text"
-            class="cf-input"
-            placeholder="按名称 / owner / team / tenant_id 搜索…"
-            @keyup.enter="resetPageAndLoad"
-          />
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="clearFilters">清除</button>
-        <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
-      </div>
+    <div class="compact-filter-bar">
+      <select v-model="kindFilter" class="cf-select cf-kind" title="类型" @change="resetPageAndLoad">
+        <option v-for="opt in KIND_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+      </select>
+      <select
+        v-if="canFilterByTenant"
+        v-model="tenantFilter"
+        class="cf-select cf-tenant"
+        title="租户"
+        @change="resetPageAndLoad"
+      >
+        <option value="">默认租户</option>
+        <option value="default">default</option>
+      </select>
+      <input
+        v-model="search"
+        type="text"
+        class="cf-input cf-grow"
+        placeholder="按名称 / owner / team / tenant_id 搜索…"
+        @keyup.enter="resetPageAndLoad"
+      />
+      <button class="btn btn-ghost btn-sm" @click="clearFilters">清除</button>
+      <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
+      <span class="cf-meta">共 {{ total }} 个</span>
     </div>
 
     <p v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</p>

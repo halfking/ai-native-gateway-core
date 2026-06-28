@@ -8,6 +8,9 @@ import {
   type FormatAnomalySummary,
 } from '../api'
 import { isSuperAdmin } from '../store'
+import ModelPicker from '../components/ModelPicker.vue'
+import ProviderPicker from '../components/ProviderPicker.vue'
+import AnomalyTypePicker, { type AnomalyTypeOption } from '../components/AnomalyTypePicker.vue'
 
 const anomalies = ref<FormatAnomalyRecord[]>([])
 const summaries = ref<FormatAnomalySummary[]>([])
@@ -35,6 +38,15 @@ const anomalyTypeLabels: Record<string, string> = {
   unexpected_structure: '非预期结构',
   null_usage_values: 'Usage 值为 Null',
 }
+
+const anomalyTypeOptions: AnomalyTypeOption[] = [
+  { value: '', label: '全部异常类型' },
+  { value: 'missing_usage_block', label: '缺失 Usage 块', description: '上游响应缺失 usage 块' },
+  { value: 'zero_completion_tokens', label: 'Completion Tokens = 0', description: '响应有内容但 completion_tokens 为 0' },
+  { value: 'extraction_failed', label: '提取失败', description: '无法从响应中提取可用 usage 信息' },
+  { value: 'unexpected_structure', label: '非预期结构', description: '上游返回结构与预期不一致' },
+  { value: 'null_usage_values', label: 'Usage 值为 Null', description: 'usage 中字段存在但值为空' },
+]
 
 const severityLabels: Record<string, string> = {
   low: '低',
@@ -162,9 +174,10 @@ onMounted(async () => {
     error.value = '需要超级管理员权限'
     return
   }
-  await refreshAll()
+  await Promise.all([load(), loadSummary()])
 })
 </script>
+
 
 <template>
   <div class="page">
@@ -198,22 +211,15 @@ onMounted(async () => {
     <div class="filters">
       <div class="filter-field filter-field-provider">
         <label for="provider-filter">Provider</label>
-        <input id="provider-filter" v-model="providerFilter" class="input" placeholder="例如 minimax" />
+        <ProviderPicker v-model="providerFilter" title="选择供应商" placeholder="选择供应商…" />
       </div>
       <div class="filter-field filter-field-model">
         <label for="model-filter">模型</label>
-        <input id="model-filter" v-model="modelFilter" class="input" placeholder="例如 minimax-m3" />
+        <ModelPicker v-model="modelFilter" title="选择模型" placeholder="选择模型…" />
       </div>
       <div class="filter-field filter-field-type">
         <label for="type-filter">异常类型</label>
-        <select id="type-filter" v-model="anomalyTypeFilter" class="select">
-          <option value="">全部异常类型</option>
-          <option value="missing_usage_block">缺失 Usage 块</option>
-          <option value="zero_completion_tokens">Completion Tokens = 0</option>
-          <option value="extraction_failed">提取失败</option>
-          <option value="unexpected_structure">非预期结构</option>
-          <option value="null_usage_values">Usage 值为 Null</option>
-        </select>
+        <AnomalyTypePicker v-model="anomalyTypeFilter" :options="anomalyTypeOptions" title="选择异常类型" placeholder="选择异常类型…" />
       </div>
       <label class="checkbox checkbox-inline">
         <input v-model="unresolvedOnly" type="checkbox" />
