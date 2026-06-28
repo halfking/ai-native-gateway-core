@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -39,7 +40,7 @@ func (r *ModelAvailabilityReader) Read(ctx context.Context, credentialID int, ra
 	if !r.Enabled() {
 		return nil, nil
 	}
-	data, err := r.redis.HGetAll(ctx, (&ModelAvailabilityCache{}).key(credentialID, rawModel)).Result()
+	data, err := r.redis.HGetAll(ctx, modelAvailabilityKey(credentialID, rawModel)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -71,4 +72,43 @@ func (r *ModelAvailabilityReader) Read(ctx context.Context, credentialID int, ra
 		}
 	}
 	return s, nil
+}
+
+func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel string) ([]ModelAvailabilitySnapshotWithCredential, error) {
+	if !r.Enabled() {
+		return nil, nil
+	}
+	keys, err := r.redis.Keys(ctx, fmt.Sprintf("llmgw:avail:*:%s", rawModel)).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ModelAvailabilitySnapshotWithCredential, 0, len(keys))
+	for _, key := range keys {
+		data, err := r.redis.HGetAll(ctx, key).Result()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		credID, err := strconv.Atoi(data["credential_id"])
+		if err != nil {
+			continue
+		}
+		snapshot, err := r.Read(ctx, credID, rawModel)
+		if err != nil || snapshot == nil {
+			continue
+		}
+		out = append(out, ModelAvailabilitySnapshotWithCredential{
+			CredentialID: credID,
+			Snapshot:     *snapshot,
+		})
+	}
+	return out, nil
+}
+
+type ModelAvailabilitySnapshotWithCredential struct {
+	CredentialID int
+	Snapshot     ModelAvailabilitySnapshot
+}
+
+func modelAvailabilityKey(credentialID int, rawModel string) string {
+	return fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)
 }
