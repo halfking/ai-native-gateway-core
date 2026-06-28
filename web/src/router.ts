@@ -45,6 +45,7 @@ import TenantModelsView       from './views/tenant/TenantModelsView.vue'
 import CredentialMonitorView  from './views/CredentialMonitorView.vue'
 import ProbeHealthView        from './views/ProbeHealthView.vue'
 import AgentRegistryView    from './views/AgentRegistryView.vue'
+import FormatAnomaliesView  from './views/FormatAnomaliesView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -83,6 +84,7 @@ export const router = createRouter({
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
+    { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresSuper: true } },
     {
       path: '/session-context',
       component: SessionContextLayout,
