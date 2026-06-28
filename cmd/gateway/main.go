@@ -1499,6 +1499,10 @@ func main() {
 			}
 		})
 		slog.Info("Phase 3.7 agent registry API enabled (/api/agents, /api/agents/:id, /api/agents/:id/link)")
+
+		// Phase 3.8 (2026-06-28): Probe Health Dashboard API
+		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
+		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
 	}
 
 	slog.Info("CHECKPOINT: before middleware stack build")
