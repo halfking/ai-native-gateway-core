@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 const availabilityMetricPrefix = "llmgw_availability_"
@@ -11,13 +12,14 @@ const availabilityMetricPrefix = "llmgw_availability_"
 var (
 	availabilityMetricOnce sync.Once
 
-	availabilityCacheWrites   *prometheus.CounterVec
-	availabilityCacheReads    *prometheus.CounterVec
-	availabilityBackfillRuns  *prometheus.CounterVec
-	availabilityBackfillRows  *prometheus.CounterVec
-	availabilityReadDuration  prometheus.Histogram
-	availabilityWriteDuration prometheus.Histogram
-	availabilityKeys          prometheus.Gauge
+	availabilityCacheWrites        *prometheus.CounterVec
+	availabilityCacheReads         *prometheus.CounterVec
+	availabilityBackfillRuns       *prometheus.CounterVec
+	availabilityBackfillRows       *prometheus.CounterVec
+	availabilityReadDuration       prometheus.Histogram
+	availabilityWriteDuration      prometheus.Histogram
+	availabilityKeys               prometheus.Gauge
+	availabilityBackfillRowsPerRun prometheus.Gauge
 )
 
 // registerAvailabilityMetrics registers all llmgw_availability_* collectors
@@ -33,6 +35,7 @@ var (
 //   - "is Redis serving the cache fast enough?" → read_duration_seconds
 //   - "is Redis accepting writes fast enough?" → write_duration_seconds
 //   - "how many cache entries are live right now?" → keys_count
+//   - "is each backfill pass productive?" → backfill_rows_per_run
 func registerAvailabilityMetrics() {
 	availabilityMetricOnce.Do(func() {
 		availabilityCacheWrites = prometheus.NewCounterVec(
@@ -106,9 +109,21 @@ func registerAvailabilityMetrics() {
 				Help: "Live count of keys under the llmgw:avail:* namespace.",
 			},
 		)
+		// availability_backfill_rows_per_run is the average row yield
+		// per backfill invocation. Operators can pair this with the
+		// BackfillEmpty alert to spot "running but producing nothing"
+		// without having to compute rate(rows) / rate(runs) in
+		// PromQL.
+		availabilityBackfillRowsPerRun = prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: availabilityMetricPrefix + "backfill_rows_per_run",
+				Help: "Average rows written per availability backfill pass.",
+			},
+		)
 		prometheus.MustRegister(availabilityCacheWrites, availabilityCacheReads,
 			availabilityBackfillRuns, availabilityBackfillRows,
-			availabilityReadDuration, availabilityWriteDuration, availabilityKeys)
+			availabilityReadDuration, availabilityWriteDuration,
+			availabilityKeys, availabilityBackfillRowsPerRun)
 	})
 }
 
@@ -171,6 +186,39 @@ func recordAvailabilityKeysAbsolute(count int) {
 		return
 	}
 	availabilityKeys.Set(float64(count))
+}
+
+// recordAvailabilityBackfillRowsPerRun updates the running average of
+// rows written per backfill pass. The caller passes the most recent
+// run's row count; we apply a simple incremental average so the
+// gauge does not snap to a new value on every tick.
+func recordAvailabilityBackfillRowsPerRun(rows int) {
+	if availabilityBackfillRowsPerRun == nil {
+		return
+	}
+	// Read current gauge, blend with new sample, set. The "0.7 prior +
+	// 0.3 new" weighting gives a slow-moving but eventually-tracking
+	// view that smooths over the periodic pass cadence.
+	prior := 0.0
+	if existing, err := readBackfillRowsPerRun(); err == nil {
+		prior = existing
+	}
+	blended := 0.7*prior + 0.3*float64(rows)
+	availabilityBackfillRowsPerRun.Set(blended)
+}
+
+// readBackfillRowsPerRun is a small helper that reads the current
+// gauge value without going through the dto pipeline. Returns 0 if the
+// gauge has not been observed yet.
+func readBackfillRowsPerRun() (float64, error) {
+	if availabilityBackfillRowsPerRun == nil {
+		return 0, nil
+	}
+	m := &dto.Metric{}
+	if err := availabilityBackfillRowsPerRun.Write(m); err != nil {
+		return 0, err
+	}
+	return m.Gauge.GetValue(), nil
 }
 
 // recordAvailabilityBackfillRun is invoked once per backfill pass.

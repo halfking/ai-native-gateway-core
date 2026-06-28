@@ -89,6 +89,30 @@ groups:
                lookback_seconds; if that returns 0 rows the upstream
                DB state is the issue.
 
+      # 2a: backfill yield has dropped off a cliff.
+      #
+      # The backfill_rows_per_run gauge tracks the moving average of
+      # rows written per pass. A sustained value below 1 means the
+      # shouldRefresh guard is rejecting everything in scope, even
+      # when the loop itself is alive (so the Empty alert above is
+      # weaker than this one). Threshold of 1 row per pass is the
+      # "we're touching the cache" floor.
+      - alert: LLMGatewayAvailabilityBackfillYieldLow
+        expr: max(llmgw_availability_backfill_rows_per_run) < 1
+        for: 1h
+        labels:
+          severity: info
+          service: llmgw
+        annotations:
+          summary: "Availability backfill moving average < 1 row per pass"
+          description: |
+            The weighted moving average of rows written per backfill
+            pass has been below 1 for one hour. The worker is alive
+            (so the Empty alert above would not fire) but is producing
+            almost nothing. Pair with
+            `llmgw_availability_keys_count` to decide whether the
+            cache is full (good) or upstream DB is empty (bad).
+
       # 2b: Redis HGETALL round-trip slow.
       #
       # p99 above 50ms means the cache layer is in danger of becoming a
