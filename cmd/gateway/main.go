@@ -866,6 +866,7 @@ func main() {
 	var modelAvailabilityCache *bg.ModelAvailabilityCache
 	var modelAvailabilityReader *bg.ModelAvailabilityReader
 	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
+	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
 	var passiveProbe *bg.PassiveProbeListener
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -1096,6 +1097,20 @@ func main() {
 					defer modelAvailabilityBackfill.Stop()
 				}
 			}
+
+			// Periodic SCAN-based key counter so the
+			// llmgw_availability_keys_count gauge stays accurate even
+			// after Redis failover or operator-initiated FLUSHDB.
+			if fpSlotRedis != nil {
+				modelAvailabilityKeyCounter = bg.NewAvailabilityKeyCounter(
+					fpSlotRedis,
+					5*time.Minute,
+				)
+				if modelAvailabilityKeyCounter != nil {
+					modelAvailabilityKeyCounter.Start(context.Background())
+					defer modelAvailabilityKeyCounter.Stop()
+				}
+			}
 		}
 
 		// Weekly rollup + auto-tune suggester require writes to
@@ -1262,6 +1277,9 @@ func main() {
 				adminHandler.SetAvailabilityReader(modelAvailabilityReader)
 				if modelAvailabilityBackfill != nil {
 					adminHandler.SetAvailabilityBackfill(modelAvailabilityBackfill)
+				}
+				if modelAvailabilityKeyCounter != nil {
+					adminHandler.SetAvailabilityKeyCounter(modelAvailabilityKeyCounter)
 				}
 			}
 			slog.Info("CHECKPOINT: after SetRedisClient")

@@ -94,10 +94,11 @@ type Handler struct {
 	healthTracker interface {
 		Enabled() bool
 	}
-	redisClient          interface{}                   // Redis client for sliding window access
-	availabilityReader   *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
-	availabilityBackfill *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
-	autoTitleGen         *AutoTitleGenerator           // Auto session title generator (2026-06-22)
+	redisClient            interface{}                   // Redis client for sliding window access
+	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
+	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
+	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
+	autoTitleGen           *AutoTitleGenerator           // Auto session title generator (2026-06-22)
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -154,6 +155,14 @@ func (h *Handler) SetAvailabilityReader(r *bg.ModelAvailabilityReader) {
 // invokes it on demand; the worker also runs every interval if started.
 func (h *Handler) SetAvailabilityBackfill(b *bg.AvailabilityCacheBackfill) {
 	h.availabilityBackfill = b
+}
+
+// SetAvailabilityKeyCounter (2026-06-29) wires the SCAN-based
+// keyspace cardinality worker. The admin /api/admin/probe/cache-keys
+// endpoint invokes CountOnce on demand; the worker also runs every
+// interval if started.
+func (h *Handler) SetAvailabilityKeyCounter(k *bg.AvailabilityKeyCounter) {
+	h.availabilityKeyCounter = k
 }
 
 // GetAutoTitleGenerator (2026-06-22) returns the auto title generator for use by routing package.
