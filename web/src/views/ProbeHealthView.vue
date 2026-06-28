@@ -268,11 +268,23 @@ function getPriorityBadge(priority: string): string {
 
 function getStateColor(state: string): string {
   switch (state) {
-    case 'healthy': return 'var(--success)'
-    case 'suspicious': return 'var(--warning)'
-    case 'failing': return 'var(--danger)'
-    case 'probing': return 'var(--accent-h)'
-    default: return 'var(--muted)'
+    case 'healthy':
+    case 'healthy_confirmed':
+    case 'available':
+      return 'var(--success)'
+    case 'recovering':
+      return 'var(--accent-h)'
+    case 'suspicious':
+    case 'unavailable':
+      return 'var(--warning)'
+    case 'failing':
+    case 'broken_confirmed':
+      return 'var(--danger)'
+    case 'probing':
+    case 'unknown':
+      return 'var(--accent-h)'
+    default:
+      return 'var(--muted)'
   }
 }
 

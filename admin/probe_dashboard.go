@@ -704,6 +704,9 @@ func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) 
 	case "prom", "prometheus":
 		writeCacheStateProm(w, entries)
 	default:
+		if entries == nil {
+			entries = []CacheStateEntry{}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"reader":        "redis",
 			"key_prefix":    "llmgw:avail",

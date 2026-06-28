@@ -156,3 +156,38 @@ func TestHandleProbeCacheStateFormatDefault(t *testing.T) {
 		t.Fatalf("content-type = %q, want application/json", got)
 	}
 }
+
+// TestHandleProbeCacheStateEmptyRedis guards against the failure mode
+// that originally made /probe-health render zero rows: the scan path
+// must NOT 500 when Redis has no availability keys yet (cold deploy /
+// after FLUSHDB). The response must be a well-formed JSON payload
+// with count=0 and an empty entries array.
+func TestHandleProbeCacheStateEmptyRedis(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	reader := bg.NewModelAvailabilityReader(client)
+	h := &Handler{availabilityReader: reader, redisClient: client}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/admin/probe/cache-state", nil)
+	h.handleProbeCacheState(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"count":0`) {
+		t.Fatalf(`expected "count":0 in body, got %s`, body)
+	}
+	if !strings.Contains(body, `"entries":[]`) {
+		t.Fatalf(`expected "entries":[] in body, got %s`, body)
+	}
+}
