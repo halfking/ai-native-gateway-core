@@ -30,10 +30,10 @@ type Index struct {
 
 	// hotCanonicalCache caches the 48h hot Top 3 canonicals to reduce
 	// request_logs scans. Protected by hotCanonicalMu. TTL: 2 minutes.
-	hotCanonicalMu    sync.RWMutex
-	hotCanonicals     []int
-	hotCanonicalsTS   time.Time
-	hotCanonicalsTTL  time.Duration
+	hotCanonicalMu   sync.RWMutex
+	hotCanonicals    []int
+	hotCanonicalsTS  time.Time
+	hotCanonicalsTTL time.Duration
 
 	// correctionLoader allows tests and alternate implementations to
 	// override how last-task correction is loaded for RecommendV2.
@@ -362,13 +362,32 @@ SELECT
       WHEN cmb.available IS NOT TRUE THEN COALESCE(cmb.unavailable_reason, 'binding_unavailable')
       WHEN pm.available IS NOT TRUE THEN COALESCE(pm.unavailable_reason, 'provider_model_unavailable')
       ELSE COALESCE(cmb.unavailable_reason, pm.unavailable_reason, '')
-    END AS unavailable_reason
+    END AS unavailable_reason,
+    -- CHANNEL_QUALITY_ROUTING: 通道质量路由所需字段
+    --
+    -- 加载 providers.category / providers.kind，用于驱动
+    -- scoreChannelQuality。JOIN 路径：credentials → providers。
+    -- cr.provider_id 必存在（NOT NULL FK），所以是 INNER JOIN；但
+    -- 保留 LEFT 是为了兼容历史脏数据。
+    COALESCE(p.category, '')  AS provider_category,
+    COALESCE(p.kind, 'cloud') AS provider_kind,
+    -- IsFree 派生：满足以下任一即视为免费（与 deriveIsFree() 一致）
+    --   - billing_mode 在 free 类
+    --   - 价格为 0（in + out 都为 0）
+    -- 注：cost_tier 在 credential_model_index 中无对应列，由 Go
+    -- 侧 deriveIsFree() 用 mc.cost_tier 二次校验。
+    CASE
+      WHEN LOWER(COALESCE(cmi.billing_mode, '')) IN ('free','token_plan','code_plan','agent_plan','monthly')
+        OR (COALESCE(cmi.unit_price_in_per_1m, 0) + COALESCE(cmi.unit_price_out_per_1m, 0)) = 0
+      THEN TRUE ELSE FALSE
+    END AS is_free
 FROM credential_model_index cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
  AND lb.raw_model     = cmi.raw_model
  AND lb.bucket        = cmi.bucket
 JOIN credentials cr ON cr.id = cmi.credential_id
+LEFT JOIN providers p ON p.id = cr.provider_id
 LEFT JOIN provider_models pm
   ON pm.provider_id = cr.provider_id
  AND pm.raw_model_name = cmi.raw_model
@@ -404,6 +423,11 @@ func scanIndexRow(rows interface {
 	var priceIn, priceOut, successRate *float64
 	var routingTier *int16
 	var unavailableReason *string
+	// CHANNEL_QUALITY_ROUTING: 新增字段用 *string/*bool 以允许 NULL
+	// （早期迁移期间 providers 关联缺失时不会让整个 refresh 失败）。
+	var providerCategory *string
+	var providerKind *string
+	var isFree *bool
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &canonicalID,
 		&canonicalName, &tags, &ctxWindow,
@@ -412,6 +436,7 @@ func scanIndexRow(rows interface {
 		&successRate, &c.P95LatencyMs,
 		&c.ActiveSessions, &c.ConcurrencyLimit,
 		&routingTier, &unavailableReason,
+		&providerCategory, &providerKind, &isFree,
 	); err != nil {
 		return c, err
 	}
@@ -467,6 +492,20 @@ func scanIndexRow(rows interface {
 	}
 	if unavailableReason != nil {
 		c.UnavailableReason = strings.TrimSpace(*unavailableReason)
+	}
+	// CHANNEL_QUALITY_ROUTING: 加载 provider category / kind / is_free
+	//
+	// 三者均为可空：providers LEFT JOIN 在 cr.provider_id 异常时会
+	// 返回 NULL row；此时回退到中性的"unknown"语义，scoreChannelQuality
+	// 会给出 base=40，避免拉黑候选。
+	if providerCategory != nil {
+		c.ProviderCategory = strings.TrimSpace(*providerCategory)
+	}
+	if providerKind != nil {
+		c.ProviderKind = strings.TrimSpace(*providerKind)
+	}
+	if isFree != nil {
+		c.IsFree = *isFree
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)

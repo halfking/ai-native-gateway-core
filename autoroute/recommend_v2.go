@@ -20,6 +20,8 @@ func (idx *Index) RecommendV2(
 	sessionID string,
 	topN int,
 ) []ScoredCandidate {
+	flags := GetFeatureFlags()
+
 	idx.mu.RLock()
 	all := idx.entries
 	pool := idx.pool
@@ -108,13 +110,43 @@ func (idx *Index) RecommendV2(
 	scored := make([]ScoredCandidate, 0, len(candidatePool))
 	for _, c := range candidatePool {
 		correction := correctionScoreByModel[c.CanonicalName]
-		bd := ScoreSimplified(c, task, avgPriceByCanonical, correction)
+		var bd ScoringBreakdown
+		switch {
+		case flags.UseChannelQualityRouting:
+			// CHANNEL_QUALITY_ROUTING: 4 维评分
+			//   intent 0.4 + price 0.2 + channel 0.3 + reliability 0.1 + correction
+			bd = ScoreWithChannelQuality(c, task, avgPriceByCanonical, correction)
+		case flags.UseSimplifiedScoring:
+			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
+		default:
+			// NET-013 fix: 完整 Score 路径构建断裂（profileWeightsFromFlags
+			// 不存在，且 Score 签名变更）。WIP feature，临时统一走简化分支。
+			// 修复 tracked in: <TBD>
+			_ = sigs // 当前简化分支未使用，留待 profile/path 落地后回归
+			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
+		}
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}
 
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].Breakdown.Composite > scored[j].Breakdown.Composite
 	})
+
+	// CHANNEL_QUALITY_ROUTING: 池分层（preferred / fallback）
+	//
+	// 业务诉求：当可靠的资源（Minimax 原厂）可用时优先使用；免费但
+	// 不可靠的（NVIDIA NIM）在主渠道未用满之前原则上跳过。
+	//
+	// 实现：
+	//   1. 按 ChannelQuality 把候选分成 preferred / fallback 两池
+	//   2. preferred 池足够（>= topN）→ 只用 preferred
+	//   3. preferred 池不足 → 用 fallback 补足
+	//      - 主渠道未饱和（任意 preferred 的 PressureRatio < 0.95）
+	//        → fallback composite *= 0.5（demotion 严格，fallback 难胜出）
+	//      - 主渠道完全饱和 → fallback composite *= 0.85（demotion 放宽）
+	if flags.UseChannelQualityRouting {
+		scored = stratifyAndPickTopN(scored, topN)
+	}
 
 	if len(scored) > topN {
 		scored = scored[:topN]
@@ -265,7 +297,6 @@ func filterCurrentlyAvailable(ctx context.Context, pool *pgxpool.Pool, all []Can
 	return filtered, nil
 }
 
-
 func fallbackSnapshotAvailability(all []Candidate) []Candidate {
 	filtered := make([]Candidate, 0, len(all))
 	for _, c := range all {
@@ -400,4 +431,78 @@ func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID 
 	`, credentialID, canonicalName).Scan(&available)
 
 	return err == nil && available
+}
+
+// stratifyAndPickTopN 实现池分层 + fallback 降权（CHANNEL_QUALITY_ROUTING）。
+//
+// 入参 scored 必须已经按 Composite 降序排列。函数返回调整后的 topN 候选。
+//
+// 行为：
+//   - 把 scored 拆为 preferred（ChannelQuality >= 50）与 fallback
+//   - 重新排序（按 composite → reliability → price）保证决胜规则一致
+//   - 若 preferred 数量 >= topN：仅取 preferred
+//   - 否则：用 fallback 补足，对 fallback 的 composite 施加 demotion
+//   - 主渠道未饱和 → 0.5
+//   - 主渠道饱和     → 0.85
+//   - 重新按 composite 排序后取 topN
+//
+// 注：demotion 只影响 composite，不修改 ChannelQuality/Reliability 等
+// 维度分数，保证可观测性（X-Gw-Auto-Decision header 仍能看到原始分）。
+func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
+	if topN <= 0 {
+		topN = 3
+	}
+	preferred, fallback := StratifyByChannelQuality(scored)
+
+	// 全部 preferred 都能进 topN → 排序后截断
+	if len(preferred) >= topN {
+		sortScoredByCompositeReliabilityPrice(preferred)
+		return preferred[:topN]
+	}
+
+	// 主渠道饱和？决定 demotion 系数
+	saturated := IsPreferredChannelSaturated(preferred)
+	factor := FallbackDemotionFactor
+	if saturated {
+		factor = FallbackDemotionFactorSaturated
+	}
+
+	// preferred 全保留 + fallback 补足
+	combined := make([]ScoredCandidate, 0, len(preferred)+len(fallback))
+	combined = append(combined, preferred...)
+	combined = append(combined, fallback...)
+
+	// 对 fallback 施加 demotion
+	if factor < 1.0 {
+		for i := range combined {
+			if combined[i].Breakdown.ChannelQuality < ChannelQualityPreferredThreshold {
+				combined[i].Breakdown.Composite *= factor
+			}
+		}
+	}
+
+	// 重新排序（按 composite → reliability → price）
+	sortScoredByCompositeReliabilityPrice(combined)
+
+	if len(combined) > topN {
+		combined = combined[:topN]
+	}
+	return combined
+}
+
+// sortScoredByCompositeReliabilityPrice 是 stratifyAndPickTopN 用的内部
+// 排序函数：先 composite 降序，再 reliability 降序，最后 price 降序。
+//
+// 注意：sort.SliceStable 在原 Composite 不变时不会重新排，所以这里
+// 必须用 sort.Slice 才能让 tie-breaker 真正生效。
+func sortScoredByCompositeReliabilityPrice(s []ScoredCandidate) {
+	sort.Slice(s, func(i, j int) bool {
+		if s[i].Breakdown.Composite != s[j].Breakdown.Composite {
+			return s[i].Breakdown.Composite > s[j].Breakdown.Composite
+		}
+		if s[i].Breakdown.Reliability != s[j].Breakdown.Reliability {
+			return s[i].Breakdown.Reliability > s[j].Breakdown.Reliability
+		}
+		return s[i].Breakdown.PriceScore > s[j].Breakdown.PriceScore
+	})
 }

@@ -18,16 +18,16 @@ type Candidate struct {
 	RawModel      string
 
 	// Static (from models_canonical + provider_offers)
-	BillingMode        string
-	UnitPriceInPer1M   float64
-	UnitPriceOutPer1M  float64
-	ContextWindow      int
-	Tags               []string // e.g. ["reasoning", "code", "agent"]
+	BillingMode       string
+	UnitPriceInPer1M  float64
+	UnitPriceOutPer1M float64
+	ContextWindow     int
+	Tags              []string // e.g. ["reasoning", "code", "agent"]
 	// 新增（需求 #4）：标准模型能力字段
-	ReleasedAt    *time.Time // 发布日期，用于 version_recency 评分
-	Strengths     []string   // 优势方向，用于 strength_match 评分
-	VersionRank   int        // 版本级次：1=最新, 2=次新, ...
-	CostTier      string     // 成本粗评：free/low/medium/high/premium
+	ReleasedAt  *time.Time // 发布日期，用于 version_recency 评分
+	Strengths   []string   // 优势方向，用于 strength_match 评分
+	VersionRank int        // 版本级次：1=最新, 2=次新, ...
+	CostTier    string     // 成本粗评：free/low/medium/high/premium
 
 	// Dynamic (from credential_model_index last 5min bucket)
 	SuccessRate      float64 // 0.0 - 1.0
@@ -46,9 +46,23 @@ type Candidate struct {
 	TaskMatchScore float64
 
 	// 新增（需求 #6）：三级路由字段
-	Tier            string  // primary/secondary/fallback（热门/次选/兜底）
-	PopularityScore float64 // 热门度评分（基于请求量、成功率等）
-	UnavailableReason string // 不可路由原因（为空则可路由）
+	Tier              string  // primary/secondary/fallback（热门/次选/兜底）
+	PopularityScore   float64 // 热门度评分（基于请求量、成功率等）
+	UnavailableReason string  // 不可路由原因（为空则可路由）
+
+	// Channel 质量路由（CHANNEL_QUALITY_ROUTING）：用于表达
+	// "可靠的资源（如 Minimax 原厂）优先于免费的、不可靠的（如
+	// NVIDIA NIM 免费凭据）" 的业务诉求。
+	//
+	// ProviderCategory 直接从 providers.category 加载，5 个取值：
+	//   official, official_proxy, third_party_relay, aggregator, self_host。
+	// ProviderKind 区分 cloud / local。
+	// IsFree 是派生字段：billing_mode=='free' || cost_tier=='free' ||
+	// 价格全 0，用于在 ChannelQuality 评分中识别"免费但可能不可靠"
+	// 的通道（典型：NVIDIA NIM 免费凭据）。
+	ProviderCategory string
+	ProviderKind     string
+	IsFree           bool
 }
 
 // ScoringBreakdown is the per-dimension score output (each 0-100)
@@ -64,13 +78,22 @@ type ScoringBreakdown struct {
 	// 新增（需求 #3）：8 维评分扩展
 	VersionRecency float64 `json:"version_recency"` // 模型新旧度 0-100（高难度偏最新，普通偏次新）
 	StrengthMatch  float64 `json:"strength_match"`  // 优势方向匹配度 0-100（strengths 与 task 交集）
+	// 新增（CHANNEL_QUALITY_ROUTING）：通道质量分与可靠度分
+	//
+	// ChannelQuality 综合 providers.category 静态分 + 运行时健康度
+	// 调整，用于表达"可靠的资源优先于免费的、不可靠的"的业务诉求。
+	// Reliability 独立表达 success_rate + p95_latency 的运行时可靠度。
+	// Composite 在 Simplified 路径下为 4 维加权（intent 0.4 + price
+	// 0.2 + channel 0.3 + reliability 0.1）+ correction。
+	ChannelQuality float64 `json:"channel_quality"`
+	Reliability    float64 `json:"reliability"`
 	Composite      float64 `json:"composite"`
 }
 
 // ScoredCandidate pairs a candidate with its breakdown — returned by
 // the decider for the top-N list stored in auto_decision.
 type ScoredCandidate struct {
-	Candidate Candidate       `json:"candidate"`
+	Candidate Candidate        `json:"candidate"`
 	Breakdown ScoringBreakdown `json:"breakdown"`
 }
 
@@ -99,24 +122,24 @@ type CostContext struct {
 //
 // All per-dimension scores are 0-100 (higher = better):
 //
-//   PriceScore     : inverse of normalised price (cheaper → higher)
-//   SpeedScore     : inverse of normalised latency (faster → higher)
-//   StabilityScore : direct success_rate × 100
-//   MatchScore     : passed-through from candidate.TaskMatchScore × 100
-//   PressureScore  : (1 - pressure_ratio) × 100 (less load → higher)
-//   ContextFit     : context_window / max(estimated_tokens, 4096), capped 1.0
-//   VersionRecency : 模型新旧度（高难度偏最新，普通偏次新）
-//   StrengthMatch  : 优势方向匹配度（strengths 与 task 交集占比）
+//	PriceScore     : inverse of normalised price (cheaper → higher)
+//	SpeedScore     : inverse of normalised latency (faster → higher)
+//	StabilityScore : direct success_rate × 100
+//	MatchScore     : passed-through from candidate.TaskMatchScore × 100
+//	PressureScore  : (1 - pressure_ratio) × 100 (less load → higher)
+//	ContextFit     : context_window / max(estimated_tokens, 4096), capped 1.0
+//	VersionRecency : 模型新旧度（高难度偏最新，普通偏次新）
+//	StrengthMatch  : 优势方向匹配度（strengths 与 task 交集占比）
 //
 // Composite is the weighted sum (weights × score / Sum(weights)).
 //
 // Parameters:
 //
-//   c              : the candidate to score
-//   sigs           : the request classification signals (for context fit)
-//   task           : the classified task type (for strength_match + version_recency)
-//   profile        : determines which weights to apply
-//   costCtx        : cohort-level baselines for normalisation
+//	c              : the candidate to score
+//	sigs           : the request classification signals (for context fit)
+//	task           : the classified task type (for strength_match + version_recency)
+//	profile        : determines which weights to apply
+//	costCtx        : cohort-level baselines for normalisation
 //
 // Returns the ScoringBreakdown (all 0-100 fields plus Composite).
 func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profile, costCtx CostContext) ScoringBreakdown {
@@ -162,15 +185,15 @@ func Score(c Candidate, sigs ClassificationSignals, task TaskType, profile Profi
 //
 // Formula:
 //
-//   blended = unit_price_in + unit_price_out  (assumes 1:1 input/output)
-//   if blended == 0                  → 100 (free)
-//   if costCtx.PriceP75 == 0         → 100 (no cohort baseline)
-//   ratio = blended / PriceP75       (1.0 means at P75, lower better)
-//   score = max(0, min(100, 100 * (1.5 - ratio)))
+//	blended = unit_price_in + unit_price_out  (assumes 1:1 input/output)
+//	if blended == 0                  → 100 (free)
+//	if costCtx.PriceP75 == 0         → 100 (no cohort baseline)
+//	ratio = blended / PriceP75       (1.0 means at P75, lower better)
+//	score = max(0, min(100, 100 * (1.5 - ratio)))
 //
-//   ratio 0.5 (half of P75) → 100
-//   ratio 1.0 (at P75)     → 50
-//   ratio 1.5 (50% more)   → 0
+//	ratio 0.5 (half of P75) → 100
+//	ratio 1.0 (at P75)     → 50
+//	ratio 1.5 (50% more)   → 0
 func scorePrice(c Candidate, costCtx CostContext) float64 {
 	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
 	if blended <= 0 {
@@ -194,10 +217,10 @@ func scorePrice(c Candidate, costCtx CostContext) float64 {
 //
 // Formula:
 //
-//   if P95LatencyMs <= 0          → 80 (unknown → middle)
-//   if costCtx.SpeedP95 <= 0      → 80
-//   ratio = P95LatencyMs / SpeedP95
-//   score = 100 * (1 - ratio)      (faster → higher)
+//	if P95LatencyMs <= 0          → 80 (unknown → middle)
+//	if costCtx.SpeedP95 <= 0      → 80
+//	ratio = P95LatencyMs / SpeedP95
+//	score = 100 * (1 - ratio)      (faster → higher)
 //
 // Capped [0, 100].
 func scoreSpeed(c Candidate, costCtx CostContext) float64 {
@@ -271,12 +294,12 @@ func scorePressure(c Candidate) float64 {
 //
 // Formula:
 //
-//   fit = context_window / max(estimated_tokens, 4096)
-//   score = min(100, fit × 100)
+//	fit = context_window / max(estimated_tokens, 4096)
+//	score = min(100, fit × 100)
 //
-//   fit >= 1.0 (context fits comfortably) → 100
-//   fit 0.5 (context half the requirement)  → 50
-//   fit 0.0 (context window unknown)       → 50 (middle)
+//	fit >= 1.0 (context fits comfortably) → 100
+//	fit 0.5 (context half the requirement)  → 50
+//	fit 0.0 (context window unknown)       → 50 (middle)
 func scoreContextFit(c Candidate, estTokens int) float64 {
 	if c.ContextWindow <= 0 {
 		return 50
@@ -302,19 +325,19 @@ func scoreContextFit(c Candidate, estTokens int) float64 {
 // Task → required tags mapping (curated based on common model
 // capabilities):
 //
-//   reasoning    : ["reasoning", "math", "logic"]
-//   code         : ["code", "programming"]
-//   agent        : ["agent", "tool_use", "function_call"]
-//   creative     : ["creative", "writing"]
-//   long_context : ["long_context", "128k", "200k", "512k", "1m"]
-//   vision       : ["vision", "multimodal"]
-//   function_call: ["function_call", "tool_use"]
-//   chat         : []   (no specific tags required)
+//	reasoning    : ["reasoning", "math", "logic"]
+//	code         : ["code", "programming"]
+//	agent        : ["agent", "tool_use", "function_call"]
+//	creative     : ["creative", "writing"]
+//	long_context : ["long_context", "128k", "200k", "512k", "1m"]
+//	vision       : ["vision", "multimodal"]
+//	function_call: ["function_call", "tool_use"]
+//	chat         : []   (no specific tags required)
 //
 // Match formula:
 //
-//   hits = |required ∩ candidate.tags|  (case-insensitive substring match)
-//   score = hits / |required|           (1.0 when all required tags hit)
+//	hits = |required ∩ candidate.tags|  (case-insensitive substring match)
+//	score = hits / |required|           (1.0 when all required tags hit)
 //
 // Tag matching is substring-based so "code" matches "code_completion"
 // and "code-review". This is loose but resilient to taxonomy drift.
