@@ -40,6 +40,15 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 	pipe.HSet(ctx, key, fields)
 	pipe.Expire(ctx, key, c.ttl)
 	_, err := pipe.Exec(ctx)
+	if err == nil {
+		if src, ok := fields["source"].(string); ok {
+			state := ""
+			if s, ok := fields["state"].(string); ok {
+				state = s
+			}
+			recordAvailabilityCacheWrite(src, state)
+		}
+	}
 	return err
 }
 

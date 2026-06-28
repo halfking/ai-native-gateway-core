@@ -765,7 +765,7 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	count, err := h.availabilityBackfill.RunOnce(ctx)
+	count, err := h.availabilityBackfill.RunOnceWithTrigger(ctx, "manual")
 	if err != nil {
 		http.Error(w, "backfill failed: "+err.Error(), http.StatusInternalServerError)
 		return
