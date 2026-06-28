@@ -930,6 +930,7 @@ func main() {
 			if keyring != nil {
 				credProbeV2.SetKeyring(keyring)
 			}
+			credProbeV2.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			credProbeV2.Start(context.Background())
 			slog.Info("CHECKPOINT: after credProbeV2.Start")
@@ -988,6 +989,7 @@ func main() {
 			// stateWriter lets it write availability_state='unreachable'.
 			slog.Info("CHECKPOINT: before NewPassiveProbeListener")
 			passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credentialstate.NewWriter(dbConn.Pool()))
+			passiveProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before passiveProbe.Start")
 			passiveProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: after passiveProbe.Start")
@@ -1307,7 +1309,17 @@ func main() {
 
 	slog.Info("CHECKPOINT: before healthz registration")
 
+	// NET-007 fix: /healthz 拆分两 path：
+	//   - /healthz            匿名基础探测（K8s liveness 用）
+	//   - /healthz/full       admin token 才能访问的详细状态（替换 ?full=true）
+	//
+	// 历史 /healthz?full=true 仍被 healthHandler 接住，但 server 端会因
+	// query 参数含 full=true 且 Authorization 不存在而 401（见
+	// domains/streaming/handler.go ServeHTTP 改动）。
 	mux.Handle("/healthz", healthHandler)
+	mux.Handle("/healthz/full",
+		middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(healthHandler))
+
 	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
 	// 指标含 provider / credential 等敏感标签）。使用
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
@@ -1385,27 +1397,35 @@ func main() {
 	}
 
 	// ── Config reload endpoint ──────────────────────────────────────────
+	//
+	// NET-003 fix:
+	//   1. 必须 admin token（LLM_GATEWAY_ADMIN_API_KEY），未授权返回 401
+	//   2. 错误响应脱敏：只返回通用 "config reload failed"，详细 err 保留
+	//      在服务端 slog 日志（供运维排查）
+	//   3. 成功响应保持 {status: ok}
 	if configFile != "" {
 		configPath := configFile
-		mux.HandleFunc("/admin/config/reload", func(w http.ResponseWriter, r *http.Request) {
+		reloadHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodPost {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			if err := cfgStore.ReloadFile(configPath); err != nil {
-				slog.Error("config: hot-reload failed", "error", err)
+				slog.Error("config: hot-reload failed", "path", configPath, "error", err)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				//nolint:errcheck // HTTP write error non-recoverable
-				json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+				json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "config reload failed"})
 				return
 			}
-			slog.Info("config: hot-reload succeeded")
+			slog.Info("config: hot-reload succeeded", "path", configPath)
 			w.Header().Set("Content-Type", "application/json")
 			//nolint:errcheck // HTTP write error non-recoverable
 			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		})
-		slog.Info("config: hot-reload endpoint enabled", "path", configFile)
+		mux.Handle("/admin/config/reload",
+			middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(reloadHandler))
+		slog.Info("config: hot-reload endpoint enabled (admin auth required)", "path", configFile)
 	}
 
 	// Static files / SPA fallback
