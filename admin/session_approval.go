@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -331,10 +332,14 @@ func (h *Handler) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
 //
 // GET /v1/approvals/:id/status
 //
-// 此端点面向客户端轮询，不强制 admin 鉴权（approval_id 是
-// 不可猜测的 UUID）。但调用方可携带 X-Tenant-ID header，handler
-// 会用它做行租户比对以阻止跨租户窥探（缺失 header → 仅返回
-// status 字段，不返回 detect_result / snapshot）。
+// NET-004 fix:
+//   1. 不再信 X-Tenant-ID header（任何客户端都能伪造）——租户从 JWT/AuthContext 拿
+//   2. 跨租户与"不存在"统一返回 404 + 通用响应体，防枚举
+//   3. 无 AuthContext（完全匿名）的请求直接 404（修复前 silent success）
+//   4. 错误信息脱敏为 "approval not found"
+//
+// 安全假设：approval_id 即使不可猜，泄漏一个就足以让外人持续枚举——
+// 必须依靠 tenant 隔离 + 错误响应一致性来增加攻击成本。
 func (h *Handler) handleApprovalStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -348,17 +353,22 @@ func (h *Handler) handleApprovalStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestedTenant := r.Header.Get("X-Tenant-ID")
-	record, err := h.approvalMgr.GetForTenant(r.Context(), approvalID, requestedTenant)
+	// 从 JWT/AuthContext 拿租户，绝不信客户端 header。
+	callerTenant := ApprovalCallerTenantID(r)
+	if callerTenant == "" || callerTenant == "default" {
+		// 没有任何 auth context —— 视为匿名窥探，统一 404 不暴露信息
+		writeError(w, http.StatusNotFound, "approval not found")
+		return
+	}
+
+	record, err := h.approvalMgr.GetForTenant(r.Context(), approvalID, callerTenant)
 	if err != nil {
-		status := http.StatusNotFound
-		switch {
-		case errors.Is(err, sessionaudit.ErrTenantMismatch):
-			status = http.StatusForbidden
-		case errors.Is(err, sessionaudit.ErrNotFound):
-			status = http.StatusNotFound
-		}
-		writeError(w, status, "approval not accessible")
+		// NET-004 fix: 跨租户、未知 ID、任意错误统一 404 + 通用响应，
+		// 防止攻击者通过 403/404 差异 + 错误文本枚举 approval_id。
+		// 详细错误保留在服务端 slog。
+		slog.Debug("approval status lookup failed", "approval_id", approvalID,
+			"caller_tenant", callerTenant, "error", err)
+		writeError(w, http.StatusNotFound, "approval not found")
 		return
 	}
 

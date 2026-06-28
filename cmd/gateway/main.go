@@ -306,29 +306,34 @@ func main() {
 		// for intelligent credential selection based on historical performance.
 		// Flushes state to database every 10s or when 100 credentials are dirty.
 		// Controlled by LLM_GATEWAY_ENABLE_BANDIT_SCORING (default: false).
-		if cfg.EnableBanditScoring && dbConn != nil && dbConn.Enabled() {
-			banditScorer := credential.NewBanditScorer()
-
-			// Load historical state from database (cold start recovery)
-			if err := banditScorer.LoadFromDB(context.Background(), dbConn.Pool()); err != nil {
-				slog.Warn("bandit: failed to load state from database", "error", err)
-			}
-
-			banditFlusher := credential.NewBanditFlusher(
-				dbConn.Pool(),
-				banditScorer,
-				10*time.Second, // flush interval
-				100,            // batch size
-			)
-			banditFlusher.Start()
-			defer banditFlusher.Stop()
-
-			router.Bandit = banditScorer
-			router.BanditFlusher = banditFlusher
-			slog.Info("bandit_scoring", "enabled", true, "flush_interval", "10s", "batch_size", 100)
-		} else if cfg.EnableBanditScoring {
-			slog.Warn("bandit_scoring", "enabled", false, "reason", "database not available")
-		}
+		//
+		// NET-012 fix: 此段在 main 分支上构建断裂（cfg.EnableBanditScoring
+		// / banditScorer.LoadFromDB 符号不存在）。WIP feature，临时注释掉。
+		// 修复 tracked in: <TBD>
+		_ = "bandit scoring disabled (WIP build break) — re-enable when BanditScorer API stabilizes"
+		// if cfg.EnableBanditScoring && dbConn != nil && dbConn.Enabled() {
+		// 	banditScorer := credential.NewBanditScorer()
+		//
+		// 	// Load historical state from database (cold start recovery)
+		// 	if err := banditScorer.LoadFromDB(context.Background(), dbConn.Pool()); err != nil {
+		// 		slog.Warn("bandit: failed to load state from database", "error", err)
+		// 	}
+		//
+		// 	banditFlusher := credential.NewBanditFlusher(
+		// 		dbConn.Pool(),
+		// 		banditScorer,
+		// 		10*time.Second, // flush interval
+		// 		100,            // batch size
+		// 	)
+		// 	banditFlusher.Start()
+		// 	defer banditFlusher.Stop()
+		//
+		// 	router.Bandit = banditScorer
+		// 	router.BanditFlusher = banditFlusher
+		// 	slog.Info("bandit_scoring", "enabled", true, "flush_interval", "10s", "batch_size", 100)
+		// } else if cfg.EnableBanditScoring {
+		// 	slog.Warn("bandit_scoring", "enabled", false, "reason", "database not available")
+		// }
 
 		norm := streaming.NewNormalizer()
 		routingExec = executors.NewExecutor(
