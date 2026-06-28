@@ -42,26 +42,41 @@ type FeatureFlags struct {
 	EnableV2Logic bool
 }
 
-// DefaultFeatureFlags returns the default flags. New behavior is off by default.
+// DefaultFeatureFlags returns the default flags.
+//
+// 注意（2026-06-28 起）：UseChannelQualityRouting 默认开启
+// （"全量启动，没有灰度"）。如需在某个部署实例上回退到旧的 2 维公式，
+// 显式设置环境变量 AUTO_USE_CHANNEL_QUALITY_ROUTING=false。
+//
+// 其它 V2 flag 仍保持默认关闭（它们各自独立 opt-in），原因：
+//   - 多数 V2 子功能仍在迭代中
+//   - UseChannelQualityRouting 是已通过审计的稳定特性
 func DefaultFeatureFlags() *FeatureFlags {
 	return &FeatureFlags{
-		UseSimplifiedScoring:     false,
-		UseHotTop3Pool:           false,
-		UseCacheRevalidation:     false,
-		Use48hFallback:           false,
-		UseChannelQualityRouting: false,
+		UseSimplifiedScoring: false,
+		UseHotTop3Pool:       false,
+		UseCacheRevalidation: false,
+		Use48hFallback:       false,
+		// CHANNEL_QUALITY_ROUTING: 2026-06-28 起默认开启。
+		// Opt-out：环境变量 AUTO_USE_CHANNEL_QUALITY_ROUTING=false。
+		UseChannelQualityRouting: true,
 		EnableV2Logic:            false,
 	}
 }
 
 // LoadFeatureFlagsFromEnv loads feature flags from environment variables.
+//
+// UseChannelQualityRouting 的默认值是 true（与 DefaultFeatureFlags 一致），
+// 表示"全量启动，没有灰度"。Opt-out：环境变量
+// AUTO_USE_CHANNEL_QUALITY_ROUTING=false。
 func LoadFeatureFlagsFromEnv() *FeatureFlags {
 	flags := &FeatureFlags{
-		UseSimplifiedScoring:     getEnvBool("AUTO_USE_SIMPLIFIED_SCORING", false),
-		UseHotTop3Pool:           getEnvBool("AUTO_USE_HOT_TOP3_POOL", false),
-		UseCacheRevalidation:     getEnvBool("AUTO_USE_CACHE_REVALIDATION", false),
-		Use48hFallback:           getEnvBool("AUTO_USE_48H_FALLBACK", false),
-		UseChannelQualityRouting: getEnvBool("AUTO_USE_CHANNEL_QUALITY_ROUTING", false),
+		UseSimplifiedScoring: getEnvBool("AUTO_USE_SIMPLIFIED_SCORING", false),
+		UseHotTop3Pool:       getEnvBool("AUTO_USE_HOT_TOP3_POOL", false),
+		UseCacheRevalidation: getEnvBool("AUTO_USE_CACHE_REVALIDATION", false),
+		Use48hFallback:       getEnvBool("AUTO_USE_48H_FALLBACK", false),
+		// CHANNEL_QUALITY_ROUTING: 默认 true（全量启动）
+		UseChannelQualityRouting: getEnvBool("AUTO_USE_CHANNEL_QUALITY_ROUTING", true),
 		EnableV2Logic:            getEnvBool("AUTO_ENABLE_V2", false),
 	}
 
@@ -70,8 +85,8 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		flags.UseHotTop3Pool = true
 		flags.UseCacheRevalidation = true
 		flags.Use48hFallback = true
-		// NOTE: UseChannelQualityRouting is NOT auto-enabled by V2 umbrella.
-		// The 4-dim formula is a separate experiment; enable explicitly.
+		// NOTE: UseChannelQualityRouting 不受 EnableV2Logic 影响，
+		// 它已经是默认开启；这里不需要再设为 true。
 	}
 
 	return flags
