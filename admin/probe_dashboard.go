@@ -15,6 +15,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/redis/go-redis/v9"
 )
 
 // ── Data Models ─────────────────────────────────────────────────────────
@@ -28,11 +31,11 @@ type ModelHealthSummary struct {
 	ProviderName    string `json:"provider_name"`
 
 	// State distribution
-	TotalCredentials  int `json:"total_credentials"`
-	HealthyCount      int `json:"healthy_count"`
-	SuspiciousCount   int `json:"suspicious_count"`
-	FailingCount      int `json:"failing_count"`
-	ProbingCount      int `json:"probing_count"`
+	TotalCredentials  int     `json:"total_credentials"`
+	HealthyCount      int     `json:"healthy_count"`
+	SuspiciousCount   int     `json:"suspicious_count"`
+	FailingCount      int     `json:"failing_count"`
+	ProbingCount      int     `json:"probing_count"`
 	HealthyPercentage float64 `json:"healthy_percentage"`
 	FailingPercentage float64 `json:"failing_percentage"`
 
@@ -43,14 +46,14 @@ type ModelHealthSummary struct {
 	WatchdogCount           int `json:"watchdog_count"`
 
 	// Health metrics
-	AvgSuccessRate7d         float64 `json:"avg_success_rate_7d"`
-	AvgVerificationHours     float64 `json:"avg_verification_hours"`
-	AvgConsecutiveSuccesses  float64 `json:"avg_consecutive_successes"`
+	AvgSuccessRate7d        float64 `json:"avg_success_rate_7d"`
+	AvgVerificationHours    float64 `json:"avg_verification_hours"`
+	AvgConsecutiveSuccesses float64 `json:"avg_consecutive_successes"`
 
 	// Real request stats (24h)
-	TotalRealSuccess24h   int     `json:"total_real_success_24h"`
-	TotalRealFailure24h   int     `json:"total_real_failure_24h"`
-	RealSuccessRate24h    *float64 `json:"real_success_rate_24h,omitempty"`
+	TotalRealSuccess24h int      `json:"total_real_success_24h"`
+	TotalRealFailure24h int      `json:"total_real_failure_24h"`
+	RealSuccessRate24h  *float64 `json:"real_success_rate_24h,omitempty"`
 
 	// Timestamps
 	LastVerifiedAt    *time.Time `json:"last_verified_at,omitempty"`
@@ -109,40 +112,40 @@ type ProbeSystemHealth struct {
 	TotalRealFailure24h int `json:"total_real_failure_24h"`
 
 	// Alerts
-	CriticalNodes      int `json:"critical_nodes"`
-	PendingProbes5min  int `json:"pending_probes_5min"`
+	CriticalNodes     int `json:"critical_nodes"`
+	PendingProbes5min int `json:"pending_probes_5min"`
 
 	SnapshotAt time.Time `json:"snapshot_at"`
 }
 
 // ModelNodeDetail represents detailed info for a single credential×model node
 type ModelNodeDetail struct {
-	RawModelName    string `json:"raw_model_name"`
-	OutboundModel   string `json:"outbound_model_name"`
-	ProbePriority   string `json:"probe_priority"`
-	State           string `json:"state"`
+	RawModelName  string `json:"raw_model_name"`
+	OutboundModel string `json:"outbound_model_name"`
+	ProbePriority string `json:"probe_priority"`
+	State         string `json:"state"`
 
 	CredentialID    int64  `json:"credential_id"`
 	CredentialLabel string `json:"credential_label"`
 	ProviderName    string `json:"provider_name"`
 
 	// Status
-	LastVerifiedAt      *time.Time `json:"last_verified_at,omitempty"`
-	NextRetryAt         *time.Time `json:"next_retry_at,omitempty"`
-	MarkedSuspiciousAt  *time.Time `json:"marked_suspicious_at,omitempty"`
-	ProbingStartedAt    *time.Time `json:"probing_started_at,omitempty"`
+	LastVerifiedAt     *time.Time `json:"last_verified_at,omitempty"`
+	NextRetryAt        *time.Time `json:"next_retry_at,omitempty"`
+	MarkedSuspiciousAt *time.Time `json:"marked_suspicious_at,omitempty"`
+	ProbingStartedAt   *time.Time `json:"probing_started_at,omitempty"`
 
 	// Stats
-	ConsecutiveSuccesses        int      `json:"consecutive_successes"`
-	ConsecutiveFailures         int      `json:"consecutive_failures"`
-	ConsecutiveWatchdogSuccesses int     `json:"consecutive_watchdog_successes"`
-	SuccessRate7d               *float64 `json:"success_rate_7d,omitempty"`
-	VerificationInterval        string   `json:"verification_interval"`
+	ConsecutiveSuccesses         int      `json:"consecutive_successes"`
+	ConsecutiveFailures          int      `json:"consecutive_failures"`
+	ConsecutiveWatchdogSuccesses int      `json:"consecutive_watchdog_successes"`
+	SuccessRate7d                *float64 `json:"success_rate_7d,omitempty"`
+	VerificationInterval         string   `json:"verification_interval"`
 
 	// Real requests (24h)
-	RealSuccess24h      int        `json:"real_success_24h"`
-	RealFailure24h      int        `json:"real_failure_24h"`
-	LastRealRequestAt   *time.Time `json:"last_real_request_at,omitempty"`
+	RealSuccess24h    int        `json:"real_success_24h"`
+	RealFailure24h    int        `json:"real_failure_24h"`
+	LastRealRequestAt *time.Time `json:"last_real_request_at,omitempty"`
 
 	// Error info
 	LastUnavailableReason *string `json:"last_unavailable_reason,omitempty"`
@@ -359,6 +362,20 @@ func (h *Handler) handleProbeModelNodes(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if rc, ok := h.redisClient.(*redis.Client); ok {
+			reader := bg.NewModelAvailabilityReader(rc)
+			if reader != nil {
+				snapshot, cacheErr := reader.Read(r.Context(), int(n.CredentialID), n.RawModelName)
+				if cacheErr == nil && snapshot != nil {
+					n.State = snapshot.State
+					n.ConsecutiveSuccesses = snapshot.ConsecutiveSuccesses
+					n.ConsecutiveFailures = snapshot.ConsecutiveFailures
+					if snapshot.NextRetryAt != nil {
+						n.NextRetryAt = snapshot.NextRetryAt
+					}
+				}
+			}
+		}
 		nodes = append(nodes, n)
 	}
 
@@ -436,17 +453,17 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 	defer rows.Close()
 
 	type TimelinePoint struct {
-		RawModelName         string     `json:"raw_model_name"`
-		OutboundModel        string     `json:"outbound_model_name"`
-		HourBucket           time.Time  `json:"hour_bucket"`
-		TotalProbes          int        `json:"total_probes"`
-		SuccessfulProbes     int        `json:"successful_probes"`
-		FailedProbes         int        `json:"failed_probes"`
-		SuccessRate          float64    `json:"success_rate"`
-		AvgLatencyMs         *float64   `json:"avg_latency_ms,omitempty"`
-		ProbedCredentials    int        `json:"probed_credentials"`
+		RawModelName          string    `json:"raw_model_name"`
+		OutboundModel         string    `json:"outbound_model_name"`
+		HourBucket            time.Time `json:"hour_bucket"`
+		TotalProbes           int       `json:"total_probes"`
+		SuccessfulProbes      int       `json:"successful_probes"`
+		FailedProbes          int       `json:"failed_probes"`
+		SuccessRate           float64   `json:"success_rate"`
+		AvgLatencyMs          *float64  `json:"avg_latency_ms,omitempty"`
+		ProbedCredentials     int       `json:"probed_credentials"`
 		SuccessfulCredentials int       `json:"successful_credentials"`
-		FailedCredentials    int        `json:"failed_credentials"`
+		FailedCredentials     int       `json:"failed_credentials"`
 	}
 
 	var timeline []TimelinePoint
