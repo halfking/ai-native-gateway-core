@@ -25,7 +25,7 @@ type mockHook struct {
 	onErrorCalls int32
 }
 
-func (h *mockHook) Name() string { return h.name }
+func (h *mockHook) Name() string  { return h.name }
 func (h *mockHook) Priority() int { return h.priority }
 func (h *mockHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool {
 	return h.enabled
@@ -353,17 +353,18 @@ func TestRequestPipeline_StageFailureStops(t *testing.T) {
 	}
 }
 
-// Test 9: AllPhases 返回 15 个阶段
+// Test 9: AllPhases returns the canonical phase order (PR-V4-02: 16 phases).
 func TestAllPhases(t *testing.T) {
 	phases := AllPhases()
-	if len(phases) != 15 {
-		t.Errorf("expected 15 phases, got %d", len(phases))
+	if len(phases) != 16 {
+		t.Errorf("expected 16 phases, got %d", len(phases))
 	}
 
 	// 检查顺序
 	expected := []Phase{
 		PhasePreAuthentication, PhaseAuthentication, PhasePostAuthentication,
 		PhasePreRouting, PhaseRouting, PhasePostRouting,
+		PhaseGovernance,
 		PhasePreTransform, PhaseTransform, PhasePostTransform,
 		PhasePreUpstream, PhaseUpstream, PhasePostUpstream,
 		PhasePreResponse, PhaseResponse, PhasePostResponse,
