@@ -28,6 +28,21 @@ type Index struct {
 	byCanonical map[int][]*Candidate
 	lastRefresh time.Time
 
+	// hotCanonicalCache caches the 48h hot Top 3 canonicals to reduce
+	// request_logs scans. Protected by hotCanonicalMu. TTL: 2 minutes.
+	hotCanonicalMu    sync.RWMutex
+	hotCanonicals     []int
+	hotCanonicalsTS   time.Time
+	hotCanonicalsTTL  time.Duration
+
+	// correctionLoader allows tests and alternate implementations to
+	// override how last-task correction is loaded for RecommendV2.
+	correctionLoader func(context.Context, *pgxpool.Pool, string, int, TaskType) (map[string]float64, error)
+
+	// availabilityFilter allows tests and alternate implementations to
+	// override the live availability check used by RecommendV2.
+	availabilityFilter func(context.Context, *pgxpool.Pool, []Candidate) ([]Candidate, error)
+
 	// Pool is the optional PG pool for on-demand refresh when the cache
 	// is stale (older than staleThreshold). nil disables on-demand refresh.
 	pool *pgxpool.Pool
@@ -40,8 +55,9 @@ type Index struct {
 // NewIndex constructs an empty index. Call Refresh once before first use.
 func NewIndex() *Index {
 	return &Index{
-		byCanonical:    make(map[int][]*Candidate),
-		staleThreshold: 10 * time.Minute,
+		byCanonical:      make(map[int][]*Candidate),
+		staleThreshold:   10 * time.Minute,
+		hotCanonicalsTTL: 2 * time.Minute,
 	}
 }
 
@@ -340,13 +356,25 @@ SELECT
     cmi.success_rate,
     cmi.p95_latency_ms,
     cmi.active_sessions,
-    cmi.concurrency_limit
+    cmi.concurrency_limit,
+    cmb.routing_tier,
+    CASE
+      WHEN cmb.available IS NOT TRUE THEN COALESCE(cmb.unavailable_reason, 'binding_unavailable')
+      WHEN pm.available IS NOT TRUE THEN COALESCE(pm.unavailable_reason, 'provider_model_unavailable')
+      ELSE COALESCE(cmb.unavailable_reason, pm.unavailable_reason, '')
+    END AS unavailable_reason
 FROM credential_model_index cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
  AND lb.raw_model     = cmi.raw_model
  AND lb.bucket        = cmi.bucket
 JOIN credentials cr ON cr.id = cmi.credential_id
+LEFT JOIN provider_models pm
+  ON pm.provider_id = cr.provider_id
+ AND pm.raw_model_name = cmi.raw_model
+LEFT JOIN credential_model_bindings cmb
+  ON cmb.credential_id = cmi.credential_id
+ AND cmb.provider_model_id = pm.id
 LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
 WHERE COALESCE(cr.lifecycle_status, 'active') != 'suspended'
   AND COALESCE(cr.status, 'active') NOT IN ('disabled')
@@ -374,6 +402,8 @@ func scanIndexRow(rows interface {
 	var canonicalName *string
 	var billingMode *string
 	var priceIn, priceOut, successRate *float64
+	var routingTier *int16
+	var unavailableReason *string
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &canonicalID,
 		&canonicalName, &tags, &ctxWindow,
@@ -381,6 +411,7 @@ func scanIndexRow(rows interface {
 		&priceIn, &priceOut,
 		&successRate, &c.P95LatencyMs,
 		&c.ActiveSessions, &c.ConcurrencyLimit,
+		&routingTier, &unavailableReason,
 	); err != nil {
 		return c, err
 	}
@@ -404,6 +435,38 @@ func scanIndexRow(rows interface {
 	}
 	if successRate != nil {
 		c.SuccessRate = *successRate
+	}
+	if routingTier != nil {
+		switch {
+		case *routingTier <= 1:
+			c.Tier = "primary"
+		case *routingTier <= 3:
+			c.Tier = "secondary"
+		default:
+			c.Tier = "fallback"
+		}
+		c.PopularityScore = 100 - float64(*routingTier)
+		if c.PopularityScore < 0 {
+			c.PopularityScore = 0
+		}
+		if c.PopularityScore > 100 {
+			c.PopularityScore = 100
+		}
+		if c.Tier == "primary" {
+			c.PopularityScore += c.SuccessRate * 10
+		}
+		if c.PopularityScore > 100 {
+			c.PopularityScore = 100
+		}
+		if c.PopularityScore < 0 {
+			c.PopularityScore = 0
+		}
+		if c.PopularityScore > 100 {
+			c.PopularityScore = 100
+		}
+	}
+	if unavailableReason != nil {
+		c.UnavailableReason = strings.TrimSpace(*unavailableReason)
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)

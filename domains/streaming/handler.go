@@ -2096,64 +2096,66 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 		// Record format anomaly if estimation failed or returned zero completion tokens
 		// despite having response content (helps detect provider format changes)
-		if h.anomalyRecorder != nil && reqLog.Success {
-			providerID := result.Candidate.ProviderID
-			clientModel := evt.ClientModel
-			outboundModel := evt.OutboundModel
+			if h.anomalyRecorder != nil && reqLog.Success {
+				providerID := result.Candidate.ProviderID
+				providerCode := result.Candidate.CatalogCode
+				clientModel := evt.ClientModel
+				outboundModel := evt.OutboundModel
 
-			// Detect anomaly type
-			var anomalyType AnomalyType
-			var severity Severity
-			if estPrompt == 0 && estCompletion == 0 && len(result.ResponseBody) > 0 {
-				anomalyType = AnomalyExtractionFailed
-				severity = SeverityHigh
-			} else if estCompletion == 0 && len(result.ResponseBody) > 100 {
-				anomalyType = AnomalyZeroCompletion
-				severity = SeverityMedium
-			} else {
-				anomalyType = AnomalyMissingUsage
-				severity = SeverityLow
-			}
-
-			// Sample before recording (avoid flooding table)
-			if ShouldRecordAnomaly(context.Background(), anomalyType, "", clientModel) {
-				contentSize := len(result.ResponseBody)
-				structure := AnalyzeResponseStructure(result.ResponseBody)
-				sample := TruncateForSample(string(result.ResponseBody), 1000)
-				usageSource := UsageSourceEstimated
-
-				var tenantIDInt *int
-				if tenantID != "" && tenantID != "default" {
-					// Try to parse tenant ID
-					if tid, err := strconv.Atoi(tenantID); err == nil {
-						tenantIDInt = &tid
-					}
+				// Detect anomaly type
+				var anomalyType AnomalyType
+				var severity Severity
+				if estPrompt == 0 && estCompletion == 0 && len(result.ResponseBody) > 0 {
+					anomalyType = AnomalyExtractionFailed
+					severity = SeverityHigh
+				} else if estCompletion == 0 && len(result.ResponseBody) > 100 {
+					anomalyType = AnomalyZeroCompletion
+					severity = SeverityMedium
+				} else {
+					anomalyType = AnomalyMissingUsage
+					severity = SeverityLow
 				}
 
-				go func() {
-					// Record asynchronously to avoid blocking request completion
-					recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-					defer cancel()
+				// Sample before recording (avoid flooding table)
+				if ShouldRecordAnomaly(anomalyType, providerCode) {
+					contentSize := len(result.ResponseBody)
+					structure := AnalyzeResponseStructure(result.ResponseBody)
+					sample := TruncateForSample(string(result.ResponseBody), 1000)
+					usageSource := UsageSourceEstimated
+					var providerCodePtr *string
+					if providerCode != "" {
+						providerCodePtr = &providerCode
+					}
+					var tenantCodePtr *string
+					if tenantID != "" {
+						tenantCodePtr = &tenantID
+					}
 
-					_ = h.anomalyRecorder.RecordAnomaly(recordCtx, AnomalyRecord{
-						RequestID:      evt.RequestID,
-						ProviderID:     &providerID,
-						ProviderCode:   nil, // Not available in Candidate struct
-						ClientModel:    &clientModel,
-						OutboundModel:  &outboundModel,
-						AnomalyType:    anomalyType,
-						Severity:       severity,
-						UsageSource:    &usageSource,
-						ExpectedTokens: &estCompletion,
-						ActualTokens:   nil, // No actual value available
-						ContentSize:    &contentSize,
-						Structure:      structure,
-						ResponseSample: &sample,
-						TenantID:       tenantIDInt,
-					})
-				}()
+					go func() {
+						// Record asynchronously to avoid blocking request completion
+						recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer cancel()
+
+						_ = h.anomalyRecorder.RecordAnomaly(recordCtx, AnomalyRecord{
+							RequestID:      evt.RequestID,
+							ProviderID:     &providerID,
+							ProviderCode:   providerCodePtr,
+							ClientModel:    &clientModel,
+							OutboundModel:  &outboundModel,
+							AnomalyType:    anomalyType,
+							Severity:       severity,
+							UsageSource:    &usageSource,
+							ExpectedTokens: &estCompletion,
+							ActualTokens:   nil,
+							ContentSize:    &contentSize,
+							Structure:      structure,
+							ResponseSample: &sample,
+							TenantID:       tenantCodePtr,
+						})
+					}()
+				}
 			}
-		}
+
 	} else if reqLog.UsageSource == nil {
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
 	}
@@ -2812,12 +2814,30 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Version: resolveGatewayVersion(),
 	}
 
-	if r.URL.Query().Get("full") == "true" {
+	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
+	// 校验由外层 AdminTokenMiddleware 完成；这里只拒绝"完全无 token"的情形）。
+	//
+	// ?full=true 会暴露 circuit.Stats() / limiter.Stats() / proxy.Status()
+	// （含 18 个内网域名、credential 熔断状态等敏感信息），不应匿名访问。
+	full := r.URL.Query().Get("full") == "true"
+	if full {
+		const expectedHeader = "Bearer "
+		auth := r.Header.Get("Authorization")
+		if len(auth) <= len(expectedHeader) || auth[:len(expectedHeader)] != expectedHeader {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			//nolint:errcheck
+			w.Write([]byte(`{"error":"admin token required for full healthz"}`))
+			return
+		}
 		resp.Circuit = h.circuit.Stats()
 		resp.Concurrency = h.limiter.Stats()
 	}
 
-	if h.proxy != nil {
+	// NET-007 fix: proxy 字段也属于敏感信息（暴露 internal.example.com 等内网
+	// 域名）。仅当 full=true 时才返回（与 circuit/concurrency 同样需要 admin token）。
+	if full && h.proxy != nil {
 		if status := h.proxy.Status(); status != nil {
 			resp.Proxy = status
 		}
