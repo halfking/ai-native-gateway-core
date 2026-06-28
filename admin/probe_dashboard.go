@@ -13,6 +13,7 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -303,6 +304,32 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
+		if cacheErr == nil && len(keys) > 0 {
+			health.TotalNodes = len(keys)
+			health.HealthyNodes = 0
+			health.FailingNodes = 0
+			health.SuspiciousNodes = 0
+			health.ProbingNodes = 0
+			for _, key := range keys {
+				data, err := rc.HGetAll(r.Context(), key).Result()
+				if err != nil {
+					continue
+				}
+				switch data["state"] {
+				case "healthy", "healthy_confirmed", "available":
+					health.HealthyNodes++
+				case "failing", "broken_confirmed", "unavailable":
+					health.FailingNodes++
+				case "suspicious":
+					health.SuspiciousNodes++
+				case "probing":
+					health.ProbingNodes++
+				}
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(health)
@@ -421,6 +448,32 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 			return
 		}
 		breakdown = append(breakdown, b)
+	}
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		reader := bg.NewModelAvailabilityReader(rc)
+		if reader != nil {
+			rows, cacheErr := reader.ReadByModel(r.Context(), modelName)
+			if cacheErr == nil && len(rows) > 0 {
+				counts := map[string]int{}
+				for _, row := range rows {
+					counts[row.Snapshot.State]++
+				}
+				breakdown = breakdown[:0]
+				states := make([]string, 0, len(counts))
+				for state := range counts {
+					states = append(states, state)
+				}
+				sort.Strings(states)
+				for _, state := range states {
+					count := counts[state]
+					breakdown = append(breakdown, ModelStateBreakdown{
+						State:    state,
+						Priority: state,
+						Count:    count,
+					})
+				}
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
