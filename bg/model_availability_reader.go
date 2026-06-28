@@ -89,7 +89,7 @@ func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel stri
 			continue
 		}
 		credID, err := strconv.Atoi(data["credential_id"])
-		if err != nil {
+		if err != nil || credID == 0 {
 			continue
 		}
 		snapshot, err := r.Read(ctx, credID, rawModel)
@@ -99,6 +99,58 @@ func (r *ModelAvailabilityReader) ReadByModel(ctx context.Context, rawModel stri
 		out = append(out, ModelAvailabilitySnapshotWithCredential{
 			CredentialID: credID,
 			Snapshot:     *snapshot,
+		})
+	}
+	return out, nil
+}
+
+// ScanKeys returns the raw availability cache keys that match a credential
+// scope filter.  When credentialID is 0 the scan is unrestricted.  Used by
+// the admin /api/admin/probe/cache-state endpoint to enumerate the cache
+// without going through the per-key Redis SCAN overhead for the common
+// credential-scoped queries.
+func (r *ModelAvailabilityReader) ScanKeys(ctx context.Context, credentialID int) ([]string, error) {
+	if !r.Enabled() {
+		return nil, nil
+	}
+	pattern := "llmgw:avail:*"
+	if credentialID > 0 {
+		pattern = fmt.Sprintf("llmgw:avail:%d:*", credentialID)
+	}
+	iter := r.redis.Scan(ctx, 0, pattern, 256).Iterator()
+	var keys []string
+	for iter.Next(ctx) {
+		keys = append(keys, iter.Val())
+		if len(keys) >= 4096 {
+			// Cap admin enumeration to keep the endpoint cheap.
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// ReadCredentials returns every cached availability entry for a single raw
+// model.  Distinct from ReadByModel only in its error semantics: callers can
+// treat the returned slice as an authoritative view (no nil entries).
+func (r *ModelAvailabilityReader) ReadCredentials(ctx context.Context, credentialIDs []int, rawModel string) ([]ModelAvailabilitySnapshotWithCredential, error) {
+	if !r.Enabled() {
+		return nil, nil
+	}
+	out := make([]ModelAvailabilitySnapshotWithCredential, 0, len(credentialIDs))
+	for _, cid := range credentialIDs {
+		snap, err := r.Read(ctx, cid, rawModel)
+		if err != nil {
+			return nil, err
+		}
+		if snap == nil {
+			continue
+		}
+		out = append(out, ModelAvailabilitySnapshotWithCredential{
+			CredentialID: cid,
+			Snapshot:     *snap,
 		})
 	}
 	return out, nil
