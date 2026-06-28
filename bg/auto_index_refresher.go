@@ -45,8 +45,8 @@ const (
 // AutoIndexRefresher runs the periodic credential_model_index and
 // model_task_index rollups.
 type AutoIndexRefresher struct {
-	db   *pgxpool.Pool
-	idx  *autoroute.Index
+	db  *pgxpool.Pool
+	idx *autoroute.Index
 
 	// RefreshInterval controls how often the rollup runs.
 	// Default: 5 minutes.
@@ -169,8 +169,24 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 //
 // Pre-computes the three profile scores (smart, speed_first, cost_first)
 // inline so the hot path (Decider.Decide) doesn't need to recompute.
+//
+// 2026-06-28 (provider-314 incident): the underlying SELECT is a
+// UNION ALL of two halves:
+//   - half 1: traffic-derived (request_logs last 5 min) — original path
+//   - half 2: cold-start fallback (v_routable_credential_models bindings
+//     not already covered by half 1)
+//
+// Both halves share the same ON CONFLICT DO UPDATE suffix so live
+// metrics always overwrite the conservative half-2 baseline as soon as
+// a credential gets real traffic.
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
-	tag, err := r.db.Exec(ctx, rollupCredentialModelIndexSQL, bucket)
+	fullSQL := `INSERT INTO credential_model_index (
+	    bucket, credential_id, raw_model, canonical_id,
+	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
+	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
+	    score_smart, score_speed_first, score_cost_first
+	)` + rollupCredentialModelIndexSQL + rollupCredentialModelIndexONCONFLICT
+	tag, err := r.db.Exec(ctx, fullSQL, bucket)
 	if err != nil {
 		return 0, fmt.Errorf("exec: %w", err)
 	}
@@ -194,19 +210,33 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // rollupCredentialModelIndexSQL is the single statement that materialises
 // the credential_model_index snapshot.
 //
-// Logic:
+// Logic (two halves joined by UNION ALL):
 //
-//   - For each (credential_id, raw_model) active in the last 5 minutes,
-//     gather:
-//       - success rate over the period
-//       - avg/p95 latency
-//       - cost (sum(cost_usd) / sum(total_tokens))
-//       - live active_sessions from credential_model_peak_1m latest bucket
-//       - concurrency_limit from credentials.concurrency_limit
-//   - Join credentials + model_offers for static attributes.
-//   - Pre-compute the 3 profile scores (smart/speed_first/cost_first)
-//     using autoroute.Score with a representative task signal
-//     (long_context as the worst-case fit).
+//	(1) Traffic-derived rows (the original path, unchanged):
+//	    For each (credential_id, raw_model) active in the last 5 minutes,
+//	    gather:
+//	      - success rate over the period
+//	      - avg/p95 latency
+//	      - cost (sum(cost_usd) / sum(total_tokens))
+//	      - live active_sessions from credential_model_peak_1m latest bucket
+//	      - concurrency_limit from credentials.concurrency_limit
+//	    Join credentials + model_offers for static attributes.
+//	    Pre-compute the 3 profile scores (smart/speed_first/cost_first)
+//	    using autoroute.Score with a representative task signal
+//	    (long_context as the worst-case fit).
+//
+//	(2) Cold-start fallback rows (added 2026-06-28):
+//	    For every (credential_id, raw_model) that is_routable=TRUE in the
+//	    unified v_routable_credential_models view BUT was not produced by
+//	    the request_logs rollup above, insert a baseline row with neutral
+//	    scores (success_rate=0.9, p95=1000, scores=50). This closes the
+//	    "manual disable → traffic stops → credential_model_index drains
+//	    → auto-route forgets the credential → admin re-enables → still
+//	    invisible" loop (provider-314/gpt-5.4 incident 2026-06-28).
+//	    Default values are conservative: a restored credential sits at
+//	    cohort-average quality until the first real request_logs row
+//	    arrives, at which point the ON CONFLICT DO UPDATE branch takes
+//	    over and replaces the baseline with live metrics.
 //
 // Cost note: this query is the heaviest in the v2.0 data plane. It runs
 // every 5 minutes and touches ~3k rows for a typical 5-min window.
@@ -221,14 +251,10 @@ func (r *AutoIndexRefresher) rollupModelTaskIndex(ctx context.Context, bucket ti
 // spinning up the full autoroute.Score() formula in PL/pgSQL.
 // The Decider still calls autoroute.Score() at request time using fresh
 // signals, so the SQL scores are advisory.
-const rollupCredentialModelIndexSQL = `INSERT INTO credential_model_index (
-    bucket, credential_id, raw_model, canonical_id,
-    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
-    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
-    score_smart, score_speed_first, score_cost_first
-)
+const rollupCredentialModelIndexSQL = `
+-- ── Half 1: traffic-derived rows (5-min window from request_logs) ─────────
 SELECT
-    $1 AS bucket,
+    $1::timestamptz AS bucket,
     rl.credential_id,
     COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
     mo.canonical_id,
@@ -282,11 +308,67 @@ WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
 GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
          mo.canonical_id, mo.billing_mode
+
+UNION ALL
+
+-- ── Half 2: cold-start fallback (added 2026-06-28, provider-314 incident) ─
+-- For every routable binding that the request_logs rollup above did NOT
+-- already produce, write a baseline row so the auto-route can see it
+-- even with zero recent traffic. Baseline values are intentionally
+-- conservative (success=0.9, p95=1000, scores=50) — the first real
+-- request through the credential will produce a request_logs row that
+-- the half-1 rollup will overwrite via ON CONFLICT DO UPDATE below.
+--
+-- Anti-join clause: skip pairs that already appeared in half 1 so we
+-- don't churn the ON CONFLICT path. Note we deliberately do NOT
+-- re-derive rl.ts in the anti-join's filter — half 1 itself filters on
+-- the same 5-min window, so equality is sufficient.
+SELECT
+    $1::timestamptz                     AS bucket,
+    v.credential_id,
+    pm.raw_model_name                   AS raw_model,
+    pm.canonical_id,
+    cmb.billing_mode,
+    cmb.unit_price_in_per_1m,
+    cmb.unit_price_out_per_1m,
+    mc.context_window,
+    0.9::numeric(5,4)                   AS success_rate,
+    1000::int                           AS p95_latency_ms,
+    0::int                              AS active_sessions,
+    c.concurrency_limit,
+    0::numeric(5,4)                     AS pressure_ratio,
+    50::numeric(8,4)                    AS score_smart,
+    50::numeric(8,4)                    AS score_speed_first,
+    50::numeric(8,4)                    AS score_cost_first
+FROM v_routable_credential_models v
+JOIN credentials c                  ON c.id = v.credential_id
+JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
+JOIN provider_models pm             ON pm.id = v.provider_model_id
+LEFT JOIN models_canonical mc       ON mc.id = pm.canonical_id
+WHERE v.is_routable = TRUE
+  AND pm.raw_model_name IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM request_logs rl
+      WHERE rl.credential_id = v.credential_id
+        AND (rl.outbound_model = pm.raw_model_name
+          OR rl.client_model  = pm.raw_model_name)
+        AND rl.ts >= NOW() - INTERVAL '5 minutes'
+  )
+`
+
+// rollupCredentialModelIndexONCONFLICT is the ON CONFLICT clause for the
+// rollup INSERT. Lives in a separate const because UNION ALL writes have
+// to combine the SELECT list with this suffix, and Go string concatenation
+// is the cleanest way to express it without making the main SELECT
+// unreadable. ON CONFLICT DO UPDATE ensures the live half-1 metrics
+// always overwrite the half-2 baseline, and vice-versa when both halves
+// target the same (bucket, credential_id, raw_model).
+const rollupCredentialModelIndexONCONFLICT = `
 ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE SET
     canonical_id         = EXCLUDED.canonical_id,
     billing_mode         = EXCLUDED.billing_mode,
     unit_price_in_per_1m = EXCLUDED.unit_price_in_per_1m,
-    unit_price_out_per_1m = EXCLUDED.unit_price_out_per_1m,
+    unit_price_out_per_1m= EXCLUDED.unit_price_out_per_1m,
     context_window       = EXCLUDED.context_window,
     success_rate         = EXCLUDED.success_rate,
     p95_latency_ms       = EXCLUDED.p95_latency_ms,

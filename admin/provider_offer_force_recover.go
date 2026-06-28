@@ -428,6 +428,13 @@ func (h *Handler) setProviderManualDisabled(w http.ResponseWriter, r *http.Reque
 		VALUES ('admin', $1, 0, $2, '', $3, $4)
 	`, action, providerID, reasonCode, actorCopy+": "+reqCopy.Reason)
 
+	// 2026-06-28: providers has no auto_route_refresh trigger at all, and
+	// even if it did, the existing trg_notify_auto_route_creds does not
+	// watch manual_disabled. Wake the listener + clear candCache so the
+	// (re)enabled provider's credentials show up within ~5s rather than
+	// waiting up to 5 min for the periodic refresh.
+	invalidateRoutingCaches(r.Context(), h.db, "providers", providerID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":         "updated",
 		"manual_disabled": req.ManualDisabled,
@@ -491,6 +498,12 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 		    (source, action, credential_id, provider_id, raw_model_name, reason_code, reason_detail)
 		VALUES ('admin', $1, $2, $3, '', $4, $5)
 	`, action, credID, providerID, reasonCode, actorCopy+": "+reqCopy.Reason)
+
+	// 2026-06-28: legacy 900-series endpoint — same wakeup as the unified
+	// handleSetManualDisabled in credential_monitor.go. PG trigger does
+	// not watch manual_disabled, so we must NOTIFY + clear candCache
+	// ourselves to keep the in-memory routing layer in sync.
+	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message":         "updated",

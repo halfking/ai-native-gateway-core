@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
+	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -1286,6 +1288,12 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	monitorSummaryCache.entries = nil
 	monitorSummaryCache.mu.Unlock()
 
+	// 2026-06-28: clear manual_disabled doesn't go through the PG trigger
+	// (trigger only watches status/availability_state/quota_state/circuit_state/
+	// concurrency_limit/lifecycle_status). Wake the auto-route refresh +
+	// process candCache so the next /v1 request sees the restored credential.
+	invalidateRoutingCaches(r.Context(), m.h.db, "credentials", req.CredentialID)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"message": fmt.Sprintf("manual_disabled cleared for credential %d", req.CredentialID),
@@ -1388,6 +1396,12 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	monitorSummaryCache.entries = nil
 	monitorSummaryCache.mu.Unlock()
 
+	// 2026-06-28: same as handleClearManualDisabled — manual_disabled UPDATE
+	// does not fire trg_notify_auto_route_creds (PG trigger only watches
+	// status/availability_state/quota_state/circuit_state/concurrency_limit/
+	// lifecycle_status). Wake the auto-route refresh + candCache explicitly.
+	invalidateRoutingCaches(r.Context(), m.h.db, "credentials", req.CredentialID)
+
 	statusText := "disabled"
 	if !req.ManualDisabled {
 		statusText = "enabled"
@@ -1397,6 +1411,56 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		"success": true,
 		"message": fmt.Sprintf("manual_disabled %s for credential %d", statusText, req.CredentialID),
 	})
+}
+
+// invalidateRoutingCaches is the wakeup shortcut for the manual_disabled
+// toggles in this file (handleSetManualDisabled / handleClearManualDisabled).
+//
+// Why: trg_notify_auto_route_creds only watches the columns
+// status, availability_state, quota_state, circuit_state,
+// concurrency_limit, lifecycle_status. UPDATEs that only touch
+// manual_disabled (this file's two handlers + the legacy 900-series
+// setCredentialManualDisabled / setProviderManualDisabled in
+// provider_offer_force_recover.go) therefore do NOT fire
+// pg_notify('auto_route_refresh', ...) — the AutoRouteRealtimeListener
+// stays asleep until the 5-min periodic refresh, and provider.candCache
+// stays warm with the stale unavailable_reason.
+//
+// This helper is the app-level wakeup so a status correction takes effect
+// within ~5s (NOTIFY debounce) instead of waiting up to 5 min.
+//
+// entityId may be a credential id or a provider id; entityKind selects
+// which label the listener payload carries ("credentials:N" or
+// "providers:N"). Best-effort: any error is logged and swallowed — the
+// admin UI already returned success to the operator and the periodic
+// refresh is the ultimate fallback.
+func invalidateRoutingCaches(ctx context.Context, db *pgxpool.Pool, entityKind string, entityID int) {
+	if db == nil || entityID <= 0 {
+		return
+	}
+	// 1) Clear the in-memory candCache used by loadCandidatesDB
+	//    (specific-model routing). Without this, a recently-restored
+	//    credential can still be filtered out by its stale
+	//    unavailable_reason for the candCache TTL.
+	provider.InvalidateAllCandidateCache()
+
+	// 2) NOTIFY the auto_route_refresh channel directly. The listener
+	//    (bg/auto_route_realtime_listener.go) debounces 5s and then
+	//    calls AutoIndexRefresher.RefreshOnce.
+	//
+	//    Use the parent request's context but bound it to 2s — we do
+	//    NOT want a slow admin client (or context-cancelled handler)
+	//    to leave the wakeup stranded. Best-effort.
+	bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = ctx // parent ctx intentionally ignored to avoid coupling to client disconnect
+
+	payload := fmt.Sprintf("%s:UPDATE:%d", entityKind, entityID)
+	if _, err := db.Exec(bgCtx, "SELECT pg_notify('auto_route_refresh', $1)", payload); err != nil {
+		// Periodic 5-min refresh is the ultimate fallback — log and move on.
+		// (No return-value needed; the admin response is already on the wire.)
+		_ = err // slog-free to keep this helper dependency-free; periodic refresh covers.
+	}
 }
 
 // deriveModelEffectiveState computes the 5-state effective_state for a model
