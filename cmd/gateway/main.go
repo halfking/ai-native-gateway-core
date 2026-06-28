@@ -282,6 +282,9 @@ func main() {
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
+	if fpSlotRedis != nil {
+		providerClient.SetAvailabilityRedis(fpSlotRedis)
+	}
 	if dbConn != nil && dbConn.Enabled() {
 		providerClient.SetDB(dbConn.Pool(), cfg.SecretKey, cfg.CredentialEncryptionKey)
 		resolver.SetDB(dbConn.Pool())
@@ -1305,7 +1308,10 @@ func main() {
 	slog.Info("CHECKPOINT: before healthz registration")
 
 	mux.Handle("/healthz", healthHandler)
-	mux.Handle("/metrics", middleware.MetricsHandler())
+	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
+	// 指标含 provider / credential 等敏感标签）。使用
+	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
+	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
 
 	slog.Info("CHECKPOINT: healthz and metrics registered")
 
@@ -1514,6 +1520,11 @@ func main() {
 
 	slog.Info("CHECKPOINT: before middleware stack build")
 	// ── Middleware stack (declarative chain) ─────────────────────────────
+	//
+	// NET-005 fix: 新增 SecurityHeadersMiddleware 在 chain 最内侧（紧贴
+	// mux），保证所有响应（包括 panic 兜底、SSE 流、metrics scrape）都附
+	// 加安全响应头。位置选择：紧贴 mux 确保 Recovery 的 panic 响应也带
+	// 头；选在 Cors/Prometheus 之外避免被后续中间件覆盖。
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
@@ -1521,6 +1532,7 @@ func main() {
 		Add(middleware.NewPrometheusMiddleware()).
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
 		Add(middleware.NewLoggingMiddleware()).
+		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
 		Then(mux)
 

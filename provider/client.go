@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -196,9 +197,11 @@ type cacheEntry[T any] struct {
 }
 
 type Client struct {
-	dbPool    *pgxpool.Pool
-	fernetKey []byte
-	keyring   *secret.Keyring
+	dbPool              *pgxpool.Pool
+	redis               *redis.Client
+	fernetKey           []byte
+	keyring             *secret.Keyring
+	asyncExitSuspicious func(credentialID int, rawModel string)
 
 	mu        sync.RWMutex
 	candCache map[string]cacheEntry[*resolveResponse]
@@ -215,6 +218,7 @@ func NewClient() *Client {
 		candCache: make(map[string]cacheEntry[*resolveResponse]),
 		keyCache:  make(map[int]cacheEntry[string]),
 	}
+	c.asyncExitSuspicious = c.defaultAsyncExitSuspicious
 	defaultClient = c
 	return c
 }
@@ -248,6 +252,10 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 	} else if pool != nil {
 		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
 	}
+}
+
+func (c *Client) SetAvailabilityRedis(redisClient *redis.Client) {
+	c.redis = redisClient
 }
 
 func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Candidate, *Policy, error) {
@@ -768,6 +776,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		c.maybeExitSuspicious(cand.CredentialID, offerRawModel)
 		out = append(out, cand)
 	}
 	if err := rows.Err(); err != nil {
@@ -964,4 +973,58 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 		}
 	}
 	return ordered
+}
+
+func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
+	if c.redis == nil || rawModel == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
+	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
+		return
+	}
+
+	c.asyncExitSuspicious(credentialID, rawModel)
+}
+
+func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
+	if c.dbPool == nil || c.redis == nil {
+		return
+	}
+	go func() {
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), time.Second)
+		defer bgCancel()
+		_, err := c.dbPool.Exec(bgCtx, `
+			UPDATE model_probe_state
+			SET state = 'recovering',
+			    next_retry_at = NOW() + INTERVAL '30 seconds',
+			    consecutive_successes = 0,
+			    consecutive_failures = 0,
+			    last_state_change_at = NOW()
+			WHERE credential_id = $1
+			  AND raw_model_name = $2
+			  AND state = 'suspicious'
+		`, credentialID, rawModel)
+		if err != nil {
+			slog.Warn("provider: maybeExitSuspicious db update failed",
+				"credential_id", credentialID,
+				"raw_model", rawModel,
+				"error", err)
+			return
+		}
+		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
+		if cacheErr := c.redis.HSet(bgCtx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel), map[string]any{
+			"state":         "recovering",
+			"updated_at":    time.Now().UTC().Format(time.RFC3339Nano),
+			"next_retry_at": nextRetryAt,
+			"source":        "call_exit",
+		}).Err(); cacheErr != nil {
+			slog.Warn("provider: maybeExitSuspicious cache update failed",
+				"credential_id", credentialID,
+				"raw_model", rawModel,
+				"error", cacheErr)
+		}
+	}()
 }
