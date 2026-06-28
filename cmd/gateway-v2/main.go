@@ -51,23 +51,27 @@ import (
 
 // v2Config 简化的 v2 配置
 type v2Config struct {
-	Listen          string
-	EnableCache     bool
-	EnableSecurity  bool
-	EnableAudit     bool
-	EnableObserv    bool
-	EnableStreaming bool
+	Listen             string
+	EnableCache        bool
+	EnableSecurity     bool
+	EnableAudit        bool
+	EnableSessionAudit bool // 2026-06-27: session audit hook 独立开关
+	EnableApprovalGate bool // 2026-06-27: approval gate 独立开关(v2 demo 默认关,需 DB+Redis)
+	EnableObserv       bool
+	EnableStreaming    bool
 }
 
 // loadConfig 加载配置
 func loadConfig() *v2Config {
 	cfg := &v2Config{
-		Listen:          getEnv("LLM_GATEWAY_LISTEN", ":8782"),
-		EnableCache:     getEnv("LLM_GATEWAY_V2_CACHE", "true") == "true",
-		EnableSecurity:  getEnv("LLM_GATEWAY_V2_SECURITY", "true") == "true",
-		EnableAudit:     getEnv("LLM_GATEWAY_V2_AUDIT", "true") == "true",
-		EnableObserv:    getEnv("LLM_GATEWAY_V2_OBSERV", "true") == "true",
-		EnableStreaming: getEnv("LLM_GATEWAY_V2_STREAMING", "true") == "true",
+		Listen:             getEnv("LLM_GATEWAY_LISTEN", ":8782"),
+		EnableCache:        getEnv("LLM_GATEWAY_V2_CACHE", "true") == "true",
+		EnableSecurity:     getEnv("LLM_GATEWAY_V2_SECURITY", "true") == "true",
+		EnableAudit:        getEnv("LLM_GATEWAY_V2_AUDIT", "true") == "true",
+		EnableSessionAudit: getEnv("LLM_GATEWAY_V2_SESSION_AUDIT", "true") == "true",
+		EnableApprovalGate: getEnv("LLM_GATEWAY_V2_APPROVAL_GATE", "false") == "true",
+		EnableObserv:       getEnv("LLM_GATEWAY_V2_OBSERV", "true") == "true",
+		EnableStreaming:    getEnv("LLM_GATEWAY_V2_STREAMING", "true") == "true",
 	}
 	return cfg
 }
@@ -116,7 +120,7 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 	// === Phase: Session Audit (PreRouting, priority 100) ===
 	// 2026-06-27: 实时安全检测（敏感词 / PII / jailbreak / injection）。
 	// 命中 NeedApproval 时由 ApprovalGateHook (priority 105) 拦截。
-	if deps.Config.EnableSecurity && deps.AuditHook != nil {
+	if deps.Config.EnableSessionAudit && deps.AuditHook != nil {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "session_audit", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{deps.AuditHook},
@@ -125,7 +129,8 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
 
 	// === Phase: Approval Gate (PreRouting, priority 105) ===
 	// 在 SessionAuditHook 之后；如需审批，返回 202 + approval_id。
-	if deps.Config.EnableSecurity && deps.GateHook != nil {
+	// v2 demo 默认关（无 DB+Redis）；生产用 cmd/gateway/main.go 走真实 PG + Redis。
+	if deps.Config.EnableApprovalGate && deps.GateHook != nil {
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "session_approval_gate", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{deps.GateHook},

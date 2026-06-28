@@ -389,6 +389,15 @@ type Executor struct {
 	// RouteNodeRecorder records per-(credential, model) health outcomes.
 	// Nil disables route-node health recording.
 	Recorder RouteNodeRecorder
+
+	// UnifiedProbeScheduler (2026-06-28): intelligent probe scheduler that
+	// maintains accurate state for all credential×model combinations.
+	// When non-nil, real-time request feedback is sent via OnRealRequest
+	// to enable <30s failure detection and adaptive health tracking.
+	// Nil disables real-time feedback (preserves legacy behavior).
+	UnifiedProbeScheduler interface {
+		OnRealRequest(ctx context.Context, credID int64, rawModel string, success bool, errMsg string)
+	}
 }
 
 func NewExecutor(
@@ -838,12 +847,25 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
-				e.HealthTracker.OnSuccess(
+					e.HealthTracker.OnSuccess(
+						params.R.Context(),
+						cand.CredentialID,
+						cand.RawModel,
+						result.LatencyMs,
+						requestID,
+					)
+				}
+
+			// 2026-06-28: Real-time success feedback to UnifiedProbeScheduler.
+			// Successful requests immediately mark suspicious/failing models
+			// as healthy, reducing false negatives and unnecessary probes.
+			if e.UnifiedProbeScheduler != nil {
+				e.UnifiedProbeScheduler.OnRealRequest(
 					params.R.Context(),
-					cand.CredentialID,
+					int64(cand.CredentialID),
 					cand.RawModel,
-					result.LatencyMs,
-					requestID,
+					true, // success
+					"",
 				)
 			}
 
@@ -1091,23 +1113,37 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 		}
 
-		// Record failed call for health tracking
-		if e.HealthTracker != nil {
-			// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
-			// callhist entries join back to request_logs.request_id.
-			// See OnSuccess path for the rationale on the async-*
-			// fallback.
-			requestID := params.R.Header.Get("X-Request-Id")
-			if requestID == "" {
-				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			// Record failed call for health tracking
+			if e.HealthTracker != nil {
+				// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
+				// callhist entries join back to request_logs.request_id.
+				// See OnSuccess path for the rationale on the async-*
+				// fallback.
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				e.HealthTracker.OnError(
+					params.R.Context(),
+					cand.CredentialID,
+					cand.RawModel,
+					kind,
+					requestID,
+				)
 			}
-			e.HealthTracker.OnError(
-				params.R.Context(),
-				cand.CredentialID,
-				cand.RawModel,
-				kind,
-				requestID,
-			)
+
+			// 2026-06-28: Real-time request feedback to UnifiedProbeScheduler.
+			// Failures are marked as urgent priority for <30s re-validation,
+			// preventing the 2-hour blind window of the legacy system.
+			// Only report credential-level issues (not client bugs).
+			if e.UnifiedProbeScheduler != nil && !errorsx.IsClientBug(kind) {
+				e.UnifiedProbeScheduler.OnRealRequest(
+					params.R.Context(),
+					int64(cand.CredentialID),
+					cand.RawModel,
+					false, // failure
+					execErr.Error(),
+				)
 		}
 
 		attempts = append(attempts, AttemptRecord{
