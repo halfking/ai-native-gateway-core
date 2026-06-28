@@ -49,6 +49,20 @@ deploying; the YAML is structured so every rule carries `alert`,
 The rules above use only `warning` and `info`. Any alert that
 should page the on-call is `warning`.
 
+## Cross-metric dependencies
+
+One rule (`LLMGatewaySuspiciousExitNoDispatches`) references the
+gateway's HTTP request counter:
+
+```
+llm_gateway_http_requests_total{path=~"/v1/.*"}
+```
+
+emitted by `middleware/prometheus_mw.go`. The alert is gated on a
+non-zero request rate so a quiet gateway does not page on a no-op.
+The `path=~"/v1/.*"` matcher is intentionally narrow — we want
+routing traffic, not `/healthz` or `/metrics` pings.
+
 ## Pairing with runbooks
 
 Each `warning` rule carries an `annotations.runbook:` field with a
