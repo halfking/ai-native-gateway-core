@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
+import ModelPicker from '../components/ModelPicker.vue'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -376,12 +377,11 @@ onUnmounted(() => {
 
     <!-- Filters -->
     <div class="filter-bar">
-      <input
+      <ModelPicker
         v-model="modelFilter"
-        @keyup.enter="fetchModels"
-        type="text"
-        placeholder="搜索模型名..."
-        class="filter-input"
+        mode="single"
+        placeholder="选择模型..."
+        class="model-picker-wrapper"
       />
       
       <select v-model="healthFilter" class="filter-input">
@@ -673,6 +673,11 @@ h1 {
   margin-bottom: 16px;
 }
 
+.model-picker-wrapper {
+  flex: 1;
+  max-width: 400px;
+}
+
 .filter-input {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -685,11 +690,6 @@ h1 {
 
 .filter-input:focus {
   border-color: var(--accent);
-}
-
-.filter-input:first-child {
-  flex: 1;
-  max-width: 300px;
 }
 
 .filter-input:nth-child(2) {

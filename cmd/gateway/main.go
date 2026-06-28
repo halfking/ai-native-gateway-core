@@ -855,6 +855,7 @@ func main() {
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
 	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
 	var modelAvailabilityCache *bg.ModelAvailabilityCache
+	var modelAvailabilityReader *bg.ModelAvailabilityReader
 	var passiveProbe *bg.PassiveProbeListener
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -1061,6 +1062,12 @@ func main() {
 			healthAutoRecover = bg.NewHealthAutoRecover(dbConn.Pool(), 1*time.Minute)
 			healthAutoRecover.Start(context.Background())
 			slog.Info("CHECKPOINT: after healthAutoRecover.Start")
+
+			// Wire the Redis availability reader so admin /api/admin/probe/cache-state
+			// can serve cache-only views without touching PostgreSQL.
+			if modelAvailabilityReader == nil {
+				modelAvailabilityReader = bg.NewModelAvailabilityReader(fpSlotRedis)
+			}
 		}
 
 		// Weekly rollup + auto-tune suggester require writes to
@@ -1221,6 +1228,10 @@ func main() {
 			// Wire redis for credential monitor endpoints (2026-06-22).
 			if fpSlotRedis != nil {
 				adminHandler.SetRedisClient(fpSlotRedis)
+				if modelAvailabilityReader == nil {
+					modelAvailabilityReader = bg.NewModelAvailabilityReader(fpSlotRedis)
+				}
+				adminHandler.SetAvailabilityReader(modelAvailabilityReader)
 			}
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}
