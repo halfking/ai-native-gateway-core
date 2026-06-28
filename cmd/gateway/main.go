@@ -39,11 +39,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -757,6 +759,26 @@ func main() {
 		adminHandler.SetApprovalManager(approvalMgr)
 		slog.Info("session audit approval manager wired",
 			"timeout", approvalTimeout.String())
+
+		// 2026-06-28: 在 v1 ChatHandler 集成 session-audit hook。
+		// 之前 handoff 修复 G 只写到 cmd/gateway-v2/main.go（demo binary），
+		// 184 生产跑的 v1 完全没有 chat-time hook — 补这个。
+		// env LLM_GATEWAY_ENABLE_SESSION_AUDIT 控制是否启用 (默认 true)。
+		enableSessionAudit := os.Getenv("LLM_GATEWAY_ENABLE_SESSION_AUDIT")
+		if enableSessionAudit == "" {
+			enableSessionAudit = "true" // 默认启用
+		}
+		if enableSessionAudit == "true" {
+			auditDetector := sessionaudit.NewFastDetector(sessionaudit.DefaultDetectorConfig())
+			auditBus := eventbus.NewMemoryBus(100)
+			auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
+			chatHandler.SetSessionAuditHook(auditHook)
+			slog.Info("session audit chat-time hook wired (v1)",
+				"approval_timeout", approvalTimeout.String())
+		} else {
+			slog.Info("session audit chat-time hook disabled by env",
+				"env", "LLM_GATEWAY_ENABLE_SESSION_AUDIT="+enableSessionAudit)
+		}
 		// settings-management: inject the DB-backed settings store so the
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
@@ -825,7 +847,7 @@ func main() {
 	var healthAutoRecover *bg.HealthAutoRecover
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
-	var modelProbe *bg.ModelProbeRunner       // TODO: remove after unifiedProbe validation
+	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
 	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
 	var passiveProbe *bg.PassiveProbeListener
 	var stickyCleaner *bg.StickyCleaner
@@ -1047,7 +1069,9 @@ func main() {
 			concurrencyAutoScaleUp.Start(context.Background())
 
 			slog.Info("CHECKPOINT: after concurrencyAutoScaleUp.Start, before NewIndex")
-			autoIdx := autoroute.NewIndex()
+				autoroute.InitFeatureFlags()
+				autoIdx := autoroute.NewIndex()
+
 			autoIdx.SetPool(dbConn.Pool())
 
 			slog.Info("CHECKPOINT: before tuningStore.Reload")

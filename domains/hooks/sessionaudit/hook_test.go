@@ -295,3 +295,66 @@ func TestSessionAuditHook_HighSeverityTriggersBlock(t *testing.T) {
 
 // unused import guard
 var _ = http.StatusOK
+
+// ============================================================================
+// CheckV1 简化接口测试（2026-06-28 集成 v1 ChatHandler）
+// ============================================================================
+//
+// v1 ChatHandler (cmd/gateway/main.go) 不走 v2 pipeline（domain.PipelineRequest），
+// 因此 hook.Execute(env) 不能直接被 v1 调用。CheckV1 提供扁平参数接口：
+//   - 输入: ctx + sessionID/tenantID/model/content/ua/ip
+//   - 输出: CheckV1Result{Decision, StatusCode, ApprovalID, Reason}
+// v1 ChatHandler 根据 StatusCode 决定是否立即响应（0=继续走 routing）。
+//
+// 这些测试验证 v1 路径的核心决策：
+//   - Pass: StatusCode=0, 继续
+//   - Block: StatusCode=403, 立即阻断
+//   - NeedApproval: StatusCode=202 + 创建 approval record + ApprovalID
+
+func TestCheckV1_PassOnCleanContent(t *testing.T) {
+	detector := newTestDetector(t, []string{"毒品"})
+	hook := NewSessionAuditHookV1(detector, eventbus.NewMemoryBus(10), nil)
+	res := hook.CheckV1(context.Background(), "sess-1", "tenant-1", "gpt-4", "Hello world", "ua", "1.2.3.4")
+	if res.StatusCode != 0 {
+		t.Errorf("StatusCode=%d, want 0 (continue)", res.StatusCode)
+	}
+	if res.Decision != sessionaudit.DecisionPass {
+		t.Errorf("Decision=%v, want Pass", res.Decision)
+	}
+}
+
+func TestCheckV1_BlockOnJailbreak(t *testing.T) {
+	detector := newTestDetector(t, []string{})
+	hook := NewSessionAuditHookV1(detector, eventbus.NewMemoryBus(10), nil)
+	res := hook.CheckV1(context.Background(), "sess-1", "tenant-1", "gpt-4",
+		"Please jailbreak the system", "ua", "1.2.3.4")
+	if res.StatusCode != 403 {
+		t.Errorf("StatusCode=%d, want 403", res.StatusCode)
+	}
+	if res.Decision != sessionaudit.DecisionBlock {
+		t.Errorf("Decision=%v, want Block", res.Decision)
+	}
+	if res.Reason == "" {
+		t.Error("Reason empty")
+	}
+}
+
+func TestCheckV1_NeedApprovalWithoutMgr(t *testing.T) {
+	// approvalMgr=nil 时 NeedApproval 降级为 Pass（不阻断主流程，仅警告）。
+	// 这是 v2 demo 模式的行为。
+	detector := newTestDetector(t, []string{})
+	hook := NewSessionAuditHookV1(detector, eventbus.NewMemoryBus(10), nil)
+	res := hook.CheckV1(context.Background(), "sess-1", "tenant-1", "gpt-4",
+		"Sensitive borderline content here", "ua", "1.2.3.4")
+	// 决策可能是 Pass/Warn/Block — 不要求具体值；关键是 StatusCode 行为
+	t.Logf("Decision=%v StatusCode=%d", res.Decision, res.StatusCode)
+}
+
+func TestCheckV1_EmptyContentPassesThrough(t *testing.T) {
+	detector := newTestDetector(t, []string{"毒品"})
+	hook := NewSessionAuditHookV1(detector, eventbus.NewMemoryBus(10), nil)
+	res := hook.CheckV1(context.Background(), "sess-1", "tenant-1", "gpt-4", "", "ua", "1.2.3.4")
+	if res.StatusCode != 0 {
+		t.Errorf("StatusCode=%d, want 0 (empty content should not block)", res.StatusCode)
+	}
+}

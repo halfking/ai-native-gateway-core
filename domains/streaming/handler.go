@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -162,8 +163,14 @@ type ChatHandler struct {
 	// function so unit tests can assert on the safety-net coverage.
 	// See SetRequestLogHook.
 	requestLogHook func(*telemetry.RequestLogEntry)
-	maasSvc        *maas.Service
-	sessionGetter  interface {
+	// sessionAuditHook (2026-06-28, session-audit feature) is the
+	// pre-routing chat-time hook.  When non-nil, every chat request
+	// goes through FastDetector before hitting GetCandidates(); Block /
+	// NeedApproval decisions short-circuit the request with 403 / 202.
+	// See SetSessionAuditHook.
+	sessionAuditHook *sessionaudithook.SessionAuditHook
+	maasSvc          *maas.Service
+	sessionGetter    interface {
 		Get(ctx context.Context, id string) (*session.Session, error)
 		Touch(ctx context.Context, id string) error
 		CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, error)
@@ -185,6 +192,10 @@ type ChatHandler struct {
 	sessionCompressor *compression.SessionCompressor
 
 	// metaToolInterceptor (Phase 2, 2026-06-20) handles meta-tool calls
+
+	// anomalyRecorder (2026-06-28) tracks response format anomalies to detect
+	// provider API changes and improve token estimation logic. nil disables.
+	anomalyRecorder *FormatAnomalyRecorder
 	// (list_categories, load_tools) locally without forwarding to upstream.
 	// nil disables Phase 2 meta-tools.
 	metaToolInterceptor *MetaToolInterceptor
@@ -400,6 +411,22 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 	h.requestLogHook = hook
 }
 
+// SetSessionAuditHook installs the chat-time session-audit hook.
+//
+// When non-nil, the hook is consulted BEFORE the request reaches
+// GetCandidates (routing). Block → 403; NeedApproval → 202 + approval_id
+// + pending_approval response; Pass/Warn → continue.
+//
+// nil disables the hook (no chat-time audit). Production callers (cmd/gateway/main.go)
+// should set this after constructing both SessionAuditHook and ApprovalManager.
+//
+// 2026-06-28: this is the v1 ChatHandler integration point that handoff
+// round-1 had claimed to wire but actually missed (修复 G only landed in
+// cmd/gateway-v2/main.go, the demo binary).
+func (h *ChatHandler) SetSessionAuditHook(hook *sessionaudithook.SessionAuditHook) {
+	h.sessionAuditHook = hook
+}
+
 func (h *ChatHandler) SetSessionGetter(sg interface {
 	Get(ctx context.Context, id string) (*session.Session, error)
 	Touch(ctx context.Context, id string) error
@@ -407,6 +434,12 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 }) {
 	h.sessionGetter = sg
+}
+
+// SetFormatAnomalyRecorder configures the anomaly recorder for tracking
+// response format issues (used to detect provider API changes).
+func (h *ChatHandler) SetFormatAnomalyRecorder(recorder *FormatAnomalyRecorder) {
+	h.anomalyRecorder = recorder
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -874,6 +907,51 @@ func (h *ChatHandler) serveWithExecutor(
 				"new_model", clientModel,
 			)
 		}
+	}
+
+	// ── Session-audit hook (2026-06-28, 集成 v1 ChatHandler) ───────────
+	// 在 tenant policy 之前、auto_route 之前调 hook。
+	// Block → 403; NeedApproval → 202 + approval_id; Pass/Warn → 继续。
+	// hook 为 nil 时不调用（chat-time audit 关闭）。
+	// hook 内部失败 / 降级 → 返回 StatusCode=0, 不阻断主流程。
+	if h.sessionAuditHook != nil && len(bodyBytes) > 0 {
+		hookContent := extractFirstUserMessage(bodyBytes)
+		hookTenant := ""
+		if keyInfo != nil {
+			hookTenant = keyInfo.TenantID
+		}
+		res := h.sessionAuditHook.CheckV1(ctx, sessionID, hookTenant, clientModel, hookContent, r.Header.Get("User-Agent"), r.RemoteAddr)
+		switch res.StatusCode {
+		case 403:
+			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil)
+			span := trace.SpanFromContext(r.Context())
+			span.SetAttributes(
+				attribute.String(observability.AttrTenantID, hookTenant),
+				attribute.String("session_audit.decision", "block"),
+			)
+			writeErrorJSON(w, http.StatusForbidden, requestID, "Request blocked by security policy: "+res.Reason, "security_violation", "blocked")
+			return
+		case 202:
+			captureAndEmitFailure("session_audit_pending_approval", res.Reason, nil, nil)
+			span := trace.SpanFromContext(r.Context())
+			span.SetAttributes(
+				attribute.String(observability.AttrTenantID, hookTenant),
+				attribute.String("session_audit.decision", "need_approval"),
+				attribute.String("session_audit.approval_id", res.ApprovalID),
+			)
+			w.Header().Set("X-Approval-ID", res.ApprovalID)
+			w.Header().Set("X-Approval-Status-URL", "/v1/approvals/"+res.ApprovalID+"/status")
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":         "pending_approval",
+				"approval_id":    res.ApprovalID,
+				"message":        "Request requires manual review due to security policy",
+				"reason":         res.Reason,
+				"poll_url":       "/v1/approvals/" + res.ApprovalID + "/status",
+				"estimated_wait": "5-15 minutes",
+			})
+			return
+		}
+		// StatusCode=0 (Pass/Warn) → 继续
 	}
 
 	// ── Tenant model policy — pre-auto check (Round 48, 2026-06-21) ──
@@ -2014,6 +2092,67 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			reqLog.PromptTokens = &estPrompt
 			reqLog.CompletionTokens = &estCompletion
 			reqLog.UsageSource = strPtr(UsageSourceEstimated)
+		}
+
+		// Record format anomaly if estimation failed or returned zero completion tokens
+		// despite having response content (helps detect provider format changes)
+		if h.anomalyRecorder != nil && reqLog.Success {
+			providerID := result.Candidate.ProviderID
+			clientModel := evt.ClientModel
+			outboundModel := evt.OutboundModel
+
+			// Detect anomaly type
+			var anomalyType AnomalyType
+			var severity Severity
+			if estPrompt == 0 && estCompletion == 0 && len(result.ResponseBody) > 0 {
+				anomalyType = AnomalyExtractionFailed
+				severity = SeverityHigh
+			} else if estCompletion == 0 && len(result.ResponseBody) > 100 {
+				anomalyType = AnomalyZeroCompletion
+				severity = SeverityMedium
+			} else {
+				anomalyType = AnomalyMissingUsage
+				severity = SeverityLow
+			}
+
+			// Sample before recording (avoid flooding table)
+			if ShouldRecordAnomaly(context.Background(), anomalyType, "", clientModel) {
+				contentSize := len(result.ResponseBody)
+				structure := AnalyzeResponseStructure(result.ResponseBody)
+				sample := TruncateForSample(string(result.ResponseBody), 1000)
+				usageSource := UsageSourceEstimated
+
+				var tenantIDInt *int
+				if tenantID != "" && tenantID != "default" {
+					// Try to parse tenant ID
+					if tid, err := strconv.Atoi(tenantID); err == nil {
+						tenantIDInt = &tid
+					}
+				}
+
+				go func() {
+					// Record asynchronously to avoid blocking request completion
+					recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+
+					_ = h.anomalyRecorder.RecordAnomaly(recordCtx, AnomalyRecord{
+						RequestID:      evt.RequestID,
+						ProviderID:     &providerID,
+						ProviderCode:   nil, // Not available in Candidate struct
+						ClientModel:    &clientModel,
+						OutboundModel:  &outboundModel,
+						AnomalyType:    anomalyType,
+						Severity:       severity,
+						UsageSource:    &usageSource,
+						ExpectedTokens: &estCompletion,
+						ActualTokens:   nil, // No actual value available
+						ContentSize:    &contentSize,
+						Structure:      structure,
+						ResponseSample: &sample,
+						TenantID:       tenantIDInt,
+					})
+				}()
+			}
 		}
 	} else if reqLog.UsageSource == nil {
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
@@ -3256,4 +3395,32 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 
 	// All empty indicators present - this is truly an empty response
 	return true
+}
+
+// extractFirstUserMessage 提取 chat 请求 body 中第一条 role="user" 的消息文本。
+//
+// 2026-06-28: 为 session-audit hook.CheckV1 提供 user content。
+// 返回 "" 表示 body 不可解析 / 找不到 user message（hook 收到空 content
+// 会降级 Pass，不阻断主流程）。
+func extractFirstUserMessage(bodyBytes []byte) string {
+	var body struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		return ""
+	}
+	for _, m := range body.Messages {
+		if m.Role == "user" {
+			// content 可以是 string 或 []contentPart；用 extractMessageText 统一处理。
+			var anyContent any
+			if err := json.Unmarshal(m.Content, &anyContent); err == nil {
+				return extractMessageText(anyContent)
+			}
+			return string(m.Content)
+		}
+	}
+	return ""
 }
