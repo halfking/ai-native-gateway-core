@@ -84,7 +84,15 @@ func DefaultDetectorConfig() *DetectorConfig {
 	}
 }
 
-// Detect 执行快速检测
+// Detect 执行快速检测。
+//
+// 当前实现只返回 Pass / Warn / NeedApproval 三种决策。DecisionBlock
+// 常量保留（public API），但实际触发路径在 SessionAuditHook 中：
+// 当 Threat.Severity 达到一定阈值时，hook 会直接把 StatusCode=403
+// 写回 ResponseWriter，无需依赖 detector 返回 Block（这样可以在不改
+// detector 规则集的前提下，由 hook 集成层决定阻断策略）。
+//
+// 详见 domains/hooks/sessionaudit/hook.go 的 Execute()。
 func (d *FastDetector) Detect(ctx context.Context, content string) (*DetectResult, error) {
 	start := time.Now()
 
