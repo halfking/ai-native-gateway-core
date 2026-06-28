@@ -432,10 +432,19 @@ func NewExecutor(
 }
 
 type ExecParams struct {
-	W                    http.ResponseWriter
-	R                    *http.Request
-	BodyBytes            []byte
-	IsStream             bool
+	W         http.ResponseWriter
+	R         *http.Request
+	BodyBytes []byte
+	IsStream  bool
+	// PreStreamPrepared means the caller already committed a 200
+	// text/event-stream response and may be emitting keep-alive comments
+	// while the executor is still retrying upstream credentials. In this
+	// mode Execute must not switch to JSON/202 fallback semantics.
+	PreStreamPrepared bool
+	// OnStreamReady is called exactly once right before the executor hands
+	// control to the normal stream writer. The caller uses it to stop any
+	// pre-stream keepalive goroutine so no writes race with StreamChat.
+	OnStreamReady        func()
 	SuppressSuccessWrite bool
 	ClientModel          string
 	OutboundModel        string
@@ -847,14 +856,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
-					e.HealthTracker.OnSuccess(
-						params.R.Context(),
-						cand.CredentialID,
-						cand.RawModel,
-						result.LatencyMs,
-						requestID,
-					)
-				}
+				e.HealthTracker.OnSuccess(
+					params.R.Context(),
+					cand.CredentialID,
+					cand.RawModel,
+					result.LatencyMs,
+					requestID,
+				)
+			}
 
 			// 2026-06-28: Real-time success feedback to UnifiedProbeScheduler.
 			// Successful requests immediately mark suspicious/failing models
@@ -1113,37 +1122,37 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 		}
 
-			// Record failed call for health tracking
-			if e.HealthTracker != nil {
-				// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
-				// callhist entries join back to request_logs.request_id.
-				// See OnSuccess path for the rationale on the async-*
-				// fallback.
-				requestID := params.R.Header.Get("X-Request-Id")
-				if requestID == "" {
-					requestID = "async-" + time.Now().Format("20060102T150405.000")
-				}
-				e.HealthTracker.OnError(
-					params.R.Context(),
-					cand.CredentialID,
-					cand.RawModel,
-					kind,
-					requestID,
-				)
+		// Record failed call for health tracking
+		if e.HealthTracker != nil {
+			// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis
+			// callhist entries join back to request_logs.request_id.
+			// See OnSuccess path for the rationale on the async-*
+			// fallback.
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
 			}
+			e.HealthTracker.OnError(
+				params.R.Context(),
+				cand.CredentialID,
+				cand.RawModel,
+				kind,
+				requestID,
+			)
+		}
 
-			// 2026-06-28: Real-time request feedback to UnifiedProbeScheduler.
-			// Failures are marked as urgent priority for <30s re-validation,
-			// preventing the 2-hour blind window of the legacy system.
-			// Only report credential-level issues (not client bugs).
-			if e.UnifiedProbeScheduler != nil && !errorsx.IsClientBug(kind) {
-				e.UnifiedProbeScheduler.OnRealRequest(
-					params.R.Context(),
-					int64(cand.CredentialID),
-					cand.RawModel,
-					false, // failure
-					execErr.Error(),
-				)
+		// 2026-06-28: Real-time request feedback to UnifiedProbeScheduler.
+		// Failures are marked as urgent priority for <30s re-validation,
+		// preventing the 2-hour blind window of the legacy system.
+		// Only report credential-level issues (not client bugs).
+		if e.UnifiedProbeScheduler != nil && !errorsx.IsClientBug(kind) {
+			e.UnifiedProbeScheduler.OnRealRequest(
+				params.R.Context(),
+				int64(cand.CredentialID),
+				cand.RawModel,
+				false, // failure
+				execErr.Error(),
+			)
 		}
 
 		attempts = append(attempts, AttemptRecord{
@@ -1834,6 +1843,9 @@ func (e *AsyncPendingError) Error() string {
 // if any precondition is missing. Each check is a one-liner so a
 // regression in the gate is easy to spot.
 func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tried int) bool {
+	if params != nil && params.PreStreamPrepared {
+		return false
+	}
 	// Recursion guard: the async goroutine calls Execute again.
 	// The inner call must take the synchronous exhaustion path
 	// regardless of the time elapsed.

@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -536,6 +536,10 @@ func (e *Executor) executeOpenAI(
 			latencyMs := int(time.Since(tTotal).Milliseconds())
 
 			if params.IsStream {
+				if params.OnStreamReady != nil {
+					params.OnStreamReady()
+					params.OnStreamReady = nil
+				}
 				var streamOutcome StreamOutcome
 				if params.StreamWrapper != nil {
 					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)

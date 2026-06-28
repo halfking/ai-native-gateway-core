@@ -51,6 +51,14 @@ type Config struct {
 	// Stream failover
 	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
 
+	// EnablePreStreamKeepalive (2026-06-28): when true, the gateway commits
+	// the SSE response (200 + text/event-stream) and emits periodic
+	// ": keep-alive\n\n" comments during upstream credential retries so
+	// streaming clients do not trip their first-byte / read timeouts.
+	// Disabled automatically for non-openai-completions protocols. Off by
+	// default so production rollouts opt in via config.
+	EnablePreStreamKeepalive bool `yaml:"enable_pre_stream_keepalive" env:"LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"`
+
 	// Pool grace period (seconds)
 	PoolGracePeriod int `yaml:"pool_grace_period_seconds" env:"LLM_GATEWAY_POOL_GRACE_PERIOD"`
 
@@ -152,9 +160,10 @@ func Load() *Config {
 		KeepaliveInterval:                  15,
 		SessionTTLHours:                    168,
 		SessionIDBodyKeys:                  parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
-		StreamRetryThreshold:               5,   // Default: allow stream failover if < 5 chunks sent
-		PoolGracePeriod:                    180, // Default: 3 minutes grace period before marking pool as dead
-		DefaultCredentialConcurrency:       20,  // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
+		StreamRetryThreshold:               5,     // Default: allow stream failover if < 5 chunks sent
+		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
+		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
+		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
 		EnableCredentialFpSlots:            true,
 		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — "5 min 内不允许抢的"
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
@@ -211,6 +220,9 @@ func Load() *Config {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.CredentialFpSlotReclaimIdleSeconds = n
 		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
+		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
 	}
 
 	return cfg
@@ -304,6 +316,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.SessionTTLHours != 0 && os.Getenv("LLM_GATEWAY_SESSION_TTL_HOURS") == "" {
 		cfg.SessionTTLHours = other.SessionTTLHours
+	}
+	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
+		cfg.EnablePreStreamKeepalive = true
 	}
 }
 

@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
@@ -791,6 +791,9 @@ func (e *Executor) executeAnthropicOnce(
 					headers: resp.Header.Clone(),
 				}
 			}
+			if params.PreStreamPrepared {
+				return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+			}
 			for k, vs := range resp.Header {
 				for _, v := range vs {
 					params.W.Header().Add(k, v)
@@ -822,6 +825,10 @@ func (e *Executor) executeAnthropicOnce(
 	latencyMs := int(time.Since(tTotal).Milliseconds())
 
 	if params.IsStream {
+		if params.OnStreamReady != nil {
+			params.OnStreamReady()
+			params.OnStreamReady = nil
+		}
 		outcome := ae.StreamResponse(params.W, resp)
 		if outcome.Interrupted && outcome.Reason != "client_cancel" {
 			streamKind := errorsx.KindStreamTimeout
