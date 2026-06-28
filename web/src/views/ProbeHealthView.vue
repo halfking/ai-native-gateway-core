@@ -323,7 +323,7 @@ onUnmounted(() => {
         <input type="checkbox" v-model="autoRefresh" />
         自动刷新 (30s)
       </label>
-      <button @click="refreshAll" class="btn-refresh">刷新</button>
+      <button @click="refreshAll" class="btn btn-sm btn-ghost">刷新</button>
     </div>
 
     <!-- System Health Card -->
@@ -375,22 +375,24 @@ onUnmounted(() => {
     </div>
 
     <!-- Filters -->
-    <div class="card filter-bar">
+    <div class="filter-bar">
       <input
         v-model="modelFilter"
         @keyup.enter="fetchModels"
         type="text"
         placeholder="搜索模型名..."
-        class="field-input"
+        class="filter-input"
       />
       
-      <select v-model="healthFilter" class="field-input">
+      <select v-model="healthFilter" class="filter-input">
         <option value="">全部健康度</option>
         <option value="healthy">健康</option>
         <option value="degraded">降级</option>
         <option value="warning">警告</option>
         <option value="critical">危急</option>
       </select>
+
+      <button @click="fetchModels" class="btn btn-sm btn-secondary">应用筛选</button>
     </div>
 
     <!-- Models Table -->
@@ -450,7 +452,7 @@ onUnmounted(() => {
             <td class="text-center">
               <button 
                 @click="selectModel(model)"
-                class="btn-sm btn-primary"
+                class="btn btn-sm btn-ghost"
               >
                 详情
               </button>
@@ -593,19 +595,6 @@ h1 {
   color: var(--muted);
 }
 
-.btn-refresh {
-  padding: 6px 12px;
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 13px;
-}
-.btn-refresh:hover {
-  background: var(--accent-h);
-}
-
 /* Stats Grid */
 .stats-grid {
   display: grid;
@@ -679,13 +668,32 @@ h1 {
 /* Filter Bar */
 .filter-bar {
   display: flex;
-  gap: 12px;
+  gap: 8px;
+  align-items: center;
   margin-bottom: 16px;
 }
 
-.field-input {
+.filter-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.filter-input:focus {
+  border-color: var(--accent);
+}
+
+.filter-input:first-child {
   flex: 1;
   max-width: 300px;
+}
+
+.filter-input:nth-child(2) {
+  width: 140px;
 }
 
 /* Table */
@@ -739,22 +747,6 @@ h1 {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
-}
-
-.btn-sm {
-  padding: 4px 10px;
-  font-size: 12px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: white;
-}
-.btn-primary:hover {
-  background: var(--accent-h);
 }
 
 .empty-state {
