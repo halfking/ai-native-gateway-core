@@ -16,6 +16,8 @@ package domain
 import (
 	"context"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domain/governance"
 )
 
 // PipelineRequest 是 Hook Pipeline 的统一载体。
@@ -60,6 +62,16 @@ type PipelineRequest struct {
 	Metadata map[string]any
 	// CreatedAt 信封创建时间
 	CreatedAt time.Time
+
+	// ── V4 治理扩展（PR-V4-02）──────────────────────────────────
+	// Governance 同步治理层共享状态；PhaseGovernance 阶段内的 hooks
+	// 读写，其他阶段应视为只读。nil 表示治理未被启用或尚未到达该阶段。
+	Governance *governance.GovernanceState
+
+	// ToolState 客户端工具编排共享状态；由 PhaseGovernance 阶段的
+	// ToolOrchestrator 写入，post_upstream 阶段的 streaming/audit
+	// hooks 读取。nil 表示本请求不涉及工具编排。
+	ToolState *governance.ToolState
 }
 
 // PipelineClientIdentity 客户端识别信息（Pipeline 视图）。
@@ -128,4 +140,33 @@ func (p *PipelineRequest) SetContext(ctx context.Context) {
 // HasError 报告 PipelineRequest 是否携带错误。
 func (p *PipelineRequest) HasError() bool {
 	return p != nil && p.Error != nil
+}
+
+// EnsureGovernance 幂等获取/创建 GovernanceState。
+//
+// 调用方在 governance 阶段的 hook 中可直接：
+//
+//	state := env.EnsureGovernance()
+//	state.RecordVerdict(v)
+//
+// nil 接收者返回 nil（不 panic），便于在 PipelineRequest 未实例化时调用。
+func (p *PipelineRequest) EnsureGovernance() *governance.GovernanceState {
+	if p == nil {
+		return nil
+	}
+	if p.Governance == nil {
+		p.Governance = &governance.GovernanceState{}
+	}
+	return p.Governance
+}
+
+// EnsureToolState 幂等获取/创建 ToolState；nil 接收者返回 nil。
+func (p *PipelineRequest) EnsureToolState() *governance.ToolState {
+	if p == nil {
+		return nil
+	}
+	if p.ToolState == nil {
+		p.ToolState = &governance.ToolState{}
+	}
+	return p.ToolState
 }

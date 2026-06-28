@@ -28,6 +28,7 @@ const (
 	PhasePreRouting         Phase = "pre_routing"
 	PhaseRouting            Phase = "routing"
 	PhasePostRouting        Phase = "post_routing"
+	PhaseGovernance         Phase = "governance" // V4 NEW (PR-V4-02)
 	PhasePreTransform       Phase = "pre_transform"
 	PhaseTransform          Phase = "transform"
 	PhasePostTransform      Phase = "post_transform"
@@ -44,6 +45,7 @@ func AllPhases() []Phase {
 	return []Phase{
 		PhasePreAuthentication, PhaseAuthentication, PhasePostAuthentication,
 		PhasePreRouting, PhaseRouting, PhasePostRouting,
+		PhaseGovernance,
 		PhasePreTransform, PhaseTransform, PhasePostTransform,
 		PhasePreUpstream, PhaseUpstream, PhasePostUpstream,
 		PhasePreResponse, PhaseResponse, PhasePostResponse,
