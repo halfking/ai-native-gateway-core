@@ -88,14 +88,16 @@
 | NET-001 | **P0** | CORS 默认 `*` 且允许 `Authorization` 跨域 | `middleware/cors_mw.go:16-27,33-34` | 静态 + 动态（curl OPTIONS → ACAO:* + ACAH:Authorization）→ **修复后 ACAH 不含 Authorization** | ✅ **已修复** |
 | NET-002 | **P0** | `gateway-v2` 零中间件 + 密钥回显 + 零超时 | `cmd/gateway-v2/main.go:341-465` | 静态 + 动态（/v1/models 无 auth → 200 OK / Slowloris 200 OK）→ **修复后 401 + 指纹化** | ✅ **已修复** |
 | NET-003 | **P0** | `/admin/config/reload` 匿名 + `err.Error()` 回显 | `cmd/gateway/main.go:1375-1396` | 静态 + 动态（DB-less 下 SPA fallback 200，生产需复测）→ **修复后 401 无 token + 错误脱敏** | ✅ **已修复** |
-| NET-004 | **P0** | `/v1/approvals/` 免认证 + 跨租户 403/404 泄露 | `admin/handler.go:355` + `session_approval.go:330-381` | 静态 + 动态（DB-less 404，生产需复测） | 未修复 |
+| NET-004 | **P0** | `/v1/approvals/` 免认证 + 跨租户 403/404 泄露 | `admin/handler.go:355` + `session_approval.go:330-381` | 静态 + 动态（DB-less 404，生产需复测）→ **修复后统一 404 + 租户来自 JWT** | ✅ **已修复** |
 | NET-005 | **P1** | 缺所有现代安全响应头 | 仓库全局缺位 | 静态 + 动态（grep 0 命中 + curl -sI 全响应空匹配）→ **修复后 4-5 个头** | ✅ **已修复** |
 | NET-006 | **P1** | `WriteTimeout=0` Slowloris | `cmd/gateway/main.go:1530` | 静态 + 动态（v1 DB-less 503 自防御；v2 零超时完整命中） | v2 ✅ / v1 未修复 |
 | NET-007 | **P1** | `/healthz` 免认证 + `?full=true` 泄露内部状态 | `handler.go:2789-2830` + `auth_mw.go:19-21` | 静态 + 动态（curl → 18 个内网域名含 internal.example.com）→ **修复后 /healthz 不含 proxy，/healthz/full 401** | ✅ **已修复** |
 | NET-008 | **P1** | `/metrics` 免认证 + 全 registry 暴露 | `auth_mw.go:19-21` + `prometheus_mw.go:37` | 静态 + 动态（curl → Go runtime metrics 全可见）→ **修复后 401 无 token** | ✅ **已修复** |
 | NET-009 | **P2** | 进程无 TLS | `cmd/gateway/main.go:1521-1533` | 静态 + 动态（openssl s_client → "wrong version number"） | 未修复 |
-| NET-010 | **P2** | 静态 SPA `/` 被 auth bypass | `auth_mw.go:19-21` + `static.go:31-55` | 静态 + 动态（curl 6 路径全 200） | 未修复 |
+| NET-010 | **P2** | 静态 SPA `/` 被 auth bypass | `auth_mw.go:19-21` + `static.go:31-55` | 静态 + 动态（curl 6 路径全 200）→ **修复后 .json/.env/.key/.sql/.bak 全 404** | ✅ **已修复** |
 | NET-011 | **P1（运维）** | `main` 分支构建断裂 | `domains/streaming/handler.go:2119,2152` | 静态 + 动态（已自动修复：go build 通过，44MB+34MB 二进制） | ✅ **已自动修复** |
+| NET-012 | **P1（运维）** | `cmd/gateway/main.go` Bandit scoring WIP 引用未定义符号 | `cmd/gateway/main.go:309-331` | 静态（go build 失败：`cfg.EnableBanditScoring`、`banditScorer.LoadFromDB` 不存在）→ 临时注释 | ⚠️ **临时绕过** |
+| NET-013 | **P1（运维）** | `autoroute/recommend_v2.go` Score API 不匹配 | `autoroute/recommend_v2.go:131` | 静态（go build 失败：`profileWeightsFromFlags` 不存在、`Score` 签名变更）→ 走简化分支 | ⚠️ **临时绕过** |
 
 **总计**：P0 × 4 · P1 × 5（含 NET-011） · P2 × 2 · P3 × 0
 **动态验证命中**：10 / 11（仅 NET-006 v1 端需生产 DB 模式复测）
@@ -1289,13 +1291,16 @@ func ShouldRecordAnomaly(ctx context.Context, anomalyType AnomalyType, providerC
 | 3 | NET-005 | S | 新增 `middleware/security_headers_mw.go` + 注册到 chain | ✅ **已修复**（2026-06-28） |
 | 4 | NET-007, NET-008 | M | 新增 `middleware/admin_token_mw.go` + `/healthz` 拆分 + `/metrics` 加 AdminTokenMiddleware | ✅ **已修复**（2026-06-28） |
 | 5 | NET-003 | XS | `cmd/gateway/main.go:1375-1396` 加 AdminTokenMiddleware + 错误信息脱敏 | ✅ **已修复**（2026-06-28） |
-| 6 | NET-004 | S | `admin/session_approval.go:338-381` 统一 404 + 租户来自 JWT | 未修复 |
-| 7 | NET-010 | S | `domains/streaming/static.go:31-55` 加静态文件扩展名白名单 | 未修复 |
+| 6 | NET-004 | S | `admin/session_approval.go:338-381` 统一 404 + 租户来自 JWT | ✅ **已修复**（2026-06-28） |
+| 7 | NET-010 | S | `domains/streaming/static.go:31-55` 加静态文件扩展名白名单 | ✅ **已修复**（2026-06-28） |
 | 8 | NET-006 | M | `cmd/gateway/main.go:1521-1533` 引入 per-stream 超时 + 并发限流（v2 端已修） | v2 ✅ / v1 未修复 |
 | 9 | NET-009 | M | `cmd/gateway/main.go` + `cmd/gateway-v2/main.go` 加可选 TLS 配置 | 未修复 |
 | 10 | NET-002 | L | `cmd/gateway-v2/main.go` 加中间件 + 移除 key 回显 + 设超时 | ✅ **已修复**（2026-06-28） |
 
-**当前进度**：11 项发现中 **已修复 7/11**（NET-001/002/003/005/007/008/011），余 4 项待后续修复（NET-004/006-v1/009/010）。
+**当前进度**：11 项原审计发现 + 2 项 WIP 构建断裂（NET-012/013）= 13 项。
+- ✅ 已修复：**9/13**（NET-001/002/003/004/005/007/008/010/011）
+- ⚠️ 临时绕过：2/13（NET-012/013 注释 WIP feature，需补完整 PR）
+- ⏳ 未修复：2/13（NET-006 v1 端 · NET-009 TLS）
 
 ---
 
@@ -1365,3 +1370,4 @@ done
 | 2026-06-28 | v1.1 | **动态验证阶段**：本地启动 `cmd/gateway` (8781) + `cmd/gateway-v2` (8789)，跑完 §7 附录 11 条复现命令。10/11 项命中（含 NET-001/002/005/007/008/009/010 完整命中；NET-003/004 需 DB 模式复测；NET-006 v2 端完整命中）。NET-011 在 `git stash pop` 后自动修复。 |
 | 2026-06-28 | v1.2 | **修复阶段 1**：修复 **NET-001**（CORS panic fail-closed + Authorization 移出 Allow-Headers）+ **NET-002**（v2 加 API Key 中间件 + 指纹化密钥 + 全套超时 + 错误响应脱敏）。所有修复均通过回归测试。NET-006 v2 端随之修复（ReadHeaderTimeout 切断 Slowloris）。 |
 | 2026-06-28 | v1.3 | **修复阶段 2**：修复 **NET-005**（新增 `SecurityHeadersMiddleware`，4-5 个响应头 + CSP 仅 HTML）+ **NET-007**（`/healthz` 拆分基础+full；基础探测不再泄露 proxy 字段）+ **NET-008**（`/metrics` AdminTokenMiddleware 包裹）+ **NET-003**（`/admin/config/reload` 加 admin 鉴权 + 错误脱敏）。新增 `middleware/admin_token_mw.go` 与 `middleware/security_headers_mw.go` 两个中间件。**累计修复 7/11 项**。 |
+| 2026-06-28 | v1.4 | **修复阶段 3**：修复 **NET-004**（`/v1/approvals/` 统一 404 + 租户来自 JWT，杜绝跨租户枚举）+ **NET-010**（SPA 静态文件扩展名白名单：`.json/.env/.bak/.sql/.key` 一律 404）。同时顺带 **绕过 NET-012**（`cmd/gateway/main.go` Bandit scoring WIP 引用未定义符号——临时注释）+ **NET-013**（`autoroute/recommend_v2.go` Score API 不匹配——临时走简化分支），恢复 `go build`。**累计 9/13 修复 + 2/13 临时绕过**（NET-012/013 待完整 PR）。 |
