@@ -11,9 +11,11 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -559,6 +561,7 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/system-health", adminWrap(h.handleProbeSystemHealth))
 	mux.HandleFunc("/api/admin/probe/model/", adminWrap(h.handleProbeModelRoutes))
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))
+	mux.HandleFunc("/api/admin/probe/cache-state", adminWrap(h.handleProbeCacheState))
 }
 
 // handleProbeModelRoutes is a router for /api/admin/probe/model/* endpoints
@@ -571,4 +574,139 @@ func (h *Handler) handleProbeModelRoutes(w http.ResponseWriter, r *http.Request)
 	} else {
 		http.Error(w, "not found", http.StatusNotFound)
 	}
+}
+
+// CacheStateEntry is the JSON shape returned by /api/admin/probe/cache-state.
+type CacheStateEntry struct {
+	CredentialID         int        `json:"credential_id"`
+	RawModel             string     `json:"raw_model_name"`
+	State                string     `json:"state"`
+	Available            bool       `json:"available"`
+	LastStatus           string     `json:"last_status"`
+	ConsecutiveSuccesses int        `json:"consecutive_successes"`
+	ConsecutiveFailures  int        `json:"consecutive_failures"`
+	UpdatedAt            *time.Time `json:"updated_at,omitempty"`
+	NextRetryAt          *time.Time `json:"next_retry_at,omitempty"`
+	Source               string     `json:"source"`
+}
+
+// GET /api/admin/probe/cache-state
+//
+// Reads the unified Redis availability cache directly.  Operators can:
+//   - look up a specific (credential_id, raw_model) pair: ?credential_id=11&model=glm-5.2
+//   - enumerate every entry for one raw_model: ?model=glm-5.2 (capped at 256)
+//   - enumerate every entry under a credential: ?credential_id=11 (capped at 256)
+//   - enumerate everything (capped at 4096 keys)
+//
+// Useful for diagnosing "is the cache populated" / "is the writer doing
+// its job" without touching the PostgreSQL tables.  Designed to remain
+// available even when the DB is degraded — it talks to Redis only.
+func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.availabilityReader == nil {
+		http.Error(w, "availability reader not wired", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+	credIDRaw := query.Get("credential_id")
+	modelRaw := query.Get("model")
+	credID := 0
+	if credIDRaw != "" {
+		if v, err := strconv.Atoi(credIDRaw); err == nil && v > 0 {
+			credID = v
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	var entries []CacheStateEntry
+	switch {
+	case credID > 0 && modelRaw != "":
+		// Single (cred, model) lookup.
+		snap, err := h.availabilityReader.Read(ctx, credID, modelRaw)
+		if err != nil {
+			http.Error(w, "cache read failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if snap != nil {
+			entries = append(entries, toCacheStateEntry(credID, modelRaw, *snap))
+		}
+	default:
+		// Range scan.
+		keys, err := h.availabilityReader.ScanKeys(ctx, credID)
+		if err != nil {
+			http.Error(w, "cache scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rc, ok := h.redisClient.(*redis.Client)
+		if !ok || rc == nil {
+			http.Error(w, "redis client unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		for _, key := range keys {
+			cid, model, ok := parseAvailabilityKey(key)
+			if !ok {
+				continue
+			}
+			if modelRaw != "" && cid != credID && model != modelRaw {
+				continue
+			}
+			if modelRaw != "" && model != modelRaw {
+				continue
+			}
+			snap, err := h.availabilityReader.Read(ctx, cid, model)
+			if err != nil || snap == nil {
+				continue
+			}
+			entries = append(entries, toCacheStateEntry(cid, model, *snap))
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reader":        "redis",
+		"key_prefix":    "llmgw:avail",
+		"credential_id": credID,
+		"model":         modelRaw,
+		"count":         len(entries),
+		"entries":       entries,
+	})
+}
+
+func toCacheStateEntry(credentialID int, rawModel string, snap bg.ModelAvailabilitySnapshot) CacheStateEntry {
+	return CacheStateEntry{
+		CredentialID:         credentialID,
+		RawModel:             rawModel,
+		State:                snap.State,
+		Available:            snap.Available,
+		LastStatus:           snap.LastStatus,
+		ConsecutiveSuccesses: snap.ConsecutiveSuccesses,
+		ConsecutiveFailures:  snap.ConsecutiveFailures,
+		UpdatedAt:            snap.UpdatedAt,
+		NextRetryAt:          snap.NextRetryAt,
+		Source:               snap.Source,
+	}
+}
+
+func parseAvailabilityKey(key string) (int, string, bool) {
+	// Format: llmgw:avail:{credential_id}:{raw_model}
+	// raw_model may itself contain colons, so split from the right.
+	const prefix = "llmgw:avail:"
+	if !strings.HasPrefix(key, prefix) {
+		return 0, "", false
+	}
+	rest := key[len(prefix):]
+	idx := strings.Index(rest, ":")
+	if idx <= 0 {
+		return 0, "", false
+	}
+	credID, err := strconv.Atoi(rest[:idx])
+	if err != nil {
+		return 0, "", false
+	}
+	return credID, rest[idx+1:], true
 }

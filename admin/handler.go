@@ -94,8 +94,9 @@ type Handler struct {
 	healthTracker interface {
 		Enabled() bool
 	}
-	redisClient  interface{}         // Redis client for sliding window access
-	autoTitleGen *AutoTitleGenerator // Auto session title generator (2026-06-22)
+	redisClient        interface{}                 // Redis client for sliding window access
+	availabilityReader *bg.ModelAvailabilityReader // 2026-06-29 mirror of unified probe state to Redis
+	autoTitleGen       *AutoTitleGenerator         // Auto session title generator (2026-06-22)
 
 	// identityPool is the legacy Layer 0 cap on total distinct end-user fingerprints.
 	// nil when the global cap feature is disabled.
@@ -139,6 +140,12 @@ func (h *Handler) SetHealthTracker(ht interface{ Enabled() bool }) {
 // SetRedisClient (2026-06-22) wires the Redis client for sliding window access.
 func (h *Handler) SetRedisClient(rc interface{}) {
 	h.redisClient = rc
+}
+
+// SetAvailabilityReader (2026-06-29) wires the Redis availability reader
+// so admin endpoints can query the unified probe-state cache directly.
+func (h *Handler) SetAvailabilityReader(r *bg.ModelAvailabilityReader) {
+	h.availabilityReader = r
 }
 
 // GetAutoTitleGenerator (2026-06-22) returns the auto title generator for use by routing package.
@@ -319,6 +326,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/change-password", admin(h.handleChangePassword))
 	mux.HandleFunc("/api/users", admin(h.handleUsers))
 	mux.HandleFunc("/api/admin/audit-logs", h.superAdmin(h.handleListAuditLogs))
+	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
+	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
+	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))
