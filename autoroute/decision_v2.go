@@ -7,9 +7,9 @@ import (
 )
 
 // DecideV2 是新的决策逻辑，集成了：
-//   1. 会话缓存可用性重校验
-//   2. 调用 RecommendV2 进行候选推荐
-//   3. 改进的审计与日志
+//  1. 会话缓存可用性重校验
+//  2. 调用 RecommendV2 进行候选推荐
+//  3. 改进的审计与日志
 //
 // 通过 Feature Flag 控制是否启用。
 func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
@@ -21,8 +21,10 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		return d.Decide(ctx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	}
 
-	// Step 0: 会话缓存检查（带可用性重校验）
-	if sessionID != "" && d.intentCache != nil {
+	flags := GetFeatureFlags()
+
+	// Step 0: 会话缓存检查（仅在启用重校验时保留该分支）
+	if flags.UseCacheRevalidation && sessionID != "" && d.intentCache != nil {
 		if cached, ok := d.intentCache.Get(sessionID); ok {
 			if !shouldReclassify(cached.TaskType, sigs) {
 				// 新增：验证缓存的模型是否仍可用
@@ -121,7 +123,26 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		"confidence", decision.Confidence,
 		"intent_match_score", winner.Breakdown.MatchScore,
 		"price_score", winner.Breakdown.PriceScore,
+		"channel_quality", winner.Breakdown.ChannelQuality,
+		"reliability", winner.Breakdown.Reliability,
 		"composite_score", winner.Breakdown.Composite,
+		"channel_category", winner.Candidate.ProviderCategory,
+		"channel_is_free", winner.Candidate.IsFree,
+	)
+
+	// CHANNEL_QUALITY_ROUTING: 路由决策结构化日志
+	// 让日志聚合系统（loki / elasticsearch）可按 pool 拆分统计。
+	poolLabel := "preferred"
+	if winner.Breakdown.ChannelQuality < ChannelQualityPreferredThreshold {
+		poolLabel = "fallback"
+	}
+	slog.Info("autoroute.routing.pool",
+		"task_type", decision.TaskType,
+		"chosen_model", decision.ChosenModel,
+		"pool", poolLabel,
+		"channel_quality", winner.Breakdown.ChannelQuality,
+		"channel_category", winner.Candidate.ProviderCategory,
+		"channel_is_free", winner.Candidate.IsFree,
 	)
 
 	// Step 6: 缓存决策

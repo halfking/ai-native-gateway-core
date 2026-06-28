@@ -449,6 +449,9 @@ func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID 
 //
 // 注：demotion 只影响 composite，不修改 ChannelQuality/Reliability 等
 // 维度分数，保证可观测性（X-Gw-Auto-Decision header 仍能看到原始分）。
+//
+// 埋点：函数返回前调用 recordRoutingDecision，记录 winner 的 pool
+// 与 demotion 行为到 llmgw_autoroute_* Prometheus 指标。
 func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
 	if topN <= 0 {
 		topN = 3
@@ -458,7 +461,10 @@ func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
 	// 全部 preferred 都能进 topN → 排序后截断
 	if len(preferred) >= topN {
 		sortScoredByCompositeReliabilityPrice(preferred)
-		return preferred[:topN]
+		result := preferred[:topN]
+		recordRoutingDecision(PoolLabelPreferred, ReasonLabelNoDemotion,
+			result[0].Breakdown.ChannelQuality, 1.0)
+		return result
 	}
 
 	// 没有 Preferred 池 → 不施加 demotion（冷启动 / 全 fallback 时
@@ -468,13 +474,19 @@ func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
 		if len(fallback) > topN {
 			fallback = fallback[:topN]
 		}
+		if len(fallback) > 0 {
+			recordRoutingDecision(PoolLabelFallback, ReasonLabelEmptyPreferred,
+				fallback[0].Breakdown.ChannelQuality, 1.0)
+		}
 		return fallback
 	}
 
 	// 主渠道饱和？决定 demotion 系数
 	saturated := IsPreferredChannelSaturated(preferred)
+	reason := ReasonLabelDemotion05
 	factor := FallbackDemotionFactor
 	if saturated {
+		reason = ReasonLabelDemotion085
 		factor = FallbackDemotionFactorSaturated
 	}
 
@@ -497,6 +509,16 @@ func stratifyAndPickTopN(scored []ScoredCandidate, topN int) []ScoredCandidate {
 
 	if len(combined) > topN {
 		combined = combined[:topN]
+	}
+
+	// 埋点：winner 可能在 preferred 也可能在 fallback
+	if len(combined) > 0 {
+		winner := combined[0]
+		pool := PoolLabelPreferred
+		if winner.Breakdown.ChannelQuality < ChannelQualityPreferredThreshold {
+			pool = PoolLabelFallback
+		}
+		recordRoutingDecision(pool, reason, winner.Breakdown.ChannelQuality, factor)
 	}
 	return combined
 }
