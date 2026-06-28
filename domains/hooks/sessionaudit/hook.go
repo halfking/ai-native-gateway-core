@@ -199,23 +199,11 @@ func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, mod
 		}
 	}
 
-	// 5. NeedApproval → 检查是否有 Severity >= 8 升级为 Block；否则 202
+	// 5. NeedApproval → 202 + 创建 approval record
+	// 注: detector 不返回 Block (DecisionBlock 保留作 public API 但实际不会触发)。
+	// v2 Execute 也没有把 NeedApproval 升级为 Block — 这是 v1 的实现选择。
+	// 如果要 403, 应该由 detector 自身的 maxSeverity/Score 阈值直接决定 (不通过 hook 升级)。
 	if result.Decision == sessionaudit.DecisionNeedApproval {
-		// 跟 v2 Execute() 一致：任一 Threat.Severity >= 8 → 直接 Block (403)
-		// 这是 detector 自身不返回 Block，由 hook 集成层决定阻断策略。
-		for _, t := range result.Threats {
-			if t.Severity >= 8 {
-				slog.Warn("session-audit CheckV1 escalating to Block (severity >= 8)",
-					"session_id", sessionID,
-					"threat_type", t.Type,
-					"severity", t.Severity)
-				return CheckV1Result{
-					Decision:   sessionaudit.DecisionBlock,
-					StatusCode: 403,
-					Reason:     result.Reason,
-				}
-			}
-		}
 		if h.approvalMgr == nil {
 			// v2 demo 模式：无 mgr 时降级为 Pass（仅记录 warning）
 			slog.Warn("session-audit CheckV1 need-approval but approvalMgr=nil, degrading to pass",
