@@ -1,10 +1,43 @@
 // Package bg — unified_probe_scheduler.go
 //
-// UnifiedProbeScheduler replaces ModelProbeRunner and SuspiciousProbeRunner
-// with a single, intelligent probe scheduler that maintains accurate state
-// for all credential×model combinations while minimizing resource usage.
+// DEPRECATED / DEAD BRANCH as of 2026-06-29.
 //
-// State machine:
+// Background: this scheduler was added on 2026-06-28 (commit 20ad9de0)
+// as a "priority queue" replacement for ModelProbeRunner +
+// SuspiciousProbeRunner, with the goal of cutting duplicate probes and
+// shrinking the failure-detection blind window from 2h to 30s. In
+// practice the cutover was never completed:
+//
+//   - It writes a different model_probe_state.state enum
+//     ("healthy"/"failing"/"probing") than the rest of the system
+//     ("healthy_confirmed"/"broken_confirmed"/"recovering"/"unknown"/"suspicious").
+//     Migrating the schema (302_unified_probe_scheduler.sql) silently
+//     rewrote every existing row to the new vocabulary, which broke
+//     read paths in credential_recovery.go, model_probe.go,
+//     credential_recovery_test.go, etc.
+//   - It also tried to drive credential_model_bindings.available
+//     through raw_model_name-only LIMIT 1 joins, which silently writes
+//     the wrong binding on multi-provider setups (fixed in 301/302
+//     runtime ensure and a DB-only UPDATE rewrite).
+//   - It was started unconditionally alongside the legacy workers
+//     (commit 20ad9de0), causing two writers to race on the same row.
+//     Three remediation PRs have stacked since (a3b87b1, d501d24, f4a1b51,
+//     f498fc03, 0556ba08, 5941428) but the dead-branch status here has
+//     not been formalised.
+//
+// Current status: cmd/gateway/main.go only starts this scheduler when
+// LLM_GATEWAY_ENABLE_UNIFIED_PROBE_SCHEDULER=true. The default is
+// "false" so the legacy ModelProbeRunner + CredentialProbeV2 +
+// PassiveProbeListener trio remains the single writer of
+// model_probe_state. This file is kept for reference only and may be
+// removed in a future cleanup once the unified design is re-thought.
+//
+// DO NOT call Start() without first confirming nothing else writes
+// model_probe_state concurrently.
+//
+// Original spec: 2026-06-28-unified-probe-scheduler (superseded).
+//
+// State machine (historical, kept for reference):
 //
 //	healthy ─────────────────────→ suspicious
 //	   ↑         (watchdog检测异常         ↓
@@ -14,10 +47,11 @@
 //	      (连续3次成功)        (探测失败)
 //
 // Priority queues:
-//   P0 - urgent:     Real-time request failures (probe within 30s)
-//   P1 - suspicious: Suspected issues (probe within 5min)
-//   P2 - failing:    Recovery attempts (exponential backoff)
-//   P3 - watchdog:   Periodic validation (adaptive 2-8h interval)
+//
+//	P0 - urgent:     Real-time request failures (probe within 30s)
+//	P1 - suspicious: Suspected issues (probe within 5min)
+//	P2 - failing:    Recovery attempts (exponential backoff)
+//	P3 - watchdog:   Periodic validation (adaptive 2-8h interval)
 //
 // Key improvements over dual-system:
 //   - 40-50% fewer probes (no duplication)
@@ -44,10 +78,10 @@ import (
 
 const (
 	// Probe intervals for each priority
-	UrgentProbeInterval     = 30 * time.Second  // P0: real-time failures
-	UnifiedSuspiciousProbeInterval = 5 * time.Minute   // P1: suspicious states (renamed to avoid conflict)
-	FailingProbeInterval    = 2 * time.Minute   // P2: recovery attempts
-	WatchdogProbeInterval   = 10 * time.Minute  // P3: periodic validation
+	UrgentProbeInterval            = 30 * time.Second // P0: real-time failures
+	UnifiedSuspiciousProbeInterval = 5 * time.Minute  // P1: suspicious states (renamed to avoid conflict)
+	FailingProbeInterval           = 2 * time.Minute  // P2: recovery attempts
+	WatchdogProbeInterval          = 10 * time.Minute // P3: periodic validation
 
 	// Batch sizes per priority
 	UrgentProbeBatch     = 20
