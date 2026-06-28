@@ -564,6 +564,7 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))
 	mux.HandleFunc("/api/admin/probe/cache-state", adminWrap(h.handleProbeCacheState))
 	mux.HandleFunc("/api/admin/probe/cache-rebuild", adminWrap(h.handleProbeCacheRebuild))
+	mux.HandleFunc("/api/admin/probe/cache-keys", adminWrap(h.handleProbeCacheKeys))
 }
 
 // handleProbeModelRoutes is a router for /api/admin/probe/model/* endpoints
@@ -773,6 +774,33 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rebuilt": count,
 		"mode":    "default",
+	})
+}
+
+// POST /api/admin/probe/cache-keys
+//
+// Triggers a one-shot SCAN over the llmgw:avail:* namespace and
+// refreshes the llmgw_availability_keys_count Prometheus gauge with
+// the live count. Useful when an operator has just flushed Redis or
+// after a failover to make the dashboard reflect the new
+// cardinality within seconds instead of waiting for the next
+// periodic tick.
+func (h *Handler) handleProbeCacheKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.availabilityKeyCounter == nil {
+		http.Error(w, "availability key counter not wired", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	h.availabilityKeyCounter.CountOnce(ctx)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"refreshed": true,
 	})
 }
 
