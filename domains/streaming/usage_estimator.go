@@ -62,6 +62,14 @@ func estimatePromptTokens(requestBody []byte) int {
 
 // estimateCompletionTokens computes an approximate completion token count
 // from a non-streaming OpenAI-style chat-completions response body.
+//
+// Enhanced to handle multiple provider response formats:
+//   - Standard OpenAI: choices[].message.content
+//   - Streaming chunks: choices[].delta.content
+//   - Legacy format: choices[].text
+//   - String content: direct string in content field
+//
+// When extraction fails, falls back to full-text token estimation.
 func estimateCompletionTokens(responseBody []byte) int {
 	if len(responseBody) == 0 {
 		return 0
@@ -82,11 +90,28 @@ func estimateCompletionTokens(responseBody []byte) int {
 	}
 	total := 0
 	for _, choice := range resp.Choices {
+		// Try message.content (main path for non-streaming responses)
 		if len(choice.Message.Content) > 0 {
-			total += extractContentTokens(choice.Message.Content)
-		} else if choice.Text != "" {
+			tokens := extractContentTokens(choice.Message.Content)
+			if tokens > 0 {
+				total += tokens
+				continue
+			}
+			// Fallback: try treating content as plain string if extractContentTokens
+			// returned 0 (could be a string that failed JSON parsing)
+			var contentStr string
+			if err := json.Unmarshal(choice.Message.Content, &contentStr); err == nil && contentStr != "" {
+				total += estimateTextTokens(contentStr)
+				continue
+			}
+		}
+		// Try legacy text field (some providers use this)
+		if choice.Text != "" {
 			total += estimateTextTokens(choice.Text)
-		} else if choice.Delta.Content != "" {
+			continue
+		}
+		// Try delta.content (streaming format)
+		if choice.Delta.Content != "" {
 			total += estimateTextTokens(choice.Delta.Content)
 		}
 	}

@@ -114,7 +114,7 @@ func TestLRUPreemptOldestIdleFirst(t *testing.T) {
 }
 
 func TestActiveGateDefaultConfig(t *testing.T) {
-	m := New(Config{DefaultLimit: 1, Enabled: true}, nil)
+	m, _ := newTestManager(t, Config{DefaultLimit: 1, Enabled: true})
 	if got := m.cfg.resolveActiveGateSeconds(); got != DefaultActiveGateSeconds {
 		t.Fatalf("resolveActiveGateSeconds = %d, want %d", got, DefaultActiveGateSeconds)
 	}
@@ -124,7 +124,7 @@ func TestActiveGateDefaultConfig(t *testing.T) {
 }
 
 func TestReclaimConfigFromManagerUsesReclaimIdleSeconds(t *testing.T) {
-	m := New(Config{DefaultLimit: 5, Enabled: true, ActiveGateSeconds: 300, ReclaimIdleSeconds: 1800}, nil)
+	m, _ := newTestManager(t, Config{DefaultLimit: 5, Enabled: true, ActiveGateSeconds: 300, ReclaimIdleSeconds: 1800})
 	cfg := m.reclaimConfigFromManager()
 	if cfg.idleAfter != 30*time.Minute {
 		t.Fatalf("reclaim idleAfter = %v, want 30m", cfg.idleAfter)
@@ -132,7 +132,7 @@ func TestReclaimConfigFromManagerUsesReclaimIdleSeconds(t *testing.T) {
 }
 
 func TestReclaimConfigFromManagerDefaultsTo30Min(t *testing.T) {
-	m := New(Config{DefaultLimit: 5, Enabled: true, ActiveGateSeconds: 300}, nil)
+	m, _ := newTestManager(t, Config{DefaultLimit: 5, Enabled: true, ActiveGateSeconds: 300})
 	cfg := m.reclaimConfigFromManager()
 	want := time.Duration(DefaultReclaimIdleSeconds) * time.Second
 	if cfg.idleAfter != want {

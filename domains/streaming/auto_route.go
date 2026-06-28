@@ -295,7 +295,7 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		sessionID = r.Header.Get("X-Session-Id")
 	}
 
-	decision, err := h.decider.Decide(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
+	decision, err := h.decider.DecideWithFeatureFlags(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		slog.Warn("auto-route: decider failed, falling back",
 			"error", err,

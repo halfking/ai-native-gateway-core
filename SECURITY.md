@@ -78,6 +78,7 @@
 - [ ] 启用 audit pipeline (不要禁用 DLQ)
 - [ ] 凭据轮换 cron 已配置
 - [ ] SIEM 推送已配置（v3.2 之后）
+- [ ] 已复跑 [`SECURITY-AUDIT-2026-06-28.md`](SECURITY-AUDIT-2026-06-28.md) §7 附录的 11 条检测命令，未命中新增问题（特别是 NET-001/NET-005/NET-007/NET-008 这 4 项易回归）
 
 ---
 
@@ -91,6 +92,16 @@ go list -m -json -u all | jq '.Path + " " + .Version'  # 详细
 ```
 
 严重 CVE 我们会在 minor release 中修复。
+
+---
+
+## 已发布的安全审计
+
+按发布时间倒序，所有审计文档请见 [`docs/SECURITY-AUDIT-INDEX.md`](docs/SECURITY-AUDIT-INDEX.md) 索引。
+
+最新：
+
+- **2026-06-28 — [网络/传输层审计](SECURITY-AUDIT-2026-06-28.md)**：11 项发现（4×P0 · 5×P1 · 2×P2），涵盖 CORS fail-open、`gateway-v2` 零中间件、`/admin/config/reload` 匿名、安全响应头缺失、Slowloris、`/healthz`/`/metrics` 暴露、构建断裂（NET-011）等。**v1.3 已修复 7/11 项**（NET-001/002/003/005/007/008/011），余 4 项未修复（NET-004/006-v1/009/010）。建议每季度 + 每次发布前复跑文末 §7 一键检测脚本。
 
 ---
 

@@ -16,6 +16,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -47,11 +50,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
+	"github.com/kaixuan/llm-gateway-go/middleware"
 )
 
 // v2Config 简化的 v2 配置
 type v2Config struct {
 	Listen             string
+	APIKey             string // NET-002 fix: v2 现在也要求 API Key 中间件
 	EnableCache        bool
 	EnableSecurity     bool
 	EnableAudit        bool
@@ -65,6 +70,7 @@ type v2Config struct {
 func loadConfig() *v2Config {
 	cfg := &v2Config{
 		Listen:             getEnv("LLM_GATEWAY_LISTEN", ":8782"),
+		APIKey:             getEnv("LLM_GATEWAY_API_KEY", ""),
 		EnableCache:        getEnv("LLM_GATEWAY_V2_CACHE", "true") == "true",
 		EnableSecurity:     getEnv("LLM_GATEWAY_V2_SECURITY", "true") == "true",
 		EnableAudit:        getEnv("LLM_GATEWAY_V2_AUDIT", "true") == "true",
@@ -81,6 +87,58 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// fingerprintKey 返回 API Key 的不可逆指纹（SHA-256 前 16 位 hex）。
+// 用于审计/观测关联，但不暴露原密钥。NET-002 fix。
+func fingerprintKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:8])
+}
+
+// authChain 构建 v2 网关的中间件链：recovery → requestid → auth → logging。
+// CORS 由调用方在外面 Wrap（这样 preflight 才能在 auth 之前通过）。
+//
+// NET-002 fix: 修复前 v2 完全无中间件，任何人都能访问。
+//
+// 与 cmd/gateway 的差异：
+//   - 这里的 auth 是简化版——只校验单个静态 API Key，不查 DB。
+//   - 无 Prometheus 中间件（v2 是 demo 端口，不需要 metrics）。
+func authChain(deps *v2Deps, cfg *v2Config) http.Handler {
+	h := httpHandler(deps)
+	// 注意：logging 中间件包外层、auth 包里层 —— 这样 401 请求也被记录
+	// 到访问日志（运维可观测"被拒绝"流量）。
+	if cfg.APIKey != "" {
+		h = simpleAPIKeyAuth(cfg.APIKey)(h)
+	} else {
+		// API Key 未配置时显式警告，但允许通过（演示场景）。
+		slog.Warn("v2 API key authentication disabled (LLM_GATEWAY_API_KEY not set)")
+	}
+	h = middleware.NewRequestIDMiddleware().Wrap(h)
+	h = middleware.NewRecoveryMiddleware().Wrap(h)
+	return h
+}
+
+// simpleAPIKeyAuth 轻量级 API Key 校验（Header: X-API-Key）。
+// 使用 crypto/subtle.ConstantTimeCompare 防 timing attack。
+func simpleAPIKeyAuth(expected string) func(http.Handler) http.Handler {
+	expectedSum := sha256.Sum256([]byte(expected))
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got := r.Header.Get("X-API-Key")
+			gotSum := sha256.Sum256([]byte(got))
+			if subtle.ConstantTimeCompare(gotSum[:], expectedSum[:]) != 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // v2Deps 集中管理所有依赖（便于测试替换）
@@ -351,10 +409,14 @@ func httpHandler(deps *v2Deps) http.Handler {
 		// 模拟提取请求信息
 		env.TenantID = r.Header.Get("X-Tenant-ID")
 		env.SessionID = r.Header.Get("X-Session-ID")
+		// NET-002 fix: 严禁把原始 API Key 注入 env.Metadata（会落到
+		// 审计/观测/session 钩子的可序列化字段中）。改用 SHA-256 前 16 位
+		// 指纹，便于关联但不泄露密钥。
+		apiKey := r.Header.Get("X-API-Key")
 		env.Metadata = map[string]any{
-			"user_content": r.URL.Query().Get("q"),
-			"model":        r.URL.Query().Get("model"),
-			"api_key":      r.Header.Get("X-API-Key"),
+			"user_content":  r.URL.Query().Get("q"),
+			"model":         r.URL.Query().Get("model"),
+			"api_key_fp":    fingerprintKey(apiKey),
 		}
 		if env.Metadata["user_content"] == nil {
 			env.Metadata["user_content"] = ""
@@ -367,8 +429,12 @@ func httpHandler(deps *v2Deps) http.Handler {
 				env.StatusCode = 500
 			}
 			w.WriteHeader(env.StatusCode)
+			// NET-002 fix: 不再把 err.Error() 回显给客户端（含内部路径、
+			// 依赖服务地址等），只回通用错误 + request_id。详细错误保留
+			// 在服务端日志供运维排查。
+			slog.Error("v2 pipeline execute failed", "request_id", env.Envelope.RequestID, "err", err)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error":      err.Error(),
+				"error":      "internal error",
 				"request_id": env.Envelope.RequestID,
 			})
 			return
@@ -440,8 +506,18 @@ func main() {
 	logger.Info("gateway-v2 starting", "listen", cfg.Listen, "stages", len(deps.Pipeline.Stages()))
 
 	srv := &http.Server{
-		Addr:    cfg.Listen,
-		Handler: httpHandler(deps),
+		Addr: cfg.Listen,
+		// NET-002 fix: 复用 cmd/gateway 的中间件链 —— recovery / requestid /
+		// cors / auth / logging。修复前 v2 端完全裸奔。
+		//
+		// 超时：参考 cmd/gateway 的值，但 WriteTimeout 调大（演示环境可能
+		// 需要长时间 SSE 流）。ReadHeaderTimeout 仍必须设置防 Slowloris。
+		Handler:           middleware.NewCORSMiddleware(getEnv("LLM_GATEWAY_CORS_ORIGINS", "http://localhost:5173")).Wrap(authChain(deps, cfg)),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// 优雅退出

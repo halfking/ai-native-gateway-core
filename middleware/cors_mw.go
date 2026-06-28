@@ -14,15 +14,24 @@ type CORSMiddleware struct {
 }
 
 func NewCORSMiddleware(origins string) *CORSMiddleware {
+	// NET-001 fix: 不再为“未配置”自动注入 "*" —— 以前默认值导致任意
+	// Origin + Authorization 跨域被放行。改为 panic 要求显式 allowlist。
+	//
+	// 如需明确开启 "*" 通配（仅限内网 CLI 客户端，无凭证场景），请在
+	// 配置中显式写 LLM_GATEWAY_CORS_ORIGINS="*"。
 	if origins == "" {
-		origins = "*"
+		panic("CORS origins must be explicitly configured (LLM_GATEWAY_CORS_ORIGINS); " +
+			"fail-closed: an empty list will block all cross-origin requests, " +
+			"use \"*\" only if you understand the risk and explicitly opt-in.")
 	}
 	return &CORSMiddleware{
 		BaseMiddleware: BaseMiddleware{name: "cors"},
 		origins:        origins,
 		allowMethods:   "GET, POST, PUT, DELETE, OPTIONS",
-		allowHeaders:   "Content-Type, Authorization, X-Request-Id, X-Device-Seed, X-Machine-Id, X-Runtime-Name, X-Runtime-Version, X-OS-Name, X-OS-Arch, X-Client-Profile",
-		maxAge:         "86400",
+		// NET-001 fix: Authorization 移出默认 allow-headers —— 跨域携带
+		// 认证凭证必须由调用方额外 CORS 反代/前端代理明确要求。
+		allowHeaders: "Content-Type, X-Request-Id, X-Device-Seed, X-Machine-Id, X-Runtime-Name, X-Runtime-Version, X-OS-Name, X-OS-Arch, X-Client-Profile",
+		maxAge:       "86400",
 	}
 }
 
