@@ -309,3 +309,98 @@ SET state = 'suspicious',
     marked_suspicious_at = COALESCE(last_attempt_at, NOW()),
     next_retry_at = COALESCE(next_retry_at, NOW())
 WHERE state IN ('recovering', 'unknown');
+
+-- 修复：绑定更新必须按 (credential_id + provider_model_id) 精确命中，
+-- 不能只靠 raw_model_name + LIMIT 1，否则多 provider 同名模型会串写。
+CREATE OR REPLACE FUNCTION model_probe_mark_available(
+    p_credential_id BIGINT,
+    p_raw_model_name TEXT,
+    p_latency_ms INTEGER DEFAULT 0
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO model_probe_state
+        (credential_id, raw_model_name, state,
+         consecutive_successes, consecutive_failures,
+         last_attempt_at, next_retry_at, last_status,
+         state_expires_at, marked_suspicious_at)
+    VALUES
+        (p_credential_id, p_raw_model_name, 'available',
+         1, 0,
+         NOW(), NOW() + INTERVAL '2 hours', 'ok',
+         NOW() + INTERVAL '2 hours', NULL)
+    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+        state = 'available',
+        consecutive_successes = model_probe_state.consecutive_successes + 1,
+        consecutive_failures = 0,
+        last_attempt_at = NOW(),
+        next_retry_at = NOW() + INTERVAL '2 hours',
+        last_status = 'ok',
+        state_expires_at = NOW() + INTERVAL '2 hours',
+        marked_suspicious_at = NULL,
+        probing_started_at = NULL;
+
+    UPDATE credential_model_bindings cmb
+    SET available = TRUE,
+        unavailable_reason = NULL,
+        unavailable_at = NULL,
+        unavailable_recover_at = NULL,
+        updated_at = NOW()
+    FROM provider_models pm
+    WHERE cmb.provider_model_id = pm.id
+      AND cmb.credential_id = p_credential_id
+      AND pm.raw_model_name = p_raw_model_name
+      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION model_probe_mark_unavailable(
+    p_credential_id BIGINT,
+    p_raw_model_name TEXT,
+    p_error_code TEXT,
+    p_error_message TEXT DEFAULT ''
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO model_probe_state
+        (credential_id, raw_model_name, state,
+         consecutive_successes, consecutive_failures,
+         last_attempt_at, next_retry_at, last_status,
+         state_expires_at, marked_suspicious_at,
+         last_unavailable_reason, last_err_code)
+    VALUES
+        (p_credential_id, p_raw_model_name, 'unavailable',
+         0, 1,
+         NOW(), NOW() + INTERVAL '2 hours', 'http_4xx',
+         NOW() + INTERVAL '2 hours', NULL,
+         p_error_message, p_error_code)
+    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+        state = 'unavailable',
+        consecutive_successes = 0,
+        consecutive_failures = model_probe_state.consecutive_failures + 1,
+        last_attempt_at = NOW(),
+        next_retry_at = NOW() + INTERVAL '2 hours',
+        last_status = 'http_4xx',
+        state_expires_at = NOW() + INTERVAL '2 hours',
+        marked_suspicious_at = NULL,
+        probing_started_at = NULL,
+        last_unavailable_reason = p_error_message,
+        last_err_code = p_error_code;
+
+    UPDATE credential_model_bindings cmb
+    SET available = FALSE,
+        unavailable_reason = 'probe_' || p_error_code,
+        unavailable_at = NOW(),
+        unavailable_recover_at = NOW() + INTERVAL '2 hours',
+        updated_at = NOW()
+    FROM provider_models pm
+    WHERE cmb.provider_model_id = pm.id
+      AND cmb.credential_id = p_credential_id
+      AND pm.raw_model_name = p_raw_model_name
+      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+END;
+$$;
