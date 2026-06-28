@@ -13,9 +13,50 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
+
+// Suspicious-exit metrics. Registered once at package init so the
+// default Prometheus registry surfaces them via the gateway's existing
+// /metrics handler with no further wiring.
+//
+// outcome labels:
+//
+//	"dispatched"  — Redis state was suspicious and we fired an async
+//	                 DB UPDATE to flip it to "recovering".
+//	"noop"         — Redis was empty / state wasn't suspicious.
+//	"db_error"     — dispatched, but the async DB UPDATE failed.
+//	"cache_error"  — DB UPDATE succeeded, but the cache re-write failed.
+//	"no_writer"    — Redis matched suspicious but the async hook was nil
+//	                 (test-only path).
+var (
+	suspiciousExitOnce sync.Once
+	suspiciousExits    *prometheus.CounterVec
+)
+
+func registerSuspiciousExitMetrics() {
+	suspiciousExitOnce.Do(func() {
+		suspiciousExits = prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llmgw_suspicious_exits_total",
+				Help: "Total routing-layer suspicious-exit dispatches and async-write outcomes.",
+			},
+			[]string{"outcome"},
+		)
+		prometheus.MustRegister(suspiciousExits)
+	})
+}
+
+func init() { registerSuspiciousExitMetrics() }
+
+func recordSuspiciousExit(outcome string) {
+	if suspiciousExits == nil {
+		return
+	}
+	suspiciousExits.WithLabelValues(outcome).Inc()
+}
 
 type Candidate struct {
 	CredentialID     int     `json:"credential_id"`
@@ -983,9 +1024,15 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	defer cancel()
 	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
 	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
+		recordSuspiciousExit("noop")
 		return
 	}
 
+	if c.asyncExitSuspicious == nil {
+		recordSuspiciousExit("no_writer")
+		return
+	}
+	recordSuspiciousExit("dispatched")
 	c.asyncExitSuspicious(credentialID, rawModel)
 }
 
@@ -1012,6 +1059,7 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 				"credential_id", credentialID,
 				"raw_model", rawModel,
 				"error", err)
+			recordSuspiciousExit("db_error")
 			return
 		}
 		nextRetryAt := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339Nano)
@@ -1025,6 +1073,9 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 				"credential_id", credentialID,
 				"raw_model", rawModel,
 				"error", cacheErr)
+			recordSuspiciousExit("cache_error")
+			return
 		}
+		recordSuspiciousExit("dispatched")
 	}()
 }
