@@ -240,18 +240,29 @@ groups:
       # resolved (good) or model_probe_state has fallen out of sync
       # with reality (bad). Pair with request volume alerts to
       # disambiguate.
+      #
+      # The `and` clause gates the alert on observed traffic so a quiet
+      # gateway (e.g. overnight) does not page on a no-op. We require at
+      # least 1 request / minute averaged over the last 5 minutes on any
+      # /v1/* endpoint before the no-dispatch signal is meaningful.
       - alert: LLMGatewaySuspiciousExitNoDispatches
         expr: |
           rate(llmgw_suspicious_exits_total{outcome="dispatched"}[1h]) == 0
+          and
+          sum(rate(llm_gateway_http_requests_total{path=~"/v1/.*"}[5m])) > 0.016
         for: 1h
         labels:
           severity: info
           service: llmgw
         annotations:
-          summary: "No suspicious exits dispatched in 1h"
+          summary: "No suspicious exits dispatched in 1h (with routing traffic)"
           description: |
-            Verify this is actually a healthy steady state by checking
+            The routing layer is serving traffic (>= ~1 req/min on /v1/*
+            endpoints) but no suspicious exits have been dispatched in
+            the last hour. Verify the steady state by checking
             `llmgw_availability_cache_writes_total{state="suspicious"}`
-            is also flat. If it's flat too, everything is genuinely
-            healthy. If writes are non-zero but dispatches are zero,
+            is also flat. If writes are non-zero but dispatches are zero,
             the routing layer may have lost its hot-path wiring.
+
+            The request-volume gate prevents this from firing on
+            idle gateways (e.g. nightly maintenance windows).
