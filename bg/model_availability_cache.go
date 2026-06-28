@@ -36,10 +36,12 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 		return nil
 	}
 	key := c.key(credentialID, rawModel)
+	writeStart := time.Now()
 	pipe := c.redis.Pipeline()
 	pipe.HSet(ctx, key, fields)
 	pipe.Expire(ctx, key, c.ttl)
 	_, err := pipe.Exec(ctx)
+	recordAvailabilityWriteDuration(time.Since(writeStart).Seconds())
 	if err == nil {
 		if src, ok := fields["source"].(string); ok {
 			state := ""

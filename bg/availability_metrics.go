@@ -11,11 +11,12 @@ const availabilityMetricPrefix = "llmgw_availability_"
 var (
 	availabilityMetricOnce sync.Once
 
-	availabilityCacheWrites  *prometheus.CounterVec
-	availabilityCacheReads   *prometheus.CounterVec
-	availabilityBackfillRuns *prometheus.CounterVec
-	availabilityBackfillRows *prometheus.CounterVec
-	availabilityReadDuration prometheus.Histogram
+	availabilityCacheWrites   *prometheus.CounterVec
+	availabilityCacheReads    *prometheus.CounterVec
+	availabilityBackfillRuns  *prometheus.CounterVec
+	availabilityBackfillRows  *prometheus.CounterVec
+	availabilityReadDuration  prometheus.Histogram
+	availabilityWriteDuration prometheus.Histogram
 )
 
 // registerAvailabilityMetrics registers all llmgw_availability_* collectors
@@ -29,6 +30,7 @@ var (
 //   - "is the periodic backfill doing anything?" → backfill_runs_total{trigger}
 //   - backfill_rows_total{trigger}
 //   - "is Redis serving the cache fast enough?" → read_duration_seconds
+//   - "is Redis accepting writes fast enough?" → write_duration_seconds
 func registerAvailabilityMetrics() {
 	availabilityMetricOnce.Do(func() {
 		availabilityCacheWrites = prometheus.NewCounterVec(
@@ -75,8 +77,23 @@ func registerAvailabilityMetrics() {
 				},
 			},
 		)
+		// availability_write_duration_seconds measures the HSET + EXPIRE
+		// pipeline round-trip. Probe workers call this on every state
+		// transition, so a p99 above 50ms here directly slows the probe
+		// loop and can back-pressure SuspiciousProbe / PassiveProbe
+		// workers.
+		availabilityWriteDuration = prometheus.NewHistogram(
+			prometheus.HistogramOpts{
+				Name: availabilityMetricPrefix + "write_duration_seconds",
+				Help: "Wall-clock duration of Redis HSET+EXPIRE pipeline against llmgw:avail:*.",
+				Buckets: []float64{
+					0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
+				},
+			},
+		)
 		prometheus.MustRegister(availabilityCacheWrites, availabilityCacheReads,
-			availabilityBackfillRuns, availabilityBackfillRows, availabilityReadDuration)
+			availabilityBackfillRuns, availabilityBackfillRows,
+			availabilityReadDuration, availabilityWriteDuration)
 	})
 }
 
@@ -115,6 +132,17 @@ func recordAvailabilityReadDuration(seconds float64) {
 		return
 	}
 	availabilityReadDuration.Observe(seconds)
+}
+
+// recordAvailabilityWriteDuration is invoked from the cache writer
+// path. It captures the wall-clock cost of the HSET+EXPIRE pipeline
+// round-trip so operators can spot a slow write side that wouldn't
+// show up in the read latency histogram.
+func recordAvailabilityWriteDuration(seconds float64) {
+	if availabilityWriteDuration == nil {
+		return
+	}
+	availabilityWriteDuration.Observe(seconds)
 }
 
 // recordAvailabilityBackfillRun is invoked once per backfill pass.
