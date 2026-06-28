@@ -11,6 +11,7 @@ package streaming
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
 const anthropicSSEBufSize = 64 * 1024
@@ -186,13 +189,15 @@ func checkAnthropicModelMismatch(c *audit.StreamCapture, clientModel, outboundMo
 	}
 }
 
-// StreamAnthropicSSEToOpenAI is the Q3 byte-level passthrough for
-// Anthropic-format SSE upstreams. The actual IR-driven transform
-// (Anthropic event → OpenAI chat.completion.chunk) lives in the
-// executor's stream path; this function writes upstream bytes through
-// to the client and feeds the side-channel audit capturer. When the
-// upstream body is already OpenAI-shaped, the executor's own stream
-// path is used instead and this helper is not invoked.
+// StreamAnthropicSSEToOpenAI converts Anthropic-format SSE upstream
+// responses into OpenAI-format SSE chunks for Q3 mode
+// (openai-completions client -> anthropic-messages upstream).
+//
+// This must never forward raw Anthropic events such as message_start
+// or content_block_delta to the client. OpenAI SDKs validate each SSE
+// payload as either a chat.completion.chunk (`choices`) or an error
+// object; leaking native Anthropic payloads causes client-side schema
+// failures.
 func StreamAnthropicSSEToOpenAI(
 	w http.ResponseWriter,
 	resp *http.Response,
@@ -235,46 +240,421 @@ func StreamAnthropicSSEToOpenAI(
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
+	chatID := "chatcmpl-" + requestID
+	if requestID == "" {
+		chatID = "chatcmpl-anthropic-openai"
+	}
+	createdAt := time.Now().Unix()
+	chunkModel := clientModel
+	if chunkModel == "" {
+		chunkModel = outboundModel
+	}
+
+	var (
+		ctx                 context.Context
+		inputTokens         int
+		outputTokens        int
+		finishReason        *string
+		toolCallIndex       int
+		emittedRole         bool
+		chunkCount          int
+		bufferedText        strings.Builder
+		hasEmittedToolCalls bool
+		bufferedToolArgs    strings.Builder
+		currentToolCallID   string
+		initialArgsSent     bool
+	)
+
+	writeChunk := func(chunk *ir.StreamChunk) {
+		if chunk == nil {
+			return
+		}
+		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
+		_, _ = io.WriteString(w, sseLine)
+		flusher.Flush()
+		if pc != nil {
+			pc.append(sseLine)
+		}
+		if capture != nil {
+			capture.ObserveChunk(chunk)
+		}
+		chunkCount++
+	}
+
+	flushBufferedText := func() {
+		if bufferedText.Len() == 0 {
+			return
+		}
+		think, rest, ok := textsplit.SplitLeadingThink(bufferedText.String())
+		if ok {
+			if think != "" {
+				writeChunk(&ir.StreamChunk{
+					Type:           ir.ChunkTypeDelta,
+					Delta:          &ir.StreamDelta{ReasoningContent: think},
+					SourceProtocol: ir.ProtocolAnthropicMessages,
+				})
+			}
+			if rest != "" {
+				writeChunk(&ir.StreamChunk{
+					Type:           ir.ChunkTypeDelta,
+					Delta:          &ir.StreamDelta{Content: rest},
+					SourceProtocol: ir.ProtocolAnthropicMessages,
+				})
+			}
+		} else {
+			writeChunk(&ir.StreamChunk{
+				Type:           ir.ChunkTypeDelta,
+				Delta:          &ir.StreamDelta{Content: bufferedText.String()},
+				SourceProtocol: ir.ProtocolAnthropicMessages,
+			})
+		}
+		bufferedText.Reset()
+	}
+
+	if resp.Request != nil {
+		ctx = resp.Request.Context()
+	} else {
+		ctx = context.Background()
+	}
+
+	runtimeCfg := currentStreamRuntimeConfig()
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+
+	type readResult struct {
+		eventType string
+		data      []byte
+		err       error
+	}
+
 	for {
-		line, err := reader.ReadString('\n')
+		readCtx, readCancel := context.WithTimeout(ctx, runtimeCfg.streamChunkTimeout)
+		resultCh := make(chan readResult, 1)
+		go func() {
+			et, d, e := readAnthropicBridgeSSEEvent(readCtx, reader)
+			resultCh <- readResult{et, d, e}
+		}()
+
+		var (
+			eventType string
+			data      []byte
+			err       error
+		)
+		select {
+		case res := <-resultCh:
+			eventType, data, err = res.eventType, res.data, res.err
+			readCancel()
+		case <-readCtx.Done():
+			readCancel()
+			slog.Warn("anthropic_to_openai: chunk timeout",
+				"timeout_seconds", runtimeCfg.streamChunkTimeout.Seconds(),
+				"chunks_received", chunkCount,
+				"request_id", requestID)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("stream_chunk_timeout")
+			}
+			emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
+				fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+			outcome.Interrupted = true
+			outcome.Reason = "chunk_timeout"
+			outcome.ChunkCount = chunkCount
+			if pc != nil {
+				pc.markInterrupted("chunk_timeout")
+			}
+			return outcome
+		}
+
 		if err != nil {
-			if err == io.EOF {
-				break
+			if err == io.EOF || readCtx.Err() != nil {
+				flushBufferedText()
+				if inputTokens > 0 || outputTokens > 0 {
+					writeChunk(&ir.StreamChunk{
+						Type: ir.ChunkTypeUsage,
+						Usage: &ir.StreamUsage{
+							PromptTokens:     inputTokens,
+							CompletionTokens: outputTokens,
+							TotalTokens:      inputTokens + outputTokens,
+						},
+						FinishReason:   "stop",
+						SourceProtocol: ir.ProtocolAnthropicMessages,
+					})
+				}
+				writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.ChunkCount = chunkCount
 			if capture != nil {
-				capture.MarkInterruptedWithReason("read_error")
+				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
 			}
+			emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
 			return outcome
 		}
-		if _, werr := w.Write([]byte(line)); werr != nil {
+
+		if eventType == "" || len(data) == 0 {
+			continue
+		}
+
+		if isOpenAIFormatData(data) {
+			slog.Warn("anthropic_to_openai: detected OpenAI-format data, dropping",
+				"event_type", eventType,
+				"data_preview", truncateForLog(string(data), 100),
+				"request_id", requestID)
+			continue
+		}
+
+		chunk, perr := ir.ParseAnthropicStreamEvent(eventType, data)
+		if perr != nil {
+			slog.Warn("anthropic_to_openai: parse failed",
+				"event_type", eventType,
+				"error", perr,
+				"request_id", requestID)
+			continue
+		}
+
+		switch chunk.Type {
+		case ir.ChunkTypeUsage:
+			if chunk.Usage != nil {
+				if chunk.Usage.PromptTokens > 0 {
+					inputTokens = chunk.Usage.PromptTokens
+				}
+				if chunk.Usage.CompletionTokens > 0 {
+					outputTokens = chunk.Usage.CompletionTokens
+				}
+			}
+			if chunk.ID != "" && !emittedRole {
+				writeChunk(&ir.StreamChunk{
+					Type:           ir.ChunkTypeDelta,
+					Delta:          &ir.StreamDelta{Role: "assistant"},
+					SourceProtocol: ir.ProtocolAnthropicMessages,
+				})
+				emittedRole = true
+			}
+			if chunk.FinishReason != "" {
+				fr := chunk.FinishReason
+				finishReason = &fr
+			}
+
+		case ir.ChunkTypeDelta:
+			if chunk.FinishReason != "" {
+				fr := chunk.FinishReason
+				finishReason = &fr
+			}
+
+			var baseCheck struct {
+				Type string `json:"type"`
+			}
+			if jerr := json.Unmarshal(data, &baseCheck); jerr == nil {
+				switch baseCheck.Type {
+				case "content_block_start":
+					var evt anthropicBridgeContentBlockStart
+					if uerr := json.Unmarshal(data, &evt); uerr == nil && evt.ContentBlock.Type == "tool_use" {
+						currentToolCallID = evt.ContentBlock.ID
+						if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{}" {
+							args := string(evt.ContentBlock.InputRaw)
+							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, &args, true))
+							toolCallIndex++
+							initialArgsSent = true
+						} else {
+							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, nil, false))
+							toolCallIndex++
+							initialArgsSent = false
+						}
+						hasEmittedToolCalls = true
+					} else if uerr == nil && evt.ContentBlock.Type == "thinking" && capture != nil {
+						capture.HasThinking = true
+					}
+
+				case "content_block_delta":
+					var evt struct {
+						Index int `json:"index"`
+						Delta struct {
+							Type        string `json:"type"`
+							Text        string `json:"text"`
+							Thinking    string `json:"thinking"`
+							PartialJSON string `json:"partial_json"`
+						} `json:"delta"`
+					}
+					if uerr := json.Unmarshal(data, &evt); uerr == nil {
+						switch evt.Delta.Type {
+						case "text", "text_delta":
+							bufferedText.WriteString(evt.Delta.Text)
+						case "thinking", "thinking_delta":
+							writeChunk(&ir.StreamChunk{
+								Type:           ir.ChunkTypeDelta,
+								Delta:          &ir.StreamDelta{ReasoningContent: evt.Delta.Thinking},
+								SourceProtocol: ir.ProtocolAnthropicMessages,
+							})
+						case "input_json_delta":
+							if !initialArgsSent && evt.Delta.PartialJSON != "" {
+								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
+							}
+						case "signature_delta":
+							_ = evt.Delta
+						default:
+							slog.Warn("unknown_delta_type_in_stream",
+								"delta_type", evt.Delta.Type,
+								"has_text", evt.Delta.Text != "",
+								"has_thinking", evt.Delta.Thinking != "",
+								"request_id", requestID)
+							if evt.Delta.Text != "" {
+								bufferedText.WriteString(evt.Delta.Text)
+							} else if evt.Delta.Thinking != "" {
+								writeChunk(&ir.StreamChunk{
+									Type:           ir.ChunkTypeDelta,
+									Delta:          &ir.StreamDelta{ReasoningContent: evt.Delta.Thinking},
+									SourceProtocol: ir.ProtocolAnthropicMessages,
+								})
+							}
+						}
+					}
+
+				case "content_block_stop":
+					flushBufferedText()
+					if !initialArgsSent && bufferedToolArgs.Len() > 0 {
+						args := bufferedToolArgs.String()
+						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &args, true))
+						bufferedToolArgs.Reset()
+					}
+					currentToolCallID = ""
+					initialArgsSent = false
+				}
+			}
+
+		case ir.ChunkTypeDone:
+			flushBufferedText()
+			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
+				slog.Warn("inconsistent_tool_calls_finish_reason",
+					"request_id", requestID,
+					"model", clientModel,
+					"prompt_tokens", inputTokens,
+					"completion_tokens", outputTokens,
+					"action", "correcting_to_stop",
+					"original_finish_reason", "tool_calls")
+				stop := "stop"
+				finishReason = &stop
+			}
+
+			fr := "stop"
+			if finishReason != nil {
+				fr = *finishReason
+			}
+			writeChunk(&ir.StreamChunk{
+				Type:           ir.ChunkTypeDelta,
+				Delta:          &ir.StreamDelta{},
+				FinishReason:   fr,
+				SourceProtocol: ir.ProtocolAnthropicMessages,
+			})
+			if inputTokens > 0 || outputTokens > 0 {
+				writeChunk(&ir.StreamChunk{
+					Type: ir.ChunkTypeUsage,
+					Usage: &ir.StreamUsage{
+						PromptTokens:     inputTokens,
+						CompletionTokens: outputTokens,
+						TotalTokens:      inputTokens + outputTokens,
+					},
+					FinishReason:   fr,
+					SourceProtocol: ir.ProtocolAnthropicMessages,
+				})
+			}
+			writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+			return StreamOutcome{ChunkCount: chunkCount}
+
+		case ir.ChunkTypeError:
+			if capture != nil {
+				capture.MarkInterruptedWithReason("upstream_error")
+			}
+			if chunk.Error != nil {
+				emitAnthropicBridgeErrorChunk(w, chunk.Error.Type, chunk.Error.Message, flusher)
+			}
 			outcome.Interrupted = true
-			outcome.Reason = "client_disconnected"
-			if capture != nil {
-				capture.MarkInterruptedWithReason("client_disconnected")
-			}
+			outcome.Reason = "upstream_error"
+			outcome.ChunkCount = chunkCount
 			return outcome
-		}
-		if pc != nil {
-			pc.append(line)
-		}
-		if capture != nil && strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
-			payload = strings.TrimSpace(payload)
-			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
-		}
-		if line == "\n" {
-			flusher.Flush()
 		}
 	}
+}
+
+type anthropicBridgeContentBlockStart struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type     string          `json:"type"`
+		ID       string          `json:"id"`
+		Name     string          `json:"name"`
+		InputRaw json.RawMessage `json:"input"`
+	} `json:"content_block"`
+}
+
+func buildAnthropicBridgeToolCallChunk(index int, id, name string, args *string, hasArgs bool) *ir.StreamChunk {
+	tc := ir.StreamToolCallDelta{
+		Index: index,
+		ID:    id,
+		Type:  "function",
+		Name:  name,
+	}
+	if hasArgs && args != nil {
+		tc.Arguments = *args
+	}
+	return &ir.StreamChunk{
+		Type:           ir.ChunkTypeDelta,
+		Delta:          &ir.StreamDelta{ToolCalls: []ir.StreamToolCallDelta{tc}},
+		SourceProtocol: ir.ProtocolAnthropicMessages,
+	}
+}
+
+func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, flusher http.Flusher) {
+	errBody := map[string]any{
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	body, _ := json.Marshal(errBody)
+	_, _ = w.Write([]byte("data: "))
+	_, _ = w.Write(body)
+	_, _ = w.Write([]byte("\n\n"))
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
-	if pc != nil {
-		pc.append("data: [DONE]\n\n")
+}
+
+func readAnthropicBridgeSSEEvent(ctx context.Context, reader io.Reader) (eventType string, data []byte, err error) {
+	br, ok := reader.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(reader)
 	}
-	return outcome
+	var dataLines []string
+	for {
+		select {
+		case <-ctx.Done():
+			return "", nil, ctx.Err()
+		default:
+		}
+		line, rerr := br.ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if len(dataLines) == 0 {
+				if rerr != nil {
+					return eventType, nil, rerr
+				}
+				continue
+			}
+			return eventType, []byte(strings.Join(dataLines, "\n")), nil
+		}
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		case strings.HasPrefix(line, ":"):
+		}
+		if rerr != nil {
+			if len(dataLines) > 0 {
+				return eventType, []byte(strings.Join(dataLines, "\n")), nil
+			}
+			return eventType, nil, io.EOF
+		}
+	}
 }
 
 // ConvertChatRequestToAnthropic is the live re-export of the Q2
