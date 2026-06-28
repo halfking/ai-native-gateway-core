@@ -106,6 +106,7 @@ async function handleLogin() {
             <div>
               <h2 id="login-modal-title">登录控制面</h2>
               <p class="login-modal__subtitle">开轩 MaaS 管理后台</p>
+              <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
             </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">

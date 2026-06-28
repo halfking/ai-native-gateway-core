@@ -19,6 +19,7 @@ interface User {
   email: string
   role: string
   enabled: boolean
+  must_change_password?: boolean
   last_login_at: string | null
   created_at: string
 }
@@ -188,6 +189,7 @@ onMounted(() => { load(); loadTenants() })
           <th>邮箱</th>
           <th>租户</th>
           <th>角色</th>
+          <th>首次改密</th>
           <th>状态</th>
           <th>最后登录</th>
           <th>操作</th>
@@ -201,6 +203,11 @@ onMounted(() => { load(); loadTenants() })
           <td>{{ u.email || '-' }}</td>
           <td><code>{{ u.tenant_id }}</code></td>
           <td><span class="badge" :class="u.role === 'super_admin' ? 'badge-purple' : 'badge-blue'">{{ roleLabel(u.role) }}</span></td>
+          <td>
+            <span class="badge" :class="u.must_change_password ? 'badge-yellow' : 'badge-green'">
+              {{ u.must_change_password ? '待改密' : '已完成' }}
+            </span>
+          </td>
           <td>
             <span v-if="!readOnly" class="badge" :class="u.enabled ? 'badge-green' : 'badge-red'" style="cursor:pointer" @click="handleToggle(u)">
               {{ u.enabled ? '启用' : '禁用' }}
@@ -325,6 +332,7 @@ onMounted(() => { load(); loadTenants() })
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
 .badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
 .badge-red { background: rgba(239,68,68,.15); color: #f87171; }
+.badge-yellow { background: rgba(234,179,8,.15); color: #facc15; }
 
 .modal-backdrop {
   position: fixed;

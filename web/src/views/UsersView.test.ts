@@ -44,6 +44,7 @@ describe('UsersView tenant admin permissions', () => {
         email: 'alice@example.com',
         role: 'tenant_admin',
         enabled: true,
+        must_change_password: true,
         last_login_at: null,
         created_at: '2026-06-27T00:00:00Z',
       },
@@ -57,6 +58,7 @@ describe('UsersView tenant admin permissions', () => {
 
     expect(wrapper.text()).toContain('当前仅开放查看和重置本租户用户密码')
     expect(wrapper.text()).toContain('重置密码')
+    expect(wrapper.text()).toContain('待改密')
     expect(wrapper.findAll('button').some((node) => node.text().includes('删除'))).toBe(false)
     expect(wrapper.findAll('button').some((node) => node.text().includes('新建用户'))).toBe(false)
   })
