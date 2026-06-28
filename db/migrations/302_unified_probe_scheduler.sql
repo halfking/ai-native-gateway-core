@@ -580,3 +580,137 @@ UPDATE model_probe_state
 SET next_retry_at = COALESCE(last_verified_at, NOW()) + verification_interval
 WHERE state = 'healthy' 
   AND next_retry_at IS NULL;
+
+-- 修复：统一 probe 函数在更新 credential_model_bindings 时必须按
+-- (credential_id + provider_model_id) 精确命中，不能只用 raw_model_name + LIMIT 1。
+CREATE OR REPLACE FUNCTION unified_probe_mark_healthy(
+    p_credential_id BIGINT,
+    p_raw_model_name TEXT,
+    p_latency_ms INTEGER DEFAULT 0
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    new_interval INTERVAL;
+BEGIN
+    SELECT CASE
+        WHEN consecutive_watchdog_successes >= 10 THEN '8 hours'::INTERVAL
+        WHEN consecutive_watchdog_successes >= 5 THEN '6 hours'::INTERVAL
+        WHEN consecutive_watchdog_successes >= 2 THEN '4 hours'::INTERVAL
+        ELSE '2 hours'::INTERVAL
+    END INTO new_interval
+    FROM model_probe_state
+    WHERE credential_id = p_credential_id
+      AND raw_model_name = p_raw_model_name;
+
+    INSERT INTO model_probe_state
+        (credential_id, raw_model_name, state,
+         consecutive_successes, consecutive_failures,
+         last_attempt_at, last_verified_at, next_retry_at,
+         probe_priority, verification_interval,
+         consecutive_watchdog_successes,
+         last_status, probing_started_at)
+    VALUES
+        (p_credential_id, p_raw_model_name, 'healthy',
+         1, 0,
+         NOW(), NOW(), NOW() + COALESCE(new_interval, '4 hours'::INTERVAL),
+         'watchdog', COALESCE(new_interval, '4 hours'::INTERVAL),
+         1,
+         'ok', NULL)
+    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+        state = 'healthy',
+        consecutive_successes = model_probe_state.consecutive_successes + 1,
+        consecutive_failures = 0,
+        last_attempt_at = NOW(),
+        last_verified_at = NOW(),
+        next_retry_at = NOW() + COALESCE(new_interval, model_probe_state.verification_interval, '4 hours'::INTERVAL),
+        probe_priority = 'watchdog',
+        verification_interval = COALESCE(new_interval, model_probe_state.verification_interval),
+        consecutive_watchdog_successes = CASE
+            WHEN model_probe_state.probe_priority = 'watchdog' THEN model_probe_state.consecutive_watchdog_successes + 1
+            ELSE 1
+        END,
+        last_status = 'ok',
+        probing_started_at = NULL,
+        state_expires_at = NULL,
+        marked_suspicious_at = NULL;
+
+    UPDATE credential_model_bindings cmb
+    SET available = TRUE,
+        unavailable_reason = NULL,
+        unavailable_at = NULL,
+        unavailable_recover_at = NULL,
+        updated_at = NOW()
+    FROM provider_models pm
+    WHERE cmb.provider_model_id = pm.id
+      AND cmb.credential_id = p_credential_id
+      AND pm.raw_model_name = p_raw_model_name
+      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION unified_probe_mark_failing(
+    p_credential_id BIGINT,
+    p_raw_model_name TEXT,
+    p_error_code TEXT,
+    p_error_message TEXT DEFAULT '',
+    p_retry_after_seconds INTEGER DEFAULT 60
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    current_failures INTEGER;
+    backoff_seconds INTEGER;
+BEGIN
+    SELECT COALESCE(consecutive_failures, 0) INTO current_failures
+    FROM model_probe_state
+    WHERE credential_id = p_credential_id
+      AND raw_model_name = p_raw_model_name;
+
+    backoff_seconds := LEAST(
+        p_retry_after_seconds * POWER(2, LEAST(current_failures, 6)),
+        3600
+    );
+
+    INSERT INTO model_probe_state
+        (credential_id, raw_model_name, state,
+         consecutive_successes, consecutive_failures,
+         last_attempt_at, next_retry_at,
+         probe_priority, last_status,
+         last_unavailable_reason, last_err_code,
+         probing_started_at, consecutive_watchdog_successes)
+    VALUES
+        (p_credential_id, p_raw_model_name, 'failing',
+         0, 1,
+         NOW(), NOW() + (backoff_seconds || ' seconds')::INTERVAL,
+         'failing', 'http_error',
+         p_error_message, p_error_code,
+         NULL, 0)
+    ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
+        state = 'failing',
+        consecutive_successes = 0,
+        consecutive_failures = model_probe_state.consecutive_failures + 1,
+        last_attempt_at = NOW(),
+        next_retry_at = NOW() + (backoff_seconds || ' seconds')::INTERVAL,
+        probe_priority = 'failing',
+        last_status = 'http_error',
+        last_unavailable_reason = p_error_message,
+        last_err_code = p_error_code,
+        probing_started_at = NULL,
+        consecutive_watchdog_successes = 0,
+        state_expires_at = NULL;
+
+    UPDATE credential_model_bindings cmb
+    SET available = FALSE,
+        unavailable_reason = 'probe_' || p_error_code,
+        unavailable_at = NOW(),
+        updated_at = NOW()
+    FROM provider_models pm
+    WHERE cmb.provider_model_id = pm.id
+      AND cmb.credential_id = p_credential_id
+      AND pm.raw_model_name = p_raw_model_name
+      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+END;
+$$;

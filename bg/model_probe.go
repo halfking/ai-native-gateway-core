@@ -61,6 +61,7 @@ type ModelProbeRunner struct {
 	db      *pgxpool.Pool
 	encKey  []byte
 	keyring *secret.Keyring
+	cache   *ModelAvailabilityCache
 	cancel  context.CancelFunc
 	done    chan struct{}
 }
@@ -74,6 +75,10 @@ func NewModelProbeRunner(db *pgxpool.Pool, encKey []byte) *ModelProbeRunner {
 }
 
 func (r *ModelProbeRunner) SetKeyring(kr *secret.Keyring) { r.keyring = kr }
+
+func (r *ModelProbeRunner) SetAvailabilityCache(cache *ModelAvailabilityCache) {
+	r.cache = cache
+}
 
 func (r *ModelProbeRunner) Start(ctx context.Context) {
 	ctx, r.cancel = context.WithCancel(ctx)
@@ -630,6 +635,7 @@ func (r *ModelProbeRunner) applyResult(
 			slog.Info("model probe: marked binding unavailable (broken_confirmed)",
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
+		r.writeAvailabilityCache(ctx, t, newState, false, status, newSucc, newFail, 7*24*time.Hour)
 	case "healthy_confirmed":
 		_, err := r.db.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
@@ -650,6 +656,41 @@ func (r *ModelProbeRunner) applyResult(
 			slog.Info("model probe: restored binding available (healthy_confirmed)",
 				"credential_id", t.CredentialID, "raw_model", t.RawModel)
 		}
+		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, 2*time.Hour)
+	default:
+		r.writeAvailabilityCache(ctx, t, newState, true, status, newSucc, newFail, 15*time.Minute)
+	}
+}
+
+func (r *ModelProbeRunner) writeAvailabilityCache(
+	ctx context.Context,
+	t probeTarget,
+	state string,
+	available bool,
+	lastStatus string,
+	consecutiveSuccesses int,
+	consecutiveFailures int,
+	nextRetryIn time.Duration,
+) {
+	if r.cache == nil || !r.cache.Enabled() {
+		return
+	}
+	nextRetryAt := time.Now().Add(nextRetryIn)
+	if err := r.cache.Set(ctx, t.CredentialID, t.RawModel, modelAvailabilityFields(
+		t.CredentialID,
+		t.RawModel,
+		state,
+		available,
+		lastStatus,
+		consecutiveSuccesses,
+		consecutiveFailures,
+		&nextRetryAt,
+		"model_probe",
+	)); err != nil {
+		slog.Warn("model probe: cache write failed",
+			"credential_id", t.CredentialID,
+			"raw_model", t.RawModel,
+			"error", err)
 	}
 }
 

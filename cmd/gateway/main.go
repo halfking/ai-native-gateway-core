@@ -749,6 +749,8 @@ func main() {
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
 		}
+		chatHandler.SetFormatAnomalyRecorder(streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool()))
+		slog.Info("response format anomaly recorder wired")
 
 		// 2026-06-27 session-audit: wire the approval manager so
 		// /api/admin/session-{audit,approvals}/* endpoints can serve
@@ -849,6 +851,7 @@ func main() {
 	var unifiedProbe *bg.UnifiedProbeScheduler
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
 	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
+	var modelAvailabilityCache *bg.ModelAvailabilityCache
 	var passiveProbe *bg.PassiveProbeListener
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -944,27 +947,30 @@ func main() {
 			if keyring != nil {
 				modelProbe.SetKeyring(keyring)
 			}
+			modelProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before modelProbe.Start")
 			modelProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: after modelProbe.Start")
 
-			// 2026-06-28: Unified Probe Scheduler (replaces ModelProbeRunner + SuspiciousProbeRunner).
-			// Intelligent probe scheduler with priority queues, real-time feedback,
-			// and adaptive watchdog intervals. Reduces probe count by 40-50% while
-			// achieving <30s failure detection (vs 2h blind window).
-			slog.Info("CHECKPOINT: before NewUnifiedProbeScheduler")
-			unifiedProbe := bg.NewUnifiedProbeScheduler(dbConn.Pool(), fernetKey)
-			if keyring != nil {
-				unifiedProbe.SetKeyring(keyring)
-			}
-			slog.Info("CHECKPOINT: before unifiedProbe.Start")
-			unifiedProbe.Start(context.Background())
-			slog.Info("CHECKPOINT: after unifiedProbe.Start")
+			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
+			// model_probe_state，会导致重复探测和状态覆盖。默认关闭，待
+			// 单一 writer + Redis 状态层完全接管后再开启。
+			if os.Getenv("LLM_GATEWAY_ENABLE_UNIFIED_PROBE_SCHEDULER") == "true" {
+				slog.Info("CHECKPOINT: before NewUnifiedProbeScheduler")
+				unifiedProbe = bg.NewUnifiedProbeScheduler(dbConn.Pool(), fernetKey)
+				if keyring != nil {
+					unifiedProbe.SetKeyring(keyring)
+				}
+				slog.Info("CHECKPOINT: before unifiedProbe.Start")
+				unifiedProbe.Start(context.Background())
+				slog.Info("CHECKPOINT: after unifiedProbe.Start")
 
-			// Wire UnifiedProbeScheduler to executor for real-time feedback
-			if routingExec != nil {
-				routingExec.UnifiedProbeScheduler = unifiedProbe
-				slog.Info("unified_probe_scheduler wired to executor")
+				if routingExec != nil {
+					routingExec.UnifiedProbeScheduler = unifiedProbe
+					slog.Info("unified_probe_scheduler wired to executor")
+				}
+			} else {
+				slog.Warn("unified probe scheduler disabled pending single-writer cutover")
 			}
 
 			// TODO: After validation, remove the old probe runners:
@@ -1042,6 +1048,7 @@ func main() {
 		// Health tracking workers (2026-06-22): sliding window aggregation,
 		// auto-scaleup, and auto-recovery. Run in both modes.
 		if fpSlotRedis != nil {
+			modelAvailabilityCache = bg.NewModelAvailabilityCache(fpSlotRedis, 4*time.Hour)
 			callHistoryAggregator = bg.NewCallHistoryAggregator(fpSlotRedis, dbConn.Pool(), 1*time.Minute)
 			callHistoryAggregator.Start(context.Background())
 
@@ -1069,8 +1076,8 @@ func main() {
 			concurrencyAutoScaleUp.Start(context.Background())
 
 			slog.Info("CHECKPOINT: after concurrencyAutoScaleUp.Start, before NewIndex")
-				autoroute.InitFeatureFlags()
-				autoIdx := autoroute.NewIndex()
+			autoroute.InitFeatureFlags()
+			autoIdx := autoroute.NewIndex()
 
 			autoIdx.SetPool(dbConn.Pool())
 
