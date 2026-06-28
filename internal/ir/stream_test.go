@@ -239,6 +239,28 @@ func TestParseAnthropicStreamEvent_MessageDelta(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicStreamEvent_MessageDeltaZeroOutputTokens(t *testing.T) {
+	data := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}`)
+
+	chunk, err := ParseAnthropicStreamEvent("message_delta", data)
+	if err != nil {
+		t.Fatalf("ParseAnthropicStreamEvent failed: %v", err)
+	}
+
+	if chunk.Type != ChunkTypeDelta {
+		t.Errorf("expected Type=delta when output_tokens=0, got %s", chunk.Type)
+	}
+	if chunk.Delta == nil {
+		t.Fatal("expected Delta to be non-nil")
+	}
+	if chunk.FinishReason != "stop" {
+		t.Errorf("expected FinishReason=stop (mapped from end_turn), got %s", chunk.FinishReason)
+	}
+	if chunk.Usage != nil {
+		t.Errorf("expected Usage=nil when output_tokens=0, got %v", chunk.Usage)
+	}
+}
+
 func TestParseAnthropicStreamEvent_MessageStop(t *testing.T) {
 	data := []byte(`{"type":"message_stop"}`)
 
