@@ -2,7 +2,6 @@ package bg
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -45,7 +44,7 @@ func (c *ModelAvailabilityCache) Set(ctx context.Context, credentialID int, rawM
 }
 
 func (c *ModelAvailabilityCache) key(credentialID int, rawModel string) string {
-	return fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)
+	return modelAvailabilityKey(credentialID, rawModel)
 }
 
 func modelAvailabilityFields(

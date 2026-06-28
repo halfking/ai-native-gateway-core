@@ -53,3 +53,31 @@ func TestModelAvailabilityReaderRead(t *testing.T) {
 		t.Fatal("expected LoadedFromCache=true")
 	}
 }
+
+func TestModelAvailabilityReaderReadByModel(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cache := NewModelAvailabilityCache(client, time.Hour)
+	reader := NewModelAvailabilityReader(client)
+
+	ctx := context.Background()
+	if err := cache.Set(ctx, 1, "glm-5.2", modelAvailabilityFields(1, "glm-5.2", "healthy_confirmed", true, "ok", 3, 0, nil, "model_probe")); err != nil {
+		t.Fatalf("cache.Set #1: %v", err)
+	}
+	if err := cache.Set(ctx, 2, "glm-5.2", modelAvailabilityFields(2, "glm-5.2", "broken_confirmed", false, "http_4xx", 0, 3, nil, "model_probe")); err != nil {
+		t.Fatalf("cache.Set #2: %v", err)
+	}
+
+	rows, err := reader.ReadByModel(ctx, "glm-5.2")
+	if err != nil {
+		t.Fatalf("ReadByModel: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+}
