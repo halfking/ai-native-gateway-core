@@ -183,6 +183,7 @@ func TestScanIndexRow_LoadsAvailabilityAndTier(t *testing.T) {
 		"official", // provider_category
 		"cloud",    // provider_kind
 		false,      // is_free
+		"",         // cost_tier
 	}}
 
 	c, err := scanIndexRow(row)
@@ -238,6 +239,7 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 				"aggregator",
 				"cloud",
 				false,
+				"",
 			}}
 			c, err := scanIndexRow(row)
 			if err != nil {
@@ -250,5 +252,42 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 				t.Fatalf("provider category: got %q, want aggregator", c.ProviderCategory)
 			}
 		})
+	}
+}
+
+// TestScanIndexRow_LoadsCostTier 验证 mc.cost_tier 字段被正确加载
+// （deriveIsFree 的 CostTier 分支依赖于该字段）。
+func TestScanIndexRow_LoadsCostTier(t *testing.T) {
+	row := stubScanRow{values: []any{
+		int64(13),
+		"m-free",
+		1,
+		"m-free",
+		[]string{"chat"},
+		64000,
+		"token", // 非 free billing_mode
+		5.0,     // 非零价格
+		5.0,
+		0.95,
+		1000,
+		0,
+		10,
+		int16(1),
+		"",
+		"aggregator",
+		"cloud",
+		false,  // SQL CASE 没有命中，所以 is_free = false
+		"free", // 但 cost_tier = 'free' → Go 侧 deriveIsFree 应识别
+	}}
+
+	c, err := scanIndexRow(row)
+	if err != nil {
+		t.Fatalf("scanIndexRow err: %v", err)
+	}
+	if c.CostTier != "free" {
+		t.Fatalf("cost_tier: got %q, want free", c.CostTier)
+	}
+	if !deriveIsFree(c) {
+		t.Fatalf("deriveIsFree should be true (cost_tier=free)")
 	}
 }
