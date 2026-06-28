@@ -45,8 +45,10 @@ func (r *ModelAvailabilityReader) Read(ctx context.Context, credentialID int, ra
 		return nil, err
 	}
 	if len(data) == 0 {
+		recordAvailabilityCacheRead("availability_reader", "miss")
 		return nil, nil
 	}
+	recordAvailabilityCacheRead("availability_reader", "hit")
 
 	s := &ModelAvailabilitySnapshot{
 		State:           data["state"],

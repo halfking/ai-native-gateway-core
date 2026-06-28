@@ -133,11 +133,34 @@ func (w *AvailabilityCacheBackfill) run(ctx context.Context) {
 }
 
 // RunOnce executes a single backfill pass. Exposed so admin handlers and
-// tests can trigger it on demand.
+// tests can trigger it on demand. The trigger label flows into the
+// llmgw_availability_backfill_*_total Prometheus counters as a label
+// so operators can distinguish periodic passes from manual runs.
 func (w *AvailabilityCacheBackfill) RunOnce(ctx context.Context) (int, error) {
-	if w == nil {
+	return w.runOnceWithTrigger(ctx, "periodic")
+}
+
+// RunOnceWithTrigger is the exported variant of RunOnce that records the
+// provided trigger label on the llmgw_availability_backfill_runs_total
+// counter. Use "manual" for admin-triggered runs and "periodic" for the
+// background tick.
+func (w *AvailabilityCacheBackfill) RunOnceWithTrigger(ctx context.Context, trigger string) (int, error) {
+	return w.runOnceWithTrigger(ctx, trigger)
+}
+
+// runOnceWithTrigger is the internal variant that allows the admin /metrics
+// path to record a distinct label.
+func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trigger string) (int, error) {
+	// Always record the run attempt, even when the worker is in a
+	// degraded state (nil db / disabled cache). Operators rely on this
+	// counter to confirm the periodic loop is alive, and a missing
+	// spike is itself a signal worth alerting on.
+	recordAvailabilityBackfillRun(trigger)
+
+	if w == nil || w.db == nil {
 		return 0, nil
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -223,6 +246,7 @@ func (w *AvailabilityCacheBackfill) RunOnce(ctx context.Context) (int, error) {
 		written++
 	}
 	if written > 0 {
+		recordAvailabilityBackfillRows(trigger, written)
 		slog.Info("availability backfill: cache repopulated", "written", written)
 	}
 	return written, nil
