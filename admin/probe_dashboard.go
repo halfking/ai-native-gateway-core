@@ -12,6 +12,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -194,6 +195,13 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 	var models []ModelHealthSummary
 	for rows.Next() {
 		var m ModelHealthSummary
+		var healthyPercentage sql.NullFloat64
+		var failingPercentage sql.NullFloat64
+		var avgSuccessRate7d sql.NullFloat64
+		var avgVerificationHours sql.NullFloat64
+		var avgConsecutiveSuccesses sql.NullFloat64
+		var totalRealSuccess24h sql.NullInt64
+		var totalRealFailure24h sql.NullInt64
 		err := rows.Scan(
 			&m.ProviderModelID,
 			&m.RawModelName,
@@ -205,17 +213,17 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 			&m.SuspiciousCount,
 			&m.FailingCount,
 			&m.ProbingCount,
-			&m.HealthyPercentage,
-			&m.FailingPercentage,
+			&healthyPercentage,
+			&failingPercentage,
 			&m.UrgentCount,
 			&m.SuspiciousPriorityCount,
 			&m.FailingPriorityCount,
 			&m.WatchdogCount,
-			&m.AvgSuccessRate7d,
-			&m.AvgVerificationHours,
-			&m.AvgConsecutiveSuccesses,
-			&m.TotalRealSuccess24h,
-			&m.TotalRealFailure24h,
+			&avgSuccessRate7d,
+			&avgVerificationHours,
+			&avgConsecutiveSuccesses,
+			&totalRealSuccess24h,
+			&totalRealFailure24h,
 			&m.RealSuccessRate24h,
 			&m.LastVerifiedAt,
 			&m.LastRealRequestAt,
@@ -228,6 +236,13 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		m.HealthyPercentage = nullFloat64(healthyPercentage)
+		m.FailingPercentage = nullFloat64(failingPercentage)
+		m.AvgSuccessRate7d = nullFloat64(avgSuccessRate7d)
+		m.AvgVerificationHours = nullFloat64(avgVerificationHours)
+		m.AvgConsecutiveSuccesses = nullFloat64(avgConsecutiveSuccesses)
+		m.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
+		m.TotalRealFailure24h = nullInt(totalRealFailure24h)
 		models = append(models, m)
 	}
 
@@ -281,6 +296,9 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 // Returns overall system health metrics
 func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request) {
 	var health ProbeSystemHealth
+	var avgSuccessRate7d sql.NullFloat64
+	var totalRealSuccess24h sql.NullInt64
+	var totalRealFailure24h sql.NullInt64
 	err := h.db.QueryRow(r.Context(), `SELECT * FROM v_probe_system_health`).Scan(
 		&health.TotalNodes,
 		&health.HealthyNodes,
@@ -294,11 +312,11 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		&health.ReadyProbes,
 		&health.CurrentProbing,
 		&health.CredentialsBeingProbed,
-		&health.AvgSuccessRate7d,
+		&avgSuccessRate7d,
 		&health.LastProbeAt,
 		&health.LastRealRequestAt,
-		&health.TotalRealSuccess24h,
-		&health.TotalRealFailure24h,
+		&totalRealSuccess24h,
+		&totalRealFailure24h,
 		&health.CriticalNodes,
 		&health.PendingProbes5min,
 		&health.SnapshotAt,
@@ -307,6 +325,11 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if avgSuccessRate7d.Valid {
+		health.AvgSuccessRate7d = &avgSuccessRate7d.Float64
+	}
+	health.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
+	health.TotalRealFailure24h = nullInt(totalRealFailure24h)
 	if rc, ok := h.redisClient.(*redis.Client); ok {
 		keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
 		if cacheErr == nil && len(keys) > 0 {
@@ -962,4 +985,18 @@ func isUnavailableState(state string) bool {
 		return true
 	}
 	return false
+}
+
+func nullFloat64(v sql.NullFloat64) float64 {
+	if !v.Valid {
+		return 0
+	}
+	return v.Float64
+}
+
+func nullInt(v sql.NullInt64) int {
+	if !v.Valid {
+		return 0
+	}
+	return int(v.Int64)
 }
