@@ -307,6 +307,12 @@ func main() {
 		// Flushes state to database every 10s or when 100 credentials are dirty.
 		if dbConn != nil && dbConn.Enabled() {
 			banditScorer := credential.NewBanditScorer()
+			
+			// Load historical state from database (cold start recovery)
+			if err := banditScorer.LoadFromDB(context.Background(), dbConn.Pool()); err != nil {
+				slog.Warn("bandit: failed to load state from database", "error", err)
+			}
+			
 			banditFlusher := credential.NewBanditFlusher(
 				dbConn.Pool(),
 				banditScorer,
@@ -856,6 +862,7 @@ func main() {
 	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
 	var modelAvailabilityCache *bg.ModelAvailabilityCache
 	var modelAvailabilityReader *bg.ModelAvailabilityReader
+	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
 	var passiveProbe *bg.PassiveProbeListener
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -1068,6 +1075,22 @@ func main() {
 			if modelAvailabilityReader == nil {
 				modelAvailabilityReader = bg.NewModelAvailabilityReader(fpSlotRedis)
 			}
+
+			// Periodic DB→Redis backfill so the cache recovers after Redis
+			// flush / cold deploy. The on-demand trigger lives in
+			// /api/admin/probe/cache-rebuild.
+			if dbConn != nil && dbConn.Enabled() {
+				modelAvailabilityBackfill = bg.NewAvailabilityCacheBackfill(
+					dbConn.Pool(),
+					modelAvailabilityCache,
+					modelAvailabilityReader,
+					bg.AvailabilityCacheBackfillConfig{},
+				)
+				if modelAvailabilityBackfill != nil {
+					modelAvailabilityBackfill.Start(context.Background())
+					defer modelAvailabilityBackfill.Stop()
+				}
+			}
 		}
 
 		// Weekly rollup + auto-tune suggester require writes to
@@ -1232,6 +1255,9 @@ func main() {
 					modelAvailabilityReader = bg.NewModelAvailabilityReader(fpSlotRedis)
 				}
 				adminHandler.SetAvailabilityReader(modelAvailabilityReader)
+				if modelAvailabilityBackfill != nil {
+					adminHandler.SetAvailabilityBackfill(modelAvailabilityBackfill)
+				}
 			}
 			slog.Info("CHECKPOINT: after SetRedisClient")
 		}

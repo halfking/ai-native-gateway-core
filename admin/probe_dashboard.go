@@ -13,6 +13,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -562,6 +563,7 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/model/", adminWrap(h.handleProbeModelRoutes))
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))
 	mux.HandleFunc("/api/admin/probe/cache-state", adminWrap(h.handleProbeCacheState))
+	mux.HandleFunc("/api/admin/probe/cache-rebuild", adminWrap(h.handleProbeCacheRebuild))
 }
 
 // handleProbeModelRoutes is a router for /api/admin/probe/model/* endpoints
@@ -709,4 +711,149 @@ func parseAvailabilityKey(key string) (int, string, bool) {
 		return 0, "", false
 	}
 	return credID, rest[idx+1:], true
+}
+
+// POST /api/admin/probe/cache-rebuild
+//
+// Triggers a single DB→Redis cache rebuild pass. Intended for ops use
+// after a Redis flush or cold deploy. The body is JSON-optional:
+//
+//	{ "lookback_seconds": 3600, "batch_size": 200 }
+//
+// When the body is empty we use the worker's defaults.  The response is
+// JSON containing how many entries were re-populated.
+func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.availabilityBackfill == nil {
+		http.Error(w, "availability backfill not wired", http.StatusServiceUnavailable)
+		return
+	}
+
+	type req struct {
+		LookbackSeconds int `json:"lookback_seconds"`
+		BatchSize       int `json:"batch_size"`
+	}
+	var body req
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if body.LookbackSeconds > 0 || body.BatchSize > 0 {
+		// Run a one-shot backfill with custom parameters by constructing
+		// a temporary worker. We do not mutate the long-running worker
+		// so the next scheduled tick is unaffected.
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		count, err := runOneShotBackfill(ctx, h.availabilityBackfill, body.LookbackSeconds, body.BatchSize)
+		if err != nil {
+			http.Error(w, "backfill failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"rebuilt":          count,
+			"lookback_seconds": body.LookbackSeconds,
+			"batch_size":       body.BatchSize,
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	count, err := h.availabilityBackfill.RunOnce(ctx)
+	if err != nil {
+		http.Error(w, "backfill failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rebuilt": count,
+		"mode":    "default",
+	})
+}
+
+// runOneShotBackfill runs a single DB→Redis rebuild pass with custom
+// batch_size / lookback_seconds. It reuses the worker's connection but
+// executes a parameterised SQL query and bypasses the worker's
+// shouldRefresh filter so the operator can force a full refresh.
+func runOneShotBackfill(ctx context.Context, w *bg.AvailabilityCacheBackfill, lookbackSeconds, batchSize int) (int, error) {
+	if lookbackSeconds <= 0 {
+		lookbackSeconds = 3600
+	}
+	if batchSize <= 0 {
+		batchSize = 200
+	}
+	if w == nil {
+		return 0, fmt.Errorf("backfill worker not wired")
+	}
+	db := w.DB()
+	if db == nil {
+		return 0, fmt.Errorf("backfill worker has no DB pool")
+	}
+	rows, err := db.Query(ctx, `
+		SELECT credential_id, raw_model_name, state,
+		       COALESCE(consecutive_successes, 0),
+		       COALESCE(consecutive_failures, 0),
+		       COALESCE(total_attempts, 0),
+		       last_attempt_at, next_retry_at, last_status
+		FROM model_probe_state
+		WHERE next_retry_at IS NOT NULL
+		  AND next_retry_at <= NOW() + make_interval(secs => $1)
+		ORDER BY next_retry_at DESC
+		LIMIT $2
+	`, lookbackSeconds, batchSize)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	written := 0
+	cache := w.Cache()
+	if cache == nil {
+		return 0, fmt.Errorf("backfill worker has no cache")
+	}
+	for rows.Next() {
+		var (
+			credID      int
+			model       string
+			state       string
+			succ        int
+			fail        int
+			total       int
+			lastAttempt *time.Time
+			nextRetry   *time.Time
+			lastStatus  *string
+		)
+		if err := rows.Scan(&credID, &model, &state, &succ, &fail, &total,
+			&lastAttempt, &nextRetry, &lastStatus); err != nil {
+			continue
+		}
+		status := ""
+		if lastStatus != nil {
+			status = *lastStatus
+		}
+		available := !isUnavailableState(state)
+		fields := bg.ModelAvailabilityFields(credID, model, state, available, status, succ, fail, nextRetry, "backfill")
+		if err := cache.Set(ctx, credID, model, fields); err != nil {
+			continue
+		}
+		written++
+	}
+	if err := rows.Err(); err != nil {
+		return written, err
+	}
+	return written, nil
+}
+
+// isUnavailableState mirrors bg.isUnavailable but stays in the admin
+// package so we don't need to export it from bg just for this endpoint.
+func isUnavailableState(state string) bool {
+	switch state {
+	case "broken_confirmed", "failing", "unreachable":
+		return true
+	}
+	return false
 }
