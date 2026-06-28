@@ -164,7 +164,27 @@ func TestDecide_InvalidTaskHint_Ignored(t *testing.T) {
 
 	dec, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", TaskType("bogus"), "")
 	if dec.TaskType != TaskCode {
-		t.Fatalf("invalid hint should fall through to heuristic, got %s", dec.TaskType)
+		fatalf := t.Fatalf
+		fatalf("invalid hint should fall through to heuristic, got %s", dec.TaskType)
+	}
+}
+
+func TestDecideWithFeatureFlags_SubFeatureEnablesV2Path(t *testing.T) {
+	old := globalFeatureFlags
+	globalFeatureFlags = &FeatureFlags{UseCacheRevalidation: true}
+	defer func() { globalFeatureFlags = old }()
+
+	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.9, Classifier: "heuristic"}}
+	idx := NewIndex()
+	idx.entries = []Candidate{{CredentialID: 1, CanonicalID: 1, CanonicalName: "m", RawModel: "m", Tags: []string{"chat"}}}
+	d := NewDecider(cls, nil, idx, nil)
+
+	dec, err := d.DecideWithFeatureFlags(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if dec.Classifier != "heuristic_v2" {
+		t.Fatalf("expected V2 path classifier suffix, got %s", dec.Classifier)
 	}
 }
 

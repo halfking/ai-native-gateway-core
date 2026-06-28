@@ -214,6 +214,10 @@ func TestRecommendV2_LiveAvailabilityFilter(t *testing.T) {
 
 // TestRecommendV2_CorrectionScoreApplied 验证上次任务结果校正会提升同模型得分。
 func TestRecommendV2_CorrectionScoreApplied(t *testing.T) {
+	old := globalFeatureFlags
+	globalFeatureFlags = &FeatureFlags{UseSimplifiedScoring: true}
+	defer func() { globalFeatureFlags = old }()
+
 	candidates := []Candidate{
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a", UnavailableReason: "", Tags: []string{"code"}, SuccessRate: 0.95, UnitPriceInPer1M: 100, UnitPriceOutPer1M: 100},
 		{CredentialID: 2, CanonicalID: 2, CanonicalName: "model-b", UnavailableReason: "", Tags: []string{"code"}, SuccessRate: 0.95, UnitPriceInPer1M: 100, UnitPriceOutPer1M: 100},
@@ -271,6 +275,46 @@ func TestGetHotTop3Canonicals_CacheStale(t *testing.T) {
 	result := idx.getHotTop3Canonicals(context.Background())
 	if len(result) != 0 {
 		t.Fatalf("expected empty result when cache stale and no pool, got %d", len(result))
+	}
+}
+
+// TestRecommendV2_DisabledHotPoolUsesAllCandidates verifies that disabling the
+// hot-top3 seed pool falls back to scoring across all available candidates.
+func TestRecommendV2_DisabledHotPoolUsesAllCandidates(t *testing.T) {
+	old := globalFeatureFlags
+	globalFeatureFlags = &FeatureFlags{UseHotTop3Pool: false, UseSimplifiedScoring: true}
+	defer func() { globalFeatureFlags = old }()
+
+	candidates := []Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "hot-a", UnavailableReason: "", Tags: []string{"chat"}, SuccessRate: 0.80, UnitPriceInPer1M: 400, UnitPriceOutPer1M: 400},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "cold-best", UnavailableReason: "", Tags: []string{"chat"}, SuccessRate: 0.95, UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10},
+	}
+
+	idx := &Index{entries: candidates, lastRefresh: time.Now()}
+	results := idx.RecommendV2(context.Background(), TaskChat, ClassificationSignals{}, "", 3)
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if results[0].Candidate.CanonicalName != "cold-best" {
+		t.Fatalf("expected full-pool scoring winner cold-best, got %s", results[0].Candidate.CanonicalName)
+	}
+}
+
+// TestRecommendV2_DisabledFallbackReturnsNil verifies that fallback does not trigger
+// when the fallback sub-feature is disabled.
+func TestRecommendV2_DisabledFallbackReturnsNil(t *testing.T) {
+	old := globalFeatureFlags
+	globalFeatureFlags = &FeatureFlags{Use48hFallback: false, UseSimplifiedScoring: true}
+	defer func() { globalFeatureFlags = old }()
+
+	candidates := []Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a", UnavailableReason: "manual", Tags: []string{"code"}},
+	}
+
+	idx := &Index{entries: candidates, lastRefresh: time.Now()}
+	results := idx.RecommendV2(context.Background(), TaskCode, ClassificationSignals{}, "", 3)
+	if results != nil {
+		t.Fatalf("expected nil when fallback is disabled, got %d results", len(results))
 	}
 }
 
