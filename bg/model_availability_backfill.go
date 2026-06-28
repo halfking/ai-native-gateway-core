@@ -247,6 +247,7 @@ func (w *AvailabilityCacheBackfill) runOnceWithTrigger(ctx context.Context, trig
 	}
 	if written > 0 {
 		recordAvailabilityBackfillRows(trigger, written)
+		recordAvailabilityBackfillRowsPerRun(written)
 		slog.Info("availability backfill: cache repopulated", "written", written)
 	}
 	return written, nil
