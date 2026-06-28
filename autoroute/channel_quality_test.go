@@ -531,6 +531,9 @@ func TestChannelQualityRouting_MinimaxBeatsNvidiaNim(t *testing.T) {
 
 // TestChannelQualityRouting_FallbackUsedWhenSaturated 验证主渠道饱和时
 // fallback 池能补足（demotion 放宽到 0.85）。
+//
+// 修复（audit #4）：freeBackup 必须是真正的 fallback（ChannelQuality < 50），
+// 否则该测试只是验证 preferred 池内部的排序，没有覆盖 fallback 路径。
 func TestChannelQualityRouting_FallbackUsedWhenSaturated(t *testing.T) {
 	saturated := Candidate{
 		CredentialID:      1,
@@ -544,14 +547,15 @@ func TestChannelQualityRouting_FallbackUsedWhenSaturated(t *testing.T) {
 		UnitPriceOutPer1M: 30,
 		TaskMatchScore:    0.8,
 	}
+	// 真正的 fallback：success < 0.90 → -25 demotion → 60-25=35 < 50
 	freeBackup := Candidate{
 		CredentialID:      2,
 		CanonicalID:       2,
 		CanonicalName:     "nvidia-backup",
 		ProviderCategory:  "aggregator",
 		BillingMode:       "free",
-		SuccessRate:       0.95, // 表现良好
-		P95LatencyMs:      2000, // 表现良好
+		SuccessRate:       0.85, // < 0.90 触发 free+unreliable demotion
+		P95LatencyMs:      2000,
 		UnitPriceInPer1M:  10,
 		UnitPriceOutPer1M: 30,
 		TaskMatchScore:    0.8,
@@ -562,6 +566,15 @@ func TestChannelQualityRouting_FallbackUsedWhenSaturated(t *testing.T) {
 	sSat := ScoreWithChannelQuality(saturated, TaskCode, avgPrices, 0)
 	sFree := ScoreWithChannelQuality(freeBackup, TaskCode, avgPrices, 0)
 
+	// 验证：freeBackup 确实落入 fallback 池
+	if sFree.ChannelQuality >= ChannelQualityPreferredThreshold {
+		t.Fatalf("freeBackup should be in fallback pool, got ChannelQuality=%.2f", sFree.ChannelQuality)
+	}
+	// 验证：saturated 是 preferred
+	if sSat.ChannelQuality < ChannelQualityPreferredThreshold {
+		t.Fatalf("saturated should be in preferred pool, got ChannelQuality=%.2f", sSat.ChannelQuality)
+	}
+
 	scored := []ScoredCandidate{
 		{Candidate: saturated, Breakdown: sSat},
 		{Candidate: freeBackup, Breakdown: sFree},
@@ -570,14 +583,79 @@ func TestChannelQualityRouting_FallbackUsedWhenSaturated(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len: got %d, want 2", len(got))
 	}
-	// 当 Minimax 满载时，free backup 仍应能进入 topN（demoted 但保留）
+	// saturated 是 preferred，freeBackup 是 fallback
+	// 主渠道饱和（PressureRatio=1.0）→ factor=0.85
 	found := false
 	for _, sc := range got {
 		if sc.Candidate.CredentialID == 2 {
 			found = true
+			want := sFree.Composite * 0.85
+			if diff := sc.Breakdown.Composite - want; diff < -0.01 || diff > 0.01 {
+				t.Errorf("saturated fallback demotion: got %.2f, want %.2f (orig %.2f * 0.85)",
+					sc.Breakdown.Composite, want, sFree.Composite)
+			}
 		}
 	}
 	if !found {
-		t.Errorf("free backup should still be selected when preferred is saturated, got %d results", len(got))
+		t.Errorf("freeBackup (fallback) should still be selected when preferred is saturated")
+	}
+}
+
+// TestChannelQualityRouting_EmptyPreferredNoDemotion 验证当所有候选都
+// 落入 fallback（冷启动 / provider_category 全部为空）时，**不**施加
+// demotion（factor = 1.0）。这是对 BUG #2 的回归测试。
+func TestChannelQualityRouting_EmptyPreferredNoDemotion(t *testing.T) {
+	// 所有候选都是 fallback（ChannelQuality < 50）
+	scored := []ScoredCandidate{
+		{Candidate: Candidate{CredentialID: 1, CanonicalName: "fb-1"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 30, Composite: 80, Reliability: 80, PriceScore: 60}},
+		{Candidate: Candidate{CredentialID: 2, CanonicalName: "fb-2"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 25, Composite: 75, Reliability: 75, PriceScore: 55}},
+		{Candidate: Candidate{CredentialID: 3, CanonicalName: "fb-3"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 20, Composite: 70, Reliability: 70, PriceScore: 50}},
+	}
+
+	got := stratifyAndPickTopN(scored, 3)
+	if len(got) != 3 {
+		t.Fatalf("len: got %d, want 3", len(got))
+	}
+	// 所有 composite 必须保持不变（factor = 1.0）
+	for _, sc := range got {
+		// 找到原始 composite
+		var orig float64
+		for _, s := range scored {
+			if s.Candidate.CredentialID == sc.Candidate.CredentialID {
+				orig = s.Breakdown.Composite
+				break
+			}
+		}
+		if diff := sc.Breakdown.Composite - orig; diff < -0.01 || diff > 0.01 {
+			t.Errorf("empty preferred: composite should be unchanged, got %.2f, want %.2f",
+				sc.Breakdown.Composite, orig)
+		}
+	}
+}
+
+// TestChannelQualityRouting_ThreeWayTieBreak 验证 3 路 tie-break 顺序：
+// Composite > Reliability > PriceScore。
+func TestChannelQualityRouting_ThreeWayTieBreak(t *testing.T) {
+	scored := []ScoredCandidate{
+		// Composite=60, Reliability=30, PriceScore=80 → 最差
+		{Candidate: Candidate{CredentialID: 1, CanonicalName: "comp-only"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 50, Composite: 60, Reliability: 30, PriceScore: 80}},
+		// Composite=60, Reliability=90, PriceScore=30 → 中（reliability 胜）
+		{Candidate: Candidate{CredentialID: 2, CanonicalName: "comp-rel"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 50, Composite: 60, Reliability: 90, PriceScore: 30}},
+		// Composite=60, Reliability=90, PriceScore=50 → 最佳
+		{Candidate: Candidate{CredentialID: 3, CanonicalName: "comp-rel-price"},
+			Breakdown: ScoringBreakdown{ChannelQuality: 50, Composite: 60, Reliability: 90, PriceScore: 50}},
+	}
+
+	got := stratifyAndPickTopN(scored, 1)
+	if len(got) != 1 {
+		t.Fatalf("len: got %d, want 1", len(got))
+	}
+	if got[0].Candidate.CanonicalName != "comp-rel-price" {
+		t.Errorf("3-way tie-break should pick highest price (comp-rel-price), got %s", got[0].Candidate.CanonicalName)
 	}
 }

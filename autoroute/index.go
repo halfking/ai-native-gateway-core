@@ -373,14 +373,17 @@ SELECT
     COALESCE(p.kind, 'cloud') AS provider_kind,
     -- IsFree 派生：满足以下任一即视为免费（与 deriveIsFree() 一致）
     --   - billing_mode 在 free 类
+    --   - cost_tier='free'（来自 models_canonical）
     --   - 价格为 0（in + out 都为 0）
-    -- 注：cost_tier 在 credential_model_index 中无对应列，由 Go
-    -- 侧 deriveIsFree() 用 mc.cost_tier 二次校验。
     CASE
       WHEN LOWER(COALESCE(cmi.billing_mode, '')) IN ('free','token_plan','code_plan','agent_plan','monthly')
+        OR LOWER(COALESCE(mc.cost_tier, '')) = 'free'
         OR (COALESCE(cmi.unit_price_in_per_1m, 0) + COALESCE(cmi.unit_price_out_per_1m, 0)) = 0
       THEN TRUE ELSE FALSE
-    END AS is_free
+    END AS is_free,
+    -- CHANNEL_QUALITY_ROUTING: models_canonical.cost_tier 也单独加载
+    -- 让 deriveIsFree() 的 CostTier 分支在 Go 侧能正确生效。
+    mc.cost_tier AS cost_tier
 FROM credential_model_index cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
@@ -428,6 +431,7 @@ func scanIndexRow(rows interface {
 	var providerCategory *string
 	var providerKind *string
 	var isFree *bool
+	var costTier *string
 	if err := rows.Scan(
 		&c.CredentialID, &c.RawModel, &canonicalID,
 		&canonicalName, &tags, &ctxWindow,
@@ -437,6 +441,7 @@ func scanIndexRow(rows interface {
 		&c.ActiveSessions, &c.ConcurrencyLimit,
 		&routingTier, &unavailableReason,
 		&providerCategory, &providerKind, &isFree,
+		&costTier,
 	); err != nil {
 		return c, err
 	}
@@ -506,6 +511,9 @@ func scanIndexRow(rows interface {
 	}
 	if isFree != nil {
 		c.IsFree = *isFree
+	}
+	if costTier != nil {
+		c.CostTier = strings.TrimSpace(*costTier)
 	}
 	c.Tags = tags
 	// PressureRatio: 0 when concurrency_limit is 0 (unknown → no penalty)
