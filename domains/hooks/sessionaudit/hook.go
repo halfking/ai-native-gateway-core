@@ -18,18 +18,34 @@ import (
 //   - 执行快速检测（≤5ms）
 //   - 根据评分决策：Pass/Warn/Block/NeedApproval
 //   - 发布审计事件到 EventBus（异步处理）
+//   - NeedApproval 时通过 ApprovalManager 创建审批记录（v1 ChatHandler 路径）
 type SessionAuditHook struct {
-	detector *sessionaudit.FastDetector
-	eventBus *eventbus.MemoryBus
-	enabled  bool
+	detector    *sessionaudit.FastDetector
+	eventBus    *eventbus.MemoryBus
+	approvalMgr *sessionaudit.ApprovalManager // v1 路径使用：NeedApproval 时 Enqueue 审批；v2 demo 传 nil
+	enabled     bool
 }
 
-// NewSessionAuditHook 创建 Hook
+// NewSessionAuditHook 创建 Hook（v2 demo 路径，approvalMgr=nil）
 func NewSessionAuditHook(detector *sessionaudit.FastDetector, bus *eventbus.MemoryBus) *SessionAuditHook {
 	return &SessionAuditHook{
 		detector: detector,
 		eventBus: bus,
 		enabled:  true, // 默认启用，可从配置加载
+	}
+}
+
+// NewSessionAuditHookV1 创建 v1 ChatHandler 用的 Hook（带 ApprovalManager）
+//
+// v1 ChatHandler 不走 v2 pipeline（domain.PipelineRequest），所以用 CheckV1 扁平接口。
+// 2026-06-28: 这条路径补 handoff 修复 G 在 v1 main 的遗漏——v1 ChatHandler
+// 之前完全没有 hook 集成点。
+func NewSessionAuditHookV1(detector *sessionaudit.FastDetector, bus *eventbus.MemoryBus, mgr *sessionaudit.ApprovalManager) *SessionAuditHook {
+	return &SessionAuditHook{
+		detector:    detector,
+		eventBus:    bus,
+		approvalMgr: mgr,
+		enabled:     true,
 	}
 }
 
@@ -120,6 +136,144 @@ func (h *SessionAuditHook) Execute(ctx context.Context, env *domain.PipelineRequ
 func (h *SessionAuditHook) OnError(ctx context.Context, env *domain.PipelineRequest, err error) error {
 	// 审计失败可降级，返回 nil 不影响主流程
 	return nil
+}
+
+// CheckV1Result 是 v1 ChatHandler 用的扁平结果。
+// StatusCode=0 表示继续走主流程（Pass/Warn）；其他值表示立即响应。
+type CheckV1Result struct {
+	Decision   sessionaudit.Decision
+	StatusCode int    // 0=继续; 403=Block; 202=NeedApproval
+	ApprovalID string // 仅 NeedApproval 时有值
+	Reason     string // 给 client 的 reason
+}
+
+// CheckV1 是给 v1 ChatHandler 用的简化接口（不走 domain.PipelineRequest）。
+//
+// 输入是扁平参数；输出是 CheckV1Result，ChatHandler 根据 StatusCode 决定
+// 是直接 writeErrorJSON (403) / writePendingJSON (202) 还是继续 routing。
+//
+// 与 Execute(env) 的区别：
+//   - Execute 需要 env.Envelope.Transport.BodyBytes（v2 路径）
+//   - CheckV1 直接接受 content string（v1 路径，ChatHandler 自己解析 body）
+func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, model, content, ua, ip string) CheckV1Result {
+	// 1. 空内容 → pass
+	if content == "" {
+		return CheckV1Result{Decision: sessionaudit.DecisionPass}
+	}
+
+	// 2. 快速检测（同步，≤5ms）
+	result, err := h.detector.Detect(ctx, content)
+	if err != nil {
+		// 检测器失败降级，不阻断
+		slog.Warn("detector failed in CheckV1, degrading", "error", err, "session_id", sessionID)
+		return CheckV1Result{Decision: sessionaudit.DecisionPass}
+	}
+
+	// 3. 发布事件（异步处理，失败不阻断）
+	if h.eventBus != nil {
+		event := &sessionaudit.SessionAuditEvent{
+			SessionID:    sessionID,
+			TenantID:     tenantID,
+			Content:      content,
+			DetectResult: result,
+			ClientInfo: sessionaudit.ClientInfo{
+				IP:        ip,
+				UserAgent: ua,
+				Model:     model,
+			},
+		}
+		_ = h.eventBus.Publish(event) // 失败不阻断
+	}
+
+	// 4. Block → 403
+	if result.Decision == sessionaudit.DecisionBlock {
+		slog.Warn("session-audit CheckV1 block",
+			"session_id", sessionID,
+			"tenant_id", tenantID,
+			"score", result.Score,
+			"reason", result.Reason)
+		return CheckV1Result{
+			Decision:   sessionaudit.DecisionBlock,
+			StatusCode: 403,
+			Reason:     result.Reason,
+		}
+	}
+
+	// 5. NeedApproval → 检查是否有 Severity >= 8 升级为 Block；否则 202
+	if result.Decision == sessionaudit.DecisionNeedApproval {
+		// 跟 v2 Execute() 一致：任一 Threat.Severity >= 8 → 直接 Block (403)
+		// 这是 detector 自身不返回 Block，由 hook 集成层决定阻断策略。
+		for _, t := range result.Threats {
+			if t.Severity >= 8 {
+				slog.Warn("session-audit CheckV1 escalating to Block (severity >= 8)",
+					"session_id", sessionID,
+					"threat_type", t.Type,
+					"severity", t.Severity)
+				return CheckV1Result{
+					Decision:   sessionaudit.DecisionBlock,
+					StatusCode: 403,
+					Reason:     result.Reason,
+				}
+			}
+		}
+		if h.approvalMgr == nil {
+			// v2 demo 模式：无 mgr 时降级为 Pass（仅记录 warning）
+			slog.Warn("session-audit CheckV1 need-approval but approvalMgr=nil, degrading to pass",
+				"session_id", sessionID)
+			return CheckV1Result{Decision: sessionaudit.DecisionPass}
+		}
+		// 构造最简 snapshot（v1 路径没有完整 env，所以用最简字段）
+		snapshot := &sessionaudit.RequestSnapshot{
+			RequestID:    sessionID + ":" + time.Now().Format("20060102150405.000"),
+			SessionID:    sessionID,
+			TenantID:     tenantID,
+			BodyBytes:    []byte(content),
+			ClientModel:  model,
+			ClientInfo:   sessionaudit.ClientInfo{IP: ip, UserAgent: ua, Model: model},
+			DetectResult: result,
+			CreatedAt:    time.Now(),
+		}
+		approvalID, err := h.approvalMgr.Create(ctx, &sessionaudit.ApprovalRequest{
+			SessionID:    sessionID,
+			TenantID:     tenantID,
+			RequestID:    snapshot.RequestID,
+			DetectResult: result,
+			Snapshot:     snapshot,
+			Timeout:      15 * time.Minute,
+		})
+		if err != nil {
+			slog.Error("session-audit CheckV1 create approval failed", "error", err, "session_id", sessionID)
+			// 创建失败 → 降级 Pass（不让用户在 mgr 出错时拿不到任何响应）
+			return CheckV1Result{Decision: sessionaudit.DecisionPass}
+		}
+		// 发 ApprovalNeededEvent
+		if h.eventBus != nil {
+			_ = h.eventBus.Publish(&sessionaudit.ApprovalNeededEvent{
+				ApprovalID:   approvalID,
+				SessionID:    sessionID,
+				TenantID:     tenantID,
+				RequestID:    snapshot.RequestID,
+				DetectResult: result,
+				Snapshot:     snapshot,
+				ExpiresAt:    time.Now().Add(15 * time.Minute),
+			})
+		}
+		return CheckV1Result{
+			Decision:   sessionaudit.DecisionNeedApproval,
+			StatusCode: 202,
+			ApprovalID: approvalID,
+			Reason:     result.Reason,
+		}
+	}
+
+	// 6. Warn → continue (StatusCode=0)
+	if result.Decision == sessionaudit.DecisionWarn {
+		slog.Warn("session-audit CheckV1 warn",
+			"session_id", sessionID,
+			"score", result.Score,
+			"reason", result.Reason)
+	}
+	return CheckV1Result{Decision: result.Decision}
 }
 
 // 编译期断言
