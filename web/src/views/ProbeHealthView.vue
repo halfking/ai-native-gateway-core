@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
-import StatusBadge from '../components/StatusBadge.vue'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -11,7 +10,6 @@ interface ModelHealthSummary {
   protocol: string
   provider_name: string
   
-  // State distribution
   total_credentials: number
   healthy_count: number
   suspicious_count: number
@@ -20,28 +18,23 @@ interface ModelHealthSummary {
   healthy_percentage: number
   failing_percentage: number
   
-  // Priority distribution
   urgent_count: number
   suspicious_priority_count: number
   failing_priority_count: number
   watchdog_count: number
   
-  // Health metrics
   avg_success_rate_7d: number
   avg_verification_hours: number
   avg_consecutive_successes: number
   
-  // Real request stats (24h)
   total_real_success_24h: number
   total_real_failure_24h: number
   real_success_rate_24h?: number
   
-  // Timestamps
   last_verified_at?: string
   last_real_request_at?: string
   next_probe_at?: string
   
-  // Alerts
   critical_nodes: number
   pending_probes_5min: number
   overall_health: 'critical' | 'warning' | 'degraded' | 'healthy' | 'unknown'
@@ -251,39 +244,39 @@ const priorityQueueTotals = computed(() => {
   return totals
 })
 
-function getHealthColor(health: string): string {
+function getHealthBadge(health: string): string {
   switch (health) {
-    case 'critical': return 'text-red-600 bg-red-50'
-    case 'warning': return 'text-yellow-600 bg-yellow-50'
-    case 'degraded': return 'text-orange-600 bg-orange-50'
-    case 'healthy': return 'text-green-600 bg-green-50'
-    default: return 'text-gray-600 bg-gray-50'
+    case 'critical': return 'badge-red'
+    case 'warning': return 'badge-yellow'
+    case 'degraded': return 'badge-yellow'
+    case 'healthy': return 'badge-green'
+    default: return 'badge-gray'
   }
 }
 
-function getPriorityColor(priority: string): string {
+function getPriorityBadge(priority: string): string {
   switch (priority) {
-    case 'urgent': return 'text-red-600 bg-red-50'
-    case 'suspicious': return 'text-yellow-600 bg-yellow-50'
-    case 'failing': return 'text-orange-600 bg-orange-50'
-    case 'recovering': return 'text-blue-600 bg-blue-50'
-    case 'watchdog': return 'text-green-600 bg-green-50'
-    default: return 'text-gray-600 bg-gray-50'
+    case 'urgent': return 'badge-red'
+    case 'suspicious': return 'badge-yellow'
+    case 'failing': return 'badge-yellow'
+    case 'recovering': return 'badge-blue'
+    case 'watchdog': return 'badge-green'
+    default: return 'badge-gray'
   }
 }
 
 function getStateColor(state: string): string {
   switch (state) {
-    case 'healthy': return 'text-green-600'
-    case 'suspicious': return 'text-yellow-600'
-    case 'failing': return 'text-red-600'
-    case 'probing': return 'text-blue-600'
-    default: return 'text-gray-600'
+    case 'healthy': return 'var(--success)'
+    case 'suspicious': return 'var(--warning)'
+    case 'failing': return 'var(--danger)'
+    case 'probing': return 'var(--accent-h)'
+    default: return 'var(--muted)'
   }
 }
 
 function formatTime(ts?: string): string {
-  if (!ts) return '-'
+  if (!ts) return '—'
   const d = new Date(ts)
   return d.toLocaleString('zh-CN', { 
     month: '2-digit', 
@@ -306,7 +299,7 @@ onMounted(() => {
   refreshAll()
   
   if (autoRefresh.value) {
-    refreshTimer = window.setInterval(refreshAll, 30000) // 30s
+    refreshTimer = window.setInterval(refreshAll, 30000)
   }
 })
 
@@ -320,297 +313,242 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="probe-health-view p-6">
+  <div class="page-container">
     <!-- Header -->
-    <div class="mb-6">
-      <h1 class="text-2xl font-semibold text-gray-900 mb-2">探测系统健康度总览</h1>
-      <p class="text-sm text-gray-600">
-        统一探测调度器实时监控 - 模型状态、优先级队列、节点详情
-      </p>
+    <div class="top-bar">
+      <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
+      <h1>探测健康度</h1>
+      <div class="spacer"></div>
+      <label class="auto-refresh-label">
+        <input type="checkbox" v-model="autoRefresh" />
+        自动刷新 (30s)
+      </label>
+      <button @click="refreshAll" class="btn-refresh">刷新</button>
     </div>
 
     <!-- System Health Card -->
-    <div v-if="systemHealth" class="bg-white rounded-lg shadow mb-6 p-6">
-      <h2 class="text-lg font-semibold mb-4">系统概览</h2>
-      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        <div>
-          <div class="text-sm text-gray-600">总节点数</div>
-          <div class="text-2xl font-bold">{{ systemHealth.total_nodes }}</div>
-        </div>
-        <div>
-          <div class="text-sm text-gray-600">健康节点</div>
-          <div class="text-2xl font-bold text-green-600">{{ systemHealth.healthy_nodes }}</div>
-        </div>
-        <div>
-          <div class="text-sm text-gray-600">失败节点</div>
-          <div class="text-2xl font-bold text-red-600">{{ systemHealth.failing_nodes }}</div>
-        </div>
-        <div>
-          <div class="text-sm text-gray-600">可疑节点</div>
-          <div class="text-2xl font-bold text-yellow-600">{{ systemHealth.suspicious_nodes }}</div>
-        </div>
-        <div>
-          <div class="text-sm text-gray-600">探测中</div>
-          <div class="text-2xl font-bold text-blue-600">{{ systemHealth.probing_nodes }}</div>
-        </div>
-        <div>
-          <div class="text-sm text-gray-600">危急节点</div>
-          <div class="text-2xl font-bold text-red-700">{{ systemHealth.critical_nodes }}</div>
-        </div>
+    <div v-if="systemHealth" class="card stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">总节点</div>
+        <div class="stat-value">{{ systemHealth.total_nodes }}</div>
       </div>
-
-      <!-- Priority Queues -->
-      <div class="mt-6 pt-6 border-t">
-        <h3 class="text-sm font-semibold text-gray-700 mb-3">优先级队列</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div class="p-3 rounded-lg bg-red-50">
-            <div class="text-xs text-red-600 font-medium">P0 - Urgent</div>
-            <div class="text-xl font-bold text-red-700">{{ priorityQueueTotals.urgent }}</div>
-          </div>
-          <div class="p-3 rounded-lg bg-yellow-50">
-            <div class="text-xs text-yellow-600 font-medium">P1 - Suspicious</div>
-            <div class="text-xl font-bold text-yellow-700">{{ priorityQueueTotals.suspicious }}</div>
-          </div>
-          <div class="p-3 rounded-lg bg-orange-50">
-            <div class="text-xs text-orange-600 font-medium">P2 - Failing</div>
-            <div class="text-xl font-bold text-orange-700">{{ priorityQueueTotals.failing }}</div>
-          </div>
-          <div class="p-3 rounded-lg bg-green-50">
-            <div class="text-xs text-green-600 font-medium">P3 - Watchdog</div>
-            <div class="text-xl font-bold text-green-700">{{ priorityQueueTotals.watchdog }}</div>
-          </div>
-        </div>
+      <div class="stat-item stat-success">
+        <div class="stat-label">健康</div>
+        <div class="stat-value">{{ systemHealth.healthy_nodes }}</div>
       </div>
+      <div class="stat-item stat-danger">
+        <div class="stat-label">失败</div>
+        <div class="stat-value">{{ systemHealth.failing_nodes }}</div>
+      </div>
+      <div class="stat-item stat-warning">
+        <div class="stat-label">可疑</div>
+        <div class="stat-value">{{ systemHealth.suspicious_nodes }}</div>
+      </div>
+      <div class="stat-item stat-accent">
+        <div class="stat-label">探测中</div>
+        <div class="stat-value">{{ systemHealth.probing_nodes }}</div>
+      </div>
+      <div class="stat-item stat-danger" v-if="systemHealth.critical_nodes > 0">
+        <div class="stat-label">危急</div>
+        <div class="stat-value">{{ systemHealth.critical_nodes }}</div>
+      </div>
+    </div>
 
-      <!-- Stats -->
-      <div class="mt-6 pt-6 border-t grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-        <div>
-          <span class="text-gray-600">平均成功率(7天):</span>
-          <span class="ml-2 font-medium">{{ systemHealth.avg_success_rate_7d?.toFixed(1) || '-' }}%</span>
-        </div>
-        <div>
-          <span class="text-gray-600">就绪探测数:</span>
-          <span class="ml-2 font-medium">{{ systemHealth.ready_probes }}</span>
-        </div>
-        <div>
-          <span class="text-gray-600">当前探测中:</span>
-          <span class="ml-2 font-medium">{{ systemHealth.current_probing }}</span>
-        </div>
-        <div>
-          <span class="text-gray-600">探测凭据数:</span>
-          <span class="ml-2 font-medium">{{ systemHealth.credentials_being_probed }}</span>
-        </div>
+    <!-- Priority Queues -->
+    <div class="card queue-grid">
+      <div class="queue-item queue-urgent">
+        <div class="queue-label">P0 Urgent</div>
+        <div class="queue-value">{{ priorityQueueTotals.urgent }}</div>
+      </div>
+      <div class="queue-item queue-suspicious">
+        <div class="queue-label">P1 Suspicious</div>
+        <div class="queue-value">{{ priorityQueueTotals.suspicious }}</div>
+      </div>
+      <div class="queue-item queue-failing">
+        <div class="queue-label">P2 Failing</div>
+        <div class="queue-value">{{ priorityQueueTotals.failing }}</div>
+      </div>
+      <div class="queue-item queue-watchdog">
+        <div class="queue-label">P3 Watchdog</div>
+        <div class="queue-value">{{ priorityQueueTotals.watchdog }}</div>
       </div>
     </div>
 
     <!-- Filters -->
-    <div class="bg-white rounded-lg shadow mb-6 p-4">
-      <div class="flex flex-wrap gap-4 items-center">
-        <input
-          v-model="modelFilter"
-          @keyup.enter="fetchModels"
-          type="text"
-          placeholder="搜索模型名..."
-          class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        
-        <select 
-          v-model="healthFilter"
-          class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">全部健康度</option>
-          <option value="healthy">健康</option>
-          <option value="degraded">降级</option>
-          <option value="warning">警告</option>
-          <option value="critical">危急</option>
-        </select>
-
-        <button
-          @click="refreshAll"
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
-        >
-          刷新
-        </button>
-
-        <label class="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" v-model="autoRefresh" class="rounded" />
-          自动刷新 (30s)
-        </label>
-      </div>
+    <div class="card filter-bar">
+      <input
+        v-model="modelFilter"
+        @keyup.enter="fetchModels"
+        type="text"
+        placeholder="搜索模型名..."
+        class="field-input"
+      />
+      
+      <select v-model="healthFilter" class="field-input">
+        <option value="">全部健康度</option>
+        <option value="healthy">健康</option>
+        <option value="degraded">降级</option>
+        <option value="warning">警告</option>
+        <option value="critical">危急</option>
+      </select>
     </div>
 
     <!-- Models Table -->
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="bg-gray-50 border-b">
-            <tr>
-              <th class="px-4 py-3 text-left font-medium text-gray-700">模型</th>
-              <th class="px-4 py-3 text-left font-medium text-gray-700">Provider</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">总节点</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">健康</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">可疑</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">失败</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">优先级</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">成功率(7d)</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">健康度</th>
-              <th class="px-4 py-3 text-center font-medium text-gray-700">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr 
-              v-for="model in filteredModels" 
-              :key="model.provider_model_id"
-              class="border-b hover:bg-gray-50 transition-colors"
-            >
-              <td class="px-4 py-3">
-                <div class="font-medium text-gray-900">{{ model.raw_model_name }}</div>
-                <div class="text-xs text-gray-500">{{ model.outbound_model_name }}</div>
-              </td>
-              <td class="px-4 py-3 text-gray-700">{{ model.provider_name }}</td>
-              <td class="px-4 py-3 text-center font-medium">{{ model.total_credentials }}</td>
-              <td class="px-4 py-3 text-center">
-                <span class="text-green-600 font-medium">{{ model.healthy_count }}</span>
-                <span class="text-xs text-gray-500 ml-1">({{ model.healthy_percentage.toFixed(0) }}%)</span>
-              </td>
-              <td class="px-4 py-3 text-center">
-                <span class="text-yellow-600 font-medium">{{ model.suspicious_count }}</span>
-              </td>
-              <td class="px-4 py-3 text-center">
-                <span class="text-red-600 font-medium">{{ model.failing_count }}</span>
-                <span class="text-xs text-gray-500 ml-1">({{ model.failing_percentage.toFixed(0) }}%)</span>
-              </td>
-              <td class="px-4 py-3">
-                <div class="flex flex-col gap-1 text-xs">
-                  <div v-if="model.urgent_count > 0" class="text-red-600">Urgent: {{ model.urgent_count }}</div>
-                  <div v-if="model.suspicious_priority_count > 0" class="text-yellow-600">Suspicious: {{ model.suspicious_priority_count }}</div>
-                  <div v-if="model.failing_priority_count > 0" class="text-orange-600">Failing: {{ model.failing_priority_count }}</div>
-                </div>
-              </td>
-              <td class="px-4 py-3 text-center">
-                <span class="font-medium">{{ model.avg_success_rate_7d.toFixed(1) }}%</span>
-              </td>
-              <td class="px-4 py-3 text-center">
-                <span :class="['px-2 py-1 rounded text-xs font-medium', getHealthColor(model.overall_health)]">
-                  {{ model.overall_health }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-center">
-                <button 
-                  @click="selectModel(model)"
-                  class="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                >
-                  详情
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+    <div class="card">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>模型</th>
+            <th>Provider</th>
+            <th class="text-center">总数</th>
+            <th class="text-center">健康</th>
+            <th class="text-center">可疑</th>
+            <th class="text-center">失败</th>
+            <th class="text-center">优先级</th>
+            <th class="text-center">成功率(7d)</th>
+            <th class="text-center">健康度</th>
+            <th class="text-center">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr 
+            v-for="model in filteredModels" 
+            :key="model.provider_model_id"
+          >
+            <td>
+              <div class="model-name">{{ model.raw_model_name }}</div>
+              <div class="model-sub">{{ model.outbound_model_name }}</div>
+            </td>
+            <td>{{ model.provider_name }}</td>
+            <td class="text-center">{{ model.total_credentials }}</td>
+            <td class="text-center">
+              <span class="rate-good">{{ model.healthy_count }}</span>
+              <span class="muted-text"> ({{ model.healthy_percentage.toFixed(0) }}%)</span>
+            </td>
+            <td class="text-center">
+              <span class="rate-warn">{{ model.suspicious_count }}</span>
+            </td>
+            <td class="text-center">
+              <span class="rate-bad">{{ model.failing_count }}</span>
+              <span class="muted-text"> ({{ model.failing_percentage.toFixed(0) }}%)</span>
+            </td>
+            <td>
+              <div class="priority-list">
+                <span v-if="model.urgent_count > 0" class="badge badge-red">U:{{ model.urgent_count }}</span>
+                <span v-if="model.suspicious_priority_count > 0" class="badge badge-yellow">S:{{ model.suspicious_priority_count }}</span>
+                <span v-if="model.failing_priority_count > 0" class="badge badge-yellow">F:{{ model.failing_priority_count }}</span>
+              </div>
+            </td>
+            <td class="text-center">
+              <span class="rate-value">{{ model.avg_success_rate_7d.toFixed(1) }}%</span>
+            </td>
+            <td class="text-center">
+              <span :class="['badge', getHealthBadge(model.overall_health)]">
+                {{ model.overall_health }}
+              </span>
+            </td>
+            <td class="text-center">
+              <button 
+                @click="selectModel(model)"
+                class="btn-sm btn-primary"
+              >
+                详情
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
       
-      <div v-if="loading" class="p-8 text-center text-gray-500">
-        加载中...
-      </div>
-      
-      <div v-else-if="filteredModels.length === 0" class="p-8 text-center text-gray-500">
-        暂无数据
-      </div>
+      <div v-if="loading" class="empty-state">加载中...</div>
+      <div v-else-if="filteredModels.length === 0" class="empty-state">暂无数据</div>
     </div>
 
     <!-- Model Detail Modal -->
     <div 
       v-if="selectedModel" 
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+      class="modal-overlay"
       @click.self="closeDetail"
     >
-      <div class="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-        <!-- Modal Header -->
-        <div class="px-6 py-4 border-b flex items-center justify-between">
+      <div class="modal-content">
+        <div class="modal-header">
           <div>
-            <h2 class="text-xl font-semibold">{{ selectedModel.raw_model_name }}</h2>
-            <p class="text-sm text-gray-600">{{ selectedModel.provider_name }}</p>
+            <h2>{{ selectedModel.raw_model_name }}</h2>
+            <p class="muted-text">{{ selectedModel.provider_name }}</p>
           </div>
           <button 
             @click="closeDetail"
-            class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            class="btn-close"
           >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-            </svg>
+            ×
           </button>
         </div>
 
-        <!-- Modal Body -->
-        <div class="flex-1 overflow-y-auto p-6">
-          <div v-if="nodesLoading" class="text-center text-gray-500 py-8">
-            加载节点详情...
-          </div>
+        <div class="modal-body">
+          <div v-if="nodesLoading" class="empty-state">加载节点详情...</div>
           
-          <div v-else class="space-y-4">
+          <div v-else class="nodes-list">
             <div 
               v-for="node in modelNodes" 
               :key="node.credential_id"
-              class="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
+              class="node-card"
             >
-              <div class="flex items-start justify-between mb-3">
+              <div class="node-header">
                 <div>
-                  <div class="font-medium text-gray-900">{{ node.credential_label }}</div>
-                  <div class="text-xs text-gray-500">Credential #{{ node.credential_id }}</div>
+                  <div class="node-label">{{ node.credential_label }}</div>
+                  <div class="muted-text small">Credential #{{ node.credential_id }}</div>
                 </div>
-                <div class="flex gap-2">
-                  <span :class="['px-2 py-1 rounded text-xs font-medium', getPriorityColor(node.probe_priority)]">
+                <div class="node-badges">
+                  <span :class="['badge', getPriorityBadge(node.probe_priority)]">
                     {{ node.probe_priority }}
                   </span>
-                  <span :class="['px-2 py-1 rounded text-xs font-medium', getStateColor(node.state)]">
+                  <span class="badge" :style="{color: getStateColor(node.state), background: 'rgba(255,255,255,0.1)'}">
                     {{ node.state }}
                   </span>
                 </div>
               </div>
 
-              <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <div class="text-gray-600 text-xs">连续成功</div>
-                  <div class="font-medium">{{ node.consecutive_successes }}</div>
+              <div class="node-stats">
+                <div class="node-stat">
+                  <div class="muted-text small">连续成功</div>
+                  <div>{{ node.consecutive_successes }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">连续失败</div>
-                  <div class="font-medium text-red-600">{{ node.consecutive_failures }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">连续失败</div>
+                  <div class="rate-bad">{{ node.consecutive_failures }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">成功率(7d)</div>
-                  <div class="font-medium">{{ node.success_rate_7d?.toFixed(1) || '-' }}%</div>
+                <div class="node-stat">
+                  <div class="muted-text small">成功率(7d)</div>
+                  <div>{{ node.success_rate_7d?.toFixed(1) || '—' }}%</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">验证间隔</div>
-                  <div class="font-medium">{{ node.verification_interval }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">验证间隔</div>
+                  <div>{{ node.verification_interval }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">实际成功(24h)</div>
-                  <div class="font-medium text-green-600">{{ node.real_success_24h }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">实际成功(24h)</div>
+                  <div class="rate-good">{{ node.real_success_24h }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">实际失败(24h)</div>
-                  <div class="font-medium text-red-600">{{ node.real_failure_24h }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">实际失败(24h)</div>
+                  <div class="rate-bad">{{ node.real_failure_24h }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">下次探测</div>
-                  <div class="font-medium">{{ node.retry_in }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">下次探测</div>
+                  <div>{{ node.retry_in }}</div>
                 </div>
-                <div>
-                  <div class="text-gray-600 text-xs">状态持续</div>
-                  <div class="font-medium">{{ formatDuration(node.state_duration_minutes) }}</div>
+                <div class="node-stat">
+                  <div class="muted-text small">状态持续</div>
+                  <div>{{ formatDuration(node.state_duration_minutes) }}</div>
                 </div>
               </div>
 
-              <div v-if="node.last_unavailable_reason" class="mt-3 pt-3 border-t">
-                <div class="text-xs text-gray-600 mb-1">最后错误</div>
-                <div class="text-sm text-red-600 font-mono">{{ node.last_unavailable_reason }}</div>
+              <div v-if="node.last_unavailable_reason" class="node-error">
+                <div class="muted-text small">最后错误</div>
+                <div class="error-text">{{ node.last_unavailable_reason }}</div>
               </div>
             </div>
 
-            <div v-if="modelNodes.length === 0" class="text-center text-gray-500 py-8">
-              暂无节点数据
-            </div>
+            <div v-if="modelNodes.length === 0" class="empty-state">暂无节点数据</div>
           </div>
         </div>
       </div>
@@ -619,8 +557,328 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.probe-health-view {
-  min-height: 100vh;
-  background: #f9fafb;
+.page-container {
+  padding: 20px;
+}
+
+.top-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.back-link {
+  color: var(--muted);
+  font-size: 13px;
+}
+.back-link:hover {
+  color: var(--text);
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.auto-refresh-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.btn-refresh {
+  padding: 6px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn-refresh:hover {
+  background: var(--accent-h);
+}
+
+/* Stats Grid */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.stat-success .stat-value { color: var(--success); }
+.stat-danger .stat-value { color: var(--danger); }
+.stat-warning .stat-value { color: var(--warning); }
+.stat-accent .stat-value { color: var(--accent-h); }
+
+/* Queue Grid */
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.queue-item {
+  padding: 12px;
+  border-radius: var(--radius);
+  text-align: center;
+}
+
+.queue-urgent { background: rgba(248,81,73,.1); }
+.queue-suspicious { background: rgba(210,153,34,.1); }
+.queue-failing { background: rgba(210,153,34,.1); }
+.queue-watchdog { background: rgba(63,185,80,.1); }
+
+.queue-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.queue-urgent .queue-label { color: var(--danger); }
+.queue-suspicious .queue-label { color: var(--warning); }
+.queue-failing .queue-label { color: var(--warning); }
+.queue-watchdog .queue-label { color: var(--success); }
+
+.queue-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.queue-urgent .queue-value { color: var(--danger); }
+.queue-suspicious .queue-value { color: var(--warning); }
+.queue-failing .queue-value { color: var(--warning); }
+.queue-watchdog .queue-value { color: var(--success); }
+
+/* Filter Bar */
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.field-input {
+  flex: 1;
+  max-width: 300px;
+}
+
+/* Table */
+.data-table {
+  font-size: 13px;
+}
+
+.data-table thead th {
+  padding: 8px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.data-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.text-center {
+  text-align: center;
+}
+
+.model-name {
+  font-weight: 600;
+}
+
+.model-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.muted-text {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 11px;
+}
+
+.rate-good { color: var(--success); font-weight: 600; }
+.rate-warn { color: var(--warning); font-weight: 600; }
+.rate-bad { color: var(--danger); font-weight: 600; }
+.rate-value { font-weight: 600; }
+
+.priority-list {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+.btn-primary:hover {
+  background: var(--accent-h);
+}
+
+.empty-state {
+  padding: 40px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal-content {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 1200px;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 32px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+.btn-close:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.nodes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.node-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.node-card:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.node-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.node-label {
+  font-weight: 600;
+}
+
+.node-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.node-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.node-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.node-error {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.error-text {
+  font-size: 12px;
+  color: var(--danger);
+  font-family: monospace;
+  margin-top: 4px;
 }
 </style>
