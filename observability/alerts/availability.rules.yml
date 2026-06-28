@@ -132,6 +132,27 @@ groups:
         annotations:
           summary: "Redis availability write p99 > 50ms"
 
+      # 2d: cache keyspace is empty for an hour.
+      #
+      # llmgw_availability_keys_count is refreshed every 5min by
+      # AvailabilityKeyCounter. A flat zero for an hour is a strong
+      # signal that the probe workers have stopped emitting (or Redis
+      # has lost the namespace). Pair with NoWrites for diagnosis.
+      - alert: LLMGatewayAvailabilityKeysEmpty
+        expr: max(llmgw_availability_keys_count) == 0
+        for: 1h
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Redis availability keyspace has been empty for 1h"
+          description: |
+            The SCAN-based cardinality counter has reported 0 keys for
+            one hour. This is consistent with a stuck probe worker
+            fleet, an upstream that no longer provides the gateway with
+            any credential/model pairs, or a Redis FLUSHDB that the
+            backfill worker has not yet repopulated.
+
   - name: llmgw-suspicious-exit
     interval: 30s
     rules:

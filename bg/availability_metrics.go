@@ -17,6 +17,7 @@ var (
 	availabilityBackfillRows  *prometheus.CounterVec
 	availabilityReadDuration  prometheus.Histogram
 	availabilityWriteDuration prometheus.Histogram
+	availabilityKeys          prometheus.Gauge
 )
 
 // registerAvailabilityMetrics registers all llmgw_availability_* collectors
@@ -31,6 +32,7 @@ var (
 //   - backfill_rows_total{trigger}
 //   - "is Redis serving the cache fast enough?" → read_duration_seconds
 //   - "is Redis accepting writes fast enough?" → write_duration_seconds
+//   - "how many cache entries are live right now?" → keys_count
 func registerAvailabilityMetrics() {
 	availabilityMetricOnce.Do(func() {
 		availabilityCacheWrites = prometheus.NewCounterVec(
@@ -91,9 +93,22 @@ func registerAvailabilityMetrics() {
 				},
 			},
 		)
+		// availability_keys_count is the live Redis cardinality for the
+		// llmgw:avail:* keyspace. Updated from two sources:
+		//   - the cache writer increments it after a successful Set so
+		//     gauge tracks writes within seconds
+		//   - the optional AvailabilityKeyCounter can periodically SCAN
+		//     and correct drift (e.g. after Redis FLUSHDB, or after a
+		//     writer path that bypassed the cache package)
+		availabilityKeys = prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: availabilityMetricPrefix + "keys_count",
+				Help: "Live count of keys under the llmgw:avail:* namespace.",
+			},
+		)
 		prometheus.MustRegister(availabilityCacheWrites, availabilityCacheReads,
 			availabilityBackfillRuns, availabilityBackfillRows,
-			availabilityReadDuration, availabilityWriteDuration)
+			availabilityReadDuration, availabilityWriteDuration, availabilityKeys)
 	})
 }
 
@@ -143,6 +158,19 @@ func recordAvailabilityWriteDuration(seconds float64) {
 		return
 	}
 	availabilityWriteDuration.Observe(seconds)
+}
+
+// recordAvailabilityKeysAbsolute lets periodic sweepers (e.g. an SCAN
+// based reconciler) replace the gauge with a fresh, authoritative
+// count. The cache writer path does NOT update this gauge because
+// HSET is upsert and we cannot distinguish create from update without
+// an extra Redis call; the periodic SCAN is the only correct source
+// of truth. See AvailabilityKeyCounter for the worker.
+func recordAvailabilityKeysAbsolute(count int) {
+	if availabilityKeys == nil {
+		return
+	}
+	availabilityKeys.Set(float64(count))
 }
 
 // recordAvailabilityBackfillRun is invoked once per backfill pass.
