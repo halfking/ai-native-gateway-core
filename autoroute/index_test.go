@@ -148,6 +148,13 @@ func (s stubScanRow) Scan(dest ...any) error {
 				v := s.values[i].(int16)
 				*ptr = &v
 			}
+		case **bool:
+			if s.values[i] == nil {
+				*ptr = nil
+			} else {
+				v := s.values[i].(bool)
+				*ptr = &v
+			}
 		default:
 			return errors.New("unsupported scan destination")
 		}
@@ -172,6 +179,10 @@ func TestScanIndexRow_LoadsAvailabilityAndTier(t *testing.T) {
 		8,
 		int16(1),
 		"manual_pause",
+		// CHANNEL_QUALITY_ROUTING: 新增字段
+		"official", // provider_category
+		"cloud",    // provider_kind
+		false,      // is_free
 	}}
 
 	c, err := scanIndexRow(row)
@@ -186,6 +197,12 @@ func TestScanIndexRow_LoadsAvailabilityAndTier(t *testing.T) {
 	}
 	if c.PopularityScore <= 0 {
 		t.Fatalf("popularity score should be populated, got %.2f", c.PopularityScore)
+	}
+	if c.ProviderCategory != "official" {
+		t.Fatalf("provider category: got %q, want official", c.ProviderCategory)
+	}
+	if c.IsFree {
+		t.Fatalf("is_free should be false for paid token billing")
 	}
 }
 
@@ -217,6 +234,10 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 				0,
 				tt.routingTier,
 				"",
+				// CHANNEL_QUALITY_ROUTING: 新增字段
+				"aggregator",
+				"cloud",
+				false,
 			}}
 			c, err := scanIndexRow(row)
 			if err != nil {
@@ -224,6 +245,9 @@ func TestScanIndexRow_MapsSecondaryAndFallback(t *testing.T) {
 			}
 			if c.Tier != tt.wantTier {
 				t.Fatalf("tier: got %s, want %s", c.Tier, tt.wantTier)
+			}
+			if c.ProviderCategory != "aggregator" {
+				t.Fatalf("provider category: got %q, want aggregator", c.ProviderCategory)
 			}
 		})
 	}
