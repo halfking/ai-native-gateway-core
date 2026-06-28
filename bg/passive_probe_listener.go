@@ -35,6 +35,7 @@ var transientErrorKinds = []string{
 type PassiveProbeListener struct {
 	db           *pgxpool.Pool
 	stateWriter  *credentialstate.Writer
+	cache        *ModelAvailabilityCache
 	cancel       context.CancelFunc
 	done         chan struct{}
 	pollInterval time.Duration
@@ -50,6 +51,10 @@ func NewPassiveProbeListener(db *pgxpool.Pool, stateWriter *credentialstate.Writ
 		done:         make(chan struct{}),
 		pollInterval: 30 * time.Second,
 	}
+}
+
+func (l *PassiveProbeListener) SetAvailabilityCache(cache *ModelAvailabilityCache) {
+	l.cache = cache
 }
 
 func (l *PassiveProbeListener) Start(ctx context.Context) {
@@ -248,6 +253,36 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 		slog.Info("passive probe: promoted to reviewing",
 			"count", n,
 		)
+		if l.cache != nil && l.cache.Enabled() {
+			rows, qErr := l.db.Query(timeout, `
+				SELECT credential_id, raw_model_name
+				FROM passive_probe_state
+				WHERE in_reviewing = TRUE
+				  AND reviewing_until > NOW() - INTERVAL '1 minute'
+			`)
+			if qErr == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var credID int
+					var rawModel string
+					if err := rows.Scan(&credID, &rawModel); err != nil {
+						continue
+					}
+					nextRetryAt := time.Now().Add(5 * time.Minute)
+					_ = l.cache.Set(timeout, credID, rawModel, modelAvailabilityFields(
+						credID,
+						rawModel,
+						"suspicious",
+						true,
+						"reviewing",
+						0,
+						0,
+						&nextRetryAt,
+						"passive_probe",
+					))
+				}
+			}
+		}
 	}
 }
 
@@ -339,6 +374,20 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 						"error", err)
 				} else {
 					markedUnreachable++
+					if l.cache != nil && l.cache.Enabled() {
+						nextRetryAt := time.Now().Add(2 * time.Minute)
+						_ = l.cache.Set(ctx, p.credentialID, p.rawModel, modelAvailabilityFields(
+							p.credentialID,
+							p.rawModel,
+							"failing",
+							false,
+							p.errorKind,
+							0,
+							p.errCount,
+							&nextRetryAt,
+							"passive_probe",
+						))
+					}
 					slog.Warn("passive probe: marked credential unreachable after review",
 						"credential_id", p.credentialID,
 						"raw_model", p.rawModel,

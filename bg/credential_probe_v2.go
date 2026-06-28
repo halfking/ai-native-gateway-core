@@ -33,6 +33,7 @@ type CredentialProbeV2 struct {
 	db               *pgxpool.Pool
 	encKey           []byte
 	keyring          *secret.Keyring
+	cache            *ModelAvailabilityCache
 	interval         time.Duration
 	fastReprobeDelay time.Duration
 	fastReprobeQueue chan int // credential IDs
@@ -53,6 +54,10 @@ func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
 
 func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
 	c.keyring = kr
+}
+
+func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) {
+	c.cache = cache
 }
 
 func (c *CredentialProbeV2) Start(ctx context.Context) {
@@ -514,6 +519,33 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		quotaState, stateReason, credID); err != nil {
 		slog.Warn("credential probe v2: writeHealth failed",
 			"credential_id", credID, "health_status", pr.HealthStatus, "error", err)
+		return
+	}
+	if c.cache != nil && c.cache.Enabled() && pr.HealthProbeModel != "" {
+		available := pr.AvailabilityState == "ready"
+		state := pr.HealthStatus
+		if state == "healthy" {
+			state = "healthy_confirmed"
+		}
+		if !available && pr.AvailabilityState != "" {
+			state = pr.AvailabilityState
+		}
+		if err := c.cache.Set(execCtx, credID, pr.HealthProbeModel, modelAvailabilityFields(
+			credID,
+			pr.HealthProbeModel,
+			state,
+			available,
+			pr.HealthStatus,
+			0,
+			0,
+			recoverAt,
+			pr.HealthSource,
+		)); err != nil {
+			slog.Warn("credential probe v2: cache write failed",
+				"credential_id", credID,
+				"probe_model", pr.HealthProbeModel,
+				"error", err)
+		}
 	}
 }
 
