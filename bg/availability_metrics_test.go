@@ -118,3 +118,63 @@ func TestAvailabilityMetricsBackfillCounters(t *testing.T) {
 		t.Fatalf("rows delta = %v, want 0 (cache disabled)", rowsAfter-rowsBefore)
 	}
 }
+
+func TestAvailabilityReadDurationHistogramObservesSamples(t *testing.T) {
+	if availabilityReadDuration == nil {
+		t.Fatal("histogram not initialised")
+	}
+
+	m := &dto.Metric{}
+	if err := availabilityReadDuration.Write(m); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	preCount := m.Histogram.GetSampleCount()
+
+	for _, d := range []float64{0.0008, 0.003, 0.04, 0.3} {
+		recordAvailabilityReadDuration(d)
+	}
+
+	after := &dto.Metric{}
+	if err := availabilityReadDuration.Write(after); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if got := after.Histogram.GetSampleCount() - preCount; got != 4 {
+		t.Fatalf("sample count delta = %v, want 4", got)
+	}
+}
+
+func TestAvailabilityReadDurationIntegratedWithReader(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	reader := NewModelAvailabilityReader(client)
+
+	ctx := context.Background()
+	if err := client.HSet(ctx, "llmgw:avail:42:glm-5.2", map[string]any{
+		"state": "healthy_confirmed",
+	}).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	pre := &dto.Metric{}
+	if err := availabilityReadDuration.Write(pre); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	preCount := pre.Histogram.GetSampleCount()
+
+	if _, err := reader.Read(ctx, 42, "glm-5.2"); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	post := &dto.Metric{}
+	if err := availabilityReadDuration.Write(post); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if got := post.Histogram.GetSampleCount() - preCount; got != 1 {
+		t.Fatalf("sample count delta = %v, want 1", got)
+	}
+}
