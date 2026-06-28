@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,83 @@ import (
 const maxBodySize = 32 << 20
 
 func MaxBodySize() int { return maxBodySize }
+
+type preStreamKeepalive struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	mu      sync.Mutex
+	once    sync.Once
+}
+
+func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration) (*preStreamKeepalive, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	psk := &preStreamKeepalive{
+		w:       w,
+		flusher: flusher,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	psk.writeComment(sseKeepaliveComment)
+	go psk.loop(interval)
+	return psk, true
+}
+
+func (p *preStreamKeepalive) loop(interval time.Duration) {
+	defer close(p.doneCh)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-ticker.C:
+			p.writeComment(sseKeepaliveComment)
+		}
+	}
+}
+
+func (p *preStreamKeepalive) writeComment(line string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	safeWriteSSE(p.w, line)
+	safeFlush(p.flusher)
+}
+
+func (p *preStreamKeepalive) stop() {
+	if p == nil {
+		return
+	}
+	p.once.Do(func() { close(p.stopCh) })
+	<-p.doneCh
+}
+
+func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code string) {
+	if errType == "" {
+		errType = "server_error"
+	}
+	if code == "" {
+		code = "provider_error"
+	}
+	safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code))
+	if flusher, ok := w.(http.Flusher); ok {
+		safeFlush(flusher)
+	}
+}
 
 func sanitizeGwSessionHeader(v string) string {
 	s := strings.TrimSpace(v)
@@ -1088,6 +1166,9 @@ func (h *ChatHandler) serveWithExecutor(
 	if isStream {
 		streamCapture = audit.NewStreamCapture()
 	}
+
+	var preStream *preStreamKeepalive
+	preStreamPrepared := false
 	defer func() {
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
@@ -1426,12 +1507,28 @@ func (h *ChatHandler) serveWithExecutor(
 		detected, _, _ := ir.DetectProtocol(bodyBytes)
 		clientProtocol = detected
 	}
+	if isStream && clientProtocol == "openai-completions" {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval); ok {
+				preStream = psk
+				preStreamPrepared = true
+			}
+		}
+	}
 
 	result, execErr := h.executor.Execute(&executors.ExecParams{
-		W:              w,
-		R:              r,
-		BodyBytes:      upstreamBody,
-		IsStream:       isStream,
+		W:                 w,
+		R:                 r,
+		BodyBytes:         upstreamBody,
+		IsStream:          isStream,
+		PreStreamPrepared: preStreamPrepared,
+		OnStreamReady: func() {
+			if preStream != nil {
+				preStream.stop()
+				preStream = nil
+			}
+		},
 		ClientProtocol: clientProtocol,
 		ClientModel:    clientModel,
 		OutboundModel:  outboundForLog,
@@ -1467,6 +1564,10 @@ func (h *ChatHandler) serveWithExecutor(
 	})
 
 	if execErr != nil {
+		if preStream != nil {
+			preStream.stop()
+			preStream = nil
+		}
 		// ── Request WAL: synchronous update on execution failure ─────────────
 		if h.requestLogger != nil {
 			var pid, cid *int64
@@ -1512,6 +1613,11 @@ func (h *ChatHandler) serveWithExecutor(
 		// when the async goroutine completes.
 		var asyncErr *executors.AsyncPendingError
 		if errors.As(execErr, &asyncErr) {
+			if preStreamPrepared {
+				logCtx.SetError("async_pending_unsupported_after_stream_start", "stream already prepared")
+				writePrewarmedStreamError(w, "upstream request delayed; async fallback unavailable after stream start", "server_error", "provider_error")
+				return
+			}
 			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
 			w.Header().Set("X-Gw-Pending-Request", asyncErr.RequestID)
 			w.Header().Set("Retry-After", "5")
@@ -1568,6 +1674,12 @@ func (h *ChatHandler) serveWithExecutor(
 			if realKind != "" {
 				w.Header().Set("X-Gateway-Last-Kind", realKind)
 			}
+			if preStreamPrepared {
+				writePrewarmedStreamError(w,
+					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
+					"server_error", "model_not_found")
+				return
+			}
 			writeErrorJSONWithKind(w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				"server_error", "model_not_found", realKind, map[string]any{
@@ -1620,8 +1732,16 @@ func (h *ChatHandler) serveWithExecutor(
 			debugInfo["attempts"] = execErrTyped.Attempts
 			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
 		}
+		if preStreamPrepared {
+			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
+			return
+		}
 		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error", debugInfo)
 		return
+	}
+	if preStream != nil {
+		preStream.stop()
+		preStream = nil
 	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
@@ -2096,65 +2216,65 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 		// Record format anomaly if estimation failed or returned zero completion tokens
 		// despite having response content (helps detect provider format changes)
-			if h.anomalyRecorder != nil && reqLog.Success {
-				providerID := result.Candidate.ProviderID
-				providerCode := result.Candidate.CatalogCode
-				clientModel := evt.ClientModel
-				outboundModel := evt.OutboundModel
+		if h.anomalyRecorder != nil && reqLog.Success {
+			providerID := result.Candidate.ProviderID
+			providerCode := result.Candidate.CatalogCode
+			clientModel := evt.ClientModel
+			outboundModel := evt.OutboundModel
 
-				// Detect anomaly type
-				var anomalyType AnomalyType
-				var severity Severity
-				if estPrompt == 0 && estCompletion == 0 && len(result.ResponseBody) > 0 {
-					anomalyType = AnomalyExtractionFailed
-					severity = SeverityHigh
-				} else if estCompletion == 0 && len(result.ResponseBody) > 100 {
-					anomalyType = AnomalyZeroCompletion
-					severity = SeverityMedium
-				} else {
-					anomalyType = AnomalyMissingUsage
-					severity = SeverityLow
-				}
-
-				// Sample before recording (avoid flooding table)
-				if ShouldRecordAnomaly(anomalyType, providerCode) {
-					contentSize := len(result.ResponseBody)
-					structure := AnalyzeResponseStructure(result.ResponseBody)
-					sample := TruncateForSample(string(result.ResponseBody), 1000)
-					usageSource := UsageSourceEstimated
-					var providerCodePtr *string
-					if providerCode != "" {
-						providerCodePtr = &providerCode
-					}
-					var tenantCodePtr *string
-					if tenantID != "" {
-						tenantCodePtr = &tenantID
-					}
-
-					go func() {
-						// Record asynchronously to avoid blocking request completion
-						recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-						defer cancel()
-
-						_ = h.anomalyRecorder.RecordAnomaly(recordCtx, AnomalyRecord{
-							RequestID:      evt.RequestID,
-							ProviderID:     &providerID,
-							ProviderCode:   providerCodePtr,
-							ClientModel:    &clientModel,
-							OutboundModel:  &outboundModel,
-							AnomalyType:    anomalyType,
-							Severity:       severity,
-							UsageSource:    &usageSource,
-							ExpectedTokens: &estCompletion,
-							ActualTokens:   nil,
-							ContentSize:    &contentSize,
-							Structure:      structure,
-							ResponseSample: &sample,
-							TenantID:       tenantCodePtr,
-						})
-					}()
-				}
+			// Detect anomaly type
+			var anomalyType AnomalyType
+			var severity Severity
+			if estPrompt == 0 && estCompletion == 0 && len(result.ResponseBody) > 0 {
+				anomalyType = AnomalyExtractionFailed
+				severity = SeverityHigh
+			} else if estCompletion == 0 && len(result.ResponseBody) > 100 {
+				anomalyType = AnomalyZeroCompletion
+				severity = SeverityMedium
+			} else {
+				anomalyType = AnomalyMissingUsage
+				severity = SeverityLow
 			}
+
+			// Sample before recording (avoid flooding table)
+			if ShouldRecordAnomaly(anomalyType, providerCode) {
+				contentSize := len(result.ResponseBody)
+				structure := AnalyzeResponseStructure(result.ResponseBody)
+				sample := TruncateForSample(string(result.ResponseBody), 1000)
+				usageSource := UsageSourceEstimated
+				var providerCodePtr *string
+				if providerCode != "" {
+					providerCodePtr = &providerCode
+				}
+				var tenantCodePtr *string
+				if tenantID != "" {
+					tenantCodePtr = &tenantID
+				}
+
+				go func() {
+					// Record asynchronously to avoid blocking request completion
+					recordCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+
+					_ = h.anomalyRecorder.RecordAnomaly(recordCtx, AnomalyRecord{
+						RequestID:      evt.RequestID,
+						ProviderID:     &providerID,
+						ProviderCode:   providerCodePtr,
+						ClientModel:    &clientModel,
+						OutboundModel:  &outboundModel,
+						AnomalyType:    anomalyType,
+						Severity:       severity,
+						UsageSource:    &usageSource,
+						ExpectedTokens: &estCompletion,
+						ActualTokens:   nil,
+						ContentSize:    &contentSize,
+						Structure:      structure,
+						ResponseSample: &sample,
+						TenantID:       tenantCodePtr,
+					})
+				}()
+			}
+		}
 
 	} else if reqLog.UsageSource == nil {
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
