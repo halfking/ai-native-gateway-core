@@ -1,0 +1,193 @@
+groups:
+  - name: llmgw-availability-cache
+    interval: 30s
+    rules:
+      # 0: probe writers silently stopped.
+      #
+      # Every probe worker in the gateway (ModelProbeRunner,
+      # CredentialProbeV2, PassiveProbeListener, the routing
+      # MaybeExitSuspicious hook) writes to the Redis availability
+      # cache as part of its state-machine output. A flat zero rate for
+      # 15 minutes across ALL sources means the writers are all dead or
+      # the cache is unreachable.
+      #
+      # The same condition can also indicate a Redis failure — operators
+      # should correlate with redis_up and the gateway's
+      # /healthz before paging.
+      - alert: LLMGatewayAvailabilityCacheNoWrites
+        expr: sum(rate(llmgw_availability_cache_writes_total[15m])) == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Redis availability cache has not been written to for 15m"
+          description: |
+            No probe worker has written any availability entry for 15
+            minutes. This typically means the probe workers themselves are
+            down, or the Redis layer is unreachable. Check
+            `sum by (source) (rate(llmgw_availability_cache_writes_total[5m]))`
+            to see whether all writers are silent or just one.
+          runbook: |
+            1. Check Redis health: redis_up{db="availability"}.
+            2. Check bg workers are running:
+               `pgrep -af probe` should show 5+ processes.
+            3. Inspect each probe worker log for recent errors.
+
+      # 1: cache hit rate collapsed.
+      #
+      # The Redis availability cache is meant to be the hot read path
+      # for the routing layer and the admin /cache-state endpoint. A
+      # sustained miss rate above 50% means either the cache TTL is
+      # expiring too fast, writers have stopped, or probes are
+      # continuously transitioning state in a way that invalidates the
+      # cache (which is itself a separate alert).
+      - alert: LLMGatewayAvailabilityCacheHitRateLow
+        expr: |
+          sum(rate(llmgw_availability_cache_reads_total{result="hit"}[10m]))
+          /
+          sum(rate(llmgw_availability_cache_reads_total[10m]))
+          < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Redis availability cache hit rate dropped below 50%"
+          description: |
+            Over the last 10 minutes fewer than half of cache reads hit.
+            Verify writers are still emitting state (cache_writes_total)
+            and the Redis TTL hasn't been shortened.
+
+      # 2: backfill running but writing nothing.
+      #
+      # AvailabilityCacheBackfill scans model_probe_state every 5min
+      # (or on /cache-rebuild) and writes entries to Redis. If it
+      # reports `runs_total > 0` but `rows_total == 0` for 30 minutes,
+      # something is wrong: the DB query is empty (no probe state), or
+      # the write loop is being short-circuited by `shouldRefresh`.
+      - alert: LLMGatewayAvailabilityBackfillEmpty
+        expr: |
+          rate(llmgw_availability_backfill_runs_total[30m]) > 0
+          and
+          rate(llmgw_availability_backfill_rows_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: info
+          service: llmgw
+        annotations:
+          summary: "Availability backfill is running but writing 0 rows"
+          description: |
+            The DB→Redis backfill is firing but not writing any rows. This
+            can mean model_probe_state is empty (suspicious), the
+            shouldRefresh guard is rejecting everything, or the worker is
+            misconfigured.
+          runbook: |
+            1. Confirm model_probe_state is populated:
+               `SELECT count(*) FROM model_probe_state`.
+            2. Try /api/admin/probe/cache-rebuild with explicit
+               lookback_seconds; if that returns 0 rows the upstream
+               DB state is the issue.
+
+  - name: llmgw-suspicious-exit
+    interval: 30s
+    rules:
+      # 3: routing hot-path DB UPDATE failing.
+      #
+      # The MaybeExitSuspicious hook fires when the routing layer
+      # picks a candidate in suspicious state. It runs a fire-and-forget
+      # UPDATE to flip model_probe_state back to recovering. If that
+      # UPDATE keeps failing we have a stuck state machine: routing
+      # keeps picking suspicious bindings, never transitions them to
+      # recovering, and the backfill worker has to do all the cleanup.
+      - alert: LLMGatewaySuspiciousExitDBErrorRate
+        expr: |
+          rate(llmgw_suspicious_exits_total{outcome="db_error"}[5m])
+          /
+          clamp_min(
+            rate(llmgw_suspicious_exits_total[5m]),
+            0.001
+          )
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Suspicious-exit DB UPDATE failing > 5%"
+          description: |
+            More than 5% of suspicious-exit dispatches are failing the
+            `model_probe_state` UPDATE. This means suspicious bindings
+            are not being transitioned back to recovering via the hot
+            path and will rely solely on the periodic backfill.
+
+      # 4: routing hot-path cache re-write failing.
+      #
+      # If DB UPDATE succeeds but the cache re-write fails the routing
+      # layer keeps picking suspicious bindings on subsequent calls
+      # (the cache still says suspicious). This is mostly cosmetic
+      # because the DB state is correct, but it amplifies dispatcher
+      # pressure on the suspicious-exit hot path.
+      - alert: LLMGatewaySuspiciousExitCacheErrorRate
+        expr: |
+          rate(llmgw_suspicious_exits_total{outcome="cache_error"}[5m])
+          /
+          clamp_min(
+            rate(llmgw_suspicious_exits_total[5m]),
+            0.001
+          )
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Suspicious-exit cache re-write failing > 5%"
+
+      # 5: suspicious-exit DB UPDATE latency creeping up.
+      #
+      # We have a 1s hard timeout on the async goroutine. p99 above
+      # 250ms means we're spending a quarter of the timeout budget on
+      # typical fast cases — which on a noisy host can quickly become
+      # timeout breaches and silent suspicious binding pile-ups.
+      - alert: LLMGatewaySuspiciousExitDBDurationHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(llmgw_suspicious_exit_db_duration_seconds_bucket[5m]))
+          ) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Suspicious-exit DB UPDATE p99 > 250ms"
+          description: |
+            p99 latency of the async `model_probe_state` UPDATE inside
+            `provider.Client.maybeExitSuspicious` is above 250ms. The
+            hard timeout is 1s; sustained latency at this level means
+            routine pressure is consuming most of the budget.
+
+      # 6: total dispatched exits dropped to zero.
+      #
+      # If routing traffic is flowing but no suspicious exits are being
+      # dispatched for an hour, it usually means routing is no longer
+      # picking suspicious bindings — either they've all been
+      # resolved (good) or model_probe_state has fallen out of sync
+      # with reality (bad). Pair with request volume alerts to
+      # disambiguate.
+      - alert: LLMGatewaySuspiciousExitNoDispatches
+        expr: |
+          rate(llmgw_suspicious_exits_total{outcome="dispatched"}[1h]) == 0
+        for: 1h
+        labels:
+          severity: info
+          service: llmgw
+        annotations:
+          summary: "No suspicious exits dispatched in 1h"
+          description: |
+            Verify this is actually a healthy steady state by checking
+            `llmgw_availability_cache_writes_total{state="suspicious"}`
+            is also flat. If it's flat too, everything is genuinely
+            healthy. If writes are non-zero but dispatches are zero,
+            the routing layer may have lost its hot-path wiring.
