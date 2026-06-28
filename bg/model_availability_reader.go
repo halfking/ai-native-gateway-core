@@ -40,7 +40,9 @@ func (r *ModelAvailabilityReader) Read(ctx context.Context, credentialID int, ra
 	if !r.Enabled() {
 		return nil, nil
 	}
+	readStart := time.Now()
 	data, err := r.redis.HGetAll(ctx, modelAvailabilityKey(credentialID, rawModel)).Result()
+	recordAvailabilityReadDuration(time.Since(readStart).Seconds())
 	if err != nil {
 		return nil, err
 	}

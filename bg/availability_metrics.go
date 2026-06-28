@@ -15,6 +15,7 @@ var (
 	availabilityCacheReads   *prometheus.CounterVec
 	availabilityBackfillRuns *prometheus.CounterVec
 	availabilityBackfillRows *prometheus.CounterVec
+	availabilityReadDuration prometheus.Histogram
 )
 
 // registerAvailabilityMetrics registers all llmgw_availability_* collectors
@@ -27,6 +28,7 @@ var (
 //   - "is anything reading the cache?" → reads_total{source}
 //   - "is the periodic backfill doing anything?" → backfill_runs_total{trigger}
 //   - backfill_rows_total{trigger}
+//   - "is Redis serving the cache fast enough?" → read_duration_seconds
 func registerAvailabilityMetrics() {
 	availabilityMetricOnce.Do(func() {
 		availabilityCacheWrites = prometheus.NewCounterVec(
@@ -57,8 +59,24 @@ func registerAvailabilityMetrics() {
 			},
 			[]string{"trigger"},
 		)
+		// availability_read_duration_seconds measures the wall-clock cost
+		// of the HGETALL round-trip on the hot read path (admin probe
+		// endpoints + routing MaybeExitSuspicious). The bucket layout is
+		// tuned for a Redis with sub-millisecond LAN latency: a healthy
+		// p99 sits under 5ms; sustained values above 50ms indicate
+		// Redis is under pressure or the cache layer is not getting the
+		// hit rate it should.
+		availabilityReadDuration = prometheus.NewHistogram(
+			prometheus.HistogramOpts{
+				Name: availabilityMetricPrefix + "read_duration_seconds",
+				Help: "Wall-clock duration of Redis HGETALL against llmgw:avail:*.",
+				Buckets: []float64{
+					0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1,
+				},
+			},
+		)
 		prometheus.MustRegister(availabilityCacheWrites, availabilityCacheReads,
-			availabilityBackfillRuns, availabilityBackfillRows)
+			availabilityBackfillRuns, availabilityBackfillRows, availabilityReadDuration)
 	})
 }
 
@@ -86,6 +104,17 @@ func recordAvailabilityCacheRead(source, result string) {
 		return
 	}
 	availabilityCacheReads.WithLabelValues(source, result).Inc()
+}
+
+// recordAvailabilityReadDuration is invoked from the reader path. It
+// captures the wall-clock cost of the underlying HGETALL round-trip
+// regardless of hit/miss outcome so operators can correlate the
+// cache_writes_total/cache_reads_total counters against raw latency.
+func recordAvailabilityReadDuration(seconds float64) {
+	if availabilityReadDuration == nil {
+		return
+	}
+	availabilityReadDuration.Observe(seconds)
 }
 
 // recordAvailabilityBackfillRun is invoked once per backfill pass.

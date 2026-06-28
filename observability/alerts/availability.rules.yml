@@ -89,6 +89,29 @@ groups:
                lookback_seconds; if that returns 0 rows the upstream
                DB state is the issue.
 
+      # 2b: Redis HGETALL round-trip slow.
+      #
+      # p99 above 50ms means the cache layer is in danger of becoming a
+      # bottleneck for the routing hot path. Combined with the
+      # CacheHitRateLow alert, this is the signature of Redis under
+      # memory pressure or network saturation.
+      - alert: LLMGatewayAvailabilityReadDurationHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(llmgw_availability_read_duration_seconds_bucket[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Redis availability read p99 > 50ms"
+          description: |
+            p99 latency of the HGETALL round-trip on llmgw:avail:* is
+            above 50ms. Combined with a falling hit rate this is the
+            classic Redis-under-pressure pattern.
+
   - name: llmgw-suspicious-exit
     interval: 30s
     rules:
