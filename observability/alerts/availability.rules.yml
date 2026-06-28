@@ -112,6 +112,26 @@ groups:
             above 50ms. Combined with a falling hit rate this is the
             classic Redis-under-pressure pattern.
 
+      # 2c: Redis HSET pipeline slow.
+      #
+      # Probe workers (ModelProbeRunner, CredentialProbeV2,
+      # PassiveProbeListener) all call cache.Set on every state
+      # transition. A p99 above 50ms here directly slows the probe loop
+      # and can back-pressure the workers — pair with the read
+      # duration alert to disambiguate network vs Redis-side slow.
+      - alert: LLMGatewayAvailabilityWriteDurationHigh
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(llmgw_availability_write_duration_seconds_bucket[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: llmgw
+        annotations:
+          summary: "Redis availability write p99 > 50ms"
+
   - name: llmgw-suspicious-exit
     interval: 30s
     rules:

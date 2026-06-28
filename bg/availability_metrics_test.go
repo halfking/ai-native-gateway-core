@@ -178,3 +178,59 @@ func TestAvailabilityReadDurationIntegratedWithReader(t *testing.T) {
 		t.Fatalf("sample count delta = %v, want 1", got)
 	}
 }
+
+func TestAvailabilityWriteDurationHistogramObservesSamples(t *testing.T) {
+	if availabilityWriteDuration == nil {
+		t.Fatal("histogram not initialised")
+	}
+
+	m := &dto.Metric{}
+	if err := availabilityWriteDuration.Write(m); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	preCount := m.Histogram.GetSampleCount()
+
+	for _, d := range []float64{0.001, 0.005, 0.04, 0.2} {
+		recordAvailabilityWriteDuration(d)
+	}
+
+	after := &dto.Metric{}
+	if err := availabilityWriteDuration.Write(after); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if got := after.Histogram.GetSampleCount() - preCount; got != 4 {
+		t.Fatalf("sample count delta = %v, want 4", got)
+	}
+}
+
+func TestAvailabilityWriteDurationIntegratedWithCache(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cache := NewModelAvailabilityCache(client, time.Hour)
+
+	ctx := context.Background()
+	pre := &dto.Metric{}
+	if err := availabilityWriteDuration.Write(pre); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	preCount := pre.Histogram.GetSampleCount()
+
+	if err := cache.Set(ctx, 7, "glm-5.2", ModelAvailabilityFields(
+		7, "glm-5.2", "healthy_confirmed", true, "ok", 3, 0, nil, "model_probe",
+	)); err != nil {
+		t.Fatalf("cache.Set: %v", err)
+	}
+
+	post := &dto.Metric{}
+	if err := availabilityWriteDuration.Write(post); err != nil {
+		t.Fatalf("histogram write: %v", err)
+	}
+	if got := post.Histogram.GetSampleCount() - preCount; got != 1 {
+		t.Fatalf("sample count delta = %v, want 1", got)
+	}
+}
