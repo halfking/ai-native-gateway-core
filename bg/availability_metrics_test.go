@@ -234,3 +234,66 @@ func TestAvailabilityWriteDurationIntegratedWithCache(t *testing.T) {
 		t.Fatalf("sample count delta = %v, want 1", got)
 	}
 }
+
+func TestAvailabilityBackfillRowsPerRunGauge(t *testing.T) {
+	if availabilityBackfillRowsPerRun == nil {
+		t.Fatal("gauge not initialised")
+	}
+
+	// Pre-condition: gauge starts at 0.
+	if got := readGauge(t, availabilityBackfillRowsPerRun); got != 0 {
+		t.Fatalf("pre gauge = %v, want 0", got)
+	}
+
+	// First sample: gauge is purely the new value (weighted 0.3).
+	recordAvailabilityBackfillRowsPerRun(10)
+	if got, want := readGauge(t, availabilityBackfillRowsPerRun), 3.0; got != want {
+		t.Fatalf("after first sample: gauge = %v, want %v (0.3 * 10)", got, want)
+	}
+
+	// Second sample: blends 0.7*3 + 0.3*10 = 5.1
+	recordAvailabilityBackfillRowsPerRun(10)
+	if got, want := readGauge(t, availabilityBackfillRowsPerRun), 5.1; got != want {
+		t.Fatalf("after second sample: gauge = %v, want %v (0.7*3 + 0.3*10)", got, want)
+	}
+
+	// Third sample at 100: blends toward 100 over time.
+	recordAvailabilityBackfillRowsPerRun(100)
+	got := readGauge(t, availabilityBackfillRowsPerRun)
+	if got <= 5.1 || got > 100 {
+		t.Fatalf("after third sample: gauge = %v, want in (5.1, 100]", got)
+	}
+}
+
+func TestAvailabilityBackfillRowsPerRunIntegratedWithBackfill(t *testing.T) {
+	w := &AvailabilityCacheBackfill{
+		cache:     NewModelAvailabilityCache(nil, 0),
+		reader:    NewModelAvailabilityReader(nil),
+		batchSize: 200,
+		lookback:  time.Hour,
+		interval:  time.Minute,
+		done:      make(chan struct{}),
+	}
+	// Cache is disabled so no rows are written. The metric is only
+	// updated when written > 0, so a RunOnceWithTrigger that observes
+	// zero rows must NOT change the gauge. We capture the pre-value to
+	// ignore cross-test state.
+	pre := readGauge(t, availabilityBackfillRowsPerRun)
+	if _, err := w.RunOnceWithTrigger(context.Background(), "manual"); err != nil {
+		t.Fatalf("RunOnceWithTrigger: %v", err)
+	}
+	post := readGauge(t, availabilityBackfillRowsPerRun)
+	if post != pre {
+		t.Fatalf("gauge drifted: pre=%v post=%v (cache disabled, expected no change)", pre, post)
+	}
+}
+
+// readGauge fetches the current float value of a Prometheus gauge.
+func readGauge(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	m := &dto.Metric{}
+	if err := g.Write(m); err != nil {
+		t.Fatalf("gauge write: %v", err)
+	}
+	return m.Gauge.GetValue()
+}
