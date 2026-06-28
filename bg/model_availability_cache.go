@@ -47,6 +47,35 @@ func (c *ModelAvailabilityCache) key(credentialID int, rawModel string) string {
 	return modelAvailabilityKey(credentialID, rawModel)
 }
 
+// ModelAvailabilityFields is the exported wrapper around modelAvailabilityFields.
+// External callers (admin endpoints, backfill workers) use this to
+// produce the Redis hash payload with the same shape the probe workers
+// write. Keeping it as a wrapper avoids duplicating the field order /
+// time-formatting rules in every consumer.
+func ModelAvailabilityFields(
+	credentialID int,
+	rawModel string,
+	state string,
+	available bool,
+	lastStatus string,
+	consecutiveSuccesses int,
+	consecutiveFailures int,
+	nextRetryAt *time.Time,
+	source string,
+) map[string]any {
+	return modelAvailabilityFields(
+		credentialID,
+		rawModel,
+		state,
+		available,
+		lastStatus,
+		consecutiveSuccesses,
+		consecutiveFailures,
+		nextRetryAt,
+		source,
+	)
+}
+
 func modelAvailabilityFields(
 	credentialID int,
 	rawModel string,
