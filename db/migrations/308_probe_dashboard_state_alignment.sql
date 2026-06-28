@@ -1,4 +1,6 @@
--- Migration 305: Probe dashboard state alignment and null-safe aggregates
+-- Migration 308: Probe dashboard state alignment and null-safe aggregates
+-- (renumbered from 305 to 308 to avoid NNN collision with
+--  305_partition_archive_functions.sql — see pre-commit migration guard)
 --
 -- Why:
 --   1. /probe-health reads PostgreSQL dashboard views, while Redis cache-state
@@ -15,8 +17,8 @@ WITH model_stats AS (
         pm.id AS provider_model_id,
         pm.raw_model_name,
         pm.outbound_model_name,
-        pm.protocol,
-        p.name AS provider_name,
+        p.protocol,
+        p.display_name AS provider_name,
 
         COUNT(*) AS total_credentials,
         COUNT(*) FILTER (WHERE mps.state IN ('healthy', 'healthy_confirmed', 'available')) AS healthy_count,
@@ -58,7 +60,7 @@ WITH model_stats AS (
     WHERE COALESCE(c.status, 'active') = 'active'
       AND COALESCE(c.lifecycle_status, 'active') = 'active'
       AND COALESCE(c.manual_disabled, FALSE) = FALSE
-    GROUP BY pm.id, pm.raw_model_name, pm.outbound_model_name, pm.protocol, p.name
+    GROUP BY pm.id, pm.raw_model_name, pm.outbound_model_name, p.protocol, p.display_name
 )
 SELECT
     provider_model_id,
