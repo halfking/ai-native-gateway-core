@@ -1486,14 +1486,31 @@ func main() {
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
-			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatHandler))
-			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatHandler))
+
+			// Phase 5 B1-5: WrapMiddleware provides an independent
+			// armor inspection path. Only applied when v2 pipeline is
+			// active, so we don't double-log when the v1 path's
+			// chatHandler.SetArmor is also active.
+			var armorMw http.Handler
+			if armorJudge != nil {
+				armorMw = armor.WrapMiddleware(chatHandler, armor.MiddlewareConfig{
+					Judge:   armorJudge,
+					Logger:  armorLogger,
+					Logger2: slog.Default(),
+				})
+			}
+
+			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, armorMw))
+			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, armorMw))
 			// /v1/messages and /v1/responses internally call
 			// chatHandler.ServeHTTP, so wrapping chatHandler is
 			// enough to put the Pipeline in front of all 4.
 			mux.Handle("/v1/messages", v2DispatchHandler(v2Deps, messagesHandler))
 			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
+			if armorMw != nil {
+				slog.Info("armor middleware: active on /v1/chat/completions + /v1/completions")
+			}
 		}
 	}
 
