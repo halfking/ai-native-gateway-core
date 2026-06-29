@@ -29,12 +29,22 @@ func (h *ClientIdentityHook) Priority() int { return 20 }
 
 // Enabled checks if the hook should run.
 func (h *ClientIdentityHook) Enabled(ctx context.Context, env *domain.PipelineRequest) bool {
-	return env != nil && env.HTTPRequest != nil && env.Metadata["identity_hash"] == nil
+	if env == nil || env.Envelope == nil || !env.Envelope.HasTransport() {
+		return false
+	}
+	if env.Metadata["identity_hash"] != nil {
+		return false
+	}
+	return env.Envelope.Transport.R != nil
 }
 
 // Execute extracts and builds client identity.
 func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
-	if env == nil || env.HTTPRequest == nil {
+	if env == nil || env.Envelope == nil || !env.Envelope.HasTransport() {
+		return nil
+	}
+	httpReq := env.Envelope.Transport.R
+	if httpReq == nil {
 		return nil
 	}
 
@@ -50,8 +60,8 @@ func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRe
 		}
 	}
 
-	clientProfile := extractClientProfile(env.HTTPRequest)
-	clientID := BuildIdentityFromRequest(env.HTTPRequest, tenantID, appID, apiKeyID, clientProfile)
+	clientProfile := extractClientProfile(httpReq)
+	clientID := BuildIdentityFromRequest(httpReq, tenantID, appID, apiKeyID, clientProfile)
 
 	if env.Metadata == nil {
 		env.Metadata = make(map[string]any)

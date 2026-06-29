@@ -95,6 +95,7 @@ import (
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/interception"
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
 	"github.com/kaixuan/llm-gateway-go/domains/provider"
@@ -204,11 +205,12 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	}
 
 	// === Phase: Client Identity (priority 20) ===
-	// TODO: Extract identity logic from ChatHandler to identity.Hook
-	// p.AddStage(&pipeline.PipelineStage{
-	// 	Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-	// 	Hooks: []pipeline.Hook{identity.NewClientIdentityHook(...)},
-	// })
+	// 2026-06-29: Extract client identity hash from request (IP, headers, tenant, API key)
+	// and inject into env.Metadata for downstream hooks and audit.
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{identity.NewClientIdentityHook()},
+	})
 
 	// === Phase: Session Loader (priority 30) ===
 	// TODO: Extract session logic from ChatHandler to session.Hook
