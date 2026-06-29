@@ -64,17 +64,43 @@ func (p *AssetHealthProbe) Stop() {
 	<-p.done
 }
 
-// ProbeOnce runs one cycle. Returns degraded/removed counts.
+// ProbeOnce runs one cycle for all tenants. Returns degraded/removed counts.
 func (p *AssetHealthProbe) ProbeOnce(ctx context.Context) (degraded, removed int64, err error) {
 	if p.hub == nil || p.syncer == nil {
 		return 0, 0, nil
 	}
 	start := time.Now()
 
+	// Get all tenants
+	tenants, err := p.hub.ListTenants(ctx)
+	if err != nil {
+		slog.Warn("asset health: list tenants failed", "error", err)
+		return 0, 0, err
+	}
+	if len(tenants) == 0 {
+		return 0, 0, nil
+	}
+
+	// Process each tenant
+	for _, tenant := range tenants {
+		tenantCtx := apihub.WithTenant(ctx, tenant)
+		d, r := p.probeOneTenant(tenantCtx, tenant)
+		degraded += d
+		removed += r
+	}
+
+	slog.Info("asset health probe: cycle complete",
+		"tenants", len(tenants), "degraded", degraded, "removed", removed,
+		"duration_ms", time.Since(start).Milliseconds())
+	return
+}
+
+// probeOneTenant runs one cycle for a single tenant. Returns degraded/removed counts.
+func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (degraded, removed int64) {
 	// Step 1: mark stale assets as degraded.
 	stale, err := p.hub.ListStale(ctx, p.staleThreshold)
 	if err != nil {
-		slog.Warn("asset health: list stale failed", "error", err)
+		slog.Warn("asset health: list stale failed", "tenant", tenant, "error", err)
 	}
 	for _, a := range stale {
 		if a.HealthState == apihub.HealthDown {
@@ -82,7 +108,7 @@ func (p *AssetHealthProbe) ProbeOnce(ctx context.Context) (degraded, removed int
 		}
 		if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDegraded); e != nil {
 			slog.Warn("asset health: mark degraded failed",
-				"ref_id", a.RefID, "error", e)
+				"tenant", tenant, "ref_id", a.RefID, "error", e)
 			continue
 		}
 		degraded++
@@ -101,7 +127,7 @@ func (p *AssetHealthProbe) ProbeOnce(ctx context.Context) (degraded, removed int
 
 	allAssets, err := p.hub.List(ctx, apihub.Filter{Limit: 1000})
 	if err != nil {
-		slog.Warn("asset health: list all failed", "error", err)
+		slog.Warn("asset health: list all failed", "tenant", tenant, "error", err)
 	}
 	for _, a := range allAssets {
 		key := string(a.Kind) + "|" + a.TenantID + "|" + itoa64(a.RefID)
@@ -112,10 +138,6 @@ func (p *AssetHealthProbe) ProbeOnce(ctx context.Context) (degraded, removed int
 			removed++
 		}
 	}
-
-	slog.Info("asset health probe: cycle complete",
-		"degraded", degraded, "removed", removed,
-		"duration_ms", time.Since(start).Milliseconds())
 	return
 }
 

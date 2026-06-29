@@ -526,7 +526,7 @@ func (s *pgStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID
 		stateStr = string(HealthUnknown)
 	}
 	var found int
-	err := s.withTenantReadOnlyTx(ctx, tenantID, func(tx pgx.Tx) error {
+	err := s.withTenantTx(ctx, tenantID, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, markHealthSQL, tenantID, string(k), refID, stateStr).Scan(&found)
 	})
 	if err != nil {
@@ -597,4 +597,33 @@ func (s *pgStore) ListStale(ctx context.Context, tenantID string, threshold time
 		return nil, err
 	}
 	return stale, nil
+}
+
+// ListTenants returns all distinct tenant_id values in the assets table.
+// Used by AssetHealthProbe to iterate over all tenants.
+func (s *pgStore) ListTenants(ctx context.Context) ([]string, error) {
+	if s.pool == nil && s.q == nil {
+		return nil, ErrNoDB
+	}
+	q := s.q
+	if q == nil {
+		q = s.pool
+	}
+	rows, err := q.Query(ctx, "SELECT DISTINCT tenant_id FROM public.assets ORDER BY tenant_id")
+	if err != nil {
+		return nil, fmt.Errorf("apihub: list tenants: %w", err)
+	}
+	defer rows.Close()
+	var tenants []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		tenants = append(tenants, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tenants, nil
 }

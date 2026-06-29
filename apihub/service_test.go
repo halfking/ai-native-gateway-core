@@ -163,6 +163,20 @@ func (m *memStore) ListStale(ctx context.Context, tenantID string, threshold tim
 	return out, nil
 }
 
+func (m *memStore) ListTenants(ctx context.Context) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	seen := make(map[string]bool)
+	for _, a := range m.assets {
+		seen[a.TenantID] = true
+	}
+	var tenants []string
+	for t := range seen {
+		tenants = append(tenants, t)
+	}
+	return tenants, nil
+}
+
 // testCtx returns a context carrying the given tenant id.
 func testCtx(t *testing.T, tenant string) context.Context {
 	t.Helper()
