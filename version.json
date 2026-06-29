@@ -1,8 +1,8 @@
 {
-  "version": "V2.2.9-session-fix",
-  "git_tag": "V2.2.9-session-fix",
-  "git_sha": "453b0cb6",
-  "build_seq": 740,
+  "version": "r1.13-done",
+  "git_tag": "r1.13-done",
+  "git_sha": "3596bca9",
+  "build_seq": 742,
   "build_date": "2026-06-29",
   "module": "llm-gateway-go"
 }
