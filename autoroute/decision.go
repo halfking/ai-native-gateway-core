@@ -49,6 +49,10 @@ type Decision struct {
 	// The first element is the winner. Used for audit and admin UI.
 	CandidatesTopN []ScoredCandidate
 
+	// EnabledFeatures records which routing sub-features were active when
+	// this decision was produced. Used for auditability and wire/header propagation.
+	EnabledFeatures []string
+
 	// DecidedAt is the wall-clock time when the decision was made.
 	// Used for observability latency tracking.
 	DecidedAt time.Time
