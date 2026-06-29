@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -185,7 +186,7 @@ func (d *Detector) DetectAndLog(ctx context.Context, tenantID, requestID, sessio
 	return result, nil
 }
 
-// loadRules 从数据库加载规则
+// loadRules 从数据库加载规则；表不存在时自动创建并加载默认规则。
 func (d *Detector) loadRules() error {
 	query := `
 		SELECT id, rule_name, rule_type, category, pattern, description, severity, enabled, case_sensitive
@@ -196,6 +197,13 @@ func (d *Detector) loadRules() error {
 
 	rows, err := d.db.Query(query)
 	if err != nil {
+		if isTableNotFound(err, "prompt_injection_rules") {
+			if createErr := d.ensureRulesTable(); createErr != nil {
+				slog.Warn("prompt_injection: cannot auto-create rules table", "error", createErr)
+				return nil // 空规则继续，不阻塞启动
+			}
+			return d.loadRules() // 表创建成功，重试
+		}
 		return err
 	}
 	defer rows.Close()
@@ -213,7 +221,7 @@ func (d *Detector) loadRules() error {
 		}
 		rule.regex, err = regexp.Compile(flags + rule.Pattern)
 		if err != nil {
-			fmt.Printf("warn: invalid regex for rule %s: %v\n", rule.RuleName, err)
+			slog.Warn("prompt_injection: invalid regex for rule", "rule", rule.RuleName, "error", err)
 			continue
 		}
 
@@ -225,6 +233,39 @@ func (d *Detector) loadRules() error {
 	}
 
 	return rows.Err()
+}
+
+// ensureRulesTable 自动创建 prompt_injection_rules 表并插入默认规则。
+// 用于表不存在时的自愈兜底，不阻塞启动。
+func (d *Detector) ensureRulesTable() error {
+	ddl := `
+	CREATE TABLE IF NOT EXISTS prompt_injection_rules (
+	    id SERIAL PRIMARY KEY,
+	    rule_name VARCHAR(100) NOT NULL UNIQUE,
+	    rule_type VARCHAR(50) NOT NULL,
+	    category VARCHAR(50) NOT NULL,
+	    pattern TEXT NOT NULL,
+	    description TEXT,
+	    severity INT NOT NULL CHECK (severity >= 1 AND severity <= 10),
+	    enabled BOOLEAN DEFAULT true,
+	    case_sensitive BOOLEAN DEFAULT false,
+	    created_at TIMESTAMPTZ DEFAULT NOW(),
+	    updated_at TIMESTAMPTZ DEFAULT NOW()
+	);
+	INSERT INTO prompt_injection_rules (rule_name, rule_type, category, pattern, description, severity) VALUES
+	('role_hijack_ignore_previous', 'basic', 'role_hijack', '(?i)(ignore|forget|disregard).*(previous|above|prior).*(instruction|prompt|rule)', '尝试让模型忽略之前的指令', 9),
+	('role_hijack_you_are_now', 'basic', 'role_hijack', '(?i)you are now (a|an) .*(admin|root|system|god mode|developer)', '尝试切换模型角色为特权用户', 10)
+	ON CONFLICT (rule_name) DO NOTHING;`
+	if _, err := d.db.Exec(ddl); err != nil {
+		return err
+	}
+	slog.Info("prompt_injection_rules table auto-created")
+	return nil
+}
+
+// isTableNotFound reports whether err is a PostgreSQL "relation does not exist" error.
+func isTableNotFound(err error, table string) bool {
+	return strings.Contains(err.Error(), "relation \""+table+"\" does not exist")
 }
 
 // detectWithRules 使用规则集检测
