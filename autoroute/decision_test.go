@@ -188,6 +188,44 @@ func TestDecideWithFeatureFlags_SubFeatureEnablesV2Path(t *testing.T) {
 	}
 }
 
+func TestIsFallbackWinner(t *testing.T) {
+	// Exact sentinel: single candidate, Composite=50, PriceScore=50, MatchScore<=30
+	fallbackResult := []ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "fallback-model"},
+		Breakdown: ScoringBreakdown{Composite: 50, MatchScore: 30, PriceScore: 50},
+	}}
+	if !isFallbackWinner(fallbackResult) {
+		t.Fatal("expected fallback sentinel to be detected")
+	}
+
+	// MatchScore = 0 (degenerate case in RecommendV2) should also be detected
+	degenerate := []ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "fallback-model"},
+		Breakdown: ScoringBreakdown{Composite: 50, MatchScore: 0, PriceScore: 50},
+	}}
+	if !isFallbackWinner(degenerate) {
+		t.Fatal("expected fallback with MatchScore=0 to be detected")
+	}
+
+	// Normal scoring result should NOT be flagged as fallback
+	normal := []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "best"}, Breakdown: ScoringBreakdown{Composite: 80, MatchScore: 70, PriceScore: 60}},
+		{Candidate: Candidate{CanonicalName: "second"}, Breakdown: ScoringBreakdown{Composite: 65, MatchScore: 50, PriceScore: 55}},
+	}
+	if isFallbackWinner(normal) {
+		t.Fatal("normal multi-candidate result should not be flagged as fallback")
+	}
+
+	// Single candidate but with non-sentinel score should NOT be flagged
+	nonSentinel := []ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "lone"},
+		Breakdown: ScoringBreakdown{Composite: 90, MatchScore: 80, PriceScore: 70},
+	}}
+	if isFallbackWinner(nonSentinel) {
+		t.Fatal("single candidate with non-sentinel score should not be flagged")
+	}
+}
+
 func TestNormaliseProfile(t *testing.T) {
 	cases := map[string]Profile{
 		"":              "",

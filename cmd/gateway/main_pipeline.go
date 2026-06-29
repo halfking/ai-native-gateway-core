@@ -97,6 +97,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
+	outputcompliancehooks "github.com/kaixuan/llm-gateway-go/domains/hooks/outputcompliance"
+	promptinjectionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/promptinjection"
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
@@ -232,6 +234,13 @@ type v2DispatchDeps struct {
 	// intentWorker 在 startAnalysisLoopIfConfigured 创建；flusher 共用它。
 	intentWorker *workers.IntentWorker
 	intentCancel context.CancelFunc // flusher goroutine 退出信号
+
+	// ── V4 governance hooks (PR-V4-11) ───────────────────────────
+	// 这三个接口均为 nil 时对应 Hook 不注册（Enabled=false）。
+	// 由 main.go 在 dbConn 可用时注入具体实现。
+	PromptInjectionDetector promptinjectionhooks.Detector
+	OutputComplianceChecker outputcompliancehooks.Checker
+	SessionSummarizer       workers.SessionSummarizer
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -369,6 +378,15 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		Hooks: []pipeline.Hook{security.NewSecurityHook(secRegistry, security.Scope{})},
 	})
 
+	// PR-V4-11: prompt injection hook（可选；deps.PromptInjectionDetector 非 nil 时启用）。
+	// 放在 governance_security 之后，interception engine 之前，让 Engine 汇总它的 verdict。
+	if deps.PromptInjectionDetector != nil {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "governance_prompt_injection", Phase: pipeline.PhaseGovernance, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{promptinjectionhooks.NewHook(deps.PromptInjectionDetector)},
+		})
+	}
+
 	// V4 interception engine (PR-V4-04): 把 security verdicts 汇总成 Decision，
 	// 写入 env.Governance.Decision。后续 PR 引入 dispatch gate 后接管 HTTP 拦截。
 	interceptEngine := interception.NewEngine(interception.EngineConfig{
@@ -398,6 +416,14 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	})
 
 	if deps.Config.EnableStreaming {
+		// PR-V4-11: output compliance hook（可选；deps.OutputComplianceChecker 非 nil 时启用）。
+		// 放在 streaming 之前——这样 redaction 发生在 SSE 切片之前。
+		if deps.OutputComplianceChecker != nil {
+			p.AddStage(&pipeline.PipelineStage{
+				Name: "post_upstream_output_compliance", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
+				Hooks: []pipeline.Hook{outputcompliancehooks.NewHook(deps.OutputComplianceChecker)},
+			})
+		}
 		p.AddStage(&pipeline.PipelineStage{
 			Name: "streaming", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{streaming.NewStreamHook(streaming.NewSSEStreamer())},
@@ -806,6 +832,21 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 		Logger:    slog.Default(),
 	})
 
+	// PR-V4-11: SessionSummaryWorker 独立跑另一个 RunLoop（订阅 session.closed）。
+	// deps.SessionSummarizer 为 nil 时跳过（避免空跑）。
+	if deps.SessionSummarizer != nil {
+		sumWorker := workers.NewSessionSummaryWorker(deps.SessionSummarizer, slog.Default())
+		sumPoll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), sumWorker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
+		sumMark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
+		go bus.RunLoop(ctx, sumWorker, sumPoll, sumMark, bus.LoopConfig{
+			Interval:  deps.Config.AnalysisInterval,
+			BatchSize: deps.Config.AnalysisBatchSize,
+			Logger:    slog.Default(),
+		})
+		slog.Info("v2 pipeline: session_summary_worker loop started",
+			"interval", deps.Config.AnalysisInterval.String())
+	}
+
 	// PR-V4-10: 启动 IntentFlusher 把 worker 累计 flush 到 assets store。
 	// IntentStore 为 nil 时 flusher 只做 in-memory reset（仍跑 goroutine，
 	// 保持代码路径一致，便于测试）。
@@ -866,11 +907,26 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	_ = deps.AuditWriter.Close()
 }
 
-// SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10) 把 main.go 持有的
-// DB pool、ApprovalManager、Publisher、IntentStore 注入 deps，从而让
-// startAnalysisLoopIfConfigured 真正启动 Loop + Flusher，
-// 并让 dispatch_gate 用真实 ApprovalCreator、postflight publish 真写库。
-func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mgr *sessionaudit.ApprovalManager, pub bus.Publisher, store assets.IntentAggregateStore) {
+// SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10 / PR-V4-11) 把 main.go 持有的
+// DB pool、ApprovalManager、Publisher、IntentStore、可选 hook detector/checker 注入 deps。
+//
+// 调用时机：v2DispatchMux 返回 deps 之后、StartV2DispatchAnalysisLoop 之前。
+// nil 参数对应的子能力自动关闭：
+//   - pool == nil → Loop / Flusher / Publisher / IntentStore 都不启动
+//   - pub == nil → postflight publish 不跑
+//   - store == nil → flusher 只做 in-memory reset
+//   - detector == nil → prompt injection hook 不注册
+//   - checker == nil → output compliance hook 不注册
+func SetV2DispatchAnalysisResources(
+	deps *v2DispatchDeps,
+	pool *pgxpool.Pool,
+	mgr *sessionaudit.ApprovalManager,
+	pub bus.Publisher,
+	store assets.IntentAggregateStore,
+	detector promptinjectionhooks.Detector,
+	checker outputcompliancehooks.Checker,
+	summarizer workers.SessionSummarizer,
+) {
 	if deps == nil {
 		return
 	}
@@ -885,5 +941,14 @@ func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mg
 	}
 	if store != nil {
 		deps.IntentStore = store
+	}
+	if detector != nil {
+		deps.PromptInjectionDetector = detector
+	}
+	if checker != nil {
+		deps.OutputComplianceChecker = checker
+	}
+	if summarizer != nil {
+		deps.SessionSummarizer = summarizer
 	}
 }

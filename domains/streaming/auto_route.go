@@ -66,16 +66,18 @@ const maxWireDecisionBytes = 16 * 1024
 // autoRouteDecision is the wire format of X-Gw-Auto-Decision. Stable
 // JSON schema — clients may parse it for observability.
 type autoRouteDecision struct {
-	TaskType       string               `json:"task_type"`
-	Confidence     float64              `json:"confidence"`
-	Profile        string               `json:"profile"`
-	Classifier     string               `json:"classifier"`
-	Reason         string               `json:"reason"`
-	ChosenModel    string               `json:"chosen_model"`
-	ChosenRawModel string               `json:"chosen_raw_model"`
-	ChosenCredID   int64                `json:"chosen_credential_id"`
-	EnabledFeatures []string `json:"enabled_features,omitempty"`
-	CandidatesTop3 []autoRouteCandidate `json:"candidates_top3"`
+	TaskType        string               `json:"task_type"`
+	Confidence      float64              `json:"confidence"`
+	Profile         string               `json:"profile"`
+	Classifier      string               `json:"classifier"`
+	Reason          string               `json:"reason"`
+	ChosenModel     string               `json:"chosen_model"`
+	ChosenRawModel  string               `json:"chosen_raw_model"`
+	ChosenCredID    int64                `json:"chosen_credential_id"`
+	EnabledFeatures []string             `json:"enabled_features,omitempty"`
+	CacheReused     bool                 `json:"cache_reused"`
+	FallbackUsed    bool                 `json:"fallback_used"`
+	CandidatesTop3  []autoRouteCandidate `json:"candidates_top3"`
 }
 
 // autoRouteCandidate is one row of the top-N audit list.
@@ -353,6 +355,8 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		ChosenRawModel:  d.ChosenRawModel,
 		ChosenCredID:    d.ChosenCredentialID,
 		EnabledFeatures: d.EnabledFeatures,
+		CacheReused:     d.CacheReused,
+		FallbackUsed:    d.FallbackUsed,
 	}
 	for _, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
