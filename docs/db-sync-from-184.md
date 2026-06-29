@@ -6,8 +6,19 @@ This runbook describes the reusable process for syncing `llm_gateway` from the 1
 
 The scripts are:
 
-- `scripts/sync-db-from-184.sh` — single-shot sync in three modes
+- `scripts/sync-db-from-184.sh` — single-shot sync in three modes (SQL-level via `pg_dump`/`psql`)
+- `scripts/sync-db-from-184-pgbase.sh` — single-shot sync via physical `pg_basebackup` (byte-level streaming replication, faster)
 - `scripts/deploy-verify-from-184.sh` — one-click: sync + restart + smoke + report
+
+## Choosing a sync strategy
+
+| Approach | Tool | Speed | Use when |
+|---|---|---|---|
+| `pg_basebackup` (byte-level) | `sync-db-from-184-pgbase.sh` | ~3-5 min for full 4 GB | Want a clean clone fast; willing to ALTER `replicator` role on 184 |
+| `pg_dump` (SQL-level) | `sync-db-from-184.sh full` | ~10-20 min for full 4 GB | No replication access; only have `llm_gateway` (superuser) credentials |
+| `pg_dump --data-only` | `sync-db-from-184.sh data-only` | ~3-5 min | Schema already aligned; only need to refresh data |
+
+For one-shot full clones, prefer `pg_basebackup` (this script). For data refresh or schema-only, use `pg_dump` modes.
 
 ## Modes
 
