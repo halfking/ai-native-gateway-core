@@ -97,6 +97,10 @@ func (s *stubService) ListStale(ctx context.Context, threshold time.Duration) ([
 	return s.listOut, nil
 }
 
+func (s *stubService) ListTenants(ctx context.Context) ([]string, error) {
+	return []string{"default"}, nil
+}
+
 // ── List ─────────────────────────────────────────────────────────────────
 
 func TestList_DefaultTenantAndLimit(t *testing.T) {
