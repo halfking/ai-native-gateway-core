@@ -269,15 +269,19 @@ func StreamAnthropicSSEToOpenAI(
 		if chunk == nil {
 			return
 		}
+
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
 		_, _ = io.WriteString(w, sseLine)
 		flusher.Flush()
+
 		if pc != nil {
 			pc.append(sseLine)
 		}
+
 		if capture != nil {
 			capture.ObserveChunk(chunk)
 		}
+
 		chunkCount++
 	}
 
@@ -330,7 +334,7 @@ func StreamAnthropicSSEToOpenAI(
 		readCtx, readCancel := context.WithTimeout(ctx, runtimeCfg.streamChunkTimeout)
 		resultCh := make(chan readResult, 1)
 		go func() {
-			et, d, e := readAnthropicBridgeSSEEvent(readCtx, reader)
+			et, d, e := readAnthropicSSEEvent(readCtx, reader)
 			resultCh <- readResult{et, d, e}
 		}()
 
@@ -383,11 +387,11 @@ func StreamAnthropicSSEToOpenAI(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
-			outcome.ChunkCount = chunkCount
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
 			}
 			emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
+			outcome.ChunkCount = chunkCount
 			return outcome
 		}
 
@@ -403,11 +407,11 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
-		chunk, perr := ir.ParseAnthropicStreamEvent(eventType, data)
-		if perr != nil {
+		chunk, err := ir.ParseAnthropicStreamEvent(eventType, data)
+		if err != nil {
 			slog.Warn("anthropic_to_openai: parse failed",
 				"event_type", eventType,
-				"error", perr,
+				"error", err,
 				"request_id", requestID)
 			continue
 		}
@@ -422,6 +426,7 @@ func StreamAnthropicSSEToOpenAI(
 					outputTokens = chunk.Usage.CompletionTokens
 				}
 			}
+
 			if chunk.ID != "" && !emittedRole {
 				writeChunk(&ir.StreamChunk{
 					Type:           ir.ChunkTypeDelta,
@@ -430,6 +435,7 @@ func StreamAnthropicSSEToOpenAI(
 				})
 				emittedRole = true
 			}
+
 			if chunk.FinishReason != "" {
 				fr := chunk.FinishReason
 				finishReason = &fr
@@ -444,11 +450,11 @@ func StreamAnthropicSSEToOpenAI(
 			var baseCheck struct {
 				Type string `json:"type"`
 			}
-			if jerr := json.Unmarshal(data, &baseCheck); jerr == nil {
+			if err := json.Unmarshal(data, &baseCheck); err == nil {
 				switch baseCheck.Type {
 				case "content_block_start":
 					var evt anthropicBridgeContentBlockStart
-					if uerr := json.Unmarshal(data, &evt); uerr == nil && evt.ContentBlock.Type == "tool_use" {
+					if err := json.Unmarshal(data, &evt); err == nil && evt.ContentBlock.Type == "tool_use" {
 						currentToolCallID = evt.ContentBlock.ID
 						if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{}" {
 							args := string(evt.ContentBlock.InputRaw)
@@ -461,7 +467,7 @@ func StreamAnthropicSSEToOpenAI(
 							initialArgsSent = false
 						}
 						hasEmittedToolCalls = true
-					} else if uerr == nil && evt.ContentBlock.Type == "thinking" && capture != nil {
+					} else if err == nil && evt.ContentBlock.Type == "thinking" && capture != nil {
 						capture.HasThinking = true
 					}
 
@@ -475,7 +481,7 @@ func StreamAnthropicSSEToOpenAI(
 							PartialJSON string `json:"partial_json"`
 						} `json:"delta"`
 					}
-					if uerr := json.Unmarshal(data, &evt); uerr == nil {
+					if err := json.Unmarshal(data, &evt); err == nil {
 						switch evt.Delta.Type {
 						case "text", "text_delta":
 							bufferedText.WriteString(evt.Delta.Text)
@@ -518,6 +524,8 @@ func StreamAnthropicSSEToOpenAI(
 					}
 					currentToolCallID = ""
 					initialArgsSent = false
+
+				case "message_start", "message_delta":
 				}
 			}
 
@@ -618,7 +626,7 @@ func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, 
 	flusher.Flush()
 }
 
-func readAnthropicBridgeSSEEvent(ctx context.Context, reader io.Reader) (eventType string, data []byte, err error) {
+func readAnthropicSSEEvent(ctx context.Context, reader io.Reader) (eventType string, data []byte, err error) {
 	br, ok := reader.(*bufio.Reader)
 	if !ok {
 		br = bufio.NewReader(reader)
