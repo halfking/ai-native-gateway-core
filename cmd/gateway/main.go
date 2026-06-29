@@ -1370,6 +1370,12 @@ func main() {
 		defer apihubWatcher.Stop()
 		slog.Info("apihub watcher initialized", "interval", "60s")
 
+		// Phase 7: Asset Health Probe — marks stale assets as degraded,
+		// missing-from-source as down. Default 6h stale / 1h tick.
+		healthProbe := bg.NewAssetHealthProbe(apihubSvc, bg.NewPGSyncer(dbConn.Pool()))
+		healthProbe.Start(context.Background())
+		defer healthProbe.Stop()
+
 		// ── Armor Logger (Track A B1-4) ─────────────────────────────────
 		// Writes armor judgments to armor_judgments table. Used by relay
 		// handlers (when armor is enabled) to audit every judge decision.
@@ -1643,6 +1649,7 @@ func main() {
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)
 		mux.HandleFunc("/api/agents", wrapAdmin(agentsAPI.List))
 		mux.HandleFunc("/api/agents/stats", wrapAdmin(agentsAPI.Stats))
+		mux.HandleFunc("/api/agents/health", wrapAdmin(agentsAPI.Health))
 		mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case strings.HasSuffix(r.URL.Path, "/link") && r.Method == http.MethodPost:

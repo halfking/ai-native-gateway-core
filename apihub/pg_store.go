@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -503,3 +504,97 @@ func itoa64(i int64) string {
 // available. Wiring code should check this and disable the hub rather
 // than crashing the gateway.
 var ErrNoDB = errors.New("apihub: no database connection")
+
+// ── MarkHealth + ListStale (Phase 7) ─────────────────────────────────────
+
+const markHealthSQL = `
+UPDATE public.assets
+   SET health_state = $4
+ WHERE tenant_id = $1 AND kind = $2 AND ref_id = $3
+RETURNING 1
+`
+
+func (s *pgStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID int64, state HealthState) error {
+	if s.pool == nil && s.q == nil {
+		return ErrNoDB
+	}
+	if tenantID == "" {
+		return errors.New("apihub: tenant_id required")
+	}
+	stateStr := string(state)
+	if stateStr == "" {
+		stateStr = string(HealthUnknown)
+	}
+	var found int
+	err := s.withTenantReadOnlyTx(ctx, tenantID, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, markHealthSQL, tenantID, string(k), refID, stateStr).Scan(&found)
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("apihub: mark health: %w", err)
+	}
+	return nil
+}
+
+const listStaleSQL = `
+SELECT kind, ref_id, tenant_id, name,
+       COALESCE(owner, ''), COALESCE(team, ''), COALESCE(cost_center, ''),
+       tags, health_state, COALESCE(version, ''),
+       registered_at, last_seen_at, metadata
+FROM public.assets
+WHERE tenant_id = $1
+  AND COALESCE(last_seen_at, registered_at) < now() - ($2 || ' seconds')::interval
+ORDER BY COALESCE(last_seen_at, registered_at) ASC
+LIMIT 1000
+`
+
+func (s *pgStore) ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error) {
+	if s.pool == nil && s.q == nil {
+		return []Asset{}, nil
+	}
+	if tenantID == "" {
+		return nil, errors.New("apihub: tenant_id required")
+	}
+	if threshold < 0 {
+		threshold = 0
+	}
+	seconds := int64(threshold.Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+
+	var stale []Asset
+	err := s.withTenantReadOnlyTx(ctx, tenantID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, listStaleSQL, tenantID, seconds)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a Asset
+			var tagsRaw, metadataRaw []byte
+			if err := rows.Scan(
+				&a.Kind, &a.RefID, &a.TenantID, &a.Name,
+				&a.Owner, &a.Team, &a.CostCenter,
+				&tagsRaw, &a.HealthState, &a.Version,
+				&a.RegisteredAt, &a.LastSeenAt, &metadataRaw,
+			); err != nil {
+				return err
+			}
+			if err := unmarshalStringMap(tagsRaw, &a.Tags); err != nil {
+				return err
+			}
+			if err := unmarshalAny(metadataRaw, &a.Metadata); err != nil {
+				return err
+			}
+			stale = append(stale, a)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stale, nil
+}

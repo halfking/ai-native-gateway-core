@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/apihub"
 )
@@ -44,6 +45,12 @@ func (okStore) List(_ context.Context, _ apihub.Filter) ([]apihub.Asset, error) 
 func (okStore) Link(_ context.Context, _ string, _ apihub.Relationship) error { return nil }
 func (okStore) Neighbors(_ context.Context, _ string, _ apihub.Kind, _ int64, _ int) ([]apihub.Asset, []apihub.Relationship, error) {
 	return nil, nil, nil
+}
+func (okStore) MarkHealth(_ context.Context, _ string, _ apihub.Kind, _ int64, _ apihub.HealthState) error {
+	return nil
+}
+func (okStore) ListStale(_ context.Context, _ string, _ time.Duration) ([]apihub.Asset, error) {
+	return nil, nil
 }
 
 func TestAssetWatcher_SyncOnce(t *testing.T) {
