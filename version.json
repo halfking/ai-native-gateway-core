@@ -1,8 +1,8 @@
 {
-  "version": "phase1.5-pre-r113-20260626-91-g24d56b19",
-  "git_tag": "phase1.5-pre-r113-20260626-91-g24d56b19",
-  "git_sha": "24d56b19",
-  "build_seq": 722,
-  "build_date": "2026-06-28",
+  "version": "V2.2.9-session-fix",
+  "git_tag": "V2.2.9-session-fix",
+  "git_sha": "d707c939",
+  "build_seq": 727,
+  "build_date": "2026-06-29",
   "module": "llm-gateway-go"
 }
