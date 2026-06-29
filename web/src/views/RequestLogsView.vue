@@ -160,6 +160,8 @@ const ERROR_KIND_LABELS: Record<string, string> = {
   no_candidate: '无可用路由',
   session_forbidden: '会话无权',
   executor_unavailable: '执行器不可用',
+  empty_response: '模型未返回任何内容',
+  empty_upstream_response: '模型未返回任何内容',
 }
 
 // 2026-06-19 T-NEW-7: labels for actual gateway failure codes (the only

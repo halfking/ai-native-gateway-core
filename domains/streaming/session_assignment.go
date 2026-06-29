@@ -188,3 +188,35 @@ func parseSessionReuseWindow() time.Duration {
 
 // ParseSessionReuseWindow is the exported alias used by cmd/gateway/main.go.
 func ParseSessionReuseWindow() time.Duration { return parseSessionReuseWindow() }
+
+// applyProvisionalGatewaySessionHeader writes a session id into
+// X-Gw-Session-Id only when the header has not already been set, so
+// the early-failure branches of /v1/messages and /v1/responses can
+// produce a request_log row with a non-empty gw_session_id without
+// overwriting a body-derived or client-supplied session.
+func applyProvisionalGatewaySessionHeader(r *http.Request, sessionID string) {
+	if r == nil || sessionID == "" {
+		return
+	}
+	if r.Header.Get("X-Gw-Session-Id") != "" {
+		return
+	}
+	r.Header.Set("X-Gw-Session-Id", sessionID)
+}
+
+// applyResolvedGatewaySession threads the final resolved session id
+// into the request header and (when sessionInfo is non-nil) into the
+// request context so downstream logger / executor calls see the same
+// session identifier.
+func applyResolvedGatewaySession(r *http.Request, sessionID string, sessionInfo *session.Session) *http.Request {
+	if r == nil {
+		return r
+	}
+	if sessionID != "" {
+		r.Header.Set("X-Gw-Session-Id", sessionID)
+	}
+	if sessionInfo != nil {
+		r = r.WithContext(session.SessionFromContextWith(r.Context(), sessionInfo))
+	}
+	return r
+}

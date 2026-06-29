@@ -84,7 +84,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	startTime := time.Now()
+	// Generate a provisional session ID for early-failure branches.
+	// Declared before the deferred safety-net so the closure can capture it.
+	provisionalSessionID := generateSystemSessionID()
 	defer func() {
+		// Ensure the safety-net logger always sees a non-empty
+		// gw_session_id, even for pre-body-parse failures. Idempotent.
+		applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 		if rec := recover(); rec != nil {
 			slog.Error("responses handler panic", "panic", rec, "request_id", requestID)
 			attemptErrCode = "internal_panic"
@@ -111,14 +117,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
 		}
 	}()
-
-	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
-	// Idempotent on existing X-Gw-Session-Id; otherwise generates a fresh
-	// gw_<uuid> so the safety-net failure row carries a session_id even
-	// for pre-keyInfo failures (method_not_allowed, missing_key, ...).
-	if gwID := h.chatHandler.ensureSessionID(r.Context(), r, nil); gwID != "" {
-		r.Header.Set("X-Gw-Session-Id", gwID)
-	}
 
 	if r.Method != http.MethodPost {
 		attemptErrCode = "method_not_allowed"
@@ -246,6 +244,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptErrCode = "model_forbidden"
 			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
 			attemptClientModel = canonical
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
 				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
 			*attemptLogged = true
@@ -257,15 +256,27 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+
+	// ── Session resolution (2026-06-29) ────────────────────────────
+	// Priority: header > body > Redis Get > CreateV2 > provisional.
 	sessionID := extractSessionIDFromHeaders(r)
 	if sessionID == "" {
 		sessionID = extractSessionIDFromBody(bodyBytes)
 	}
-	if sessionID == "" {
-		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, nil, clientProfileFromKey(keyInfo))
+	var sessionInfo *session.Session
+	if sessionID != "" {
+		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
+			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
+				sessionInfo = si
+			}
+		}
+	}
+	if sessionID == "" || sessionInfo == nil {
+		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			attemptErrCode = "session_assignment_failed"
 			attemptErrMsg = "failed to assign gateway session id"
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 			*attemptLogged = true
@@ -274,7 +285,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if assignment != nil && assignment.SessionID != "" {
 			sessionID = assignment.SessionID
-			r.Header.Set("X-Gw-Session-Id", sessionID)
+			sessionInfo = assignment.SessionInfo
 			if assignment.Resumed {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Reused", "true")
@@ -285,6 +296,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if sessionID == "" {
+		sessionID = provisionalSessionID
+	}
+	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 
@@ -540,6 +555,11 @@ func normalizeResponsesTools(value any) any {
 func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
 	if len(body) == 0 {
 		writeResponsesError(w, http.StatusInternalServerError, "Failed to read upstream response", "server_error", "upstream_read_error")
+		return nil
+	}
+
+	if isEmptyUpstreamChatResponse(body) {
+		writeResponsesError(w, http.StatusBadGateway, "模型未返回任何内容", "api_error", "empty_upstream_response")
 		return nil
 	}
 

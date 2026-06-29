@@ -79,8 +79,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	startTime := time.Now()
+	// Generate a provisional session ID for early-failure branches.
+	// Declared before the deferred safety-net so the closure can capture it.
+	provisionalSessionID := generateSystemSessionID()
 	_, _ = &attemptErrCode, &attemptErrMsg
 	defer func() {
+		// Ensure the safety-net logger always sees a non-empty
+		// gw_session_id, even for pre-body-parse failures. Idempotent:
+		// if the session block below already set a real session ID,
+		// this is a no-op.
+		applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 		// Panic recovery: catch any panic from the inner pipeline and
 		// emit a safety-net request_logs row before bubbling up.
 		if rec := recover(); rec != nil {
@@ -109,14 +117,6 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				attemptErrCode, attemptErrMsg, latency, attemptRequestBody, attemptKeyInfo, r)
 		}
 	}()
-
-	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
-	// Idempotent on existing X-Gw-Session-Id; otherwise generates a fresh
-	// gw_<uuid> so the safety-net failure row carries a session_id even
-	// for pre-keyInfo failures (method_not_allowed, missing_key, ...).
-	if gwID := h.chatHandler.ensureSessionID(r.Context(), r, nil); gwID != "" {
-		r.Header.Set("X-Gw-Session-Id", gwID)
-	}
 
 	if r.Method != http.MethodPost {
 		attemptErrCode = "method_not_allowed"
@@ -288,6 +288,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			attemptErrCode = "model_forbidden"
 			attemptErrMsg = fmt.Sprintf("Model '%s' is not available for your account", canonical)
 			attemptClientModel = canonical
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 			h.chatHandler.recordFailedRequestWithKey(requestID, canonical, "",
 				nil, nil, attemptErrCode, attemptErrMsg, 0, bodyBytes, keyInfo, r)
 			*attemptLogged = true
@@ -298,15 +299,38 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+
+	// ── Session resolution (2026-06-29) ────────────────────────────
+	// Priority: header > body > Redis Get > CreateV2 > provisional.
+	// The body-derived session must be resolved before we consult
+	// Redis/CreateV2 so that a client-supplied session_id in the
+	// JSON body is honored instead of being shadowed by a freshly
+	// generated gw_<uuid>.
 	sessionID := extractSessionIDFromHeaders(r)
 	if sessionID == "" {
 		sessionID = extractSessionIDFromBody(bodyBytes)
 	}
-	if sessionID == "" {
-		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, nil, clientProfileFromKey(keyInfo))
+	var sessionInfo *session.Session
+	if sessionID != "" {
+		// Resolve SessionInfo for the header/body-derived id so the
+		// executor + logger can correlate. Fall through to assignment
+		// path if the id is unknown.
+		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
+			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
+				sessionInfo = si
+			}
+		}
+	}
+	if sessionID == "" || sessionInfo == nil {
+		// No usable session yet — run the full assignment path which
+		// covers message-count-based reuse, recent-session lookup, and
+		// CreateV2 auto-create. Pass the already-extracted id so it is
+		// not regenerated.
+		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			attemptErrCode = "session_assignment_failed"
 			attemptErrMsg = "failed to assign gateway session id"
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 				nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
 			*attemptLogged = true
@@ -315,7 +339,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if assignment != nil && assignment.SessionID != "" {
 			sessionID = assignment.SessionID
-			r.Header.Set("X-Gw-Session-Id", sessionID)
+			sessionInfo = assignment.SessionInfo
 			if assignment.Resumed {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Reused", "true")
@@ -326,6 +350,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if sessionID == "" {
+		// Last-resort fallback: use the provisional id so downstream
+		// logging never sees an empty gw_session_id.
+		sessionID = provisionalSessionID
+	}
+	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
 	var endUser string
 	if reqBody.Metadata != nil && reqBody.Metadata.UserID != "" {
 		endUser = reqBody.Metadata.UserID
@@ -751,6 +781,11 @@ func convertAnthropicToolChoice(raw json.RawMessage) any {
 func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []byte, clientModel, requestID string) []byte {
 	if len(body) == 0 {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "Failed to read upstream response")
+		return nil
+	}
+
+	if isEmptyUpstreamChatResponse(body) {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "模型未返回任何内容")
 		return nil
 	}
 
