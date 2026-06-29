@@ -460,7 +460,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 	// (2026-06-29 端点补全 P0 第 1 步)
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeOpenAIError(w, http.StatusMethodNotAllowed,
+				"method not allowed, use POST", "invalid_request_error")
 			return
 		}
 
@@ -474,14 +475,22 @@ func httpHandler(deps *v2Deps) http.Handler {
 			User   string `json:"user,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
 			return
 		}
 		if req.Model == "" {
 			req.Model = "gpt-4o"
 		}
 		if len(req.Messages) == 0 {
-			http.Error(w, "messages array is required", http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				"messages array is required", "invalid_request_error")
+			return
+		}
+		if req.Stream {
+			writeOpenAIError(w, http.StatusBadRequest,
+				"stream=true is not supported in gateway-v2 demo mode; set stream=false",
+				"invalid_request_error")
 			return
 		}
 
@@ -557,7 +566,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 	// /v1/messages — Anthropic Messages API 兼容端点 (2026-06-29 端点补全第 4 步)
 	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeAnthropicError(w, http.StatusMethodNotAllowed,
+				"method not allowed, use POST", "invalid_request_error")
 			return
 		}
 
@@ -571,7 +581,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			writeAnthropicError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
 			return
 		}
 		if req.Model == "" {
@@ -581,12 +592,15 @@ func httpHandler(deps *v2Deps) http.Handler {
 			req.MaxTokens = 1024
 		}
 		if len(req.Messages) == 0 {
-			http.Error(w, "messages is required", http.StatusBadRequest)
+			writeAnthropicError(w, http.StatusBadRequest,
+				"messages is required", "invalid_request_error")
 			return
 		}
 		for _, m := range req.Messages {
 			if m.Role == "system" {
-				http.Error(w, "system role must be top-level field", http.StatusBadRequest)
+				writeAnthropicError(w, http.StatusBadRequest,
+					"messages must not contain 'system' role (use top-level 'system' field)",
+					"invalid_request_error")
 				return
 			}
 		}
@@ -664,7 +678,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 	//              "model": "...", "usage": {"input_tokens": N, "output_tokens": M}}
 	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeOpenAIError(w, http.StatusMethodNotAllowed,
+				"method not allowed, use POST", "invalid_request_error")
 			return
 		}
 
@@ -674,14 +689,16 @@ func httpHandler(deps *v2Deps) http.Handler {
 			MaxTokens *int            `json:"max_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
 			return
 		}
 		if req.Model == "" {
 			req.Model = "gpt-4o"
 		}
 		if len(req.Input) == 0 {
-			http.Error(w, "input is required", http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				"input is required", "invalid_request_error")
 			return
 		}
 
@@ -749,7 +766,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 			"output": []map[string]any{
 				{
 					"type": "message",
-					"id":   "msg_" + env.Envelope.RequestID,
+					// 使用 msg_<nanos> 格式（与 resp_<nanos> 区分），避免双重前缀
+					"id":   fmt.Sprintf("msg_%d", time.Now().UnixNano()),
 					"role": "assistant",
 					"content": []map[string]any{
 						{
@@ -778,7 +796,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 	//   response: {"id": "cmpl-...", "object": "text_completion", "choices": [{"text": "..."}], ...}
 	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeOpenAIError(w, http.StatusMethodNotAllowed,
+				"method not allowed, use POST", "invalid_request_error")
 			return
 		}
 
@@ -788,14 +807,16 @@ func httpHandler(deps *v2Deps) http.Handler {
 			MaxTokens int    `json:"max_tokens"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid JSON: %v", err), "invalid_request_error")
 			return
 		}
 		if req.Model == "" {
 			req.Model = "gpt-3.5-turbo" // legacy default (matches demo provider)
 		}
 		if req.Prompt == "" {
-			http.Error(w, "prompt is required", http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				"prompt is required", "invalid_request_error")
 			return
 		}
 
@@ -860,7 +881,8 @@ func httpHandler(deps *v2Deps) http.Handler {
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		providers, err := deps.ProviderStore.List()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeOpenAIError(w, http.StatusInternalServerError,
+				err.Error(), "api_error")
 			return
 		}
 
@@ -902,13 +924,15 @@ func httpHandler(deps *v2Deps) http.Handler {
 		// 从路径提取 model_id: "/v1/models/gpt-4o" -> "gpt-4o"
 		modelID := strings.TrimPrefix(r.URL.Path, "/v1/models/")
 		if modelID == "" || strings.Contains(modelID, "/") {
-			http.Error(w, "model_id required", http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest,
+				"model_id required", "invalid_request_error")
 			return
 		}
 
 		providers, err := deps.ProviderStore.List()
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeOpenAIError(w, http.StatusInternalServerError,
+				err.Error(), "api_error")
 			return
 		}
 
@@ -1015,4 +1039,36 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+// writeOpenAIError 返回 OpenAI 格式的 JSON 错误响应。
+// 用于 OpenAI 兼容端点：/v1/chat/completions、/v1/completions、
+// /v1/responses、/v1/models/{model_id}。
+//
+// OpenAI 错误格式：{"error": {"message": "...", "type": "...", "param": "...", "code": "..."}}
+func writeOpenAIError(w http.ResponseWriter, status int, msg, errType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": msg,
+			"type":    errType,
+		},
+	})
+}
+
+// writeAnthropicError 返回 Anthropic 格式的 JSON 错误响应。
+// 用于 Anthropic Messages API 兼容端点：/v1/messages。
+//
+// Anthropic 错误格式：{"type": "error", "error": {"type": "...", "message": "..."}}
+func writeAnthropicError(w http.ResponseWriter, status int, msg, errType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    errType,
+			"message": msg,
+		},
+	})
 }
