@@ -7,11 +7,13 @@ import "encoding/json"
 // 没有任何实质内容。用于 /v1/messages 和 /v1/responses 的
 // writeNonStreamResponse，在检测到空响应时返回 502 而非 200。
 //
-// 判定条件（全部满足才视为空）：
+// 判定条件：
 //  1. body 能成功 JSON 解析
 //  2. choices 为空 / 缺失，或
-//     choices[0].finish_reason 为空，且
 //     choices[0].message 没有 content / reasoning_content / tool_calls
+//
+// 注：finish_reason 不作为判定条件。有内容但缺少 finish_reason 的
+// 响应仍被视为有效（某些上游可能返回不完整的元数据）。
 func isEmptyUpstreamChatResponse(body []byte) bool {
 	if len(body) == 0 {
 		return false // 上游读取失败由 len(body)==0 分支处理
@@ -38,20 +40,11 @@ func isEmptyUpstreamChatResponse(body []byte) bool {
 
 	choice := chatResp.Choices[0]
 
-	// 有 finish_reason 且 message 有实质内容 → 不是空响应
+	// Check if response has actual content (finish_reason is not required)
 	hasContent := choice.Message.Content != "" ||
 		choice.Message.ReasoningContent != "" ||
 		len(choice.Message.ToolCalls) > 0
 
-	if choice.FinishReason != "" && hasContent {
-		return false
-	}
-
-	// finish_reason 为空且无任何内容 → 空响应
-	if choice.FinishReason == "" && !hasContent {
-		return true
-	}
-
-	// 有 finish_reason 但无内容，或有内容但无 finish_reason → 空响应
-	return !hasContent || choice.FinishReason == ""
+	// Empty if no content, regardless of finish_reason
+	return !hasContent
 }
