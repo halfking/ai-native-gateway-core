@@ -91,8 +91,10 @@ INSERT INTO prompt_injection_rules (rule_name, rule_type, category, pattern, des
 ('bypass_xml_tags', 'advanced', 'bypass', '<system>.*</system>.*<user>', '使用 XML 标签绕过', 8),
 
 -- Unicode 混淆
-('bypass_zero_width', 'advanced', 'bypass', '[\u200B-\u200D\uFEFF]', '零宽字符混淆', 7),
-('bypass_rtl_override', 'advanced', 'bypass', '[\u202E]', 'RTL 覆盖字符', 7),
+-- 注意：Go 的 regexp (RE2) 使用 \x{XXXX} 语法，不支持 \uXXXX。
+-- PostgreSQL standard_conforming_strings=on 时反斜杠为字面量，因此存储 \x{...} 字面字符供 Go 解析。
+('bypass_zero_width', 'advanced', 'bypass', '[\x{200B}-\x{200D}\x{FEFF}]', '零宽字符混淆', 7),
+('bypass_rtl_override', 'advanced', 'bypass', '[\x{202E}]', 'RTL 覆盖字符', 7),
 
 -- 编码绕过
 ('bypass_base64', 'advanced', 'bypass', '(?i)(base64|b64).*(decode|eval)', 'Base64 编码绕过', 7),
@@ -154,13 +156,14 @@ CREATE TABLE IF NOT EXISTS prompt_injection_detections (
     
     -- 上下文
     client_ip VARCHAR(45),
-    user_agent TEXT,
-    
-    INDEX idx_detections_tenant_time (tenant_id, detected_at DESC),
-    INDEX idx_detections_request (request_id),
-    INDEX idx_detections_session (session_key),
-    INDEX idx_detections_risk (tenant_id, risk_level) WHERE blocked = true
+    user_agent TEXT
 );
+
+-- 4.1 创建检测日志表索引（PostgreSQL 使用 CREATE INDEX，非 MySQL 内联 INDEX 语法）
+CREATE INDEX idx_detections_tenant_time ON prompt_injection_detections (tenant_id, detected_at DESC);
+CREATE INDEX idx_detections_request ON prompt_injection_detections (request_id);
+CREATE INDEX idx_detections_session ON prompt_injection_detections (session_key);
+CREATE INDEX idx_detections_risk ON prompt_injection_detections (tenant_id, risk_level) WHERE blocked = true;
 
 -- 5. RLS 策略
 ALTER TABLE prompt_injection_policies ENABLE ROW LEVEL SECURITY;
