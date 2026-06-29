@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -249,7 +250,7 @@ func (c *Checker) detectToxicity(output string, policy *Policy) []ComplianceIssu
 	return issues
 }
 
-// loadPIIPatterns 加载 PII 模式
+// loadPIIPatterns 加载 PII 模式；表不存在时自动创建并加载默认模式。
 func (c *Checker) loadPIIPatterns() error {
 	query := `
 		SELECT id, pattern_name, pattern_type, regex_pattern, description, enabled, severity, redact_format
@@ -260,6 +261,13 @@ func (c *Checker) loadPIIPatterns() error {
 
 	rows, err := c.db.Query(query)
 	if err != nil {
+		if isTableNotFound(err, "pii_patterns") {
+			if createErr := c.ensurePIIPatternsTable(); createErr != nil {
+				slog.Warn("output_compliance: cannot auto-create pii_patterns table", "error", createErr)
+				return nil // 空模式继续，不阻塞启动
+			}
+			return c.loadPIIPatterns()
+		}
 		return err
 	}
 	defer rows.Close()
@@ -276,7 +284,7 @@ func (c *Checker) loadPIIPatterns() error {
 
 		pattern.regex, err = regexp.Compile(pattern.RegexPattern)
 		if err != nil {
-			fmt.Printf("warn: invalid PII pattern %s: %v\n", pattern.PatternName, err)
+			slog.Warn("output_compliance: invalid PII pattern", "pattern", pattern.PatternName, "error", err)
 			continue
 		}
 
@@ -286,7 +294,34 @@ func (c *Checker) loadPIIPatterns() error {
 	return rows.Err()
 }
 
-// loadToxicKeywords 加载毒性关键词
+// ensurePIIPatternsTable 自动创建 pii_patterns 表并插入默认模式。
+func (c *Checker) ensurePIIPatternsTable() error {
+	ddl := `
+	CREATE TABLE IF NOT EXISTS pii_patterns (
+	    id SERIAL PRIMARY KEY,
+	    pattern_name VARCHAR(100) NOT NULL UNIQUE,
+	    pattern_type VARCHAR(50) NOT NULL,
+	    regex_pattern TEXT NOT NULL,
+	    description TEXT,
+	    enabled BOOLEAN DEFAULT true,
+	    severity INT DEFAULT 7,
+	    redact_format VARCHAR(100),
+	    created_at TIMESTAMPTZ DEFAULT NOW()
+	);
+	INSERT INTO pii_patterns (pattern_name, pattern_type, regex_pattern, description, severity, redact_format) VALUES
+	('email_standard', 'email', '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '标准邮箱格式', 7, '***@***.com'),
+	('phone_cn_mobile', 'phone', '1[3-9]\d{9}', '中国手机号（11位）', 8, '***-****-****'),
+	('id_card_cn_18', 'id_card', '\d{17}[\dXx]', '中国身份证（18位）', 9, '******19******'),
+	('credit_card_visa', 'credit_card', '4\d{15}', 'Visa 信用卡', 9, '****-****-****-****')
+	ON CONFLICT (pattern_name) DO NOTHING;`
+	if _, err := c.db.Exec(ddl); err != nil {
+		return err
+	}
+	slog.Info("pii_patterns table auto-created")
+	return nil
+}
+
+// loadToxicKeywords 加载毒性关键词；表不存在时自动创建并加载默认关键词。
 func (c *Checker) loadToxicKeywords() error {
 	query := `
 		SELECT id, keyword, category, severity, language, enabled
@@ -296,6 +331,13 @@ func (c *Checker) loadToxicKeywords() error {
 
 	rows, err := c.db.Query(query)
 	if err != nil {
+		if isTableNotFound(err, "toxic_keywords") {
+			if createErr := c.ensureToxicKeywordsTable(); createErr != nil {
+				slog.Warn("output_compliance: cannot auto-create toxic_keywords table", "error", createErr)
+				return nil // 空关键词继续，不阻塞启动
+			}
+			return c.loadToxicKeywords()
+		}
 		return err
 	}
 	defer rows.Close()
@@ -310,6 +352,34 @@ func (c *Checker) loadToxicKeywords() error {
 	}
 
 	return rows.Err()
+}
+
+// ensureToxicKeywordsTable 自动创建 toxic_keywords 表并插入默认关键词。
+func (c *Checker) ensureToxicKeywordsTable() error {
+	ddl := `
+	CREATE TABLE IF NOT EXISTS toxic_keywords (
+	    id SERIAL PRIMARY KEY,
+	    keyword VARCHAR(100) NOT NULL,
+	    category VARCHAR(50) NOT NULL,
+	    severity INT NOT NULL CHECK (severity >= 1 AND severity <= 10),
+	    language VARCHAR(10) DEFAULT 'zh',
+	    enabled BOOLEAN DEFAULT true,
+	    created_at TIMESTAMPTZ DEFAULT NOW()
+	);
+	INSERT INTO toxic_keywords (keyword, category, severity, language) VALUES
+	('傻逼', 'profanity', 8, 'zh'), ('fuck', 'profanity', 9, 'en'),
+	('kill', 'violence', 8, 'en'), ('racist', 'hate_speech', 9, 'en')
+	ON CONFLICT DO NOTHING;`
+	if _, err := c.db.Exec(ddl); err != nil {
+		return err
+	}
+	slog.Info("toxic_keywords table auto-created")
+	return nil
+}
+
+// isTableNotFound reports whether err is a PostgreSQL "relation does not exist" error.
+func isTableNotFound(err error, table string) bool {
+	return strings.Contains(err.Error(), "relation \""+table+"\" does not exist")
 }
 
 // getPolicy 获取策略
