@@ -3,8 +3,11 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import {
   getAgents,
   getAgent,
+  getAgentNeighbors,
+  getAgentStats,
   linkAgent,
   type AgentAsset,
+  type AgentStatsResponse,
   type AssetKind,
   type RelationType,
 } from '../api/agents'
@@ -46,6 +49,18 @@ const showDetailDialog = ref(false)
 const detailLoading = ref(false)
 const detail = ref<AgentAsset | null>(null)
 const detailError = ref<string | null>(null)
+
+// Phase 6: stats overview (total / by_kind / by_health / by_owner)
+const stats = ref<AgentStatsResponse | null>(null)
+const statsLoading = ref(false)
+const statsError = ref<string | null>(null)
+
+// Phase 6: neighbors topology dialog
+const showNeighborsDialog = ref(false)
+const neighborsLoading = ref(false)
+const neighbors = ref<{ upstream: Array<{ kind: AssetKind; ref_id: number; name: string }>; downstream: Array<{ kind: AssetKind; ref_id: number; name: string }>; depth: number; count: number } | null>(null)
+const neighborsSeed = ref<AgentAsset | null>(null)
+const neighborsError = ref<string | null>(null)
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
@@ -235,8 +250,43 @@ function onAutoRefreshToggle(enabled: boolean) {
   else stopAutoRefresh()
 }
 
+async function loadStats() {
+  statsLoading.value = true
+  statsError.value = null
+  try {
+    const resp = await getAgentStats()
+    stats.value = resp
+  } catch (e: unknown) {
+    statsError.value = e instanceof Error ? e.message : '加载统计失败'
+  } finally {
+    statsLoading.value = false
+  }
+}
+
+async function openNeighborsDialog(row: AgentAsset) {
+  neighborsSeed.value = row
+  neighbors.value = null
+  neighborsError.value = null
+  showNeighborsDialog.value = true
+  neighborsLoading.value = true
+  try {
+    const resp = await getAgentNeighbors(row.ref_id, 2)
+    neighbors.value = {
+      upstream: resp.upstream,
+      downstream: resp.downstream,
+      depth: resp.depth,
+      count: resp.count,
+    }
+  } catch (e: unknown) {
+    neighborsError.value = e instanceof Error ? e.message : '加载拓扑失败'
+  } finally {
+    neighborsLoading.value = false
+  }
+}
+
 onMounted(() => {
   load()
+  loadStats()
 })
 
 onBeforeUnmount(() => {

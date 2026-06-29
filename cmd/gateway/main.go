@@ -1642,16 +1642,20 @@ func main() {
 		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)
 		mux.HandleFunc("/api/agents", wrapAdmin(agentsAPI.List))
+		mux.HandleFunc("/api/agents/stats", wrapAdmin(agentsAPI.Stats))
 		mux.HandleFunc("/api/agents/", func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.URL.Path, "/link") && r.Method == "POST" {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/link") && r.Method == http.MethodPost:
 				wrapAdmin(agentsAPI.Link)(w, r)
-			} else if r.Method == "GET" {
+			case strings.HasSuffix(r.URL.Path, "/neighbors") && r.Method == http.MethodGet:
+				wrapAdmin(agentsAPI.Neighbors)(w, r)
+			case r.Method == http.MethodGet:
 				wrapAdmin(agentsAPI.Get)(w, r)
-			} else {
+			default:
 				http.NotFound(w, r)
 			}
 		})
-		slog.Info("Phase 3.7 agent registry API enabled (/api/agents, /api/agents/:id, /api/agents/:id/link)")
+		slog.Info("Phase 3.7+6 agent registry API enabled (/api/agents, /:id, /:id/link, /:id/neighbors, /stats)")
 
 		// Phase 3.8 (2026-06-28): Probe Health Dashboard API
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
