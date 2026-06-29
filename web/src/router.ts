@@ -44,6 +44,7 @@ import MaaSOrderView          from './views/tenant/MaaSOrderView.vue'
 import TenantModelsView       from './views/tenant/TenantModelsView.vue'
 import CredentialMonitorView  from './views/CredentialMonitorView.vue'
 import ProbeHealthView        from './views/ProbeHealthView.vue'
+import ProbeHealthDetailView  from './views/ProbeHealthDetailView.vue'
 import AgentRegistryView    from './views/AgentRegistryView.vue'
 import FormatAnomaliesView  from './views/FormatAnomaliesView.vue'
 
@@ -76,6 +77,7 @@ export const router = createRouter({
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView, meta: { requiresSuper: true } },
     { path: '/probe-health',       component: ProbeHealthView, meta: { requiresSuper: true } },
+    { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },

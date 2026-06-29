@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, onUnmounted } from 'vue'
+import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import ModelPicker from '../components/ModelPicker.vue'
 import { req } from '../api/_core'
 
@@ -84,52 +85,26 @@ interface ProbeSystemHealth {
   snapshot_at: string
 }
 
-interface ModelNodeDetail {
-  raw_model_name: string
-  outbound_model_name: string
-  probe_priority: string
-  state: string
-  
-  credential_id: number
-  credential_label: string
-  provider_name: string
-  
-  last_verified_at?: string
-  next_retry_at?: string
-  marked_suspicious_at?: string
-  probing_started_at?: string
-  
-  consecutive_successes: number
-  consecutive_failures: number
-  consecutive_watchdog_successes: number
-  success_rate_7d?: number
-  verification_interval: string
-  
-  real_success_24h: number
-  real_failure_24h: number
-  last_real_request_at?: string
-  
-  last_unavailable_reason?: string
-  last_err_code?: string
-  
-  retry_in: string
-  state_duration_minutes: number
-}
-
 // ── State ────────────────────────────────────────────────────────────────
 
 const loading = ref(false)
 const systemHealth = ref<ProbeSystemHealth | null>(null)
 const models = ref<ModelHealthSummary[]>([])
 const queues = ref<ProbeQueueSnapshot[]>([])
-const selectedModel = ref<ModelHealthSummary | null>(null)
-const modelNodes = ref<ModelNodeDetail[]>([])
-const nodesLoading = ref(false)
+const router = useRouter()
 
 const modelFilter = ref('')
 const healthFilter = ref<string>('')
 const autoRefresh = ref(true)
 let refreshTimer: number | null = null
+let filterDebounceTimer: number | null = null
+
+watch(modelFilter, () => {
+  if (filterDebounceTimer) clearTimeout(filterDebounceTimer)
+  filterDebounceTimer = window.setTimeout(() => {
+    fetchModels()
+  }, 400)
+})
 
 // ── API ──────────────────────────────────────────────────────────────────
 
@@ -166,29 +141,6 @@ async function fetchQueues() {
     console.error('Failed to fetch queues:', err)
     queues.value = []
   }
-}
-
-async function fetchModelNodes(modelName: string) {
-  nodesLoading.value = true
-  try {
-    const data = await req<{ nodes: ModelNodeDetail[] }>('GET', `/api/admin/probe/model/${encodeURIComponent(modelName)}/nodes`)
-    modelNodes.value = data.nodes || []
-  } catch (err) {
-    console.error('Failed to fetch model nodes:', err)
-    modelNodes.value = []
-  } finally {
-    nodesLoading.value = false
-  }
-}
-
-function selectModel(model: ModelHealthSummary) {
-  selectedModel.value = model
-  fetchModelNodes(model.raw_model_name)
-}
-
-function closeDetail() {
-  selectedModel.value = null
-  modelNodes.value = []
 }
 
 async function refreshAll() {
@@ -239,57 +191,6 @@ function getHealthBadge(health: string): string {
   }
 }
 
-function getPriorityBadge(priority: string): string {
-  switch (priority) {
-    case 'urgent': return 'badge-red'
-    case 'suspicious': return 'badge-yellow'
-    case 'failing': return 'badge-yellow'
-    case 'recovering': return 'badge-blue'
-    case 'watchdog': return 'badge-green'
-    default: return 'badge-gray'
-  }
-}
-
-function getStateColor(state: string): string {
-  switch (state) {
-    case 'healthy':
-    case 'healthy_confirmed':
-    case 'available':
-      return 'var(--success)'
-    case 'recovering':
-      return 'var(--accent-h)'
-    case 'suspicious':
-    case 'unavailable':
-      return 'var(--warning)'
-    case 'failing':
-    case 'broken_confirmed':
-      return 'var(--danger)'
-    case 'probing':
-    case 'unknown':
-      return 'var(--accent-h)'
-    default:
-      return 'var(--muted)'
-  }
-}
-
-function formatTime(ts?: string): string {
-  if (!ts) return '—'
-  const d = new Date(ts)
-  return d.toLocaleString('zh-CN', { 
-    month: '2-digit', 
-    day: '2-digit', 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  })
-}
-
-function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${Math.round(minutes)}分钟`
-  const hours = Math.floor(minutes / 60)
-  const mins = Math.round(minutes % 60)
-  return mins > 0 ? `${hours}小时${mins}分钟` : `${hours}小时`
-}
-
 // ── Lifecycle ────────────────────────────────────────────────────────────
 
 onMounted(() => {
@@ -304,6 +205,10 @@ onUnmounted(() => {
   if (refreshTimer) {
     clearInterval(refreshTimer)
     refreshTimer = null
+  }
+  if (filterDebounceTimer) {
+    clearTimeout(filterDebounceTimer)
+    filterDebounceTimer = null
   }
 })
 
@@ -405,13 +310,14 @@ onUnmounted(() => {
             <th class="text-center">优先级</th>
             <th class="text-center">成功率(7d)</th>
             <th class="text-center">健康度</th>
-            <th class="text-center">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr 
             v-for="model in filteredModels" 
             :key="model.provider_model_id"
+            style="cursor:pointer"
+            @click="router.push({ path: '/probe-health/detail', query: { model: model.raw_model_name } })"
           >
             <td>
               <div class="model-name">{{ model.raw_model_name }}</div>
@@ -445,14 +351,6 @@ onUnmounted(() => {
                 {{ model.overall_health }}
               </span>
             </td>
-            <td class="text-center">
-              <button 
-                @click="selectModel(model)"
-                class="btn btn-sm btn-ghost"
-              >
-                详情
-              </button>
-            </td>
           </tr>
         </tbody>
       </table>
@@ -461,96 +359,6 @@ onUnmounted(() => {
       <div v-else-if="filteredModels.length === 0" class="empty-state">暂无数据</div>
     </div>
 
-    <!-- Model Detail Modal -->
-    <div 
-      v-if="selectedModel" 
-      class="modal-overlay"
-      @click.self="closeDetail"
-    >
-      <div class="modal-content">
-        <div class="modal-header">
-          <div>
-            <h2>{{ selectedModel.raw_model_name }}</h2>
-            <p class="muted-text">{{ selectedModel.provider_name }}</p>
-          </div>
-          <button 
-            @click="closeDetail"
-            class="btn-close"
-          >
-            ×
-          </button>
-        </div>
-
-        <div class="modal-body">
-          <div v-if="nodesLoading" class="empty-state">加载节点详情...</div>
-          
-          <div v-else class="nodes-list">
-            <div 
-              v-for="node in modelNodes" 
-              :key="node.credential_id"
-              class="node-card"
-            >
-              <div class="node-header">
-                <div>
-                  <div class="node-label">{{ node.credential_label }}</div>
-                  <div class="muted-text small">Credential #{{ node.credential_id }}</div>
-                </div>
-                <div class="node-badges">
-                  <span :class="['badge', getPriorityBadge(node.probe_priority)]">
-                    {{ node.probe_priority }}
-                  </span>
-                  <span class="badge" :style="{color: getStateColor(node.state), background: 'rgba(255,255,255,0.1)'}">
-                    {{ node.state }}
-                  </span>
-                </div>
-              </div>
-
-              <div class="node-stats">
-                <div class="node-stat">
-                  <div class="muted-text small">连续成功</div>
-                  <div>{{ node.consecutive_successes }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">连续失败</div>
-                  <div class="rate-bad">{{ node.consecutive_failures }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">成功率(7d)</div>
-                  <div>{{ node.success_rate_7d?.toFixed(1) || '—' }}%</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">验证间隔</div>
-                  <div>{{ node.verification_interval }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">实际成功(24h)</div>
-                  <div class="rate-good">{{ node.real_success_24h }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">实际失败(24h)</div>
-                  <div class="rate-bad">{{ node.real_failure_24h }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">下次探测</div>
-                  <div>{{ node.retry_in }}</div>
-                </div>
-                <div class="node-stat">
-                  <div class="muted-text small">状态持续</div>
-                  <div>{{ formatDuration(node.state_duration_minutes) }}</div>
-                </div>
-              </div>
-
-              <div v-if="node.last_unavailable_reason" class="node-error">
-                <div class="muted-text small">最后错误</div>
-                <div class="error-text">{{ node.last_unavailable_reason }}</div>
-              </div>
-            </div>
-
-            <div v-if="modelNodes.length === 0" class="empty-state">暂无节点数据</div>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -751,122 +559,4 @@ h1 {
   color: var(--muted);
 }
 
-/* Modal */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-content {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  max-width: 1200px;
-  width: 100%;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.modal-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-}
-
-.btn-close {
-  background: none;
-  border: none;
-  font-size: 32px;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-}
-.btn-close:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.modal-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px;
-}
-
-.nodes-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.node-card {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-}
-
-.node-card:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.node-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  margin-bottom: 12px;
-}
-
-.node-label {
-  font-weight: 600;
-}
-
-.node-badges {
-  display: flex;
-  gap: 6px;
-}
-
-.node-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 12px;
-}
-
-.node-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.node-error {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.error-text {
-  font-size: 12px;
-  color: var(--danger);
-  font-family: monospace;
-  margin-top: 4px;
-}
 </style>
