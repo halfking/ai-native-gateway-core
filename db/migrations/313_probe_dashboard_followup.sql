@@ -1,8 +1,9 @@
--- Migration 311: Probe dashboard follow-up
+-- Migration 313: Probe dashboard follow-up
 --
--- 注意：本文件原编号 309，因 Round-48 审计发现 309 与 309_intent_aggregates
--- 冲突，已重命名为 311。逻辑内容未变。
---（保留原注释以提供迁移历史追溯）
+-- 编号历史（迁移链追溯）：
+--   原编号 309 → Round-48 审计发现与 309_intent_aggregates 冲突，改为 311
+--   311        → 又与 311_prompt_injection_detection 冲突，改为 313
+-- 逻辑内容未变。
 --
 -- Why:
 --   Migration 308 fixed v_model_health_dashboard, v_probe_system_health and
