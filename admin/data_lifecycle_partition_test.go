@@ -37,7 +37,7 @@ func TestParsePartitionBounds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			startDate, endDate, err := parsePartitionBounds(tt.bounds)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("parsePartitionBounds() expected error, got nil")
@@ -97,12 +97,38 @@ func TestPartitionedTableConfig(t *testing.T) {
 	if !found {
 		t.Errorf("request_logs not found in partitionedTables")
 	}
+
+	// Verify all 4 expected tables are present (added in migration 318)
+	expected := map[string]string{
+		"request_logs":           "request_logs_archive",
+		"request_wal":            "request_wal_archive",
+		"routing_decision_log":   "routing_decision_log_archive",
+		"credential_model_index": "credential_model_index_archive",
+	}
+	for tbl, wantArchive := range expected {
+		found := false
+		for _, config := range partitionedTables {
+			if config.TableName == tbl {
+				found = true
+				if !config.HasArchiveFunc {
+					t.Errorf("%s should have HasArchiveFunc=true", tbl)
+				}
+				if config.ArchiveTableName != wantArchive {
+					t.Errorf("%s ArchiveTableName = %s, want %s", tbl, config.ArchiveTableName, wantArchive)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s not found in partitionedTables (added by migration 318)", tbl)
+		}
+	}
 }
 
 func TestExecuteArchivePartition(t *testing.T) {
 	// This is a unit test for validation logic only
 	// We test the validation without a database connection
-	
+
 	tests := []struct {
 		name           string
 		req            archivePartitionRequest
@@ -151,7 +177,7 @@ func TestExecuteArchivePartition(t *testing.T) {
 					break
 				}
 			}
-			
+
 			if tt.expectError {
 				if tableConfig != nil && tt.expectedStatus == "error" {
 					// Table exists but month format might be invalid
