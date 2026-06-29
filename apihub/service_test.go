@@ -128,6 +128,41 @@ func (m *memStore) Neighbors(ctx context.Context, tenantID string, k Kind, refID
 	return assets, rels, nil
 }
 
+// MarkHealth (Phase 7) updates health_state in-memory.
+func (m *memStore) MarkHealth(ctx context.Context, tenantID string, k Kind, refID int64, state HealthState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.assets[assetKey{k, refID}]
+	if !ok || a.TenantID != tenantID {
+		return ErrNotFound
+	}
+	a.HealthState = state
+	m.assets[assetKey{k, refID}] = a
+	return nil
+}
+
+// ListStale (Phase 7) returns assets with LastSeenAt (or RegisteredAt
+// fallback) older than now() - threshold.
+func (m *memStore) ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cutoff := time.Now().UTC().Add(-threshold)
+	var out []Asset
+	for _, a := range m.assets {
+		if a.TenantID != tenantID {
+			continue
+		}
+		clock := a.LastSeenAt
+		if clock.IsZero() {
+			clock = a.RegisteredAt
+		}
+		if clock.Before(cutoff) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 // testCtx returns a context carrying the given tenant id.
 func testCtx(t *testing.T, tenant string) context.Context {
 	t.Helper()
@@ -352,5 +387,81 @@ func TestWithCacheTTL(t *testing.T) {
 	svc := New(newMemStore(), WithCacheTTL(5*time.Minute))
 	if svc.cache.ttl != 5*time.Minute {
 		t.Fatalf("WithCacheTTL: got %v, want 5m", svc.cache.ttl)
+	}
+}
+
+// ── Phase 7: MarkHealth + ListStale ──────────────────────────────────────
+
+func TestService_MarkHealth_UpdatesAndInvalidatesCache(t *testing.T) {
+	svc := New(newMemStore())
+	ctx := testCtx(t, "t1")
+	if err := svc.Register(ctx, Asset{Kind: KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Get(ctx, KindLLMEndpoint, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkHealth(ctx, KindLLMEndpoint, 1, HealthDown); err != nil {
+		t.Fatalf("MarkHealth: %v", err)
+	}
+	got, err := svc.Get(ctx, KindLLMEndpoint, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HealthState != HealthDown {
+		t.Errorf("HealthState = %q, want down", got.HealthState)
+	}
+}
+
+func TestService_MarkHealth_NotFoundAcrossTenant(t *testing.T) {
+	svc := New(newMemStore())
+	if err := svc.Register(testCtx(t, "tA"), Asset{Kind: KindLLMEndpoint, RefID: 1, TenantID: "tA", Name: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.MarkHealth(testCtx(t, "tB"), KindLLMEndpoint, 1, HealthDown)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-tenant err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestService_ListStale_FiltersByThreshold(t *testing.T) {
+	svc := New(newMemStore())
+	ctx := testCtx(t, "t1")
+	for _, id := range []int64{1, 2} {
+		if err := svc.Register(ctx, Asset{Kind: KindLLMEndpoint, RefID: id, TenantID: "t1", Name: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mem := svc.store.(*memStore)
+	mem.mu.Lock()
+	a1 := mem.assets[assetKey{KindLLMEndpoint, 1}]
+	a1.LastSeenAt = time.Now().UTC().Add(-2 * time.Hour)
+	mem.assets[assetKey{KindLLMEndpoint, 1}] = a1
+	mem.mu.Unlock()
+
+	stale, err := svc.ListStale(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("len(stale) = %d, want 1", len(stale))
+	}
+	if stale[0].RefID != 1 {
+		t.Errorf("stale[0].RefID = %d, want 1", stale[0].RefID)
+	}
+}
+
+func TestService_ListStale_EmptyWhenNothingMatches(t *testing.T) {
+	svc := New(newMemStore())
+	ctx := testCtx(t, "t1")
+	if err := svc.Register(ctx, Asset{Kind: KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "f"}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := svc.ListStale(ctx, 1*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Errorf("len(stale) = %d, want 0", len(stale))
 	}
 }

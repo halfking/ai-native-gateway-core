@@ -22,6 +22,10 @@ type Store interface {
 	List(ctx context.Context, f Filter) ([]Asset, error)
 	Link(ctx context.Context, tenantID string, rel Relationship) error
 	Neighbors(ctx context.Context, tenantID string, k Kind, refID int64, depth int) ([]Asset, []Relationship, error)
+	// MarkHealth (Phase 7) updates the health_state column of one asset.
+	MarkHealth(ctx context.Context, tenantID string, k Kind, refID int64, state HealthState) error
+	// ListStale (Phase 7) returns assets whose last_seen_at is older than threshold.
+	ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error)
 }
 
 // Service is the application-layer facade over Store. It adds an in-process
@@ -126,6 +130,27 @@ func (s *Service) Neighbors(ctx context.Context, k Kind, refID int64, depth int)
 		depth = 1
 	}
 	return s.store.Neighbors(ctx, tenantFromCtx(ctx), k, refID, depth)
+}
+
+// MarkHealth (Phase 7) updates the health_state column and invalidates cache.
+func (s *Service) MarkHealth(ctx context.Context, k Kind, refID int64, state HealthState) error {
+	if !k.IsValid() {
+		return fmt.Errorf("%w: %q", ErrInvalidKind, k)
+	}
+	if state == "" {
+		state = HealthUnknown
+	}
+	tenantID := tenantFromCtx(ctx)
+	if err := s.store.MarkHealth(ctx, tenantID, k, refID, state); err != nil {
+		return err
+	}
+	s.cache.invalidate(k, refID, tenantID)
+	return nil
+}
+
+// ListStale (Phase 7) returns assets older than threshold.
+func (s *Service) ListStale(ctx context.Context, threshold time.Duration) ([]Asset, error) {
+	return s.store.ListStale(ctx, tenantFromCtx(ctx), threshold)
 }
 
 // StartRefresh launches a background goroutine that periodically refreshes
