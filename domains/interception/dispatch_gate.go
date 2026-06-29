@@ -1,12 +1,21 @@
 package interception
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
 	"github.com/kaixuan/llm-gateway-go/domain/governance"
 )
+
+// ApprovalCreator 为 Suspend 决策创建审批单（PR-V4-08 引入）。
+//
+// env 携带 TenantID / Metadata；adapter 可从中读取 audit_result 等上下文。
+// 实现见 approval_creator.go 的 ApprovalManagerCreator。
+type ApprovalCreator interface {
+	Create(ctx context.Context, env *domain.PipelineRequest, req *governance.ApprovalRequest) (string, error)
+}
 
 // DispatchOutcome dispatch gate 对请求的处置结果。
 type DispatchOutcome int
@@ -48,6 +57,14 @@ func InspectDecision(env *domain.PipelineRequest) DispatchOutcome {
 //   - statusCode = http.StatusOK 时 body 为 nil，调用方应继续走 fallback
 //   - 其他 statusCode 必须写响应
 func WriteDecisionResponse(env *domain.PipelineRequest) (int, []byte) {
+	return WriteDecisionResponseWithApprovals(context.Background(), env, nil)
+}
+
+// WriteDecisionResponseWithApprovals（PR-V4-08）在 Suspend 时可选创建审批记录。
+//
+// creator 为 nil 时与 WriteDecisionResponse 等价；
+// creator 非 nil 时 Suspend 会调用其 Create，approval_id 写入响应 body。
+func WriteDecisionResponseWithApprovals(ctx context.Context, env *domain.PipelineRequest, creator ApprovalCreator) (int, []byte) {
 	if env == nil || env.Governance == nil || env.Governance.Decision == nil {
 		return http.StatusOK, nil
 	}
@@ -56,7 +73,7 @@ func WriteDecisionResponse(env *domain.PipelineRequest) (int, []byte) {
 	case governance.DecisionBlock:
 		return http.StatusForbidden, blockBody(d)
 	case governance.DecisionSuspend:
-		return http.StatusAccepted, suspendBody(d)
+		return http.StatusAccepted, suspendBody(ctx, env, creator)
 	case governance.DecisionTerminate:
 		return http.StatusGone, terminateBody(d)
 	default:
@@ -108,16 +125,20 @@ type SuspendBody struct {
 	PollingURL string `json:"polling_url,omitempty"`
 }
 
-func suspendBody(d *governance.Decision) []byte {
+func suspendBody(ctx context.Context, env *domain.PipelineRequest, creator ApprovalCreator) []byte {
 	body := SuspendBody{
 		Status:  "pending",
-		Reason:  d.Reason,
-		TraceID: d.TraceID,
-		// polling_url 留给 sessionaudit 集成阶段填充；当前为空字符串（JSON 省略）
+		Reason:  env.Governance.Decision.Reason,
+		TraceID: env.Governance.Decision.TraceID,
 	}
+	d := env.Governance.Decision
 	if d.Suspension != nil && d.Suspension.Approval != nil {
 		body.RiskLevel = d.Suspension.Approval.RiskLevel
-		// ApprovalID 留给 PR-V4-06 通过 sessionaudit.ApprovalManager.Create 填充
+		if creator != nil {
+			if approvalID, err := creator.Create(ctx, env, d.Suspension.Approval); err == nil {
+				body.ApprovalID = approvalID
+			}
+		}
 	}
 	return mustMarshal(body)
 }
