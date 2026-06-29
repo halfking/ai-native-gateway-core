@@ -408,6 +408,18 @@ func (idx *Index) get48hFallback(ctx context.Context) *Candidate {
 	return best
 }
 
+// isFallbackWinner reports whether the recommendation result came from the
+// 48h popularity fallback. RecommendV2's fallback path always returns exactly
+// one candidate with the sentinel breakdown {Composite: 50, MatchScore ≤ 30,
+// PriceScore: 50}. This signature cannot be produced by normal scoring.
+func isFallbackWinner(results []ScoredCandidate) bool {
+	if len(results) != 1 {
+		return false
+	}
+	bd := results[0].Breakdown
+	return bd.Composite == 50 && bd.PriceScore == 50 && bd.MatchScore <= 30
+}
+
 // ValidateCachedChoice verifies that a cached credential/model pair is still available.
 func ValidateCachedChoice(ctx context.Context, pool *pgxpool.Pool, credentialID int64, canonicalName string) bool {
 	if pool == nil {

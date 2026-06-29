@@ -690,6 +690,17 @@ var acquireSlotScript = redis.NewScript(`
 // (slot 0 before slot 1), which can starve a heavily-used
 // (re-acquired often) credential pool.
 //
+// 2026-06-29: added the `current == holder` branch. Without it,
+// concurrent requests from the SAME sticky session could each
+// take a DIFFERENT slot (because the per-slot scan treats
+// `current == holder` as "owned by another active holder" and
+// moves on). A single user with N concurrent requests would
+// consume up to N slots, starving every other user once the
+// pool is full. Now when this scan sees a slot the caller already
+// owns, it refreshes the TTL and returns it as the chosen slot —
+// matching the design intent "same holder shares a slot across
+// concurrent requests".
+//
 // KEYS[1] = slot key prefix (e.g. "llmgw:cred_fp_slot:42")
 // ARGV[1] = limit
 // ARGV[2] = holder
@@ -698,7 +709,7 @@ var acquireSlotScript = redis.NewScript(`
 // ARGV[5] = activeGateSeconds
 // ARGV[6] = pinKey (caller's pin)
 // ARGV[7] = credentialID (for wiping the old holder's pin)
-// Returns: {1, slotIndex, oldHolder} on preempt, {0, "", ""} on
+// Returns: {1, slotIndex, oldHolder} on preempt/own-slot, {0, "", ""} on
 // no preemptable slot.
 var acquireLRUScript = redis.NewScript(`
 	local prefix = KEYS[1]
@@ -720,6 +731,19 @@ var acquireLRUScript = redis.NewScript(`
 		if current == false then
 			-- Free slot — take it (no LRU bookkeeping needed)
 			redis.call('SET', key, holder, 'EX', slotTTL)
+			if pinKey ~= '' and pinTTL > 0 then
+				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
+			end
+			return {1, slot, ''}
+		end
+		if current == holder then
+			-- 2026-06-29 fix: caller already owns this slot. Refresh
+			-- the TTL and return it. Without this branch, concurrent
+			-- requests from the same sticky session each consume a
+			-- distinct slot, exhausting the pool prematurely. Matches
+			-- acquireSlotScript's "same holder" branch so all paths
+			-- share the same per-holder-slot semantic.
+			redis.call('EXPIRE', key, slotTTL)
 			if pinKey ~= '' and pinTTL > 0 then
 				redis.call('SET', pinKey, tostring(slot), 'EX', pinTTL)
 			end

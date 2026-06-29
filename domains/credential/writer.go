@@ -315,11 +315,12 @@ func (w *Writer) writeModelLevelFailureOnly(
 	if rawModel == "" {
 		if _, err := w.dbPool.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
-			SET available          = FALSE,
-			    unavailable_reason = $1,
-			    unavailable_at     = now(),
-			    updated_at         = now()
-			WHERE cmb.credential_id = $2
+			SET available              = FALSE,
+			    unavailable_reason     = $1,
+			    unavailable_at         = now(),
+			    unavailable_recover_at = $2,
+			    updated_at             = now()
+			WHERE cmb.credential_id = $3
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE

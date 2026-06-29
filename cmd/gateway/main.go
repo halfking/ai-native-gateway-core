@@ -1475,7 +1475,9 @@ func main() {
 				pool := dbConn.Pool()
 				pub := bus.NewPGPublisher(pool, slog.Default())
 				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
-				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore)
+				// PR-V4-11: detector / checker / summarizer 当前传 nil；
+				// 它们需要 *sql.DB（不是 pgxpool），后续 PR 再桥接。
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore, nil, nil, nil)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)

@@ -339,21 +339,33 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 	}
 
 	markedUnreachable := 0
+	skippedOnDBError := 0
 	for _, p := range toResolve {
 		// Check if there was at least one success for this (credential, model)
 		// pair during the reviewing window. If so, the credential recovered.
+		// Use 6 minutes (not 5) to cover async telemetry lag — request_logs
+		// rows may arrive a few seconds after the actual response.
 		var successes int
 		err := l.db.QueryRow(ctx, `
 			SELECT COUNT(*) FROM request_logs
 			WHERE credential_id = $1
 			  AND COALESCE(outbound_model, client_model) = $2
 			  AND success = TRUE
-			  AND ts > NOW() - INTERVAL '5 minutes'
+			  AND ts > NOW() - INTERVAL '6 minutes'
 		`, p.credentialID, p.rawModel).Scan(&successes)
 		if err != nil {
-			slog.Debug("passive probe: success check failed",
+			// DB error on the success check — do NOT fall through to
+			// markUnreachable. A transient DB blip causing successes=0
+			// would produce a false-positive unreachable marking, which
+			// is the exact bug that locks stable credentials like
+			// minimax-m3 out of the candidate pool. Skip this entry;
+			// it will be re-checked on the next poll cycle.
+			slog.Warn("passive probe: success check DB error — skipping entry (NOT marking unreachable)",
 				"credential_id", p.credentialID,
+				"raw_model", p.rawModel,
 				"error", err)
+			skippedOnDBError++
+			continue
 		}
 
 		if successes > 0 {
@@ -420,10 +432,11 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		}
 	}
 
-	if markedUnreachable > 0 {
+	if markedUnreachable > 0 || skippedOnDBError > 0 {
 		slog.Info("passive probe: review resolution complete",
 			"resolved", len(toResolve),
 			"marked_unreachable", markedUnreachable,
+			"skipped_on_db_error", skippedOnDBError,
 		)
 	}
 }

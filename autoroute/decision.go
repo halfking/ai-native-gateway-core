@@ -53,6 +53,14 @@ type Decision struct {
 	// this decision was produced. Used for auditability and wire/header propagation.
 	EnabledFeatures []string
 
+	// CacheReused is true when the decision was served from the session
+	// intent cache without reclassification. Used for event-level audit.
+	CacheReused bool
+
+	// FallbackUsed is true when the winning candidate came from the 48-hour
+	// popularity fallback rather than normal scoring. Used for event-level audit.
+	FallbackUsed bool
+
 	// DecidedAt is the wall-clock time when the decision was made.
 	// Used for observability latency tracking.
 	DecidedAt time.Time
