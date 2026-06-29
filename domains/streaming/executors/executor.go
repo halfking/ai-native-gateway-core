@@ -86,6 +86,26 @@ type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, c
 // chat.completion JSON body. Wired from main.go.
 type AnthropicToChatResponseFunc func(body []byte, clientModel string) ([]byte, error)
 
+// ChatResponseToAnthropicFunc is the Q2 (anthropic client ← openai
+// upstream) non-stream **response** counterpart of AnthropicToChatResponseFunc:
+// converts an OpenAI Chat Completions JSON response body into an
+// Anthropic Messages JSON response body.
+//
+// Wired from main.go (streaming.ConvertChatResponseToAnthropic). When
+// the IR feature flag is on, the executor calls
+// `IR.ParseOpenAIResponse + IR.SerializeAnthropicResponse` directly
+// instead of this hook.
+type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string) ([]byte, error)
+
+// OpenAIToAnthropicSSEFunc is the Q2 streaming **response** counterpart
+// of AnthropicToOpenAIStream: reads OpenAI-format SSE upstream and
+// writes Anthropic-format SSE to the client. Used by executeOpenAI
+// when ClientProtocol == "anthropic-messages" AND the upstream is
+// OpenAI-shaped (cand.Protocol != "anthropic-messages").
+//
+// Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
+type OpenAIToAnthropicSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
 type SanitizeAnthropicToolsFunc func(body []byte) []byte
@@ -216,6 +236,21 @@ type Executor struct {
 	// chat.completion JSON body. Used by executeAnthropic when
 	// ClientProtocol != "anthropic-messages".
 	AnthropicToChatResponse AnthropicToChatResponseFunc
+	// ChatResponseToAnthropic is the Q2 non-stream response counterpart:
+	// converts an OpenAI Chat Completions JSON body into an Anthropic
+	// Messages JSON body. Used by executeOpenAI when
+	// ClientProtocol == "anthropic-messages" AND the upstream is
+	// OpenAI-shaped (cand.Protocol != "anthropic-messages"). Nil means
+	// the legacy pre-fix behaviour applies (raw OpenAI body forwarded).
+	// 2026-06-29: added to close Q2 row of the protocol conversion
+	// matrix audit (docs/2026-06-29-protocol-conversion-matrix.md).
+	ChatResponseToAnthropic ChatResponseToAnthropicFunc
+	// OpenAIToAnthropicStream is the Q2 streaming response counterpart:
+	// converts an OpenAI-format SSE upstream into an Anthropic-format
+	// SSE stream for the client. Used by executeOpenAI when
+	// ClientProtocol == "anthropic-messages" AND params.IsStream.
+	// 2026-06-29: see ChatResponseToAnthropic.
+	OpenAIToAnthropicStream OpenAIToAnthropicSSEFunc
 	// SanitizeAnthropicTools strips invalid tool type fields from Anthropic
 	// Messages bodies (Q3/Q4) before forwarding to minimax/anthropic upstream.
 	SanitizeAnthropicTools SanitizeAnthropicToolsFunc

@@ -546,6 +546,27 @@ func (e *Executor) executeOpenAI(
 				} else if e.StreamChat != nil {
 					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, e.Normalize, params.Capture, params.ToolsRequested)
 				}
+				// Q2 streaming response (anthropic client ← openai upstream):
+				// if the standard StreamChat hook did not emit any chunks
+				// (or the executor reaches this branch via an OpenAI-shaped
+				// upstream reply), dispatch to the OpenAI→Anthropic SSE
+				// converter so the Anthropic client receives
+				// Anthropic-shaped `message_start` / `content_block_delta`
+				// events instead of raw OpenAI `choices` chunks.
+				//
+				// 2026-06-29: pre-fix, this branch did not exist and the
+				// OpenAI SSE bytes were forwarded verbatim. See
+				// docs/2026-06-29-protocol-conversion-matrix.md.
+				if e.OpenAIToAnthropicStream != nil &&
+					params.ClientProtocol == "anthropic-messages" &&
+					cand.Protocol != "anthropic-messages" {
+					streamOutcome = e.OpenAIToAnthropicStream(
+						params.W, resp,
+						params.ClientModel, outboundModel,
+						params.R.Header.Get("X-Request-Id"),
+						params.Capture, nil,
+					)
+				}
 				// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
 				// relay/stream.go writes detected flags into the capture
 				// during the stream read loop. Pluck them out here so
@@ -707,6 +728,38 @@ func (e *Executor) executeOpenAI(
 			}
 			if e.StripMinimaxFields != nil {
 				respBody = e.StripMinimaxFields(respBody)
+			}
+			// Q2 non-stream response (anthropic client ← openai upstream):
+			// the upstream body is still OpenAI-shaped at this point; if
+			// the client is Anthropic, convert to Anthropic Messages JSON
+			// before writing to the wire. Without this branch the
+			// Anthropic SDK receives a `choices[].message.content` shape
+			// and rejects it as malformed.
+			//
+			// Prefer the IR path when the feature flag is on; otherwise
+			// fall back to the legacy hook. 2026-06-29 fix — see
+			// docs/2026-06-29-protocol-conversion-matrix.md.
+			if params.ClientProtocol == "anthropic-messages" && cand.Protocol != "anthropic-messages" {
+				if e.IR != nil {
+					if irResp, irErr := e.IR.ParseOpenAIResponse(respBody); irErr == nil {
+						if converted, serErr := e.IR.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
+							respBody = converted
+						} else {
+							slog.Warn("q2 ir serialize anthropic response failed; forwarding raw body",
+								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						}
+					} else {
+						slog.Warn("q2 ir parse openai response failed; forwarding raw body",
+							"error", irErr, "request_id", params.R.Header.Get("X-Request-Id"))
+					}
+				} else if e.ChatResponseToAnthropic != nil {
+					if converted, convErr := e.ChatResponseToAnthropic(respBody, params.ClientModel, params.R.Header.Get("X-Request-Id")); convErr == nil {
+						respBody = converted
+					} else {
+						slog.Warn("q2 chat_to_anthropic response convert failed; forwarding raw body",
+							"error", convErr, "request_id", params.R.Header.Get("X-Request-Id"))
+					}
+				}
 			}
 			if !params.SuppressSuccessWrite {
 				for k, vs := range resp.Header {

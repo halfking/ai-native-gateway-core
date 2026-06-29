@@ -398,6 +398,27 @@ func main() {
 			return outcome
 		}
 		routingExec.AnthropicToChatResponse = streaming.ConvertAnthropicResponseToChat
+		// 2026-06-29: Q2 (anthropic client ← openai upstream) **response**
+		// conversion hooks. Closes the Q2 rows of the protocol conversion
+		// matrix audit (docs/2026-06-29-protocol-conversion-matrix.md).
+		// Pre-fix, the executor wrote the raw OpenAI body / SSE bytes
+		// back to the Anthropic client.
+		routingExec.ChatResponseToAnthropic = streaming.ConvertChatResponseToAnthropic
+		routingExec.OpenAIToAnthropicStream = func(
+			w http.ResponseWriter,
+			resp *http.Response,
+			clientModel, outboundModel, requestID string,
+			cap *audit.StreamCapture,
+			pcAny any,
+		) executors.StreamOutcome {
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
+			}
+			outcome := streaming.StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			saveCapturedPending(pendingStore, pc, resp)
+			return outcome
+		}
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
 		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
