@@ -4,19 +4,19 @@ import (
 	"context"
 	"os"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
 )
 
-// legacyMemoryServices wraps the deprecated concrete memora client/sink and
-// exposes only the live memory.Reader / memory.Writer surfaces used by the
-// cut-over gateway runtime.
+// legacyMemoryServices wraps the memora client/sink (now in domains/memory/client)
+// and exposes the live memory.Reader / memory.Writer surfaces used by the
+// gateway runtime.
 type legacyMemoryServices struct {
-	client *memora.Client
-	sink   *memora.Sink
+	client *memclient.Client
+	sink   *memclient.Sink
 }
 
-func newLegacyMemoryServices(client *memora.Client, sink *memora.Sink) *legacyMemoryServices {
+func newLegacyMemoryServices(client *memclient.Client, sink *memclient.Sink) *legacyMemoryServices {
 	return &legacyMemoryServices{client: client, sink: sink}
 }
 
@@ -24,13 +24,13 @@ func newLegacyMemoryServicesFromEnv(baseURL string) *legacyMemoryServices {
 	if baseURL == "" {
 		return nil
 	}
-	client := memora.NewClient(memora.ClientConfig{
+	client := memclient.NewClient(memclient.ClientConfig{
 		BaseURL:            baseURL,
 		APIKey:             os.Getenv("LLM_GATEWAY_MEMORA_API_KEY"),
 		SmartSearchBaseURL: os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_BASE_URL"),
 		SmartSearchAPIKey:  os.Getenv("LLM_GATEWAY_MEMORA_SMART_SEARCH_API_KEY"),
 	})
-	sink := memora.NewSink(client, 2, 2048)
+	sink := memclient.NewSink(client, 2, 2048)
 	return newLegacyMemoryServices(client, sink)
 }
 
