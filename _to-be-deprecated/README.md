@@ -27,19 +27,21 @@
 | `auth/` | `domains/authentication/` | ✅ 新包已上线 | **0** | 旧 `relay/sessions` 内部仍引用 |
 | `circuit/` | `domains/credential/breaker.go` | ✅ 重构完成 | **0** | 旧 `relay/routing` 内部仍引用 |
 | `compressor/` | `domains/hooks/compression/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
-| `credentialstate/` | `domains/credential/writer.go` | ✅ 重构完成 | **0** | 旧 `routing` 内部仍引用 |
+| `credentialstate/` | `domains/credential/writer.go` | ✅ **DELETED (R1.13 2026-06-29)** | **0** | — |
 | `identity/` | `domains/identity/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
 | `limiter/` | `domains/credential/limiter.go` | ✅ 重构完成 | **0** | 旧 `relay/routing` 内部仍引用 |
-| `memora/` | `domains/integration/` (部分) | ✅ 部分迁移 | **0** | 旧 `compressor/routing` 内部仍引用 |
+| `memora/` | `domains/memory/client/` | ✅ **DELETED (R1.13 2026-06-29)** | **0** | — |
 | `relay/` | `domains/streaming/` + `domains/transformation/anthropic/` | ✅ 新包已上线 | **0** | 旧 `transport` 内部仍引用 |
-| `routing/` | `domains/streaming/` + `domains/routing/` | ✅ 新包已上线 | **0** | 旧 `relay` 内部仍引用 |
+| `routing/` | `domains/streaming/executors/` | ✅ **DELETED (R1.13 2026-06-29)** | **0** | — |
 | `sessions/` | `domains/session/` | ✅ 新包已上线 | **0** | 旧 `relay/routing` 内部仍引用 |
-| `telemetry/` | `domains/hooks/observability/telemetry/` | ✅ 重构完成 | **0** | ✅ 可删除候选：无外部/内部反向引用 |
+| `telemetry/` | `domains/hooks/observability/telemetry/` | ✅ **DELETED (R1.13 2026-06-29)** | **0** | — |
 | `transform/` | `domains/transformation/transform*.go` | ✅ 重构完成 | **0** | 旧 `compressor/relay/routing` 内部仍引用 |
-| `transport/` | `domains/transformation/transport*.go` | ✅ 重构完成 | **0** | ✅ 可删除候选：无外部/内部反向引用 |
+| `transport/` | `domains/transformation/transport*.go` | ✅ **DELETED (R1.13 2026-06-29)** | **0** | — |
 
-**汇总**: 14 个老包已在 `_to-be-deprecated/` 待删除目录内。当前仅
-`telemetry/` 与 `transport/` 是可删除候选；其余老包仍被旧包内部依赖链引用。
+**R1.13 进度 (2026-06-29)**: 5 个老包已删除（credentialstate, routing, memora, telemetry, transport），删除约 22,822 LOC。
+剩余 9 个老包（audit, auth, circuit, compressor, identity, identitypool, limiter, observability/siem, relay, sessions, transform）共 43,926 LOC。
+
+**汇总**: 14 个老包中已有 5 个完成 R1.13 清理。剩余老包仍被旧包内部依赖链引用。
 
 ---
 
