@@ -18,14 +18,24 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
+// jwtSecret resolves the JWT signing key. Rule 20 §8.2: the hardcoded
+// "default-jwt-secret-change-me" fallback has been removed because it lets
+// any deployment sign valid admin tokens. Callers that need a guaranteed
+// non-empty secret must check enabled first; SignToken returns an error
+// when no secret is configured (rather than silently using an insecure
+// default).
+//
+// Precedence: LLM_GATEWAY_JWT_SECRET env → fallbackKey (cfg.SecretKey).
 func jwtSecret(fallbackKey string) []byte {
 	if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
 		return []byte(s)
 	}
-	if fallbackKey != "" {
-		return []byte(fallbackKey)
-	}
-	return []byte("default-jwt-secret-change-me")
+	return []byte(fallbackKey)
+}
+
+// jwtSecretConfigured reports whether a JWT signing key is available.
+func jwtSecretConfigured(fallbackKey string) bool {
+	return len(jwtSecret(fallbackKey)) > 0
 }
 
 func jwtExpiry() time.Duration {
@@ -38,7 +48,11 @@ func jwtExpiry() time.Duration {
 }
 
 // SignToken creates a signed JWT string for the given user.
+// Returns an error if no JWT signing key is configured (rule 20 §8.2).
 func SignToken(userID int, tenantID, username, role, secretKey string, mustChangePassword bool) (string, time.Time, error) {
+	if !jwtSecretConfigured(secretKey) {
+		return "", time.Time{}, fmt.Errorf("jwt signing secret not configured (set LLM_GATEWAY_JWT_SECRET or LLM_GATEWAY_SECRET_KEY)")
+	}
 	expiry := jwtExpiry()
 	expiresAt := time.Now().Add(expiry)
 

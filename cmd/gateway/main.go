@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
 	"log/slog"
 	"net/http"
@@ -138,6 +139,20 @@ func main() {
 		} else {
 			slog.Info("config: loaded YAML file", "path", configFile)
 		}
+	}
+
+	// ── Auth fail-closed guard (rule 20 §8) ───────────────────────────────
+	// In production, the three auth secrets must be set; otherwise the
+	// process refuses to start rather than running fail-open. dev/local
+	// keeps fail-open but logs a prominent warning.
+	if cfg.IsProduction() {
+		if missing := cfg.ValidateAuthSecrets(); missing != "" {
+			panic(fmt.Sprintf("auth fail-closed (LLM_GATEWAY_ENV=production): missing required secret %s", missing))
+		}
+		slog.Info("auth: production fail-closed mode active, all auth secrets present")
+	} else if missing := cfg.ValidateAuthSecrets(); missing != "" {
+		slog.Warn("auth: INSECURE fail-open mode — missing secret in non-production env", "missing", missing,
+			"hint", "set LLM_GATEWAY_ENV=production to enforce fail-closed")
 	}
 
 	cfgStore := config.NewStore(cfg)
