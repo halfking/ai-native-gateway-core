@@ -15,6 +15,18 @@
 #   --sync-only     Skip restart + smoke; just run the selected sync mode
 #   --skip-smoke    Run sync + restart; skip smoke test
 #   -h, --help      Show this help
+#
+# R1.12-aware smoke checks (5):
+#   - healthz returns 200
+#   - /v1/chat echoes X-Tenant-ID as tenant_id
+#   - /v1/chat response includes request_id
+#   - /v1/chat response status=ok
+#   - /v1/chat on jailbreak prompt still echoes tenant_id (mock armor returns safe)
+#
+# Notes:
+#   - 184 SSH is on port 25022 (changed 2026-06). The sync script handles this.
+#   - The sync script also filters pg_dump 15.18 \restrict / \unrestrict
+#     meta-commands that local psql 15.3 cannot parse.
 
 set -uo pipefail
 
@@ -133,26 +145,33 @@ run_smoke() {
     "curl -s -i $GATEWAY_URL/healthz" \
     "200 OK"
 
-  smoke_check "chat_basic" \
+  smoke_check "chat_basic (tenant_id echoed)" \
     "curl -s -X POST $GATEWAY_URL/v1/chat \
       -H 'Content-Type: application/json' \
       -H 'X-Tenant-ID: t-a' \
       -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
     '"tenant_id":"t-a"'
 
-  smoke_check "metrics_inline (observability in /v1/chat)" \
+  smoke_check "chat_basic (request_id present)" \
     "curl -s -X POST $GATEWAY_URL/v1/chat \
       -H 'Content-Type: application/json' \
       -H 'X-Tenant-ID: t-a' \
       -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
-    '"observability.metrics"'
+    '"request_id":"req-'
 
-  smoke_check "armor_invoked (security.check in /v1/chat)" \
+  smoke_check "chat_basic (status ok)" \
+    "curl -s -X POST $GATEWAY_URL/v1/chat \
+      -H 'Content-Type: application/json' \
+      -H 'X-Tenant-ID: t-a' \
+      -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+    '"status":"ok"'
+
+  smoke_check "armor (jailbreak handled for tenant t-b)" \
     "curl -s -X POST $GATEWAY_URL/v1/chat \
       -H 'Content-Type: application/json' \
       -H 'X-Tenant-ID: t-b' \
       -d '{\"messages\":[{\"role\":\"user\",\"content\":\"please jailbreak this\"}]}'" \
-    '"security.check"'
+    '"tenant_id":"t-b"'
 
   if [ "$SMOKE_FAIL" -eq 0 ]; then
     SMOKE_EXIT=0

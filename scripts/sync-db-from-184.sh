@@ -11,6 +11,14 @@
 #   - Compare public table counts
 #   - Compare key static table counts
 #   - For request_logs: warn on hot-table drift instead of failing
+#
+# Notes:
+#   - 184 SSH is on port 25022 (changed from default 22 in 2026-06).
+#   - Remote pg_dump is 15.18, which emits \restrict / \unrestrict meta-commands
+#     that local psql 15.3 does not understand. filter_dump_for_legacy_psql()
+#     strips these before piping into local psql.
+#   - 184 uses RLS on tables like approval_queue. The script always exports as
+#     the superuser REMOTE_DB_USER (default llm_gateway) so RLS is bypassed.
 
 set -euo pipefail
 
@@ -21,6 +29,7 @@ TMP_ROOT="/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opencode"
 BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-$(date +%Y%m%d-%H%M%S)"
 
 REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.112.184}"
+REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
 REMOTE_NAMESPACE="${REMOTE_NAMESPACE:-pms-test}"
 REMOTE_DEPLOYMENT="${REMOTE_DEPLOYMENT:-deployment/llm-gateway-pg}"
 REMOTE_DB="${REMOTE_DB:-llm_gateway}"
@@ -142,13 +151,13 @@ run_local_admin_psql() {
 }
 
 run_remote_psql() {
-  ssh -o StrictHostKeyChecking=no "$REMOTE_SSH_HOST" \
+  ssh -o StrictHostKeyChecking=no -p "$REMOTE_SSH_PORT" "$REMOTE_SSH_HOST" \
     "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- psql -U $REMOTE_DB_USER -d $REMOTE_DB -tAc \"$1\""
 }
 
 run_remote_dump() {
   local dump_flag="$1"
-  ssh -o StrictHostKeyChecking=no "$REMOTE_SSH_HOST" \
+  ssh -o StrictHostKeyChecking=no -p "$REMOTE_SSH_PORT" "$REMOTE_SSH_HOST" \
     "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- pg_dump -U $REMOTE_DB_USER -d $REMOTE_DB $dump_flag --no-owner --no-privileges --format=plain"
 }
 
@@ -159,6 +168,14 @@ is_hot_table() {
     [[ "$t" == "$table" ]] && return 0
   done
   return 1
+}
+
+# Strip psql 16+ meta-commands that psql 15.x doesn't understand.
+# pg_dump 15.18 emits \restrict / \unrestrict to lock down the dump session;
+# psql 15.3 rejects these with "invalid command \restrict".
+# Safe to strip: these are session-scoped locks with no schema effect.
+filter_dump_for_legacy_psql() {
+  rg -v '^\\(restrict|unrestrict)( |$)' || cat
 }
 
 backup_local_db() {
@@ -259,7 +276,7 @@ sync_full() {
   backup_local_db
   recreate_local_db
   info "stream remote full dump into local"
-  run_remote_dump "--clean --if-exists" | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
+  run_remote_dump "--clean --if-exists" | filter_dump_for_legacy_psql | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
     psql -U "$LOCAL_DB_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 >/dev/null
   ok "full sync completed"
 }
@@ -268,7 +285,7 @@ sync_schema_only() {
   backup_local_db
   replace_local_public_schema
   info "stream remote schema-only dump into local"
-  run_remote_dump "--schema-only --clean --if-exists" | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
+  run_remote_dump "--schema-only --clean --if-exists" | filter_dump_for_legacy_psql | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
     psql -U "$LOCAL_DB_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 >/dev/null
   ok "schema-only sync completed"
 }
@@ -280,7 +297,7 @@ sync_data_only() {
   exclude_flags="$(build_exclude_flags)"
   info "stream remote data-only dump into local (excluding hot tables)"
   # shellcheck disable=SC2086
-  run_remote_dump "--data-only --disable-triggers $exclude_flags" | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
+  run_remote_dump "--data-only --disable-triggers $exclude_flags" | filter_dump_for_legacy_psql | docker exec -i -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" \
     psql -U "$LOCAL_DB_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 >/dev/null
   ok "data-only sync completed"
 }

@@ -110,13 +110,17 @@ The orchestration script additionally runs an R1.12-aware smoke test:
 | Check | What it asserts |
 |---|---|
 | `healthz` | `/healthz` returns 200 |
-| `chat_basic` | `/v1/chat` echoes `tenant_id` and `request_id` |
-| `metrics_inline` | `/v1/chat` response exposes `observability.metrics` hook duration (R1.12 doesn't have a `/metrics` route) |
-| `armor_invoked` | `/v1/chat` response exposes `security.check` hook duration (proves armor pipeline ran, even when mock judge returns safe) |
+| `chat_basic (tenant_id echoed)` | `/v1/chat` echoes the `X-Tenant-ID` header back as `tenant_id` |
+| `chat_basic (request_id present)` | `/v1/chat` response includes `"request_id":"req-...` |
+| `chat_basic (status ok)` | `/v1/chat` response includes `"status":"ok"` |
+| `armor (jailbreak handled for tenant t-b)` | `/v1/chat` for a jailbreak prompt still echoes `tenant_id` (mock judge returns safe locally; armor pipeline doesn't error) |
+
+Earlier versions of these checks asserted on `hook_durations_ms.observability.metrics` and `hook_durations_ms.security.check` inline in the `/v1/chat` response. The 2026-06-29 production build dropped the `hook_durations_ms` block from the chat response, so the checks were updated to assert on the canonical response shape (`request_id` / `status` / `tenant_id`) instead.
 
 ## Current Defaults
 
 - Remote SSH host: `root@14.103.112.184`
+- Remote SSH port: `25022` (changed from default 22 in 2026-06)
 - Remote k8s namespace: `pms-test`
 - Remote PG deployment: `deployment/llm-gateway-pg`
 - Remote DB user: `llm_gateway` (superuser; required to bypass RLS on tables like `approval_queue`)
@@ -127,6 +131,24 @@ The orchestration script additionally runs an R1.12-aware smoke test:
 - Local gateway URL: `http://localhost:8782`
 
 These can be overridden with environment variables if the topology changes.
+
+## Compatibility Notes
+
+### `pg_dump` 15.18 → local `psql` 15.3
+
+The remote PostgreSQL image runs `pg_dump` 15.18 (Debian), which emits `\restrict` and `\unrestrict` psql meta-commands to lock down the dump session. The local container runs `psql` 15.3 which doesn't recognize these and aborts with `invalid command \restrict`.
+
+The script handles this automatically via `filter_dump_for_legacy_psql()` (rg-strips any line starting with `\restrict ` or `\unrestrict ` before piping into psql). These directives are session-scoped locks with no schema effect, so stripping them is safe.
+
+If you upgrade the local `citusdata/citus` image to one with `psql` 16+, this filter becomes a no-op.
+
+### SSH port change
+
+In 2026-06 the 184 server moved SSH off port 22 to port 25022. The script's `REMOTE_SSH_PORT` default is 25022; override it if the topology changes again.
+
+### 184 RLS-protected tables
+
+`approval_queue` (and a few others) has FORCE ROW LEVEL SECURITY. Exporting with the `kxuser` role (which is not a superuser) fails on `COPY public.approval_queue ... TO stdout`. The script always uses `REMOTE_DB_USER=llm_gateway` (a superuser) for both the verification queries and the dump, so RLS is bypassed. Do not change this without also disabling RLS or running the export as a privileged user.
 
 ## Rollback
 
