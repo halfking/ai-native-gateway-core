@@ -14,7 +14,7 @@ type Checker struct {
 	windowDuration   time.Duration // default 1 hour
 	failureThreshold float64       // default 0.80 (80%)
 	minSampleSize    int           // default 5
-	degradedCooldown time.Duration // default 2 hours
+	degradedCooldown time.Duration // default 15 minutes
 	enableCheck      bool          // feature flag
 	invalidateCache  func()        // candidate-cache invalidator (nil → no-op)
 }
@@ -39,7 +39,7 @@ func DefaultCheckerConfig() CheckerConfig {
 		WindowDuration:   1 * time.Hour,
 		FailureThreshold: 0.80, // 80% failure rate
 		MinSampleSize:    5,
-		DegradedCooldown: 2 * time.Hour,
+		DegradedCooldown: 15 * time.Minute,
 		EnableCheck:      true,
 	}
 }

@@ -160,7 +160,7 @@ $$;
 COMMENT ON FUNCTION model_probe_mark_available(BIGINT, TEXT, INTEGER) IS 
     '标记模型为可用状态，2小时后自动过期为 suspicious';
 
--- ── 6. 标记模型为不可用状态（2小时后过期）───────────────────────────────
+-- ── 6. 标记模型为不可用状态（15分钟后过期）───────────────────────────────
 
 CREATE OR REPLACE FUNCTION model_probe_mark_unavailable(
     p_credential_id BIGINT,
@@ -179,19 +179,19 @@ BEGIN
          state_expires_at, marked_suspicious_at,
          last_unavailable_reason, last_err_code)
     VALUES 
-        (p_credential_id, p_raw_model_name, 'unavailable',
-         0, 1,
-         NOW(), NOW() + INTERVAL '2 hours', 'http_4xx',
-         NOW() + INTERVAL '2 hours', NULL,
-         p_error_message, p_error_code)
+         (p_credential_id, p_raw_model_name, 'unavailable',
+          0, 1,
+          NOW(), NOW() + INTERVAL '15 minutes', 'http_4xx',
+          NOW() + INTERVAL '15 minutes', NULL,
+          p_error_message, p_error_code)
     ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
         state = 'unavailable',
         consecutive_successes = 0,
         consecutive_failures = model_probe_state.consecutive_failures + 1,
         last_attempt_at = NOW(),
-        next_retry_at = NOW() + INTERVAL '2 hours',
+        next_retry_at = NOW() + INTERVAL '15 minutes',
         last_status = 'http_4xx',
-        state_expires_at = NOW() + INTERVAL '2 hours',
+        state_expires_at = NOW() + INTERVAL '15 minutes',
         marked_suspicious_at = NULL,
         probing_started_at = NULL,
         last_unavailable_reason = p_error_message,
@@ -200,7 +200,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION model_probe_mark_unavailable(BIGINT, TEXT, TEXT, TEXT) IS 
-    '标记模型为不可用状态，2小时后自动过期为 suspicious';
+    '标记模型为不可用状态，15分钟后自动过期为 suspicious';
 
 -- ── 7. 开始探测（原子性获取探测权限）────────────────────────────────────
 
@@ -296,11 +296,11 @@ SET state = 'available',
     next_retry_at = NOW() + INTERVAL '2 hours'
 WHERE state = 'healthy_confirmed';
 
--- 将现有的 broken_confirmed 状态映射为 unavailable（2小时后过期）
+-- 将现有的 broken_confirmed 状态映射为 unavailable（15分钟后过期）
 UPDATE model_probe_state
 SET state = 'unavailable',
-    state_expires_at = NOW() + INTERVAL '2 hours',
-    next_retry_at = NOW() + INTERVAL '2 hours'
+    state_expires_at = NOW() + INTERVAL '15 minutes',
+    next_retry_at = NOW() + INTERVAL '15 minutes'
 WHERE state = 'broken_confirmed';
 
 -- 将现有的 recovering/unknown 状态映射为 suspicious（立即可探测）
@@ -375,17 +375,17 @@ BEGIN
     VALUES
         (p_credential_id, p_raw_model_name, 'unavailable',
          0, 1,
-         NOW(), NOW() + INTERVAL '2 hours', 'http_4xx',
-         NOW() + INTERVAL '2 hours', NULL,
+         NOW(), NOW() + INTERVAL '15 minutes', 'http_4xx',
+         NOW() + INTERVAL '15 minutes', NULL,
          p_error_message, p_error_code)
     ON CONFLICT (credential_id, raw_model_name) DO UPDATE SET
         state = 'unavailable',
         consecutive_successes = 0,
         consecutive_failures = model_probe_state.consecutive_failures + 1,
         last_attempt_at = NOW(),
-        next_retry_at = NOW() + INTERVAL '2 hours',
+        next_retry_at = NOW() + INTERVAL '15 minutes',
         last_status = 'http_4xx',
-        state_expires_at = NOW() + INTERVAL '2 hours',
+        state_expires_at = NOW() + INTERVAL '15 minutes',
         marked_suspicious_at = NULL,
         probing_started_at = NULL,
         last_unavailable_reason = p_error_message,
@@ -395,7 +395,7 @@ BEGIN
     SET available = FALSE,
         unavailable_reason = 'probe_' || p_error_code,
         unavailable_at = NOW(),
-        unavailable_recover_at = NOW() + INTERVAL '2 hours',
+        unavailable_recover_at = NOW() + INTERVAL '15 minutes',
         updated_at = NOW()
     FROM provider_models pm
     WHERE cmb.provider_model_id = pm.id
