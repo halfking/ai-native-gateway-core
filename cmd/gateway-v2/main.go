@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -552,6 +553,90 @@ func httpHandler(deps *v2Deps) http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
+	// /v1/completions — OpenAI 旧版 completions 端点 (legacy)
+	// (2026-06-29 端点补全 P0 第 3 步)
+	//
+	// 与 /v1/chat/completions 类似但请求/响应格式更简单:
+	//   request:  {"model": "...", "prompt": "Hello", "max_tokens": 16}
+	//   response: {"id": "cmpl-...", "object": "text_completion", "choices": [{"text": "..."}], ...}
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Model     string `json:"model"`
+			Prompt    string `json:"prompt"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model == "" {
+			req.Model = "gpt-3.5-turbo" // legacy default (matches demo provider)
+		}
+		if req.Prompt == "" {
+			http.Error(w, "prompt is required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		env := domain.NewRequestEnvelope(ctx, &domain.RequestEnvelope{
+			RequestID: fmt.Sprintf("cmpl-%d", time.Now().UnixNano()),
+			CreatedAt: time.Now(),
+			GoContext: ctx,
+		})
+		env.TenantID = r.Header.Get("X-Tenant-ID")
+		env.SessionID = r.Header.Get("X-Session-ID")
+		env.Metadata = map[string]any{
+			"model":        req.Model,
+			"user_content": req.Prompt,
+			"max_tokens":   req.MaxTokens,
+			"api_key_fp":   fingerprintKey(r.Header.Get("X-API-Key")),
+		}
+		if err := deps.Pipeline.Execute(ctx, env); err != nil {
+			slog.Error("v2 completions pipeline failed",
+				"request_id", env.Envelope.RequestID, "err", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "internal error", "type": "internal_error",
+					"request_id": env.Envelope.RequestID,
+				},
+			})
+			return
+		}
+
+		promptTokens := len(req.Prompt) / 4
+		completionText := fmt.Sprintf("[gateway-v2 demo] 收到模型 %s 的 completions 请求。Prompt: %q。",
+			req.Model, truncate(req.Prompt, 80))
+		completionTokens := len(completionText) / 4
+
+		resp := map[string]any{
+			"id":      env.Envelope.RequestID,
+			"object":  "text_completion",
+			"created": time.Now().Unix(),
+			"model":   req.Model,
+			"choices": []map[string]any{
+				{
+					"text":          completionText,
+					"index":         0,
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     promptTokens,
+				"completion_tokens": completionTokens,
+				"total_tokens":      promptTokens + completionTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
 	// /v1/models — OpenAI 兼容的模型列表端点（2026-06-26 端点补全第一步）
 	// 返回所有活跃 provider 的 model 列表，按 OpenAI API 格式:
 	//   { "object": "list", "data": [{ "id": "...", "object": "model", ... }] }
@@ -589,6 +674,63 @@ func httpHandler(deps *v2Deps) http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"object": "list",
 			"data":   data,
+		})
+	})
+
+	// /v1/models/{model_id} — OpenAI 兼容的单模型查询端点
+	// (2026-06-29 端点补全 P0 第 2 步)
+	//
+	// 返回 404 如果模型不存在。查询所有 provider + models 列表，匹配第一个。
+	mux.HandleFunc("/v1/models/", func(w http.ResponseWriter, r *http.Request) {
+		// 从路径提取 model_id: "/v1/models/gpt-4o" -> "gpt-4o"
+		modelID := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+		if modelID == "" || strings.Contains(modelID, "/") {
+			http.Error(w, "model_id required", http.StatusBadRequest)
+			return
+		}
+
+		providers, err := deps.ProviderStore.List()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		type openAIModel struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		}
+
+		now := time.Now().Unix()
+		for _, p := range providers {
+			if p.Disabled {
+				continue
+			}
+			for _, m := range p.Models {
+				if m.Name == modelID {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(openAIModel{
+						ID:      m.Name,
+						Object:  "model",
+						Created: now,
+						OwnedBy: p.Name,
+					})
+					return
+				}
+			}
+		}
+
+		// OpenAI 格式错误: {"error": {"message": "...", "type": "...", "code": "model_not_found"}}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": fmt.Sprintf("The model '%s' does not exist", modelID),
+				"type":    "invalid_request_error",
+				"param":   "model",
+				"code":    "model_not_found",
+			},
 		})
 	})
 
