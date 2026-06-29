@@ -291,3 +291,20 @@ func TestScanIndexRow_LoadsCostTier(t *testing.T) {
 		t.Fatalf("deriveIsFree should be true (cost_tier=free)")
 	}
 }
+
+// TestComputeCostContext_SpeedP95Unsorted verifies that SpeedP95 correctly
+// returns the maximum P95 latency regardless of input order.
+// Regression test for the unsorted-speeds bug.
+func TestComputeCostContext_SpeedP95Unsorted(t *testing.T) {
+	// Candidates deliberately NOT ordered by latency.
+	cands := []Candidate{
+		{P95LatencyMs: 500, UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10},
+		{P95LatencyMs: 2000, UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10},
+		{P95LatencyMs: 800, UnitPriceInPer1M: 10, UnitPriceOutPer1M: 10},
+	}
+
+	ctx := computeCostContext(cands)
+	if ctx.SpeedP95 != 2000 {
+		t.Fatalf("SpeedP95: got %.0f, want 2000 (true max)", ctx.SpeedP95)
+	}
+}
