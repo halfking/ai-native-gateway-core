@@ -113,17 +113,17 @@ SELECT
     pending_probes_5min,
     CASE
         WHEN critical_nodes > 0 THEN 'critical'
-        WHEN failing_percentage > 20 THEN 'warning'
-        WHEN failing_percentage > 10 THEN 'degraded'
-        WHEN healthy_percentage >= 90 THEN 'healthy'
+        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 'warning'
+        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 10 THEN 'degraded'
+        WHEN ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) >= 90 THEN 'healthy'
         ELSE 'unknown'
     END as overall_health
 FROM model_stats
-ORDER BY 
-    CASE 
+ORDER BY
+    CASE
         WHEN critical_nodes > 0 THEN 1
         WHEN urgent_count > 0 THEN 2
-        WHEN failing_percentage > 20 THEN 3
+        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 3
         ELSE 4
     END,
     total_credentials DESC,
