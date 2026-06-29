@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/apihub"
 )
@@ -88,6 +89,12 @@ func (s *stubService) Neighbors(ctx context.Context, k apihub.Kind, refID int64,
 	s.neighborsDepth = depth
 	s.lastNbCall = true
 	return s.neighborsOut, s.neighborsRels, s.neighborsErr
+}
+
+func (s *stubService) ListStale(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listOut, nil
 }
 
 // ── List ─────────────────────────────────────────────────────────────────
@@ -399,5 +406,51 @@ func TestStats_EmptyListReturnsZeroTotals(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"total":0`) {
 		t.Errorf("body missing total=0: %s", w.Body.String())
+	}
+}
+
+// ── Health (Phase 7) ─────────────────────────────────────────────────────
+
+func TestHealth_ReturnsStaleAssets(t *testing.T) {
+	stub := &stubService{
+		listOut: []apihub.Asset{
+			{Kind: apihub.KindLLMEndpoint, RefID: 1, TenantID: "t1", Name: "old", HealthState: apihub.HealthDegraded},
+		},
+	}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health", nil)
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"total":1`) {
+		t.Errorf("body: %s", body)
+	}
+}
+
+func TestHealth_CustomThresholdParsed(t *testing.T) {
+	stub := &stubService{}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health?threshold=30m", nil)
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if !strings.Contains(w.Body.String(), `"threshold":"30m0s"`) {
+		t.Errorf("body: %s", w.Body.String())
+	}
+}
+
+func TestHealth_BadThresholdFallsBack(t *testing.T) {
+	stub := &stubService{}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health?threshold=bogus", nil)
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if !strings.Contains(w.Body.String(), `"threshold":"6h0m0s"`) {
+		t.Errorf("body: %s", w.Body.String())
 	}
 }

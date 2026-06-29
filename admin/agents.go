@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/apihub"
 )
@@ -21,6 +22,8 @@ type AgentService interface {
 	Get(ctx context.Context, k apihub.Kind, refID int64) (apihub.Asset, error)
 	Link(ctx context.Context, rel apihub.Relationship) error
 	Neighbors(ctx context.Context, k apihub.Kind, refID int64, depth int) ([]apihub.Asset, []apihub.Relationship, error)
+	// ListStale (Phase 7) returns assets older than threshold.
+	ListStale(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error)
 }
 
 // AgentsHandler exposes the unified asset registry as REST API.
@@ -326,6 +329,40 @@ func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		"by_kind":   byKind,
 		"by_health": byHealth,
 		"by_owner":  byOwner,
+	})
+}
+
+// ── Health (Phase 7) ─────────────────────────────────────────────────────
+
+// Health handles GET /api/agents/health — lists stale assets (last_seen_at
+// older than ?threshold=6h by default).
+func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	threshold := 6 * time.Hour
+	if s := r.URL.Query().Get("threshold"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 && d <= 24*time.Hour {
+			threshold = d
+		}
+	}
+
+	stale, err := h.svc.ListStale(ctx, threshold)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	byHealth := make(map[string]int)
+	for _, a := range stale {
+		byHealth[string(a.HealthState)]++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"threshold": threshold.String(),
+		"total":     len(stale),
+		"by_health": byHealth,
+		"items":     stale,
 	})
 }
 
