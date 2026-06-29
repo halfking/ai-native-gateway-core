@@ -1148,7 +1148,15 @@ func (h *ChatHandler) serveWithExecutor(
 
 	isStream := reqBody.Stream
 	endUser := resolveEndUser(reqBody.User, r)
-	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
+	// 2026-06-29: Prefer the Pipeline-computed identity (v2 dispatch
+	// path) to avoid recomputing. Fall back to inline computation for
+	// the legacy v1 path or when the Pipeline did not run.
+	var clientID identity.ClientIdentity
+	if precomputed, ok := identity.ComputedIdentityFromContext(ctx); ok {
+		clientID = *precomputed
+	} else {
+		clientID = identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
+	}
 	identityHash := clientID.ShortID()
 	// startTime is the outer-watcher time; executor tracks per-candidate
 	// latency internally.  We re-use the safety-net's startTime (the

@@ -72,7 +72,7 @@ func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRe
 	env.Metadata["client_profile"] = clientID.Fingerprint.ClientProfile
 
 	slog.Debug("identity hook: computed client identity",
-		"identity_hash", clientID.IdentityHash[:16],
+		"identity_hash", clientID.ShortID(),
 		"client_profile", clientProfile,
 		"tenant_id", tenantID,
 	)

@@ -519,6 +519,14 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			RequestID: requestID,
 			CreatedAt: time.Now(),
 			GoContext: ctx,
+			// 2026-06-29: Populate Transport so hooks that depend on
+			// the raw *http.Request (e.g. ClientIdentityHook) can run.
+			// Without this, env.Envelope.HasTransport() is false and
+			// every transport-dependent hook is silently disabled.
+			Transport: &domain.TransportContext{
+				R:        r,
+				IsStream: false, // updated below after body sniff
+			},
 		})
 		env.TenantID = r.Header.Get("X-Tenant-ID")
 		env.SessionID = r.Header.Get("X-Session-ID")
@@ -526,6 +534,9 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// Best-effort body sniff for metadata. chatHandler will
 		// re-parse the full body for its own protocol decoding.
 		model, stream, _, _ := dispatchRequestBody(r)
+		if env.Envelope != nil && env.Envelope.Transport != nil {
+			env.Envelope.Transport.IsStream = stream
+		}
 		env.Metadata = map[string]any{
 			"method":  r.Method,
 			"path":    r.URL.Path,
@@ -584,6 +595,16 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 
 		// Forward to the v1 chatHandler. The chatHandler writes the
 		// response (including SSE stream) to w and we just observe.
+		//
+		// 2026-06-29: Inject Pipeline-computed identity into the request
+		// context so ChatHandler can reuse it instead of recomputing.
+		// See domains/streaming/handler.go:1151 fallback.
+		if rawID, ok := env.Metadata["client_identity"]; ok {
+			if cid, ok := rawID.(identity.ClientIdentity); ok {
+				ctx = identity.WithComputedIdentity(ctx, &cid)
+				r = r.WithContext(ctx)
+			}
+		}
 		fallback.ServeHTTP(w, r)
 
 		// Postflight: best-effort metrics stamping. We can't append
