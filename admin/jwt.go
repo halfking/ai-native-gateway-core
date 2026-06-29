@@ -25,7 +25,8 @@ type JWTClaims struct {
 // when no secret is configured (rather than silently using an insecure
 // default).
 //
-// Precedence: LLM_GATEWAY_JWT_SECRET env → fallbackKey (cfg.SecretKey).
+// Precedence (SSOT: admin/auth_params.go EnvJWTSecret, EnvSecretKey):
+//   LLM_GATEWAY_JWT_SECRET env → fallbackKey (cfg.SecretKey).
 func jwtSecret(fallbackKey string) []byte {
 	if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
 		return []byte(s)
@@ -44,7 +45,7 @@ func jwtExpiry() time.Duration {
 			return d
 		}
 	}
-	return 24 * time.Hour
+	return 24 * time.Hour // SSOT: admin/auth_params.go JWTDefaultTTL
 }
 
 // SignToken creates a signed JWT string for the given user.
