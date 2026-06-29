@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -17,16 +18,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// SettingsAdapter adapts settings.Store to the SettingsGetter interface.
-type SettingsAdapter struct {
-	store *settings.Store
-}
+// SettingsAdapter adapts settings.Global to the SettingsGetter interface.
+type SettingsAdapter struct{}
 
 func (a *SettingsAdapter) GetBool(tenantID, key string, defaultValue bool) bool {
-	if a.store == nil || settings.Global == nil {
+	if settings.Global == nil {
 		return defaultValue
 	}
-	val, _, err := settings.Global.EffectiveValue("tenant", key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
 	if err != nil || len(val) == 0 {
 		return defaultValue
 	}
@@ -38,10 +37,10 @@ func (a *SettingsAdapter) GetBool(tenantID, key string, defaultValue bool) bool 
 }
 
 func (a *SettingsAdapter) GetInt(tenantID, key string, defaultValue int) int {
-	if a.store == nil || settings.Global == nil {
+	if settings.Global == nil {
 		return defaultValue
 	}
-	val, _, err := settings.Global.EffectiveValue("tenant", key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
 	if err != nil || len(val) == 0 {
 		return defaultValue
 	}
@@ -53,10 +52,10 @@ func (a *SettingsAdapter) GetInt(tenantID, key string, defaultValue int) int {
 }
 
 func (a *SettingsAdapter) GetFloat(tenantID, key string, defaultValue float64) float64 {
-	if a.store == nil || settings.Global == nil {
+	if settings.Global == nil {
 		return defaultValue
 	}
-	val, _, err := settings.Global.EffectiveValue("tenant", key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
 	if err != nil || len(val) == 0 {
 		return defaultValue
 	}
@@ -68,10 +67,10 @@ func (a *SettingsAdapter) GetFloat(tenantID, key string, defaultValue float64) f
 }
 
 func (a *SettingsAdapter) GetString(tenantID, key string, defaultValue string) string {
-	if a.store == nil || settings.Global == nil {
+	if settings.Global == nil {
 		return defaultValue
 	}
-	val, _, err := settings.Global.EffectiveValue("tenant", key, tenantID)
+	val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, key, tenantID)
 	if err != nil || len(val) == 0 {
 		return defaultValue
 	}
@@ -83,17 +82,19 @@ func (a *SettingsAdapter) GetString(tenantID, key string, defaultValue string) s
 }
 
 // IntegrateAutoControlSystem sets up the auto-control system hooks.
-func IntegrateAutoControlSystem(db *sql.DB, settingsStore *settings.Store, chatHandler interface{ SetResponseInterceptor(interface{}) }) {
+// chatHandler should have SetResponseInterceptor(response.ResponseInterceptor).
+func IntegrateAutoControlSystem(db *sql.DB, chatHandler interface{ SetResponseInterceptor(response.ResponseInterceptor) }) {
 	// 1. Register configuration specs
 	log.Println("Registering auto-control configuration specs...")
 	for _, spec := range settings.AutoControlSpecs() {
-		if err := settings.Global.RegisterSpec(spec); err != nil {
+		s := spec // take address
+		if err := settings.Global.RegisterSpec(&s); err != nil {
 			log.Printf("Warning: failed to register spec %s: %v", spec.Key, err)
 		}
 	}
 
 	// 2. Create settings adapter
-	settingsAdapter := &SettingsAdapter{store: settingsStore}
+	settingsAdapter := &SettingsAdapter{}
 
 	// 3. Create database stores
 	handoffStore := handoff.NewPGStore(db)
@@ -152,13 +153,11 @@ func IntegrateAutoControlSystem(db *sql.DB, settingsStore *settings.Store, chatH
 // Replace with your actual LLM client implementation.
 type SimpleLLMCaller struct{}
 
-func (c *SimpleLLMCaller) CallLLM(ctx interface{}, model string, messages []map[string]string) (string, error) {
+func (c *SimpleLLMCaller) CallLLM(ctx context.Context, model string, messages []map[string]string) (string, error) {
 	// TODO: Implement actual LLM calling logic
-	// This should use your existing chat completion infrastructure
 	return `{"completed": false, "confidence": 0.5, "reason": "not implemented"}`, nil
 }
 
-// Helper functions for environment variables
 func getEnv(key, defaultVal string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
@@ -200,27 +199,3 @@ func getEnvFloat(key string, defaultVal float64) float64 {
 	}
 	return f
 }
-
-// Example usage in main():
-//
-// func main() {
-//     // ... existing initialization ...
-//     
-//     // Initialize database
-//     db, err := sql.Open("postgres", dsn)
-//     if err != nil {
-//         log.Fatal(err)
-//     }
-//     
-//     // Initialize settings store
-//     settingsDB := settings.NewStoreDB(db)
-//     settings.Init(settingsDB)
-//     
-//     // Create chat handler
-//     chatHandler := streaming.NewChatHandler(...)
-//     
-//     // Integrate auto-control system
-//     IntegrateAutoControlSystem(db, settingsDB, chatHandler)
-//     
-//     // ... rest of server setup ...
-// }
