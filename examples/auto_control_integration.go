@@ -1,5 +1,8 @@
+//go:build ignore
+// +build ignore
+
 // Package main shows how to integrate the auto-control system.
-// 
+//
 // This is a reference implementation for cmd/gateway/main.go or cmd/gateway-v2/main.go
 package main
 
@@ -83,7 +86,9 @@ func (a *SettingsAdapter) GetString(tenantID, key string, defaultValue string) s
 
 // IntegrateAutoControlSystem sets up the auto-control system hooks.
 // chatHandler should have SetResponseInterceptor(response.ResponseInterceptor).
-func IntegrateAutoControlSystem(db *sql.DB, chatHandler interface{ SetResponseInterceptor(response.ResponseInterceptor) }) {
+func IntegrateAutoControlSystem(db *sql.DB, chatHandler interface {
+	SetResponseInterceptor(response.ResponseInterceptor)
+}) {
 	// 1. Register configuration specs
 	log.Println("Registering auto-control configuration specs...")
 	for _, spec := range settings.AutoControlSpecs() {
