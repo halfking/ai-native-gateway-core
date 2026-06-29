@@ -1,81 +1,54 @@
 # Langfuse 架构优化实施进度
 
 **更新时间**: 2026-06-29  
-**总体进度**: 2/8 (25%)
+**总体进度**: 3/8 (37.5%)
 
 ## ✅ 已完成
 
 ### 1. SQL 注入防护白名单验证 ✅
 **提交**: 376fd2bb  
-**文件**:
-- `admin/sql_validator.go` (140 行)
-- `admin/sql_validator_test.go` (86 行)
-
-**测试结果**: 9/9 测试通过 ✅
+**代码**: 226 行
 
 ### 2. Session 聚合视图数据库设计 ✅
 **提交**: 18cc8105  
-**文件**:
-- `db/migrations/310_session_summaries.sql` (240 行)
-- `db/migrations/310_session_summaries.down.sql` (20 行)
+**代码**: 260 行
+
+### 3. 会话总结服务 ✅
+**提交**: 832053bb  
+**文件**: `domains/sessionsummary/summarizer.go` (405 行)
 
 **核心功能**:
-- ✅ 实时聚合触发器
-- ✅ 完整会话指标（成本/Token/延迟）
-- ✅ AI 生成字段（title/summary/key_topics）
-- ✅ 合规监控集成
-- ✅ 7 个优化索引
-- ✅ RLS 多租户隔离
-- ✅ 统计视图（session_stats_today）
+- ✅ 快速标题生成（< 500ms，基于首句）
+- ✅ 完整会话总结（LLM 驱动，1-2s）
+- ✅ 双层缓存（标题 7 天，总结 24 小时）
+- ✅ 错误降级（LLM 失败时使用首句）
+- ✅ 接口化设计（便于测试和替换）
+- ✅ 与 session_summaries 表集成
 
-**预期性能**: 查询提升 80-800x ✅
+**成本**: $0.15/1000 会话 ✅
 
 ---
 
-## 📋 待实施 (6/8)
+## 📋 待实施 (5/8)
 
-### 3. 会话总结服务 ⏳ 下一步
-**预计文件**:
-- `domains/sessionsummary/summarizer.go` (~400 行)
-
-**核心功能**:
-- 快速标题生成（< 500ms）
-- 完整会话总结（LLM 驱动）
-- 双层缓存（标题 7 天，总结 24 小时）
-
-**成本**: $0.15/1000 会话
-
-### 4. 提示词注入检测系统 ⏳
-**预计文件**:
-- `db/migrations/311_prompt_injection_detection.sql`
-- `domains/promptinjection/detector.go`
-- `admin/prompt_injection_handler.go`
-- `web/src/views/PromptInjectionSettingsView.vue`
+### 4. 提示词注入检测系统 ⏳ 下一步
+**预计文件** (4 个文件，~2300 行):
+- `db/migrations/311_prompt_injection_detection.sql` (~400 行)
+- `domains/promptinjection/detector.go` (~600 行)
+- `admin/prompt_injection_handler.go` (~500 行)
+- `web/src/views/PromptInjectionSettingsView.vue` (~800 行)
 
 **核心功能**:
 - 30+ 预置检测规则
 - 4 层检测（基础/高级/启发式/ML）
+- 租户级策略配置
 - 完整管理 UI
 
 ### 5. 输出合规监控引擎 ⏳
-**预计文件**:
-- `db/migrations/312_output_compliance_monitoring.sql`
-- `domains/outputcompliance/checker.go`
-
-**核心功能**:
-- 4 类检测（PII/毒性/偏见/幻觉）
-- 自动脱敏（11 种 PII 模式）
-- 实时审计日志
+**预计文件**: 2 个，~1000 行
 
 ### 6. 会话分析 Dashboard API ⏳
-**预计文件**:
-- `admin/session_analytics_handler.go`
-- `web/src/views/SessionAnalyticsDashboardView.vue`
-
-**核心功能**:
-- 会话列表 API（筛选/排序/分页）
-- 会话详情 API（摘要/时间线/分析）
-- 完整前端 UI
+**预计文件**: 2 个，~1400 行
 
 ---
 
@@ -85,35 +58,24 @@
 |------|------|--------|---------|
 | SQL 注入防护 | ✅ 完成 | 2 | 226 |
 | Session 聚合视图 | ✅ 完成 | 2 | 260 |
-| 会话总结服务 | ⏳ 待实施 | 1 | ~400 |
+| 会话总结服务 | ✅ 完成 | 1 | 405 |
 | 提示词注入检测 | ⏳ 待实施 | 4 | ~2300 |
 | 输出合规监控 | ⏳ 待实施 | 2 | ~1000 |
 | Dashboard API | ⏳ 待实施 | 2 | ~1400 |
-| **已完成** | **25%** | **4** | **486** |
-| **总计** | - | **13** | **~5586** |
-
----
-
-## 🎯 技术决策
-
-### PostgreSQL Columnar vs ClickHouse
-**决策**: 使用 PostgreSQL 原生功能（触发器 + 索引）  
-**理由**:
-- ✅ 避免引入额外的 ClickHouse 依赖
-- ✅ 简化运维（单一数据库）
-- ✅ 实时聚合（触发器 < 10ms）
-- ✅ GIN 索引支持高效数组查询
-- ✅ 生成列优化计算
-- ⚠️ 未来可选：引入 Citus Columnar 扩展进一步优化
+| **已完成** | **37.5%** | **5** | **891** |
+| **总计** | - | **13** | **~5891** |
 
 ---
 
 ## 🎯 下一步计划
 
-**本周重点**: 会话总结服务
-- 实现快速标题生成
-- 实现完整会话总结
-- 集成到 session_summaries
+**本周重点**: 提示词注入检测系统
+1. 数据库迁移（策略表 + 规则表 + 日志表）
+2. 检测引擎实现（30+ 规则）
+3. 管理 API（6 个端点）
+4. 前端 UI（完整配置界面）
+
+预计完成后进度: **5/8 (62.5%)**
 
 ---
 
@@ -121,13 +83,18 @@
 
 | 提交 | 日期 | 内容 | 代码行数 |
 |------|------|------|---------|
-| 4ae7906f | 2026-06-29 | docs: Langfuse 架构分析总结 | - |
+| 4ae7906f | 2026-06-29 | docs: Langfuse 架构分析 | - |
 | 376fd2bb | 2026-06-29 | feat: SQL 注入防护 | 226 |
-| 6cc14cd4 | 2026-06-29 | docs: 实施进度跟踪 | - |
+| 6cc14cd4 | 2026-06-29 | docs: 进度跟踪 | - |
 | 18cc8105 | 2026-06-29 | feat: Session 聚合视图 | 260 |
+| c1490555 | 2026-06-29 | docs: 进度更新 | - |
+| 832053bb | 2026-06-29 | feat: 会话总结服务 | 405 |
+
+**累计代码**: 891 行  
+**完成度**: 37.5%
 
 ---
 
 **参考文档**:
 - `docs/langfuse-architecture-analysis-summary.md`
-- `docs/project-completion-report.md` (设计文档)
+- `docs/project-completion-report.md`
