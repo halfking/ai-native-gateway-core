@@ -439,6 +439,7 @@ onBeforeUnmount(() => {
             <td class="col-actions" @click.stop>
               <button class="btn btn-ghost btn-sm" @click="showDetail(a)">详情</button>
               <button class="btn btn-ghost btn-sm" @click="openLinkDialog(a)">关联</button>
+              <button class="btn btn-ghost btn-sm" @click="openNeighborsDialog(a)">拓扑</button>
             </td>
           </tr>
         </tbody>
@@ -541,10 +542,94 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- Phase 6: neighbors topology dialog -->
+    <div v-if="showNeighborsDialog" class="drawer-backdrop" @click="showNeighborsDialog = false">
+      <div class="drawer-panel card drawer-panel-wide" @click.stop>
+        <div class="drawer-header">
+          <h3>拓扑 — {{ neighborsSeed?.name }} (#{{ neighborsSeed?.ref_id }})</h3>
+          <button class="btn btn-sm" @click="showNeighborsDialog = false">关闭</button>
+        </div>
+        <div v-if="neighborsLoading" class="loading-state">加载中…</div>
+        <p v-else-if="neighborsError" style="color:var(--danger)">{{ neighborsError }}</p>
+        <div v-else-if="neighbors" class="neighbors-body">
+          <p class="neighbors-meta">深度 {{ neighbors.depth }} · 邻居 {{ neighbors.count }} 个</p>
+          <div class="neighbors-section">
+            <h4>下游 (downstream) — {{ neighbors.downstream.length }}</h4>
+            <ul v-if="neighbors.downstream.length" class="neighbor-list">
+              <li v-for="n in neighbors.downstream" :key="`d-${n.kind}-${n.ref_id}`">
+                <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
+                <strong>{{ n.name }}</strong>
+                <span class="ref-id">#{{ n.ref_id }}</span>
+              </li>
+            </ul>
+            <p v-else class="empty-note">无下游邻居</p>
+          </div>
+          <div class="neighbors-section">
+            <h4>上游 (upstream) — {{ neighbors.upstream.length }}</h4>
+            <ul v-if="neighbors.upstream.length" class="neighbor-list">
+              <li v-for="n in neighbors.upstream" :key="`u-${n.kind}-${n.ref_id}`">
+                <span class="kind-tag kind-{{ n.kind }}">{{ n.kind }}</span>
+                <strong>{{ n.name }}</strong>
+                <span class="ref-id">#{{ n.ref_id }}</span>
+              </li>
+            </ul>
+            <p v-else class="empty-note">无上游邻居</p>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.stats-grid { margin-bottom: 12px; }
+.stats-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.stat-card {
+  flex: 1 1 120px;
+  padding: 10px 14px;
+  background: var(--surface-1, rgba(255,255,255,0.04));
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 8px;
+}
+.stat-label {
+  font-size: 11px;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.stat-healthy { color: #4ade80; }
+.stat-down { color: #f87171; }
+
+.neighbors-body { padding: 8px 0; }
+.neighbors-meta { font-size: 12px; opacity: 0.7; margin: 0 0 12px; }
+.neighbors-section { margin-bottom: 14px; }
+.neighbors-section h4 {
+  font-size: 13px;
+  margin: 0 0 6px;
+  opacity: 0.85;
+}
+.neighbor-list { list-style: none; padding: 0; margin: 0; }
+.neighbor-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
+  font-size: 13px;
+}
+.ref-id { opacity: 0.5; font-size: 11px; }
+.empty-note { font-size: 12px; opacity: 0.6; padding: 4px 8px; }
+
 .kind-tag {
   display: inline-block;
   padding: 2px 8px;
