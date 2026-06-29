@@ -211,7 +211,11 @@ func BuildUpstreamRequest(
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
-	// Forward identity labels as upstream headers (not the raw fingerprint)
+	// Rule 20 §7: X-Virtual-* headers are server-injected, delete client residue first
+	virtualHeaders := []string{"X-Virtual-Client-Id", "X-Virtual-IP", "X-Virtual-MAC"}
+	for _, h := range virtualHeaders {
+		req.Header.Del(h)
+	}
 	if id != nil {
 		req.Header.Set("X-Virtual-Client-Id", id.VirtualClientID)
 		req.Header.Set("X-Virtual-IP", id.VirtualIP)
