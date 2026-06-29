@@ -1,7 +1,9 @@
--- Migration 312: Probe Health 修复汇总（comprehensive fix）
+-- Migration 314: Probe Health 修复汇总（comprehensive fix）
 --
--- 注意：本文件原编号 310，因 310 已被 310_session_summaries 占用（Round-48
--- 审计发现 310 编号重复），已重命名为 312。逻辑内容未变。
+-- 编号历史（迁移链追溯）：
+--   原编号 310 → 310 被 310_session_summaries 占用，改为 312
+--   312        → 又与 312_output_compliance_monitoring 冲突，改为 314
+-- 逻辑内容未变。
 --
 -- 目的：修复 probe-health 页面无数据问题 + 增强状态同步可靠性
 --

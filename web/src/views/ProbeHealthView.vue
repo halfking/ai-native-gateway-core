@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import ModelPicker from '../components/ModelPicker.vue'
+import { req } from '../api/_core'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -134,11 +135,7 @@ let refreshTimer: number | null = null
 
 async function fetchSystemHealth() {
   try {
-    const resp = await fetch('/api/admin/probe/system-health', {
-      credentials: 'include'
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    systemHealth.value = await resp.json()
+    systemHealth.value = await req<ProbeSystemHealth>('GET', '/api/admin/probe/system-health')
   } catch (err) {
     console.error('Failed to fetch system health:', err)
   }
@@ -151,10 +148,7 @@ async function fetchModels() {
       ? `/api/admin/probe/dashboard?model=${encodeURIComponent(modelFilter.value)}`
       : '/api/admin/probe/dashboard'
     
-    const resp = await fetch(url, { credentials: 'include' })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    
-    const data = await resp.json()
+    const data = await req<{ models: ModelHealthSummary[]; total: number }>('GET', url)
     models.value = data.models || []
   } catch (err) {
     console.error('Failed to fetch models:', err)
@@ -166,12 +160,7 @@ async function fetchModels() {
 
 async function fetchQueues() {
   try {
-    const resp = await fetch('/api/admin/probe/queue-snapshot', {
-      credentials: 'include'
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    
-    const data = await resp.json()
+    const data = await req<{ queues: ProbeQueueSnapshot[]; total: number }>('GET', '/api/admin/probe/queue-snapshot')
     queues.value = data.queues || []
   } catch (err) {
     console.error('Failed to fetch queues:', err)
@@ -182,12 +171,7 @@ async function fetchQueues() {
 async function fetchModelNodes(modelName: string) {
   nodesLoading.value = true
   try {
-    const resp = await fetch(`/api/admin/probe/model/${encodeURIComponent(modelName)}/nodes`, {
-      credentials: 'include'
-    })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    
-    const data = await resp.json()
+    const data = await req<{ nodes: ModelNodeDetail[] }>('GET', `/api/admin/probe/model/${encodeURIComponent(modelName)}/nodes`)
     modelNodes.value = data.nodes || []
   } catch (err) {
     console.error('Failed to fetch model nodes:', err)
