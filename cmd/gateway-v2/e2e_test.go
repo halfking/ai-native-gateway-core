@@ -739,6 +739,7 @@ func TestE2E_ResponsesEndpoint(t *testing.T) {
 			Status string `json:"status"`
 			Model  string `json:"model"`
 			Output []struct {
+				ID      string `json:"id"`
 				Type    string `json:"type"`
 				Role    string `json:"role"`
 				Content []struct {
@@ -779,6 +780,22 @@ func TestE2E_ResponsesEndpoint(t *testing.T) {
 		}
 		if resp.Usage.TotalTokens != resp.Usage.InputTokens+resp.Usage.OutputTokens {
 			t.Error("usage total_tokens mismatch")
+		}
+
+		// P0-2 回归测试：output[0].id 必须是 msg_xxx 格式（不是 msg_resp_xxx）
+		if !strings.HasPrefix(resp.Output[0].ID, "msg_") {
+			t.Errorf("expected output[0].id to start with 'msg_', got %q", resp.Output[0].ID)
+		}
+		if strings.HasPrefix(resp.Output[0].ID, "msg_resp_") {
+			t.Errorf("output[0].id has double prefix: %q", resp.Output[0].ID)
+		}
+		// response.id 应该以 resp_ 开头
+		if !strings.HasPrefix(resp.ID, "resp_") {
+			t.Errorf("expected id to start with 'resp_', got %q", resp.ID)
+		}
+		// 两个 ID 必须不同（不能共享）
+		if resp.Output[0].ID == resp.ID {
+			t.Errorf("output[0].id should differ from id, both: %q", resp.ID)
 		}
 	})
 
@@ -839,6 +856,137 @@ func TestE2E_ResponsesEndpoint(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		if rec.Code != 405 {
 			t.Errorf("expected 405, got %d", rec.Code)
+		}
+	})
+}
+
+// TestE2E_ErrorFormats 验证所有端点的错误响应均为 JSON 格式
+// （而不是 http.Error() 的纯文本格式）。这是审计修正 P0-1 的回归测试。
+func TestE2E_ErrorFormats(t *testing.T) {
+	cfg := &v2Config{EnableCache: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("chat_completions_invalid_JSON_returns_openai_format", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions",
+			strings.NewReader("not valid json"))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 400 {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+			t.Errorf("expected application/json content-type, got %q", rec.Header().Get("Content-Type"))
+		}
+		var resp struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("error response must be JSON, got: %s", rec.Body.String())
+		}
+		if resp.Error == nil {
+			t.Fatal("expected OpenAI error object {error: {...}}")
+		}
+		if resp.Error["type"] != "invalid_request_error" {
+			t.Errorf("expected type='invalid_request_error', got %v", resp.Error["type"])
+		}
+	})
+
+	t.Run("messages_invalid_role_returns_anthropic_format", func(t *testing.T) {
+		body := `{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"system","content":"x"}]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 400 {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+			t.Errorf("expected application/json content-type, got %q", rec.Header().Get("Content-Type"))
+		}
+		var resp struct {
+			Type  string         `json:"type"`
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("error response must be JSON, got: %s", rec.Body.String())
+		}
+		if resp.Type != "error" {
+			t.Errorf("expected type='error', got %q", resp.Type)
+		}
+		if resp.Error == nil {
+			t.Fatal("expected Anthropic error object {error: {...}}")
+		}
+		if resp.Error["type"] != "invalid_request_error" {
+			t.Errorf("expected error.type='invalid_request_error', got %v", resp.Error["type"])
+		}
+	})
+
+	t.Run("chat_completions_stream_true_returns_openai_error", func(t *testing.T) {
+		body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 400 {
+			t.Fatalf("expected 400 for stream=true, got %d", rec.Code)
+		}
+		var resp struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("error response must be JSON, got: %s", rec.Body.String())
+		}
+		if resp.Error == nil {
+			t.Fatal("expected OpenAI error object")
+		}
+	})
+
+	t.Run("completions_empty_prompt_returns_openai_format", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/completions",
+			strings.NewReader(`{"model":"gpt-3.5-turbo","prompt":""}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 400 {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+		var resp struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("error response must be JSON, got: %s", rec.Body.String())
+		}
+		if resp.Error == nil {
+			t.Fatal("expected OpenAI error object")
+		}
+	})
+
+	t.Run("responses_empty_input_returns_openai_format", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses",
+			strings.NewReader(`{"model":"gpt-4o"}`))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 400 {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+		var resp struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("error response must be JSON, got: %s", rec.Body.String())
+		}
+		if resp.Error == nil {
+			t.Fatal("expected OpenAI error object")
 		}
 	})
 }
