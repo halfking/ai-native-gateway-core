@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,4 +328,111 @@ func TestE2E_ModelsEndpoint(t *testing.T) {
 // newEmptyProviderStore 创建一个空的 provider store（用于测试边界情况）
 func newEmptyProviderStore() *provider.InMemoryStore {
 	return provider.NewInMemoryStore()
+}
+
+// TestE2E_ChatCompletionsEndpoint 验证 /v1/chat/completions（OpenAI 兼容）
+func TestE2E_ChatCompletionsEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true, EnableSecurity: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("valid_request", func(t *testing.T) {
+		body := `{
+			"model": "gpt-4o",
+			"messages": [
+				{"role": "system", "content": "You are a helpful assistant."},
+				{"role": "user", "content": "Hello, world!"}
+			]
+		}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Index   int `json:"index"`
+				Message struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+
+		if resp.Object != "chat.completion" {
+			t.Errorf("expected object='chat.completion', got %q", resp.Object)
+		}
+		if resp.Model != "gpt-4o" {
+			t.Errorf("expected model='gpt-4o', got %q", resp.Model)
+		}
+		if len(resp.Choices) != 1 {
+			t.Fatalf("expected 1 choice, got %d", len(resp.Choices))
+		}
+		if resp.Choices[0].Message.Role != "assistant" {
+			t.Errorf("expected role='assistant', got %q", resp.Choices[0].Message.Role)
+		}
+		if resp.Choices[0].FinishReason != "stop" {
+			t.Errorf("expected finish_reason='stop', got %q", resp.Choices[0].FinishReason)
+		}
+		if resp.Usage.TotalTokens != resp.Usage.PromptTokens+resp.Usage.CompletionTokens {
+			t.Error("usage total_tokens != prompt_tokens + completion_tokens")
+		}
+	})
+
+	t.Run("invalid_method", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/chat/completions", nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected 405, got %d", rec.Code)
+		}
+	})
+
+	t.Run("empty_messages", func(t *testing.T) {
+		body := `{"model": "gpt-4o", "messages": []}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("default_model_when_omitted", func(t *testing.T) {
+		body := `{"messages": [{"role": "user", "content": "hi"}]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var resp struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.Model != "gpt-4o" {
+			t.Errorf("expected default model 'gpt-4o', got %q", resp.Model)
+		}
+	})
 }
