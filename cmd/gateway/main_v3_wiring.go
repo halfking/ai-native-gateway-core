@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
@@ -156,7 +156,7 @@ func NewDependenciesFromExecutor(exec *executors.Executor) *compression.Dependen
 	return deps
 }
 
-// memoraClientAdapter bridges *memora.Client to the compression.MemoraClient
+// memoraClientAdapter bridges *memclient.Client to the compression.MemoraClient
 // interface (Disabled + Search).
 type memoraClientAdapter struct {
 	c memory.Reader
@@ -188,11 +188,11 @@ func (m memoraClientAdapter) SmartSearch(ctx context.Context, userID, query stri
 func convertMemoraItems(items []memory.Memory) []memory.Memory { return items }
 
 type legacyMemoraReader struct {
-	c *memora.Client
+	c *memclient.Client
 }
 
 type legacyMemoraWriter struct {
-	s *memora.Sink
+	s *memclient.Sink
 }
 
 func (m legacyMemoraReader) Disabled() bool {
@@ -220,9 +220,9 @@ func (m legacyMemoraReader) AddMessage(ctx context.Context, userID string, messa
 	if m.c == nil {
 		return nil
 	}
-	legacyMessages := make([]memora.Message, 0, len(messages))
+	legacyMessages := make([]memory.Message, 0, len(messages))
 	for i := range messages {
-		legacyMessages = append(legacyMessages, memora.Message{
+		legacyMessages = append(legacyMessages, memory.Message{
 			Role:    messages[i].Role,
 			Content: messages[i].Content,
 		})
@@ -276,14 +276,14 @@ func (w legacyMemoraWriter) Enqueue(op memory.WriteOp) {
 	if w.s == nil {
 		return
 	}
-	msgs := make([]memora.Message, 0, len(op.Messages))
+	msgs := make([]memory.Message, 0, len(op.Messages))
 	for i := range op.Messages {
-		msgs = append(msgs, memora.Message{
+		msgs = append(msgs, memory.Message{
 			Role:    op.Messages[i].Role,
 			Content: op.Messages[i].Content,
 		})
 	}
-	w.s.Enqueue(memora.WriteOp{
+	w.s.Enqueue(memory.WriteOp{
 		UserID:   op.UserID,
 		Info:     op.Info,
 		Source:   op.Source,
