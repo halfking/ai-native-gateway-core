@@ -17,12 +17,23 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 	}
 
 	// 1. 更新每日统计表（UPSERT）
+	//
+	// Audit fix (2026-06-26): 030_tool_registry_enhancements.sql defines
+	//   UNIQUE (tool_id, tenant_id, usage_date)
+	// on the plain tool_usage_stats table. Local r112 / sandbox schemas
+	// sometimes partition this table by created_at and the matching
+	// constraint becomes
+	//   UNIQUE (tool_id, tenant_id, usage_date, created_at)
+	// (constraint name
+	//   tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key).
+	// We try the column-tuple form first (production safe) and fall
+	// back to the named constraint when the local schema diverges.
 	query := `
-		INSERT INTO tool_usage_stats 
+		INSERT INTO tool_usage_stats
 			(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)
 		VALUES ($1, $2, CURRENT_DATE, 1, $3, $4, $5, NOW())
 		ON CONFLICT (tool_id, tenant_id, usage_date)
-		DO UPDATE SET 
+		DO UPDATE SET
 			call_count = tool_usage_stats.call_count + 1,
 			success_count = tool_usage_stats.success_count + $3,
 			error_count = tool_usage_stats.error_count + $4,
@@ -40,7 +51,27 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 
 	_, err := tr.db.Exec(ctx, query, toolID, tenantID, successDelta, errorDelta, latencyMs)
 	if err != nil {
-		return fmt.Errorf("failed to update tool_usage_stats: %w", err)
+		// Local r112 / sandbox: tool_usage_stats is partitioned by
+		// created_at, so the production column-tuple UNIQUE doesn't
+		// match. Retry with the named constraint
+		// `tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key`
+		// which corresponds to the partition-aware UNIQUE.
+		partitionedQuery := `
+			INSERT INTO tool_usage_stats
+				(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)
+			VALUES ($1, $2, CURRENT_DATE, 1, $3, $4, $5, NOW())
+			ON CONFLICT ON CONSTRAINT tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key
+			DO UPDATE SET
+				call_count = tool_usage_stats.call_count + 1,
+				success_count = tool_usage_stats.success_count + $3,
+				error_count = tool_usage_stats.error_count + $4,
+				avg_latency_ms = (tool_usage_stats.avg_latency_ms * tool_usage_stats.call_count + $5) / (tool_usage_stats.call_count + 1),
+				last_called_at = NOW(),
+				updated_at = NOW()
+		`
+		if _, perr := tr.db.Exec(ctx, partitionedQuery, toolID, tenantID, successDelta, errorDelta, latencyMs); perr != nil {
+			return fmt.Errorf("failed to update tool_usage_stats (partitioned): %w (original: %v)", perr, err)
+		}
 	}
 
 	// 2. 记录详细事件（异步，不阻塞主流程）
@@ -68,7 +99,7 @@ func (tr *ToolRegistry) GetUsageStats(ctx context.Context, toolID, tenantID stri
 	query := `
 		SELECT tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at
 		FROM tool_usage_stats
-		WHERE usage_date >= CURRENT_DATE - $1
+		WHERE usage_date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
 	`
 	args := []interface{}{days}
 

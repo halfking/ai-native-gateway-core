@@ -119,6 +119,29 @@ func GetFeatureFlags() *FeatureFlags {
 	return globalFeatureFlags
 }
 
+func activeFeatureNames(flags *FeatureFlags) []string {
+	if flags == nil {
+		return nil
+	}
+	features := make([]string, 0, 5)
+	if flags.UseSimplifiedScoring {
+		features = append(features, "simplified_scoring")
+	}
+	if flags.UseHotTop3Pool {
+		features = append(features, "hot_top3_pool")
+	}
+	if flags.UseCacheRevalidation {
+		features = append(features, "cache_revalidation")
+	}
+	if flags.Use48hFallback {
+		features = append(features, "fallback_48h")
+	}
+	if flags.UseChannelQualityRouting {
+		features = append(features, "channel_quality_routing")
+	}
+	return features
+}
+
 // DecideWithFeatureFlags routes requests based on enabled sub-features.
 // If no V2 sub-feature is enabled, it falls back to the legacy path.
 func (d *Decider) DecideWithFeatureFlags(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
