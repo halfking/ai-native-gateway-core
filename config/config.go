@@ -96,8 +96,45 @@ type Config struct {
 	// for the legal/ToS implications.
 	EnableDisguise bool `yaml:"enable_disguise" env:"LLM_GATEWAY_ENABLE_DISGUISE"`
 
+	// DeployEnv is the deployment environment: "production"/"prod" enables
+	// auth fail-closed mode (rule 20 §8). Empty or any other value keeps
+	// dev/local fail-open behavior with slog.Warn.
+	// Source: LLM_GATEWAY_ENV (also accepts GO_ENV / APP_ENV for parity).
+	DeployEnv string `yaml:"deploy_env" env:"LLM_GATEWAY_ENV"`
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
+}
+
+// IsProduction reports whether the process is running in a production-like
+// environment. Auth secret validation (rule 20 §8) treats this as the
+// fail-closed switch: production + missing secret → startup panic.
+func (cfg *Config) IsProduction() bool {
+	env := strings.ToLower(strings.TrimSpace(cfg.DeployEnv))
+	return env == "production" || env == "prod"
+}
+
+// ValidateAuthSecrets enforces rule 20 §8: in production, the three auth
+// secrets (data-plane API key, ops admin token, JWT signing key) must all
+// be non-empty, otherwise the process must NOT start fail-open.
+//
+// JWT secret is derived from LLM_GATEWAY_JWT_SECRET → SecretKey fallback
+// (same precedence as admin/jwt.go.jwtSecret). A JWT secret is "present"
+// if either is set.
+//
+// Returns the first missing secret name, or "" if all present.
+func (cfg *Config) ValidateAuthSecrets() (missing string) {
+	if cfg.APIKey == "" {
+		return "LLM_GATEWAY_API_KEY"
+	}
+	if cfg.AdminAPIKey == "" {
+		return "LLM_GATEWAY_ADMIN_API_KEY"
+	}
+	jwtSecret := firstNonEmpty(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
+	if jwtSecret == "" {
+		return "LLM_GATEWAY_JWT_SECRET (or LLM_GATEWAY_SECRET_KEY fallback)"
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
@@ -168,6 +205,7 @@ func Load() *Config {
 		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — "5 min 内不允许抢的"
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
 		EnableDisguise:                     false, // off by default; opt-in
+		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {
