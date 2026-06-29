@@ -713,3 +713,132 @@ func TestE2E_CompletionsEndpoint(t *testing.T) {
 		}
 	})
 }
+
+// TestE2E_ResponsesEndpoint 验证 /v1/responses（OpenAI Responses API）
+func TestE2E_ResponsesEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("string_input", func(t *testing.T) {
+		body := `{"model": "gpt-4o", "input": "Hello, GPT!"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			ID     string `json:"id"`
+			Object string `json:"object"`
+			Status string `json:"status"`
+			Model  string `json:"model"`
+			Output []struct {
+				Type    string `json:"type"`
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"output"`
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+				TotalTokens  int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+
+		if resp.Object != "response" {
+			t.Errorf("expected object='response', got %q", resp.Object)
+		}
+		if resp.Status != "completed" {
+			t.Errorf("expected status='completed', got %q", resp.Status)
+		}
+		if resp.Model != "gpt-4o" {
+			t.Errorf("expected model='gpt-4o', got %q", resp.Model)
+		}
+		if len(resp.Output) != 1 {
+			t.Fatalf("expected 1 output item, got %d", len(resp.Output))
+		}
+		if resp.Output[0].Type != "message" {
+			t.Errorf("expected output[0].type='message', got %q", resp.Output[0].Type)
+		}
+		if len(resp.Output[0].Content) != 1 {
+			t.Fatalf("expected 1 content block, got %d", len(resp.Output[0].Content))
+		}
+		if resp.Output[0].Content[0].Type != "output_text" {
+			t.Errorf("expected content type='output_text', got %q", resp.Output[0].Content[0].Type)
+		}
+		if resp.Usage.TotalTokens != resp.Usage.InputTokens+resp.Usage.OutputTokens {
+			t.Error("usage total_tokens mismatch")
+		}
+	})
+
+	t.Run("array_input", func(t *testing.T) {
+		body := `{"model": "gpt-4o", "input": [
+			{"role": "system", "content": "You are helpful."},
+			{"role": "user", "content": "Hi there"}
+		]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Object string `json:"object"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.Object != "response" {
+			t.Errorf("expected object='response', got %q", resp.Object)
+		}
+	})
+
+	t.Run("empty_input", func(t *testing.T) {
+		body := `{"model": "gpt-4o"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("default_model", func(t *testing.T) {
+		body := `{"input": "hello"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var resp struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		if resp.Model != "gpt-4o" {
+			t.Errorf("expected default 'gpt-4o', got %q", resp.Model)
+		}
+	})
+
+	t.Run("invalid_method", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/responses", nil)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 405 {
+			t.Errorf("expected 405, got %d", rec.Code)
+		}
+	})
+}
