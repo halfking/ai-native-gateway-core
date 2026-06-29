@@ -628,6 +628,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	logCtx = h.NewRequestLogContext(r, requestID, startTime)
 	logCtx.ClientRequestID = clientRequestID
+	// 2026-06-30: 记录客户端请求端点 (migration 320)
+	logCtx.SetClientEndpoint(r.URL.Path)
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
@@ -1779,6 +1781,10 @@ func (h *ChatHandler) serveWithExecutor(
 		// useless — operators can't see why upstream failed.
 		enrichedErrMsg := execErr.Error()
 		if ue, ok := extractUpstreamError(execErr); ok {
+			// 2026-06-30: 记录上游状态码到 request_logs (migration 320)
+			if ue.StatusCode > 0 {
+				logCtx.SetUpstreamStatus(ue.StatusCode)
+			}
 			if len(ue.Body) > 0 {
 				logCtx.SetResponseBody(ue.Body)
 				preview := string(ue.Body)
@@ -1837,20 +1843,30 @@ func (h *ChatHandler) serveWithExecutor(
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
-		
+
 		interceptReq := &ResponseInterceptRequest{
-			SessionID:     gwSessionID,
-			RequestID:     requestID,
-			TenantID:      func() string { if keyInfo != nil { return keyInfo.TenantID }; return "" }(),
-			ClientModel:   clientModel,
-			ResponseBody:  result.ResponseBody,
-			TokensUsed:    extractTotalTokens(result.ResponseBody, streamCapture),
-			ContextWindow: func() int { if len(candidates) > 0 && candidates[0].ContextWindow != nil { return *candidates[0].ContextWindow }; return 0 }(),
-			MessageCount:  msgCount,
-			FinishReason:  extractFinishReason(result.ResponseBody),
-			IsStreaming:   isStream,
+			SessionID: gwSessionID,
+			RequestID: requestID,
+			TenantID: func() string {
+				if keyInfo != nil {
+					return keyInfo.TenantID
+				}
+				return ""
+			}(),
+			ClientModel:  clientModel,
+			ResponseBody: result.ResponseBody,
+			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
+			ContextWindow: func() int {
+				if len(candidates) > 0 && candidates[0].ContextWindow != nil {
+					return *candidates[0].ContextWindow
+				}
+				return 0
+			}(),
+			MessageCount: msgCount,
+			FinishReason: extractFinishReason(result.ResponseBody),
+			IsStreaming:  isStream,
 		}
-		
+
 		if isStream {
 			// For streaming, call InterceptStreamEnd
 			interceptMeta := &ResponseStreamMeta{
@@ -1862,7 +1878,7 @@ func (h *ChatHandler) serveWithExecutor(
 				MessageCount:  msgCount,
 				TokensUsed:    interceptReq.TokensUsed,
 			}
-			
+
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
 			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {

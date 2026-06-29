@@ -76,6 +76,13 @@ type RequestLogContext struct {
 	QualityFixActions []byte
 	QualityScore      *float64
 
+	// 2026-06-30: 上游错误诊断字段 (migration 320)
+	UpstreamStatusCode *int
+	ClientTimeout      bool
+	ClientEndpoint     string
+	StreamChunkErrors  int
+	StreamChunksSent   int
+
 	meta   requestAttemptMeta
 	logged bool
 }
@@ -86,6 +93,46 @@ func (c *RequestLogContext) SetError(code, msg string) {
 	}
 	c.ErrCode = code
 	c.ErrMsg = msg
+}
+
+// SetUpstreamStatus records the upstream HTTP status code extracted from upstream.Error.
+func (c *RequestLogContext) SetUpstreamStatus(statusCode int) {
+	if c == nil || statusCode <= 0 {
+		return
+	}
+	c.UpstreamStatusCode = &statusCode
+}
+
+// SetClientTimeout marks that the client disconnected or timed out.
+func (c *RequestLogContext) SetClientTimeout(timeout bool) {
+	if c == nil {
+		return
+	}
+	c.ClientTimeout = timeout
+}
+
+// SetClientEndpoint records the client request endpoint path (e.g., /v1/chat/completions).
+func (c *RequestLogContext) SetClientEndpoint(endpoint string) {
+	if c == nil || endpoint == "" {
+		return
+	}
+	c.ClientEndpoint = endpoint
+}
+
+// IncrementStreamChunkErrors increments the count of stream chunk errors.
+func (c *RequestLogContext) IncrementStreamChunkErrors() {
+	if c == nil {
+		return
+	}
+	c.StreamChunkErrors++
+}
+
+// IncrementStreamChunksSent increments the count of successfully sent stream chunks.
+func (c *RequestLogContext) IncrementStreamChunksSent() {
+	if c == nil {
+		return
+	}
+	c.StreamChunksSent++
 }
 
 // AddQualityFlag appends a single detected issue tag, deduplicating
@@ -372,6 +419,29 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		v := c.ClientRequestID
 		clientRequestIDPtr = &v
 	}
+
+	// 2026-06-30: 准备上游诊断字段
+	var clientEndpointPtr *string
+	if c.ClientEndpoint != "" {
+		clientEndpointPtr = &c.ClientEndpoint
+	}
+
+	var clientTimeoutPtr *bool
+	if c.ClientTimeout {
+		v := true
+		clientTimeoutPtr = &v
+	}
+
+	var streamChunkErrorsPtr *int
+	if c.StreamChunkErrors > 0 {
+		streamChunkErrorsPtr = &c.StreamChunkErrors
+	}
+
+	var streamChunksSentPtr *int
+	if c.StreamChunksSent >= 0 {
+		streamChunksSentPtr = &c.StreamChunksSent
+	}
+
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,
 		TenantID:          tenantID,
@@ -397,6 +467,12 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		ResponseBody:      responseBodyText,
 		ResponsePreview:   responsePreviewPtr,
 		ClientRequestID:   clientRequestIDPtr,
+		// 2026-06-30: 上游诊断字段
+		UpstreamStatusCode: c.UpstreamStatusCode,
+		ClientTimeout:      clientTimeoutPtr,
+		ClientEndpoint:     clientEndpointPtr,
+		StreamChunkErrors:  streamChunkErrorsPtr,
+		StreamChunksSent:   streamChunksSentPtr,
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)

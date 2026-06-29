@@ -1,7 +1,20 @@
 # 会话自动控制系统 - 实现完成总结
 
+> ## ⚠️ 状态说明：实现已完成，main 未 wire (2026-06-30)
+>
+> 本文描述的 ResponseInterceptor / Handoff / Goal 模式完整链路是**产品路线图的一部分**。
+> 代码、配置 KV（`settings/handoff_specs.go`、`settings/goal_specs.go`）、数据库 schema 已就位，
+> **但 `cmd/gateway/main.go` 当前未启用 main wiring**（`SetResponseInterceptor` 仅 `examples/auto_control_integration.go` 中调用，且该 example 带 `//go:build ignore`）。
+>
+> **2026-06-30 P0 修复说明**：原计划 PR-9 删除这些代码 → 经用户确认这是核心业务代码（不是 dead code），
+> **取消删除**，保留为可启用功能。后续若要启用，由产品决策后单独 PR 完成 main wiring。
+>
+> 详见 `docs/audit/2026-06-30-weekly-audit-report.md` P0-12 与 `docs/plans/2026-06-30-p0-remediation-plan.md` PR-9。
+
+---
+
 **日期**: 2026-06-30  
-**状态**: ✅ **核心实现100%完成，准备集成测试**
+**状态**: ✅ 核心代码完成 · ⚙️ main wiring 待产品决策
 
 ---
 
