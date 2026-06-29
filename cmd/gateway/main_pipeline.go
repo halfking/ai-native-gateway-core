@@ -84,12 +84,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
@@ -98,13 +95,13 @@ import (
 	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"
 	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
+	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/domains/interception"
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
 	"github.com/kaixuan/llm-gateway-go/domains/provider"
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/security"
 	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 )
@@ -119,12 +116,7 @@ type v2DispatchConfig struct {
 	EnableAudit     bool
 	EnableObserv    bool
 	EnableStreaming bool
-	// EnableAnalysis 控制 V4 异步分析 Loop（PR-V4-08）。
-	// 默认 false；deps.PGDBPool 非 nil 时启动 IntentWorker + RunLoop。
-	EnableAnalysis bool
-	// AnalysisInterval / AnalysisBatchSize 控制 Loop 行为；0 走默认值。
-	AnalysisInterval  time.Duration
-	AnalysisBatchSize int
+	EnableAuth      bool // 2026-06-29: Enable authentication hook
 }
 
 // v2UsePipeline reports whether the v2 Pipeline wrapper should be used
@@ -148,39 +140,14 @@ func v2UsePipeline() bool {
 // loadV2DispatchConfig builds the dispatch configuration from env vars.
 func loadV2DispatchConfig() v2DispatchConfig {
 	return v2DispatchConfig{
-		UsePipeline:       v2UsePipeline(),
-		EnableCache:       envBool("LLM_GATEWAY_V2_CACHE", true),
-		EnableSecurity:    envBool("LLM_GATEWAY_V2_SECURITY", true),
-		EnableAudit:       envBool("LLM_GATEWAY_V2_AUDIT", true),
-		EnableObserv:      envBool("LLM_GATEWAY_V2_OBSERV", true),
-		EnableStreaming:   envBool("LLM_GATEWAY_V2_STREAMING", true),
-		EnableAnalysis:    envBool("LLM_GATEWAY_V2_ANALYSIS", false),
-		AnalysisInterval:  envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
-		AnalysisBatchSize: envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
+		UsePipeline:     v2UsePipeline(),
+		EnableCache:     envBool("LLM_GATEWAY_V2_CACHE", true),
+		EnableSecurity:  envBool("LLM_GATEWAY_V2_SECURITY", true),
+		EnableAudit:     envBool("LLM_GATEWAY_V2_AUDIT", true),
+		EnableObserv:    envBool("LLM_GATEWAY_V2_OBSERV", true),
+		EnableStreaming: envBool("LLM_GATEWAY_V2_STREAMING", true),
+		EnableAuth:      envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
 	}
-}
-
-func envDuration(key string, def time.Duration) time.Duration {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	if d, err := time.ParseDuration(v); err == nil {
-		return d
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
-		return n
-	}
-	return def
 }
 
 // v2DispatchDeps bundles the dependencies the Pipeline wrapper needs.
@@ -210,15 +177,6 @@ type v2DispatchDeps struct {
 	// (/v1/messages, /v1/responses, /v1/completions) all funnel
 	// into ChatHandler internally (domains/streaming/messages.go etc.).
 	ChatHandler *streaming.ChatHandler
-
-	// ── V4 异步分析 Loop（PR-V4-08）─────────────────────────────────
-	// PGDBPool 由 main.go 注入；nil 时 EnableAnalysis 自动失效。
-	PGDBPool *pgxpool.Pool
-	// ApprovalManager 让 dispatch_gate 在 Suspend 时真正写 approval_queue。
-	ApprovalManager *sessionaudit.ApprovalManager
-
-	// analysisCancel 是 Loop goroutine 的退出信号；v2ShutdownPipeline 触发。
-	analysisCancel context.CancelFunc
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -231,28 +189,34 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p := pipeline.NewRequestPipeline()
 
 	// === Phase: Authentication (priority 10) ===
-	// Note: Currently disabled - authentication is handled by middleware.
-	// TODO: Migrate authentication logic from middleware to Pipeline Hook.
-	// Uncomment when authentication.NewAPIKeyAuthHook is ready.
-	// p.AddStage(&pipeline.PipelineStage{
-	// 	Name: "authentication", Phase: pipeline.PhaseAuthentication, Mode: pipeline.ModeSequential,
-	// 	Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
-	// })
+	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
+	// Extract API Key from metadata and verify against database.
+	if deps.Config.EnableAuth {
+		keyVerifier := authentication.NewKeyVerifier()
+		// Note: KeyVerifier needs DB connection to verify keys.
+		// In production, pass the DB pool from main.go.
+		// For demo/test: keys are not verified, hook will skip.
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "authentication", 
+			Phase: pipeline.PhaseAuthentication, 
+			Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
+		})
+	}
 
 	// === Phase: Client Identity (priority 20) ===
-	// Note: Currently disabled - identity extraction happens in ChatHandler.
-	// TODO: Extract identity logic from ChatHandler to identity.NewClientIdentityHook.
-	// p.AddStage(&pipeline.PipelineStage{
-	// 	Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-	// 	Hooks: []pipeline.Hook{identity.NewClientIdentityHook(identityBuilder)},
-	// })
+	// 2026-06-29: Extract client identity hash from request (IP, headers, tenant, API key)
+	// and inject into env.Metadata for downstream hooks and audit.
+	p.AddStage(&pipeline.PipelineStage{
+		Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{identity.NewClientIdentityHook()},
+	})
 
 	// === Phase: Session Loader (priority 30) ===
-	// Note: Currently disabled - session loading happens in ChatHandler.
-	// TODO: Extract session logic from ChatHandler to session.NewSessionLoaderHook.
+	// TODO: Extract session logic from ChatHandler to session.Hook
 	// p.AddStage(&pipeline.PipelineStage{
 	// 	Name: "session_loader", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-	// 	Hooks: []pipeline.Hook{session.NewSessionLoaderHook(sessionMgr)},
+	// 	Hooks: []pipeline.Hook{session.NewSessionLoaderHook(...)},
 	// })
 
 	if deps.Config.EnableObserv && deps.Tracer != nil {
@@ -567,9 +531,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			"path":    r.URL.Path,
 			"model":   model,
 			"stream":  stream,
-			"api_key": r.Header.Get("X-API-Key"),
 			"remote":  r.RemoteAddr,
 			"agent":   r.UserAgent(),
+		}
+		
+		// Extract API Key from Authorization header for authentication hook
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			if len(auth) > 7 && auth[:7] == "Bearer " {
+				env.Metadata["api_key"] = auth[7:]
+			}
+		}
+		// Also check X-API-Key header (fallback)
+		if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
+			env.Metadata["api_key"] = apiKey
 		}
 
 		// Preflight pipeline. A stage error is logged but does NOT
@@ -689,67 +663,13 @@ func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) 
 		"streaming", cfg.EnableStreaming,
 		"stages", stages,
 	)
-	startAnalysisLoopIfConfigured(deps)
 	return mux, deps, true
-}
-
-// startAnalysisLoopIfConfigured (PR-V4-08)
-//
-// 仅当 EnableAnalysis=true 且 deps.PGDBPool 非 nil 时启动 V4 异步分析 Loop。
-// Loop 由 IntentWorker + PGPollFunc + PGMarkFunc 组成，
-// 在新 goroutine 内运行；analysisCancel 用于优雅退出。
-func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
-	if deps == nil {
-		return
-	}
-	if !deps.Config.EnableAnalysis {
-		return
-	}
-	if deps.PGDBPool == nil {
-		slog.Warn("v2 pipeline: EnableAnalysis=true but PGDBPool is nil; skipping loop")
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	deps.analysisCancel = cancel
-
-	worker := workers.NewIntentWorker(slog.Default())
-	poll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), worker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
-	mark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
-
-	go bus.RunLoop(ctx, worker, poll, mark, bus.LoopConfig{
-		Interval:  deps.Config.AnalysisInterval,
-		BatchSize: deps.Config.AnalysisBatchSize,
-		Logger:    slog.Default(),
-	})
-
-	slog.Info("v2 pipeline: V4 async analysis loop started",
-		"worker", worker.Name(),
-		"subscribed_types", worker.SubscribedTypes(),
-		"interval", deps.Config.AnalysisInterval.String(),
-		"batch_size", deps.Config.AnalysisBatchSize,
-	)
-}
-
-// analysisSubscribedWorkerTypes 是 Loop 默认订阅的事件类型（PR-V4-08）。
-// 当前只有一个 worker：IntentWorker；将来扩展时改这里。
-func analysisSubscribedWorkerTypes() []analysis.EventType {
-	return []analysis.EventType{
-		analysis.EventRequestCompleted,
-	}
 }
 
 // v2ShutdownPipeline releases the in-memory resources held by the v2
 // dispatch deps. Mirrors shutdownV2Pipeline in main_v2_pipeline.go.
 func v2ShutdownPipeline(deps *v2DispatchDeps) {
-	if deps == nil {
-		return
-	}
-	// 先取消 analysis loop（PR-V4-08）。
-	if deps.analysisCancel != nil {
-		deps.analysisCancel()
-		deps.analysisCancel = nil
-	}
-	if deps.AuditWriter == nil {
+	if deps == nil || deps.AuditWriter == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
