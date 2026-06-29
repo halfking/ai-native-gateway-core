@@ -595,19 +595,19 @@ git checkout r1.13-pre -- _to-be-deprecated/{credentialstate,routing,memora,tele
 
 ## 13. Checklist（执行时勾选）
 
-- [ ] Commit 1: git tag `r1.13-pre` + build baseline
-- [ ] Commit 2: `bg/passive_probe_listener.go` import 重写 + test
-- [ ] Commit 3: `cmd/gateway/main.go` import 重写 + build
-- [ ] Commit 4: `admin/routing.go` import 重写 + test
-- [ ] Commit 5: `admin/memora_handlers.go` UserID 重写 + test
-- [ ] Commit 6: 新建 `domains/memory/client/` + 迁移 3 文件 + 更新 `cmd/gateway/*` + test
-- [ ] Commit 7: 删除 5 个老包 + 更新 manifest + 完整 verify + git tag `r1.13-done`
-- [ ] 更新 ARCHITECTURE.md 的 "当前迁移进度" 章节
-- [ ] 通知团队 R1.13 完成，`_to-be-deprecated/` 体积从 66K → 56K LOC
+- [x] Commit 1: git tag `r1.13-pre` + build baseline
+- [x] Commit 2+3 (合并): `bg/passive_probe_listener.go` + `cmd/gateway/main.go` import 重写 + test
+- [x] Commit 4: `admin/routing.go` import 重写 + test
+- [x] Commit 5: `admin/memora_handlers.go` UserID 重写 + test
+- [x] Commit 6: 新建 `domains/memory/client/` + 迁移 3 文件 + 更新 `cmd/gateway/*` + test
+- [x] Commit 7: 删除 5 个老包 + 更新 manifest + 完整 verify + git tag `r1.13-done`
+- [x] 更新 `_to-be-deprecated/README.md` 的 "待删除包状态" 表
+- [x] 通知团队 R1.13 完成，`_to-be-deprecated/` 体积从 66,748 → 43,926 LOC（-22,822）
 
 ---
 
 **Plan 创建者**: Kiro (explore subagent ses_0ecfc793bffe11TpO27f4zAwbp)  
-**Plan 审批者**: [待填写]  
-**执行者**: [待填写]  
-**执行日期**: [待填写]
+**Plan 审批者**: 用户 (2026-06-29)  
+**执行者**: opencode-agent  
+**执行日期**: 2026-06-29/30  
+**结果**: ✅ 全部完成。77 包 build + test 通过，0 外部引用残留。
