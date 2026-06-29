@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -506,7 +505,7 @@ func (h *SessionAnalyticsHandler) ExportSession(c echo.Context) error {
 	tenantID := c.Get("tenant_id").(string)
 	sessionKey := c.Param("session_key")
 
-	// 获取完整会话数据
+	// 获取完整会话数据（已是 JSON 字节流，直接写入避免二次编码）
 	detail, err := h.getFullSessionDetail(c.Request().Context(), tenantID, sessionKey)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to export session: "+err.Error())
@@ -515,13 +514,18 @@ func (h *SessionAnalyticsHandler) ExportSession(c echo.Context) error {
 	c.Response().Header().Set("Content-Type", "application/json")
 	c.Response().Header().Set("Content-Disposition", "attachment; filename=session_"+sessionKey+".json")
 
-	return json.NewEncoder(c.Response()).Encode(detail)
+	// detail 是 row_to_json 的输出（原始 JSON 字节），直接写入响应体
+	_, err = c.Response().Write(detail)
+	return err
 }
 
 // getFullSessionDetail 获取完整会话详情（内部方法）
-func (h *SessionAnalyticsHandler) getFullSessionDetail(ctx context.Context, tenantID, sessionKey string) (interface{}, error) {
+// 返回 JSON 字节流，由 ExportSession 直接写入响应。
+// 使用 []byte 而非 interface{}，因为 pgx Scan 到 interface{} 会返回 []byte，
+// 显式声明类型更清晰且避免编码两次。
+func (h *SessionAnalyticsHandler) getFullSessionDetail(ctx context.Context, tenantID, sessionKey string) ([]byte, error) {
 	query := `SELECT row_to_json(t) FROM (SELECT * FROM session_summaries WHERE tenant_id = $1 AND session_key = $2) t`
-	var result interface{}
+	var result []byte
 	err := h.db.QueryRowContext(ctx, query, tenantID, sessionKey).Scan(&result)
 	return result, err
 }
