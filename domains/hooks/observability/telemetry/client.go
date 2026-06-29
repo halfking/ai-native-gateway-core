@@ -192,6 +192,14 @@ type RequestLogEntry struct {
 	// that client retries reusing the same id do not collapse into a
 	// single audit row.
 	ClientRequestID *string `json:"client_request_id,omitempty"`
+
+	// 2026-06-30: 上游错误诊断字段（migration 320）
+	// 用于记录上游返回的 HTTP 状态码、客户端超时、流式传输统计等信息
+	UpstreamStatusCode *int    `json:"upstream_status_code,omitempty"`
+	ClientTimeout      *bool   `json:"client_timeout,omitempty"`
+	ClientEndpoint     *string `json:"client_endpoint,omitempty"`
+	StreamChunkErrors  *int    `json:"stream_chunk_errors,omitempty"`
+	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
 }
 
 func NewClient() *Client {
@@ -509,7 +517,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		tool_calls,
 		-- 2026-06-26: client-supplied X-Request-Id (debug only;
 		-- request_logs.request_id is server-generated, see migration 054).
-		client_request_id
+		client_request_id,
+		-- 2026-06-30: upstream diagnostics (migration 320).
+		upstream_status_code, client_timeout, client_endpoint,
+		stream_chunk_errors, stream_chunks_sent
 	) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -535,7 +546,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		CAST($62 AS text[]), CAST($63 AS jsonb), $64,
 		$65,
 		CAST($66 AS jsonb),
-		$67
+		$67,
+		$68, $69, $70, $71, $72
 		)
 			ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
@@ -607,7 +619,13 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
-		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id)
+		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id),
+		-- 2026-06-30: upstream diagnostics (migration 320)
+		upstream_status_code = EXCLUDED.upstream_status_code,
+		client_timeout = EXCLUDED.client_timeout,
+		client_endpoint = EXCLUDED.client_endpoint,
+		stream_chunk_errors = EXCLUDED.stream_chunk_errors,
+		stream_chunks_sent = EXCLUDED.stream_chunks_sent
 `,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -686,6 +704,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		entry.ToolCalls,
 		// 2026-06-26: client-supplied X-Request-Id (debug only).
 		entry.ClientRequestID,
+		// 2026-06-30: upstream diagnostics (migration 320).
+		entry.UpstreamStatusCode,
+		entry.ClientTimeout,
+		entry.ClientEndpoint,
+		entry.StreamChunkErrors,
+		entry.StreamChunksSent,
 	)
 	if err != nil {
 		return err
@@ -948,6 +972,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ToolCalls,
 		// 2026-06-26: client-supplied X-Request-Id (debug only).
 		entry.ClientRequestID,
+		// 2026-06-30: upstream diagnostics (migration 320).
+		entry.UpstreamStatusCode,
+		entry.ClientTimeout,
+		entry.ClientEndpoint,
+		entry.StreamChunkErrors,
+		entry.StreamChunksSent,
 	)
 	if err != nil {
 		return err

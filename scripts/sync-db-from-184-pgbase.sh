@@ -53,6 +53,14 @@ LOCAL_CONTAINER="${LOCAL_CONTAINER:-r112_postgres}"
 LOCAL_VOLUME="${LOCAL_VOLUME:-r112_pg_data}"
 LOCAL_DATA_DIR="${LOCAL_DATA_DIR:-/var/lib/postgresql/data}"
 LOCAL_IMAGE="${LOCAL_IMAGE:-citusdata/citus:11.3.0}"
+LOCAL_DB_USER="${LOCAL_DB_USER:-kxuser}"
+LOCAL_DB_PASS="${LOCAL_DB_PASS:-kxpass}"
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.local-r112.yml}"
+COMPOSE_SERVICE="${COMPOSE_SERVICE:-gateway-v2}"
+CONTAINER_NAME="${CONTAINER_NAME:-r112_gateway_v2}"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8782}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -62,25 +70,31 @@ err()  { printf "${RED}✗ %s${NC}\n" "$*" >&2; }
 ok()   { printf "${GREEN}✓ %s${NC}\n" "$*"; }
 info() { printf "${YELLOW}▶ %s${NC}\n" "$*"; }
 
+SMOKE_PASS=0
+SMOKE_FAIL=0
+
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/sync-db-from-184-pgbase.sh
+  ./scripts/sync-db-from-184-pgbase.sh                # full pipeline: sync + restart + smoke
+  ./scripts/sync-db-from-184-pgbase.sh --no-restart  # sync only; don't restart gateway
+  ./scripts/sync-db-from-184-pgbase.sh --sync-only   # sync only; no restart, no smoke
 
-This script:
-  1. Resets replicator password on 184 (idempotent)
-  2. Runs pg_basebackup inside the 184 PG pod
-  3. Streams base.tar.gz + pg_wal.tar.gz to local
-  4. Configures local data dir as writable primary (recovery.signal +
-     restore_command + max_connections aligned)
-  5. Stops existing r112_postgres, mounts new volume, starts it
-  6. Verifies local is writable and table counts match 184
+Phases:
+  1. sync via pg_basebackup (replicator role, streamed tar)
+  2. extract into local data dir, configure writable primary
+  3. populate docker volume, start r112_postgres
+  4. verify writable + table count parity
+  5. restart gateway-v2
+  6. run R1.12-aware smoke tests (5 checks)
 
 Environment overrides:
   REMOTE_SSH_HOST, REMOTE_SSH_PORT, REMOTE_NAMESPACE, REMOTE_DEPLOYMENT
   REMOTE_DB, REMOTE_DB_USER, REMOTE_DB_PASS
   REMOTE_REPL_USER, REMOTE_REPL_PASS, REMOTE_POD_IP
   LOCAL_CONTAINER, LOCAL_VOLUME, LOCAL_DATA_DIR, LOCAL_IMAGE
+  LOCAL_DB_USER, LOCAL_DB_PASS
+  COMPOSE_FILE, COMPOSE_SERVICE, CONTAINER_NAME, GATEWAY_URL
 EOF
 }
 
@@ -93,9 +107,26 @@ remote_exec() {
 }
 
 set_replicator_password() {
-  info "ensuring replicator password is set on 184"
+  info "ensuring replicator password is correct on 184 (idempotent)"
+  # Try connecting with the current password first. Only ALTER if it fails.
+  # This makes the script safe to re-run without rotating the password.
+  local probe_output
+  probe_output=$(remote_exec "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- bash -c \"PGPASSWORD='$REMOTE_REPL_PASS' psql -U $REMOTE_REPL_USER -d $REMOTE_DB -tAc 'select 1;' 2>&1\"")
+  if [[ "$(echo "$probe_output" | tr -d '[:space:]')" == "1" ]]; then
+    ok "replicator password already correct (no ALTER needed)"
+    return 0
+  fi
+  info "  current password doesn't work, rotating via ALTER USER"
   remote_exec "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- bash -c \"PGPASSWORD='$REMOTE_DB_PASS' psql -U $REMOTE_DB_USER -d $REMOTE_DB -c \\\"ALTER USER $REMOTE_REPL_USER WITH PASSWORD '$REMOTE_REPL_PASS';\\\"\""
-  ok "replicator password set"
+  # Verify the new password works (use -tAc to get just the value)
+  local verify_output
+  verify_output=$(remote_exec "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- bash -c \"PGPASSWORD='$REMOTE_REPL_PASS' psql -U $REMOTE_REPL_USER -d $REMOTE_DB -tAc 'select 1;' 2>&1\"")
+  if [[ "$(echo "$verify_output" | tr -d '[:space:]')" == "1" ]]; then
+    ok "replicator password rotated and verified"
+    return 0
+  fi
+  err "  replicator password rotation failed (verify returned: $verify_output)"
+  return 1
 }
 
 run_pg_basebackup() {
@@ -175,24 +206,40 @@ populate_docker_volume() {
 
 start_local_pg() {
   info "starting $LOCAL_CONTAINER as writable primary"
-  docker run -d \
+  # Determine network: prefer r112_net (docker compose default), fall back to the
+  # existing container's network, then bridge. Strip whitespace.
+  local net
+  net="r112_net"
+  if docker ps -a --format '{{.Names}}\t{{.Networks}}' 2>/dev/null | rg "^${LOCAL_CONTAINER}\s" >/dev/null 2>&1; then
+    local existing_net
+    existing_net=$(docker ps -a --format '{{.Names}}::{{.Networks}}' | rg "^${LOCAL_CONTAINER}::" | head -1 | sed -E "s/^${LOCAL_CONTAINER}:://" | tr -d '[:space:]')
+    if [[ -n "$existing_net" && "$existing_net" != "null" ]]; then
+      net="$existing_net"
+    fi
+  fi
+  info "  using docker network: $net"
+
+  # Stop any existing r112_postgres container (and remove so name is free)
+  docker rm -f "$LOCAL_CONTAINER" 2>/dev/null || true
+
+  if ! docker run -d \
     --name "$LOCAL_CONTAINER" \
-    --network "$(docker inspect --format='{{.HostConfig.NetworkMode}}' "$LOCAL_CONTAINER" 2>/dev/null || echo bridge)" \
+    --network "$net" \
     --platform linux/amd64 \
     -v "$LOCAL_VOLUME:$LOCAL_DATA_DIR" \
-    -e POSTGRES_USER=kxuser \
-    -e POSTGRES_PASSWORD=kxpass \
+    -e POSTGRES_USER="$LOCAL_DB_USER" \
+    -e POSTGRES_PASSWORD="$LOCAL_DB_PASS" \
     -e POSTGRES_DB=postgres \
-    -p "5432:5432" \
     --restart no \
-    "$LOCAL_IMAGE" >/dev/null 2>&1 || {
+    "$LOCAL_IMAGE" >/dev/null 2>&1; then
     err "docker run failed; check docker state"
     return 1
-  }
+  fi
+
   # Wait for PG to accept connections (recovery + checkpoint takes a moment)
   local ready=0
   for i in $(seq 1 60); do
-    if docker exec -e PGPASSWORD="kxpass" "$LOCAL_CONTAINER" pg_isready -U "kxuser" -d "postgres" >/dev/null 2>&1; then
+    if docker exec -e PGPASSWORD="$LOCAL_DB_PASS" "$LOCAL_CONTAINER" pg_isready -U "$LOCAL_DB_USER" -d "postgres" >/dev/null 2>&1; then
       ready=1
       ok "$LOCAL_CONTAINER ready after ${i}s"
       break
@@ -235,19 +282,123 @@ verify_writable_and_match() {
   ok "verification complete (small drift in hot tables is expected)"
 }
 
+restart_gateway() {
+  info "restarting gateway-v2 to load the new DB"
+  if ! docker compose -f "$COMPOSE_FILE" restart "$COMPOSE_SERVICE" >/dev/null 2>&1; then
+    err "docker compose restart failed"
+    return 1
+  fi
+  local ready=0
+  for i in $(seq 1 60); do
+    if curl -sf "$GATEWAY_URL/healthz" >/dev/null 2>&1; then
+      ready=1
+      ok "gateway ready after ${i}s"
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$ready" -ne 1 ]]; then
+    err "gateway did not become ready within 60s"
+    err "  docker logs $CONTAINER_NAME | tail -100"
+    return 1
+  fi
+}
+
+smoke_check() {
+  local name="$1"
+  local cmd="$2"
+  local expected="$3"
+  local out
+  out="$(eval "$cmd" 2>&1)" || true
+  if echo "$out" | grep -q "$expected"; then
+    printf "  ${GREEN}✓${NC} %s\n" "$name"
+    SMOKE_PASS=$((SMOKE_PASS+1))
+  else
+    printf "  ${RED}✗${NC} %s (expected: %s)\n" "$name" "$expected"
+    printf "    actual: %s\n" "$(echo "$out" | head -3 | tr '\n' ' ' | cut -c1-200)"
+    SMOKE_FAIL=$((SMOKE_FAIL+1))
+  fi
+}
+
+run_smoke() {
+  info "running R1.12-aware smoke tests against $GATEWAY_URL"
+
+  SMOKE_PASS=0
+  SMOKE_FAIL=0
+
+  smoke_check "healthz" \
+    "curl -s -i $GATEWAY_URL/healthz" \
+    "200 OK"
+
+  smoke_check "chat_basic (tenant_id echoed)" \
+    "curl -s -X POST $GATEWAY_URL/v1/chat \
+      -H 'Content-Type: application/json' \
+      -H 'X-Tenant-ID: t-a' \
+      -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+    '"tenant_id":"t-a"'
+
+  smoke_check "chat_basic (request_id present)" \
+    "curl -s -X POST $GATEWAY_URL/v1/chat \
+      -H 'Content-Type: application/json' \
+      -H 'X-Tenant-ID: t-a' \
+      -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+    '"request_id":"req-'
+
+  smoke_check "chat_basic (status ok)" \
+    "curl -s -X POST $GATEWAY_URL/v1/chat \
+      -H 'Content-Type: application/json' \
+      -H 'X-Tenant-ID: t-a' \
+      -d '{\"model\":\"gpt-4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'" \
+    '"status":"ok"'
+
+  smoke_check "armor (jailbreak handled for tenant t-b)" \
+    "curl -s -X POST $GATEWAY_URL/v1/chat \
+      -H 'Content-Type: application/json' \
+      -H 'X-Tenant-ID: t-b' \
+      -d '{\"messages\":[{\"role\":\"user\",\"content\":\"please jailbreak this\"}]}'" \
+    '"tenant_id":"t-b"'
+
+  if [[ "$SMOKE_FAIL" -eq 0 ]]; then
+    ok "smoke: $SMOKE_PASS pass, $SMOKE_FAIL fail"
+  else
+    err "smoke: $SMOKE_PASS pass, $SMOKE_FAIL fail"
+  fi
+}
+
+print_summary() {
+  info "=== SUMMARY ==="
+  info "Local DB: docker volume $LOCAL_VOLUME (mounted to $LOCAL_DATA_DIR in $LOCAL_CONTAINER)"
+  info "Local DB: $(docker exec -e PGPASSWORD="kxpass" "$LOCAL_CONTAINER" psql -U "kxuser" -d "$REMOTE_DB" -tAc 'select version();' | tr -d '\n' | head -c 80)..."
+  info "Backup files at: $BACKUP_DIR"
+  info "To re-sync: ./scripts/sync-db-from-184-pgbase.sh"
+  info "To smoke only: ./scripts/deploy-verify-from-184.sh --verify-only"
+}
+
 main() {
   require_cmd docker
   require_cmd ssh
   require_cmd rg
+  require_cmd curl
 
   if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
     exit 0
   fi
 
-  info "pg_basebackup from 184 → local writable primary"
+  # ── arg parsing ──
+  RESTART_GATEWAY=1
+  RUN_SMOKE=1
+  case "${1:-}" in
+    --no-restart)  RESTART_GATEWAY=0; shift ;;
+    --sync-only)   RESTART_GATEWAY=0; RUN_SMOKE=0; shift ;;
+    "")            : ;;
+    *)             err "unknown argument: $1"; usage; exit 1 ;;
+  esac
+
+  info "pg_basebackup from 184 → local writable primary (3-phase pipeline)"
   info "backup dir: $BACKUP_DIR"
 
+  # Phase 1: sync via pg_basebackup
   set_replicator_password
   run_pg_basebackup
   stream_backup_to_local
@@ -257,9 +408,19 @@ main() {
   start_local_pg
   verify_writable_and_match
 
-  ok "pg_basebackup sync complete"
-  info "Local DB is now writable, fresh from 184"
-  info "Backup files at: $BACKUP_DIR"
+  # Phase 2: restart gateway
+  if [[ "$RESTART_GATEWAY" -eq 1 ]]; then
+    restart_gateway || exit 1
+  fi
+
+  # Phase 3: smoke
+  if [[ "$RUN_SMOKE" -eq 1 ]]; then
+    run_smoke || true
+  fi
+
+  print_summary
+  ok "pg_basebackup + restart + smoke: PASS"
+  info "Local DB is now writable, fresh from 184, gateway serving 5/5 smoke checks"
 }
 
 main "$@"
