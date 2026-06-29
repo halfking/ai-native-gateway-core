@@ -69,11 +69,20 @@ func verifyAdminAuth(r *http.Request, db *pgxpool.Pool, secretKey string) bool {
 	return appCode == "admin"
 }
 
+// handleLogout clears the session cookie (rule 20 §6.1).
+func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	clearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// ── Try JWT auth first (no DB needed) ─────────────────
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		// ── Try JWT auth first (Bearer header or session cookie) ──
+		if tokenStr, ok := extractBearerOrCookieToken(r); ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
 				authReq := SetAuthContext(r, &AuthContext{
@@ -98,7 +107,11 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 		// unconditionally when JWT verification failed, leaving this branch
 		// as dead code. Admin API keys (sk-...) registered in the api_keys
 		// table with application code 'admin' must still authenticate.
+		// ── Fall back to legacy admin API key (DB lookup) ──────
+		// DEPRECATED (rule 20 §10): scheduled for removal on 2026-07-27.
 		if db != nil && verifyAdminAuth(r, db, secretKey) {
+			slog.Warn("admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)",
+				"path", r.URL.Path, "remote", r.RemoteAddr)
 			authReq := SetAuthContext(r, &AuthContext{
 				TenantID: "default",
 				Username: "admin",
@@ -187,6 +200,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 				}
 
 				h.auditLog(u.Username, "authentication.login", "user", u.ID, fmt.Sprintf("method=jwt role=%s tenant=%s ip=%s", u.Role, u.TenantID, r.RemoteAddr))
+				// Dual-write (rule 20 §6.1): set HttpOnly cookie AND return access_token
+				setSessionCookie(w, r, token, expiresAt)
 				writeJSON(w, http.StatusOK, map[string]any{
 					"access_token": token,
 					"token_type":   "Bearer",
@@ -307,7 +322,11 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 
 		// Fall back to legacy admin API key (DB lookup).
 		// Restored after f88a96aa regression.
+		// ── Fall back to legacy admin API key (DB lookup) ──────
+		// DEPRECATED (rule 20 §10): scheduled for removal on 2026-07-27.
 		if db != nil && verifyAdminAuth(r, db, secretKey) {
+			slog.Warn("admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)",
+				"path", r.URL.Path, "remote", r.RemoteAddr)
 			authReq := SetAuthContext(r, &AuthContext{
 				TenantID: "default",
 				Username: "admin",

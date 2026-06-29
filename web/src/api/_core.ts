@@ -29,6 +29,9 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
   const r = await fetch(BASE + path, {
     method,
     headers: headers(method),
+    // Rule 20 §6.1: send HttpOnly session cookie (llmgw_session) so the
+    // server's AdminMiddleware can authenticate JWT logins via cookie.
+    credentials: 'same-origin',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (r.status === 401) {

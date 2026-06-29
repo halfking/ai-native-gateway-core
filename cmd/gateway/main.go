@@ -155,6 +155,12 @@ func main() {
 			"hint", "set LLM_GATEWAY_ENV=production to enforce fail-closed")
 	}
 
+	// Rule 20 §3: ops token SHOULD carry the ops_ prefix (soft check, non-blocking)
+	if cfg.AdminAPIKey != "" && !strings.HasPrefix(cfg.AdminAPIKey, "ops_") {
+		slog.Warn("auth: ops token should use ops_ prefix per rule 20 §3",
+			"hint", "rotate to ops_-prefixed value at next maintenance window")
+	}
+
 	cfgStore := config.NewStore(cfg)
 	streaming.SetConfigStore(cfgStore)
 	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel)

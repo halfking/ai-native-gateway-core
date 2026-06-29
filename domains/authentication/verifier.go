@@ -153,6 +153,11 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 		return nil, fmt.Errorf("key verifier not configured")
 	}
 
+	// Rule 20 §2: data plane only accepts sk-* API keys
+	if !strings.HasPrefix(rawKey, "sk-") {
+		return nil, fmt.Errorf("invalid api key: data plane requires sk-* prefix")
+	}
+
 	if info := kv.getCache(rawKey); info != nil {
 		// Stale cache entries from before key_prefix was populated must refresh.
 		if strings.TrimSpace(info.KeyPrefix) != "" {

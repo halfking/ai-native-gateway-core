@@ -334,6 +334,7 @@ func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
+	mux.HandleFunc("/api/auth/logout", h.handleLogout)
 	// JWT-authenticated routes (JWT or admin key)
 	mux.Handle("/v1/keys/apply", h.admin(h.handleV1KeysApply))
 

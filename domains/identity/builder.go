@@ -47,3 +47,22 @@ type identityCtxKey struct{}
 func WithRequest(ctx context.Context, r *http.Request) context.Context {
 	return context.WithValue(ctx, identityCtxKey{}, r)
 }
+
+// computedIdentityKey 是用于传递"已计算的 ClientIdentity"的 context key。
+// Pipeline 在 preflight 阶段计算出 identity 后，通过 WithComputedIdentity
+// 注入 ctx，下游的 v1 ChatHandler 用 ComputedIdentityFromContext 读取，
+// 避免重复计算。
+type computedIdentityKey struct{}
+
+// WithComputedIdentity 将一个已计算的 *ClientIdentity 放入 ctx。
+// 允许 nil（下游会走 fallback 重新计算）。
+func WithComputedIdentity(ctx context.Context, c *ClientIdentity) context.Context {
+	return context.WithValue(ctx, computedIdentityKey{}, c)
+}
+
+// ComputedIdentityFromContext 返回 ctx 中预先计算的 *ClientIdentity。
+// 若不存在则返回 nil, false。
+func ComputedIdentityFromContext(ctx context.Context) (*ClientIdentity, bool) {
+	c, ok := ctx.Value(computedIdentityKey{}).(*ClientIdentity)
+	return c, ok && c != nil
+}
