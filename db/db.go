@@ -1820,14 +1820,14 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    suspicious_priority_count,
 		    failing_priority_count,
 		    watchdog_count,
-		    ROUND(avg_success_rate_7d, 2) as avg_success_rate_7d,
-		    ROUND(avg_verification_hours, 1) as avg_verification_hours,
-		    ROUND(avg_consecutive_successes, 1) as avg_consecutive_successes,
+		    ROUND(avg_success_rate_7d::numeric, 2) as avg_success_rate_7d,
+		    ROUND(avg_verification_hours::numeric, 1) as avg_verification_hours,
+		    ROUND(avg_consecutive_successes::numeric, 1) as avg_consecutive_successes,
 		    total_real_success_24h,
 		    total_real_failure_24h,
 		    CASE
 		        WHEN (total_real_success_24h + total_real_failure_24h) > 0
-		        THEN ROUND(total_real_success_24h * 100.0 / (total_real_success_24h + total_real_failure_24h), 2)
+		        THEN ROUND((total_real_success_24h * 100.0 / (total_real_success_24h + total_real_failure_24h))::numeric, 2)
 		        ELSE NULL
 		    END as real_success_rate_24h,
 		    last_verified_at,
@@ -1960,7 +1960,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		     WHERE state = 'probing') as credentials_being_probed,
 		    (SELECT ROUND(AVG(CASE WHEN total_attempts > 0
 		                           THEN consecutive_successes::float / total_attempts * 100
-		                           ELSE NULL END), 2)
+		                           ELSE NULL END)::numeric, 2)
 		     FROM model_probe_state) as avg_success_rate_7d,
 		    (SELECT MAX(last_attempt_at) FROM model_probe_state) as last_probe_at,
 		    (SELECT MAX(last_attempt_at) FROM model_probe_state) as last_real_request_at,
@@ -1982,7 +1982,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    COUNT(*) as total_probes,
 		    COUNT(*) FILTER (WHERE mpr.status = 'ok') as successful_probes,
 		    COUNT(*) FILTER (WHERE mpr.status != 'ok') as failed_probes,
-		    ROUND(COUNT(*) FILTER (WHERE mpr.status = 'ok') * 100.0 / COUNT(*), 2) as success_rate,
+		    ROUND((COUNT(*) FILTER (WHERE mpr.status = 'ok') * 100.0 / COUNT(*))::numeric, 2) as success_rate,
 		    AVG(mpr.latency_ms) FILTER (WHERE mpr.status = 'ok') as avg_latency_ms,
 		    COUNT(DISTINCT mpr.credential_id) as probed_credentials,
 		    COUNT(DISTINCT mpr.credential_id) FILTER (WHERE mpr.status = 'ok') as successful_credentials,
@@ -2014,7 +2014,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        COUNT(*) as count,
 		        ROUND(AVG(CASE WHEN mps.total_attempts > 0
 		                       THEN mps.consecutive_successes::float / mps.total_attempts * 100
-		                       ELSE NULL END), 2) as avg_success_rate,
+		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
 		        EXTRACT(EPOCH FROM MIN(mps.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
 		    FROM model_probe_state mps
 		    JOIN credentials c ON c.id = mps.credential_id

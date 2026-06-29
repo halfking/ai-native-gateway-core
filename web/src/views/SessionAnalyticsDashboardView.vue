@@ -386,7 +386,7 @@ const filters = reactive({
 
 const sortBy = ref('last_request_at')
 
-const sessions = ref([])
+const sessions = ref<any[]>([])
 const pagination = reactive({
   page: 1,
   page_size: 20,
@@ -394,8 +394,8 @@ const pagination = reactive({
 })
 
 const detailDrawerVisible = ref(false)
-const currentSession = ref(null)
-const sessionDetail = ref(null)
+const currentSession = ref<any>(null)
+const sessionDetail = ref<any>(null)
 
 const loading = ref(false)
 
