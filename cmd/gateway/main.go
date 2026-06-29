@@ -1431,6 +1431,12 @@ func main() {
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
 		if _, v2Deps, ok := v2DispatchMux(chatHandler, messagesHandler, responsesHandler); ok && v2Deps != nil {
+			// PR-V4-09: 注入 DB pool + ApprovalManager 后再启动 Loop。
+			if dbConn != nil && dbConn.Pool() != nil {
+				SetV2DispatchAnalysisResources(v2Deps, dbConn.Pool(), approvalMgr)
+			}
+			StartV2DispatchAnalysisLoop(v2Deps)
+			defer v2ShutdownPipeline(v2Deps)
 			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatHandler))
 			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatHandler))
 			// /v1/messages and /v1/responses internally call

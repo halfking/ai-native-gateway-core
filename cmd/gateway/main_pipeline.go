@@ -84,8 +84,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis"
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -102,6 +106,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 	"github.com/kaixuan/llm-gateway-go/domains/security"
 	securityplugins "github.com/kaixuan/llm-gateway-go/domains/security/plugins"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 )
@@ -110,13 +115,16 @@ import (
 // Pipeline wrapper around the 4 v1 endpoints. Every field except
 // UsePipeline defaults to the values used by cmd/gateway-v2.
 type v2DispatchConfig struct {
-	UsePipeline     bool
-	EnableCache     bool
-	EnableSecurity  bool
-	EnableAudit     bool
-	EnableObserv    bool
-	EnableStreaming bool
-	EnableAuth      bool // 2026-06-29: Enable authentication hook
+	UsePipeline       bool
+	EnableCache       bool
+	EnableSecurity    bool
+	EnableAudit       bool
+	EnableObserv      bool
+	EnableStreaming   bool
+	EnableAuth        bool // 2026-06-29: Enable authentication hook
+	EnableAnalysis    bool // PR-V4-09: 异步分析 Loop 默认 off
+	AnalysisInterval  time.Duration
+	AnalysisBatchSize int
 }
 
 // v2UsePipeline reports whether the v2 Pipeline wrapper should be used
@@ -140,14 +148,40 @@ func v2UsePipeline() bool {
 // loadV2DispatchConfig builds the dispatch configuration from env vars.
 func loadV2DispatchConfig() v2DispatchConfig {
 	return v2DispatchConfig{
-		UsePipeline:     v2UsePipeline(),
-		EnableCache:     envBool("LLM_GATEWAY_V2_CACHE", true),
-		EnableSecurity:  envBool("LLM_GATEWAY_V2_SECURITY", true),
-		EnableAudit:     envBool("LLM_GATEWAY_V2_AUDIT", true),
-		EnableObserv:    envBool("LLM_GATEWAY_V2_OBSERV", true),
-		EnableStreaming: envBool("LLM_GATEWAY_V2_STREAMING", true),
-		EnableAuth:      envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
+		UsePipeline:       v2UsePipeline(),
+		EnableCache:       envBool("LLM_GATEWAY_V2_CACHE", true),
+		EnableSecurity:    envBool("LLM_GATEWAY_V2_SECURITY", true),
+		EnableAudit:       envBool("LLM_GATEWAY_V2_AUDIT", true),
+		EnableObserv:      envBool("LLM_GATEWAY_V2_OBSERV", true),
+		EnableStreaming:   envBool("LLM_GATEWAY_V2_STREAMING", true),
+		EnableAuth:        envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
+		EnableAnalysis:    envBool("LLM_GATEWAY_V2_ANALYSIS", false),
+		AnalysisInterval:  envDuration("LLM_GATEWAY_V2_ANALYSIS_INTERVAL", 5*time.Second),
+		AnalysisBatchSize: envInt("LLM_GATEWAY_V2_ANALYSIS_BATCH", 10),
 	}
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err == nil {
+		return n
+	}
+	return def
 }
 
 // v2DispatchDeps bundles the dependencies the Pipeline wrapper needs.
@@ -177,6 +211,15 @@ type v2DispatchDeps struct {
 	// (/v1/messages, /v1/responses, /v1/completions) all funnel
 	// into ChatHandler internally (domains/streaming/messages.go etc.).
 	ChatHandler *streaming.ChatHandler
+
+	// ── V4 async analysis Loop (PR-V4-09) ────────────────────────
+	// PGDBPool 由 main.go 注入；nil 时 EnableAnalysis 自动失效。
+	PGDBPool *pgxpool.Pool
+	// ApprovalManager 让 dispatch_gate 在 Suspend 时真正写 approval_queue。
+	ApprovalManager *sessionaudit.ApprovalManager
+
+	// analysisCancel Loop goroutine 退出信号；v2ShutdownPipeline 触发。
+	analysisCancel context.CancelFunc
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -197,9 +240,9 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		// In production, pass the DB pool from main.go.
 		// For demo/test: keys are not verified, hook will skip.
 		p.AddStage(&pipeline.PipelineStage{
-			Name: "authentication", 
-			Phase: pipeline.PhaseAuthentication, 
-			Mode: pipeline.ModeSequential,
+			Name:  "authentication",
+			Phase: pipeline.PhaseAuthentication,
+			Mode:  pipeline.ModeSequential,
 			Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
 		})
 	}
@@ -527,14 +570,14 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// re-parse the full body for its own protocol decoding.
 		model, stream, _, _ := dispatchRequestBody(r)
 		env.Metadata = map[string]any{
-			"method":  r.Method,
-			"path":    r.URL.Path,
-			"model":   model,
-			"stream":  stream,
-			"remote":  r.RemoteAddr,
-			"agent":   r.UserAgent(),
+			"method": r.Method,
+			"path":   r.URL.Path,
+			"model":  model,
+			"stream": stream,
+			"remote": r.RemoteAddr,
+			"agent":  r.UserAgent(),
 		}
-		
+
 		// Extract API Key from Authorization header for authentication hook
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			if len(auth) > 7 && auth[:7] == "Bearer " {
@@ -567,7 +610,13 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// Block / Suspend / Terminate → 直接写响应并 short-circuit；
 		// Continue / Mutate → 继续交给 fallback handler。
 		if interception.InspectDecision(env) == interception.DispatchShortCircuit {
-			code, body := interception.WriteDecisionResponse(env)
+			// PR-V4-09: 当 deps.ApprovalManager 非 nil 时，注入真实
+			// ApprovalCreator，让 Suspend 决策真正写 approval_queue。
+			var creator interception.ApprovalCreator
+			if deps.ApprovalManager != nil {
+				creator = interception.NewApprovalManagerCreator(deps.ApprovalManager)
+			}
+			code, body := interception.WriteDecisionResponseWithApprovals(ctx, env, creator)
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(code)
 			if len(body) > 0 {
@@ -663,17 +712,94 @@ func v2DispatchMux(chatHandler, messagesHandler, responsesHandler http.Handler) 
 		"streaming", cfg.EnableStreaming,
 		"stages", stages,
 	)
+	// Loop 启动延后到 SetV2DispatchAnalysisResources 之后（PR-V4-09）。
+	// 见 main.go 中的 StartV2DispatchAnalysisLoop 调用。
 	return mux, deps, true
+}
+
+// StartV2DispatchAnalysisLoop (PR-V4-09) 在 SetV2DispatchAnalysisResources 注入 DB
+// pool + ApprovalManager 之后调用。如果之前 v2DispatchMux 已经返回 deps 但资源
+// 还没注入，需要在这里显式触发启动。
+func StartV2DispatchAnalysisLoop(deps *v2DispatchDeps) {
+	startAnalysisLoopIfConfigured(deps)
+}
+
+// startAnalysisLoopIfConfigured (PR-V4-09)
+//
+// 仅当 EnableAnalysis=true 且 deps.PGDBPool 非 nil 时启动 V4 异步分析 Loop。
+// Loop 由 IntentWorker + PGPollFunc + PGMarkFunc 组成；goroutine 内运行，
+// analysisCancel 用于优雅退出。
+func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
+	if deps == nil {
+		return
+	}
+	if !deps.Config.EnableAnalysis {
+		return
+	}
+	if deps.PGDBPool == nil {
+		slog.Warn("v2 pipeline: EnableAnalysis=true but PGDBPool is nil; skipping loop")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.analysisCancel = cancel
+
+	worker := workers.NewIntentWorker(slog.Default())
+	poll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), worker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
+	mark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
+
+	go bus.RunLoop(ctx, worker, poll, mark, bus.LoopConfig{
+		Interval:  deps.Config.AnalysisInterval,
+		BatchSize: deps.Config.AnalysisBatchSize,
+		Logger:    slog.Default(),
+	})
+
+	slog.Info("v2 pipeline: V4 async analysis loop started",
+		"worker", worker.Name(),
+		"subscribed_types", worker.SubscribedTypes(),
+		"interval", deps.Config.AnalysisInterval.String(),
+		"batch_size", deps.Config.AnalysisBatchSize,
+	)
+}
+
+// analysisSubscribedWorkerTypes 是 Loop 默认订阅的事件类型（PR-V4-09）。
+// 当前仅 IntentWorker；将来扩展时改这里。
+func analysisSubscribedWorkerTypes() []analysis.EventType {
+	return []analysis.EventType{
+		analysis.EventRequestCompleted,
+	}
 }
 
 // v2ShutdownPipeline releases the in-memory resources held by the v2
 // dispatch deps. Mirrors shutdownV2Pipeline in main_v2_pipeline.go.
 func v2ShutdownPipeline(deps *v2DispatchDeps) {
-	if deps == nil || deps.AuditWriter == nil {
+	if deps == nil {
+		return
+	}
+	// 先取消 analysis loop（PR-V4-09）。
+	if deps.analysisCancel != nil {
+		deps.analysisCancel()
+		deps.analysisCancel = nil
+	}
+	if deps.AuditWriter == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = ctx
 	_ = deps.AuditWriter.Close()
+}
+
+// SetV2DispatchAnalysisResources (PR-V4-09) 把 main.go 持有的 DB pool 和
+// ApprovalManager 注入 deps，从而让 startAnalysisLoopIfConfigured 真正启动
+// Loop，并让 dispatch_gate 用真实 ApprovalCreator。
+func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mgr *sessionaudit.ApprovalManager) {
+	if deps == nil {
+		return
+	}
+	if pool != nil {
+		deps.PGDBPool = pool
+	}
+	if mgr != nil {
+		deps.ApprovalManager = mgr
+	}
 }
