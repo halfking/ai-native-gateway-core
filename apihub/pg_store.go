@@ -545,7 +545,7 @@ SELECT kind, ref_id, tenant_id, name,
        registered_at, last_seen_at, metadata
 FROM public.assets
 WHERE tenant_id = $1
-  AND COALESCE(last_seen_at, registered_at) < now() - ($2 || ' seconds')::interval
+  AND COALESCE(last_seen_at, registered_at) < now() - make_interval(secs => $2)
 ORDER BY COALESCE(last_seen_at, registered_at) ASC
 LIMIT 1000
 `
