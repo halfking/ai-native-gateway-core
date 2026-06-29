@@ -43,13 +43,19 @@ func NewHandler(db *pgxpool.Pool) *Handler {
 }
 
 // ListCategories returns all available tool categories with tool counts.
+//
+// Audit fix (2026-06-26): c.display_order must appear in GROUP BY because
+// PostgreSQL rejects it in the SELECT list otherwise (SQLSTATE 42803).
+// The previous form omitted it; PG accepts it as a "functional
+// dependency" only when the primary key is included — c.id alone does
+// not imply c.display_order (multiple rows in c could share c.id).
 func (h *Handler) ListCategories(ctx context.Context) ([]Category, error) {
 	query := `
 		SELECT c.id, c.name, c.description, COUNT(t.id) as tool_count
 		FROM tool_categories c
 		LEFT JOIN tool_registry t ON c.id = t.category AND t.enabled = true
 		WHERE c.enabled = true
-		GROUP BY c.id, c.name, c.description
+		GROUP BY c.id, c.name, c.description, c.display_order
 		ORDER BY c.display_order
 	`
 
