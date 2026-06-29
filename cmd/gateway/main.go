@@ -1405,20 +1405,6 @@ func main() {
 		chatHandler.SetArmor(armorJudge, armorLogger)
 	}
 
-	// Phase 5 B1-5: Wrap chatHandler/messagesHandler/responsesHandler with
-	// armor middleware so the audit path is independent of chatHandler's
-	// internal SetArmor wiring. This catches chat-shaped requests that
-	// reach messagesHandler/responsesHandler via the v2 dispatcher.
-	var armorWrappedChat http.Handler = chatHandler
-	if armorLogger != nil && armorJudge != nil {
-		armorWrappedChat = armor.WrapMiddleware(chatHandler, armor.MiddlewareConfig{
-			Judge:   armorJudge,
-			Logger:  armorLogger,
-			Logger2: slog.Default(),
-		})
-		slog.Info("armor middleware: active on /v1/chat/completions + /v1/completions")
-	}
-
 	slog.Info("CHECKPOINT: before static handler init")
 
 	// ── Static files (Vue SPA) ───────────────────────────────────────────
