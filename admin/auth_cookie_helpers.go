@@ -12,12 +12,6 @@ import (
 	"time"
 )
 
-// sessionCookieName is the HttpOnly session cookie name (must match frontend).
-const sessionCookieName = "llmgw_session"
-
-// sessionCookieMaxAge must match the JWT default TTL (24h, rule 20 §5).
-const sessionCookieMaxAge = 24 * time.Hour
-
 // cookieSecure returns the Secure flag for the session cookie.
 func cookieSecure(r *http.Request) bool {
 	if v := os.Getenv("LLM_GATEWAY_COOKIE_SECURE"); v != "" {
@@ -41,7 +35,7 @@ func cookieSecure(r *http.Request) bool {
 // clearSessionCookie expires the session cookie (MaxAge=-1) on the client.
 func clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     CookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -53,14 +47,14 @@ func clearSessionCookie(w http.ResponseWriter) {
 
 // setSessionCookie writes the JWT as an HttpOnly+Secure+SameSite=Strict cookie.
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
-	maxAge := int(sessionCookieMaxAge.Seconds())
+	maxAge := int(CookieMaxAge.Seconds())
 	if !expiresAt.IsZero() {
 		if remaining := time.Until(expiresAt); remaining > 0 {
 			maxAge = int(remaining.Seconds())
 		}
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
+		Name:     CookieName,
 		Value:    token,
 		Path:     "/",
 		MaxAge:   maxAge,
@@ -79,7 +73,7 @@ func extractBearerOrCookieToken(r *http.Request) (string, bool) {
 			return auth[len(prefix):], true
 		}
 	}
-	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
 		return c.Value, true
 	}
 	return "", false

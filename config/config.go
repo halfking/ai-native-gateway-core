@@ -118,7 +118,8 @@ func (cfg *Config) IsProduction() bool {
 // secrets (data-plane API key, ops admin token, JWT signing key) must all
 // be non-empty, otherwise the process must NOT start fail-open.
 //
-// JWT secret is derived from LLM_GATEWAY_JWT_SECRET → SecretKey fallback
+// JWT secret (SSOT: admin/auth_params.go EnvJWTSecret, EnvSecretKey):
+//   LLM_GATEWAY_JWT_SECRET → SecretKey fallback
 // (same precedence as admin/jwt.go.jwtSecret). A JWT secret is "present"
 // if either is set.
 //
