@@ -1767,7 +1767,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering')) as failing_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'probing') as probing_count,
 
-		        COUNT(*) FILTER (WHERE mps.consecutive_failures >= 3) as urgent_count,
+		        SUM(CASE WHEN mps.consecutive_failures >= 3 THEN 1 ELSE 0 END) as urgent_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'suspicious') as suspicious_priority_count,
 		        COUNT(*) FILTER (WHERE mps.state IN ('failing', 'recovering')) as failing_priority_count,
 		        COUNT(*) FILTER (WHERE mps.state = 'healthy_confirmed') as watchdog_count,
@@ -1785,10 +1785,9 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        MAX(mps.last_attempt_at) as last_real_request_at,
 		        MIN(mps.next_retry_at) as next_probe_at,
 
-		        COUNT(*) FILTER (
-		            WHERE mps.state IN ('failing', 'broken_confirmed')
-		              AND mps.consecutive_failures >= 3
-		        ) as critical_nodes,
+		        SUM(CASE WHEN mps.state IN ('failing', 'broken_confirmed')
+		                  AND mps.consecutive_failures >= 3
+		             THEN 1 ELSE 0 END) as critical_nodes,
 
 		        COUNT(*) FILTER (
 		            WHERE mps.next_retry_at <= NOW() + INTERVAL '5 minutes'
