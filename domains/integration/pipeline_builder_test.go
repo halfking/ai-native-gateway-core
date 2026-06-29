@@ -108,7 +108,7 @@ func TestBuildRequestPipeline_PreRoutingHookCount(t *testing.T) {
 	// order depends on insertion, but both should be present
 	hasIdentity, hasSession := false, false
 	for _, n := range names {
-		if n == "identity.inject" {
+		if n == "identity.client_identity" {
 			hasIdentity = true
 		}
 		if n == "session.load" {
@@ -116,7 +116,7 @@ func TestBuildRequestPipeline_PreRoutingHookCount(t *testing.T) {
 		}
 	}
 	if !hasIdentity {
-		t.Error("identity.inject hook missing")
+		t.Error("identity.client_identity hook missing")
 	}
 	if !hasSession {
 		t.Error("session.load hook missing")
@@ -152,8 +152,8 @@ func TestBuildRequestPipeline_NilStore(t *testing.T) {
 func TestBuildRequestPipeline_Execute_RealEnvelope(t *testing.T) {
 	store := newStubStore()
 	store.store["sess-1"] = &session.Session{
-		SessionID:         "sess-1",
-		LastCredentialID:  "cred-99",
+		SessionID:        "sess-1",
+		LastCredentialID: "cred-99",
 	}
 	p := BuildRequestPipeline(minimalBuilder(), &authentication.Verifier{}, store)
 
