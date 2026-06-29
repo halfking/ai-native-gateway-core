@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { clearAll } from '../store'
+import { logout as apiLogout } from '../api/auth'
 
 const router = useRouter()
 
@@ -8,7 +9,8 @@ function goHome() {
   router.push('/')
 }
 
-function logout() {
+async function logout() {
+  try { await apiLogout() } catch { /* ignore */ }
   clearAll()
   router.push('/login')
 }
