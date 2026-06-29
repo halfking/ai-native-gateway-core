@@ -17,6 +17,7 @@ func (idx *Index) RecommendV2(
 	ctx context.Context,
 	task TaskType,
 	sigs ClassificationSignals,
+	profile Profile,
 	sessionID string,
 	topN int,
 ) []ScoredCandidate {
@@ -119,11 +120,11 @@ func (idx *Index) RecommendV2(
 		case flags.UseSimplifiedScoring:
 			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
 		default:
-			// NET-013 fix: 完整 Score 路径构建断裂（profileWeightsFromFlags
-			// 不存在，且 Score 签名变更）。WIP feature，临时统一走简化分支。
-			// 修复 tracked in: <TBD>
-			_ = sigs // 当前简化分支未使用，留待 profile/path 落地后回归
-			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
+			// NET-013 fix: default branch now invokes the legacy 8-dim
+			// Score() so profile (smart / speed_first / cost_first) is
+			// honoured when both channel-quality and simplified scoring
+			// are disabled.
+			bd = Score(c, sigs, task, profile, computeCostContext(candidatePool))
 		}
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}

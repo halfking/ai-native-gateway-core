@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
@@ -34,7 +34,7 @@ var transientErrorKinds = []string{
 // and applies the secondary-verification trigger.
 type PassiveProbeListener struct {
 	db           *pgxpool.Pool
-	stateWriter  *credentialstate.Writer
+	stateWriter  *credential.Writer
 	cache        *ModelAvailabilityCache
 	cancel       context.CancelFunc
 	done         chan struct{}
@@ -44,7 +44,7 @@ type PassiveProbeListener struct {
 // NewPassiveProbeListener creates a listener with the given poll interval.
 // Default: 30s. stateWriter is used to mark credentials unreachable after
 // the reviewing window confirms persistent failures.
-func NewPassiveProbeListener(db *pgxpool.Pool, stateWriter *credentialstate.Writer) *PassiveProbeListener {
+func NewPassiveProbeListener(db *pgxpool.Pool, stateWriter *credential.Writer) *PassiveProbeListener {
 	return &PassiveProbeListener{
 		db:           db,
 		stateWriter:  stateWriter,
@@ -138,7 +138,7 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 //   - BUG-G fix: only poll transient-class errors (transient/timeout/network/
 //     concurrent/stream_timeout/upstream_down). Quota/auth/model_not_found
 //     are handled by their own dedicated state machines
-//     (credentialstate.Writer + model_probe), not the reviewing path.
+//     (credential.Writer + model_probe), not the reviewing path.
 //   - BUG-E fix: window_total_count now counts ALL requests (success+failure)
 //     for the (credential, model) pair, not just failures, so the error_rate
 //     ratio in reviewPromotion is a real error rate.
@@ -295,7 +295,7 @@ func (l *PassiveProbeListener) reviewPromotion(ctx context.Context) {
 //     reviewing window (last 5 minutes). A success during the window means
 //     the credential recovered → clear reviewing, reset counters.
 //  2. If still failing → mark the credential availability_state='unreachable'
-//     via credentialstate.Writer (2-minute cooling for KindNetwork), which
+//     via credential.Writer (2-minute cooling for KindNetwork), which
 //     removes it from the routable candidate pool. credential_recovery.go
 //     will auto-restore it to 'ready' after the cooling period.
 //  3. Always clear in_reviewing=FALSE so the entry can be re-promoted if
@@ -377,7 +377,7 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		} else if p.errCount > 0 {
 			// Still failing — mark unreachable (BUG-C/D fix).
 			if l.stateWriter != nil && l.stateWriter.Enabled() {
-				if err := l.stateWriter.WriteOnError(ctx, p.credentialID, p.rawModel, credentialstate.Failure{
+				if err := l.stateWriter.WriteOnError(ctx, p.credentialID, p.rawModel, credential.Failure{
 					Kind:   errorsx.KindNetwork,
 					Detail: fmt.Sprintf("passive_probe_review_failed: %s on %s (%d errors)", p.errorKind, p.rawModel, p.errCount),
 				}); err != nil {
