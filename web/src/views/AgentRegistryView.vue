@@ -333,6 +333,33 @@ onBeforeUnmount(() => {
       <span class="cf-meta">共 {{ total }} 个</span>
     </div>
 
+    <!-- Phase 6: stats overview card -->
+    <div v-if="stats || statsError" class="stats-grid">
+      <div v-if="stats" class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">总数</div>
+          <div class="stat-value">{{ stats.total }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">LLM 端点</div>
+          <div class="stat-value">{{ stats.by_kind['llm_endpoint'] ?? 0 }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">MCP 服务</div>
+          <div class="stat-value">{{ stats.by_kind['mcp_server'] ?? 0 }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">健康</div>
+          <div class="stat-value stat-healthy">{{ stats.by_health['healthy'] ?? 0 }}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">降级/下线</div>
+          <div class="stat-value stat-down">{{ (stats.by_health['degraded'] ?? 0) + (stats.by_health['down'] ?? 0) }}</div>
+        </div>
+      </div>
+      <p v-else-if="statsError" style="color:var(--danger);font-size:12px">统计加载失败: {{ statsError }}</p>
+    </div>
+
     <p v-if="error" style="color:var(--danger);margin-bottom:12px">{{ error }}</p>
 
     <div v-if="!loading && total > 0" class="pagination-bar">
