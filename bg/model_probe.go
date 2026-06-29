@@ -160,6 +160,10 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	// so admin-set manual reasons are never overwritten.
 	r.reconcileBrokenConfirmedBindings(timeoutCtx)
 
+	// 2026-06-29 fix: 反向reconcile — 当 model_probe_state 变为 healthy_confirmed
+	// 时恢复 binding.available=TRUE。解决"常用模型报无可用凭据"误报问题。
+	r.reconcileHealthyConfirmedBindings(timeoutCtx)
+
 	// 2026-06-23: passive-failure boost — apply model's recent failure
 	// signals to the schedule BEFORE selecting targets. If a binding has
 	// had 3+ failures in the last 5 minutes (e.g. the minimax-m3 spike),
