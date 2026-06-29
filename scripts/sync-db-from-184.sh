@@ -30,6 +30,10 @@ BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-$(date +%Y%m%d-%H%M%S)"
 
 REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.112.184}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
+REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-/Users/xutaohuang/.ssh/id_ed25519}"
+# SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
+# and may hang if 184's sshd has a slow/limiting response to unknown keys.
+REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey"
 REMOTE_NAMESPACE="${REMOTE_NAMESPACE:-pms-test}"
 REMOTE_DEPLOYMENT="${REMOTE_DEPLOYMENT:-deployment/llm-gateway-pg}"
 REMOTE_DB="${REMOTE_DB:-llm_gateway}"
@@ -151,13 +155,13 @@ run_local_admin_psql() {
 }
 
 run_remote_psql() {
-  ssh -o StrictHostKeyChecking=no -p "$REMOTE_SSH_PORT" "$REMOTE_SSH_HOST" \
+  ssh $REMOTE_SSH_OPTS -p "$REMOTE_SSH_PORT" -i "$REMOTE_SSH_IDENTITY" "$REMOTE_SSH_HOST" \
     "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- psql -U $REMOTE_DB_USER -d $REMOTE_DB -tAc \"$1\""
 }
 
 run_remote_dump() {
   local dump_flag="$1"
-  ssh -o StrictHostKeyChecking=no -p "$REMOTE_SSH_PORT" "$REMOTE_SSH_HOST" \
+  ssh $REMOTE_SSH_OPTS -p "$REMOTE_SSH_PORT" -i "$REMOTE_SSH_IDENTITY" "$REMOTE_SSH_HOST" \
     "kubectl -n $REMOTE_NAMESPACE exec $REMOTE_DEPLOYMENT -- pg_dump -U $REMOTE_DB_USER -d $REMOTE_DB $dump_flag --no-owner --no-privileges --format=plain"
 }
 
