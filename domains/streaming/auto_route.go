@@ -349,8 +349,9 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		Classifier:     d.Classifier,
 		Reason:         d.Reason,
 		ChosenModel:    d.ChosenModel,
-		ChosenRawModel: d.ChosenRawModel,
-		ChosenCredID:   d.ChosenCredentialID,
+		ChosenRawModel:  d.ChosenRawModel,
+		ChosenCredID:    d.ChosenCredentialID,
+		EnabledFeatures: d.EnabledFeatures,
 	}
 	for _, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
