@@ -1,9 +1,10 @@
-// Package workers 包含 V4 治理平台的异步分析 worker 实现（PR-V4-06 引入首个）。
+// Package workers 包含 V4 治理平台的异步分析 worker 实现。
 //
 // 当前实现：
 //   - IntentWorker：订阅 request.completed，对 payload 中的 user_content 做
-//     轻量意图分类，仅 in-memory 累计命中次数（不写库；DB 写入留给
-//     PR-V4-07 assets 层）。
+//     轻量意图分类，按 (tenant_id, intent_kind) 累计；
+//     FlushAndReset 把累计 delta upsert 到 assets.IntentAggregateStore
+//     然后清零（PR-V4-10）。
 package workers
 
 import (
@@ -13,22 +14,15 @@ import (
 	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domains/assets"
 )
 
-// IntentWorker 意图分类 worker（PR-V4-06 占位实现）。
-//
-// 行为：
-//   - 订阅 EventRequestCompleted
-//   - 从 payload 中提取 user_content 字符串（缺失则跳过）
-//   - 按关键词命中分类为 chat / code / reasoning / unclassified
-//   - 累加到内部 counter；不写库
-//
-// PR-V4-07 起将累加结果写入 assets.IntentAggregateStore。
+// IntentWorker 意图分类 worker。
 type IntentWorker struct {
 	logger *slog.Logger
 
 	mu     sync.Mutex
-	counts map[analysis.IntentKind]int
+	counts map[string]map[analysis.IntentKind]int64
 }
 
 // NewIntentWorker 构造 worker。
@@ -38,7 +32,7 @@ func NewIntentWorker(logger *slog.Logger) *IntentWorker {
 	}
 	return &IntentWorker{
 		logger: logger,
-		counts: make(map[analysis.IntentKind]int),
+		counts: make(map[string]map[analysis.IntentKind]int64),
 	}
 }
 
@@ -61,7 +55,12 @@ func (w *IntentWorker) Handle(ctx context.Context, evt analysis.AnalysisEvent) e
 	}
 	kind := classifyIntent(content)
 	w.mu.Lock()
-	w.counts[kind]++
+	tBucket, ok := w.counts[evt.TenantID]
+	if !ok {
+		tBucket = make(map[analysis.IntentKind]int64, 4)
+		w.counts[evt.TenantID] = tBucket
+	}
+	tBucket[kind]++
 	w.mu.Unlock()
 	w.logger.Debug("intent_worker: classified",
 		"event_id", evt.EventID,
@@ -73,21 +72,54 @@ func (w *IntentWorker) Handle(ctx context.Context, evt analysis.AnalysisEvent) e
 }
 
 // Snapshot 返回当前 in-memory 计数快照（仅供 telemetry / 测试）。
-func (w *IntentWorker) Snapshot() map[analysis.IntentKind]int {
+func (w *IntentWorker) Snapshot() map[string]map[analysis.IntentKind]int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	out := make(map[analysis.IntentKind]int, len(w.counts))
-	for k, v := range w.counts {
-		out[k] = v
+	out := make(map[string]map[analysis.IntentKind]int64, len(w.counts))
+	for tenant, bucket := range w.counts {
+		copied := make(map[analysis.IntentKind]int64, len(bucket))
+		for k, v := range bucket {
+			copied[k] = v
+		}
+		out[tenant] = copied
 	}
 	return out
 }
 
+// FlushAndReset 把累计 delta 写入 store 并清零。
+func (w *IntentWorker) FlushAndReset(ctx context.Context, store assets.IntentAggregateStore) error {
+	if store == nil {
+		w.mu.Lock()
+		w.counts = make(map[string]map[analysis.IntentKind]int64)
+		w.mu.Unlock()
+		return nil
+	}
+
+	w.mu.Lock()
+	snap := w.counts
+	w.counts = make(map[string]map[analysis.IntentKind]int64)
+	w.mu.Unlock()
+
+	var firstErr error
+	for tenant, bucket := range snap {
+		if tenant == "" {
+			continue
+		}
+		for kind, delta := range bucket {
+			if delta <= 0 {
+				continue
+			}
+			if err := store.Increment(ctx, tenant, kind, delta); err != nil && firstErr == nil {
+				firstErr = err
+				w.logger.Warn("intent_worker: flush Increment failed",
+					"tenant_id", tenant, "kind", kind, "delta", delta, "error", err)
+			}
+		}
+	}
+	return firstErr
+}
+
 // extractUserContent 从事件 payload 中提取 user_content 字段。
-//
-// 容忍多种 payload 形态：
-//   - map[string]any{"user_content": string}
-//   - 结构体（通过 type switch / 反射留给后续 PR；当前只支持 map）
 func extractUserContent(payload any) (string, bool) {
 	if payload == nil {
 		return "", false
@@ -100,13 +132,7 @@ func extractUserContent(payload any) (string, bool) {
 	return "", false
 }
 
-// classifyIntent 轻量关键词分类（生产应替换为 ML 模型调用）。
-//
-// 与 v3 IntentAnalyzer 规则保持一致以保证可对比：
-//   - code: "code" / "function" / "var " / "class "
-//   - reasoning: "why" / "explain" / "reason" / "because"
-//   - chat: "hello" / "hi" / "你好"
-//   - 否则 unclassified
+// classifyIntent 轻量关键词分类。
 func classifyIntent(content string) analysis.IntentKind {
 	lc := strings.ToLower(content)
 	switch {

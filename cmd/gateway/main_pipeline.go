@@ -90,6 +90,7 @@ import (
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/workers"
+	"github.com/kaixuan/llm-gateway-go/domains/assets"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -220,6 +221,17 @@ type v2DispatchDeps struct {
 
 	// analysisCancel Loop goroutine 退出信号；v2ShutdownPipeline 触发。
 	analysisCancel context.CancelFunc
+
+	// ── V4 publish + asset sink (PR-V4-10) ───────────────────────
+	// Publisher 把 request.completed 写入 analysis_events；
+	// IntentStore 是 flusher 的 sink，按 (tenant, kind) 累计。
+	// 两者均为 nil 时仅退化为 in-memory Loop。
+	Publisher   bus.Publisher
+	IntentStore assets.IntentAggregateStore
+
+	// intentWorker 在 startAnalysisLoopIfConfigured 创建；flusher 共用它。
+	intentWorker *workers.IntentWorker
+	intentCancel context.CancelFunc // flusher goroutine 退出信号
 }
 
 // buildV2DispatchPipeline assembles the Hook Pipeline used by the v2
@@ -640,7 +652,47 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// responses), so we only update internal env state for the
 		// audit/metrics hooks to consume.
 		env.StatusCode = 0 // writer's status is unknown; left for a later phase
+
+		// PR-V4-10: 异步发布 request.completed 事件 → analysis_events。
+		// 只在 deps.Publisher 非 nil 时执行（即 EnableAnalysis=true 且
+		// 注入了 DB pool）。失败仅记录日志，不影响主流程。
+		if deps.Publisher != nil && env.TenantID != "" {
+			evt := analysis.AnalysisEvent{
+				EventID:    "evt-" + requestID,
+				Type:       analysis.EventRequestCompleted,
+				TenantID:   env.TenantID,
+				SessionID:  env.SessionID,
+				RequestID:  requestID,
+				OccurredAt: time.Now(),
+				Payload: map[string]any{
+					"user_content": extractFirstUserMessage(env),
+					"status_code":  env.StatusCode,
+					"model":        env.Metadata["model"],
+					"path":         r.URL.Path,
+				},
+			}
+			if err := deps.Publisher.Publish(ctx, evt); err != nil {
+				slog.Warn("v2 dispatch: publish request.completed failed",
+					"request_id", requestID, "error", err)
+			}
+		}
 	})
+}
+
+// extractFirstUserMessage 从 env 中尝试取出第一条用户消息文本。
+//
+// 容忍多种 envelope 形态（不同 endpoint 走不同结构）；找不到时返回空串。
+// 这里不做完整解析——只供 IntentWorker 分类用，越宽容越好。
+func extractFirstUserMessage(env *domain.PipelineRequest) string {
+	if env == nil || env.Metadata == nil {
+		return ""
+	}
+	for _, k := range []string{"user_content", "user_message", "prompt", "input"} {
+		if v, ok := env.Metadata[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // v2DispatchMux wires the v2 dispatch dependencies when the flag is
@@ -744,6 +796,7 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 	deps.analysisCancel = cancel
 
 	worker := workers.NewIntentWorker(slog.Default())
+	deps.intentWorker = worker
 	poll := bus.NewPGPollFunc(bus.AsPGDB(deps.PGDBPool), worker.SubscribedTypes(), deps.Config.AnalysisBatchSize)
 	mark := bus.NewPGMarkFunc(bus.AsPGDB(deps.PGDBPool), slog.Default())
 
@@ -753,11 +806,24 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 		Logger:    slog.Default(),
 	})
 
+	// PR-V4-10: 启动 IntentFlusher 把 worker 累计 flush 到 assets store。
+	// IntentStore 为 nil 时 flusher 只做 in-memory reset（仍跑 goroutine，
+	// 保持代码路径一致，便于测试）。
+	flusherCtx, flusherCancel := context.WithCancel(context.Background())
+	deps.intentCancel = flusherCancel
+	flusherInterval := deps.Config.AnalysisInterval * 6
+	if flusherInterval < 30*time.Second {
+		flusherInterval = 60 * time.Second
+	}
+	flusher := workers.NewIntentFlusher(worker, deps.IntentStore, flusherInterval, slog.Default())
+	go flusher.Run(flusherCtx)
+
 	slog.Info("v2 pipeline: V4 async analysis loop started",
 		"worker", worker.Name(),
 		"subscribed_types", worker.SubscribedTypes(),
 		"interval", deps.Config.AnalysisInterval.String(),
 		"batch_size", deps.Config.AnalysisBatchSize,
+		"flusher_interval", flusherInterval.String(),
 	)
 }
 
@@ -775,10 +841,21 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	if deps == nil {
 		return
 	}
-	// 先取消 analysis loop（PR-V4-09）。
+	// 先取消 flusher（PR-V4-10），保证它在 Loop 退出前把 worker 累计
+	// flush 到 store，避免最后窗内的 delta 丢失。
+	if deps.intentCancel != nil {
+		deps.intentCancel()
+		deps.intentCancel = nil
+	}
+	// 取消 analysis loop（PR-V4-09）。
 	if deps.analysisCancel != nil {
 		deps.analysisCancel()
 		deps.analysisCancel = nil
+	}
+	// Publisher / IntentStore 不由本函数关闭（pool 由 dbConn 管），
+	// 但调用 Close 让实现内部清理（PGPool 之外通常是 no-op）。
+	if deps.Publisher != nil {
+		_ = deps.Publisher.Close()
 	}
 	if deps.AuditWriter == nil {
 		return
@@ -789,10 +866,11 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	_ = deps.AuditWriter.Close()
 }
 
-// SetV2DispatchAnalysisResources (PR-V4-09) 把 main.go 持有的 DB pool 和
-// ApprovalManager 注入 deps，从而让 startAnalysisLoopIfConfigured 真正启动
-// Loop，并让 dispatch_gate 用真实 ApprovalCreator。
-func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mgr *sessionaudit.ApprovalManager) {
+// SetV2DispatchAnalysisResources (PR-V4-09 / PR-V4-10) 把 main.go 持有的
+// DB pool、ApprovalManager、Publisher、IntentStore 注入 deps，从而让
+// startAnalysisLoopIfConfigured 真正启动 Loop + Flusher，
+// 并让 dispatch_gate 用真实 ApprovalCreator、postflight publish 真写库。
+func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mgr *sessionaudit.ApprovalManager, pub bus.Publisher, store assets.IntentAggregateStore) {
 	if deps == nil {
 		return
 	}
@@ -801,5 +879,11 @@ func SetV2DispatchAnalysisResources(deps *v2DispatchDeps, pool *pgxpool.Pool, mg
 	}
 	if mgr != nil {
 		deps.ApprovalManager = mgr
+	}
+	if pub != nil {
+		deps.Publisher = pub
+	}
+	if store != nil {
+		deps.IntentStore = store
 	}
 }

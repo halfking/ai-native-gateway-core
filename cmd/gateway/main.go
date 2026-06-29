@@ -34,6 +34,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
+	"github.com/kaixuan/llm-gateway-go/domains/assets"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -1452,9 +1454,13 @@ func main() {
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
 		if _, v2Deps, ok := v2DispatchMux(chatHandler, messagesHandler, responsesHandler); ok && v2Deps != nil {
-			// PR-V4-09: 注入 DB pool + ApprovalManager 后再启动 Loop。
+			// PR-V4-09 / PR-V4-10: 注入 DB pool + ApprovalManager + Publisher +
+			// IntentStore 后再启动 Loop 和 Flusher。
 			if dbConn != nil && dbConn.Pool() != nil {
-				SetV2DispatchAnalysisResources(v2Deps, dbConn.Pool(), approvalMgr)
+				pool := dbConn.Pool()
+				pub := bus.NewPGPublisher(pool, slog.Default())
+				intentStore := assets.NewPGIntentAggregateStore(pool, slog.Default())
+				SetV2DispatchAnalysisResources(v2Deps, pool, approvalMgr, pub, intentStore)
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
