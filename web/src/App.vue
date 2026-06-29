@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { store, clearAll, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
+import { logout as apiLogout } from './api/auth'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import { useLoginModal } from './composables/useLoginModal'
@@ -101,7 +102,8 @@ watch(
   { immediate: true },
 )
 
-function logout() {
+async function logout() {
+  try { await apiLogout() } catch { /* ignore */ }
   clearAll()
   router.push('/')
 }

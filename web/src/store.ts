@@ -1,7 +1,7 @@
 import { reactive } from 'vue'
 
 const KEY = 'llmgw_api_key'
-const JWT_KEY = 'llmgw_jwt_token'
+// JWT_KEY removed (rule 20 §6.1): JWT now in HttpOnly cookie
 const USER_KEY = 'llmgw_user_info'
 const PREFERRED_CHAT_KEY_PREFIX = 'llmgw_preferred_key_id:'
 
@@ -18,7 +18,7 @@ export interface UserInfo {
 
 export const store = reactive({
   apiKey: localStorage.getItem(KEY) ?? '',
-  jwtToken: localStorage.getItem(JWT_KEY) ?? '',
+  jwtToken: '', // in-memory only, not persisted
   userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
 })
 
@@ -54,8 +54,7 @@ export function clearPreferredChatKeyId() {
 }
 
 export function setJwtToken(token: string) {
-  store.jwtToken = token
-  localStorage.setItem(JWT_KEY, token)
+  store.jwtToken = token || 'cookie' // transient in-memory flag
 }
 
 // Returns the token that should go into the `Authorization: Bearer` header.
@@ -67,7 +66,8 @@ export function setJwtToken(token: string) {
 // sends an empty bearer and 401s every admin endpoint. See api-autoroute.ts,
 // api-work-types.ts, PricingManagementView.vue.
 export function authBearer(): string {
-  return store.jwtToken || store.apiKey || ''
+  if (store.jwtToken) return '' // JWT via cookie
+  return store.apiKey || ''
 }
 
 export function setUserInfo(user: UserInfo | null) {
@@ -90,7 +90,6 @@ export function clearMustChangePasswordFlag() {
 export function clearJwt() {
   store.jwtToken = ''
   store.userInfo = null
-  localStorage.removeItem(JWT_KEY)
   localStorage.removeItem(USER_KEY)
 }
 
@@ -101,7 +100,7 @@ export function clearAll() {
 
 // Returns true if we have any valid auth credential (JWT or legacy API key).
 export function isAuthenticated(): boolean {
-  return !!(store.jwtToken || store.apiKey)
+  return !!(store.jwtToken || store.userInfo || store.apiKey)
 }
 
 // Returns true if current user is super_admin
