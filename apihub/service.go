@@ -26,6 +26,8 @@ type Store interface {
 	MarkHealth(ctx context.Context, tenantID string, k Kind, refID int64, state HealthState) error
 	// ListStale (Phase 7) returns assets whose last_seen_at is older than threshold.
 	ListStale(ctx context.Context, tenantID string, threshold time.Duration) ([]Asset, error)
+	// ListTenants (Phase 7 audit fix) returns all distinct tenant_id values.
+	ListTenants(ctx context.Context) ([]string, error)
 }
 
 // Service is the application-layer facade over Store. It adds an in-process
@@ -80,7 +82,9 @@ func (s *Service) Register(ctx context.Context, a Asset) error {
 	if a.HealthState == "" {
 		a.HealthState = HealthUnknown
 	}
-	a.RegisteredAt = time.Now().UTC()
+	now := time.Now().UTC()
+	a.RegisteredAt = now
+	a.LastSeenAt = now
 	if err := s.store.Upsert(ctx, a); err != nil {
 		return err
 	}
@@ -151,6 +155,10 @@ func (s *Service) MarkHealth(ctx context.Context, k Kind, refID int64, state Hea
 // ListStale (Phase 7) returns assets older than threshold.
 func (s *Service) ListStale(ctx context.Context, threshold time.Duration) ([]Asset, error) {
 	return s.store.ListStale(ctx, tenantFromCtx(ctx), threshold)
+}
+
+func (s *Service) ListTenants(ctx context.Context) ([]string, error) {
+	return s.store.ListTenants(ctx)
 }
 
 // StartRefresh launches a background goroutine that periodically refreshes
