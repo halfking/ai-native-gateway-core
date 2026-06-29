@@ -2306,29 +2306,43 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ToolCalls = b
 			}
 		}
-		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
-		// the post-processed quality signals into the request_log row.
-		// The non-stream path stores the result directly on
-		// ExecuteResult; the stream path already pushed them into the
-		// capture above (m["quality_flags"] etc.). For non-stream we
-		// simply read the fields that the executor set.
-		if len(result.QualityFlags) > 0 {
-			reqLog.QualityFlags = result.QualityFlags
-		}
-		if len(result.QualityFixActions) > 0 {
-			reqLog.QualityFixActions = result.QualityFixActions
-		}
-		if result.QualityScore != nil {
-			reqLog.QualityScore = result.QualityScore
-		}
+	}
+
+	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
+	// the post-processed quality signals into the request_log row.
+	// The non-stream path stores the result directly on
+	// ExecuteResult; the stream path already pushed them into the
+	// capture above (m["quality_flags"] etc.). For non-stream we
+	// simply read the fields that the executor set.
+	if len(result.QualityFlags) > 0 {
+		reqLog.QualityFlags = result.QualityFlags
+	}
+	if len(result.QualityFixActions) > 0 {
+		reqLog.QualityFixActions = result.QualityFixActions
+	}
+	if result.QualityScore != nil {
+		reqLog.QualityScore = result.QualityScore
+	}
+
+	// 2026-06-30: Extract tokens from response body for BOTH streaming and non-streaming.
+	// Previously this was inside the `if capture != nil` block, which meant non-streaming
+	// requests never had their completion_tokens/cache tokens extracted from the response.
+	// This caused request_logs to show NULL for completion_tokens and cache_*_tokens even
+	// when the upstream response contained a complete usage block.
+	if result.ResponseBody != nil && len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
 		if pt > 0 || ct > 0 {
-			reqLog.PromptTokens = &pt
-			reqLog.CompletionTokens = &ct
-			if crt > 0 {
+			// Only overwrite if not already set from streaming capture
+			if reqLog.PromptTokens == nil || *reqLog.PromptTokens == 0 {
+				reqLog.PromptTokens = &pt
+			}
+			if reqLog.CompletionTokens == nil || *reqLog.CompletionTokens == 0 {
+				reqLog.CompletionTokens = &ct
+			}
+			if crt > 0 && (reqLog.CacheReadTokens == nil || *reqLog.CacheReadTokens == 0) {
 				reqLog.CacheReadTokens = &crt
 			}
-			if cwt > 0 {
+			if cwt > 0 && (reqLog.CacheWriteTokens == nil || *reqLog.CacheWriteTokens == 0) {
 				reqLog.CacheWriteTokens = &cwt
 			}
 		}
