@@ -414,9 +414,9 @@ func httpHandler(deps *v2Deps) http.Handler {
 		// 指纹，便于关联但不泄露密钥。
 		apiKey := r.Header.Get("X-API-Key")
 		env.Metadata = map[string]any{
-			"user_content":  r.URL.Query().Get("q"),
-			"model":         r.URL.Query().Get("model"),
-			"api_key_fp":    fingerprintKey(apiKey),
+			"user_content": r.URL.Query().Get("q"),
+			"model":        r.URL.Query().Get("model"),
+			"api_key_fp":   fingerprintKey(apiKey),
 		}
 		if env.Metadata["user_content"] == nil {
 			env.Metadata["user_content"] = ""
@@ -452,6 +452,104 @@ func httpHandler(deps *v2Deps) http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+
+	// /v1/chat/completions — OpenAI 兼容 chat completions 端点
+	// (2026-06-29 端点补全 P0 第 1 步)
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			Stream bool   `json:"stream"`
+			User   string `json:"user,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model == "" {
+			req.Model = "gpt-4o"
+		}
+		if len(req.Messages) == 0 {
+			http.Error(w, "messages array is required", http.StatusBadRequest)
+			return
+		}
+
+		lastUser := ""
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			if req.Messages[i].Role == "user" {
+				lastUser = req.Messages[i].Content
+				break
+			}
+		}
+
+		ctx := r.Context()
+		env := domain.NewRequestEnvelope(ctx, &domain.RequestEnvelope{
+			RequestID: fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+			CreatedAt: time.Now(),
+			GoContext: ctx,
+		})
+		env.TenantID = r.Header.Get("X-Tenant-ID")
+		env.SessionID = r.Header.Get("X-Session-ID")
+		env.Metadata = map[string]any{
+			"model":         req.Model,
+			"user_content":  lastUser,
+			"message_count": len(req.Messages),
+			"stream":        req.Stream,
+			"api_key_fp":    fingerprintKey(r.Header.Get("X-API-Key")),
+		}
+		if err := deps.Pipeline.Execute(ctx, env); err != nil {
+			slog.Error("v2 chat/completions pipeline failed",
+				"request_id", env.Envelope.RequestID, "err", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message":    "internal error",
+					"type":       "internal_error",
+					"request_id": env.Envelope.RequestID,
+				},
+			})
+			return
+		}
+
+		promptTokens := len(lastUser) / 4
+		completionContent := fmt.Sprintf("[gateway-v2 demo] 收到模型 %s 的请求。最后一条 user 消息: %q。完整 Pipeline 已执行 17 stages。",
+			req.Model, truncate(lastUser, 100))
+		completionTokens := len(completionContent) / 4
+
+		completionID := env.Envelope.RequestID
+		resp := map[string]any{
+			"id":      completionID,
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   req.Model,
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": completionContent,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]any{
+				"prompt_tokens":     promptTokens,
+				"completion_tokens": completionTokens,
+				"total_tokens":      promptTokens + completionTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 
 	// /v1/models — OpenAI 兼容的模型列表端点（2026-06-26 端点补全第一步）
@@ -550,3 +648,12 @@ var (
 	_ *credential.HealthCheckHook
 	_ *provider.ProviderDiscoveryHook
 )
+
+// truncate 截断字符串到 maxLen runes（避免 split multibyte）
+func truncate(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
