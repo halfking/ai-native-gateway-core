@@ -363,6 +363,7 @@ func newDeps(cfg *v2Config) *v2Deps {
 			{Name: "gpt-4o", MaxContextTokens: 128000, SupportsStream: true, SupportsTools: true},
 			{Name: "gpt-4", MaxContextTokens: 8192, SupportsStream: true, SupportsTools: true},
 			{Name: "gpt-3.5-turbo", MaxContextTokens: 4096, SupportsStream: true},
+			{Name: "claude-3-5-sonnet-20241022", MaxContextTokens: 200000, SupportsStream: true, SupportsTools: true},
 		},
 		TimeoutSec: 60,
 	})
@@ -547,6 +548,104 @@ func httpHandler(deps *v2Deps) http.Handler {
 				"prompt_tokens":     promptTokens,
 				"completion_tokens": completionTokens,
 				"total_tokens":      promptTokens + completionTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// /v1/messages — Anthropic Messages API 兼容端点 (2026-06-29 端点补全第 4 步)
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			System    string `json:"system"`
+			Messages  []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model == "" {
+			req.Model = "claude-3-5-sonnet-20241022"
+		}
+		if req.MaxTokens <= 0 {
+			req.MaxTokens = 1024
+		}
+		if len(req.Messages) == 0 {
+			http.Error(w, "messages is required", http.StatusBadRequest)
+			return
+		}
+		for _, m := range req.Messages {
+			if m.Role == "system" {
+				http.Error(w, "system role must be top-level field", http.StatusBadRequest)
+				return
+			}
+		}
+
+		lastUser := ""
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			if req.Messages[i].Role == "user" {
+				lastUser = req.Messages[i].Content
+				break
+			}
+		}
+
+		ctx := r.Context()
+		env := domain.NewRequestEnvelope(ctx, &domain.RequestEnvelope{
+			RequestID: fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+			CreatedAt: time.Now(),
+			GoContext: ctx,
+		})
+		env.TenantID = r.Header.Get("X-Tenant-ID")
+		env.SessionID = r.Header.Get("X-Session-ID")
+		env.Metadata = map[string]any{
+			"model":         req.Model,
+			"max_tokens":    req.MaxTokens,
+			"system":        req.System,
+			"user_content":  lastUser,
+			"message_count": len(req.Messages),
+			"api_key_fp":    fingerprintKey(r.Header.Get("X-API-Key")),
+		}
+		if err := deps.Pipeline.Execute(ctx, env); err != nil {
+			slog.Error("v2 messages pipeline failed",
+				"request_id", env.Envelope.RequestID, "err", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "internal_error",
+					"message": "internal error",
+				},
+			})
+			return
+		}
+
+		inputTokens := (len(lastUser) + len(req.System)) / 4
+		contentText := fmt.Sprintf("[gateway-v2 demo] 收到 Anthropic Messages API 请求。模型: %s, max_tokens: %d, system: %q。最后一条 user: %q。Pipeline 已完成。",
+			req.Model, req.MaxTokens, truncate(req.System, 50), truncate(lastUser, 80))
+		outputTokens := len(contentText) / 4
+
+		resp := map[string]any{
+			"id":            env.Envelope.RequestID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []map[string]any{{"type": "text", "text": contentText}},
+			"model":         req.Model,
+			"stop_reason":   "end_turn",
+			"stop_sequence": nil,
+			"usage": map[string]any{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")

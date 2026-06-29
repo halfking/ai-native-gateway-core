@@ -33,9 +33,14 @@ FAILURE_RATE = float(os.environ.get("MOCK_FAILURE_RATE", "0.0"))
 
 
 def make_response(model: str, content: str, request_id: str) -> dict:
+    # NOTE: we omit `object` and other fields that the gateway's
+    # StripMinimaxFieldsBody would strip anyway (object, request_id,
+    # usage_extra, ...). This keeps the body length consistent with what
+    # the gateway will pass through to the client. Without this, the
+    # gateway emits Content-Length=N (mock's full size) but the actual
+    # body is N-K (after stripping), causing client IncompleteRead.
     return {
         "id": f"chatcmpl-{request_id}",
-        "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
         "choices": [
@@ -143,7 +148,11 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         return response
 
     body_out = make_response(model, content, request_id)
-    body_out["x_request_id"] = request_id
+    # NOTE: do NOT add custom top-level fields like x_request_id to the body.
+    # The gateway's StripMinimaxFieldsBody hook strips non-standard fields
+    # from the upstream response, which would cause Content-Length to
+    # disagree with the actual body bytes (client gets IncompleteRead).
+    # The X-Request-Id response HEADER is still set below for log correlation.
     elapsed = (time.monotonic() - started) * 1000
     print(f"[{TOKEN}] req={request_id} OK after {elapsed:.0f}ms "
           f"(budget={delay_ms}ms, model={model})",

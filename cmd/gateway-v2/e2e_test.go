@@ -519,6 +519,119 @@ func TestE2E_ChatCompletionsEndpoint(t *testing.T) {
 	})
 }
 
+// TestE2E_MessagesEndpoint 验证 /v1/messages（Anthropic Messages API 兼容）
+func TestE2E_MessagesEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true, EnableSecurity: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("valid_request", func(t *testing.T) {
+		body := `{
+			"model": "claude-3-5-sonnet-20241022",
+			"max_tokens": 1024,
+			"system": "You are a helpful assistant.",
+			"messages": [{"role": "user", "content": "Hello, Claude!"}]
+		}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			ID         string `json:"id"`
+			Type       string `json:"type"`
+			Role       string `json:"role"`
+			Model      string `json:"model"`
+			StopReason string `json:"stop_reason"`
+			Content    []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+
+		if resp.Type != "message" {
+			t.Errorf("expected type='message', got %q", resp.Type)
+		}
+		if resp.Role != "assistant" {
+			t.Errorf("expected role='assistant', got %q", resp.Role)
+		}
+		if resp.Model != "claude-3-5-sonnet-20241022" {
+			t.Errorf("expected model='claude-3-5-sonnet-20241022', got %q", resp.Model)
+		}
+		if resp.StopReason != "end_turn" {
+			t.Errorf("expected stop_reason='end_turn', got %q", resp.StopReason)
+		}
+		if len(resp.Content) != 1 {
+			t.Fatalf("expected 1 content block, got %d", len(resp.Content))
+		}
+		if resp.Content[0].Type != "text" {
+			t.Errorf("expected content type='text', got %q", resp.Content[0].Type)
+		}
+		if resp.Content[0].Text == "" {
+			t.Error("expected non-empty content text")
+		}
+		if resp.Usage.InputTokens == 0 {
+			t.Error("expected non-zero input_tokens")
+		}
+	})
+
+	t.Run("system_role_in_messages_rejected", func(t *testing.T) {
+		// Anthropic 强制要求 system 必须是顶级字段，不能放在 messages 里
+		body := `{
+			"model": "claude-3-5-sonnet-20241022",
+			"max_tokens": 100,
+			"messages": [
+				{"role": "system", "content": "Should be top-level"},
+				{"role": "user", "content": "Hello"}
+			]
+		}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("expected 400 for system role in messages, got %d", rec.Code)
+		}
+	})
+
+	t.Run("empty_messages", func(t *testing.T) {
+		body := `{"model": "claude-3-5-sonnet-20241022", "max_tokens": 100, "messages": []}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("expected 400, got %d", rec.Code)
+		}
+	})
+
+	t.Run("default_max_tokens", func(t *testing.T) {
+		// 不传 max_tokens 应该有默认值（1024）
+		body := `{"model": "claude-3-5-sonnet-20241022", "messages": [{"role": "user", "content": "hi"}]}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		// 200 with default max_tokens applied
+		if rec.Code != 200 {
+			t.Errorf("expected 200 with default max_tokens, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 // TestE2E_CompletionsEndpoint 验证 /v1/completions（OpenAI 旧版 completions）
 func TestE2E_CompletionsEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
