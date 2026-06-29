@@ -652,6 +652,124 @@ func httpHandler(deps *v2Deps) http.Handler {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
+	// /v1/responses — OpenAI Responses API 兼容端点
+	// (2026-06-29 端点补全 P0 第 5 步)
+	//
+	// OpenAI Responses API 格式 (2025 新版):
+	//   request:  {"model": "gpt-4o", "input": "Hello"} 或
+	//             {"model": "gpt-4o", "input": [{"role": "user", "content": "Hello"}]}
+	//   response: {"id": "resp_...", "object": "response", "status": "completed",
+	//              "output": [{"type": "message", "role": "assistant",
+	//                          "content": [{"type": "output_text", "text": "..."}]}],
+	//              "model": "...", "usage": {"input_tokens": N, "output_tokens": M}}
+	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Model     string          `json:"model"`
+			Input     json.RawMessage `json:"input"`
+			MaxTokens *int            `json:"max_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Model == "" {
+			req.Model = "gpt-4o"
+		}
+		if len(req.Input) == 0 {
+			http.Error(w, "input is required", http.StatusBadRequest)
+			return
+		}
+
+		// 提取 input 内容（字符串或数组）
+		inputText := strings.TrimSpace(string(req.Input))
+		if strings.HasPrefix(inputText, "[") {
+			// 数组格式: [{"role": "user", "content": "..."}]
+			var items []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(req.Input, &items); err == nil && len(items) > 0 {
+				// 取最后一个 user 内容
+				for i := len(items) - 1; i >= 0; i-- {
+					if items[i].Role == "user" {
+						inputText = items[i].Content
+						break
+					}
+				}
+			}
+		}
+		inputText = strings.Trim(inputText, `"`)
+
+		ctx := r.Context()
+		env := domain.NewRequestEnvelope(ctx, &domain.RequestEnvelope{
+			RequestID: fmt.Sprintf("resp_%d", time.Now().UnixNano()),
+			CreatedAt: time.Now(),
+			GoContext: ctx,
+		})
+		env.TenantID = r.Header.Get("X-Tenant-ID")
+		env.SessionID = r.Header.Get("X-Session-ID")
+		env.Metadata = map[string]any{
+			"model":        req.Model,
+			"user_content": inputText,
+			"api_key_fp":   fingerprintKey(r.Header.Get("X-API-Key")),
+		}
+		if req.MaxTokens != nil {
+			env.Metadata["max_tokens"] = *req.MaxTokens
+		}
+		if err := deps.Pipeline.Execute(ctx, env); err != nil {
+			slog.Error("v2 responses pipeline failed",
+				"request_id", env.Envelope.RequestID, "err", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "internal error", "type": "internal_error",
+					"request_id": env.Envelope.RequestID,
+				},
+			})
+			return
+		}
+
+		inputTokens := len(inputText) / 4
+		outputText := fmt.Sprintf("[gateway-v2 demo] 收到 OpenAI Responses API 请求。模型: %s, input: %q。Pipeline 17 stages 已完成。",
+			req.Model, truncate(inputText, 100))
+		outputTokens := len(outputText) / 4
+
+		resp := map[string]any{
+			"id":         env.Envelope.RequestID,
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "completed",
+			"model":      req.Model,
+			"output": []map[string]any{
+				{
+					"type": "message",
+					"id":   "msg_" + env.Envelope.RequestID,
+					"role": "assistant",
+					"content": []map[string]any{
+						{
+							"type":        "output_text",
+							"text":        outputText,
+							"annotations": []any{},
+						},
+					},
+				},
+			},
+			"usage": map[string]any{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"total_tokens":  inputTokens + outputTokens,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
 	// /v1/completions — OpenAI 旧版 completions 端点 (legacy)
 	// (2026-06-29 端点补全 P0 第 3 步)
 	//
