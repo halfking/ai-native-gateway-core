@@ -34,6 +34,20 @@ var partitionedTables = []partitionedTableConfig{
 		Description:      "请求预写日志表",
 		HasArchiveFunc:   true, // Added in migration 305
 	},
+	{
+		TableName:        "routing_decision_log",
+		ArchiveTableName: "routing_decision_log_archive",
+		PartitionColumn:  "ts",
+		Description:      "路由决策日志表",
+		HasArchiveFunc:   true, // Added in migration 318
+	},
+	{
+		TableName:        "credential_model_index",
+		ArchiveTableName: "credential_model_index_archive",
+		PartitionColumn:  "bucket",
+		Description:      "凭据模型健康度索引（5min rollup）",
+		HasArchiveFunc:   true, // Added in migration 318; main table partitioned in 317
+	},
 }
 
 // partitionInfo represents information about a table partition
@@ -226,13 +240,13 @@ func (h *Handler) getPartitionTableStatus(ctx context.Context, config partitione
 // POST /api/admin/data-lifecycle/partitions/archive
 // Archives a specific partition to columnar storage
 type archivePartitionRequest struct {
-	TableName     string `json:"table_name"`      // e.g., "request_logs"
-	ArchiveMonth  string `json:"archive_month"`   // YYYY-MM format
-	DryRun        bool   `json:"dry_run"`
+	TableName    string `json:"table_name"`    // e.g., "request_logs"
+	ArchiveMonth string `json:"archive_month"` // YYYY-MM format
+	DryRun       bool   `json:"dry_run"`
 }
 
 type archivePartitionResponse struct {
-	Status           string `json:"status"`            // "success", "skipped", "error", "dry_run"
+	Status           string `json:"status"` // "success", "skipped", "error", "dry_run"
 	TableName        string `json:"table_name"`
 	ArchiveMonth     string `json:"archive_month"`
 	RowsMigrated     int64  `json:"rows_migrated"`
@@ -316,7 +330,7 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 		// Execute archive function
 		funcName := fmt.Sprintf("archive_%s", req.TableName)
 		query := fmt.Sprintf("SELECT status, rows_migrated, partition_dropped FROM %s($1)", funcName)
-		
+
 		var status string
 		err := h.db.QueryRow(ctx, query, archiveDate).Scan(
 			&status,
@@ -459,7 +473,7 @@ func (h *Handler) executeArchivePartition(ctx context.Context, req archivePartit
 	} else {
 		funcName := fmt.Sprintf("archive_%s", req.TableName)
 		query := fmt.Sprintf("SELECT status, rows_migrated, partition_dropped FROM %s($1)", funcName)
-		
+
 		var status string
 		err := h.db.QueryRow(timeoutCtx, query, archiveDate).Scan(
 			&status,
@@ -512,12 +526,12 @@ func parsePartitionBounds(bounds string) (time.Time, time.Time, error) {
 
 // Helper function to check if a string contains a substring
 func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		(s == substr || 
-		 (len(s) > len(substr) && 
-		  (s[:len(substr)] == substr || 
-		   s[len(s)-len(substr):] == substr ||
-		   containsSubstringMiddle(s, substr))))
+	return len(s) >= len(substr) &&
+		(s == substr ||
+			(len(s) > len(substr) &&
+				(s[:len(substr)] == substr ||
+					s[len(s)-len(substr):] == substr ||
+					containsSubstringMiddle(s, substr))))
 }
 
 func containsSubstringMiddle(s, substr string) bool {

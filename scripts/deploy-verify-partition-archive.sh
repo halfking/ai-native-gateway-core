@@ -65,31 +65,60 @@ echo ""
 
 # Database verification
 if [ "$SKIP_DB_CHECKS" != "true" ]; then
-    print_step "2. Verifying database migration 305..."
+    print_step "2. Verifying database migration 305 + 317 + 318 + 318b..."
     
-    # Check if archive functions exist
-    echo "Checking archive_request_wal function..."
-    FUNC_COUNT=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
-        "SELECT COUNT(*) FROM pg_proc WHERE proname = 'archive_request_wal';" 2>/dev/null || echo "0")
+    # Check that all 4 archive functions exist (305, 318)
+    echo "Checking archive functions..."
+    EXPECTED_FUNCS=("archive_request_logs" "archive_request_wal" "archive_routing_decision_log" "archive_credential_model_index")
+    for fn in "${EXPECTED_FUNCS[@]}"; do
+        FUNC_COUNT=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
+            "SELECT COUNT(*) FROM pg_proc WHERE proname = '$fn';" 2>/dev/null || echo "0")
+        if [ "$FUNC_COUNT" -gt 0 ]; then
+            print_success "$fn() function exists"
+        else
+            print_error "$fn() function NOT found"
+            echo "Run migration 305 / 318: psql -h \$DB_HOST -U \$DB_USER -d \$DB_NAME -f db/migrations/305_partition_archive_functions.sql db/migrations/318_fix_archive_functions.sql"
+            exit 1
+        fi
+    done
     
-    if [ "$FUNC_COUNT" -gt 0 ]; then
-        print_success "archive_request_wal() function exists"
+    # Check that all 4 archive tables exist
+    echo "Checking archive tables..."
+    EXPECTED_TABLES=("request_logs_archive" "request_wal_archive" "routing_decision_log_archive" "credential_model_index_archive")
+    for tbl in "${EXPECTED_TABLES[@]}"; do
+        TABLE_COUNT=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
+            "SELECT COUNT(*) FROM pg_class WHERE relname = '$tbl' AND relnamespace = 'public'::regnamespace;" 2>/dev/null || echo "0")
+        if [ "$TABLE_COUNT" -gt 0 ]; then
+            print_success "$tbl table exists"
+        else
+            print_error "$tbl table NOT found"
+            exit 1
+        fi
+    done
+    
+    # Check credential_model_index is partitioned (migration 317)
+    echo "Checking credential_model_index is partitioned..."
+    RELKIND=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
+        "SELECT relkind FROM pg_class WHERE relname = 'credential_model_index' AND relnamespace = 'public'::regnamespace;" 2>/dev/null | tr -d ' ')
+    if [ "$RELKIND" = "p" ]; then
+        print_success "credential_model_index is a partitioned table (relkind=p)"
     else
-        print_error "archive_request_wal() function NOT found"
-        echo "Run migration: psql -h \$DB_HOST -U \$DB_USER -d \$DB_NAME -f db/migrations/305_partition_archive_functions.sql"
+        print_error "credential_model_index is NOT partitioned (relkind=$RELKIND, expected p). Run migration 317."
         exit 1
     fi
     
-    # Check if archive table exists
-    echo "Checking request_wal_archive table..."
-    TABLE_COUNT=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
-        "SELECT COUNT(*) FROM pg_class WHERE relname = 'request_wal_archive' AND relnamespace = 'public'::regnamespace;" 2>/dev/null || echo "0")
-    
-    if [ "$TABLE_COUNT" -gt 0 ]; then
-        print_success "request_wal_archive table exists"
+    # Check archive partitions are columnar (or heap for request_logs)
+    echo "Checking archive access methods..."
+    ARCHIVE_AM=$(psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -c \
+        "SELECT am.amname
+           FROM pg_class c
+           JOIN pg_am am ON c.relam = am.oid
+          WHERE c.relname = 'credential_model_index_archive_2026_06'
+            AND c.relnamespace = 'public'::regnamespace;" 2>/dev/null | tr -d ' ')
+    if [ "$ARCHIVE_AM" = "columnar" ]; then
+        print_success "credential_model_index_archive_2026_06 is columnar"
     else
-        print_error "request_wal_archive table NOT found"
-        exit 1
+        print_warning "credential_model_index_archive_2026_06 am=$ARCHIVE_AM (expected columnar, but not yet archived)"
     fi
     
     echo ""
@@ -130,35 +159,36 @@ fi
 
 echo ""
 
-# Test dry-run archive
-print_step "4. Testing dry-run archive..."
+# Test dry-run archive for every supported table
+print_step "4. Testing dry-run archive for all 4 tables..."
 
 # Get a recent month (3 months ago) for testing
 TEST_MONTH=$(date -d '3 months ago' +%Y-%m 2>/dev/null || date -v-3m +%Y-%m 2>/dev/null || echo "2026-03")
 
-echo "Testing dry-run archive for request_logs $TEST_MONTH..."
-HTTP_CODE=$(curl -s -o /tmp/archive_response.json -w "%{http_code}" \
-    -X POST \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "{\"table_name\":\"request_logs\",\"archive_month\":\"$TEST_MONTH\",\"dry_run\":true}" \
-    "$API_BASE_URL/api/admin/data-lifecycle/partitions/archive")
+TABLES=("request_logs" "request_wal" "routing_decision_log" "credential_model_index")
+for TABLE in "${TABLES[@]}"; do
+    echo "Testing dry-run archive for $TABLE $TEST_MONTH..."
+    HTTP_CODE=$(curl -s -o /tmp/archive_response.json -w "%{http_code}" \
+        -X POST \
+        -H "Authorization: Bearer $ADMIN_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"table_name\":\"$TABLE\",\"archive_month\":\"$TEST_MONTH\",\"dry_run\":true}" \
+        "$API_BASE_URL/api/admin/data-lifecycle/partitions/archive")
 
-if [ "$HTTP_CODE" = "200" ]; then
-    print_success "POST /api/admin/data-lifecycle/partitions/archive (dry-run) - OK (200)"
-    
-    if command -v jq &> /dev/null; then
-        STATUS=$(jq -r '.status' /tmp/archive_response.json 2>/dev/null)
-        MESSAGE=$(jq -r '.message' /tmp/archive_response.json 2>/dev/null)
-        echo "  Status: $STATUS"
-        echo "  Message: $MESSAGE"
+    if [ "$HTTP_CODE" = "200" ]; then
+        print_success "POST .../archive (dry-run, $TABLE) - OK (200)"
+        if command -v jq &> /dev/null; then
+            STATUS=$(jq -r '.status' /tmp/archive_response.json 2>/dev/null)
+            MESSAGE=$(jq -r '.message' /tmp/archive_response.json 2>/dev/null)
+            echo "  Status: $STATUS"
+            echo "  Message: $MESSAGE"
+        fi
+    else
+        print_error "POST .../archive (dry-run, $TABLE) - Failed ($HTTP_CODE)"
+        cat /tmp/archive_response.json
+        exit 1
     fi
-else
-    print_error "POST /api/admin/data-lifecycle/partitions/archive - Failed ($HTTP_CODE)"
-    echo "Response:"
-    cat /tmp/archive_response.json
-    exit 1
-fi
+done
 
 echo ""
 
@@ -169,8 +199,19 @@ print_success "All checks passed!"
 echo ""
 echo "Next steps:"
 echo "  1. Monitor the partitions status in admin interface"
-echo "  2. Review archivable partitions count"
+echo "  2. Review archivable partitions count (4 tables now supported)"
 echo "  3. Execute actual archive when ready (remove dry_run flag)"
+echo ""
+echo "Tables under lifecycle management (migration 318):"
+echo "  - request_logs             (ts,        columnar archive)"
+echo "  - request_wal              (created_at, columnar archive)"
+echo "  - routing_decision_log     (ts,        columnar archive)"
+echo "  - credential_model_index   (bucket,    columnar archive, 7d cutoff)"
+echo ""
+echo "Monthly schedule (cron: 0 4 1-3 * * /opt/scripts/columnar-monthly-cron.sh):"
+echo "  day 1: request_logs, routing_decision_log"
+echo "  day 2: request_wal"
+echo "  day 3: credential_model_index"
 echo ""
 echo "Documentation:"
 echo "  - Quick Start: DATA_LIFECYCLE_PARTITION_README.md"
