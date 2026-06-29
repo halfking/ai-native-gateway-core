@@ -85,7 +85,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 
 	// Step 3: 候选推荐（使用新逻辑）
-	recommended := idx.RecommendV2(ctx, cls.Primary, sigs, sessionID, d.TopN)
+	recommended := idx.RecommendV2(ctx, cls.Primary, sigs, profile, sessionID, d.TopN)
 
 	// 应用 override store（如果配置）
 	if d.overrideStore != nil {

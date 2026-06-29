@@ -316,6 +316,12 @@ type ChatHandler struct {
 	// overridden via LLM_GATEWAY_SESSION_REUSE_WINDOW env. 0 means
 	// "always create new" (no recent-session reuse).
 	sessionReuseWindow time.Duration
+
+	// responseInterceptor (2026-06-29, auto-control feature) intercepts
+	// LLM responses before forwarding to clients. Enables automatic handoff
+	// when context limits are reached and goal-mode continuous execution.
+	// nil disables response interception (default).
+	responseInterceptor ResponseInterceptor
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -323,6 +329,63 @@ type ToolRegistryService interface {
 	Get(ctx context.Context, tenantID, toolID string) (*registry.ToolDef, error)
 	GetCategory(ctx context.Context, tenantID, category string) ([]*registry.ToolDef, error)
 	ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string
+}
+
+// ResponseInterceptor intercepts LLM responses before forwarding to clients.
+// Enables automatic handoff and goal-mode continuous execution.
+type ResponseInterceptor interface {
+	InterceptNonStream(ctx context.Context, req *ResponseInterceptRequest) (*ResponseInterceptResult, error)
+	InterceptStreamChunk(ctx context.Context, chunk []byte, meta *ResponseStreamMeta) (*ResponseChunkResult, error)
+	InterceptStreamEnd(ctx context.Context, meta *ResponseStreamMeta) (*ResponseEndResult, error)
+}
+
+// ResponseInterceptRequest contains context for response interception.
+type ResponseInterceptRequest struct {
+	SessionID     string
+	RequestID     string
+	TenantID      string
+	ClientModel   string
+	ResponseBody  []byte
+	TokensUsed    int
+	ContextWindow int
+	MessageCount  int
+	FinishReason  string
+	IsStreaming   bool
+}
+
+// ResponseInterceptResult contains the outcome of response interception.
+type ResponseInterceptResult struct {
+	ShouldBlock    bool
+	ModifiedBody   []byte
+	InjectFollowUp []byte
+	Action         string
+	Metadata       map[string]interface{}
+}
+
+// ResponseStreamMeta contains metadata for stream interception.
+type ResponseStreamMeta struct {
+	SessionID     string
+	RequestID     string
+	TenantID      string
+	ClientModel   string
+	ContextWindow int
+	MessageCount  int
+	TokensUsed    int
+	ChunkIndex    int
+}
+
+// ResponseChunkResult contains the outcome of stream chunk interception.
+type ResponseChunkResult struct {
+	ShouldBlock   bool
+	ModifiedChunk []byte
+	InjectAfter   []byte
+}
+
+// ResponseEndResult contains the outcome of stream end interception.
+type ResponseEndResult struct {
+	InjectFollowUp []byte
+	Action         string
+	Metadata       map[string]interface{}
 }
 
 func NewChatHandler(cm *credential.Manager, l *credential.Limiter, matrix *transformation.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
@@ -503,6 +566,16 @@ func (h *ChatHandler) SetRequestLogHook(hook func(*telemetry.RequestLogEntry)) {
 // cmd/gateway-v2/main.go, the demo binary).
 func (h *ChatHandler) SetSessionAuditHook(hook *sessionaudithook.SessionAuditHook) {
 	h.sessionAuditHook = hook
+}
+
+// SetResponseInterceptor wires the response interceptor for automatic
+// handoff and goal mode. When set, the handler calls the interceptor
+// after receiving LLM responses but before forwarding to clients.
+// nil disables response interception (default).
+//
+// 2026-06-29: auto-control feature integration point.
+func (h *ChatHandler) SetResponseInterceptor(interceptor ResponseInterceptor) {
+	h.responseInterceptor = interceptor
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
@@ -1756,6 +1829,63 @@ func (h *ChatHandler) serveWithExecutor(
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
+
+	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
+	// Call interceptor after successful execution but before final metrics.
+	// This enables automatic handoff when context limits are reached and
+	// goal-mode continuous execution.
+	if h.responseInterceptor != nil && result != nil {
+		// Calculate total message count from request body
+		msgCount := extractMessageCount(bodyBytes)
+		
+		interceptReq := &ResponseInterceptRequest{
+			SessionID:     gwSessionID,
+			RequestID:     requestID,
+			TenantID:      func() string { if keyInfo != nil { return keyInfo.TenantID }; return "" }(),
+			ClientModel:   clientModel,
+			ResponseBody:  result.ResponseBody,
+			TokensUsed:    extractTotalTokens(result.ResponseBody, streamCapture),
+			ContextWindow: func() int { if len(candidates) > 0 && candidates[0].ContextWindow != nil { return *candidates[0].ContextWindow }; return 0 }(),
+			MessageCount:  msgCount,
+			FinishReason:  extractFinishReason(result.ResponseBody),
+			IsStreaming:   isStream,
+		}
+		
+		if isStream {
+			// For streaming, call InterceptStreamEnd
+			interceptMeta := &ResponseStreamMeta{
+				SessionID:     gwSessionID,
+				RequestID:     requestID,
+				TenantID:      interceptReq.TenantID,
+				ClientModel:   clientModel,
+				ContextWindow: interceptReq.ContextWindow,
+				MessageCount:  msgCount,
+				TokensUsed:    interceptReq.TokensUsed,
+			}
+			
+			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
+				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
+			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {
+				// Inject follow-up request asynchronously
+				go h.injectFollowUpRequest(context.Background(), gwSessionID, endResult.InjectFollowUp, endResult.Action)
+			}
+		} else {
+			// For non-streaming, call InterceptNonStream
+			if interceptResult, err := h.responseInterceptor.InterceptNonStream(r.Context(), interceptReq); err != nil {
+				slog.Warn("response_interceptor_failed", "error", err, "session_id", gwSessionID)
+			} else if interceptResult != nil {
+				if interceptResult.ShouldBlock {
+					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
+					// Response was blocked, don't continue
+					return
+				}
+				if len(interceptResult.InjectFollowUp) > 0 {
+					// Inject follow-up request asynchronously
+					go h.injectFollowUpRequest(context.Background(), gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
+				}
+			}
+		}
+	}
 
 	// ── Request WAL: async update on execution success ─────────────
 	if h.requestLogger != nil && result != nil {
