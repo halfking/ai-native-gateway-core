@@ -1713,7 +1713,12 @@ onUnmounted(() => {
 .top-bar > .label {
   font-size: 11px;
 }
-.top-bar .field-input { font-size: 11px; padding: 2px 6px; }
+.top-bar .field-input {
+  width: auto;
+  max-width: 120px;
+  font-size: 11px;
+  padding: 2px 6px;
+}
 .top-bar .spacer { flex: 1; }
 .top-bar .btn-sm { font-size: 11px; padding: 2px 8px; }
 .top-bar .quick-filter-group { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
