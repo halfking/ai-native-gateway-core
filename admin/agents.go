@@ -207,8 +207,11 @@ func (h *AgentsHandler) Neighbors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	depth := 1
-	if d, err := strconv.Atoi(r.URL.Query().Get("depth")); err == nil && d >= 1 && d <= 5 {
+	if d, err := strconv.Atoi(r.URL.Query().Get("depth")); err == nil && d >= 1 {
 		depth = d
+	}
+	if depth > 5 {
+		depth = 5
 	}
 
 	seed, err := h.svc.Get(ctx, apihub.KindLLMEndpoint, refID)
