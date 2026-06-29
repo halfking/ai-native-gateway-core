@@ -16,7 +16,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/credentialstate"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1051,7 +1050,7 @@ func main() {
 			// still-failing → mark unreachable; recovered → clear.
 			// stateWriter lets it write availability_state='unreachable'.
 			slog.Info("CHECKPOINT: before NewPassiveProbeListener")
-			passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credentialstate.NewWriter(dbConn.Pool()))
+			passiveProbe = bg.NewPassiveProbeListener(dbConn.Pool(), credential.NewWriter(dbConn.Pool()))
 			passiveProbe.SetAvailabilityCache(modelAvailabilityCache)
 			slog.Info("CHECKPOINT: before passiveProbe.Start")
 			passiveProbe.Start(context.Background())
