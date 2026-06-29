@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -20,8 +21,8 @@ func NewSessionAnalyticsHandler(db *sql.DB) *SessionAnalyticsHandler {
 	return &SessionAnalyticsHandler{db: db}
 }
 
-// SessionSummary 会话摘要
-type SessionSummary struct {
+// AnalyticsSessionSummary 会话摘要
+type AnalyticsSessionSummary struct {
 	SessionKey              string    `json:"session_key"`
 	TenantID                string    `json:"tenant_id"`
 	FirstRequestAt          time.Time `json:"first_request_at"`
@@ -60,8 +61,8 @@ type SessionSummary struct {
 	UpdatedAt               time.Time `json:"updated_at"`
 }
 
-// SessionStats 会话统计
-type SessionStats struct {
+// AnalyticsSessionStats 会话统计
+type AnalyticsSessionStats struct {
 	TotalSessions       int     `json:"total_sessions"`
 	ActiveSessions      int     `json:"active_sessions"`
 	TotalRequests       int64   `json:"total_requests"`
@@ -73,9 +74,9 @@ type SessionStats struct {
 	HighQualityRate     float64 `json:"high_quality_rate"`
 }
 
-// SessionDetail 会话详情
-type SessionDetail struct {
-	Summary  SessionSummary  `json:"summary"`
+// AnalyticsSessionDetail 会话详情
+type AnalyticsSessionDetail struct {
+	Summary  AnalyticsSessionSummary  `json:"summary"`
 	Timeline []RequestEvent  `json:"timeline"`
 	Analysis SessionAnalysis `json:"analysis"`
 }
@@ -238,9 +239,9 @@ func (h *SessionAnalyticsHandler) ListSessions(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	sessions := []SessionSummary{}
+	sessions := []AnalyticsSessionSummary{}
 	for rows.Next() {
-		session := SessionSummary{}
+		session := AnalyticsSessionSummary{}
 		if err := rows.Scan(
 			&session.SessionKey, &session.TenantID, &session.FirstRequestAt, &session.LastRequestAt, &session.DurationSeconds,
 			&session.RequestCount, &session.SuccessCount, &session.ErrorCount,
@@ -295,7 +296,7 @@ func (h *SessionAnalyticsHandler) GetSessionDetail(c echo.Context) error {
 		WHERE tenant_id = $1 AND session_key = $2
 	`
 
-	summary := SessionSummary{}
+	summary := AnalyticsSessionSummary{}
 	err := h.db.QueryRowContext(c.Request().Context(), summaryQuery, tenantID, sessionKey).Scan(
 		&summary.SessionKey, &summary.TenantID, &summary.FirstRequestAt, &summary.LastRequestAt, &summary.DurationSeconds,
 		&summary.RequestCount, &summary.SuccessCount, &summary.ErrorCount,
@@ -351,7 +352,7 @@ func (h *SessionAnalyticsHandler) GetSessionDetail(c echo.Context) error {
 	// 构建分析数据
 	analysis := h.buildSessionAnalysis(c.Request().Context(), tenantID, sessionKey, timeline)
 
-	detail := SessionDetail{
+	detail := AnalyticsSessionDetail{
 		Summary:  summary,
 		Timeline: timeline,
 		Analysis: analysis,
@@ -379,7 +380,7 @@ func (h *SessionAnalyticsHandler) GetSessionStats(c echo.Context) error {
 		WHERE tenant_id = $1
 	`
 
-	stats := SessionStats{}
+	stats := AnalyticsSessionStats{}
 	err := h.db.QueryRowContext(c.Request().Context(), query, tenantID).Scan(
 		&stats.TotalSessions,
 		&stats.ActiveSessions,
@@ -393,7 +394,7 @@ func (h *SessionAnalyticsHandler) GetSessionStats(c echo.Context) error {
 	)
 
 	if err == sql.ErrNoRows {
-		stats = SessionStats{}
+		stats = AnalyticsSessionStats{}
 	} else if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get stats: "+err.Error())
 	}
