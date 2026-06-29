@@ -89,14 +89,14 @@ CREATE TABLE IF NOT EXISTS output_compliance_audit (
     
     -- 上下文
     model VARCHAR(100),
-    client_ip VARCHAR(45),
-    
-    -- 索引
-    INDEX idx_output_audit_tenant_time (tenant_id, detected_at DESC),
-    INDEX idx_output_audit_request (request_id),
-    INDEX idx_output_audit_session (session_key),
-    INDEX idx_output_audit_issue (tenant_id, issue_type, severity DESC)
+    client_ip VARCHAR(45)
 );
+
+-- 2.1 创建审计表索引（PostgreSQL 使用 CREATE INDEX，非 MySQL 内联 INDEX 语法）
+CREATE INDEX idx_output_audit_tenant_time ON output_compliance_audit (tenant_id, detected_at DESC);
+CREATE INDEX idx_output_audit_request ON output_compliance_audit (request_id);
+CREATE INDEX idx_output_audit_session ON output_compliance_audit (session_key);
+CREATE INDEX idx_output_audit_issue ON output_compliance_audit (tenant_id, issue_type, severity DESC);
 
 -- 3. 创建 PII 检测模式表
 CREATE TABLE IF NOT EXISTS pii_patterns (
