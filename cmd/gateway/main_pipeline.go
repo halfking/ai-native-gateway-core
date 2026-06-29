@@ -86,6 +86,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domain"
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
@@ -114,6 +115,7 @@ type v2DispatchConfig struct {
 	EnableAudit     bool
 	EnableObserv    bool
 	EnableStreaming bool
+	EnableAuth      bool // 2026-06-29: Enable authentication hook
 }
 
 // v2UsePipeline reports whether the v2 Pipeline wrapper should be used
@@ -143,6 +145,7 @@ func loadV2DispatchConfig() v2DispatchConfig {
 		EnableAudit:     envBool("LLM_GATEWAY_V2_AUDIT", true),
 		EnableObserv:    envBool("LLM_GATEWAY_V2_OBSERV", true),
 		EnableStreaming: envBool("LLM_GATEWAY_V2_STREAMING", true),
+		EnableAuth:      envBool("LLM_GATEWAY_V2_AUTH", false), // 2026-06-29: Auth disabled by default (demo mode)
 	}
 }
 
@@ -183,6 +186,36 @@ type v2DispatchDeps struct {
 // metrics duplicate-registration panic).
 func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	p := pipeline.NewRequestPipeline()
+
+	// === Phase: Authentication (priority 10) ===
+	// 2026-06-29: Enable when LLM_GATEWAY_V2_AUTH=true
+	// Extract API Key from metadata and verify against database.
+	if deps.Config.EnableAuth {
+		keyVerifier := authentication.NewKeyVerifier()
+		// Note: KeyVerifier needs DB connection to verify keys.
+		// In production, pass the DB pool from main.go.
+		// For demo/test: keys are not verified, hook will skip.
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "authentication", 
+			Phase: pipeline.PhaseAuthentication, 
+			Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
+		})
+	}
+
+	// === Phase: Client Identity (priority 20) ===
+	// TODO: Extract identity logic from ChatHandler to identity.Hook
+	// p.AddStage(&pipeline.PipelineStage{
+	// 	Name: "client_identity", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+	// 	Hooks: []pipeline.Hook{identity.NewClientIdentityHook(...)},
+	// })
+
+	// === Phase: Session Loader (priority 30) ===
+	// TODO: Extract session logic from ChatHandler to session.Hook
+	// p.AddStage(&pipeline.PipelineStage{
+	// 	Name: "session_loader", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
+	// 	Hooks: []pipeline.Hook{session.NewSessionLoaderHook(...)},
+	// })
 
 	if deps.Config.EnableObserv && deps.Tracer != nil {
 		p.AddStage(&pipeline.PipelineStage{
@@ -496,9 +529,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			"path":    r.URL.Path,
 			"model":   model,
 			"stream":  stream,
-			"api_key": r.Header.Get("X-API-Key"),
 			"remote":  r.RemoteAddr,
 			"agent":   r.UserAgent(),
+		}
+		
+		// Extract API Key from Authorization header for authentication hook
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			if len(auth) > 7 && auth[:7] == "Bearer " {
+				env.Metadata["api_key"] = auth[7:]
+			}
+		}
+		// Also check X-API-Key header (fallback)
+		if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
+			env.Metadata["api_key"] = apiKey
 		}
 
 		// Preflight pipeline. A stage error is logged but does NOT
