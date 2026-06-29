@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -41,3 +42,108 @@ func TestDecisionToWire_IncludesEnabledFeatures(t *testing.T) {
 		t.Fatal("expected FallbackUsed to be false in wire")
 	}
 }
+
+// TestAutoDecision_RoundTrip verifies the full Decision → wire → JSON →
+// unmarshal pipeline. This is the contract between autoroute.Decision,
+// the X-Gw-Auto-Decision header, and request_logs.auto_decision JSONB:
+// every field must survive serialisation intact.
+func TestAutoDecision_RoundTrip(t *testing.T) {
+	dec := &autoroute.Decision{
+		TaskType:           autoroute.TaskCode,
+		Confidence:         0.87,
+		Profile:            autoroute.ProfileSpeedFirst,
+		Classifier:         "heuristic_v2",
+		Reason:             "code intent, speed-first",
+		ChosenModel:        "claude-sonnet",
+		ChosenRawModel:     "claude-sonnet-4-2026",
+		ChosenCredentialID: 777,
+		EnabledFeatures:    []string{"channel_quality_routing", "cache_revalidation"},
+		CacheReused:        false,
+		FallbackUsed:       true,
+		CandidatesTopN: []autoroute.ScoredCandidate{
+			{Candidate: autoroute.Candidate{CanonicalName: "claude-sonnet", CredentialID: 777},
+				Breakdown: autoroute.ScoringBreakdown{Composite: 85, MatchScore: 70, PriceScore: 60, ChannelQuality: 55}},
+			{Candidate: autoroute.Candidate{CanonicalName: "gpt-4.1", CredentialID: 123},
+				Breakdown: autoroute.ScoringBreakdown{Composite: 72, MatchScore: 65, PriceScore: 50, ChannelQuality: 40}},
+		},
+	}
+
+	// Step 1: Decision → wire
+	wire := decisionToWire(dec)
+
+	// Step 2: wire → JSON (simulates writeAutoDecisionHeader + SetAutoDecision)
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Step 3: JSON → generic map (simulates what a client / DB consumer sees)
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Assert every Decision field survived the round-trip.
+	assertStr(t, decoded, "task_type", "code")
+	assertFloat(t, decoded, "confidence", 0.87)
+	assertStr(t, decoded, "profile", "speed_first")
+	assertStr(t, decoded, "classifier", "heuristic_v2")
+	assertStr(t, decoded, "reason", "code intent, speed-first")
+	assertStr(t, decoded, "chosen_model", "claude-sonnet")
+	assertStr(t, decoded, "chosen_raw_model", "claude-sonnet-4-2026")
+	assertFloat(t, decoded, "chosen_credential_id", 777)
+
+	// Event-level audit fields — these are the ones most likely to be
+	// silently dropped by future struct changes.
+	if v, ok := decoded["cache_reused"]; !ok || v != false {
+		t.Fatalf("cache_reused missing or wrong: %v", decoded["cache_reused"])
+	}
+	if v, ok := decoded["fallback_used"]; !ok || v != true {
+		t.Fatalf("fallback_used missing or wrong: %v", decoded["fallback_used"])
+	}
+
+	// enabled_features
+	features, ok := decoded["enabled_features"].([]any)
+	if !ok || len(features) != 2 {
+		t.Fatalf("enabled_features missing or wrong length: %v", decoded["enabled_features"])
+	}
+	if features[0] != "channel_quality_routing" || features[1] != "cache_revalidation" {
+		t.Fatalf("enabled_features content mismatch: %v", features)
+	}
+
+	// candidates_top3 — at least the winner must survive
+	cands, ok := decoded["candidates_top3"].([]any)
+	if !ok || len(cands) != 2 {
+		t.Fatalf("candidates_top3 missing or wrong length: %v", decoded["candidates_top3"])
+	}
+	winner, ok := cands[0].(map[string]any)
+	if !ok {
+		t.Fatal("winner candidate not a map")
+	}
+	assertStr(t, winner, "model", "claude-sonnet")
+	assertFloat(t, winner, "composite_score", 85)
+}
+
+func assertStr(t *testing.T, m map[string]any, key, want string) {
+	t.Helper()
+	if v, ok := m[key]; !ok || v != want {
+		t.Fatalf("%s: want %q, got %v", key, want, m[key])
+	}
+}
+
+func assertFloat(t *testing.T, m map[string]any, key string, want float64) {
+	t.Helper()
+	v, ok := m[key]
+	if !ok {
+		t.Fatalf("%s: key missing", key)
+	}
+	switch n := v.(type) {
+	case float64:
+		if n != want {
+			t.Fatalf("%s: want %v, got %v", key, want, n)
+		}
+	default:
+		t.Fatalf("%s: expected numeric, got %T (%v)", key, v, v)
+	}
+}
+
