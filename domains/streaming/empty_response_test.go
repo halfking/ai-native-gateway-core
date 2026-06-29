@@ -39,9 +39,9 @@ func TestIsEmptyUpstreamChatResponse(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "choice with content but no finish_reason is empty",
+			name: "choice with content but no finish_reason is NOT empty",
 			body: `{"choices":[{"index":0,"message":{"role":"assistant","content":"hello"}}]}`,
-			want: true,
+			want: false,
 		},
 		{
 			name: "normal response with content and finish_reason is not empty",

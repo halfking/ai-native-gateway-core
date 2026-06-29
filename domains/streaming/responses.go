@@ -264,14 +264,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = extractSessionIDFromBody(bodyBytes)
 	}
 	var sessionInfo *session.Session
-	if sessionID != "" {
-		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
-			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
-				sessionInfo = si
-			}
-		}
-	}
-	if sessionID == "" || sessionInfo == nil {
+	if sessionID == "" {
 		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			attemptErrCode = "session_assignment_failed"
@@ -293,6 +286,15 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if assignment.AutoCreated {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Auto", "true")
+			}
+		}
+	} else {
+		// Client provided session ID — resolve SessionInfo for context
+		// propagation, but honor the client's ID even if Redis doesn't
+		// know it yet (first request in a new session).
+		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
+			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
+				sessionInfo = si
 			}
 		}
 	}

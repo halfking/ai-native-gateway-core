@@ -311,21 +311,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = extractSessionIDFromBody(bodyBytes)
 	}
 	var sessionInfo *session.Session
-	if sessionID != "" {
-		// Resolve SessionInfo for the header/body-derived id so the
-		// executor + logger can correlate. Fall through to assignment
-		// path if the id is unknown.
-		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
-			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
-				sessionInfo = si
-			}
-		}
-	}
-	if sessionID == "" || sessionInfo == nil {
-		// No usable session yet — run the full assignment path which
-		// covers message-count-based reuse, recent-session lookup, and
-		// CreateV2 auto-create. Pass the already-extracted id so it is
-		// not regenerated.
+	if sessionID == "" {
+		// No session ID provided by client — run the full assignment
+		// path which covers message-count-based reuse, recent-session
+		// lookup, and CreateV2 auto-create.
 		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
 		if assignErr != nil {
 			attemptErrCode = "session_assignment_failed"
@@ -347,6 +336,15 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if assignment.AutoCreated {
 				w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 				w.Header().Set("X-Gw-Session-Auto", "true")
+			}
+		}
+	} else {
+		// Client provided session ID — resolve SessionInfo for context
+		// propagation, but honor the client's ID even if Redis doesn't
+		// know it yet (first request in a new session).
+		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
+			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
+				sessionInfo = si
 			}
 		}
 	}
