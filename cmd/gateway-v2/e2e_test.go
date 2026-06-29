@@ -330,6 +330,88 @@ func newEmptyProviderStore() *provider.InMemoryStore {
 	return provider.NewInMemoryStore()
 }
 
+// TestE2E_ModelByIDEndpoint 验证 /v1/models/{model_id}（OpenAI 兼容单模型查询）
+func TestE2E_ModelByIDEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("existing_model", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/models/gpt-4o", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+		if resp.ID != "gpt-4o" {
+			t.Errorf("expected id='gpt-4o', got %q", resp.ID)
+		}
+		if resp.Object != "model" {
+			t.Errorf("expected object='model', got %q", resp.Object)
+		}
+		if resp.OwnedBy != "OpenAI" {
+			t.Errorf("expected owned_by='OpenAI', got %q", resp.OwnedBy)
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/v1/models/nonexistent-model-xyz", nil)
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 404 {
+			t.Fatalf("expected 404, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			Error map[string]any `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v", err)
+		}
+		if resp.Error == nil {
+			t.Fatal("expected error object in response")
+		}
+		if code, _ := resp.Error["code"].(string); code != "model_not_found" {
+			t.Errorf("expected code='model_not_found', got %v", resp.Error["code"])
+		}
+	})
+
+	t.Run("empty_id", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		// "/v1/models/" with trailing slash -> empty model_id
+		req := httptest.NewRequest("GET", "/v1/models/", nil)
+		handler.ServeHTTP(rec, req)
+		// 400: empty model_id is invalid
+		if rec.Code != 400 {
+			t.Errorf("expected 400 for empty model_id, got %d", rec.Code)
+		}
+	})
+
+	t.Run("nested_path_rejected", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		// "/v1/models/foo/bar" contains "/" -> reject
+		req := httptest.NewRequest("GET", "/v1/models/foo/bar", nil)
+		handler.ServeHTTP(rec, req)
+		// 400: nested path
+		if rec.Code != 400 {
+			t.Errorf("expected 400 for nested path, got %d", rec.Code)
+		}
+	})
+}
+
 // TestE2E_ChatCompletionsEndpoint 验证 /v1/chat/completions（OpenAI 兼容）
 func TestE2E_ChatCompletionsEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true, EnableSecurity: true}
@@ -433,6 +515,88 @@ func TestE2E_ChatCompletionsEndpoint(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		if resp.Model != "gpt-4o" {
 			t.Errorf("expected default model 'gpt-4o', got %q", resp.Model)
+		}
+	})
+}
+
+// TestE2E_CompletionsEndpoint 验证 /v1/completions（OpenAI 旧版 completions）
+func TestE2E_CompletionsEndpoint(t *testing.T) {
+	cfg := &v2Config{EnableCache: true}
+	deps := newDeps(cfg)
+	deps.Pipeline = buildPipeline(deps)
+	defer deps.AuditWriter.Close()
+	handler := httpHandler(deps)
+
+	t.Run("valid_request", func(t *testing.T) {
+		body := `{"model": "gpt-3.5-turbo", "prompt": "Once upon a time", "max_tokens": 16}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+
+		var resp struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Text         string `json:"text"`
+				Index        int    `json:"index"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid JSON: %v (body: %s)", err, rec.Body.String())
+		}
+		if resp.Object != "text_completion" {
+			t.Errorf("expected object='text_completion', got %q", resp.Object)
+		}
+		if resp.Model != "gpt-3.5-turbo" {
+			t.Errorf("expected model='gpt-3.5-turbo', got %q", resp.Model)
+		}
+		if len(resp.Choices) != 1 {
+			t.Fatalf("expected 1 choice, got %d", len(resp.Choices))
+		}
+		if resp.Choices[0].FinishReason != "stop" {
+			t.Errorf("expected finish_reason='stop', got %q", resp.Choices[0].FinishReason)
+		}
+	})
+
+	t.Run("empty_prompt", func(t *testing.T) {
+		body := `{"model": "gpt-3.5-turbo", "prompt": ""}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("default_model", func(t *testing.T) {
+		body := `{"prompt": "hello"}`
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var resp struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		// default is gpt-3.5-turbo (matches demo provider store)
+		if resp.Model != "gpt-3.5-turbo" {
+			t.Errorf("expected default 'gpt-3.5-turbo', got %q", resp.Model)
 		}
 	})
 }
