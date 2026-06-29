@@ -16,10 +16,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/routing"
 )
 
 type routingHandler struct {
@@ -131,50 +131,50 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	type candidate struct {
-		Rank                 int      `json:"rank"`
-		ProviderID           int      `json:"provider_id"`
-		ProviderName         string   `json:"provider_name"`
-		CatalogCode          string   `json:"catalog_code"`
-		Protocol             string   `json:"protocol"`
-		BaseURL              string   `json:"base_url"`
-		ProviderEnabled      bool     `json:"provider_enabled"`
-		CredentialID         int      `json:"credential_id"`
-		CredentialLabel      string   `json:"credential_label"`
-		CredentialStatus     string   `json:"credential_status"`
-		LifecycleStatus      string   `json:"lifecycle_status"`
-		AvailabilityState    string   `json:"availability_state"`
-		AvailabilityRecoverAt *string `json:"availability_recover_at"`
-		QuotaState           string   `json:"quota_state"`
-		QuotaRecoverAt       *string  `json:"quota_recover_at"`
-		ConcurrencyLimit     *int     `json:"concurrency_limit"`
-		EffectiveConcurrency *int     `json:"effective_concurrency"`
-		EffectiveAt          *string  `json:"effective_at"`
-		ExpiresAt            *string  `json:"expires_at"`
-		CredentialInEffect   bool     `json:"credential_in_effect"`
-		BalanceUSD           *float64 `json:"balance_usd"`
-		CircuitState         string   `json:"circuit_state"`
-		CoolingUntil         *string  `json:"cooling_until"`
-		Available            bool     `json:"available"`
-		Tier                 int      `json:"tier"`
-		Weight               int      `json:"weight"`
-		UnitPriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
-		UnitPriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
-		Currency             string   `json:"currency"`
-		SuccessRate          float64  `json:"success_rate"`
-		P95LatencyMs         int      `json:"p95_latency_ms"`
-		ModelName            string   `json:"model_name"`
-		StandardizedName     string   `json:"standardized_name"`
-		QuotaCapUSD          float64  `json:"quota_cap_usd"`
-		QuotaUsedUSD         float64  `json:"quota_used_usd"`
-		RuntimeRoutable      bool     `json:"runtime_routable"`
-		Routable             bool     `json:"routable"`
-		BlockReason          string   `json:"block_reason,omitempty"`
-		ManualPriority       int      `json:"manual_priority"`
-		ActiveSessions       int      `json:"active_sessions"`
-		ConsecutiveFailures  int      `json:"consecutive_failures"`
-		CompositeScore       float64  `json:"composite_score"`
-		BillingMode          string   `json:"billing_mode"`
-		BillingRound         int      `json:"billing_round"`
+		Rank                  int      `json:"rank"`
+		ProviderID            int      `json:"provider_id"`
+		ProviderName          string   `json:"provider_name"`
+		CatalogCode           string   `json:"catalog_code"`
+		Protocol              string   `json:"protocol"`
+		BaseURL               string   `json:"base_url"`
+		ProviderEnabled       bool     `json:"provider_enabled"`
+		CredentialID          int      `json:"credential_id"`
+		CredentialLabel       string   `json:"credential_label"`
+		CredentialStatus      string   `json:"credential_status"`
+		LifecycleStatus       string   `json:"lifecycle_status"`
+		AvailabilityState     string   `json:"availability_state"`
+		AvailabilityRecoverAt *string  `json:"availability_recover_at"`
+		QuotaState            string   `json:"quota_state"`
+		QuotaRecoverAt        *string  `json:"quota_recover_at"`
+		ConcurrencyLimit      *int     `json:"concurrency_limit"`
+		EffectiveConcurrency  *int     `json:"effective_concurrency"`
+		EffectiveAt           *string  `json:"effective_at"`
+		ExpiresAt             *string  `json:"expires_at"`
+		CredentialInEffect    bool     `json:"credential_in_effect"`
+		BalanceUSD            *float64 `json:"balance_usd"`
+		CircuitState          string   `json:"circuit_state"`
+		CoolingUntil          *string  `json:"cooling_until"`
+		Available             bool     `json:"available"`
+		Tier                  int      `json:"tier"`
+		Weight                int      `json:"weight"`
+		UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+		Currency              string   `json:"currency"`
+		SuccessRate           float64  `json:"success_rate"`
+		P95LatencyMs          int      `json:"p95_latency_ms"`
+		ModelName             string   `json:"model_name"`
+		StandardizedName      string   `json:"standardized_name"`
+		QuotaCapUSD           float64  `json:"quota_cap_usd"`
+		QuotaUsedUSD          float64  `json:"quota_used_usd"`
+		RuntimeRoutable       bool     `json:"runtime_routable"`
+		Routable              bool     `json:"routable"`
+		BlockReason           string   `json:"block_reason,omitempty"`
+		ManualPriority        int      `json:"manual_priority"`
+		ActiveSessions        int      `json:"active_sessions"`
+		ConsecutiveFailures   int      `json:"consecutive_failures"`
+		CompositeScore        float64  `json:"composite_score"`
+		BillingMode           string   `json:"billing_mode"`
+		BillingRound          int      `json:"billing_round"`
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
@@ -300,7 +300,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			Tier:                c.Tier,
 			CredentialID:        c.CredentialID,
 		}
-		c.CompositeScore = routing.CalculateCompositeScore(pc, weights)
+		c.CompositeScore = executors.CalculateCompositeScore(pc, weights)
 		candidates = append(candidates, c)
 	}
 
@@ -320,7 +320,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return routing.CompareCandidatePriority(
+		return executors.CompareCandidatePriority(
 			toProviderCandidate(candidates[i]),
 			toProviderCandidate(candidates[j]),
 		)
@@ -489,13 +489,13 @@ func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) 
 			modelName, providerName, catalogCode, protocol, baseURL string
 			credentialLabel, credentialStatus, lifecycleStatus      string
 			availabilityState, quotaState, circuitState             string
-			currency, standardizedName                                *string
-			providerID, credentialID, tier, weight, p95               int
-			providerEnabled, available                                bool
-			successRate, balanceUSD                                   *float64
-			availabilityRecoverAt, quotaRecoverAt                     *time.Time
-			effectiveAt, expiresAt, coolingUntil                      *time.Time
-			priceIn, priceOut                                         *float64
+			currency, standardizedName                              *string
+			providerID, credentialID, tier, weight, p95             int
+			providerEnabled, available                              bool
+			successRate, balanceUSD                                 *float64
+			availabilityRecoverAt, quotaRecoverAt                   *time.Time
+			effectiveAt, expiresAt, coolingUntil                    *time.Time
+			priceIn, priceOut                                       *float64
 		)
 		if err := rows.Scan(
 			&modelName, &providerID, &providerName, &catalogCode, &protocol, &baseURL,
@@ -799,7 +799,7 @@ func (h *Handler) handleRoutingModelTree(w http.ResponseWriter, r *http.Request)
 			Variants   []simpleVariant `json:"variants"`
 		}
 		type simpleSeries struct {
-			Series      string           `json:"series"`
+			Series      string             `json:"series"`
 			Generations []simpleGeneration `json:"generations"`
 		}
 		simpleList := make([]simpleSeries, 0, len(seriesList))
@@ -1445,39 +1445,39 @@ func (h *Handler) handleRoutingDecisions(w http.ResponseWriter, r *http.Request)
 			_ = json.Unmarshal(decisionTrace, &trace)
 		}
 		decisions = append(decisions, map[string]any{
-			"ts":                     ts,
-			"request_id":             reqID,
-			"idempotency_key":        idempotencyKey,
-			"tenant_id":              tenantID,
-			"api_key_id":             apiKeyID,
-			"model":                  mdl,
-			"chosen_credential_id":   credID,
-			"chosen_provider_id":     provID,
-			"tier":                   tier,
-			"candidates_tried":       tried,
-			"latency_ms":             latency,
-			"success":                success,
-			"error_class":            errorClass,
-			"prompt_tokens":          pTok,
-			"completion_tokens":      cTok,
-			"cost_usd":               cost,
-			"request_bytes":          reqBytes,
-			"response_bytes":         respBytes,
-			"client_model":           clientModel,
-			"resolved_raw_model":     resolvedRawModel,
-			"outbound_model":         outboundModel,
-			"sticky_hit":             stickyHit,
-			"client_profile":         clientProfile,
-			"request_mode":           requestMode,
-			"identity_hash":          identityHash,
-			"transform_rule_id":      transformRuleID,
-			"egress_protocol":        egressProtocol,
-			"failure_stage":          failureStage,
-			"failure_detail_code":    failureDetailCode,
-			"resolution_path":        resolutionPath,
-			"canonical_model":        canonicalModel,
-			"resolution_raw_models":  rawModels,
-			"decision_trace":         trace,
+			"ts":                    ts,
+			"request_id":            reqID,
+			"idempotency_key":       idempotencyKey,
+			"tenant_id":             tenantID,
+			"api_key_id":            apiKeyID,
+			"model":                 mdl,
+			"chosen_credential_id":  credID,
+			"chosen_provider_id":    provID,
+			"tier":                  tier,
+			"candidates_tried":      tried,
+			"latency_ms":            latency,
+			"success":               success,
+			"error_class":           errorClass,
+			"prompt_tokens":         pTok,
+			"completion_tokens":     cTok,
+			"cost_usd":              cost,
+			"request_bytes":         reqBytes,
+			"response_bytes":        respBytes,
+			"client_model":          clientModel,
+			"resolved_raw_model":    resolvedRawModel,
+			"outbound_model":        outboundModel,
+			"sticky_hit":            stickyHit,
+			"client_profile":        clientProfile,
+			"request_mode":          requestMode,
+			"identity_hash":         identityHash,
+			"transform_rule_id":     transformRuleID,
+			"egress_protocol":       egressProtocol,
+			"failure_stage":         failureStage,
+			"failure_detail_code":   failureDetailCode,
+			"resolution_path":       resolutionPath,
+			"canonical_model":       canonicalModel,
+			"resolution_raw_models": rawModels,
+			"decision_trace":        trace,
 		})
 	}
 	if decisions == nil {
@@ -1518,15 +1518,15 @@ func (h *Handler) handleRoutingHealth(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type credHealth struct {
-		CredentialID            int        `json:"credential_id"`
-		Label                   string     `json:"label"`
-		Status                  string     `json:"status"`
-		CircuitState            string     `json:"circuit_state"`
-		ConsecutiveFailures     int        `json:"consecutive_failures"`
-		CircuitOpenCountWindow  int        `json:"circuit_open_count_window"`
-		CoolingUntil            *time.Time `json:"cooling_until"`
-		ProviderName            string     `json:"provider_name"`
-		CatalogCode             *string    `json:"catalog_code"`
+		CredentialID           int        `json:"credential_id"`
+		Label                  string     `json:"label"`
+		Status                 string     `json:"status"`
+		CircuitState           string     `json:"circuit_state"`
+		ConsecutiveFailures    int        `json:"consecutive_failures"`
+		CircuitOpenCountWindow int        `json:"circuit_open_count_window"`
+		CoolingUntil           *time.Time `json:"cooling_until"`
+		ProviderName           string     `json:"provider_name"`
+		CatalogCode            *string    `json:"catalog_code"`
 	}
 	creds := make([]credHealth, 0)
 	openCount := 0
@@ -1923,7 +1923,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 		}
 
 		d.BillingRound = provider.BillingRound(d.BillingMode)
-		d.CompositeScore = routing.CalculateCompositeScore(provider.Candidate{
+		d.CompositeScore = executors.CalculateCompositeScore(provider.Candidate{
 			ManualPriority:      d.ManualPriority,
 			PriceInPer1M:        priceIn,
 			PriceOutPer1M:       priceOut,
@@ -1939,7 +1939,7 @@ func (h *Handler) handleRoutingScoreDetails(w http.ResponseWriter, r *http.Reque
 	}
 
 	sort.SliceStable(details, func(i, j int) bool {
-		return routing.CompareCandidatePriority(
+		return executors.CompareCandidatePriority(
 			provider.Candidate{
 				CredentialID:   details[i].CredentialID,
 				ManualPriority: details[i].ManualPriority,
@@ -2017,8 +2017,8 @@ func (h *Handler) handleRoutingScoringWeights(w http.ResponseWriter, r *http.Req
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
-func scoringWeightsFromMap(m map[string]float64) routing.ScoringWeights {
-	w := routing.DefaultScoringWeights()
+func scoringWeightsFromMap(m map[string]float64) executors.ScoringWeights {
+	w := executors.DefaultScoringWeights()
 	if v, ok := m["price"]; ok {
 		w.Price = v
 	}
