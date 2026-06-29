@@ -22,6 +22,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 
 	flags := GetFeatureFlags()
+	enabledFeatures := activeFeatureNames(flags)
 
 	// Step 0: 会话缓存检查（仅在启用重校验时保留该分支）
 	if flags.UseCacheRevalidation && sessionID != "" && d.intentCache != nil {
@@ -43,6 +44,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 						Profile:            cached.Profile,
 						Classifier:         "session_cache_v2",
 						Reason:             "reused session intent (revalidated)",
+						EnabledFeatures:    enabledFeatures,
 						DecidedAt:          time.Now(),
 					}, nil
 				} else {
@@ -114,6 +116,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		Classifier:         cls.Classifier + "_v2",
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
+		EnabledFeatures:    enabledFeatures,
 		DecidedAt:          time.Now(),
 	}
 
