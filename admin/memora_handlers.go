@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/memora"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
 // handleMemoraStatus returns the current Memora connectivity status and
@@ -545,7 +545,7 @@ func (h *Handler) handleMemoraContext(w http.ResponseWriter, r *http.Request) {
 	tenantID := h.sessionTenantID(ctx, taskID, sc, r)
 	userID := ""
 	if err == nil && apiKeyID > 0 {
-		userID = memora.UserID(tenantID, apiKeyID, taskID)
+		userID = memory.UserID(tenantID, apiKeyID, taskID)
 	}
 
 	var facts []map[string]any
