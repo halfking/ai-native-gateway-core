@@ -45,6 +45,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 						Classifier:         "session_cache_v2",
 						Reason:             "reused session intent (revalidated)",
 						EnabledFeatures:    enabledFeatures,
+						CacheReused:        true,
 						DecidedAt:          time.Now(),
 					}, nil
 				} else {
@@ -105,6 +106,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 
 	winner := recommended[0]
 
+	// Detect whether the winner came from the 48h popularity fallback.
+	// RecommendV2's fallback path always returns a single candidate with
+	// the exact breakdown {Composite: 50, MatchScore <= 30, PriceScore: 50}.
+	fallbackUsed := isFallbackWinner(recommended)
+
 	// Step 5: 构建决策
 	decision := &Decision{
 		ChosenModel:        winner.Candidate.CanonicalName,
@@ -117,6 +123,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
 		EnabledFeatures:    enabledFeatures,
+		FallbackUsed:       fallbackUsed,
 		DecidedAt:          time.Now(),
 	}
 
