@@ -4,6 +4,8 @@ import { req } from './_core'
 // Agent Registry surfaces backed by /api/agents (admin/agents.go).
 // Exposes the unified apihub.Asset registry as paged list + per-id
 // detail + link creation (depends_on / calls / similar_to edges).
+// Phase 6: added /stats + /neighbors endpoints.
+//
 // All routes require tenant_admin+; super_admin can pass ?tenant=.
 
 export type AssetKind = 'llm_endpoint' | 'mcp_server' | 'agent'
@@ -46,6 +48,37 @@ export interface AgentLinkResponse {
   }
 }
 
+// Phase 6: topology traversal (BFS through asset_relationships).
+export interface AgentNeighbor {
+  kind: AssetKind
+  ref_id: number
+  name: string
+}
+
+export interface AgentNeighborsResponse {
+  asset: AgentAsset
+  depth: number
+  edges: Array<{
+    src_kind: AssetKind
+    src_ref_id: number
+    dst_kind: AssetKind
+    dst_ref_id: number
+    type: RelationType
+    weight?: number
+  }>
+  upstream: AgentNeighbor[]
+  downstream: AgentNeighbor[]
+  count: number
+}
+
+// Phase 6: aggregate stats (one-shot in-memory aggregation).
+export interface AgentStatsResponse {
+  total: number
+  by_kind: Record<string, number>
+  by_health: Record<string, number>
+  by_owner: Record<string, number>
+}
+
 export function getAgents(params: {
   kind?: AssetKind | 'all'
   tenant?: string
@@ -70,4 +103,16 @@ export function linkAgent(sourceId: number, targetId: number, linkType: Relation
     target_id: targetId,
     link_type: linkType,
   })
+}
+
+// getAgentNeighbors traverses the topology graph.
+// depth: 1-5 (default 1). 0 is treated as 1.
+export function getAgentNeighbors(id: number, depth = 1) {
+  const qs = depth > 1 ? `?depth=${depth}` : ''
+  return req<AgentNeighborsResponse>('GET', `/api/agents/${id}/neighbors${qs}`)
+}
+
+// getAgentStats returns aggregated counts (total, by_kind, by_health, by_owner).
+export function getAgentStats() {
+  return req<AgentStatsResponse>('GET', '/api/agents/stats')
 }
