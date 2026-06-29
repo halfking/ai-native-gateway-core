@@ -125,18 +125,31 @@ func (p *AssetHealthProbe) probeOneTenant(ctx context.Context, tenant string) (d
 		liveLookup[string(a.Kind)+"|"+a.TenantID+"|"+itoa64(a.RefID)] = true
 	}
 
-	allAssets, err := p.hub.List(ctx, apihub.Filter{Limit: 1000})
-	if err != nil {
-		slog.Warn("asset health: list all failed", "tenant", tenant, "error", err)
-	}
-	for _, a := range allAssets {
-		key := string(a.Kind) + "|" + a.TenantID + "|" + itoa64(a.RefID)
-		if !liveLookup[key] {
-			if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown); e != nil {
-				continue
-			}
-			removed++
+	// Fetch all assets with pagination (1000 per batch)
+	const batchSize = 1000
+	offset := 0
+	for {
+		batch, err := p.hub.List(ctx, apihub.Filter{Limit: batchSize})
+		if err != nil {
+			slog.Warn("asset health: list all failed", "tenant", tenant, "offset", offset, "error", err)
+			break
 		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, a := range batch {
+			key := string(a.Kind) + "|" + a.TenantID + "|" + itoa64(a.RefID)
+			if !liveLookup[key] {
+				if e := p.hub.MarkHealth(ctx, a.Kind, a.RefID, apihub.HealthDown); e != nil {
+					continue
+				}
+				removed++
+			}
+		}
+		if len(batch) < batchSize {
+			break
+		}
+		offset += batchSize
 	}
 	return
 }

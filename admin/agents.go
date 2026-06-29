@@ -24,6 +24,8 @@ type AgentService interface {
 	Neighbors(ctx context.Context, k apihub.Kind, refID int64, depth int) ([]apihub.Asset, []apihub.Relationship, error)
 	// ListStale (Phase 7) returns assets older than threshold.
 	ListStale(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error)
+	// ListTenants (Phase 7 audit) returns all tenant IDs.
+	ListTenants(ctx context.Context) ([]string, error)
 }
 
 // AgentsHandler exposes the unified asset registry as REST API.
@@ -335,7 +337,8 @@ func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 // ── Health (Phase 7) ─────────────────────────────────────────────────────
 
 // Health handles GET /api/agents/health — lists stale assets (last_seen_at
-// older than ?threshold=6h by default).
+// older than ?threshold=6h by default) across all tenants.
+// Supports pagination via ?offset=0&limit=100 (default limit=1000).
 func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -346,23 +349,64 @@ func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stale, err := h.svc.ListStale(ctx, threshold)
+	offset := 0
+	if s := r.URL.Query().Get("offset"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	limit := 1000
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 10000 {
+			limit = n
+		}
+	}
+
+	// List all tenants and aggregate stale assets
+	tenants, err := h.svc.ListTenants(ctx)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	var allStale []apihub.Asset
+	for _, tenant := range tenants {
+		tenantCtx := apihub.WithTenant(ctx, tenant)
+		stale, err := h.svc.ListStale(tenantCtx, threshold)
+		if err != nil {
+			// Log but continue with other tenants
+			continue
+		}
+		allStale = append(allStale, stale...)
+	}
+
+	// Apply pagination
+	total := len(allStale)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	page := allStale[start:end]
+
 	byHealth := make(map[string]int)
-	for _, a := range stale {
+	for _, a := range page {
 		byHealth[string(a.HealthState)]++
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"threshold": threshold.String(),
-		"total":     len(stale),
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"count":     len(page),
 		"by_health": byHealth,
-		"items":     stale,
+		"items":     page,
 	})
 }
 
