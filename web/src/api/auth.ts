@@ -26,6 +26,10 @@ export function login(username: string, password: string) {
   return req<LoginResponse>('POST', '/api/auth/token', { username, password })
 }
 
+export function logout() {
+  return req<{ ok: boolean }>('POST', '/api/auth/logout')
+}
+
 // ── Gateway sessions (OpenAI-compatible /v1/sessions) ───────────────────
 
 export interface GatewaySessionCreated {
