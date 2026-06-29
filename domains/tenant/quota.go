@@ -29,7 +29,7 @@ func (c *QuotaChecker) SetQuota(quota *TenantQuota) {
 // CheckQuota checks if a tenant has quota available.
 func (c *QuotaChecker) CheckQuota(ctx context.Context, tenantID string, tokensRequested int64) error {
 	c.mu.RLock()
-	quota, ok := c.quotas[tenantID]
+	_, ok := c.quotas[tenantID]
 	c.mu.RUnlock()
 	
 	if !ok {

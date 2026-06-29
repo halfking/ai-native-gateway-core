@@ -74,6 +74,7 @@ type autoRouteDecision struct {
 	ChosenModel    string               `json:"chosen_model"`
 	ChosenRawModel string               `json:"chosen_raw_model"`
 	ChosenCredID   int64                `json:"chosen_credential_id"`
+	EnabledFeatures []string `json:"enabled_features,omitempty"`
 	CandidatesTop3 []autoRouteCandidate `json:"candidates_top3"`
 }
 

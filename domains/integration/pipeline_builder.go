@@ -37,7 +37,7 @@ func BuildRequestPipeline(
 	// Stage 2: Pre-Routing (identity + session 并行)
 	hooks := []pipeline.Hook{}
 	if identityBuilder != nil {
-		hooks = append(hooks, identity.NewIdentityHook(identityBuilder))
+		hooks = append(hooks, identity.NewClientIdentityHook())
 	}
 	if sessionStore != nil {
 		hooks = append(hooks, session.NewSessionLoaderHook(sessionStore, sticky))
