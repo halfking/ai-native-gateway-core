@@ -130,39 +130,46 @@ ORDER BY
 
 -- 2.2 探测队列快照
 CREATE OR REPLACE VIEW v_probe_queue_snapshot AS
-SELECT 
-    CASE 
-        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-        WHEN mps.state = 'suspicious' THEN 'suspicious'
-        WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-        WHEN mps.state = 'healthy_confirmed' THEN 'watchdog'
-        ELSE 'unknown'
-    END as probe_priority,
-    mps.state,
+SELECT
+    sub.probe_priority,
+    sub.state,
     COUNT(*) as queue_size,
-    COUNT(*) FILTER (WHERE mps.next_retry_at <= NOW()) as ready_now,
-    COUNT(*) FILTER (WHERE mps.next_retry_at <= NOW() + INTERVAL '1 minute') as ready_1min,
-    COUNT(*) FILTER (WHERE mps.next_retry_at <= NOW() + INTERVAL '5 minutes') as ready_5min,
-    MIN(mps.next_retry_at) as earliest_retry_at,
-    MAX(mps.next_retry_at) as latest_retry_at,
-    AVG(EXTRACT(EPOCH FROM (NOW() - mps.last_attempt_at))) as avg_wait_seconds,
-    MAX(EXTRACT(EPOCH FROM (NOW() - mps.last_attempt_at))) as max_wait_seconds
-FROM model_probe_state mps
-JOIN credentials c ON c.id = mps.credential_id
-WHERE mps.state IN ('suspicious', 'failing', 'recovering')
-  AND COALESCE(c.status, 'active') = 'active'
-  AND COALESCE(c.lifecycle_status, 'active') = 'active'
-  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-GROUP BY probe_priority, mps.state
-ORDER BY 
-    CASE 
-        WHEN mps.consecutive_failures >= 3 THEN 1
-        WHEN mps.state = 'suspicious' THEN 2
-        WHEN mps.state IN ('failing', 'recovering') THEN 3
-        WHEN mps.state = 'healthy_confirmed' THEN 4
+    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW()) as ready_now,
+    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '1 minute') as ready_1min,
+    COUNT(*) FILTER (WHERE sub.next_retry_at <= NOW() + INTERVAL '5 minutes') as ready_5min,
+    MIN(sub.next_retry_at) as earliest_retry_at,
+    MAX(sub.next_retry_at) as latest_retry_at,
+    AVG(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as avg_wait_seconds,
+    MAX(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as max_wait_seconds
+FROM (
+    SELECT
+        CASE
+            WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+            WHEN mps.state = 'suspicious' THEN 'suspicious'
+            WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+            WHEN mps.state = 'healthy_confirmed' THEN 'watchdog'
+            ELSE 'unknown'
+        END as probe_priority,
+        mps.state,
+        mps.next_retry_at,
+        mps.last_attempt_at
+    FROM model_probe_state mps
+    JOIN credentials c ON c.id = mps.credential_id
+    WHERE mps.state IN ('suspicious', 'failing', 'recovering')
+      AND COALESCE(c.status, 'active') = 'active'
+      AND COALESCE(c.lifecycle_status, 'active') = 'active'
+      AND COALESCE(c.manual_disabled, FALSE) = FALSE
+) sub
+GROUP BY sub.probe_priority, sub.state
+ORDER BY
+    CASE
+        WHEN sub.probe_priority = 'urgent' THEN 1
+        WHEN sub.probe_priority = 'suspicious' THEN 2
+        WHEN sub.probe_priority = 'failing' THEN 3
+        WHEN sub.probe_priority = 'watchdog' THEN 4
         ELSE 5
     END,
-    mps.state;
+    sub.state;
 
 -- 2.3 模型优先级详情
 CREATE OR REPLACE VIEW v_model_priority_details AS
@@ -283,35 +290,43 @@ RETURNS TABLE (
 LANGUAGE SQL
 STABLE
 AS $$
-    SELECT 
-        mps.state::TEXT,
-        CASE 
-            WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-            WHEN mps.state = 'suspicious' THEN 'suspicious'
-            WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-            ELSE 'watchdog'
-        END::TEXT as priority,
+    SELECT
+        sub.state::TEXT,
+        sub.priority::TEXT,
         COUNT(*) as count,
-        ROUND(AVG(CASE WHEN mps.total_attempts > 0
-                       THEN mps.consecutive_successes::float / mps.total_attempts * 100
+        ROUND(AVG(CASE WHEN sub.total_attempts > 0
+                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
                        ELSE NULL END)::numeric, 2) as avg_success_rate,
-        EXTRACT(EPOCH FROM MIN(mps.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
-    FROM model_probe_state mps
-    JOIN credentials c ON c.id = mps.credential_id
-    WHERE mps.raw_model_name = p_raw_model_name
-      AND COALESCE(c.status, 'active') = 'active'
-      AND COALESCE(c.lifecycle_status, 'active') = 'active'
-      AND COALESCE(c.manual_disabled, FALSE) = FALSE
-    GROUP BY mps.state
-    ORDER BY 
-        CASE 
-            WHEN mps.consecutive_failures >= 3 THEN 1
-            WHEN mps.state = 'suspicious' THEN 2
-            WHEN mps.state IN ('failing', 'recovering') THEN 3
-            WHEN mps.state = 'healthy_confirmed' THEN 4
+        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
+    FROM (
+        SELECT
+            mps.state,
+            mps.consecutive_successes,
+            mps.total_attempts,
+            mps.next_retry_at,
+            CASE
+                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+                WHEN mps.state = 'suspicious' THEN 'suspicious'
+                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+                ELSE 'watchdog'
+            END as priority
+        FROM model_probe_state mps
+        JOIN credentials c ON c.id = mps.credential_id
+        WHERE mps.raw_model_name = p_raw_model_name
+          AND COALESCE(c.status, 'active') = 'active'
+          AND COALESCE(c.lifecycle_status, 'active') = 'active'
+          AND COALESCE(c.manual_disabled, FALSE) = FALSE
+    ) sub
+    GROUP BY sub.state, sub.priority
+    ORDER BY
+        CASE sub.priority
+            WHEN 'urgent' THEN 1
+            WHEN 'suspicious' THEN 2
+            WHEN 'failing' THEN 3
+            WHEN 'watchdog' THEN 4
             ELSE 5
         END,
-        mps.state;
+        sub.state;
 $$;
 
 COMMENT ON VIEW v_model_health_dashboard IS '模型健康度总览 (FIXED 2026-06-29)';
