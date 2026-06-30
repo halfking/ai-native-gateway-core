@@ -172,30 +172,3 @@ func extractAssistantContent(body []byte) string {
 	}
 	return ""
 }
-
-// AuditHook handles post-completion code auditing.
-type AuditHook struct {
-	db        GoalStore
-	llmCaller LLMCaller
-}
-
-// NewAuditHook creates a new audit hook.
-func NewAuditHook(db GoalStore, llmCaller LLMCaller) *AuditHook {
-	return &AuditHook{db: db, llmCaller: llmCaller}
-}
-
-// InterceptNonStream handles audit logic.
-func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
-	// Audit processing would go here
-	return nil, nil
-}
-
-// InterceptStreamChunk is a no-op for audit.
-func (a *AuditHook) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
-	return nil, nil
-}
-
-// InterceptStreamEnd is a no-op for audit.
-func (a *AuditHook) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
-	return nil, nil
-}

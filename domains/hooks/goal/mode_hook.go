@@ -239,9 +239,10 @@ func (h *ModeHook) detectKeyword(req *response.InterceptRequest) (bool, string) 
 
 // buildContinueMessage constructs a continuation request.
 func (h *ModeHook) buildContinueMessage(req *response.InterceptRequest) []byte {
+	prompts := NewPrompts(LocaleZhCN) // Default to Chinese, can be enhanced to detect from request
 	reqBody := map[string]interface{}{
 		"model":    req.ClientModel,
-		"messages": []map[string]string{{"role": "user", "content": "请继续下一步"}},
+		"messages": []map[string]string{{"role": "user", "content": prompts.ContinueNextStep()}},
 		"stream":   false,
 	}
 	body, _ := json.Marshal(reqBody)
@@ -255,8 +256,9 @@ func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequ
 		model = "auto"
 	}
 
-	auditPrompt := fmt.Sprintf(`你是代码审计专家。请审查任务执行过程并返回JSON:
-{"issues": [{"severity": "high/medium/low", "description": "...", "fix": "..."}], "summary": "总体评估"}`)
+	prompts := NewPrompts(LocaleZhCN)
+	auditPrompt := prompts.AuditStarted() + "\n" + fmt.Sprintf(`Review the task execution and return JSON:
+{"issues": [{"severity": "high/medium/low", "description": "...", "fix": "..."}], "summary": "Overall assessment"}`)
 
 	reqBody := map[string]interface{}{
 		"model":    model,
