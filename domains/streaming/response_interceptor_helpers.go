@@ -1,9 +1,13 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 )
@@ -21,18 +25,47 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 		"body_size", len(followUpBody),
 	)
 
-	// TODO: Implement actual request injection
-	// This would:
-	// 1. Parse followUpBody as a chat request
-	// 2. Add session context (X-Gw-Session-Id header)
-	// 3. Submit to the handler pipeline
-	// 4. Handle response asynchronously
-	//
-	// For now, log the intent
-	slog.Info("follow_up_request_queued",
-		"session_id", sessionID,
-		"action", action,
-	)
+	// Rate limit: prevent infinite loops
+	// TODO: Add proper rate limiting per session
+	time.Sleep(100 * time.Millisecond)
+
+	// Create a synthetic HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", "/v1/chat/completions", bytes.NewReader(followUpBody))
+	if err != nil {
+		slog.Error("follow_up_request_create_failed", "error", err, "session_id", sessionID)
+		return
+	}
+
+	// Set required headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gw-Session-Id", sessionID)
+	req.Header.Set("X-Gw-Follow-Up-Action", action)
+
+	// Use a response recorder to capture the response
+	rr := httptest.NewRecorder()
+
+	// Execute the request through the handler
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("follow_up_request_panic", "error", r, "session_id", sessionID)
+		}
+	}()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code >= 400 {
+		slog.Warn("follow_up_request_failed",
+			"session_id", sessionID,
+			"action", action,
+			"status_code", rr.Code,
+		)
+	} else {
+		slog.Info("follow_up_request_completed",
+			"session_id", sessionID,
+			"action", action,
+			"status_code", rr.Code,
+		)
+	}
 }
 
 // extractMessageCount counts messages in a chat request body.
