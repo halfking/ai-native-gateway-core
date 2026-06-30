@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -41,9 +42,7 @@ type CredentialProbeV2 struct {
 	done             chan struct{}
 
 	// 新增：状态管理器引用
-	stateManager interface {
-		UpdateFromProbe(ctx context.Context, state interface{})
-	}
+	stateManager credentialstate.StateObserver
 }
 
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
@@ -66,9 +65,7 @@ func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) 
 }
 
 // SetStateManager 设置状态管理器（新增）
-func (c *CredentialProbeV2) SetStateManager(sm interface {
-	UpdateFromProbe(ctx context.Context, state interface{})
-}) {
+func (c *CredentialProbeV2) SetStateManager(sm credentialstate.StateObserver) {
 	c.stateManager = sm
 }
 
@@ -700,18 +697,18 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 	// 新增：同步到状态管理器
 	if c.stateManager != nil && pr.HealthProbeModel != "" {
 		now := time.Now()
-		stateUpdate := map[string]interface{}{
-			"CredentialID":  credID,
-			"Model":         pr.HealthProbeModel,
-			"Available":     pr.AvailabilityState == "ready",
-			"HealthStatus":  pr.HealthStatus,
-			"AvgLatencyMs":  pr.HealthLatencyMs,
-			"LastUpdatedAt": now,
-			"LastError":     pr.HealthError,
-			"RecoverAt":     recoverAt,
-			"Source":        "probe_v2",
+		state := &credentialstate.State{
+			CredentialID:  credID,
+			Model:         pr.HealthProbeModel,
+			Available:     pr.AvailabilityState == "ready",
+			HealthStatus:  pr.HealthStatus,
+			AvgLatencyMs:  pr.HealthLatencyMs,
+			LastUpdatedAt: now,
+			LastError:     pr.HealthError,
+			RecoverAt:     recoverAt,
+			Source:        "probe_v2",
 		}
-		c.stateManager.UpdateFromProbe(execCtx, stateUpdate)
+		c.stateManager.UpdateFromProbe(execCtx, state)
 	}
 }
 

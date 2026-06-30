@@ -133,15 +133,52 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	state.LastError = string(errKind)
 	state.Source = "request"
 
-	// 闪断保护：连续失败 >= 2 次 → 触发快速验证（2秒+5秒双重验证）
-	if state.ConsecutiveFails >= 2 {
+	// 智能探测策略：
+	// 1. 临时故障（429/503/timeout）：连续失败 >= 3 → 30秒后验证，间隔递增 (30s → 2m → 5m)
+	// 2. 永久故障（auth/quota/model_not_found）：连续失败 >= 2 → 标记 broken，探测间隔 15分钟
+	// 3. 闪断保护：2秒内有成功 → 不触发探测
+	isTransient := errKind == errorsx.KindRateLimit ||
+		errKind == errorsx.KindUpstreamDown ||
+		errKind == errorsx.KindTimeout ||
+		errKind == errorsx.KindStreamTimeout
+
+	isPermanent := errKind == errorsx.KindAuth ||
+		errKind == errorsx.KindAuthRevoked ||
+		errKind == errorsx.KindModelNotFound ||
+		errKind == errorsx.KindQuotaPermanent
+
+	if isPermanent && state.ConsecutiveFails >= 2 {
+		// 永久故障：快速标记为 broken，降低探测频率（15分钟）
+		state.Available = false
+		nextRetry := now.Add(15 * time.Minute)
+		state.RecoverAt = &nextRetry
+
+		slog.Warn("credstate: permanent failure detected",
+			"credential_id", credID,
+			"model", model,
+			"error_kind", errKind,
+			"consecutive_fails", state.ConsecutiveFails,
+			"next_retry", nextRetry)
+
+	} else if isTransient && state.ConsecutiveFails >= 3 {
+		// 临时故障：递增退避探测 (30s → 2m → 5m)
+		var backoff time.Duration
+		switch {
+		case state.ConsecutiveFails <= 3:
+			backoff = 30 * time.Second
+		case state.ConsecutiveFails <= 5:
+			backoff = 2 * time.Minute
+		default:
+			backoff = 5 * time.Minute
+		}
+
 		if state.LastSuccessAt == nil || now.Sub(*state.LastSuccessAt) > 2*time.Second {
-			slog.Info("credstate: triggering fast probe after consecutive failures",
+			slog.Info("credstate: transient failure, scheduling reprobe",
 				"credential_id", credID,
 				"model", model,
-				"consecutive_fails", state.ConsecutiveFails)
+				"consecutive_fails", state.ConsecutiveFails,
+				"backoff", backoff)
 
-			// 提交到 CredentialProbeV2 的快速探测队列
 			if m.credProbeV2Submitter != nil {
 				m.credProbeV2Submitter(credID)
 			}
