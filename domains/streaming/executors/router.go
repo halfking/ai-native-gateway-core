@@ -11,6 +11,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -41,11 +42,7 @@ type Router struct {
 	rrCounter atomic.Uint64
 
 	// 新增：状态管理器引用
-	StateManager interface {
-		GetState(ctx context.Context, credID int, model string) (state interface{}, err error)
-		IsAvailable(ctx context.Context, credID int, model string) (bool, string)
-		Enabled() bool
-	}
+	StateManager credentialstate.StateProvider
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -190,30 +191,30 @@ func (m *Manager) RegisterNodesForCredential(ctx context.Context, credID int, mo
 
 	// 合并用户提供的模型列表（去重）
 	modelSet := make(map[string]bool)
-	for _, m := range dbModels {
-		modelSet[m] = true
+	for _, mdl := range dbModels {
+		modelSet[mdl] = true
 	}
-	for _, m := range models {
-		if m != "" {
-			modelSet[m] = true
+	for _, mdl := range models {
+		if mdl != "" {
+			modelSet[mdl] = true
 		}
 	}
 
 	// 批量注册
 	var errs []error
 	registered := 0
-	for model := range modelSet {
+	for mdl := range modelSet {
 		req := RegisterNodeRequest{
 			CredentialID:  credID,
-			RawModelName:  model,
+			RawModelName:  mdl,
 			ProbeEnabled:  true,
-			ProbeInterval: 1 * 3600, // 1小时
+			ProbeInterval: time.Hour,
 			CreatedBy:     "system",
 			TriggerProbe:  false, // 批量注册时不立即触发探测
 		}
 
 		if err := m.RegisterNode(ctx, req); err != nil {
-			errs = append(errs, fmt.Errorf("register %s: %w", model, err))
+			errs = append(errs, fmt.Errorf("register %s: %w", mdl, err))
 		} else {
 			registered++
 		}
