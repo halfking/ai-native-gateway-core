@@ -1741,11 +1741,46 @@ func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
 // If creation fails (e.g. a column added by a migration that hasn't been applied
 // yet), the gateway must still start. Therefore this function logs a warning on
 // error and returns nil, never blocking db.Open.
+//
+// 2026-06-30 PR-8: wraps the DROP+CREATE in a transaction guarded by
+// pg_try_advisory_xact_lock. Without this, two pods booting concurrently
+// race on DROP VIEW CASCADE: the loser sees "view does not exist" / rows
+// flipping schema mid-flight, leaving /probe-health returning 500 for
+// ~30s (audit P0-11). The non-blocking variant is deliberate — pods
+// that lose the race skip the rebuild; the winner's commit is visible
+// immediately. Lock ID is a fixed int64 chosen to not collide with
+// other advisory locks in this codebase.
+const probeViewAdvisoryLockID int64 = 0x50524F42 // "PROB" in ASCII
+
 func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 	if d == nil || d.pool == nil {
 		return
 	}
-	_, err := d.pool.Exec(ctx, `
+
+	// 2026-06-30 PR-8: wrap DROP+CREATE in a transaction so the advisory
+	// lock is auto-released at commit/rollback (no unlock path to forget).
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("probe health dashboard views: begin tx failed (non-fatal)",
+			"error", err)
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // tx Commit supersedes; Rollback on commit is a no-op
+
+	// Try to acquire the advisory lock. If another pod already holds it,
+	// skip the rebuild — that pod's commit will publish the views.
+	var locked bool
+	if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, probeViewAdvisoryLockID).Scan(&locked); err != nil {
+		slog.Warn("probe health dashboard views: pg_try_advisory_xact_lock failed (non-fatal)",
+			"error", err)
+		return
+	}
+	if !locked {
+		slog.Info("probe health dashboard views: another pod holds the advisory lock, skipping rebuild")
+		return
+	}
+
+	_, err = tx.Exec(ctx, `
 		DROP VIEW IF EXISTS v_model_health_dashboard CASCADE;
 		DROP VIEW IF EXISTS v_probe_queue_snapshot CASCADE;
 		DROP VIEW IF EXISTS v_model_priority_details CASCADE;
@@ -2053,6 +2088,11 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		// admin dashboard views are unavailable. The probe-health page
 		// will show empty data, but routing is unaffected.
 		slog.Warn("probe health dashboard views creation failed (non-fatal; /probe-health page may be empty)",
+			"error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("probe health dashboard views: tx commit failed (non-fatal)",
 			"error", err)
 		return
 	}
