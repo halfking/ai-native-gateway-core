@@ -389,7 +389,19 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
-	if candErr != nil || len(candidates) == 0 {
+	if candErr != nil {
+		// Database or infrastructure error - do NOT disguise as no_candidate
+		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel)
+		rc := classifyRoutingError(candErr)
+		latency := int(time.Since(startTime).Milliseconds())
+		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+			nil, nil, rc.code, rc.message, latency, bodyBytes, keyInfo, r)
+		*attemptLogged = true
+		writeAnthropicError(w, rc.httpStatus, "api_error", rc.message)
+		return
+	}
+	if len(candidates) == 0 {
+		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
 		latency := int(time.Since(startTime).Milliseconds())

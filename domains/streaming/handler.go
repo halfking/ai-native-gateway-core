@@ -1332,12 +1332,13 @@ func (h *ChatHandler) serveWithExecutor(
 
 	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if err != nil {
-		slog.Error("failed to get candidates from provider", "error", err)
-		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark("no_candidate",
-			fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
+		// Database or infrastructure error - do NOT disguise as no_candidate
+		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel)
+		rc := classifyRoutingError(err)
+		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, rc.code, nil, int(time.Since(startTime).Milliseconds()))
+		logCtx.failAndMark(rc.code, rc.message, nil, nil)
 		markLogged()
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("no available provider for model '%s'", clientModel), "server_error", "no_candidate")
+		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "database_error", rc.code)
 		return
 	}
 	if len(candidates) == 0 {
