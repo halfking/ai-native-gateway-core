@@ -8,6 +8,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionSpecs()...)
 	out = append(out, RateLimitPlatformSpecs()...)
 	out = append(out, PassthroughSpecs()...)
+	out = append(out, ModuleSpecs()...)
+	out = append(out, LogSpecs()...)
 	return out
 }
 

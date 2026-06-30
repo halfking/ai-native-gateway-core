@@ -380,6 +380,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)
 
+	// Module management — enterprise feature module listing, toggling, and
+	// integration configuration (Feishu bot, webhook, etc.).
+	h.registerModuleRoutes(mux)
+
 	// 2026-06-27 Session audit & approval queue endpoints (sessionaudit domain).
 	// All require JWT/admin-key auth (h.admin wrap). Approve/Reject endpoints
 	// additionally enforce tenant_id comparison in handler (cross-tenant 403).
