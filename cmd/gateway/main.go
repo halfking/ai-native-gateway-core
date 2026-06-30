@@ -672,6 +672,13 @@ func main() {
 		}
 		// V3.1 (2026-06-26): wire route node recorder + session routing
 		routingExec.Recorder = executors.NewRouteNodeRecorder(fpSlots)
+
+		// 2026-07-01 Phase 2.x: wire credential state observer for real request feedback
+		if stateManager != nil {
+			routingExec.StateObserver = stateManager
+			slog.Info("credential state observer enabled (Phase 2.x real request feedback)")
+		}
+
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 		// 2026-06-26: configurable recent-session reuse window. Default
