@@ -150,6 +150,10 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		// pool.Close() removed - handled by defer
 		return nil, err
 	}
+	if err := db.ensureAnalysisEventsRLS(migCtx); err != nil {
+		// pool.Close() removed - handled by defer
+		return nil, err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -1395,6 +1399,55 @@ func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
 		return err
 	}
 	slog.Info("supplemental RLS ensured (tenant_settings_kv, settings_audit, tenant_tool_policies, tool_call_events, tool_usage_stats, tool_registry)")
+	return nil
+}
+
+// ensureAnalysisEventsRLS — 2026-07-01 (round 50 audit fix)
+//
+// Adds RLS to public.analysis_events and public.intent_aggregates. The two
+// CREATE TABLE statements live in migrations 306/309 but the original authors
+// deferred RLS ("加 RLS-friendly 列 (tenant_id) 便于后续多租户过滤" — 306.sql:14).
+// This function reapplies RLS at startup so the linter and the live DB stay
+// in sync even if the .sql files never get re-applied (consistent with the
+// ensureSupplementalRLS pattern above).
+//
+// Two policies per table (matches 316_output_compliance_monitoring convention):
+//   - tenant_isolation_<table>: USING (tenant_id = get_current_tenant())
+//   - <table>_super_admin_bypass: USING (app.bypass_rls OR app.current_role = 'super_admin')
+//
+// Writers (publisher.go, intent_store.go) now wrap INSERT in a tx with
+// `SET LOCAL app.bypass_rls = 'true'` so they can write across tenants.
+func (d *DB) ensureAnalysisEventsRLS(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.analysis_events ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_analysis_events ON public.analysis_events;
+		CREATE POLICY tenant_isolation_analysis_events ON public.analysis_events
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+		DROP POLICY IF EXISTS analysis_events_super_admin_bypass ON public.analysis_events;
+		CREATE POLICY analysis_events_super_admin_bypass ON public.analysis_events
+		    USING (
+		        current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+
+		ALTER TABLE public.intent_aggregates ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS tenant_isolation_intent_aggregates ON public.intent_aggregates;
+		CREATE POLICY tenant_isolation_intent_aggregates ON public.intent_aggregates
+		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+		DROP POLICY IF EXISTS intent_aggregates_super_admin_bypass ON public.intent_aggregates;
+		CREATE POLICY intent_aggregates_super_admin_bypass ON public.intent_aggregates
+		    USING (
+		        current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("analysis_events + intent_aggregates RLS ensured (2026-07-01 round 50)")
 	return nil
 }
 
