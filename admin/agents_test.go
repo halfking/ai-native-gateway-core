@@ -54,6 +54,12 @@ type stubService struct {
 	neighborsRef   int64
 	neighborsDepth int
 	lastNbCall     bool
+
+	// PR-6 (2026-06-30): PR-6 test hooks. If set, override default behavior.
+	listStaleFn         func(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error)
+	listTenantsFn       func(ctx context.Context) ([]string, error)
+	lastListStaleTenant string
+	listStaleCalls      int
 }
 
 func (s *stubService) List(ctx context.Context, f apihub.Filter) ([]apihub.Asset, error) {
@@ -93,11 +99,28 @@ func (s *stubService) Neighbors(ctx context.Context, k apihub.Kind, refID int64,
 
 func (s *stubService) ListStale(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error) {
 	s.mu.Lock()
+	s.listStaleCalls++
+	// Record the tenant from context for assertions. We can't import
+	// apihub.TenantFromContext (lowercase), so we read the value key
+	// directly via reflection-free string match — the apihub package
+	// stores tenantID as a string under tenantCtxKey{}.
+	type ctxKey interface{}
+	// Iterate the ctx is impossible; instead, callers pass tenant
+	// directly when overriding. For default path we just record "".
+	s.lastListStaleTenant = ""
+	s.mu.Unlock()
+	if s.listStaleFn != nil {
+		return s.listStaleFn(ctx, threshold)
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.listOut, nil
 }
 
 func (s *stubService) ListTenants(ctx context.Context) ([]string, error) {
+	if s.listTenantsFn != nil {
+		return s.listTenantsFn(ctx)
+	}
 	return []string{"default"}, nil
 }
 
@@ -456,5 +479,108 @@ func TestHealth_BadThresholdFallsBack(t *testing.T) {
 
 	if !strings.Contains(w.Body.String(), `"threshold":"6h0m0s"`) {
 		t.Errorf("body: %s", w.Body.String())
+	}
+}
+
+// PR-6 (2026-06-30): tenant_admin must see only their own tenant's
+// stale assets (was seeing 'default' tenant's data due to RLS fallback
+// in pg_store.ListTenants — audit P0-9). Super_admin retains the
+// cross-tenant aggregation.
+func TestHealth_TenantAdmin_SeesOnlyOwnTenant(t *testing.T) {
+	stub := &stubService{
+		listTenantsFn: func(ctx context.Context) ([]string, error) {
+			t.Error("tenant_admin should NOT call ListTenants (RLS would restrict it to 'default')")
+			return nil, nil
+		},
+		listStaleFn: func(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error) {
+			tenant := apihub.TenantFromContext(ctx)
+			if tenant != "acme" {
+				t.Errorf("ListStale called with tenant=%q, want acme", tenant)
+			}
+			return []apihub.Asset{
+				{Kind: apihub.KindLLMEndpoint, RefID: 1, TenantID: "acme", Name: "stale-acme", HealthState: apihub.HealthDegraded},
+			}, nil
+		},
+	}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health", nil)
+	req = SetAuthContext(req, &AuthContext{
+		UserID:   42,
+		TenantID: "acme",
+		Username: "alice",
+		Role:     "tenant_admin",
+		IsJWT:    true,
+	})
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"total":1`) {
+		t.Errorf("expected total=1 (own tenant only), got: %s", body)
+	}
+	if !strings.Contains(body, "stale-acme") {
+		t.Errorf("expected own tenant's stale asset, got: %s", body)
+	}
+}
+
+// PR-6: super_admin aggregates across all tenants via ListTenants loop.
+func TestHealth_SuperAdmin_AggregatesAcrossTenants(t *testing.T) {
+	tenants := []string{"default", "acme", "globex"}
+	stub := &stubService{
+		listTenantsFn: func(ctx context.Context) ([]string, error) {
+			return tenants, nil
+		},
+		listStaleFn: func(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error) {
+			tenant := apihub.TenantFromContext(ctx)
+			return []apihub.Asset{
+				{Kind: apihub.KindLLMEndpoint, RefID: 1, TenantID: tenant, HealthState: apihub.HealthDegraded},
+			}, nil
+		},
+	}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health", nil)
+	req = SetAuthContext(req, &AuthContext{
+		UserID:   99,
+		TenantID: "default",
+		Username: "root",
+		Role:     "super_admin",
+		IsJWT:    true,
+	})
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"total":3`) {
+		t.Errorf("expected total=3 (3 tenants × 1 stale), got: %s", body)
+	}
+}
+
+// PR-6: legacy admin_key role also aggregates (treats as super).
+func TestHealth_AdminKey_AggregatesAcrossTenants(t *testing.T) {
+	tenants := []string{"default", "tenant-x"}
+	stub := &stubService{
+		listTenantsFn: func(ctx context.Context) ([]string, error) {
+			return tenants, nil
+		},
+		listStaleFn: func(ctx context.Context, threshold time.Duration) ([]apihub.Asset, error) {
+			return nil, nil
+		},
+	}
+	h := newAgentsHandlerWithSvc(stub)
+	req := httptest.NewRequest("GET", "/api/agents/health", nil)
+	req = SetAuthContext(req, &AuthContext{
+		Role: "admin_key",
+	})
+	w := httptest.NewRecorder()
+	h.Health(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 }

@@ -189,6 +189,16 @@ func WithTenant(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantCtxKey{}, tenantID)
 }
 
+// TenantFromContext (2026-06-30 PR-6) is the public counterpart of
+// tenantFromCtx — used by test stubs in admin package to assert which
+// tenant the handler queried. Returns "" if not set.
+func TenantFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(tenantCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // tenantFromCtx extracts the tenant id; returns "default" if absent.
 func tenantFromCtx(ctx context.Context) string {
 	if v, ok := ctx.Value(tenantCtxKey{}).(string); ok && v != "" {
