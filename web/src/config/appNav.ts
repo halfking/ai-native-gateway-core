@@ -84,7 +84,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/settings', label: '系统设置', icon: '⚙️', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', icon: '⚠️', super: true, hideForTenant: true },
-      { path: '/admin/agents', label: 'Agent Registry', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/modules', label: '模块管理', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/agents', label: 'Agent Registry', icon: '🤖', super: true, hideForTenant: true },
     ],
   },
   {
