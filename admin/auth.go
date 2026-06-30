@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -325,9 +324,9 @@ func (h *Handler) generateAdminKey(secretKey string) (raw, hash, prefix, ciphert
 // tenant_admin requests get 403 Forbidden.
 func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Try JWT first (no DB needed)
-		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+		// Try JWT first (no DB needed) — from Authorization Bearer or llmgw_session cookie
+		tokenStr, ok := extractBearerOrCookieToken(r)
+		if ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
 			if err == nil && claims.UserID > 0 {
 				if claims.Role != "super_admin" {
