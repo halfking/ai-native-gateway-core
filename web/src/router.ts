@@ -47,6 +47,7 @@ import ProbeHealthView        from './views/ProbeHealthView.vue'
 import ProbeHealthDetailView  from './views/ProbeHealthDetailView.vue'
 import AgentRegistryView    from './views/AgentRegistryView.vue'
 import FormatAnomaliesView  from './views/FormatAnomaliesView.vue'
+import ModulesView          from './views/ModulesView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -133,6 +134,7 @@ export const router = createRouter({
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
+    { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
