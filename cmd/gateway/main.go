@@ -38,6 +38,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/assets"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -233,6 +234,7 @@ func main() {
 	var pendingStore *pending.Store
 	var redisClientForCache *session.RedisClient
 	var routingExec *executors.Executor
+	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
 	if cfg.RedisAddr != "" {
@@ -323,6 +325,18 @@ func main() {
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
+
+		// 2026-06-30: Credential×model state manager — provides
+		// real-time (<1s) availability for routing decisions via a
+		// memory→redis→db cache hierarchy. Created early so it can be
+		// wired into healthTracker; started later after probe services
+		// are initialised.
+		if dbConn != nil && dbConn.Enabled() {
+			stateManager = credentialstate.NewManager(dbConn.Pool(), fpSlotRedis)
+			router.StateManager = stateManager
+			slog.Info("credential state manager created",
+				"redis_enabled", fpSlotRedis != nil)
+		}
 
 		// Phase 1 Bandit Scoring (2026-06-26): Initialize Thompson Sampling scorer
 		// for intelligent credential selection based on historical performance.
@@ -991,6 +1005,11 @@ func main() {
 				credProbeV2.SetKeyring(keyring)
 			}
 			credProbeV2.SetAvailabilityCache(modelAvailabilityCache)
+			// 2026-06-30: wire state manager so probe results update
+			// the real-time state cache immediately.
+			if stateManager != nil {
+				credProbeV2.SetStateManager(stateManager)
+			}
 			slog.Info("CHECKPOINT: before credProbeV2.Start")
 			credProbeV2.Start(context.Background())
 			slog.Info("CHECKPOINT: after credProbeV2.Start")
@@ -1057,6 +1076,28 @@ func main() {
 			slog.Info("CHECKPOINT: after passiveProbe.Start")
 		}
 		slog.Info("CHECKPOINT: after probe workers block")
+
+		// 2026-06-30: Start the credential-state manager AFTER probe
+		// services have been wired. The manager watches for state changes
+		// from probes, requests, and admin actions, and triggers fast
+		// re-probes when consecutive failures exceed threshold.
+		if stateManager != nil {
+			// Wire the fast-reprobe submitters so UpdateOnFailure can
+			// trigger immediate verification after threshold breaches.
+			if credProbeV2 != nil {
+				stateManager.SetProbeSubmitter(
+					credProbeV2.SubmitFastProbe,
+					func(ctx context.Context, credID int, model string) error {
+						if modelProbe != nil {
+							return modelProbe.TriggerManual(ctx, credID, model)
+						}
+						return nil
+					},
+				)
+			}
+			stateManager.Start(context.Background())
+			slog.Info("credential state manager started")
+		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
 		stickyCleaner = bg.NewStickyCleaner(dbConn.Pool())
@@ -1312,6 +1353,11 @@ func main() {
 				adminHandler.SetModelProbeRunner(modelProbe)
 			}
 			slog.Info("CHECKPOINT: after SetModelProbeRunner")
+			// 2026-06-30: wire state manager for /api/credentials/*/state
+			// and /api/credentials/*/test endpoints.
+			if stateManager != nil {
+				adminHandler.SetStateManager(stateManager)
+			}
 			adminHandler.SetFpSlots(fpSlots)
 			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
