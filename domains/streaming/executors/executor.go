@@ -2269,6 +2269,17 @@ func (e *Executor) buildAsyncSuccessEntry(
 		ErrorKind:     &emptyKind, // empty string → COALESCE writes NULL
 		GwSessionID:   strPtr(sessionID),
 	}
+	// 2026-06-30 PR-5: thread client_request_id from X-Gw-Client-Request-Id
+	// header on async-retry success path. Without this, async-retry
+	// request_logs rows are missing client_request_id even when the
+	// client supplied one (audit P0-8).
+	if params.R != nil {
+		if cid := params.R.Header.Get("X-Gw-Client-Request-Id"); cid != "" {
+			entry.ClientRequestID = &cid
+		} else if cid := params.R.Header.Get("X-Client-Request-Id"); cid != "" {
+			entry.ClientRequestID = &cid
+		}
+	}
 	if result != nil {
 		if result.Candidate.CredentialID != 0 {
 			id := result.Candidate.CredentialID
