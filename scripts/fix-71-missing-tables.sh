@@ -5,14 +5,19 @@
 
 set -e
 
-SERVER="__HOST_71_IP__"
-PORT="25022"
-USER="root"
-export SSHPASS='__REDACTED_SSH_PASSWORD__'
+SERVER="${SERVER:-__HOST_71_IP__}"
+PORT="${PORT:-25022}"
+USER="${USER:-root}"
+# SSHPASS must be set in the environment before running this script.
+# Example: SSHPASS='xxx' bash scripts/fix-71-missing-tables.sh
+if [ -z "${SSHPASS:-}" ]; then
+  echo "ERROR: SSHPASS environment variable is not set. Export it before running." >&2
+  exit 1
+fi
 
-DB_CONTAINER="llm-gateway-pg-71-replica"
-DB_USER="llm_gateway"
-DB_NAME="crm"
+DB_CONTAINER="${DB_CONTAINER:-llm-gateway-pg-71-replica}"
+DB_USER="${DB_USER:-llm_gateway}"
+DB_NAME="${DB_NAME:-llm_gateway}"
 
 echo "================================================"
 echo "LLM Gateway 71服务器缺失表修复脚本"
