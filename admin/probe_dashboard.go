@@ -170,6 +170,18 @@ type ModelStateBreakdown struct {
 	NextProbeInSeconds *int     `json:"next_probe_in_seconds,omitempty"`
 }
 
+// buildStateDistribution (2026-06-30 PR-7) flattens a breakdown slice into a
+// {state: total_count} map. Frontend ProbeHealthDetailView.vue reads
+// `state_distribution` directly for the 4 status badges; without this
+// field the badges show 0 (audit P0-10).
+func buildStateDistribution(breakdown []ModelStateBreakdown) map[string]int {
+	out := make(map[string]int, len(breakdown))
+	for _, b := range breakdown {
+		out[b.State] += b.Count
+	}
+	return out
+}
+
 // ── API Handlers ────────────────────────────────────────────────────────
 
 // GET /api/admin/probe/dashboard
@@ -503,9 +515,16 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// 2026-06-30 PR-7: also expose state_distribution as a flat map so the
+	// frontend can render header badges (healthy/degraded/failed/probing
+	// counts) without iterating breakdown[]. Audit P0-10 — the previous
+	// endpoint only returned `breakdown` and the frontend read
+	// `state_distribution`, leaving the 4 status badges showing 0.
+	stateDistribution := buildStateDistribution(breakdown)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"model":     modelName,
-		"breakdown": breakdown,
+		"model":              modelName,
+		"breakdown":          breakdown,
+		"state_distribution": stateDistribution,
 	})
 }
 
