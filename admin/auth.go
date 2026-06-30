@@ -93,8 +93,7 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 					IsJWT:              true,
 					MustChangePassword: claims.MustChangePassword,
 				})
-				if claims.MustChangePassword && !isPasswordChangeAllowedPath(r.URL.Path) {
-					writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
+				if enforceMustChangePassword(w, r, claims) {
 					return
 				}
 				next(w, authReq)
@@ -128,7 +127,34 @@ func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) 
 }
 
 func isPasswordChangeAllowedPath(path string) bool {
-	return path == "/api/auth/me" || path == "/api/auth/change-password"
+	switch path {
+	case "/api/auth/me",
+		"/api/auth/change-password",
+		"/api/auth/logout":
+		return true
+	}
+	return false
+}
+
+// enforceMustChangePassword applies rule 20 §6.2 — users with
+// MustChangePassword=true can only hit whitelisted paths (me,
+// change-password, logout). All other requests return 403. Returns
+// true if the request was handled (blocked), false if processing
+// should continue.
+//
+// 2026-06-30 PR-4: extracted from AdminMiddleware so SuperAdminMiddleware
+// can apply the same gate. Without this, super_admin requests with
+// must_change_password=true could bypass the password-change requirement
+// via the Authorization: Bearer header path (C4.1 in weekly audit).
+func enforceMustChangePassword(w http.ResponseWriter, r *http.Request, claims *JWTClaims) bool {
+	if claims == nil || !claims.MustChangePassword {
+		return false
+	}
+	if isPasswordChangeAllowedPath(r.URL.Path) {
+		return false
+	}
+	writeError(w, http.StatusForbidden, errPasswordChangeRequired.Error())
+	return true
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +332,14 @@ func SuperAdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey str
 			if err == nil && claims.UserID > 0 {
 				if claims.Role != "super_admin" {
 					writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+					return
+				}
+				// 2026-06-30 PR-4: super_admin must also satisfy the password
+				// change requirement (rule 20 §6.2). Previously this was only
+				// checked in AdminMiddleware; SuperAdminMiddleware skipped it,
+				// allowing must_change_password=true super_admins to bypass the
+				// gate via Authorization: Bearer <jwt>.
+				if enforceMustChangePassword(w, r, claims) {
 					return
 				}
 				authReq := SetAuthContext(r, &AuthContext{
