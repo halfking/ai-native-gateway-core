@@ -69,7 +69,18 @@ func (s *PGIntentAggregateStore) Increment(ctx context.Context, tenantID string,
 	if tenantID == "" {
 		return errors.New("assets: empty tenant_id")
 	}
-	_, err := s.pool.Exec(ctx, `
+	// 2026-07-01: intent_aggregates has RLS (323_intent_aggregates_rls.sql).
+	// Increment runs in a tx with bypass_rls so the writer does not have to
+	// mirror the per-tenant GUC for every upsert.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SET LOCAL app.bypass_rls = 'true'`); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO intent_aggregates (tenant_id, intent_kind, count, last_updated)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (tenant_id, intent_kind) DO UPDATE
@@ -79,8 +90,9 @@ func (s *PGIntentAggregateStore) Increment(ctx context.Context, tenantID string,
 	if err != nil {
 		s.logger.Warn("assets.Increment failed",
 			"tenant_id", tenantID, "kind", kind, "delta", delta, "error", err)
+		return err
 	}
-	return err
+	return tx.Commit(ctx)
 }
 
 // Get 读取该 tenant 下所有累计；按 intent_kind 排序。
