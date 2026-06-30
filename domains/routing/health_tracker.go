@@ -99,9 +99,13 @@ func (h *HealthTracker) OnSuccess(ctx context.Context, credentialID int, model s
 		}
 	}()
 
-	// 新增：实时更新状态管理器
+	// 新增：实时更新状态管理器（使用 detached context 避免请求取消导致更新丢失）
 	if h.stateManager != nil {
-		go h.stateManager.UpdateOnSuccess(ctx, credentialID, model, latencyMs, requestID)
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			h.stateManager.UpdateOnSuccess(bgCtx, credentialID, model, latencyMs, requestID)
+		}()
 	}
 
 	// Note: Auto-scaleup is handled by background worker, not per-request
@@ -172,6 +176,10 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 
 	// 新增：实时更新状态管理器 + 触发快速验证
 	if h.stateManager != nil {
-		go h.stateManager.UpdateOnFailure(ctx, credentialID, model, errKind, requestID)
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			h.stateManager.UpdateOnFailure(bgCtx, credentialID, model, errKind, requestID)
+		}()
 	}
 }

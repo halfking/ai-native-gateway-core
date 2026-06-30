@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -76,6 +77,11 @@ type Handler struct {
 		Pause()
 		Resume()
 	}
+	// stateManager (2026-06-30) provides live credential×model state for
+	// the /api/credentials/{id}/test + /state endpoints and feeds the
+	// router with real-time availability decisions. nil disables the
+	// state-management feature; routing falls back to DB-based health.
+	stateManager credentialstate.StateProvider
 	// modelPolicy (Round 48, 2026-06-21) is the tenant-scoped model
 	// denylist cache.  admin handlers call Invalidate after every
 	// write so the next chat request sees the change without waiting
@@ -247,6 +253,10 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
+// SetStateManager wires the credential-state manager for /api/credentials/*/state
+// and /api/credentials/*/test endpoints. Pass nil to disable.
+func (h *Handler) SetStateManager(sm credentialstate.StateProvider) { h.stateManager = sm }
 
 func (h *Handler) SetFpSlots(m *credentialfpslot.Manager) {
 	h.fpSlots = m
@@ -512,6 +522,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			monitorH := NewCredentialMonitorHandlers(h, nil, rc)
 			monitorH.RegisterMonitorRoutes(mux, h.superAdmin)
 		}
+
+		// Credential state management (2026-06-30): manual probe + live state query.
+		// Routes are guarded by superAdmin (same as monitor routes).
+		h.registerStateRoutes(mux)
 
 		h.registerMaasRoutes(mux)
 	}

@@ -3,9 +3,11 @@ package credentialstate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -71,41 +73,57 @@ func (m *Manager) setToRedis(ctx context.Context, key string, state *State) {
 }
 
 func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*State, error) {
-	// 从 model_probe_state 和 credentials 表读取最新状态
-	var state State
+	// 从 model_probe_state 表读取最新探测状态。该表由
+	// bg.ModelProbeRunner 维护，记录 (credential, model) 级别的健康。
+	var (
+		state          State
+		healthStatus   *string
+		consecFailures *int
+		lastAttemptAt  *time.Time
+		nextRetryAt    *time.Time
+	)
 	err := m.db.QueryRow(ctx, `
-		SELECT 
+		SELECT
 			mps.credential_id,
 			mps.raw_model_name,
-			COALESCE(cmb.available, FALSE),
-			COALESCE(mps.state, 'unknown'),
-			mps.consecutive_successes,
+			mps.state,
 			mps.consecutive_failures,
 			mps.last_attempt_at,
 			mps.next_retry_at
 		FROM model_probe_state mps
-		LEFT JOIN credential_model_bindings cmb 
-			ON cmb.credential_id = mps.credential_id
-		LEFT JOIN provider_models pm 
-			ON pm.id = cmb.provider_model_id 
-			AND pm.raw_model_name = mps.raw_model_name
-		WHERE mps.credential_id = $1 
+		WHERE mps.credential_id = $1
 		  AND mps.raw_model_name = $2
 	`, credID, model).Scan(
 		&state.CredentialID,
 		&state.Model,
-		&state.Available,
-		&state.HealthStatus,
-		&state.ConsecutiveFails,
-		&state.ConsecutiveFails,
-		&state.LastUpdatedAt,
-		&state.RecoverAt,
+		&healthStatus,
+		&consecFailures,
+		&lastAttemptAt,
+		&nextRetryAt,
 	)
 
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 
+	if healthStatus != nil {
+		state.HealthStatus = *healthStatus
+		// model_probe_state.state 的可能值：
+		//   healthy_confirmed → 可用
+		//   recovering / unknown / broken_confirmed → 不可用
+		state.Available = *healthStatus == "healthy_confirmed"
+	}
+	if consecFailures != nil {
+		state.ConsecutiveFails = *consecFailures
+	}
+	if lastAttemptAt != nil {
+		state.LastUpdatedAt = *lastAttemptAt
+	}
+	state.RecoverAt = nextRetryAt
 	state.Source = "db"
+
 	return &state, nil
 }
