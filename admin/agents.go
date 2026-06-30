@@ -337,8 +337,12 @@ func (h *AgentsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 // ── Health (Phase 7) ─────────────────────────────────────────────────────
 
 // Health handles GET /api/agents/health — lists stale assets (last_seen_at
-// older than ?threshold=6h by default) across all tenants.
-// Supports pagination via ?offset=0&limit=100 (default limit=1000).
+// older than ?threshold=6h by default).
+//
+// 2026-06-30 PR-6: tenant isolation. tenant_admin only sees their own
+// tenant's stale assets (was seeing 'default' tenant's data due to RLS
+// fallback in pg_store.ListTenants — audit P0-9). super_admin /
+// admin_key retain the cross-tenant view.
 func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -363,22 +367,34 @@ func (h *AgentsHandler) Health(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// List all tenants and aggregate stale assets
-	tenants, err := h.svc.ListTenants(ctx)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	var allStale []apihub.Asset
-	for _, tenant := range tenants {
-		tenantCtx := apihub.WithTenant(ctx, tenant)
+	if IsTenantAdmin(r) {
+		// tenant_admin: only their own tenant. Use auth.TenantID directly
+		// rather than ListTenants() (which is RLS-restricted to 'default').
+		tenantID := GetTenantID(r)
+		tenantCtx := apihub.WithTenant(ctx, tenantID)
 		stale, err := h.svc.ListStale(tenantCtx, threshold)
 		if err != nil {
-			// Log but continue with other tenants
-			continue
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-		allStale = append(allStale, stale...)
+		allStale = stale
+	} else {
+		// super_admin / admin_key / unknown role: aggregate across all tenants.
+		tenants, err := h.svc.ListTenants(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, tenant := range tenants {
+			tenantCtx := apihub.WithTenant(ctx, tenant)
+			stale, err := h.svc.ListStale(tenantCtx, threshold)
+			if err != nil {
+				// Log but continue with other tenants
+				continue
+			}
+			allStale = append(allStale, stale...)
+		}
 	}
 
 	// Apply pagination
