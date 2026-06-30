@@ -1,24 +1,5 @@
 #!/usr/bin/env bash
 
-# ⚠️  WARNING: This script accesses PRODUCTION database (71)
-# ⚠️  Data sync from production is DISABLED by default for security
-# ⚠️  See docs/DATABASE-ENVIRONMENT-SEPARATION.md for details
-#
-# If you need to sync from production (emergency only):
-# 1. Get DBA approval with change request ID
-# 2. Use the .DISABLED version with explicit approval tracking
-# 3. Contact DevOps team for assistance
-#
-echo "❌ ERROR: Sync from production (71) is disabled for security."
-echo "Please use scripts/sync-db-from-184.sh to sync from test environment instead."
-echo ""
-echo "If this is an emergency and you have DBA approval:"
-echo "  1. Check docs/DATABASE-ENVIRONMENT-SEPARATION.md"
-echo "  2. Use scripts/sync-db-from-71.sh.DISABLED with APPROVAL_ID"
-echo "  3. Contact DevOps team"
-exit 1
-
-# Original script below (disabled):
 # Sync llm_gateway from server 71 (test-apps-infra) to local r112_postgres.
 #
 # Server 71 topology:
