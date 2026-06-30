@@ -30,7 +30,7 @@ BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-$(date +%Y%m%d-%H%M%S)"
 
 REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.112.184}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
-REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-/Users/xutaohuang/.ssh/id_ed25519}"
+REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
 # and may hang if 184's sshd has a slow/limiting response to unknown keys.
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey"

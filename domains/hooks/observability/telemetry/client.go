@@ -893,7 +893,13 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
 	   -- 2026-06-26: client-supplied X-Request-Id (debug only). COALESCE so
 	   -- a late success UPDATE does not blank a value set on INSERT.
-	   client_request_id = COALESCE($64, client_request_id)
+	   client_request_id = COALESCE($64, client_request_id),
+	   -- 2026-06-30: upstream diagnostics (migration 320).
+	   upstream_status_code = COALESCE($65, upstream_status_code),
+	   client_timeout = COALESCE($66, client_timeout),
+	   client_endpoint = COALESCE($67, client_endpoint),
+	   stream_chunk_errors = COALESCE($68, stream_chunk_errors),
+	   stream_chunks_sent = COALESCE($69, stream_chunks_sent)
 	  FROM latest
 	 WHERE request_logs.id = latest.id
 	   AND request_logs.ts = latest.ts

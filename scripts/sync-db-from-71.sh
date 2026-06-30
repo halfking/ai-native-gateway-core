@@ -35,7 +35,7 @@ BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-71-$(date +%Y%m%d-%H%M%S)"
 
 REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.174.71}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
-REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-/Users/xutaohuang/.ssh/71_id_rsa}"
+REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/71_id_rsa}"
 REMOTE_PG_CONTAINER="${REMOTE_PG_CONTAINER:-llm-gateway-pg-71-replica}"
 REMOTE_DB="${REMOTE_DB:-llm_gateway}"
 # Use the superuser for export because some tables (e.g. approval_queue)

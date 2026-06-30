@@ -272,7 +272,7 @@ const clientGuides = computed((): ClientGuide[] => [
     name: 'Claude Desktop',
     icon: '🤖',
     steps: [
-      'Claude Desktop 本身走 Anthropic 账号；若需接入开轩 MCP 工具：',
+      'Claude Desktop 本身走 Anthropic 账号；若需接入启圭WM MCP 工具：',
       '编辑 claude_desktop_config.json（macOS: ~/Library/Application Support/Claude/）',
       '添加 HTTP MCP：url https://mcp.internal.example.com/memora/mcp，headers.Authorization = Bearer <MEMORA_API_KEY>',
       'Quit & Reopen Claude Desktop 生效（需 ≥ 1.0 版本）',

@@ -38,7 +38,7 @@ const props = withDefaults(
     advantagesTitle: '竞争优势',
     advantagesSubtitle: '差异化能力，面向企业生产场景',
     ctaLabel: '登录开始使用',
-    footerText: '开轩启圭 · 企业智能工作台',
+    footerText: '开轩启圭WM · 企业智能工作台',
     accent: '',
     hideCta: true,
   },
