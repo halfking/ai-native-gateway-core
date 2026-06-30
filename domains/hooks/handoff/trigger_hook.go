@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
 )
 
 // TriggerConfig contains configuration for handoff triggering.
@@ -191,8 +192,11 @@ func (h *TriggerHook) shouldTriggerHandoff(ctx context.Context, req *response.In
 func (h *TriggerHook) buildHandoffMessage(req *response.InterceptRequest) []byte {
 	skillName := h.loadSetting(req.TenantID, "handoff.skill_name", h.config.SkillName).(string)
 	
-	content := fmt.Sprintf("/%s\n\n请保存当前任务状态、上下文和进度，然后生成handoff提示词供新会话继续。\n当前: tokens=%d, context=%d, messages=%d",
-		skillName, req.TokensUsed, req.ContextWindow, req.MessageCount)
+	prompts := goal.NewPrompts(goal.LocaleZhCN) // Default to Chinese
+	content := fmt.Sprintf("/%s\n\n%s\nCurrent: tokens=%d, context=%d, messages=%d",
+		skillName, 
+		prompts.HandoffPrompt(fmt.Sprintf("tokens=%d", req.TokensUsed)),
+		req.TokensUsed, req.ContextWindow, req.MessageCount)
 
 	reqBody := map[string]interface{}{
 		"model":    req.ClientModel,
