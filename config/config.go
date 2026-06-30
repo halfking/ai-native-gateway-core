@@ -34,6 +34,20 @@ type Config struct {
 	CORSOrigins string `yaml:"cors_origins" env:"LLM_GATEWAY_CORS_ORIGINS"`
 	StaticDir   string `yaml:"static_dir" env:"LLM_GATEWAY_STATIC_DIR"`
 
+	// Log rotation. File-based rotation is opt-in: an empty
+	// LLM_GATEWAY_LOG_FILE keeps slog on stderr (default).
+	// When set, the gateway writes JSON lines to the file under
+	// the rotation policy below; rotated backups are gzipped
+	// (LLM_GATEWAY_LOG_COMPRESS) and pruned by both count
+	// (LLM_GATEWAY_LOG_MAX_BACKUPS) and age (LLM_GATEWAY_LOG_MAX_AGE_DAYS).
+	// Defaults match the operator spec: 100 MB × 10 = ~1 GB
+	// ceiling, 7-day rolling retention, gzip on rotate.
+	LogFile       string `yaml:"log_file" env:"LLM_GATEWAY_LOG_FILE"`
+	LogMaxSizeMB  int    `yaml:"log_max_size_mb" env:"LLM_GATEWAY_LOG_MAX_SIZE_MB"`
+	LogMaxBackups int    `yaml:"log_max_backups" env:"LLM_GATEWAY_LOG_MAX_BACKUPS"`
+	LogMaxAgeDays int    `yaml:"log_max_age_days" env:"LLM_GATEWAY_LOG_MAX_AGE_DAYS"`
+	LogCompress   bool   `yaml:"log_compress" env:"LLM_GATEWAY_LOG_COMPRESS"`
+
 	// Upstream
 	PythonEndpoint  string `yaml:"python_endpoint" env:"LLM_GATEWAY_PYTHON_ENDPOINT"`
 	AdminAPIKey     string `yaml:"admin_api_key" env:"LLM_GATEWAY_ADMIN_API_KEY"`
@@ -119,7 +133,9 @@ func (cfg *Config) IsProduction() bool {
 // be non-empty, otherwise the process must NOT start fail-open.
 //
 // JWT secret (SSOT: admin/auth_params.go EnvJWTSecret, EnvSecretKey):
-//   LLM_GATEWAY_JWT_SECRET → SecretKey fallback
+//
+//	LLM_GATEWAY_JWT_SECRET → SecretKey fallback
+//
 // (same precedence as admin/jwt.go.jwtSecret). A JWT secret is "present"
 // if either is set.
 //
@@ -207,6 +223,15 @@ func Load() *Config {
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
 		EnableDisguise:                     false, // off by default; opt-in
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
+		// Log rotation: opt-in via LLM_GATEWAY_LOG_FILE. Defaults
+		// match the operator spec when file logging IS enabled:
+		// 100 MB × 10 files ≈ 1 GB ceiling, 7-day rolling
+		// retention, gzip on rotate. See internal/logging.
+		LogFile:       os.Getenv("LLM_GATEWAY_LOG_FILE"),
+		LogMaxSizeMB:  100,
+		LogMaxBackups: 10,
+		LogMaxAgeDays: 7,
+		LogCompress:   true,
 	}
 
 	if dbStr := os.Getenv("LLM_GATEWAY_REDIS_DB"); dbStr != "" {
@@ -262,6 +287,28 @@ func Load() *Config {
 	}
 	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
 		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
+	}
+
+	// Log rotation overrides (only honoured when LLM_GATEWAY_LOG_FILE
+	// is non-empty; the package-level defaults in internal/logging
+	// already match the operator spec).
+	if v := os.Getenv("LLM_GATEWAY_LOG_MAX_SIZE_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.LogMaxSizeMB = n
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LOG_MAX_BACKUPS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.LogMaxBackups = n
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LOG_MAX_AGE_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.LogMaxAgeDays = n
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_LOG_COMPRESS"); v != "" {
+		cfg.LogCompress = v == "true" || v == "1"
 	}
 
 	return cfg
@@ -358,6 +405,25 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true
+	}
+	if other.LogFile != "" && os.Getenv("LLM_GATEWAY_LOG_FILE") == "" {
+		cfg.LogFile = other.LogFile
+	}
+	if other.LogMaxSizeMB != 0 && os.Getenv("LLM_GATEWAY_LOG_MAX_SIZE_MB") == "" {
+		cfg.LogMaxSizeMB = other.LogMaxSizeMB
+	}
+	if other.LogMaxBackups != 0 && os.Getenv("LLM_GATEWAY_LOG_MAX_BACKUPS") == "" {
+		cfg.LogMaxBackups = other.LogMaxBackups
+	}
+	if other.LogMaxAgeDays != 0 && os.Getenv("LLM_GATEWAY_LOG_MAX_AGE_DAYS") == "" {
+		cfg.LogMaxAgeDays = other.LogMaxAgeDays
+	}
+	if other.LogCompress && !cfg.LogCompress && os.Getenv("LLM_GATEWAY_LOG_COMPRESS") == "" {
+		// YAML `log_compress: true` wins when the env var is unset;
+		// explicit `false` in YAML cannot be overridden because
+		// Go's zero-value bool is ambiguous (this matches how
+		// EnablePreStreamKeepalive is handled above).
+		cfg.LogCompress = true
 	}
 }
 
