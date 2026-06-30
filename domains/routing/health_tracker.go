@@ -108,6 +108,13 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 		return
 	}
 
+	// Filter out client-side errors that don't indicate credential health issues.
+	// Client cancellations, timeouts, and bugs should not count against the
+	// credential's health metrics or trigger circuit breakers.
+	if shouldIgnoreForHealthTracking(errKind) {
+		return
+	}
+
 	go func() {
 		// Bound the whole record→tune→check chain so a slow PG can't
 		// hold a goroutine open indefinitely; 10s is ample for two
@@ -149,5 +156,22 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 				"model", model,
 				"error", err)
 		}
-	}()
+		}()
+	}
+
+// shouldIgnoreForHealthTracking returns true if the error kind should not
+// be counted against credential health metrics. Client-side errors (user
+// cancellations, client timeouts, client bugs) don't reflect credential or
+// upstream health and should be filtered out.
+func shouldIgnoreForHealthTracking(kind errorsx.ErrorKind) bool {
+	// Client canceled the request (e.g., closed browser tab, timeout on client side)
+	if kind == errorsx.KindCanceled {
+		return true
+	}
+	// Client bugs (tool_call_id_mismatch, model_not_found due to typo, etc.)
+	// These are caller mistakes, not credential failures
+	if errorsx.IsClientBug(kind) {
+		return true
+	}
+	return false
 }
