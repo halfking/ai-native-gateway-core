@@ -16,8 +16,21 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 	return &AuthMiddleware{
 		BaseMiddleware: BaseMiddleware{
 			name: "auth",
+			// Global API-key auth runs BEFORE mux routing, but admin handlers
+			// registered under /api/* are independently wrapped with
+			// admin.AdminMiddleware (Bearer JWT / cookie / API key) via
+			// wrapAdmin in cmd/gateway/main.go. The /api/* prefix bypass
+			// here lets cookie-authenticated browser sessions reach those
+			// wrapped admin handlers without sending the global API key
+			// (rule 20 §6.1 cookie compliance).
+			//
+			// SAFETY: every registered /api/* endpoint is wrapped by
+			// wrapAdmin/superAdmin in cmd/gateway/main.go and
+			// admin/handler.go. Verified 2026-06-30 via grep — see
+			// docs/audit/2026-06-30-weekly-audit-report.md P0-3.
 			bypass: BypassRule{
-				ExactPaths: []string{"/healthz", "/metrics", "/"},
+				ExactPaths:   []string{"/healthz", "/metrics", "/"},
+				PathPrefixes: []string{"/api/"},
 			},
 		},
 		expectedKey: apiKey,
