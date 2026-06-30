@@ -3,7 +3,7 @@
 **日期**: 2026-07-01  
 **问题**: 用户取消请求被计入凭据错误统计  
 **影响**: 未来 Phase 2.x（实际请求反馈集成）  
-**修复**: commit `<将被填充>`
+**修复**: commit `88772512`
 
 ---
 
@@ -197,7 +197,7 @@ psql -c "SELECT consecutive_fails FROM credential_states WHERE credential_id=X A
 ## 参考
 
 - Phase 2 核心: commit `3342cfca` (热度感知探测)
-- 用户取消修复: commit `<本次提交>`
+- 用户取消修复: commit `88772512`
 - 相关文件:
   - `domains/credentialstate/manager.go`
   - `domains/credentialstate/manager_test.go`
