@@ -223,7 +223,7 @@ curl -X POST https://llmgateway.internal.example.com/api/admin/data-lifecycle/cl
 
 ### 4. 分析数据量
 ```bash
-ssh root@14.103.112.184
+ssh root@__INTERNAL_PUBLIC_IP__
 cd /opt/llm-gateway-go
 ./scripts/analyze-request-logs-size.sh
 ```

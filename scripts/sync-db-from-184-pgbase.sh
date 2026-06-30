@@ -19,12 +19,12 @@
 #   - Local is NOT continuously synced; run again to re-sync
 #
 # Pre-requisites:
-#   - SSH access to root@14.103.112.184:25022 (configured)
+#   - SSH access to root@__INTERNAL_PUBLIC_IP__:25022 (configured)
 #   - 184 PG has `replicator` role with REPLICATION privilege (default)
 #   - Local Docker has citusdata/citus:11.3.0 image (or compatible)
 #
 # 184 PG pg_hba.conf only allows replication from specific pod IPs
-# (172.31.0.3 / 172.31.0.4), so pg_basebackup MUST be run from inside
+# (__INTERNAL_K8S_HOST__ / __INTERNAL_K8S_HOST__), so pg_basebackup MUST be run from inside
 # the PG pod itself (via kubectl exec). The dump is then streamed out
 # via kubectl exec cat | tar.
 #
@@ -38,7 +38,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opencode"
 BACKUP_DIR="$TMP_ROOT/llmgw-pgbase-$(date +%Y%m%d-%H%M%S)"
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.112.184}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@__INTERNAL_PUBLIC_IP__}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
 REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
@@ -48,10 +48,10 @@ REMOTE_NAMESPACE="${REMOTE_NAMESPACE:-pms-test}"
 REMOTE_DEPLOYMENT="${REMOTE_DEPLOYMENT:-deployment/llm-gateway-pg}"
 REMOTE_DB="${REMOTE_DB:-llm_gateway}"
 REMOTE_DB_USER="${REMOTE_DB_USER:-llm_gateway}"
-REMOTE_DB_PASS="${REMOTE_DB_PASS:-<DB_PASSWORD_REDACTED>}"
+REMOTE_DB_PASS="${REMOTE_DB_PASS:-__REDACTED_DB_PASSWORD__}"
 REMOTE_REPL_USER="${REMOTE_REPL_USER:-replicator}"
 REMOTE_REPL_PASS="${REMOTE_REPL_PASS:-repl_pwd_2026}"
-REMOTE_POD_IP="${REMOTE_POD_IP:-172.31.0.4}"
+REMOTE_POD_IP="${REMOTE_POD_IP:-__INTERNAL_K8S_HOST__}"
 
 LOCAL_CONTAINER="${LOCAL_CONTAINER:-r112_postgres}"
 LOCAL_VOLUME="${LOCAL_VOLUME:-r112_pg_data}"

@@ -176,7 +176,7 @@ WHERE client_model = 'claude-opus-4-8'
 
 ### Step 1: 编译新版本
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 git pull
 go build -o llm-gateway-go ./cmd/gateway
 ```
@@ -223,7 +223,7 @@ kubectl -n pms-test exec -i llm-gateway-pg-xxx -- \
 ### Step 4: 同步到 71 (如需要)
 ```bash
 # 71 使用 systemd，需要替换二进制文件
-ssh root@14.103.174.71
+ssh root@__HOST_71_IP__
 systemctl stop llm-gateway-go
 cp /path/to/new/llm-gateway-go /usr/local/bin/
 systemctl start llm-gateway-go

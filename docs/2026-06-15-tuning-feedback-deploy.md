@@ -60,7 +60,7 @@ curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -d '{"model": "auto", "messages": [{"role":"user","content":"水池问题..."}]}'
 
 # 验证 tuning_signals 表里有新行
-psql -h 184 -U stockuser -d casdoor \
+psql -h 184 -U __DB_USER__ -d casdoor \
   -c "SELECT task_type, classifier, quality_score FROM tuning_signals ORDER BY ts DESC LIMIT 5;"
 
 # 查看提议

@@ -4,7 +4,7 @@
 
 set -e
 
-SERVER="${SERVER:-14.103.174.71}"
+SERVER="${SERVER:-__HOST_71_IP__}"
 PORT="${PORT:-25022}"
 USER="${USER:-root}"
 # SSHPASS must be set in the environment before running this script.

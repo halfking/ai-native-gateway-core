@@ -370,7 +370,7 @@
 |---|---|
 | 75842cfa | feat(scripts): sync 184→local handles port 25022 + pg_dump 15.18 \restrict |
 | 98ee0001 | feat(deploy): rule 22 标准化 — deploy/*.sh + doctor.sh + .env.example + LOCAL_CONFIG |
-| db556316 | fix(dockerfile): registry.internal.example.com → registry.kxpms.cn |
+| db556316 | fix(dockerfile): registry.internal.example.com → registry.internal.example.com |
 | feae6f38 | feat(scripts): 184→local DB sync + one-click deploy/verify |
 | a921709c | fix(scripts): deploy to /opt/llm-gateway-go/llm-gateway |
 | 1c481705 | fix(scripts): sanitize deploy-to-71.sh — 替换硬编码 secret |

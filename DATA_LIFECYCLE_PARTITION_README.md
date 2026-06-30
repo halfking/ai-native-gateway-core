@@ -2,7 +2,7 @@
 
 ## 快速开始
 
-在 https://llmgo.kxpms.cn/admin/data-lifecycle 中新增了分区表列存储归档管理功能，支持将历史数据自动迁移到高压缩比的 columnar 存储。
+在 https://llmgateway.internal.example.com/admin/data-lifecycle 中新增了分区表列存储归档管理功能，支持将历史数据自动迁移到高压缩比的 columnar 存储。
 
 ### 核心功能
 
@@ -21,21 +21,21 @@
 ```bash
 # 1. 查看可归档的分区
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions
 
 # 2. 试运行归档（推荐）
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 
 # 3. 执行归档
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":false}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 ```
 
 ## 文件变更

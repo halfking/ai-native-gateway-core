@@ -2,7 +2,7 @@
 
 ## 实现概述
 
-本次更新为 https://llmgo.kxpms.cn/admin/data-lifecycle 数据生命周期管理界面添加了对多个分区表（request_logs、request_wal 等）的列存储归档管理功能。
+本次更新为 https://llmgateway.internal.example.com/admin/data-lifecycle 数据生命周期管理界面添加了对多个分区表（request_logs、request_wal 等）的列存储归档管理功能。
 
 ## 新增文件
 
@@ -205,7 +205,7 @@ systemctl restart llm-gateway-go
 ```bash
 # 查询分区状态
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions
 ```
 
 ### 5. 试运行归档
@@ -215,7 +215,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 ```
 
 ## 测试情况

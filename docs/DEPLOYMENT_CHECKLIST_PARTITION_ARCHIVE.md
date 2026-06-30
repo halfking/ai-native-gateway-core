@@ -95,7 +95,7 @@ curl http://localhost:8080/health
 **使用验证脚本**：
 ```bash
 export ADMIN_TOKEN=your_admin_token_here
-export API_BASE_URL=https://llmgo.kxpms.cn
+export API_BASE_URL=https://llmgateway.internal.example.com
 ./scripts/deploy-verify-partition-archive.sh
 ```
 
@@ -104,7 +104,7 @@ export API_BASE_URL=https://llmgo.kxpms.cn
 1. **查询分区状态**：
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | jq .
 ```
 
 预期输出：包含 `request_logs` 和 `request_wal` 的分区信息
@@ -115,7 +115,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 预期输出：`status: "dry_run"` 或 `status: "skipped"`（如果分区不存在）
@@ -123,7 +123,7 @@ curl -X POST \
 ### Step 6: 功能测试
 
 1. **访问管理界面**：
-   - URL: https://llmgo.kxpms.cn/admin/data-lifecycle
+   - URL: https://llmgateway.internal.example.com/admin/data-lifecycle
    - 确认页面正常加载（前端需要单独开发，目前仅 API）
 
 2. **测试权限控制**：
@@ -133,7 +133,7 @@ curl -X POST \
   -H "Authorization: Bearer $NON_SUPER_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 ```
 
 预期：403 Forbidden
@@ -142,7 +142,7 @@ curl -X POST \
 ```bash
 # 找一个确实存在的旧分区
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions | \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | \
   jq '.[] | select(.table_name=="request_logs") | .partitions[] | select(.can_archive==true) | .partition_name' | head -1
 
 # 假设找到 request_logs_2026_03，执行归档
@@ -150,7 +150,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-03","dry_run":false}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 预期：`status: "success"`, `rows_migrated: <数字>`, `partition_dropped: true`
@@ -298,7 +298,7 @@ export ADMIN_TOKEN=xxx
 
 # 查看可归档分区
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions | \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | \
   jq '.[] | {table: .table_name, archivable: .archivable_count}'
 
 # 执行单次归档（试运行）
@@ -306,12 +306,12 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
 
 # 批量归档（试运行）
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"table_name":"request_logs","months":["2026-02","2026-03","2026-04"],"dry_run":true}' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive-batch | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive-batch | jq .
 ```

@@ -108,6 +108,6 @@ work on a fresh DB:
 
 - **Host**: `DB_HOST:5432` (single citus cluster, all 14 DBs)
 - **Database**: `<DB_NAME>`
-- **User**: `kxuser` (formerly `stockuser` / `postgres` — merged 2026-06-24)
+- **User**: `kxuser` (formerly `__DB_USER__` / `postgres` — merged 2026-06-24)
 - **PG version**: PostgreSQL 15.2 (Ubuntu 15.2-1.pgdg22.04+1)
 - **k8s service**: `llm-gateway-pg-svc.pms-test.svc.cluster.local:5432`

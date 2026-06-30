@@ -271,7 +271,7 @@ go build ./domains/agent-ecosystem/...
 psql -d llm_gateway -f migrations/xxx_agent_ecosystem.sql
 
 # 智能体注册测试
-curl -X POST https://llmgo.kxpms.cn/api/admin/agents \
+curl -X POST https://llmgateway.internal.example.com/api/admin/agents \
   -H "X-Agent-ID: test-agent" \
   -H "X-Agent-Name: Test Agent" \
   -d '{"category":"coding"}'

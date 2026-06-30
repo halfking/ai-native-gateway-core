@@ -11,10 +11,10 @@
 ### 1.1 数据库状态（184 llm_gateway）
 ```bash
 # SSH 到 184
-ssh -p 25022 root@14.103.112.184
+ssh -p 25022 root@__INTERNAL_PUBLIC_IP__
 
 # 检查 migrations 是否已应用
-export PGPASSWORD='<DB_PASSWORD_REDACTED>'
+export PGPASSWORD='__REDACTED_DB_PASSWORD__'
 POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
 
 kubectl exec -n pms-test $POD -c citus -- psql -U llm_gateway -d llm_gateway -c "
@@ -61,11 +61,11 @@ crontab -l | grep columnar
 ### 2.1 验证镜像存在
 ```bash
 # 在本地或 registry 检查
-curl -s https://registry.kxpms.cn/v2/kx-llm-gateway-go/tags/list | grep -o 'gitsha-0b0d80e8'
+curl -s https://registry.internal.example.com/v2/kx-llm-gateway-go/tags/list | grep -o 'gitsha-0b0d80e8'
 ```
 
 **镜像信息**：
-- 镜像名：`registry.kxpms.cn/kx-llm-gateway-go:gitsha-0b0d80e8`
+- 镜像名：`registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8`
 - Digest：`sha256:1ed8b062287f71910c9e51b783533ce7db770d795cc64c86532d18901587d1c3`
 - 构建时间：2026-06-29T22:48:35Z
 - Git SHA：0b0d80e8
@@ -90,7 +90,7 @@ kubectl get deploy -n pms-test llm-gateway-go-deployment -o yaml | grep -E "imag
 ### 3.3 更新镜像
 ```bash
 kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
-  llm-gateway-go=registry.kxpms.cn/kx-llm-gateway-go:gitsha-0b0d80e8
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8
 ```
 
 ### 3.4 监控 Rollout
@@ -152,7 +152,7 @@ kubectl logs -n pms-test -l app=llm-gateway-go --tail=200 | grep -E "ensure.*par
 
 ### 4.5 数据库端验证
 ```bash
-export PGPASSWORD='<DB_PASSWORD_REDACTED>'
+export PGPASSWORD='__REDACTED_DB_PASSWORD__'
 POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
 
 # 验证 4 个表都有当前月和下月分区
@@ -296,7 +296,7 @@ WHERE relname = 'credential_model_index'
 ```bash
 # 一键部署
 kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
-  llm-gateway-go=registry.kxpms.cn/kx-llm-gateway-go:gitsha-0b0d80e8 && \
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8 && \
 kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test
 
 # 一键验证

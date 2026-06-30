@@ -1,7 +1,7 @@
 # llm-gateway-go 多级 Sticky 路由部署验证报告
 
 **部署时间**: 2026-06-25 21:23  
-**部署环境**: 184 k3s (llmgo.kxpms.cn)  
+**部署环境**: 184 k3s (llmgateway.internal.example.com)  
 **版本**: ee72c966  
 **部署方式**: `./scripts/deploy-llm-gateway-go-184.sh --only app`  
 
@@ -19,10 +19,10 @@ pod/llm-gateway-go-deployment-6d7c5fddd7-qz949 condition met
 
 **健康检查**:
 ```bash
-$ curl -s https://llmgo.kxpms.cn/healthz | jq .status
+$ curl -s https://llmgateway.internal.example.com/healthz | jq .status
 "ok"
 
-$ curl -s https://llmgo.kxpms.cn/healthz | jq .version
+$ curl -s https://llmgateway.internal.example.com/healthz | jq .version
 "V2.2.0-77-gee72c966-ee72c966-2026-06-25-690"
 ```
 
@@ -68,7 +68,7 @@ export LLMGW_API_KEY="your-api-key"
 
 ```bash
 # SSH到184，查询 sticky_sessions 表
-ssh root@172.31.0.4
+ssh root@__INTERNAL_K8S_HOST__
 docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c "
   SELECT 
     sticky_key,
@@ -157,7 +157,7 @@ kubectl -n pms-test logs deploy/llm-gateway-go-deployment -f | grep sticky
 
 ```bash
 # 主仓库回滚
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 git revert HEAD~2..HEAD  # 回滚最近2次提交（submodule + audit）
 git push
 
@@ -168,14 +168,14 @@ git revert b1703ccb  # 回滚多级sticky实现
 git push
 
 # 重新部署
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 ./scripts/deploy-llm-gateway-go-184.sh --only app
 ```
 
 ### 方式2: 回滚到已知好的commit
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 git checkout c6ee414b  # 多级sticky之前的最后一个commit
 cd ../..
 git add services/llm-gateway-go
@@ -187,7 +187,7 @@ git push
 ### 方式3: 仅清空sticky数据（保留代码）
 
 ```bash
-ssh root@172.31.0.4
+ssh root@__INTERNAL_K8S_HOST__
 docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c "TRUNCATE TABLE sticky_sessions;"
 ```
 
@@ -199,7 +199,7 @@ docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c "TRUNCATE TABLE stic
 
 1. **kubectl 连接超时**:
    ```
-   dial tcp 14.103.112.184:6443: connect: operation timed out
+   dial tcp __INTERNAL_PUBLIC_IP__:6443: connect: operation timed out
    ```
    - **原因**: 本地网络到184的6443端口连接问题
    - **影响**: 无法直接使用 `kubectl` 查看日志
@@ -232,7 +232,7 @@ export LLMGW_API_KEY="your-api-key"
 ### 3. 部署到71（如果184验证通过）
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 ./scripts/deploy-llm-gateway-go-71.sh
 ```
 

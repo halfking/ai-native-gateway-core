@@ -66,7 +66,7 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   # Memora MCP server (mock 占位)
   # ─────────────────────────────────────────────────────────────────────
-  # TODO(r112): 替换为真实 mcp-server 镜像 (registry.kxpms.cn/kx-memora-mcp:<tag>)
+  # TODO(r112): 替换为真实 mcp-server 镜像 (registry.internal.example.com/kx-memora-mcp:<tag>)
   # 当前用 nginx:alpine + 假 /healthz 端点保证 gateway-v2 启动不报错
   # ─────────────────────────────────────────────────────────────────────
   memora-mcp:

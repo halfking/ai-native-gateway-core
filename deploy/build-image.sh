@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="llm-gateway-go"  # 替换为实际服务名
-REGISTRY="registry.kxpms.cn"
+REGISTRY="${REGISTRY:-registry.internal.example.com}"
 IMAGE_NAME="${REGISTRY}/kaixuan-platform-${SERVICE_NAME}"
 
 # ── 解析参数 ───────────────────────────────────────────────────────
@@ -35,6 +35,7 @@ command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
 # ── 构建镜像（多架构支持） ─────────────────────────────────────────
 BUILD_ARGS=(
   --platform linux/amd64
+  --build-arg REGISTRY="${REGISTRY}"
   --build-arg SOURCE_VERSION="${TAG}"
   --build-arg CACHEBUST="$(date +%s)"
   -t "${IMAGE_NAME}:${TAG}"

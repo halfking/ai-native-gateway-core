@@ -16,6 +16,7 @@ CONTAINER_NAME="kx-${SERVICE_NAME}"
 ENV="local"
 TAG="latest"
 DRY_RUN=false
+REGISTRY="${REGISTRY:-registry.internal.example.com}"
 
 # ── 解析参数 ───────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -32,7 +33,7 @@ echo "=== deploy: ${SERVICE_NAME} (env=${ENV}, tag=${TAG}) ==="
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "[DRY-RUN] 以下命令将被执行:"
-  echo "  docker pull registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
+  echo "  docker pull ${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${TAG}"
   echo "  docker stop ${CONTAINER_NAME} 2>/dev/null || true"
   echo "  docker rm ${CONTAINER_NAME} 2>/dev/null || true"
   echo "  docker run -d --name ${CONTAINER_NAME} ..."
@@ -44,9 +45,9 @@ fi
 command -v docker >/dev/null 2>&1 || { echo "❌ docker 未安装"; exit 1; }
 
 # ── 2. 拉取镜像 ────────────────────────────────────────────────────
-echo "▶ 拉取镜像: registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
+echo "▶ 拉取镜像: ${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${TAG}"
 # TODO: 根据环境选择性推送/拉取
-# docker pull registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}
+# docker pull ${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${TAG}"
 
 # ── 3. 保存当前版本信息（用于回滚） ────────────────────────────────
 DEPLOY_TRACKER_DIR="/var/lib/deploy-tracker"
@@ -71,7 +72,7 @@ echo "▶ 启动新容器: ${CONTAINER_NAME}"
 #   -p ${PORT:-8080}:${PORT:-8080} \
 #   --env-file .env \
 #   --network kaixuan_local_net \
-#   "registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${TAG}"
+#   "${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${TAG}"
 
 echo "✅ 部署完成"
 

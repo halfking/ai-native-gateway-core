@@ -105,7 +105,7 @@
 ### 3.1 启动准备
 ```bash
 # 工作目录
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 
 # 1. 启动本地依赖（如有 PostgreSQL/Citus/Redis/Memora 需求）
 # 注：当前 cmd/gateway-v2 用 mock in-memory store，**无强制外部依赖**。
@@ -114,7 +114,7 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 
 # 2. （可选）应用 migrations
 # 当前 R1.12 demo 阶段不需 schema migration；如需 RLS 验证，跑：
-PGPASSWORD='${PG_PASSWORD}' psql -h 172.31.0.4 -U kxuser -d llm_gateway \
+PGPASSWORD='${PG_PASSWORD}' psql -h __INTERNAL_K8S_HOST__ -U kxuser -d llm_gateway \
   -f docs/architecture/migrations/2026-06-22-rls-candidate-failure-logs.sql
 # 真实路径以 docs/architecture/ 下最新 SQL 为准
 
@@ -179,7 +179,7 @@ bash scripts/e2e-llm-gateway-go-jsonb-telemetry.sh
 ### 3.4 全仓库 lint 链（必跑，**阻断门**）
 ```bash
 # 根目录
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 
 # L1 lint — 任一 FAIL 阻断灰度
 make -C scripts lint-pg-rls                 # RLS policy L1=0
@@ -263,7 +263,7 @@ bash scripts/e2e-multitenant-all.sh --skip-e2e
 | 全量切流 | 100% → `:8782` | 用户授权后 | 7 天 0 critical |
 | 删除 v1 | `git rm cmd/gateway/` | 全量稳定后 30 天 | 用户授权 |
 
-> **红线**：v1 (`cmd/gateway/main.go`) 在切流完成前**禁止删除**；71 仍在生产服务 `llm.kxpms.cn`。
+> **红线**：v1 (`cmd/gateway/main.go`) 在切流完成前**禁止删除**；71 仍在生产服务 `llmgateway.internal.example.com`。
 
 ---
 
@@ -314,7 +314,7 @@ bash scripts/e2e-multitenant-all.sh --skip-e2e
 > - `scripts/apply-migrations.sh`（multi-db migration 编排）
 > - `scripts/e2e-r112-multitenant-local.sh`（R1.12 专用本地多租户 E2E）
 >
-> 当前替代方案：直接用 `psql -h 172.31.0.4` 验证 RLS，cmd/gateway-v2 用 mock in-memory store 不需真实 DB。
+> 当前替代方案：直接用 `psql -h __INTERNAL_K8S_HOST__` 验证 RLS，cmd/gateway-v2 用 mock in-memory store 不需真实 DB。
 
 ---
 

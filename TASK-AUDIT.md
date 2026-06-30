@@ -59,7 +59,7 @@
 **手动部署步骤**（需要在服务器上执行）：
 
 ```bash
-# 在 14.103.112.184 服务器上执行：
+# 在 __INTERNAL_PUBLIC_IP__ 服务器上执行：
 
 # 1. 同步完整代码（如果 git pull 失败，用以下方式）
 cd /root/kaixuan/llm-gateway-go

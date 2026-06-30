@@ -9,7 +9,7 @@ DOCS_DIR="$REPO_ROOT/services/llm-gateway-go/docs/pricing"
 
 # 凭据
 SSH_PASS="${K8S_SSH_PASSWORD:-__REDACTED_SSH_PASSWORD__}"
-SSH_HOST="${SSH_HOST:-root@14.103.112.184}"
+SSH_HOST="${SSH_HOST:-root@__INTERNAL_PUBLIC_IP__}"
 POSTGRES_POD="llm-gateway-pg-58cbbc4559-qq2rh"
 PSQL_USER="llm_gateway"
 PSQL_DB="llm_gateway"

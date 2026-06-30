@@ -85,7 +85,7 @@ curl -sk -H "Authorization: Bearer $API_KEY" \
 ## 安全 & 凭据
 
 - **admin password**: 从 k8s secret `llm-gateway-secret` (key `admin-password`) 读
-- **SSH**: 火山 184 = `root@14.103.112.184`, 凭据 `K8S_SSH_PASSWORD` 环境变量
+- **SSH**: 火山 184 = `root@__INTERNAL_PUBLIC_IP__`, 凭据 `K8S_SSH_PASSWORD` 环境变量
 - **psql**: 直连 184 postgres 容器，DB=`llm_gateway` user=`llm_gateway`
 - **DON'T**: 改 Casdoor admin 密码 / 改任何 secret / 直写 secret_ciphertext
 

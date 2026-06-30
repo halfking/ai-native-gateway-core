@@ -11,8 +11,8 @@
 
 | 环境 | 服务器 | 部署方式 | 镜像 | 状态 | 健康检查 |
 |------|--------|---------|------|------|----------|
-| **184** | 14.103.112.184 | k3s (2 replicas) | gitsha-f222c0b0 | ✅ Running | https://llmgateway.internal.example.com/healthz |
-| **71** | 14.103.174.71 | systemd + docker | gitsha-f222c0b0 | ✅ Running | http://14.103.174.71:8781/healthz |
+| **184** | __INTERNAL_PUBLIC_IP__ | k3s (2 replicas) | gitsha-f222c0b0 | ✅ Running | https://llmgateway.internal.example.com/healthz |
+| **71** | __HOST_71_IP__ | systemd + docker | gitsha-f222c0b0 | ✅ Running | http://__HOST_71_IP__:8781/healthz |
 
 ### 域名映射
 
@@ -39,7 +39,7 @@
 ```bash
 ✅ 服务状态: active (running)
 ✅ 镜像更新: gitsha-4a00d8cd → gitsha-f222c0b0
-✅ 健康检查: http://14.103.174.71:8781/healthz → 200 OK
+✅ 健康检查: http://__HOST_71_IP__:8781/healthz → 200 OK
 ✅ Nginx 转发: https://llmgateway.internal.example.com/healthz → 200 OK
 ```
 

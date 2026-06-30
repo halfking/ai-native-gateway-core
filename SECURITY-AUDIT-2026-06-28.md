@@ -573,7 +573,7 @@ if err != nil || record.TenantID != tenantID {
 ```bash
 $ grep -rEn "Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options|Content-Security-Policy|Referrer-Policy|Permissions-Policy" \
     --include="*.go" --include="*.html" \
-    /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+    __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 # 0 matches
 ```
 
@@ -611,7 +611,7 @@ curl -sI http://localhost:8781/ | grep -iE "strict-transport|x-frame|x-content|c
 静态：
 ```bash
 $ grep -rEn "Strict-Transport-Security|X-Frame-Options|X-Content-Type-Options|Content-Security-Policy|Referrer-Policy|Permissions-Policy" \
-    --include="*.go" --include="*.html" /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+    --include="*.go" --include="*.html" __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 # 0 matches
 ```
 
@@ -1223,7 +1223,7 @@ domains/streaming/handler.go:2152:23: cannot use tenantIDInt (variable of type *
 
 **测试 / 复现命令**：
 ```bash
-$ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+$ cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 $ go build -o /tmp/llm-gw ./cmd/gateway
 # (build error as shown above)
 

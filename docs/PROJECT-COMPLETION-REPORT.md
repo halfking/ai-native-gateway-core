@@ -178,7 +178,7 @@ client_timeout: false              ✅ 区分超时类型
 
 ### 单元测试
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 go test -v ./domains/streaming -run TestRequestLogContext
 ```
 

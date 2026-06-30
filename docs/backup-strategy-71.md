@@ -3,7 +3,7 @@
 > **Last updated:** 2026-06-30
 > **Status:** ✅ Production (daily running since 2026-06-30)
 > **Maintainer:** Kaixuan DevOps Team
-> **Scope:** 71 server (172.31.0.3 / 14.103.174.71) — `llm-gateway-pg-71-replica` 容器
+> **Scope:** 71 server (__INTERNAL_K8S_HOST__ / __HOST_71_IP__) — `llm-gateway-pg-71-replica` 容器
 > **Environment:** volcano 71 (formerly a streaming replica, now promoted primary after 184 outage)
 
 ---
@@ -21,13 +21,13 @@
 
 | User | Password | 库 | 用途 |
 |------|----------|----|----|
-| **`llm_gateway`** | `<DB_PASSWORD_REDACTED>` | 14 个库（superuser） | 主超级用户（备份 + 跨库 admin） |
+| **`llm_gateway`** | `__REDACTED_DB_PASSWORD__` | 14 个库（superuser） | 主超级用户（备份 + 跨库 admin） |
 | `kaixuan_user` | `kaixuan_pass123` | `kaixuan` | 开轩主应用 |
 | `casdoor_user` | `casdoor_pass123` | `casdoor` | Casdoor 认证 |
 | `crm_user` | `crm_pass123` | `crm` | CRM |
 | `doc_tools_user` | `doc_tools_pass123` | `doc_tools` | 文档工具 |
-| `kxuser` (旧) | `184_stock_pass_change_me` | 11 个库 | 184 流复制继承的访问账号 |
-| `casdoor_user` (旧) | `184_stock_pass_change_me` | 多个库 | 184 默认密码 |
+| `kxuser` (旧) | `__REDACTED_DB_PASSWORD__` | 11 个库 | 184 流复制继承的访问账号 |
+| `casdoor_user` (旧) | `__REDACTED_DB_PASSWORD__` | 多个库 | 184 默认密码 |
 
 **凭据加载机制（脚本 `load_secret()` 函数）**：
 1. **环境变量**：`PG_PASSWORD` / `REMOTE_SSHPASS`
@@ -128,7 +128,7 @@
 **安全考虑**：
 - 密码是 56 的 SSH 密码（root）
 - 不入 git，不入 SOPS
-- 只在脚本顶部作为 `REMOTE_SSHPASS="${REMOTE_SSHPASS:-<SSH_PASSWORD_REDACTED>}"` 兜底
+- 只在脚本顶部作为 `REMOTE_SSHPASS="${REMOTE_SSHPASS:-__REDACTED_SSH_PASSWORD__}"` 兜底
 - 实际生产建议用 vault 注入
 
 ## 5. 脚本 (Scripts)
@@ -148,8 +148,8 @@ bash /opt/scripts/backup-pg-71.sh list           # 列出所有 backup（本地 
 - `RETENTION_DAYS=3`
 - `DOCKER_CONTAINER=llm-gateway-pg-71-replica`
 - `PG_USER="llm_gateway"` (superuser)
-- `PG_PASSWORD="<DB_PASSWORD_REDACTED>"`
-- `REMOTE_HOST="root@14.103.169.56"`
+- `PG_PASSWORD="__REDACTED_DB_PASSWORD__"`
+- `REMOTE_HOST="root@__HOST_56_IP__"`
 - `REMOTE_PORT="25022"`
 - `REMOTE_DIR="/opt/databackups-71-mirror"`
 
@@ -273,12 +273,12 @@ ssh 71 "docker run -d --name llm-gateway-pg-71-replica \
   --network host --restart=no \
   -v /data/llm-gateway-pg-71-replica:/var/lib/postgresql/data \
   -e POSTGRES_USER=llm_gateway \
-  -e POSTGRES_PASSWORD=<DB_PASSWORD_REDACTED> \
+  -e POSTGRES_PASSWORD=__REDACTED_DB_PASSWORD__ \
   citusdata/citus:11.3.0 \
   -c shared_preload_libraries=citus,citus_columnar -c max_connections=1000"
 
 # 6. 改 env /etc/llm-gateway-go/env 指向 127.0.0.1（如果之前指 184）
-ssh 71 "sed -i 's|@172.31.0.4:5432|@127.0.0.1:5432|g' /etc/llm-gateway-go/env"
+ssh 71 "sed -i 's|@__INTERNAL_K8S_HOST__:5432|@127.0.0.1:5432|g' /etc/llm-gateway-go/env"
 ```
 
 ### 8.2 应急恢复（71 → 56 同步 + 56 上启动）

@@ -243,7 +243,7 @@ $ shellcheck scripts/*.sh
 
 ```bash
 # SSH 登录到 184 服务器
-ssh root@14.103.112.184
+ssh root@__INTERNAL_PUBLIC_IP__
 
 # 拉取最新代码
 cd /opt/llm-gateway-go
@@ -297,7 +297,7 @@ URL: https://llmgateway.internal.example.com/admin/data-lifecycle
 
 ```bash
 # 命令行
-ssh root@14.103.112.184
+ssh root@__INTERNAL_PUBLIC_IP__
 cd /opt/llm-gateway-go
 ./scripts/analyze-request-logs-size.sh
 

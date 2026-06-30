@@ -7,7 +7,7 @@
 **检查可归档分区数量**：
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions | \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | \
   jq '.[] | {table: .table_name, archivable: .archivable_count, archived: .archived_count, total: .total_partitions}'
 ```
 
@@ -21,7 +21,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 #### 步骤 1：查看可归档分区
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions | \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | \
   jq '.[] | select(.archivable_count > 0) | {
     table: .table_name, 
     archivable_partitions: [.partitions[] | select(.can_archive==true) | .partition_name]
@@ -38,7 +38,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"archive_month\":\"$MONTH\",\"dry_run\":true}" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 **检查输出**：
@@ -53,7 +53,7 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"archive_month\":\"$MONTH\",\"dry_run\":false}" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
 ```
 
 **预期结果**：
@@ -102,14 +102,14 @@ curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"months\":$MONTHS,\"dry_run\":true}" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive-batch | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive-batch | jq .
 
 # 确认后执行
 curl -X POST \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"table_name\":\"$TABLE\",\"months\":$MONTHS,\"dry_run\":false}" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive-batch | jq .
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive-batch | jq .
 ```
 
 ### 4. 空间回收
@@ -229,7 +229,7 @@ ORDER BY tablename;
 ```bash
 # 1. 验证 token 角色
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/whoami | jq .
+  https://llmgateway.internal.example.com/api/admin/whoami | jq .
 
 # 应该看到 role: "super_admin"
 
@@ -263,7 +263,7 @@ CREATE EXTENSION IF NOT EXISTS citus_columnar;
 # Partition archive monitoring script
 
 ADMIN_TOKEN="${ADMIN_TOKEN}"
-API_BASE_URL="${API_BASE_URL:-https://llmgo.kxpms.cn}"
+API_BASE_URL="${API_BASE_URL:-https://llmgateway.internal.example.com}"
 
 echo "=========================================="
 echo "Partition Archive Status - $(date)"

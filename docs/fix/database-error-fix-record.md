@@ -198,7 +198,7 @@ GetCandidates() 返回 error != nil?
 ## 编译验证
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 go build -o /tmp/llm-gateway-test ./cmd/gateway
 ```
 

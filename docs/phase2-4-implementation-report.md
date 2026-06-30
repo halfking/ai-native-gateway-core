@@ -250,7 +250,7 @@ $ bash -n scripts/install-cleanup-cron.sh
 
 ```bash
 # SSH 登录到 184 服务器
-ssh root@14.103.112.184
+ssh root@__INTERNAL_PUBLIC_IP__
 
 # 安装定时任务
 cd /opt/llm-gateway-go

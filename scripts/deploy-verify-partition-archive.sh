@@ -13,7 +13,7 @@ echo ""
 DB_HOST="${DB_HOST:-localhost}"
 DB_USER="${DB_USER:-postgres}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-API_BASE_URL="${API_BASE_URL:-https://llmgo.kxpms.cn}"
+API_BASE_URL="${API_BASE_URL:-https://llmgateway.internal.example.com}"
 ADMIN_TOKEN="${ADMIN_TOKEN}"
 
 # Colors

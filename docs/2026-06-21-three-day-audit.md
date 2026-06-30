@@ -199,19 +199,19 @@ c0650d3a  18:??:??  fix(docker): use kx-base:go-vue-amd64's existing appuser
 
 ```bash
 # T1 tool_registry 字段
-SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@14.103.112.184 \
+SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@__INTERNAL_PUBLIC_IP__ \
   'kubectl -n pms-test exec deploy/llm-gateway-pg -- \
    psql -U llm_gateway -d llm_gateway -c \
    "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='\''tool_registry'\'' ORDER BY ordinal_position;"'
 
 # T2 020 UNIQUE index
-SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@14.103.112.184 \
+SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@__INTERNAL_PUBLIC_IP__ \
   'kubectl -n pms-test exec deploy/llm-gateway-pg -- \
    psql -U llm_gateway -d llm_gateway -tAc \
    "SELECT indexname FROM pg_indexes WHERE tablename='\''request_logs'\'' AND indexname='\''idx_request_logs_request_id_ts_unique'\'';"'
 
 # T3 026 RLS policies
-SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@14.103.112.184 \
+SSHPASS="$K8S_SSH_PASSWORD" sshpass -e ssh -o StrictHostKeyChecking=no root@__INTERNAL_PUBLIC_IP__ \
   'kubectl -n pms-test exec deploy/llm-gateway-pg -- \
    psql -U llm_gateway -d llm_gateway -tAc \
    "SELECT tablename, policyname FROM pg_policies WHERE tablename IN ('\''settings_audit'\'', '\''tenant_settings_kv'\'', '\''tenant_tool_policies'\'', '\''tool_call_events'\'', '\''tool_usage_stats'\'', '\''tenant_model_policies'\'', '\''tenant_model_policies_audit'\'') ORDER BY tablename;"'

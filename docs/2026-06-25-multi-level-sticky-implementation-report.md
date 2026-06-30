@@ -129,7 +129,7 @@ K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
 
 2. **备份当前代码**:
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 git add .
 git commit -m "feat(routing): multi-level sticky routing to prevent cross-model pollution
 
@@ -149,7 +149,7 @@ git push
 #### 184 (k3s) 部署
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 ./scripts/deploy-llm-gateway-go-184.sh --only app
 ```
 
@@ -170,7 +170,7 @@ kubectl -n pms-test logs deploy/kx-llm-gateway-go -f | grep "sticky"
 #### 71 (host docker) 部署
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 ./scripts/deploy-llm-gateway-go-71.sh
 ```
 
@@ -259,7 +259,7 @@ K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
 ### 快速回滚 (代码)
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 git revert HEAD
 git push
 

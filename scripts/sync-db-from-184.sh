@@ -28,7 +28,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opencode"
 BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-$(date +%Y%m%d-%H%M%S)"
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.112.184}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@__INTERNAL_PUBLIC_IP__}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
 REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all

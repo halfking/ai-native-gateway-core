@@ -24,7 +24,7 @@
 
 **步骤**:
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 
 # 创建核心领域目录
 mkdir -p domains/{authentication,tenant,identity,session,routing,credential,provider,transformation,streaming,agent-ecosystem}

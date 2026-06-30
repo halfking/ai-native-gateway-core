@@ -7,7 +7,11 @@
 # build context.
 
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue AS builder
+# REGISTRY: pass --build-arg REGISTRY=<your-registry> to override.
+# Default is the public placeholder; production builds set the real value
+# via CI environment (see ~/Documents/llm-gateway-env.md §REGISTRY).
+ARG REGISTRY=registry.internal.example.com
+FROM --platform=linux/amd64 ${REGISTRY}/kx-base:go-vue AS builder
 
 # Defensive: kx-base:go-vue already provides git/ca-certificates, nodejs + npm.
 # Verify availability; fail fast if any are missing.
@@ -52,7 +56,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=auto \
 # 2.14GB → ~0.95GB (-55%).
 # Builder stage (above) still uses kx-base:go-vue for Go toolchain
 # compatibility (Q2 decision: only swap runtime, keep builder).
-FROM --platform=linux/amd64 registry.kxpms.cn/kx-base:go-vue-alpine-slim-runtime
+FROM --platform=linux/amd64 ${REGISTRY}/kx-base:go-vue-alpine-slim-runtime
 
 ARG GIT_TAG=""
 ARG GIT_SHA=""

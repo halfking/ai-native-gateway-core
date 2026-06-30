@@ -90,7 +90,7 @@ has_outbound:  f (FALSE) ❌
 kubectl -n pms-test exec deployment/llm-gateway-go-deployment -- env | grep -i "RESPONSE\|BODY\|SKIP\|SAVE"
 
 # 71 环境变量
-ssh root@14.103.174.71 "cat /etc/llm-gateway-go/env | grep -i 'RESPONSE\|BODY\|SKIP\|SAVE'"
+ssh root@__HOST_71_IP__ "cat /etc/llm-gateway-go/env | grep -i 'RESPONSE\|BODY\|SKIP\|SAVE'"
 ```
 
 ### 2. 代码逻辑问题
@@ -129,7 +129,7 @@ ssh root@14.103.174.71 "cat /etc/llm-gateway-go/env | grep -i 'RESPONSE\|BODY\|S
 kubectl -n pms-test get deploy llm-gateway-go-deployment -o yaml | grep -A 10 "env:"
 
 # 在 71 上检查
-ssh root@14.103.174.71 "cat /etc/llm-gateway-go/env"
+ssh root@__HOST_71_IP__ "cat /etc/llm-gateway-go/env"
 ```
 
 ### 步骤 2: 查看源代码中的日志写入逻辑
@@ -166,7 +166,7 @@ kubectl -n pms-test exec -i llm-gateway-pg-58cbbc4559-qq2rh -- \
 kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=200 | grep -i "response\|body\|save\|write"
 
 # 71 日志
-ssh root@14.103.174.71 "journalctl -u llm-gateway-go.service --since '1 hour ago' | grep -i 'response\|body\|save\|write'"
+ssh root@__HOST_71_IP__ "journalctl -u llm-gateway-go.service --since '1 hour ago' | grep -i 'response\|body\|save\|write'"
 ```
 
 ---

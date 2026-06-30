@@ -3,7 +3,7 @@
 # Sync llm_gateway from server 71 (test-apps-infra) to local r112_postgres.
 #
 # Server 71 topology:
-#   - SSH: 14.103.174.71:25022 (key: ~/.ssh/71_id_rsa)
+#   - SSH: __HOST_71_IP__:25022 (key: ~/.ssh/71_id_rsa)
 #   - PG: docker container "llm-gateway-pg-71-replica" running directly on host
 #   - Credentials inside container: kxuser / <TEST_DB_PASSWORD_REDACTED> / db=llm_gateway
 #   - PG version: 15.3 (same as local)
@@ -33,7 +33,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opencode"
 BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-71-$(date +%Y%m%d-%H%M%S)"
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@14.103.174.71}"
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@__HOST_71_IP__}"
 REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
 REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/71_id_rsa}"
 REMOTE_PG_CONTAINER="${REMOTE_PG_CONTAINER:-llm-gateway-pg-71-replica}"
@@ -42,7 +42,7 @@ REMOTE_DB="${REMOTE_DB:-llm_gateway}"
 # have FORCE ROW LEVEL SECURITY and the regular kxuser role gets blocked.
 # 71's docker compose sets POSTGRES_USER=llm_gateway with this password.
 REMOTE_DB_USER="${REMOTE_DB_USER:-llm_gateway}"
-REMOTE_DB_PASS="${REMOTE_DB_PASS:-<DB_PASSWORD_REDACTED>}"
+REMOTE_DB_PASS="${REMOTE_DB_PASS:-__REDACTED_DB_PASSWORD__}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
 # and may hang if 71's sshd has a slow response to unknown keys.
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey"
@@ -56,7 +56,7 @@ LOCAL_DB_PASS="${LOCAL_DB_PASS:-<TEST_DB_PASSWORD_REDACTED>}"
 # local pre-sync backup because some tables have FORCE ROW LEVEL SECURITY
 # and the regular kxuser role gets blocked by pg_dump.
 LOCAL_DB_SUPERUSER="${LOCAL_DB_SUPERUSER:-llm_gateway}"
-LOCAL_DB_SUPERPASS="${LOCAL_DB_SUPERPASS:-<DB_PASSWORD_REDACTED>}"
+LOCAL_DB_SUPERPASS="${LOCAL_DB_SUPERPASS:-__REDACTED_DB_PASSWORD__}"
 
 KEY_TABLES=(
   approval_queue

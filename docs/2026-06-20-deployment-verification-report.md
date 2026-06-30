@@ -213,7 +213,7 @@ export LLM_GATEWAY_API_KEY="your-key-here"
 kubectl -n pms-test logs -f deployment/llm-gateway-go-deployment --tail=50
 
 # 4. 查看最近的请求（需要数据库访问）
-psql -h 14.103.112.184 -U stockuser -d llm_gateway -c \
+psql -h __INTERNAL_PUBLIC_IP__ -U __DB_USER__ -d llm_gateway -c \
   "SELECT client_model, response_body::jsonb->'_kxg_meta' as meta 
    FROM request_logs 
    WHERE created_at > now() - interval '10 minutes' 

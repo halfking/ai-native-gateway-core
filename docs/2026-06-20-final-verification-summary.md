@@ -11,7 +11,7 @@
 
 1. **服务健康状态** - ✅ PASS
    - 184 k3s: https://llmgateway.internal.example.com/healthz → 200 OK
-   - 71 systemd: http://14.103.174.71:8781/healthz → 200 OK
+   - 71 systemd: http://__HOST_71_IP__:8781/healthz → 200 OK
    - 56 nginx 转发: https://llmgateway.internal.example.com/healthz → 200 OK
 
 2. **Q3 路径基础功能** - ✅ PASS

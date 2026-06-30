@@ -15,10 +15,10 @@ The scripts are:
 
 | Server | IP | SSH port | SSH key | PG location | k8s? |
 |---|---|---|---|---|---|
-| **184** (`test-apps-apps`) | `14.103.112.184` | 25022 | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
-| **71** (`test-apps-infra`) | `14.103.174.71` | 25022 | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
+| **184** (`test-apps-apps`) | `__INTERNAL_PUBLIC_IP__` | 25022 | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
+| **71** (`test-apps-infra`) | `__HOST_71_IP__` | 25022 | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
 
-The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `<DB_PASSWORD_REDACTED>` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
+The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `__REDACTED_DB_PASSWORD__` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
 
 ## Choosing a sync strategy
 
@@ -140,7 +140,7 @@ Earlier versions of these checks asserted on `hook_durations_ms.observability.me
 
 ## Current Defaults
 
-- Remote SSH host: `root@14.103.112.184`
+- Remote SSH host: `root@__INTERNAL_PUBLIC_IP__`
 - Remote SSH port: `25022` (changed from default 22 in 2026-06)
 - Remote k8s namespace: `pms-test`
 - Remote PG deployment: `deployment/llm-gateway-pg`

@@ -76,26 +76,26 @@
 ```bash
 # SSH to 184
 export SSHPASS='__REDACTED_SSH_PASSWORD__'
-sshpass -e ssh root@14.103.112.184
+sshpass -e ssh root@__INTERNAL_PUBLIC_IP__
 
 # 1. 应用 migration 022 (settings_kv + tenant_settings_kv)
-PGPASSWORD=184_stock_pass_change_me psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   -f /opt/llm-gateway-go/db/migrations/022_settings_kv.sql
 
 # 2. 应用 migration 023 (settings_audit)
-PGPASSWORD=184_stock_pass_change_me psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   -f /opt/llm-gateway-go/db/migrations/023_settings_audit.sql
 
 # 3. 验证表结构
-PGPASSWORD=184_stock_pass_change_me psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "\d settings_kv"
-PGPASSWORD=184_stock_pass_change_me psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "\d tenant_settings_kv"
-PGPASSWORD=184_stock_pass_change_me psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "\d settings_audit"
+PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_kv"
+PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d tenant_settings_kv"
+PGPASSWORD=__REDACTED_DB_PASSWORD__ psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "\d settings_audit"
 ```
 
 ### 5.2 部署 llm-gateway-go
 
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy
+cd __DEV_HOME__/workspace/official-deploy
 K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__' bash scripts/llm-gateway-go-184-deploy.sh
 ```
 

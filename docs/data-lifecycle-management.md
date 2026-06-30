@@ -36,7 +36,7 @@
 **实现**：
 ```bash
 # 1. 导出 30-90 天数据为 Parquet
-PGPASSWORD=xxx psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c \
+PGPASSWORD=xxx psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c \
   "COPY (SELECT * FROM request_logs WHERE ts BETWEEN '2026-03-01' AND '2026-04-01') 
    TO STDOUT WITH (FORMAT binary)" | \
   python3 scripts/pg_to_parquet.py > archive/request_logs_2026-03.parquet
@@ -74,7 +74,7 @@ zcat archive/request_logs_2026-03.jsonl.gz | jq 'select(.gw_session_id == "xxx")
 **实现**：
 ```bash
 # 1. 导出
-pg_dump -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+pg_dump -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   --table=request_logs \
   --data-only \
   --where="ts BETWEEN '2026-03-01' AND '2026-04-01'" \
@@ -120,7 +120,7 @@ zcat archive/request_logs_2026-03.sql.gz | psql ...
 
 ```bash
 # 使用 pg_dump 增量备份最近 7 天数据
-pg_dump -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+pg_dump -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   --table=request_logs \
   --data-only \
   --where="ts > NOW() - INTERVAL '7 days'" \
@@ -134,7 +134,7 @@ find /backup/incremental/ -name "request_logs_*.sql.gz" -mtime +14 -delete
 
 ```bash
 # 全量备份整个 request_logs 表
-pg_dump -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+pg_dump -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   --table=request_logs \
   --data-only \
   | gzip -9 > /backup/full/request_logs_full_$(date +%Y%m%d).sql.gz
@@ -304,7 +304,7 @@ CREATE TABLE data_lifecycle_audit (
 
 ```bash
 # 1. 查看数据量
-psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "
+psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "
 SELECT 
     COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '7 days') AS hot,
     COUNT(*) FILTER (WHERE ts BETWEEN NOW() - INTERVAL '30 days' AND NOW() - INTERVAL '7 days') AS warm,
@@ -315,14 +315,14 @@ FROM request_logs;
 "
 
 # 2. 备份 30-90 天数据（归档前先备份）
-pg_dump -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway \
+pg_dump -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway \
   --table=request_logs \
   --data-only \
   --where="ts BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '30 days'" \
   | gzip -9 > /backup/archive_$(date +%Y%m%d).sql.gz
 
 # 3. 删除 90 天以上数据（谨慎操作！）
-psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "
+psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "
 -- 先统计影响行数
 SELECT COUNT(*) AS will_delete FROM request_logs WHERE ts < NOW() - INTERVAL '90 days';
 
@@ -331,7 +331,7 @@ SELECT COUNT(*) AS will_delete FROM request_logs WHERE ts < NOW() - INTERVAL '90
 "
 
 # 4. VACUUM 回收空间
-psql -h __INTERNAL_K8S_HOST__ -U stockuser -d llm_gateway -c "VACUUM FULL ANALYZE request_logs;"
+psql -h __INTERNAL_K8S_HOST__ -U __DB_USER__ -d llm_gateway -c "VACUUM FULL ANALYZE request_logs;"
 ```
 
 ## 📞 联系与支持

@@ -11,8 +11,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DB_HOST="${DB_HOST:-__INTERNAL_DB_HOST__}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-DB_USER="${DB_USER:-stockuser}"
-DB_PASSWORD="${DB_PASSWORD:-184_stock_pass_change_me}"
+DB_USER="${DB_USER:-__DB_USER__}"
+DB_PASSWORD="${DB_PASSWORD:-__REDACTED_DB_PASSWORD__}"
 
 # 颜色输出
 RED='\033[0;31m'

@@ -180,7 +180,7 @@
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions
 ```
 
 查看返回结果中 `can_archive: true` 的分区即可归档。
@@ -196,7 +196,7 @@ curl -X POST \
     "archive_month": "2026-04",
     "dry_run": true
   }' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 ```
 
 返回结果会显示将要迁移的行数，但不会实际执行。
@@ -214,7 +214,7 @@ curl -X POST \
     "archive_month": "2026-04",
     "dry_run": false
   }' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
 ```
 
 ### 场景 4：批量归档多个月份
@@ -228,7 +228,7 @@ curl -X POST \
     "months": ["2026-01", "2026-02", "2026-03"],
     "dry_run": false
   }' \
-  https://llmgo.kxpms.cn/api/admin/data-lifecycle/partitions/archive-batch
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive-batch
 ```
 
 ## 自动化管理

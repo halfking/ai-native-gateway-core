@@ -191,7 +191,7 @@ kubectl -n pms-test get pods | grep llm-gateway-go
 
 ```bash
 # 1. SSH到71服务器
-sshpass -e ssh -o StrictHostKeyChecking=no root@14.103.174.71
+sshpass -e ssh -o StrictHostKeyChecking=no root@__HOST_71_IP__
 
 # 2. 停止服务
 systemctl stop llm-gateway-go
@@ -207,7 +207,7 @@ docker cp temp:/app/llm-gateway-go /opt/llm-gateway-go/llm-gateway-go
 docker rm temp
 
 # 方式B：从本地scp
-# scp llm-gateway-go root@14.103.174.71:/opt/llm-gateway-go/
+# scp llm-gateway-go root@__HOST_71_IP__:/opt/llm-gateway-go/
 
 # 5. 启动服务
 systemctl start llm-gateway-go

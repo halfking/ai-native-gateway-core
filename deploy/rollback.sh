@@ -13,6 +13,7 @@ SERVICE_NAME="llm-gateway-go"
 CONTAINER_NAME="kx-${SERVICE_NAME}"
 
 ENV="local"
+REGISTRY="${REGISTRY:-registry.internal.example.com}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env) ENV="$2"; shift 2 ;;
@@ -29,7 +30,7 @@ PREV_TAG_FILE="${DEPLOY_TRACKER_DIR}/${SERVICE_NAME}_prev_tag"
 
 if [[ ! -f "$PREV_TAG_FILE" ]]; then
   echo "❌ 未找到前一个版本记录（${PREV_TAG_FILE}）"
-  echo "   回滚需要手动指定 tag：docker run ... registry.kxpms.cn/...:<tag>"
+  echo "   回滚需要手动指定 tag：docker run ... ${REGISTRY}/...:<tag>"
   exit 1
 fi
 
@@ -37,8 +38,8 @@ PREV_TAG=$(cat "$PREV_TAG_FILE")
 echo "   前版本: ${PREV_TAG}"
 
 # ── 2. 拉取前一个版本 ──────────────────────────────────────────────
-echo "▶ 拉取镜像: registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}"
-# docker pull registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}
+echo "▶ 拉取镜像: ${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}"
+# docker pull ${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}
 
 # ── 3. 停止当前容器 ────────────────────────────────────────────────
 echo "▶ 停止当前容器: ${CONTAINER_NAME}"
@@ -53,7 +54,7 @@ echo "▶ 启动前版本: ${PREV_TAG}"
 #   --restart always \
 #   -p ${PORT:-8080}:${PORT:-8080} \
 #   --env-file .env \
-#   "registry.kxpms.cn/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}"
+#   "${REGISTRY}/kaixuan-platform-${SERVICE_NAME}:${PREV_TAG}"
 
 echo "✅ 回滚完成（版本: ${PREV_TAG}）"
 

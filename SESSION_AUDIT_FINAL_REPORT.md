@@ -341,7 +341,7 @@ SESSION_AUDIT_SENSITIVE_WORDS=/etc/llm-gateway/sensitive_words.txt
 
 **请求**:
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -361,7 +361,7 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 
 **请求**:
 ```bash
-curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
+curl -X POST https://llmgateway.internal.example.com/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -d '{
     "model": "gpt-4",
@@ -390,11 +390,11 @@ curl -X POST https://llmgo.kxpms.cn/v1/chat/completions \
 **管理员操作**:
 ```bash
 # 查看待审批列表
-curl https://llmgo.kxpms.cn/api/admin/session-approvals?status=pending \
+curl https://llmgateway.internal.example.com/api/admin/session-approvals?status=pending \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 批准
-curl -X POST https://llmgo.kxpms.cn/api/admin/session-approvals/uuid-xxx/approve \
+curl -X POST https://llmgateway.internal.example.com/api/admin/session-approvals/uuid-xxx/approve \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{"reason": "Verified as security research"}'
 ```

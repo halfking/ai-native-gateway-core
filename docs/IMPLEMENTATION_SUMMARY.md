@@ -168,7 +168,7 @@ type SettingsGetter interface {
 
 ### Step 1: 运行数据库Migration (5分钟)
 ```bash
-cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
+cd __DEV_HOME__/workspace/official-deploy/services/llm-gateway-go
 psql -d llm_gateway -f deploy/sql/20260629_auto_control.sql
 ```
 
