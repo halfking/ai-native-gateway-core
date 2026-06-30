@@ -2,8 +2,47 @@
 # LLM Gateway 71服务器缺失表快速修复脚本
 # 日期: 2026-06-30
 # 问题: request_wal 和 request_logs 表完全缺失
+#
+# ⚠️  WARNING: This script modifies PRODUCTION database (71)
+# ⚠️  Requires DBA approval and change request ID
+# ⚠️  See docs/DATABASE-ENVIRONMENT-SEPARATION.md for details
 
 set -e
+
+# 环境确认
+echo "=========================================="
+echo "⚠️  PRODUCTION ENVIRONMENT WARNING"
+echo "=========================================="
+echo "This script will modify database on 71 PRODUCTION server"
+echo ""
+echo "Before proceeding, you must have:"
+echo "  1. DBA approval"
+echo "  2. Change request ID"
+echo "  3. Backup verification"
+echo ""
+read -p "Enter your change request ID (or 'cancel' to abort): " APPROVAL_ID
+if [ -z "$APPROVAL_ID" ] || [ "$APPROVAL_ID" == "cancel" ]; then
+    echo "❌ Operation cancelled - no approval ID provided"
+    exit 1
+fi
+echo "Change request ID: $APPROVAL_ID"
+echo ""
+read -p "Type 'CONFIRM' to proceed with production modification: " CONFIRM
+if [ "$CONFIRM" != "CONFIRM" ]; then
+    echo "❌ Operation cancelled - confirmation not received"
+    exit 1
+fi
+
+# 记录审计日志
+AUDIT_LOG="fix-71-tables-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$AUDIT_LOG")
+exec 2>&1
+echo "Audit log: $AUDIT_LOG"
+echo "Timestamp: $(date -Iseconds)"
+echo "Operator: $(whoami)"
+echo "Approval ID: $APPROVAL_ID"
+echo "=========================================="
+echo ""
 
 SERVER="${SERVER:-__HOST_71_IP__}"
 PORT="${PORT:-25022}"
