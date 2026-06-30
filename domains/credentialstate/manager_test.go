@@ -128,6 +128,60 @@ func TestManager_CacheHierarchy(t *testing.T) {
 	}
 }
 
+func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	ctx := context.Background()
+	db := setupTestDB(t)
+	defer db.Close()
+
+	m := NewManager(db, nil)
+	m.Start(ctx)
+	defer m.Stop()
+
+	// 先记录一次成功，建立基线
+	m.UpdateOnSuccess(ctx, 1, "test-model", 50, "req-0")
+
+	state, _ := m.GetState(ctx, 1, "test-model")
+	if state == nil {
+		t.Fatal("state should exist after success")
+	}
+	initialFails := state.ConsecutiveFails
+
+	// 用户取消 - 不应计入错误统计
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindCanceled, "req-1")
+
+	// 验证状态未变化
+	state, _ = m.GetState(ctx, 1, "test-model")
+	if state == nil {
+		t.Fatal("state should still exist")
+	}
+
+	if state.ConsecutiveFails != initialFails {
+		t.Errorf("KindCanceled should not increment consecutive_fails: expected %d, got %d",
+			initialFails, state.ConsecutiveFails)
+	}
+
+	if state.LastError == string(errorsx.KindCanceled) {
+		t.Error("KindCanceled should not be recorded as last_error")
+	}
+
+	// 验证真实错误仍然会被计入
+	m.UpdateOnFailure(ctx, 1, "test-model", errorsx.KindNetwork, "req-2")
+	state, _ = m.GetState(ctx, 1, "test-model")
+
+	if state.ConsecutiveFails != initialFails+1 {
+		t.Errorf("Real error should increment consecutive_fails: expected %d, got %d",
+			initialFails+1, state.ConsecutiveFails)
+	}
+
+	if state.LastError != string(errorsx.KindNetwork) {
+		t.Errorf("expected last_error=%s, got %s", errorsx.KindNetwork, state.LastError)
+	}
+}
+
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	// 这里应该连接测试数据库
 	// 为了简化，跳过实际连接

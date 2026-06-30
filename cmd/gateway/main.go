@@ -50,6 +50,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -122,9 +123,27 @@ func main() {
 	case "error":
 		level = slog.LevelError
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-	})))
+
+	// File-based rotation. When LLM_GATEWAY_LOG_FILE is set, slog's
+	// default handler is replaced with one that writes JSON to the
+	// rotated log file (and mirrors to stderr for safety). When the
+	// env var is empty, logging.Init is a no-op and slog stays on
+	// stderr. See internal/logging for the rotation policy and
+	// config/config.go for the operator-spec defaults.
+	logCfg := logging.DefaultConfig()
+	logCfg.File = cfg.LogFile
+	logCfg.MaxSizeMB = cfg.LogMaxSizeMB
+	logCfg.MaxBackups = cfg.LogMaxBackups
+	logCfg.MaxAgeDays = cfg.LogMaxAgeDays
+	logCfg.Compress = cfg.LogCompress
+	if _, err := logging.Init(logCfg, level); err != nil {
+		// Fall back to stderr so the service still starts and the
+		// operator sees the misconfiguration in the log.
+		fmt.Fprintf(os.Stderr, "logging: file rotation disabled: %v\n", err)
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level: level,
+		})))
+	}
 
 	// ── Optional YAML config file ─────────────────────────────────────────
 	configFile := os.Getenv("LLM_GATEWAY_CONFIG_FILE")
@@ -1853,6 +1872,13 @@ func main() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		memorySvc.Stop(stopCtx)
 		stopCancel()
+	}
+
+	// Flush + close the rotated log file last so the final
+	// "gateway stopped" record (and any deferred background-task
+	// shutdown logs above) make it to disk.
+	if err := logging.Shutdown(); err != nil {
+		fmt.Fprintf(os.Stderr, "logging: shutdown error: %v\n", err)
 	}
 
 	slog.Info("gateway stopped")
