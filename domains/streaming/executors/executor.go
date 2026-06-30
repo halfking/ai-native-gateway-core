@@ -433,6 +433,17 @@ type Executor struct {
 	UnifiedProbeScheduler interface {
 		OnRealRequest(ctx context.Context, credID int64, rawModel string, success bool, errMsg string)
 	}
+
+	// StateObserver (2026-07-01 Phase 2.x): credential state manager that
+	// records real request outcomes (success/failure) and triggers adaptive
+	// probing. When non-nil, UpdateOnSuccess/UpdateOnFailure are called with
+	// classified error kinds. KindCanceled (user cancellation) is automatically
+	// skipped by the manager to avoid false positives.
+	// Nil disables credential state tracking (preserves legacy behavior).
+	StateObserver interface {
+		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
+		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
+	}
 }
 
 func NewExecutor(
@@ -913,6 +924,22 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
+			// 2026-07-01 Phase 2.x: Record success in credential state manager.
+			// This enables adaptive probing based on real request outcomes.
+			if e.StateObserver != nil {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				e.StateObserver.UpdateOnSuccess(
+					params.R.Context(),
+					cand.CredentialID,
+					cand.RawModel,
+					result.LatencyMs,
+					requestID,
+				)
+			}
+
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -1059,6 +1086,22 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
 			}
 
+			// 2026-07-01 Phase 2.x: Record failure in credential state manager.
+			// KindCanceled is automatically skipped by the manager.
+			if e.StateObserver != nil {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				e.StateObserver.UpdateOnFailure(
+					params.R.Context(),
+					cand.CredentialID,
+					cand.RawModel,
+					kind,
+					requestID,
+				)
+			}
+
 			if sie.resumable {
 				// Stream is resumable (few chunks sent) - try next candidate.
 				// The inner tryCandidate already wrote the credential state
@@ -1201,6 +1244,23 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if e.Recorder != nil {
 			e.Recorder.RecordFailure(params.R.Context(), cand.CredentialID, cand.RawModel, kind)
 		}
+
+		// 2026-07-01 Phase 2.x: Record failure in credential state manager.
+		// KindCanceled is automatically skipped by the manager.
+		if e.StateObserver != nil {
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			}
+			e.StateObserver.UpdateOnFailure(
+				params.R.Context(),
+				cand.CredentialID,
+				cand.RawModel,
+				kind,
+				requestID,
+			)
+		}
+
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		e.recordBanditFailure(cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
