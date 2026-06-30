@@ -25,6 +25,9 @@ type Manager struct {
 	// 探测器提交函数（函数注入，避免循环依赖）
 	credProbeV2Submitter func(credID int)
 	modelProbeSubmitter  func(ctx context.Context, credID int, model string) error
+
+	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
+	popularityTracker *ModelPopularityTracker
 }
 
 // CacheEntry 缓存条目
@@ -299,4 +302,32 @@ func (m *Manager) cacheKey(credID int, model string) string {
 // Enabled 是否启用
 func (m *Manager) Enabled() bool {
 	return m != nil && m.db != nil
+}
+
+// EnablePopularityTracking 启用模型热度追踪（Phase 2 特性）
+//
+// 启用后，Manager 会基于 request_logs 统计模型调用频率，
+// 动态调整探测间隔：
+//   - 高频模型（>100 req/h）：10秒探测
+//   - 中频模型（10-100 req/h）：2分钟探测
+//   - 低频模型（<10 req/h）：10分钟探测
+//
+// 必须在 Start() 之前调用。
+func (m *Manager) EnablePopularityTracking() {
+	if m.db == nil {
+		slog.Warn("credstate: cannot enable popularity tracking without database")
+		return
+	}
+	m.popularityTracker = NewModelPopularityTracker(m.db)
+	slog.Info("credstate: popularity tracking enabled")
+}
+
+// GetRecommendedProbeInterval 返回模型的推荐探测间隔（基于热度）
+//
+// 如果未启用热度追踪，返回默认值 5 分钟。
+func (m *Manager) GetRecommendedProbeInterval(model string) time.Duration {
+	if m.popularityTracker == nil {
+		return 5 * time.Minute // 默认：中等间隔
+	}
+	return m.popularityTracker.GetProbeInterval(model)
 }
