@@ -333,6 +333,18 @@ func main() {
 		// are initialised.
 		if dbConn != nil && dbConn.Enabled() {
 			stateManager = credentialstate.NewManager(dbConn.Pool(), fpSlotRedis)
+
+			// Phase 2 (2026-07-01): Enable model popularity tracking.
+			// Hot models (>100 req/h) → 10s probe; cold models (<10 req/h) → 10m probe.
+			// Requires LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=true (default: false).
+			if os.Getenv("LLM_GATEWAY_ENABLE_POPULARITY_TRACKING") == "true" {
+				stateManager.EnablePopularityTracking()
+				slog.Info("popularity tracking enabled (Phase 2)",
+					"hot_interval", "10s",
+					"warm_interval", "2m",
+					"cold_interval", "10m")
+			}
+
 			router.StateManager = stateManager
 			slog.Info("credential state manager created",
 				"redis_enabled", fpSlotRedis != nil)
