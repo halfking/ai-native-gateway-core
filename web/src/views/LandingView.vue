@@ -58,14 +58,14 @@ const advantages = [
   <div class="llmgo-landing">
     <ServiceLandingPage
       kicker="Enterprise AI & Agent Gateway"
-      title="开轩企业 AI 与智能体网关"
+      title="启圭WM企业 AI 与智能体网关"
       subtitle="从大模型代理到智能体编排的统一入口。统一接入多家 LLM，智能路由、安全护盾、缓存降本、全链路审计——让企业的每一次 AI 调用可控、可观测、可计费。"
       :hero-points="['智能路由', '调用安全', '缓存降本', 'Agent 就绪', '全链路审计', 'MaaS 计费']"
       :features="features"
       :advantages="advantages"
       advantages-title="差异化优势"
       advantages-subtitle="海外厂商给不了的能力"
-      footer-text="开轩 LLM Gateway · llmgateway.internal.example.com · 私有部署 · 中国本地化"
+      footer-text="启圭WM LLM Gateway · llmgateway.internal.example.com · 私有部署 · 中国本地化"
       accent="#6366f1"
       :hide-cta="true"
     />

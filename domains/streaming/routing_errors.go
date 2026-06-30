@@ -1,7 +1,6 @@
 package streaming
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 )
@@ -21,7 +20,7 @@ func classifyRoutingError(err error) routingErrorClass {
 	errStr := err.Error()
 	c := routingErrorClass{
 		code:       "routing_database_error",
-		message:    fmt.Sprintf("Routing service error: %v", err),
+		message:    "Routing service error: internal database failure",
 		httpStatus: http.StatusInternalServerError,
 	}
 	switch {
@@ -36,7 +35,7 @@ func classifyRoutingError(err error) routingErrorClass {
 	case strings.Contains(errStr, "relation") || strings.Contains(errStr, "partition") ||
 		strings.Contains(errStr, "function") || strings.Contains(errStr, "does not exist"):
 		c.code = "routing_schema_error"
-		c.message = fmt.Sprintf("Database schema error: %v", err)
+		c.message = "Database schema error: missing relation or function"
 	}
 	return c
 }

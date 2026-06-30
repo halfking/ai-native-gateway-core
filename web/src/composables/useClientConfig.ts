@@ -362,12 +362,12 @@ export function getManualSteps(tool: ToolId, os: OS): string {
 
 1. 打开 Cherry Studio → 设置 → 模型服务
 2. 点击「添加自定义服务商」
-3. 名称填「开轩网关」，类型选「OpenAI 兼容」
+3. 名称填「启圭WM网关」，类型选「OpenAI 兼容」
 4. API 地址填：${baseURL}
 5. API Key 填入你的 sk-* 密钥
 6. 模型列表填入（用英文逗号分隔）：
    glm-4-flash, glm-5.1, minimax-m3, claude-sonnet-4-6, deepseek-v4-pro, auto
-7. 保存后在左侧模型列表找到「开轩网关」即可使用`
+7. 保存后在左侧模型列表找到「启圭WM网关」即可使用`
   }
   if (tool === 'roocode') {
     const path = OS_INFO[os].paths.roocode
