@@ -1,24 +1,34 @@
-# 184 -> Local DB Sync
+# 184 / 71 → Local DB Sync
 
 ## Purpose
 
-This runbook describes the reusable process for syncing `llm_gateway` from the 184 k3s production environment into the local `r112_postgres` database.
+This runbook describes the reusable process for syncing `llm_gateway` from the 184 k3s production environment (or 71 host-docker replica) into the local `r112_postgres` database.
 
 The scripts are:
 
-- `scripts/sync-db-from-184.sh` — single-shot sync in three modes (SQL-level via `pg_dump`/`psql`)
-- `scripts/sync-db-from-184-pgbase.sh` — single-shot sync via physical `pg_basebackup` (byte-level streaming replication, faster)
+- `scripts/sync-db-from-184.sh` — single-shot sync from **184** in three modes (SQL-level via `pg_dump`/`psql`)
+- `scripts/sync-db-from-184-pgbase.sh` — single-shot sync from **184** via physical `pg_basebackup` (byte-level streaming replication, faster)
+- `scripts/sync-db-from-71.sh` — single-shot sync from **71** in three modes (SQL-level via `pg_dump`/`psql`)
 - `scripts/deploy-verify-from-184.sh` — one-click: sync + restart + smoke + report
+
+## Server topology
+
+| Server | IP | SSH port | SSH key | PG location | k8s? |
+|---|---|---|---|---|---|
+| **184** (`test-apps-apps`) | `14.103.112.184` | 25022 | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
+| **71** (`test-apps-infra`) | `14.103.174.71` | 25022 | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
+
+The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `<DB_PASSWORD_REDACTED>` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
 
 ## Choosing a sync strategy
 
 | Approach | Tool | Speed | Use when |
 |---|---|---|---|
 | `pg_basebackup` (byte-level) | `sync-db-from-184-pgbase.sh` | ~3-5 min for full 4 GB | Want a clean clone fast; willing to ALTER `replicator` role on 184 |
-| `pg_dump` (SQL-level) | `sync-db-from-184.sh full` | ~10-20 min for full 4 GB | No replication access; only have `llm_gateway` (superuser) credentials |
-| `pg_dump --data-only` | `sync-db-from-184.sh data-only` | ~3-5 min | Schema already aligned; only need to refresh data |
+| `pg_dump` (SQL-level) | `sync-db-from-{184,71}.sh full` | ~10-20 min for full 4 GB | No replication access; only have `llm_gateway` (superuser) credentials |
+| `pg_dump --data-only` | `sync-db-from-{184,71}.sh data-only` | ~3-5 min | Schema already aligned; only need to refresh data |
 
-For one-shot full clones, prefer `pg_basebackup` (this script). For data refresh or schema-only, use `pg_dump` modes.
+For one-shot full clones from 184, prefer `pg_basebackup` (this script). For data refresh or schema-only, use `pg_dump` modes. For 71, only `pg_dump` modes are available (no replication privilege on the host-docker container).
 
 ## Modes
 
