@@ -4,14 +4,19 @@
 
 set -e
 
-SERVER="14.103.174.71"
-PORT="25022"
-USER="root"
-export SSHPASS='<SSH_PASSWORD_REDACTED>'
+SERVER="${SERVER:-14.103.174.71}"
+PORT="${PORT:-25022}"
+USER="${USER:-root}"
+# SSHPASS must be set in the environment before running this script.
+# Example: SSHPASS='xxx' bash scripts/diagnose-routing.sh <model>
+if [ -z "${SSHPASS:-}" ]; then
+  echo "ERROR: SSHPASS environment variable is not set. Export it before running." >&2
+  exit 1
+fi
 
-DB_CONTAINER="llm-gateway-pg-71-replica"
-DB_USER="llm_gateway"
-DB_NAME="crm"
+DB_CONTAINER="${DB_CONTAINER:-llm-gateway-pg-71-replica}"
+DB_USER="${DB_USER:-llm_gateway}"
+DB_NAME="${DB_NAME:-llm_gateway}"
 
 # 参数检查
 if [ $# -lt 1 ]; then
