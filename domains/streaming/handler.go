@@ -678,6 +678,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Only runs if the request context is canceled (client disconnect)
 		// AND we never successfully completed via the success path.
 		if h.requestLogger != nil && r.Context().Err() != nil {
+			// 2026-06-30: 标记客户端超时/断开连接 (migration 320)
+			if errors.Is(r.Context().Err(), context.DeadlineExceeded) ||
+				errors.Is(r.Context().Err(), context.Canceled) {
+				logCtx.SetClientTimeout(true)
+			}
 			// Use Background context since request context is already canceled
 			update := &telemetry.LogUpdate{
 				RequestID: requestID,
@@ -2144,6 +2149,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		responsePreviewPtr = strPtr(responsePreviewText)
 	}
 
+	// 2026-06-30 PR-5: nil-safe accessor — logCtx may be nil for
+	// domains/streaming/messages.go and responses.go paths.
+	var clientReqIDPtr *string
+	if logCtx != nil && logCtx.ClientRequestID != "" {
+		s := logCtx.ClientRequestID
+		clientReqIDPtr = &s
+	}
+
 	loggedOutbound := outboundModelForLog(evt.ClientModel, evt.OutboundModel, result.Candidate.RawModel)
 
 	reqLog := &telemetry.RequestLogEntry{
@@ -2195,7 +2208,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		// alongside the server-generated RequestID. Distinguishes
 		// legitimate client retries (same client_request_id, distinct
 		// request_id) from genuinely fresh requests.
-		ClientRequestID: strPtr(logCtx.ClientRequestID),
+		//
+		// 2026-06-30 PR-5: nil-safe — logCtx may be nil from
+		// domains/streaming/messages.go and responses.go paths; see
+		// clientReqIDPtr setup above. Audit P0-6.
+		ClientRequestID: clientReqIDPtr,
 	}
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
