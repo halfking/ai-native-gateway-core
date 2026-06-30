@@ -11,8 +11,8 @@ MAILTO=ops@kaixuan.com
 DB_HOST=__INTERNAL_DB_HOST__
 DB_PORT=5432
 DB_NAME=llm_gateway
-DB_USER=stockuser
-DB_PASSWORD=184_stock_pass_change_me
+DB_USER=__DB_USER__
+DB_PASSWORD=__REDACTED_DB_PASSWORD__
 
 # 清理策略配置
 ENABLE_TRIM=false           # 温数据裁剪（7-30天）

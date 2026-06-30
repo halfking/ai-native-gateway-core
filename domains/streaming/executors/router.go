@@ -39,6 +39,13 @@ type Router struct {
 	// candidates have equal routing scores. Prevents all requests from
 	// always selecting the first candidate in a sorted list.
 	rrCounter atomic.Uint64
+
+	// 新增：状态管理器引用
+	StateManager interface {
+		GetState(ctx context.Context, credID int, model string) (state interface{}, err error)
+		IsAvailable(ctx context.Context, credID int, model string) (bool, string)
+		Enabled() bool
+	}
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
@@ -51,7 +58,16 @@ func (r *Router) PlanCandidates(
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
-	available := filterAvailable(candidates)
+	// 新增：使用状态管理器过滤（如果启用）
+	var available []provider.Candidate
+	if r.StateManager != nil && r.StateManager.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		available = r.filterAvailableWithStateManager(ctx, candidates)
+	} else {
+		available = filterAvailable(candidates)
+	}
+
 	if len(available) == 0 {
 		// Build a per-reason breakdown so the next "all providers failed at
 		// the same time" outage can be root-caused from this log line alone.
@@ -175,6 +191,30 @@ func rotateCandidates(cands []provider.Candidate, offset int) []provider.Candida
 func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 	var out []provider.Candidate
 	for _, c := range cands {
+		if c.IsAvailable() {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterAvailableWithStateManager 新增：使用状态管理器优先判断可用性
+func (r *Router) filterAvailableWithStateManager(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
+	var out []provider.Candidate
+	for _, c := range cands {
+		// 优先查询状态管理器
+		if r.StateManager != nil && r.StateManager.Enabled() {
+			available, reason := r.StateManager.IsAvailable(ctx, c.CredentialID, c.RawModel)
+			if !available {
+				slog.Debug("router: filtered by state manager",
+					"credential_id", c.CredentialID,
+					"model", c.RawModel,
+					"reason", reason)
+				continue
+			}
+		}
+
+		// 回退到原有逻辑
 		if c.IsAvailable() {
 			out = append(out, c)
 		}

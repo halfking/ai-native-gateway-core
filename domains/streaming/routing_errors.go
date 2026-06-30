@@ -17,25 +17,41 @@ type routingErrorClass struct {
 // must NOT be disguised as the business error "no_candidate" — they have
 // different root causes and require different operational responses.
 func classifyRoutingError(err error) routingErrorClass {
+	if err == nil {
+		return routingErrorClass{
+			code:       "routing_unknown_error",
+			message:    "Internal routing service error",
+			httpStatus: http.StatusInternalServerError,
+		}
+	}
+
 	errStr := err.Error()
 	c := routingErrorClass{
 		code:       "routing_database_error",
-		message:    "Routing service error: internal database failure",
+		message:    "Internal routing service error",
 		httpStatus: http.StatusInternalServerError,
 	}
 	switch {
 	case strings.Contains(errStr, "not configured"):
 		c.code = "routing_not_configured"
-		c.message = "Routing service is not configured"
+		c.message = "Routing service temporarily unavailable"
 		c.httpStatus = http.StatusServiceUnavailable
 	case strings.Contains(errStr, "connection") || strings.Contains(errStr, "timeout"):
 		c.code = "routing_connection_error"
-		c.message = "Database connection error"
+		c.message = "Routing service temporarily unavailable"
 		c.httpStatus = http.StatusServiceUnavailable
-	case strings.Contains(errStr, "relation") || strings.Contains(errStr, "partition") ||
-		strings.Contains(errStr, "function") || strings.Contains(errStr, "does not exist"):
+	case strings.Contains(errStr, "relation \"") && strings.Contains(errStr, "does not exist"):
 		c.code = "routing_schema_error"
-		c.message = "Database schema error: missing relation or function"
+		c.message = "Internal routing configuration error"
+		c.httpStatus = http.StatusInternalServerError
+	case strings.Contains(errStr, "partition") && (strings.Contains(errStr, "does not exist") || strings.Contains(errStr, "found for row")):
+		c.code = "routing_schema_error"
+		c.message = "Internal routing configuration error"
+		c.httpStatus = http.StatusInternalServerError
+	case strings.Contains(errStr, "function") && strings.Contains(errStr, "does not exist"):
+		c.code = "routing_schema_error"
+		c.message = "Internal routing configuration error"
+		c.httpStatus = http.StatusInternalServerError
 	}
 	return c
 }

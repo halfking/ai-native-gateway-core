@@ -18,7 +18,7 @@ The scripts are:
 | **184** (`test-apps-apps`) | `__INTERNAL_PUBLIC_IP__` | 25022 | `~/.ssh/id_ed25519` | k8s deployment `llm-gateway-pg` in `pms-test` namespace | Yes |
 | **71** (`test-apps-infra`) | `__HOST_71_IP__` | 25022 | `~/.ssh/71_id_rsa` | host docker container `llm-gateway-pg-71-replica` | No |
 
-The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
+The 71 PG container is the same `citusdata/citus:11.3.0` image as local, runs as the `llm_gateway` superuser, and uses the password `__REDACTED_DB_PASSWORD__` (set in the container's `POSTGRES_USER` / `POSTGRES_PASSWORD`).
 
 ## Choosing a sync strategy
 

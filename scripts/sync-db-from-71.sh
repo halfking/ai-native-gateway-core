@@ -42,7 +42,7 @@ REMOTE_DB="${REMOTE_DB:-llm_gateway}"
 # have FORCE ROW LEVEL SECURITY and the regular kxuser role gets blocked.
 # 71's docker compose sets POSTGRES_USER=llm_gateway with this password.
 REMOTE_DB_USER="${REMOTE_DB_USER:-llm_gateway}"
-REMOTE_DB_PASS="${REMOTE_DB_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+REMOTE_DB_PASS="${REMOTE_DB_PASS:-__REDACTED_DB_PASSWORD__}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
 # and may hang if 71's sshd has a slow response to unknown keys.
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey"
@@ -56,7 +56,7 @@ LOCAL_DB_PASS="${LOCAL_DB_PASS:-kxpass}"
 # local pre-sync backup because some tables have FORCE ROW LEVEL SECURITY
 # and the regular kxuser role gets blocked by pg_dump.
 LOCAL_DB_SUPERUSER="${LOCAL_DB_SUPERUSER:-llm_gateway}"
-LOCAL_DB_SUPERPASS="${LOCAL_DB_SUPERPASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+LOCAL_DB_SUPERPASS="${LOCAL_DB_SUPERPASS:-__REDACTED_DB_PASSWORD__}"
 
 KEY_TABLES=(
   approval_queue

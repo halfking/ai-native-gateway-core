@@ -74,7 +74,7 @@ for fn in "${TARGETS[@]}"; do
   # We do not interpret the row here — we just capture it.
   set +e
   kubectl exec -n "$K8S_NAMESPACE" "$POD" -c citus -- \
-    env PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' \
+    env PGPASSWORD='__REDACTED_DB_PASSWORD__' \
     psql -U "$PG_USER" -d "$PG_DB" -tA \
     -c "SELECT * FROM $fn('$ARCHIVE_MONTH'::date);" \
     2>&1 | tee -a /var/log/columnar-monthly.log

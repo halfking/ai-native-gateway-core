@@ -64,14 +64,14 @@ curl -s -X POST "https://llmgateway.internal.example.com/api/admin/auto-route/re
 
 ```bash
 # kubectl exec into the PG pod, then pipe the SQL
-kubectl -n pms-test exec -i postgres-0 -- psql -U stockuser -d llmgw < \
+kubectl -n pms-test exec -i postgres-0 -- psql -U __DB_USER__ -d llmgw < \
   services/llm-gateway-go/docs/2026-06-15-auto-route-mode.sql
 ```
 
 ### Rollback
 
 ```bash
-kubectl -n pms-test exec -i postgres-0 -- psql -U stockuser -d llmgw < \
+kubectl -n pms-test exec -i postgres-0 -- psql -U __DB_USER__ -d llmgw < \
   services/llm-gateway-go/docs/2026-06-15-auto-route-mode.down.sql
 ```
 
