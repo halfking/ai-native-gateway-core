@@ -172,7 +172,7 @@ PASS: TestAcquire_Sticky_AcrossReleases
 1. 应用 DB migration（自动，pod 启动时执行）：
    ```bash
    kubectl exec -n pms-test deploy/llm-gateway-go-deployment -- \
-     psql -U stockuser -d llm_gateway -f /app/migrations/036_fp_slot_limit.sql
+     psql -U __DB_USER__ -d llm_gateway -f /app/migrations/036_fp_slot_limit.sql
    ```
 2. 部署到 184：`./scripts/deploy-llm-gateway-go-184.sh`
 3. 部署到 71：`./scripts/deploy-llm-gateway-go-71.sh`

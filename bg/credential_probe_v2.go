@@ -39,6 +39,11 @@ type CredentialProbeV2 struct {
 	fastReprobeQueue chan int // credential IDs
 	cancel           context.CancelFunc
 	done             chan struct{}
+
+	// 新增：状态管理器引用
+	stateManager interface {
+		UpdateFromProbe(ctx context.Context, state interface{})
+	}
 }
 
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
@@ -58,6 +63,23 @@ func (c *CredentialProbeV2) SetKeyring(kr *secret.Keyring) {
 
 func (c *CredentialProbeV2) SetAvailabilityCache(cache *ModelAvailabilityCache) {
 	c.cache = cache
+}
+
+// SetStateManager 设置状态管理器（新增）
+func (c *CredentialProbeV2) SetStateManager(sm interface {
+	UpdateFromProbe(ctx context.Context, state interface{})
+}) {
+	c.stateManager = sm
+}
+
+// SubmitFastProbe 提交到快速探测队列（新增公共方法）
+func (c *CredentialProbeV2) SubmitFastProbe(credID int) {
+	select {
+	case c.fastReprobeQueue <- credID:
+		slog.Debug("credential probe v2: fast probe submitted", "credential_id", credID)
+	default:
+		slog.Warn("credential probe v2: fast probe queue full", "credential_id", credID)
+	}
 }
 
 func (c *CredentialProbeV2) Start(ctx context.Context) {
@@ -673,6 +695,23 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 				"probe_model", pr.HealthProbeModel,
 				"error", err)
 		}
+	}
+
+	// 新增：同步到状态管理器
+	if c.stateManager != nil && pr.HealthProbeModel != "" {
+		now := time.Now()
+		stateUpdate := map[string]interface{}{
+			"CredentialID":  credID,
+			"Model":         pr.HealthProbeModel,
+			"Available":     pr.AvailabilityState == "ready",
+			"HealthStatus":  pr.HealthStatus,
+			"AvgLatencyMs":  pr.HealthLatencyMs,
+			"LastUpdatedAt": now,
+			"LastError":     pr.HealthError,
+			"RecoverAt":     recoverAt,
+			"Source":        "probe_v2",
+		}
+		c.stateManager.UpdateFromProbe(execCtx, stateUpdate)
 	}
 }
 

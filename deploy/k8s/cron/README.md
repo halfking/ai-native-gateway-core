@@ -5,7 +5,7 @@
 - `0 3 1 * *` (1st of every month at 03:00 UTC)
 
 ## Required Kubernetes resources (one-time setup)
-1. `Secret: llm-gateway-pg-pass` (key: `pg-password` = stockuser password from Casdoor secret)
+1. `Secret: llm-gateway-pg-pass` (key: `pg-password` = __DB_USER__ password from Casdoor secret)
 2. `Secret: llm-gateway-secret` (key: `admin-api-key` = admin JWT for `/api/pricing/import`)
 3. `Secret: pricing-refresh-secret` (key: `feishu-webhook` = optional Feishu incoming webhook URL)
 4. `ConfigMap: pricing-refresh-src` (key: `refresh-bundle.tar.gz` = git-archived scripts)

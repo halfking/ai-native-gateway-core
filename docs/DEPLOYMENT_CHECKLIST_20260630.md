@@ -14,7 +14,7 @@
 ssh -p 25022 root@__INTERNAL_PUBLIC_IP__
 
 # 检查 migrations 是否已应用
-export PGPASSWORD='<DB_PASSWORD_REDACTED>'
+export PGPASSWORD='__REDACTED_DB_PASSWORD__'
 POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
 
 kubectl exec -n pms-test $POD -c citus -- psql -U llm_gateway -d llm_gateway -c "
@@ -152,7 +152,7 @@ kubectl logs -n pms-test -l app=llm-gateway-go --tail=200 | grep -E "ensure.*par
 
 ### 4.5 数据库端验证
 ```bash
-export PGPASSWORD='<DB_PASSWORD_REDACTED>'
+export PGPASSWORD='__REDACTED_DB_PASSWORD__'
 POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
 
 # 验证 4 个表都有当前月和下月分区

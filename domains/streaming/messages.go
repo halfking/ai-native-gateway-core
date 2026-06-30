@@ -391,7 +391,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 	if candErr != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
-		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel)
+		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(candErr)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
@@ -403,12 +403,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(candidates) == 0 {
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
-		attemptErrMsg = fmt.Sprintf("no available provider for model '%s'", clientModel)
+		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
 		latency := int(time.Since(startTime).Milliseconds())
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
-		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", fmt.Sprintf("No available provider for model '%s'", clientModel))
+		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", attemptErrMsg)
 		return
 	}
 	if len(candidates) > 0 {

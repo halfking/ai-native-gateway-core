@@ -1,4 +1,3 @@
-
 package routing
 
 import (
@@ -17,6 +16,12 @@ type HealthTracker struct {
 	recorder *credentialhealth.Recorder
 	tuner    *credentialhealth.Tuner
 	checker  *credentialhealth.Checker
+
+	// 新增：状态管理器引用
+	stateManager interface {
+		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
+		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
+	}
 }
 
 // NewHealthTracker creates a health tracker for the executor.
@@ -45,6 +50,14 @@ func NewHealthTracker(
 		tuner:    tuner,
 		checker:  checker,
 	}
+}
+
+// SetStateManager 设置状态管理器（新增）
+func (h *HealthTracker) SetStateManager(sm interface {
+	UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
+	UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
+}) {
+	h.stateManager = sm
 }
 
 // Enabled returns true if health tracking is enabled.
@@ -85,6 +98,11 @@ func (h *HealthTracker) OnSuccess(ctx context.Context, credentialID int, model s
 				"error", err)
 		}
 	}()
+
+	// 新增：实时更新状态管理器
+	if h.stateManager != nil {
+		go h.stateManager.UpdateOnSuccess(ctx, credentialID, model, latencyMs, requestID)
+	}
 
 	// Note: Auto-scaleup is handled by background worker, not per-request
 }
@@ -151,4 +169,9 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 				"error", err)
 		}
 	}()
+
+	// 新增：实时更新状态管理器 + 触发快速验证
+	if h.stateManager != nil {
+		go h.stateManager.UpdateOnFailure(ctx, credentialID, model, errKind, requestID)
+	}
 }

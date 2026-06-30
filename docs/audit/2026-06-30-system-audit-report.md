@@ -320,7 +320,7 @@ func (sc *StreamCapture) RecordChunk(chunk []byte) {
 ### 步骤1: 备份现有数据（10分钟）
 ```bash
 # 在71服务器执行
-SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
   "docker exec llm-gateway-pg-71-replica pg_dump -U llm_gateway -d crm -Fc -f /tmp/crm_backup_20260630.dump"
 ```
 
@@ -334,13 +334,13 @@ grep -A 100 "CREATE TABLE public.request_wal" deploy/sql/01-schema.sql > /tmp/re
 grep -A 200 "CREATE TABLE public.request_logs" deploy/sql/01-schema.sql >> /tmp/request_tables.sql
 
 # 3. 在71数据库执行
-SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
   "docker exec -i llm-gateway-pg-71-replica psql -U llm_gateway -d crm < /tmp/request_tables.sql"
 ```
 
 ### 步骤3: 验证表创建（5分钟）
 ```bash
-SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
   "docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d crm -c '\dt request*'"
 ```
 
@@ -356,14 +356,14 @@ SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
 
 ### 步骤4: 重启服务（5分钟）
 ```bash
-SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
   "docker restart llm-gateway-go"
 ```
 
 ### 步骤5: 验证日志（10分钟）
 ```bash
 # 观察日志，不应再出现 "no partition of relation" 错误
-SSHPASS='<SSH_PASSWORD_REDACTED>' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
+SSHPASS='__REDACTED_SSH_PASSWORD__' sshpass -e ssh -p 25022 root@__HOST_71_IP__ \
   "docker logs -f llm-gateway-go 2>&1 | grep -E 'request_logger|routing'"
 ```
 
