@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 type mockRequestLogEmitter struct {
@@ -196,5 +196,69 @@ func TestRequestLogEmitter_DisabledShortCircuit(t *testing.T) {
 	mock := &mockRequestLogEmitter{enabled: false}
 	if mock.Enabled() {
 		t.Fatal("Enabled() should return false")
+	}
+}
+
+// PR-5 (2026-06-30): async-retry success path must populate
+// client_request_id from X-Gw-Client-Request-Id header. Without this,
+// retry storms cannot be correlated (audit P0-8).
+func TestBuildAsyncSuccessEntry_PropagatesClientRequestID(t *testing.T) {
+	e := &Executor{}
+	startedAt := time.Now().Add(-1 * time.Second)
+	result := &ExecuteResult{
+		Candidate: provider.Candidate{CredentialID: 1, ProviderID: 2},
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Gw-Client-Request-Id", "client-req-abc-123")
+	params := &ExecParams{
+		R:             req,
+		ClientModel:   "gpt-4",
+		OutboundModel: "gpt-4-turbo",
+	}
+
+	entry := e.buildAsyncSuccessEntry("req-1", "sess-1", startedAt, result, params)
+
+	if entry.ClientRequestID == nil {
+		t.Fatal("ClientRequestID should be populated from X-Gw-Client-Request-Id header")
+	}
+	if *entry.ClientRequestID != "client-req-abc-123" {
+		t.Errorf("ClientRequestID = %q, want %q", *entry.ClientRequestID, "client-req-abc-123")
+	}
+}
+
+// PR-5: fallback to X-Client-Request-Id header for back-compat.
+func TestBuildAsyncSuccessEntry_FallsBackToXClientRequestID(t *testing.T) {
+	e := &Executor{}
+	startedAt := time.Now().Add(-1 * time.Second)
+	result := &ExecuteResult{Candidate: provider.Candidate{CredentialID: 1}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Client-Request-Id", "legacy-client-req-456")
+	params := &ExecParams{R: req, ClientModel: "gpt-4"}
+
+	entry := e.buildAsyncSuccessEntry("req-1", "sess-1", startedAt, result, params)
+
+	if entry.ClientRequestID == nil {
+		t.Fatal("ClientRequestID should fall back to X-Client-Request-Id")
+	}
+	if *entry.ClientRequestID != "legacy-client-req-456" {
+		t.Errorf("ClientRequestID = %q, want legacy-client-req-456", *entry.ClientRequestID)
+	}
+}
+
+// PR-5: nil ClientRequestID when no header is present (regression-safe).
+func TestBuildAsyncSuccessEntry_NilWhenNoHeader(t *testing.T) {
+	e := &Executor{}
+	startedAt := time.Now().Add(-1 * time.Second)
+	result := &ExecuteResult{Candidate: provider.Candidate{CredentialID: 1}}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	params := &ExecParams{R: req, ClientModel: "gpt-4"}
+
+	entry := e.buildAsyncSuccessEntry("req-1", "sess-1", startedAt, result, params)
+
+	if entry.ClientRequestID != nil {
+		t.Errorf("ClientRequestID should be nil when no header, got %q", *entry.ClientRequestID)
 	}
 }

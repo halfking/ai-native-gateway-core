@@ -83,7 +83,15 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		requestID = uuid.NewString()
 		w.Header().Set("X-Request-Id", requestID)
 	}
-	startTime := time.Now()
+	// 2026-06-30 PR-5: thread the client-supplied X-Request-Id so request_logs
+	// distinguishes legitimate client retries from fresh requests.
+	clientRequestID := r.Header.Get("X-Gw-Client-Request-Id")
+	if clientRequestID == "" {
+		clientRequestID = r.Header.Get("X-Client-Request-Id")
+	}
+	logCtx := h.chatHandler.NewRequestLogContext(r, requestID, time.Now())
+	logCtx.ClientRequestID = clientRequestID
+	startTime := logCtx.StartTime
 	// Generate a provisional session ID for early-failure branches.
 	// Declared before the deferred safety-net so the closure can capture it.
 	provisionalSessionID := generateSystemSessionID()
@@ -382,7 +390,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID, attemptCredentialID, canonicalID,
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
-		nil,
+		logCtx,
 	)
 
 	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
@@ -446,7 +454,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		responseBody = h.writeNonStreamResponse(w, result.ResponseBody, clientModel, requestID)
 	}
 
-	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.InboundBody, responseBody, nil)
+	h.chatHandler.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "responses", txResult, result.InboundBody, responseBody, logCtx)
 	*attemptLogged = true
 }
 
