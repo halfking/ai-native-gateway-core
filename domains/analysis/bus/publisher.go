@@ -63,13 +63,27 @@ func (p *PGPublisher) Publish(ctx context.Context, evt analysis.AnalysisEvent) e
 	if occurredAt.IsZero() {
 		occurredAt = time.Now()
 	}
-	_, err := p.pool.Exec(ctx, `
+	// 2026-07-01: analysis_events has RLS (322_analysis_events_rls.sql).
+	// Publisher writes for many tenants; set bypass_rls so the writer does
+	// not need to know the per-tenant GUC for every event. Wrapped in a tx
+	// so SET LOCAL is auto-released at commit/rollback.
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck
+	if _, err := tx.Exec(ctx, `SET LOCAL app.bypass_rls = 'true'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO analysis_events
 			(event_id, type, tenant_id, session_id, request_id, payload, occurred_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (event_id) DO NOTHING
-	`, evt.EventID, string(evt.Type), evt.TenantID, evt.SessionID, evt.RequestID, payload, occurredAt)
-	return err
+	`, evt.EventID, string(evt.Type), evt.TenantID, evt.SessionID, evt.RequestID, payload, occurredAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Close 释放 pool（如有）。
