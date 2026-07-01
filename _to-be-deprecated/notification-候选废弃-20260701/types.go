@@ -10,6 +10,17 @@
 //   - 渠道抽象：统一的NotificationChannel接口
 //   - 可扩展：易于添加新的通知渠道
 //   - 异步处理：不阻塞主流程
+//
+// 状态: 候选废弃 (2026-07-01)。本包实现完整（1624 行）但从未被生产代码
+// 集成——无任何 Go 包 import 它、无路由挂载 CallbackServer、cmd/gateway/
+// main.go 不引用。生产通知当前通过 K8s cron job 直接 curl 飞书 webhook
+// (FEISHU_WEBHOOK_URL) 实现简单文本通知。
+//
+// 决策: 移到 _to-be-deprecated/notification-候选废弃-20260701/ 等待 owner
+// 最终确认。代码保留作为未来飞书交互式卡片集成的参考实现——若需要
+// LarkBotChannel 的完整功能（AppID/AppSecret 鉴权 + 卡片 + callback），
+// 可从 _to-be-deprecated/ 复活。详细审计见 docs/产品方案/2026-07-01-
+// notification-decision.md。
 package notification
 
 import (
