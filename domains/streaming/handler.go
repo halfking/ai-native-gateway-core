@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -179,19 +178,6 @@ type ServiceID struct {
 	CredentialID int
 }
 
-// defaultService returns the default provider+credential from env vars.
-func defaultService() ServiceID { //nolint:unused
-	pid, _ := strconv.Atoi(os.Getenv("LLM_GATEWAY_DEFAULT_PROVIDER"))
-	cid, _ := strconv.Atoi(os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL"))
-	if pid == 0 {
-		pid = 1
-	}
-	if cid == 0 {
-		cid = 1
-	}
-	return ServiceID{ProviderID: pid, CredentialID: cid}
-}
-
 type chatRequestBody struct {
 	Model    string          `json:"model"`
 	Stream   bool            `json:"stream"`
@@ -204,10 +190,6 @@ type chatRequestBody struct {
 	// Format: ["filesystem.*", "network.http_get"]
 	// Expands to full tool definitions via toolRegistry.
 	ToolIDs []string `json:"tool_ids,omitempty"`
-}
-
-type chatResponseBody struct { //nolint:unused
-	Model string `json:"model"`
 }
 
 //-----------------------------------------------------------------------------
@@ -825,7 +807,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeRateLimitHeaders(w, rlOutcome)
 		if rlOutcome.Blocked {
 			captureAndEmitFailure("rate_limit_exceeded", "rate limit exceeded", nil, nil)
-			writeErrorJSON(w, http.StatusTooManyRequests, requestID, "Rate limit exceeded", "rate_limit_error", "rate_limit_exceeded")
+			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
 			return
 		}
 	}
@@ -835,7 +817,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if budgetErr := h.keyVerifier.CheckBudget(r.Context(), keyInfo.ID); budgetErr != nil {
 			if _, ok := budgetErr.(*authentication.BudgetExceededError); ok {
 				captureAndEmitFailure("budget_exhausted", "budget exhausted", nil, nil)
-				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Budget exhausted. Contact admin to top up.", "insufficient_quota", "budget_exhausted")
+				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgBudgetExhausted, nil)
 				return
 			}
 		}
@@ -846,7 +828,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if err := h.maasSvc.PreCheckCredits(r.Context(), keyInfo.TenantID); err != nil {
 			if _, ok := err.(*maas.InsufficientCreditsError); ok {
 				captureAndEmitFailure("insufficient_credits", "insufficient credits", nil, nil)
-				writeErrorJSON(w, http.StatusPaymentRequired, requestID, "Insufficient credits. Please subscribe or purchase a top-up package.", "insufficient_quota", "insufficient_credits")
+				writeErrorJSONCtx(r.Context(), w, http.StatusPaymentRequired, requestID, "insufficient_quota", i18n.MsgInsufficientCredits, nil)
 				return
 			}
 		}
@@ -918,7 +900,7 @@ func (h *ChatHandler) serveWithExecutor(
 					if bindErr := h.sessionGetter.BindAPIKey(ctx, sessionID, keyInfo.ID, keyInfo.TenantID); bindErr != nil {
 						slog.Warn("orphan session bind failed", "error", bindErr, "session_id", sessionID)
 						captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
-						writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+						writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 						return
 					}
 					si.APIKeyID = keyInfo.ID
@@ -926,7 +908,7 @@ func (h *ChatHandler) serveWithExecutor(
 					sessionInfo = si
 				} else {
 					captureAndEmitFailure("session_forbidden", "session not owned by this api key", nil, nil)
-					writeErrorJSON(w, http.StatusForbidden, requestID, "session not owned by this API key", "session_error", "SESSION_FORBIDDEN")
+					writeErrorJSONCtx(r.Context(), w, http.StatusForbidden, requestID, "session_error", i18n.MsgSessionForbidden, nil)
 					return
 				}
 			}
@@ -1016,7 +998,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if assignErr != nil {
 			slog.Error("session assignment failed", "error", assignErr)
 			captureAndEmitFailure("session_error", "failed to assign session id", nil, nil)
-			writeErrorJSON(w, http.StatusInternalServerError, requestID, "failed to assign session id", "session_error", "SESSION_ASSIGN_FAILED")
+			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "session_error", i18n.MsgSessionAssignFailed, nil)
 			return
 		}
 		if assignment != nil && assignment.SessionID != "" {
@@ -1358,7 +1340,7 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
 		markLogged()
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, fmt.Sprintf("No available provider for model '%s'", clientModel), "server_error", "no_candidate")
+		writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "server_error", i18n.MsgNoCandidate, map[string]any{"Model": clientModel})
 		return
 	}
 	if len(candidates) > 0 {
@@ -1429,7 +1411,7 @@ func (h *ChatHandler) serveWithExecutor(
 		modified, intercepted, err := h.metaToolInterceptor.InterceptRequest(r.Context(), bodyBytes)
 		if err != nil {
 			captureAndEmitFailure("meta_tool_error", fmt.Sprintf("meta-tool expansion failed: %v", err), nil, nil)
-			writeErrorJSON(w, http.StatusInternalServerError, requestID, "Meta-tool processing failed", "internal_error", "meta_tool_error")
+			writeErrorJSONCtx(r.Context(), w, http.StatusInternalServerError, requestID, "internal_error", i18n.MsgMetaToolError, nil)
 			return
 		}
 		if intercepted {
@@ -1841,7 +1823,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
 			return
 		}
-		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, "upstream request failed", "server_error", "provider_error", debugInfo)
+		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
 		return
 	}
 	if preStream != nil {
@@ -2608,10 +2590,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // rest of the row is filled in from the supplied error metadata.
 // The caller is expected to call EmitRequestLog exactly once;
 // recordFailedRequest never duplicates the entry.
-func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) { //nolint:unused
-	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil, nil)
-}
-
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
 	ctx := &RequestLogContext{
@@ -2698,33 +2676,6 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 			*attemptClientModel = "<unknown>"
 		}
 	}
-}
-
-func (h *ChatHandler) recordFailedRequestDetailed( //nolint:unused
-	requestID, clientModel, outboundModel string,
-	providerID, credentialID *int,
-	errCode, errMessage string,
-	latencyMs int,
-	requestBody []byte,
-	keyInfo *authentication.KeyInfo,
-	clientProfile, identityHash, requestMode string,
-	gwSessionID, gwTaskID string,
-	meta *requestAttemptMeta,
-) {
-	// Deprecated: kept for binary compatibility in tests; delegates to pipeline.
-	ctx := &RequestLogContext{
-		handler:       h,
-		RequestID:     requestID,
-		StartTime:     time.Now().Add(-time.Duration(latencyMs) * time.Millisecond),
-		KeyInfo:       keyInfo,
-		Body:          requestBody,
-		ClientModel:   clientModel,
-		OutboundModel: outboundModel,
-	}
-	if meta != nil {
-		ctx.meta = *meta
-	}
-	ctx.EmitFailure(errCode, errMessage, providerID, credentialID)
 }
 
 // mapGatewayErrorToDetail returns a machine-readable sub-classification for
@@ -3184,40 +3135,6 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(resp)
-}
-
-var hopByHopHeaders = map[string]bool{ //nolint:unused
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"TE":                  true,
-	"Trailers":            true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-	"Authorization":       true,
-	"Cookie":              true,
-	"Host":                true,
-}
-
-func copySafeHeaders(src http.Header) http.Header { //nolint:unused
-	dst := make(http.Header, len(src))
-	for k, vs := range src {
-		if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
-			continue
-		}
-		dst[k] = append([]string(nil), vs...)
-	}
-	return dst
-}
-
-func envDuration(key string, def time.Duration) time.Duration { //nolint:unused
-	if v := os.Getenv(key); v != "" {
-		if s, err := strconv.Atoi(v); err == nil && s > 0 {
-			return time.Duration(s) * time.Second
-		}
-	}
-	return def
 }
 
 func extractBearerToken(r *http.Request) string {
