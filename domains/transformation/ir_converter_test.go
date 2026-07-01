@@ -17,6 +17,11 @@ type mockIRAdapter struct {
 	parseAnthropicResponseFunc     func([]byte) (*ir.InternalResponse, error)
 	serializeOpenAIResponseFunc    func(*ir.InternalResponse, string) ([]byte, error)
 	serializeAnthropicResponseFunc func(*ir.InternalResponse, string) ([]byte, error)
+	// Phase E (2026-07-01): Responses API methods (Responses client target).
+	// Mirrors the production IRConverter interface so mockIRAdapter
+	// stays structurally compatible as the interface evolves.
+	serializeResponsesFunc         func(*ir.StreamChunk, string) string
+	serializeResponsesResponseFunc func(*ir.InternalResponse, string) ([]byte, error)
 }
 
 func (m *mockIRAdapter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
@@ -73,6 +78,25 @@ func (m *mockIRAdapter) SerializeAnthropicResponse(resp *ir.InternalResponse, cl
 		return m.serializeAnthropicResponseFunc(resp, clientModel)
 	}
 	return []byte(`{"id":"msg_1","model":"claude-sonnet-4"}`), nil
+}
+
+// SerializeResponses (Phase E): default returns empty SSE if no override.
+// Tests that exercise the Responses path set serializeResponsesFunc.
+func (m *mockIRAdapter) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	if m.serializeResponsesFunc != nil {
+		return m.serializeResponsesFunc(chunk, itemID)
+	}
+	return ""
+}
+
+// SerializeResponsesResponse (Phase E): default returns empty body.
+// Tests that exercise the non-stream Responses path set
+// serializeResponsesResponseFunc.
+func (m *mockIRAdapter) SerializeResponsesResponse(resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	if m.serializeResponsesResponseFunc != nil {
+		return m.serializeResponsesResponseFunc(resp, clientModel)
+	}
+	return []byte(`{}`), nil
 }
 
 // --- 测试：Parse 提取 extensions ---
