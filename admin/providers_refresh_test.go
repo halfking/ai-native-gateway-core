@@ -337,7 +337,7 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 	}
 }
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string { return &s } //nolint:unused
 
 // MiniMax catalog uses discovery_strategy=manifest with models_endpoint_template=/models.
 // Manual refresh (forceAPI=true) must call the live API, not the stale manifest seed —

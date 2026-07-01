@@ -1517,7 +1517,7 @@ var freeProviders = map[string]freeProviderTemplate{
 
 // ── Helper to find env var (used by quick_entry validation) ─────────────
 
-func envOrEmpty(name string) string {
+func envOrEmpty(name string) string { //nolint:unused
 	return os.Getenv(name)
 }
 

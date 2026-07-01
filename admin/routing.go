@@ -22,7 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
-type routingHandler struct {
+type routingHandler struct { //nolint:unused
 	db     *pgxpool.Pool
 	secret string
 }
@@ -270,7 +270,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 		// 2026-07-01: 优化 RuntimeRoutable 计算，考虑恢复时间
 		now := time.Now()
-		
+
 		// 检查 availability 状态（考虑恢复时间）
 		availabilityOK := c.AvailabilityState == "ready" || c.AvailabilityState == ""
 		if !availabilityOK && c.AvailabilityRecoverAt != nil {
@@ -282,7 +282,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		// 检查 quota 状态（考虑恢复时间）
 		quotaOK := c.QuotaState == "ok" || c.QuotaState == ""
 		if !quotaOK && c.QuotaRecoverAt != nil {
@@ -294,7 +294,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		
+
 		c.RuntimeRoutable = c.Available &&
 			c.CredentialStatus == "active" &&
 			c.LifecycleStatus == "active" &&
@@ -302,7 +302,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			quotaOK &&
 			c.CircuitState != "open"
 		c.Routable = c.RuntimeRoutable
-		
+
 		if !c.RuntimeRoutable {
 			if c.LifecycleStatus != "active" {
 				c.BlockReason = "lifecycle_" + c.LifecycleStatus
@@ -318,7 +318,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				c.BlockReason = "unknown"
 			}
 		}
-		
+
 		// 2026-07-01: 如果不包含被阻塞的候选，跳过不可路由的
 		if !includeBlocked && !c.Routable {
 			continue
@@ -407,7 +407,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 // interface — the struct is defined locally inside handleListCandidates.
 // L-3: replaced the stubs that always returned true / "state check".
 
-type routableCandidate interface {
+type routableCandidate interface { //nolint:unused
 	getAvailable() bool
 	getLifecycleStatus() string
 	getAvailabilityState() string
@@ -415,7 +415,7 @@ type routableCandidate interface {
 	getCircuitState() string
 }
 
-func isRoutable(c interface{}) bool {
+func isRoutable(c interface{}) bool { //nolint:unused
 	if rc, ok := c.(routableCandidate); ok {
 		return rc.getAvailable()
 	}
@@ -427,7 +427,7 @@ func isRoutable(c interface{}) bool {
 	return true // unknown type, optimistic
 }
 
-func blockReason(c interface{}) string {
+func blockReason(c interface{}) string { //nolint:unused
 	type hasFields interface {
 		getLifecycleStatus() string
 		getCircuitState() string

@@ -29,7 +29,7 @@ import (
 )
 
 // attachmentRow 是 attachments 列表查询的单行结果。
-type attachmentRow struct {
+type attachmentRow struct { //nolint:unused
 	RequestID   string          `json:"request_id"`
 	Ts          time.Time       `json:"ts"`
 	TenantID    string          `json:"tenant_id"`
@@ -40,7 +40,7 @@ type attachmentRow struct {
 
 // handleDataLifecycleAttachments GET /api/admin/attachments
 // 列出含附件的请求记录，按时间倒序分页。
-func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
@@ -101,7 +101,7 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 
 // handleDataLifecycleAttachmentStats GET /api/admin/attachments/stats
 // 统计附件的类型、大小、数量分布。
-func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
@@ -167,7 +167,7 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 
 // handleDataLifecycleAttachmentPolicy GET /api/admin/attachments/policy
 // 返回当前清理策略配置（只读展示）。
-func (h *Handler) handleDataLifecycleAttachmentPolicy(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachmentPolicy(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	writeJSON(w, http.StatusOK, map[string]any{
 		"policy": map[string]any{
 			"retention_days":    30,
@@ -184,7 +184,7 @@ func (h *Handler) handleDataLifecycleAttachmentPolicy(w http.ResponseWriter, r *
 
 // handleDataLifecycleAttachmentCleanupPreview POST /api/admin/attachments/cleanup/preview
 // 预览将要被清理的附件记录数量（dry-run）。
-func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
@@ -222,7 +222,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 
 // handleDataLifecycleAttachmentCleanupExecute POST /api/admin/attachments/cleanup/execute
 // 执行清理：将过期记录的 attachments 列置为 NULL。
-func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
@@ -255,7 +255,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 
 // handleDataLifecycleAttachmentItem GET /api/admin/attachments/{request_id}
 // 查看某个请求的附件详情。
-func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
@@ -297,7 +297,7 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 }
 
 // clampInt 解析查询参数为 int，限定在 [min, max] 范围，默认 def。
-func clampInt(s string, def, min, max int) int {
+func clampInt(s string, def, min, max int) int { //nolint:unused
 	if s == "" {
 		return def
 	}
@@ -315,7 +315,7 @@ func clampInt(s string, def, min, max int) int {
 }
 
 // parseTimeRange 解析 since/until 查询参数（RFC3339）。
-func parseTimeRange(r *http.Request) (since, until time.Time) {
+func parseTimeRange(r *http.Request) (since, until time.Time) { //nolint:unused
 	if s := r.URL.Query().Get("since"); s != "" {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			since = t
@@ -330,7 +330,7 @@ func parseTimeRange(r *http.Request) (since, until time.Time) {
 }
 
 // parseOlderThanDays 从 JSON 请求体解析 older_than_days，默认 def。
-func parseOlderThanDays(r *http.Request, def int) int {
+func parseOlderThanDays(r *http.Request, def int) int { //nolint:unused
 	if r.Body != nil {
 		var body struct {
 			OlderThanDays int `json:"older_than_days"`

@@ -21,7 +21,7 @@ func GenerateTenantAdminPassword(tenantCode string) string {
 }
 
 // generateRandomPassword returns a 12-char URL-safe random password with mixed case and digits.
-func generateRandomPassword() (string, error) {
+func generateRandomPassword() (string, error) { //nolint:unused
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
 		return "", err

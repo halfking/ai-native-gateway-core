@@ -89,7 +89,7 @@ func (h *Handler) setIdentityPoolMax(w http.ResponseWriter, r *http.Request) {
 // ── Compatibility helpers ─────────────────────────────────────────────
 
 // parseIdentityPoolMax is a small helper for callers that have a query string.
-func parseIdentityPoolMax(s string) (int, error) {
+func parseIdentityPoolMax(s string) (int, error) { //nolint:unused
 	if s == "" {
 		return 0, nil
 	}

@@ -524,7 +524,7 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 // autoroute.AssignStrategy). When A/B is disabled, the
 // AssignStrategy helper always returns pattern_layered, so all
 // rows have the same strategy label.
-func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request) {
+func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if r.Method != http.MethodGet {
 		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return

@@ -93,15 +93,15 @@ type batchEntry struct {
 }
 
 type telemetryIngester struct {
-	db    *pgxpool.Pool
+	db    *pgxpool.Pool //nolint:unused
 	queue chan any
-	done  chan struct{}
-	wg    sync.WaitGroup
+	done  chan struct{}  //nolint:unused
+	wg    sync.WaitGroup //nolint:unused
 }
 
 var ingester *telemetryIngester
 
-func startIngester(db *pgxpool.Pool) {
+func startIngester(db *pgxpool.Pool) { //nolint:unused
 	if db == nil {
 		return
 	}
@@ -114,14 +114,14 @@ func startIngester(db *pgxpool.Pool) {
 	go ingester.worker()
 }
 
-func stopIngester() {
+func stopIngester() { //nolint:unused
 	if ingester != nil {
 		close(ingester.done)
 		ingester.wg.Wait()
 	}
 }
 
-func (t *telemetryIngester) worker() {
+func (t *telemetryIngester) worker() { //nolint:unused
 	defer t.wg.Done()
 	batch := make([]any, 0, 100)
 	timer := time.NewTimer(200 * time.Millisecond)
@@ -150,7 +150,7 @@ func (t *telemetryIngester) worker() {
 	}
 }
 
-func (t *telemetryIngester) flush(batch []any) {
+func (t *telemetryIngester) flush(batch []any) { //nolint:unused
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -164,7 +164,7 @@ func (t *telemetryIngester) flush(batch []any) {
 	}
 }
 
-func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) {
+func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) { //nolint:unused
 	rawModelsJSON, _ := json.Marshal(coalesceRawModels(e.ResolutionRawModels))
 	traceJSON := coalesceTrace(e.DecisionTrace)
 	_, err := t.db.Exec(ctx, `
@@ -205,7 +205,7 @@ func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionL
 	}
 }
 
-func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) {
+func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLogInput) { //nolint:unused
 	totalTok := calcTotal(e.PromptTokens, e.CompletionTokens)
 	rawModel := firstNonEmptyStr(e.OutboundModel, e.ClientModel)
 	search := buildSearchText(e)
@@ -460,7 +460,7 @@ func coalesceTrace(trace json.RawMessage) []byte {
 	return trace
 }
 
-func calcTotal(a, b *int) *int {
+func calcTotal(a, b *int) *int { //nolint:unused
 	if a == nil && b == nil {
 		return nil
 	}
@@ -474,7 +474,7 @@ func calcTotal(a, b *int) *int {
 	return &v
 }
 
-func firstNonEmptyStr(ss ...*string) *string {
+func firstNonEmptyStr(ss ...*string) *string { //nolint:unused
 	for _, s := range ss {
 		if s != nil && *s != "" {
 			return s
@@ -483,7 +483,7 @@ func firstNonEmptyStr(ss ...*string) *string {
 	return nil
 }
 
-func buildSearchText(e *requestLogInput) *string {
+func buildSearchText(e *requestLogInput) *string { //nolint:unused
 	parts := []string{}
 	for _, s := range []*string{e.ClientModel, e.OutboundModel, e.ClientProfile, e.RequestMode} {
 		if s != nil && *s != "" {

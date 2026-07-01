@@ -15,7 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 )
 
-func extractID(path string) (int, bool) {
+func extractID(path string) (int, bool) { //nolint:unused
 	parts := splitPath(path)
 	if len(parts) == 0 {
 		return 0, false

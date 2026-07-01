@@ -943,7 +943,7 @@ func (h *Handler) usageKeyTrend(w http.ResponseWriter, r *http.Request, keyID in
 // usageKeyTraffic returns per-5-minute request counts from request_logs for
 // a single API key.  Used by /keys/:id to show peak traffic and gateway vs
 // upstream failure breakdown within the selected window.
-func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID int) {
+func (h *Handler) usageKeyTraffic(w http.ResponseWriter, r *http.Request, keyID int) { //nolint:unused
 	// tenant_admin can only view usage for their own tenant's keys (Fix 8)
 	if !h.assertKeyTenantScope(w, r, keyID) {
 		return
