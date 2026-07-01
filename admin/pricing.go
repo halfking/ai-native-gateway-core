@@ -941,14 +941,14 @@ func (h *Handler) pricingAutoInherit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"inherited": inherited})
 }
 
-func nullableFloat(v *float64) string {
+func nullableFloat(v *float64) string { //nolint:unused
 	if v == nil {
 		return "NULL"
 	}
 	return strconv.FormatFloat(*v, 'f', -1, 64)
 }
 
-func nullableStr(v *string) string {
+func nullableStr(v *string) string { //nolint:unused
 	if v == nil {
 		return "NULL"
 	}

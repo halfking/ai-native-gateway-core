@@ -26,7 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 )
 
-func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, providerID int) {
+func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, providerID int) { //nolint:unused
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 

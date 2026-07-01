@@ -219,7 +219,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 	}, nil
 }
 
-func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+func (h *Handler) checkCredentialHealth(w http.ResponseWriter, r *http.Request, providerID, credID int) { //nolint:unused
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 

@@ -104,7 +104,7 @@ func (s *stubService) ListStale(ctx context.Context, threshold time.Duration) ([
 	// apihub.TenantFromContext (lowercase), so we read the value key
 	// directly via reflection-free string match — the apihub package
 	// stores tenantID as a string under tenantCtxKey{}.
-	type ctxKey interface{}
+	type ctxKey interface{} //nolint:unused
 	// Iterate the ctx is impossible; instead, callers pass tenant
 	// directly when overriding. For default path we just record "".
 	s.lastListStaleTenant = ""
