@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -259,7 +260,7 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"models": models,
 		"total":  len(models),
 	})
@@ -298,7 +299,7 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"queues": queues,
 		"total":  len(queues),
 	})
@@ -370,7 +371,7 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
+	_ = json.NewEncoder(w).Encode(health)
 }
 
 // GET /api/admin/probe/model/{model}/nodes
@@ -445,7 +446,7 @@ func (h *Handler) handleProbeModelNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"model": modelName,
 		"nodes": nodes,
 		"total": len(nodes),
@@ -521,7 +522,7 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 	// endpoint only returned `breakdown` and the frontend read
 	// `state_distribution`, leaving the 4 status badges showing 0.
 	stateDistribution := buildStateDistribution(breakdown)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"model":              modelName,
 		"breakdown":          breakdown,
 		"state_distribution": stateDistribution,
@@ -588,7 +589,7 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"timeline": timeline,
 		"total":    len(timeline),
 	})
@@ -756,40 +757,40 @@ func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) 
 func writeCacheStateProm(w http.ResponseWriter, entries []CacheStateEntry) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_snapshot_info Per-(credential, model) cache snapshot, one series per entry.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_snapshot_info gauge")
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_available 1 if the cached state is available for routing, 0 otherwise.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_available gauge")
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_consecutive_successes Cached consecutive success count from the most recent probe.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_consecutive_successes gauge")
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_consecutive_failures Cached consecutive failure count from the most recent probe.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_consecutive_failures gauge")
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_updated_at Unix timestamp of the most recent cache write for this entry.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_updated_at gauge")
-	fmt.Fprintln(w, "# HELP llmgw_availability_cache_next_retry_at Unix timestamp by which the probe worker plans to revisit this entry.")
-	fmt.Fprintln(w, "# TYPE llmgw_availability_cache_next_retry_at gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_snapshot_info Per-(credential, model) cache snapshot, one series per entry.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_snapshot_info gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_available 1 if the cached state is available for routing, 0 otherwise.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_available gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_consecutive_successes Cached consecutive success count from the most recent probe.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_consecutive_successes gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_consecutive_failures Cached consecutive failure count from the most recent probe.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_consecutive_failures gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_updated_at Unix timestamp of the most recent cache write for this entry.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_updated_at gauge")
+	promPrintln(w, "# HELP llmgw_availability_cache_next_retry_at Unix timestamp by which the probe worker plans to revisit this entry.")
+	promPrintln(w, "# TYPE llmgw_availability_cache_next_retry_at gauge")
 
 	now := time.Now().Unix()
 	for _, e := range entries {
 		base := fmt.Sprintf(`credential_id=%q,raw_model=%q,state=%q,source=%q`,
 			strconv.Itoa(e.CredentialID), e.RawModel, e.State, e.Source)
-		fmt.Fprintf(w, "llmgw_availability_cache_snapshot_info{%s} 1\n", base)
+		promPrintf(w, "llmgw_availability_cache_snapshot_info{%s} 1\n", base)
 		avail := 0
 		if e.Available {
 			avail = 1
 		}
-		fmt.Fprintf(w, "llmgw_availability_cache_available{credential_id=%q,raw_model=%q} %d\n",
+		promPrintf(w, "llmgw_availability_cache_available{credential_id=%q,raw_model=%q} %d\n",
 			strconv.Itoa(e.CredentialID), e.RawModel, avail)
-		fmt.Fprintf(w, "llmgw_availability_cache_consecutive_successes{credential_id=%q,raw_model=%q} %d\n",
+		promPrintf(w, "llmgw_availability_cache_consecutive_successes{credential_id=%q,raw_model=%q} %d\n",
 			strconv.Itoa(e.CredentialID), e.RawModel, e.ConsecutiveSuccesses)
-		fmt.Fprintf(w, "llmgw_availability_cache_consecutive_failures{credential_id=%q,raw_model=%q} %d\n",
+		promPrintf(w, "llmgw_availability_cache_consecutive_failures{credential_id=%q,raw_model=%q} %d\n",
 			strconv.Itoa(e.CredentialID), e.RawModel, e.ConsecutiveFailures)
 		if e.UpdatedAt != nil {
 			ts := e.UpdatedAt.Unix()
 			if ts < 0 || ts == 0 {
 				ts = now
 			}
-			fmt.Fprintf(w, "llmgw_availability_cache_updated_at{credential_id=%q,raw_model=%q} %d\n",
+			promPrintf(w, "llmgw_availability_cache_updated_at{credential_id=%q,raw_model=%q} %d\n",
 				strconv.Itoa(e.CredentialID), e.RawModel, ts)
 		}
 		if e.NextRetryAt != nil {
@@ -797,11 +798,19 @@ func writeCacheStateProm(w http.ResponseWriter, entries []CacheStateEntry) {
 			if ts < 0 || ts == 0 {
 				ts = now
 			}
-			fmt.Fprintf(w, "llmgw_availability_cache_next_retry_at{credential_id=%q,raw_model=%q} %d\n",
+			promPrintf(w, "llmgw_availability_cache_next_retry_at{credential_id=%q,raw_model=%q} %d\n",
 				strconv.Itoa(e.CredentialID), e.RawModel, ts)
 		}
 	}
 }
+
+// promPrintln / promPrintf wrap fmt.Fprintln/Fprintf for Prometheus
+// exporter endpoints where write errors are non-actionable (client
+// disconnect mid-response means we can't recover). Use these helpers
+// instead of bare fmt.Fprintln to satisfy errcheck without per-line
+// _ = noise.
+func promPrintln(w io.Writer, s string)                  { _, _ = fmt.Fprintln(w, s) }
+func promPrintf(w io.Writer, format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 
 func toCacheStateEntry(credentialID int, rawModel string, snap bg.ModelAvailabilitySnapshot) CacheStateEntry {
 	return CacheStateEntry{

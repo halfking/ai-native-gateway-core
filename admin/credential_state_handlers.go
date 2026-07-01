@@ -153,7 +153,7 @@ func (h *Handler) handleCredentialStateQuery(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"credential_id": credID,
 		"model":         model,
 		"state":         state,
@@ -184,7 +184,7 @@ func parseCredentialID(w http.ResponseWriter, r *http.Request) (int, bool) {
 func writeAccepted(w http.ResponseWriter, body map[string]any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func writeStateServiceUnavailable(w http.ResponseWriter) {

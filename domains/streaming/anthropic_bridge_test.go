@@ -131,7 +131,7 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 
 	resp, err := http.Get(srv.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := newBridgeWriter()
 	pc := newBridgePendingCapturer(1024)
@@ -160,7 +160,7 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 
 	resp, err := http.Get(srv.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)

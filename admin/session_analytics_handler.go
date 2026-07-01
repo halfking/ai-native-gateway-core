@@ -236,7 +236,7 @@ func (h *SessionAnalyticsHandler) ListSessions(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to query sessions: "+err.Error())
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	sessions := []AnalyticsSessionSummary{}
 	for rows.Next() {
@@ -333,7 +333,7 @@ func (h *SessionAnalyticsHandler) GetSessionDetail(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get timeline: "+err.Error())
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	timeline := []RequestEvent{}
 	for rows.Next() {
@@ -475,7 +475,7 @@ func (h *SessionAnalyticsHandler) buildSessionAnalysis(ctx context.Context, tena
 
 	rows, err := h.db.QueryContext(ctx, complianceQuery, tenantID, sessionKey)
 	if err == nil {
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var requestID string
 			var timestamp time.Time
