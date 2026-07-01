@@ -1,0 +1,87 @@
+# golangci-lint 配置 (Phase 0 任务 4/5)
+# 目的: 强制依赖方向，支持弹性架构演进
+
+run:
+  timeout: 5m
+  tests: true
+  skip-dirs:
+    - _to-be-deprecated
+    - vendor
+    - build
+
+linters:
+  enable:
+    - depguard      # 依赖方向强制
+    - gofmt         # 格式化
+    - goimports     # import 排序
+    - govet         # go vet
+    - errcheck      # 错误检查
+    - staticcheck   # 静态分析
+    - unused        # 未使用代码
+    - gosimple      # 简化建议
+    - ineffassign   # 无效赋值
+
+linters-settings:
+  depguard:
+    rules:
+      # 规则 1: domain/ 零依赖（叶子包）
+      domain-zero-deps:
+        files:
+          - "$all"
+          - "!**/domain/**"
+        deny:
+          - pkg: "github.com/kaixuan/llm-gateway-go/domain"
+            desc: "domain/ 是叶子包，不应被业务包依赖（只能依赖接口）"
+        
+      # 规则 2: platform/ 不能依赖 application/gateway
+      platform-no-app:
+        files:
+          - "**/db/**"
+          - "**/auth/**"
+          - "**/pool/**"
+          - "**/secret/**"
+        deny:
+          - pkg: "github.com/kaixuan/llm-gateway-go/routing"
+            desc: "platform 层不能依赖 application 层"
+          - pkg: "github.com/kaixuan/llm-gateway-go/maas"
+            desc: "platform 层不能依赖 application 层"
+          - pkg: "github.com/kaixuan/llm-gateway-go/admin"
+            desc: "platform 层不能依赖 application 层"
+          - pkg: "github.com/kaixuan/llm-gateway-go/cmd"
+            desc: "platform 层不能依赖 gateway 层"
+      
+      # 规则 3: 禁止循环依赖关键路径
+      no-circular:
+        files:
+          - "$all"
+        deny:
+          - pkg: "github.com/kaixuan/llm-gateway-go/relay"
+            desc: "relay/ 已废弃 (_to-be-deprecated/)，不应有新引用"
+      
+      # 规则 4: control/query 不能相互依赖（CQRS）
+      cqrs-separation:
+        files:
+          - "**/control/**"
+        deny:
+          - pkg: "github.com/kaixuan/llm-gateway-go/query"
+            desc: "CQRS: control/ (命令) 不能依赖 query/ (查询)"
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  
+  exclude-rules:
+    # 测试文件放宽规则
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosimple
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+severity:
+  default-severity: error
