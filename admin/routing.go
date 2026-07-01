@@ -194,7 +194,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			v.credential_id,
 			COALESCE(c.label, '') AS credential_label,
 			v.credential_status,
-			v.lifecycle_status,
+			v.credential_lifecycle_status AS lifecycle_status,
 			v.availability_state,
 			v.availability_recover_at::text,
 			v.quota_state,
@@ -251,6 +251,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(cmb.success_rate, 0.9) DESC
 	`, rawModels, includeBlocked)
 	if err != nil {
+		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels, "include_blocked", includeBlocked)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -262,7 +263,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var c candidate
 		var isRoutable bool
 		var unavailableReason *string
-		
+
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
