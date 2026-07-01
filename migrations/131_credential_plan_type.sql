@@ -52,6 +52,8 @@ SELECT
     c.quota_recover_at,
     c.plan_type,
     mo.billing_mode,
+    c.tenant_id,
+    c.provider_id,
     
     -- 核心逻辑: 判断是否可路由
     CASE
