@@ -10,6 +10,7 @@ func PlatformSpecs() []*Spec {
 	out = append(out, PassthroughSpecs()...)
 	out = append(out, ModuleSpecs()...)
 	out = append(out, LogSpecs()...)
+	out = append(out, StorageSpecs()...)
 	return out
 }
 
