@@ -181,6 +181,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
+	// 2026-07-02: 重构使用 v_routable_credential_models 视图
+	// 优点：单一真实来源（SSOT），自动应用所有过滤规则（包括 plan_type 兼容性）
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			p.id AS provider_id,
@@ -189,14 +191,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			COALESCE(p.protocol, 'openai-completions') AS protocol,
 			p.base_url,
 			p.enabled AS provider_enabled,
-			c.id AS credential_id,
+			v.credential_id,
 			COALESCE(c.label, '') AS credential_label,
-			COALESCE(c.status, 'active') AS credential_status,
-			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			COALESCE(c.availability_state, 'ready') AS availability_state,
-			c.availability_recover_at::text,
-			COALESCE(c.quota_state, 'ok') AS quota_state,
-			c.quota_recover_at::text,
+			v.credential_status,
+			v.lifecycle_status,
+			v.availability_state,
+			v.availability_recover_at::text,
+			v.quota_state,
+			v.quota_recover_at::text,
 			c.concurrency_limit,
 			c.effective_concurrency,
 			c.effective_at::text,
@@ -206,32 +208,36 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			c.balance_usd::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			c.cooling_until::text,
-			mo.available,
-			COALESCE(mo.routing_tier, 2) AS tier,
-			COALESCE(mo.weight, 100) AS weight,
-			COALESCE(mo.manual_priority, 99) AS manual_priority,
-			COALESCE(mo.active_sessions, 0) AS active_sessions,
-			COALESCE(mo.consecutive_failures, 0) AS consecutive_failures,
-			COALESCE(mo.billing_mode, 'token') AS billing_mode,
+			v.binding_available AS available,
+			COALESCE(cmb.routing_tier, 2) AS tier,
+			COALESCE(cmb.weight, 100) AS weight,
+			COALESCE(cmb.manual_priority, 99) AS manual_priority,
+			COALESCE(cmb.active_sessions, 0) AS active_sessions,
+			COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
+			COALESCE(v.billing_mode, 'token') AS billing_mode,
 			mo.unit_price_in_per_1m,
 			mo.unit_price_out_per_1m,
-			COALESCE(mo.currency, 'USD') AS currency,
-			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
+			COALESCE(cmb.currency, 'USD') AS currency,
+			COALESCE(cmb.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999) AS p95_latency_ms,
-			mo.raw_model_name AS model_name,
-			COALESCE(mo.standardized_name, mo.raw_model_name) AS standardized_name,
+			v.raw_model_name AS model_name,
+			COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
 			COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
-			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd
-		FROM model_offers mo
-		JOIN credentials c ON c.id = mo.credential_id
+			COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
+			v.is_routable,
+			v.unavailable_reason
+		FROM v_routable_credential_models v
+		JOIN credentials c ON c.id = v.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
+		LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
+			AND mo.raw_model_name = v.raw_model_name
 		WHERE p.tenant_id = 'default'
-		  AND (lower(mo.raw_model_name) = ANY($1) OR lower(mo.standardized_name) = ANY($1))
-		  AND mo.available IS TRUE
-		  AND c.status IN ('active','cooling','degraded')
+		  AND lower(v.raw_model_name) = ANY($1)
 		  AND p.enabled IS TRUE
+		  AND (v.is_routable = true OR $2)
 		ORDER BY
-			CASE COALESCE(mo.billing_mode, 'token')
+			CASE COALESCE(v.billing_mode, 'token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
 				WHEN 'code_plan' THEN 1
@@ -239,11 +245,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				WHEN 'monthly' THEN 1
 				ELSE 2
 			END,
-			COALESCE(mo.manual_priority, 99),
-			COALESCE(mo.routing_tier, 2),
-			COALESCE(mo.weight, 100) DESC,
-			COALESCE(mo.success_rate, 0.9) DESC
-	`, rawModels)
+			COALESCE(cmb.manual_priority, 99),
+			COALESCE(cmb.routing_tier, 2),
+			COALESCE(cmb.weight, 100) DESC,
+			COALESCE(cmb.success_rate, 0.9) DESC
+	`, rawModels, includeBlocked)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
@@ -254,6 +260,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	candidates := make([]candidate, 0)
 	for rows.Next() {
 		var c candidate
+		var isRoutable bool
+		var unavailableReason *string
+		
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
@@ -265,63 +274,16 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency, &c.SuccessRate,
 			&c.P95LatencyMs, &c.ModelName, &c.StandardizedName,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
+			&isRoutable, &unavailableReason,
 		); err != nil {
 			continue
 		}
-		// 2026-07-01: 优化 RuntimeRoutable 计算，考虑恢复时间
-		now := time.Now()
-
-		// 检查 availability 状态（考虑恢复时间）
-		availabilityOK := c.AvailabilityState == "ready" || c.AvailabilityState == ""
-		if !availabilityOK && c.AvailabilityRecoverAt != nil {
-			// 解析恢复时间
-			if recoverTime, err := time.Parse(time.RFC3339, *c.AvailabilityRecoverAt); err == nil {
-				if recoverTime.Before(now) {
-					// 已过恢复时间，视为可用
-					availabilityOK = true
-				}
-			}
-		}
-
-		// 检查 quota 状态（考虑恢复时间）
-		quotaOK := c.QuotaState == "ok" || c.QuotaState == ""
-		if !quotaOK && c.QuotaRecoverAt != nil {
-			// 解析恢复时间
-			if recoverTime, err := time.Parse(time.RFC3339, *c.QuotaRecoverAt); err == nil {
-				if recoverTime.Before(now) {
-					// 已过恢复时间，视为可用
-					quotaOK = true
-				}
-			}
-		}
-
-		c.RuntimeRoutable = c.Available &&
-			c.CredentialStatus == "active" &&
-			c.LifecycleStatus == "active" &&
-			availabilityOK &&
-			quotaOK &&
-			c.CircuitState != "open"
-		c.Routable = c.RuntimeRoutable
-
-		if !c.RuntimeRoutable {
-			if c.LifecycleStatus != "active" {
-				c.BlockReason = "lifecycle_" + c.LifecycleStatus
-			} else if c.CircuitState == "open" {
-				c.BlockReason = "circuit_open"
-			} else if c.QuotaState != "" && c.QuotaState != "ok" {
-				c.BlockReason = "quota_" + c.QuotaState
-			} else if c.AvailabilityState != "" && c.AvailabilityState != "ready" {
-				c.BlockReason = "availability_" + c.AvailabilityState
-			} else if !c.Available {
-				c.BlockReason = "offer_unavailable"
-			} else {
-				c.BlockReason = "unknown"
-			}
-		}
-
-		// 2026-07-01: 如果不包含被阻塞的候选，跳过不可路由的
-		if !includeBlocked && !c.Routable {
-			continue
+		// 2026-07-02: 使用视图的 is_routable 判断，不再重复计算
+		// 视图已包含所有过滤规则：status, lifecycle, availability, quota, plan_type 兼容性
+		c.RuntimeRoutable = isRoutable
+		c.Routable = isRoutable
+		if unavailableReason != nil {
+			c.BlockReason = *unavailableReason
 		}
 		c.BillingRound = provider.BillingRound(c.BillingMode)
 		pc := provider.Candidate{
