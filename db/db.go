@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1421,33 +1423,35 @@ func (d *DB) ensureAnalysisEventsRLS(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	_, err := d.pool.Exec(ctx, `
-		ALTER TABLE public.analysis_events ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS tenant_isolation_analysis_events ON public.analysis_events;
-		CREATE POLICY tenant_isolation_analysis_events ON public.analysis_events
-		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-		DROP POLICY IF EXISTS analysis_events_super_admin_bypass ON public.analysis_events;
-		CREATE POLICY analysis_events_super_admin_bypass ON public.analysis_events
-		    USING (
-		        current_setting('app.current_role', true) = 'super_admin'
-		        OR current_setting('app.bypass_rls', true) = 'true'
-		    );
-
-		ALTER TABLE public.intent_aggregates ENABLE ROW LEVEL SECURITY;
-		DROP POLICY IF EXISTS tenant_isolation_intent_aggregates ON public.intent_aggregates;
-		CREATE POLICY tenant_isolation_intent_aggregates ON public.intent_aggregates
-		    USING ((tenant_id)::text = (public.get_current_tenant())::text);
-		DROP POLICY IF EXISTS intent_aggregates_super_admin_bypass ON public.intent_aggregates;
-		CREATE POLICY intent_aggregates_super_admin_bypass ON public.intent_aggregates
-		    USING (
-		        current_setting('app.current_role', true) = 'super_admin'
-		        OR current_setting('app.bypass_rls', true) = 'true'
-		    );
-	`)
-	if err != nil {
-		return err
+	// These tables may not exist (e.g. on older deployments without the full
+	// migration history); skip gracefully rather than blocking DB startup.
+	for _, tbl := range []string{"public.analysis_events", "public.intent_aggregates"} {
+		var exists bool
+		if err := d.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1)`, tbl[7:]).Scan(&exists); err != nil {
+			slog.Warn("analysis_events RLS: table existence check failed", "table", tbl, "error", err)
+			continue
+		}
+		if !exists {
+			slog.Warn("analysis_events RLS: table does not exist (skipping)", "table", tbl)
+			continue
+		}
+		if _, err := d.pool.Exec(ctx, fmt.Sprintf(`
+			ALTER TABLE %s ENABLE ROW LEVEL SECURITY;
+			DROP POLICY IF EXISTS tenant_isolation_%s ON %s;
+			CREATE POLICY tenant_isolation_%s ON %s
+			    USING ((tenant_id)::text = (public.get_current_tenant())::text);
+			DROP POLICY IF EXISTS %s_super_admin_bypass ON %s;
+			CREATE POLICY %s_super_admin_bypass ON %s
+			    USING (
+			        current_setting('app.current_role', true) = 'super_admin'
+			        OR current_setting('app.bypass_rls', true) = 'true'
+			    );
+		`, tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl, strings.Replace(tbl[7:], ".", "_", 1), tbl)); err != nil {
+			slog.Warn("analysis_events RLS: apply failed", "table", tbl, "error", err)
+		} else {
+			slog.Info("analysis_events RLS ensured", "table", tbl)
+		}
 	}
-	slog.Info("analysis_events + intent_aggregates RLS ensured (2026-07-01 round 50)")
 	return nil
 }
 
