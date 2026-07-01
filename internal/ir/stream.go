@@ -660,7 +660,7 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 				},
 			}
 			data, _ := json.Marshal(body)
-			output.WriteString(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data))
+			fmt.Fprintf(&output, "event: content_block_delta\ndata: %s\n\n", data)
 		}
 
 		// Reasoning content
@@ -674,7 +674,7 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 				},
 			}
 			data, _ := json.Marshal(body)
-			output.WriteString(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data))
+			fmt.Fprintf(&output, "event: content_block_delta\ndata: %s\n\n", data)
 		}
 
 		// Tool calls
@@ -692,7 +692,7 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 					},
 				}
 				data, _ := json.Marshal(body)
-				output.WriteString(fmt.Sprintf("event: content_block_start\ndata: %s\n\n", data))
+				fmt.Fprintf(&output, "event: content_block_start\ndata: %s\n\n", data)
 			}
 			if tc.Arguments != "" {
 				// content_block_delta (input_json_delta)
@@ -705,7 +705,7 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 					},
 				}
 				data, _ := json.Marshal(body)
-				output.WriteString(fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", data))
+				fmt.Fprintf(&output, "event: content_block_delta\ndata: %s\n\n", data)
 			}
 		}
 
@@ -795,7 +795,7 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 				"delta":         c.Delta.Content,
 			}
 			data, _ := json.Marshal(body)
-			output.WriteString(fmt.Sprintf("event: response.output_text.delta\ndata: %s\n\n", data))
+			fmt.Fprintf(&output, "event: response.output_text.delta\ndata: %s\n\n", data)
 		}
 
 		// 2) Reasoning content → response.reasoning_text.delta
@@ -808,7 +808,7 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 				"delta":         c.Delta.ReasoningContent,
 			}
 			data, _ := json.Marshal(body)
-			output.WriteString(fmt.Sprintf("event: response.reasoning_text.delta\ndata: %s\n\n", data))
+			fmt.Fprintf(&output, "event: response.reasoning_text.delta\ndata: %s\n\n", data)
 		}
 
 		// 3) Tool calls → response.output_item.added (new) +
@@ -830,7 +830,7 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 					},
 				}
 				data, _ := json.Marshal(body)
-				output.WriteString(fmt.Sprintf("event: response.output_item.added\ndata: %s\n\n", data))
+				fmt.Fprintf(&output, "event: response.output_item.added\ndata: %s\n\n", data)
 			}
 			if tc.Arguments != "" {
 				// Continue existing tool call's argument stream.
@@ -841,7 +841,7 @@ func (c *StreamChunk) SerializeResponses(itemID string) string {
 					"delta":        tc.Arguments,
 				}
 				data, _ := json.Marshal(body)
-				output.WriteString(fmt.Sprintf("event: response.function_call_arguments.delta\ndata: %s\n\n", data))
+				fmt.Fprintf(&output, "event: response.function_call_arguments.delta\ndata: %s\n\n", data)
 			}
 		}
 

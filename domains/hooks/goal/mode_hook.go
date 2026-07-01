@@ -4,7 +4,6 @@ package goal
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -257,8 +256,8 @@ func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequ
 	}
 
 	prompts := NewPrompts(LocaleZhCN)
-	auditPrompt := prompts.AuditStarted() + "\n" + fmt.Sprintf(`Review the task execution and return JSON:
-{"issues": [{"severity": "high/medium/low", "description": "...", "fix": "..."}], "summary": "Overall assessment"}`)
+	auditPrompt := prompts.AuditStarted() + "\n" + `Review the task execution and return JSON:
+{"issues": [{"severity": "high/medium/low", "description": "...", "fix": "..."}], "summary": "Overall assessment"}`
 
 	reqBody := map[string]interface{}{
 		"model":    model,

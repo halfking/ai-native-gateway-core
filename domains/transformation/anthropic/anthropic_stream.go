@@ -510,7 +510,7 @@ func writeSSEWithCapturer(w http.ResponseWriter, pc *pendingCapturer, event stri
 	}
 }
 
-func writeSSE(w http.ResponseWriter, event string, payload any) {
+func writeSSE(w http.ResponseWriter, event string, payload any) { //nolint:unused
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return

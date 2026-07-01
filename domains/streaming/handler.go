@@ -178,7 +178,7 @@ type ServiceID struct {
 }
 
 // defaultService returns the default provider+credential from env vars.
-func defaultService() ServiceID {
+func defaultService() ServiceID { //nolint:unused
 	pid, _ := strconv.Atoi(os.Getenv("LLM_GATEWAY_DEFAULT_PROVIDER"))
 	cid, _ := strconv.Atoi(os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL"))
 	if pid == 0 {
@@ -204,7 +204,7 @@ type chatRequestBody struct {
 	ToolIDs []string `json:"tool_ids,omitempty"`
 }
 
-type chatResponseBody struct {
+type chatResponseBody struct { //nolint:unused
 	Model string `json:"model"`
 }
 
@@ -2637,7 +2637,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // rest of the row is filled in from the supplied error metadata.
 // The caller is expected to call EmitRequestLog exactly once;
 // recordFailedRequest never duplicates the entry.
-func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) {
+func (h *ChatHandler) recordFailedRequest(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte) { //nolint:unused
 	h.recordFailedRequestWithKey(requestID, clientModel, outboundModel, providerID, credentialID, errCode, errMessage, latencyMs, requestBody, nil, nil)
 }
 
@@ -2729,7 +2729,7 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 	}
 }
 
-func (h *ChatHandler) recordFailedRequestDetailed(
+func (h *ChatHandler) recordFailedRequestDetailed( //nolint:unused
 	requestID, clientModel, outboundModel string,
 	providerID, credentialID *int,
 	errCode, errMessage string,
@@ -3215,7 +3215,7 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-var hopByHopHeaders = map[string]bool{
+var hopByHopHeaders = map[string]bool{ //nolint:unused
 	"Connection":          true,
 	"Keep-Alive":          true,
 	"Proxy-Authenticate":  true,
@@ -3229,7 +3229,7 @@ var hopByHopHeaders = map[string]bool{
 	"Host":                true,
 }
 
-func copySafeHeaders(src http.Header) http.Header {
+func copySafeHeaders(src http.Header) http.Header { //nolint:unused
 	dst := make(http.Header, len(src))
 	for k, vs := range src {
 		if hopByHopHeaders[http.CanonicalHeaderKey(k)] {
@@ -3240,7 +3240,7 @@ func copySafeHeaders(src http.Header) http.Header {
 	return dst
 }
 
-func envDuration(key string, def time.Duration) time.Duration {
+func envDuration(key string, def time.Duration) time.Duration { //nolint:unused
 	if v := os.Getenv(key); v != "" {
 		if s, err := strconv.Atoi(v); err == nil && s > 0 {
 			return time.Duration(s) * time.Second

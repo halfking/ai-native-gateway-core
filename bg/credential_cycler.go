@@ -181,7 +181,7 @@ func (c *CredentialCycler) cleanStickySessions(ctx context.Context) {
 	}
 }
 
-func decryptCred(ciphertext string, encKey []byte) (string, error) {
+func decryptCred(ciphertext string, encKey []byte) (string, error) { //nolint:unused
 	return decryptCredWithKeyring(ciphertext, nil, encKey)
 }
 
@@ -269,13 +269,13 @@ func httpStatusToMsg(statusCode int, body string) string {
 	return msg
 }
 
-type credentialProbeResult struct {
+type credentialProbeResult struct { //nolint:unused
 	CredentialID int    `json:"credential_id"`
 	Status       string `json:"status"`
 	Error        string `json:"error,omitempty"`
 }
 
-func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialProbeResult {
+func (c *CredentialCycler) probeOne(ctx context.Context, credID int) credentialProbeResult { //nolint:unused
 	result := credentialProbeResult{CredentialID: credID}
 
 	execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

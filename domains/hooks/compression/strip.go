@@ -149,7 +149,7 @@ func detectToolRounds(msgs []json.RawMessage) map[int]bool {
 // hasAnyToolCallsAfter is unused but kept for future use.
 // (Removed detectToolRounds "skip last round" optimization because
 // filterMessages already handles "keep last round" correctly.)
-func hasAnyToolCallsAfter(msgs []json.RawMessage, start int) bool {
+func hasAnyToolCallsAfter(msgs []json.RawMessage, start int) bool { //nolint:unused
 	for k := start; k < len(msgs); k++ {
 		if hasToolCalls(msgs[k]) {
 			return true

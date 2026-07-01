@@ -143,27 +143,27 @@ func (p *LarkCommandParser) FormatCommandResult(cmd *RemoteCommand) string {
 	}
 
 	// 基本信息
-	builder.WriteString(fmt.Sprintf("**指令ID**: %s\n", cmd.ID))
-	builder.WriteString(fmt.Sprintf("**类型**: %s\n", cmd.Type))
+	fmt.Fprintf(&builder, "**指令ID**: %s\n", cmd.ID)
+	fmt.Fprintf(&builder, "**类型**: %s\n", cmd.Type)
 	if cmd.SessionID != "" {
-		builder.WriteString(fmt.Sprintf("**会话ID**: %s\n", cmd.SessionID))
+		fmt.Fprintf(&builder, "**会话ID**: %s\n", cmd.SessionID)
 	}
-	builder.WriteString(fmt.Sprintf("**操作人**: %s\n", cmd.IssuerName))
-	builder.WriteString(fmt.Sprintf("**状态**: %s\n", cmd.Status))
+	fmt.Fprintf(&builder, "**操作人**: %s\n", cmd.IssuerName)
+	fmt.Fprintf(&builder, "**状态**: %s\n", cmd.Status)
 
 	// 执行时间
 	if cmd.ExecutedAt != nil && cmd.CompletedAt != nil {
 		duration := cmd.CompletedAt.Sub(*cmd.ExecutedAt)
-		builder.WriteString(fmt.Sprintf("**耗时**: %dms\n", duration.Milliseconds()))
+		fmt.Fprintf(&builder, "**耗时**: %dms\n", duration.Milliseconds())
 	}
 
 	// 结果或错误
 	if cmd.Status == CommandStatusFailed && cmd.Error != "" {
-		builder.WriteString(fmt.Sprintf("\n**错误**: %s\n", cmd.Error))
+		fmt.Fprintf(&builder, "\n**错误**: %s\n", cmd.Error)
 	} else if cmd.Result != nil && len(cmd.Result) > 0 {
 		builder.WriteString("\n**结果**:\n")
 		for key, value := range cmd.Result {
-			builder.WriteString(fmt.Sprintf("- %s: %v\n", key, value))
+			fmt.Fprintf(&builder, "- %s: %v\n", key, value)
 		}
 	}
 

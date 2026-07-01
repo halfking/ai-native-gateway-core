@@ -1035,9 +1035,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	return tx.Commit(ctx)
 }
 
-func intptr(v int) *int           { return &v }
-func floatptr(v float64) *float64 { return &v }
-func strptr(v string) *string     { return &v }
+func intptr(v int) *int           { return &v } //nolint:unused
+func floatptr(v float64) *float64 { return &v } //nolint:unused
+func strptr(v string) *string     { return &v } //nolint:unused
 func boolptr(v bool) *bool        { return &v }
 
 func nonEmpty(value, fallback string) string {

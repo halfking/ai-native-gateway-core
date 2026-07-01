@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-type requestIDContextKey struct{}
+type requestIDContextKey struct{} //nolint:unused
 
 type RequestIDMiddleware struct {
 	BaseMiddleware

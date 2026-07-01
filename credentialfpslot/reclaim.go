@@ -128,7 +128,7 @@ func (m *Manager) reclaimConfigFromManager() reclaimConfig {
 type reclaimLoop struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
-	mu      sync.Mutex
+	mu      sync.Mutex //nolint:unused
 	running bool
 }
 
@@ -154,7 +154,7 @@ func (m *Manager) reclaimLoopStart(parent context.Context, cfg reclaimConfig) {
 }
 
 // reclaimLoopStop signals the goroutine to exit and waits for it.
-func (m *Manager) reclaimLoopStop() {
+func (m *Manager) reclaimLoopStop() { //nolint:unused
 	m.reclaimLoopMu.Lock()
 	if !m.reclaimLoop.running {
 		m.reclaimLoopMu.Unlock()
@@ -228,7 +228,7 @@ func (m *Manager) reclaimIdleSlots(ctx context.Context, cfg reclaimConfig) (int,
 
 // parseSlotKey extracts (credentialID, slotIndex) from a key like
 // "llmgw:cred_fp_slot:123:4".
-func parseSlotKey(key string) (credID, slotIdx int, ok bool) {
+func parseSlotKey(key string) (credID, slotIdx int, ok bool) { //nolint:unused
 	const prefix = "llmgw:cred_fp_slot:"
 	if !strings.HasPrefix(key, prefix) {
 		return 0, 0, false

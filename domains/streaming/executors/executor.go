@@ -1643,7 +1643,7 @@ func (e *Executor) restoreCredentialState(ctx context.Context, credentialID int,
 	}
 }
 
-func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, detail string) {
+func (e *Executor) disableModelOffer(ctx context.Context, credentialID int, rawModel string, kind errorsx.ErrorKind, detail string) { //nolint:unused
 	// 2026-06-13: IsClientBug kinds (model_not_found, tool_call_id_mismatch,
 	// canceled, unsupported_feature) are NOT the credential's fault. Without
 	// this guard, a single upstream 404 (e.g. Zhipu/Aliyun intermittent
@@ -1820,7 +1820,7 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 // stickyCredentialID (L3 only) is kept for backward compatibility with
 // any external callers and is used when the multi-level inputs are
 // unavailable (e.g., model is empty).
-func (e *Executor) stickyCredentialIDMultiLevel(
+func (e *Executor) stickyCredentialIDMultiLevel( //nolint:unused
 	tenantID string,
 	appID, apiKeyID *int,
 	clientProfile string,
@@ -2669,7 +2669,7 @@ func injectStreamOptions(body []byte) []byte {
 	return buf.Bytes()
 }
 
-func executorMustMarshal(v any) json.RawMessage {
+func executorMustMarshal(v any) json.RawMessage { //nolint:unused
 	b, _ := json.Marshal(v)
 	return b
 }

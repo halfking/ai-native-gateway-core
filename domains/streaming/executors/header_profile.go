@@ -80,7 +80,7 @@ func (h *HeaderProfileCache) load(ctx context.Context, catalogCode, protocol str
 	return p
 }
 
-func (h *HeaderProfileCache) applyOutbound(reqHeaders map[string][]string, profile *headerProfile) {
+func (h *HeaderProfileCache) applyOutbound(reqHeaders map[string][]string, profile *headerProfile) { //nolint:unused
 	if profile == nil {
 		return
 	}
@@ -89,7 +89,7 @@ func (h *HeaderProfileCache) applyOutbound(reqHeaders map[string][]string, profi
 	}
 }
 
-func (h *HeaderProfileCache) stripInbound(src map[string][]string, profile *headerProfile) map[string][]string {
+func (h *HeaderProfileCache) stripInbound(src map[string][]string, profile *headerProfile) map[string][]string { //nolint:unused
 	if profile == nil || len(profile.StripPrefixes) == 0 {
 		return src
 	}
@@ -110,7 +110,7 @@ func (h *HeaderProfileCache) stripInbound(src map[string][]string, profile *head
 	return out
 }
 
-func (h *HeaderProfileCache) refreshLoop(stopCh <-chan struct{}) {
+func (h *HeaderProfileCache) refreshLoop(stopCh <-chan struct{}) { //nolint:unused
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {

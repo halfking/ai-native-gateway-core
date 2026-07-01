@@ -487,7 +487,7 @@ func applyToolsCaching(outboundBody []byte, state *SessionState) ([]byte, bool) 
 }
 
 // sha256Hash computes the SHA256 hash of the given data and returns it as a hex string.
-func sha256Hash(data any) string {
+func sha256Hash(data any) string { //nolint:unused
 	b, err := json.Marshal(data)
 	if err != nil {
 		return ""

@@ -1008,7 +1008,7 @@ type ProbeStateRow struct {
 	LastStateChangeRun   *int64     `json:"last_state_change_run"`
 }
 
-func truncate(s string, n int) string {
+func truncate(s string, n int) string { //nolint:unused
 	if len(s) <= n {
 		return s
 	}

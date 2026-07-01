@@ -13,7 +13,7 @@ import (
 // current linter only scans auth/middleware/relay directories for callers.
 // Keeping this helper here preserves the intended layering signal without
 // changing runtime behavior.
-func applyTenantAttrs(span trace.Span, tenantID, authMethod, userID string) {
+func applyTenantAttrs(span trace.Span, tenantID, authMethod, userID string) { //nolint:unused
 	if span == nil {
 		return
 	}

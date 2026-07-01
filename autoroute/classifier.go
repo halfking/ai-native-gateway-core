@@ -647,7 +647,7 @@ func rankSecondary(scores map[TaskType]float64, winner TaskType) []TaskScore {
 	return out
 }
 
-func buildReason(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool) string {
+func buildReason(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool) string { //nolint:unused
 	return buildReasonEx(winner, reasoningHits, codeHits, creativeHits, hasCodeBlock, "")
 }
 

@@ -16,7 +16,7 @@ func TestStreamAnthropicSSEToOpenAI_ChunkTimeout(t *testing.T) {
 
 }
 
-type stallAfterNReadsReader struct {
+type stallAfterNReadsReader struct { //nolint:unused
 	data       []byte
 	offset     int
 	readCount  int
@@ -24,7 +24,7 @@ type stallAfterNReadsReader struct {
 	ctx        context.Context
 }
 
-func (r *stallAfterNReadsReader) Read(p []byte) (n int, err error) {
+func (r *stallAfterNReadsReader) Read(p []byte) (n int, err error) { //nolint:unused
 	r.readCount++
 	if r.readCount > r.stallAfter {
 		<-r.ctx.Done()
@@ -67,13 +67,13 @@ func TestReadSSEEvent_ContextTimeout(t *testing.T) {
 		"The timeout detection happens at the goroutine level in StreamAnthropicSSEToOpenAI.")
 }
 
-type slowReader struct {
+type slowReader struct { //nolint:unused
 	data   []byte
 	offset int
 	delay  time.Duration
 }
 
-func (r *slowReader) Read(p []byte) (n int, err error) {
+func (r *slowReader) Read(p []byte) (n int, err error) { //nolint:unused
 	if r.offset >= len(r.data) {
 		return 0, io.EOF
 	}
@@ -87,7 +87,7 @@ func (r *slowReader) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
-func truncate(s string, maxLen int) string {
+func truncate(s string, maxLen int) string { //nolint:unused
 	if len(s) <= maxLen {
 		return s
 	}

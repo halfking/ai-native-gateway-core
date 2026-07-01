@@ -174,7 +174,7 @@ func TestRotationProducesBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open rotated file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
