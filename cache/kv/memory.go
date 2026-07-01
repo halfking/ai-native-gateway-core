@@ -8,12 +8,15 @@
 // eagerly (via SweepExpired). For long-running processes with very high
 // key churn, call SweepExpired periodically from a bg worker.
 //
-// Concurrency: All public methods are safe for concurrent use.
+// Concurrency: All public methods are safe for concurrent use. Stats
+// counters use sync/atomic to avoid data races exposed by -race detector
+// (Bug fix from B3 concurrent testing — see cache/delta/store_test.go).
 package kv
 
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,9 +30,16 @@ type entry struct {
 // Construction is via NewInMemoryStore; the zero value is NOT usable
 // (data map is nil).
 type InMemoryStore struct {
-	mu    sync.RWMutex
-	data  map[string]entry
-	stats Stats
+	mu   sync.RWMutex
+	data map[string]entry
+	// Stats counters are accessed via atomic ops; never read the struct
+	// field directly except through Stats() which does atomic loads.
+	lookups     int64
+	hits        int64
+	misses      int64
+	stores      int64
+	invalidates int64
+	expirations int64
 }
 
 // NewInMemoryStore creates an empty in-memory Store. Callers typically
@@ -49,19 +59,19 @@ func (s *InMemoryStore) Lookup(ctx context.Context, key string) ([]byte, bool, e
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	s.stats.Lookups++
+	atomic.AddInt64(&s.lookups, 1)
 
 	e, ok := s.data[key]
 	if !ok {
-		s.stats.Misses++
+		atomic.AddInt64(&s.misses, 1)
 		return nil, false, nil
 	}
 	if time.Now().After(e.expiresAt) {
-		s.stats.Expirations++
-		s.stats.Misses++
+		atomic.AddInt64(&s.expirations, 1)
+		atomic.AddInt64(&s.misses, 1)
 		return nil, false, nil
 	}
-	s.stats.Hits++
+	atomic.AddInt64(&s.hits, 1)
 	// Defensive copy: callers can mutate the returned slice without
 	// corrupting storage.
 	out := make([]byte, len(e.payload))
@@ -82,7 +92,7 @@ func (s *InMemoryStore) Store(ctx context.Context, key string, payload []byte, t
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stats.Stores++
+	atomic.AddInt64(&s.stores, 1)
 
 	// Defensive copy: caller may mutate the input after Store returns.
 	stored := make([]byte, len(payload))
@@ -101,16 +111,21 @@ func (s *InMemoryStore) Invalidate(ctx context.Context, key string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stats.Invalidates++
+	atomic.AddInt64(&s.invalidates, 1)
 	delete(s.data, key)
 	return nil
 }
 
 // Stats returns a snapshot of cumulative counters.
 func (s *InMemoryStore) Stats() Stats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.stats
+	return Stats{
+		Lookups:     atomic.LoadInt64(&s.lookups),
+		Hits:        atomic.LoadInt64(&s.hits),
+		Misses:      atomic.LoadInt64(&s.misses),
+		Stores:      atomic.LoadInt64(&s.stores),
+		Invalidates: atomic.LoadInt64(&s.invalidates),
+		Expirations: atomic.LoadInt64(&s.expirations),
+	}
 }
 
 // Size returns the number of stored entries (for telemetry / debugging).
