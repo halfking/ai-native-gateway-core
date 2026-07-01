@@ -442,10 +442,17 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		streamChunkErrorsPtr = &c.StreamChunkErrors
 	}
 
+	// 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+	// Always provide a value (0 for uninitialized/negative sentinel) so
+	// the INSERT/UPDATE never violates the NOT NULL constraint. This
+	// mirrors the fix in BuildSuccessEntry (handler.go:2212) and ensures
+	// both success and failure paths honour the schema contract.
 	var streamChunksSentPtr *int
-	if c.StreamChunksSent >= 0 {
-		streamChunksSentPtr = &c.StreamChunksSent
+	sent := c.StreamChunksSent
+	if sent < 0 {
+		sent = 0
 	}
+	streamChunksSentPtr = &sent
 
 	// 2026-07-01: 序列化附件元数据为 JSONB
 	var attachmentsJSON json.RawMessage
