@@ -24,6 +24,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -337,62 +338,24 @@ type ToolRegistryService interface {
 	ExpandToolIDs(ctx context.Context, tenantID string, toolIDs []string) []string
 }
 
-// ResponseInterceptor intercepts LLM responses before forwarding to clients.
-// Enables automatic handoff and goal-mode continuous execution.
-type ResponseInterceptor interface {
-	InterceptNonStream(ctx context.Context, req *ResponseInterceptRequest) (*ResponseInterceptResult, error)
-	InterceptStreamChunk(ctx context.Context, chunk []byte, meta *ResponseStreamMeta) (*ResponseChunkResult, error)
-	InterceptStreamEnd(ctx context.Context, meta *ResponseStreamMeta) (*ResponseEndResult, error)
-}
+// ResponseInterceptor is the interface for response interception hooks.
+// Alias to domains/hooks/response.ResponseInterceptor for type unification.
+type ResponseInterceptor = response.ResponseInterceptor
 
-// ResponseInterceptRequest contains context for response interception.
-type ResponseInterceptRequest struct {
-	SessionID     string
-	RequestID     string
-	TenantID      string
-	ClientModel   string
-	ResponseBody  []byte
-	TokensUsed    int
-	ContextWindow int
-	MessageCount  int
-	FinishReason  string
-	IsStreaming   bool
-}
+// ResponseInterceptRequest is an alias to response.InterceptRequest.
+type ResponseInterceptRequest = response.InterceptRequest
 
-// ResponseInterceptResult contains the outcome of response interception.
-type ResponseInterceptResult struct {
-	ShouldBlock    bool
-	ModifiedBody   []byte
-	InjectFollowUp []byte
-	Action         string
-	Metadata       map[string]interface{}
-}
+// ResponseInterceptResult is an alias to response.InterceptResult.
+type ResponseInterceptResult = response.InterceptResult
 
-// ResponseStreamMeta contains metadata for stream interception.
-type ResponseStreamMeta struct {
-	SessionID     string
-	RequestID     string
-	TenantID      string
-	ClientModel   string
-	ContextWindow int
-	MessageCount  int
-	TokensUsed    int
-	ChunkIndex    int
-}
+// ResponseStreamMeta is an alias to response.StreamMeta.
+type ResponseStreamMeta = response.StreamMeta
 
-// ResponseChunkResult contains the outcome of stream chunk interception.
-type ResponseChunkResult struct {
-	ShouldBlock   bool
-	ModifiedChunk []byte
-	InjectAfter   []byte
-}
+// ResponseChunkResult is an alias to response.ChunkResult.
+type ResponseChunkResult = response.ChunkResult
 
-// ResponseEndResult contains the outcome of stream end interception.
-type ResponseEndResult struct {
-	InjectFollowUp []byte
-	Action         string
-	Metadata       map[string]interface{}
-}
+// ResponseEndResult is an alias to response.EndResult.
+type ResponseEndResult = response.EndResult
 
 func NewChatHandler(cm *credential.Manager, l *credential.Limiter, matrix *transformation.Matrix, pools *pool.PoolManager, resolver *resolve.Resolver, auditor audit.Sink) *ChatHandler {
 	if auditor == nil {
