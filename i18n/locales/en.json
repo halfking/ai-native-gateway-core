@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "Missing API key"
+  },
+  "invalid_key": {
+    "other": "Invalid or expired API key"
+  },
+  "missing_auth": {
+    "other": "Missing or malformed Authorization header"
+  },
+  "rate_limit_exceeded": {
+    "other": "Rate limit exceeded"
+  },
+  "budget_exhausted": {
+    "other": "Budget exhausted. Contact admin to top up."
+  },
+  "insufficient_credits": {
+    "other": "Insufficient credits. Please subscribe or purchase a top-up package."
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "session not owned by this API key"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "failed to assign session id"
+  },
+  "blocked": {
+    "other": "Request blocked by security policy: {{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "No available provider for model '{{.Model}}'"
+  },
+  "meta_tool_error": {
+    "other": "Meta-tool processing failed"
+  },
+  "provider_error": {
+    "other": "upstream request failed"
+  },
+  "internal_error": {
+    "other": "Internal server error"
+  }
+}

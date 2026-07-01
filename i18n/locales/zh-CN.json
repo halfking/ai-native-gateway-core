@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "缺少 API 密钥"
+  },
+  "invalid_key": {
+    "other": "API 密钥无效或已过期"
+  },
+  "missing_auth": {
+    "other": "缺少或格式错误的 Authorization 请求头"
+  },
+  "rate_limit_exceeded": {
+    "other": "请求频率超出限制"
+  },
+  "budget_exhausted": {
+    "other": "预算已耗尽，请联系管理员充值。"
+  },
+  "insufficient_credits": {
+    "other": "额度不足，请订阅或购买充值包。"
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "该会话不属于此 API 密钥"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "分配会话 ID 失败"
+  },
+  "blocked": {
+    "other": "请求被安全策略拦截：{{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "没有可用于模型“{{.Model}}”的供应商"
+  },
+  "meta_tool_error": {
+    "other": "元工具处理失败"
+  },
+  "provider_error": {
+    "other": "上游请求失败"
+  },
+  "internal_error": {
+    "other": "内部服务器错误"
+  }
+}

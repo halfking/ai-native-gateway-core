@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,33 +64,93 @@ type AttachmentMetadata struct {
 
 // Storage 附件文件系统存储。零值不可用，必须通过 NewStorage 构造。
 type Storage struct {
-	// BaseDir 存储根目录，绝对路径
-	BaseDir string
-	// MaxSize 单文件最大字节数（解码后），0 表示用 DefaultMaxSize
+	// baseDir 存储根目录，绝对路径。通过 BaseDir()/SetBaseDir() 访问，
+	// 受 dirMu 保护以支持运行时热切换（迁移到新目录后无需重启）。
+	baseDir string
+	// dirMu 保护 baseDir 与 mkdirCache 的并发读写。所有 baseDir 的读取
+	// 走 BaseDir()（读锁），迁移时 SetBaseDir() 持写锁原子替换。
+	dirMu sync.RWMutex
+	// MaxSize 单文件最大字节数（解码后），0 表示用 DefaultMaxSize。
+	// 该值在迁移时不变，无需加锁。
 	MaxSize int64
-	// mkdirCache 缓存已创建的目录，避免重复 MkdirAll 系统调用
+	// mkdirCache 缓存已创建的目录，避免重复 MkdirAll 系统调用。
+	// 注意：SetBaseDir 切换目录后必须清空此缓存，否则 ensureDir 会误以为
+	// 新目录下的子目录已存在而跳过创建。
 	mkdirCache sync.Map // map[string]bool
 }
 
 // NewStorage 构造一个 Storage。baseDir 为空时默认 ./data/attachments。
 // 如果 baseDir 不存在会自动创建（0755）。
 func NewStorage(baseDir string) (*Storage, error) {
-	if baseDir == "" {
-		baseDir = "./data/attachments"
+	s := &Storage{MaxSize: DefaultMaxSize}
+	if err := s.SetBaseDir(baseDir); err != nil {
+		return nil, err
 	}
-	// 转为绝对路径，避免工作目录漂移导致找不到文件
-	abs, err := filepath.Abs(baseDir)
+	return s, nil
+}
+
+// BaseDir 返回当前存储根目录（绝对路径）。读锁，并发安全。
+func (s *Storage) BaseDir() string {
+	s.dirMu.RLock()
+	defer s.dirMu.RUnlock()
+	return s.baseDir
+}
+
+// SetBaseDir 热切换存储根目录。dir 为空时默认 ./data/attachments。
+// 会 MkdirAll 新目录、清空 mkdirCache（避免对旧目录的缓存误判新目录）。
+// 写锁，与并发的 SaveBase64Image/Load 互斥。
+func (s *Storage) SetBaseDir(dir string) error {
+	if s == nil {
+		return errors.New("attachments: storage is nil")
+	}
+	if dir == "" {
+		dir = "./data/attachments"
+	}
+	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, fmt.Errorf("attachments: resolve base dir %q: %w", baseDir, err)
+		return fmt.Errorf("attachments: resolve base dir %q: %w", dir, err)
 	}
-	// 预创建根目录，提前暴露权限/路径问题
 	if err := os.MkdirAll(abs, 0755); err != nil {
-		return nil, fmt.Errorf("attachments: create base dir %q: %w", abs, err)
+		return fmt.Errorf("attachments: create base dir %q: %w", abs, err)
 	}
-	return &Storage{
-		BaseDir: abs,
-		MaxSize: DefaultMaxSize,
-	}, nil
+	s.dirMu.Lock()
+	s.baseDir = abs
+	// 切换目录后旧缓存失效：新目录下尚未创建 YYYY/MM/req_xxx 子目录，
+	// 若不清空，ensureDir 会误判已创建而跳过 MkdirAll。
+	s.mkdirCache.Range(func(k, _ any) bool { s.mkdirCache.Delete(k); return true })
+	s.dirMu.Unlock()
+	return nil
+}
+
+// Summary 统计当前存储目录的文件数、总字节数与最旧文件修改时间。
+// 供管理端「文件系统占用」与迁移前后校验复用（收口重复的 WalkDir 逻辑）。
+func (s *Storage) Summary() (fileCount int, totalBytes int64, oldestMod *time.Time, err error) {
+	if s == nil {
+		return 0, 0, nil, errors.New("attachments: storage is nil")
+	}
+	base := s.BaseDir()
+	err = filepath.WalkDir(base, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil // 忽略无法访问的子目录
+		}
+		if d.IsDir() {
+			return nil
+		}
+		fileCount++
+		info, infoErr := d.Info()
+		if infoErr == nil {
+			totalBytes += info.Size()
+			mt := info.ModTime()
+			if oldestMod == nil || mt.Before(*oldestMod) {
+				oldestMod = &mt
+			}
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return 0, 0, nil, err
+	}
+	return fileCount, totalBytes, oldestMod, nil
 }
 
 // SaveResult 是 SaveBase64Image 的返回值。
@@ -148,7 +209,9 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	// 流式解码：边解码边计算哈希，同时写入临时文件。
 	// 这样无论文件多大，内存占用恒定（一个 chunk buffer）。
 	ext := mimeTypeToExt(contentType)
-	tmpPath := filepath.Join(s.BaseDir, relDir, ".tmp_"+randomSuffix())
+	// 在整个保存流程内固定 baseDir 快照，避免迁移切换目录中途产生跨目录路径。
+	baseDir := s.BaseDir()
+	tmpPath := filepath.Join(baseDir, relDir, ".tmp_"+randomSuffix())
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("attachments: create tmp file: %w", err)
@@ -182,7 +245,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	fileName := hashHex[:16] + ext
 	relPath := filepath.Join(relDir, fileName)
-	fullPath := filepath.Join(s.BaseDir, relPath)
+	fullPath := filepath.Join(baseDir, relPath)
 
 	// 去重：目标文件已存在则直接删除临时文件
 	deduped := false
@@ -259,11 +322,13 @@ func (s *Storage) FullPath(relPath string) (string, error) {
 }
 
 // safeJoin 将相对路径安全拼接到 BaseDir，防止目录遍历（../../etc/passwd）。
+// 每次调用快照当前 BaseDir，确保迁移切换目录后立即生效。
 func (s *Storage) safeJoin(relPath string) (string, error) {
+	base := s.BaseDir()
 	cleaned := filepath.Clean("/" + relPath) // 强制为根绝对路径，消除 ..
-	full := filepath.Join(s.BaseDir, cleaned)
+	full := filepath.Join(base, cleaned)
 	// 二次校验：结果必须在 BaseDir 之内
-	absBase := filepath.Clean(s.BaseDir)
+	absBase := filepath.Clean(base)
 	if !strings.HasPrefix(filepath.Clean(full)+string(filepath.Separator), absBase+string(filepath.Separator)) &&
 		filepath.Clean(full) != absBase {
 		return "", fmt.Errorf("attachments: path escapes base dir: %q", relPath)
@@ -276,7 +341,7 @@ func (s *Storage) ensureDir(relDir string) error {
 	if _, ok := s.mkdirCache.Load(relDir); ok {
 		return nil
 	}
-	full := filepath.Join(s.BaseDir, relDir)
+	full := filepath.Join(s.BaseDir(), relDir)
 	if err := os.MkdirAll(full, 0755); err != nil {
 		return err
 	}

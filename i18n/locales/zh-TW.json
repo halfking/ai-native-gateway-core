@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "缺少 API 金鑰"
+  },
+  "invalid_key": {
+    "other": "API 金鑰無效或已過期"
+  },
+  "missing_auth": {
+    "other": "缺少或格式錯誤的 Authorization 標頭"
+  },
+  "rate_limit_exceeded": {
+    "other": "請求頻率超出限制"
+  },
+  "budget_exhausted": {
+    "other": "預算已耗盡，請聯絡管理員儲值。"
+  },
+  "insufficient_credits": {
+    "other": "額度不足，請訂閱或購買儲值包。"
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "該工作階段不屬於此 API 金鑰"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "指派工作階段 ID 失敗"
+  },
+  "blocked": {
+    "other": "請求被安全策略封鎖：{{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "沒有可用於模型「{{.Model}}」的供應商"
+  },
+  "meta_tool_error": {
+    "other": "元工具處理失敗"
+  },
+  "provider_error": {
+    "other": "上游請求失敗"
+  },
+  "internal_error": {
+    "other": "內部伺服器錯誤"
+  }
+}

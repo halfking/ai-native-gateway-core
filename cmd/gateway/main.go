@@ -877,7 +877,7 @@ func main() {
 		attachmentExtractor := attachments.NewExtractor(attachmentStorage)
 		chatHandler.SetAttachmentExtractor(attachmentExtractor)
 		slog.Info("attachment extractor enabled",
-			"dir", attachmentStorage.BaseDir,
+			"dir", attachmentStorage.BaseDir(),
 			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
 	}
 
@@ -938,7 +938,7 @@ func main() {
 		if attachmentStorage != nil {
 			adminHandler.SetAttachmentHandler(attachments.NewHandler(attachmentStorage, dbConn.Pool()))
 			slog.Info("attachment download/list handler wired",
-				"dir", attachmentStorage.BaseDir)
+				"dir", attachmentStorage.BaseDir())
 		}
 		chatHandler.SetFormatAnomalyRecorder(streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool()))
 		slog.Info("response format anomaly recorder wired")
@@ -1882,6 +1882,7 @@ func main() {
 	handler := middleware.NewBuilder().
 		Add(middleware.NewRecoveryMiddleware()).
 		Add(middleware.NewRequestIDMiddleware()).
+		Add(middleware.NewLocaleMiddleware(cfg.DefaultLanguage)). // i18n: before auth so auth errors localize too
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).

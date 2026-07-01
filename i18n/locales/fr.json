@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "Clé API manquante"
+  },
+  "invalid_key": {
+    "other": "Clé API invalide ou expirée"
+  },
+  "missing_auth": {
+    "other": "En-tête Authorization manquant ou mal formé"
+  },
+  "rate_limit_exceeded": {
+    "other": "Limite de débit dépassée"
+  },
+  "budget_exhausted": {
+    "other": "Budget épuisé. Contactez l'administrateur pour recharger."
+  },
+  "insufficient_credits": {
+    "other": "Crédits insuffisants. Veuillez vous abonner ou acheter un forfait de recharge."
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "cette session n'appartient pas à cette clé API"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "échec de l'attribution de l'identifiant de session"
+  },
+  "blocked": {
+    "other": "Demande bloquée par la politique de sécurité : {{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "Aucun fournisseur disponible pour le modèle « {{.Model}} »"
+  },
+  "meta_tool_error": {
+    "other": "Échec du traitement du méta-outil"
+  },
+  "provider_error": {
+    "other": "échec de la requête en amont"
+  },
+  "internal_error": {
+    "other": "Erreur interne du serveur"
+  }
+}
