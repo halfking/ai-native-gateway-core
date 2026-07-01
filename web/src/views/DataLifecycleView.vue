@@ -27,6 +27,7 @@
     <StorageOverview v-show="activeTab === 'storage'" ref="storageRef" />
     <BlobManager v-show="activeTab === 'blobs'" />
     <AttachmentManager v-show="activeTab === 'attachments'" />
+    <FilesystemMaintenance v-show="activeTab === 'filesystem'" ref="filesystemRef" />
     <div v-show="activeTab === 'logs'" class="legacy-panel">
       <!-- 老的请求日志管理面板（保留） -->
       <div class="stats-row" v-if="stats">
@@ -197,15 +198,17 @@ import {
 import StorageOverview from './data-lifecycle/StorageOverview.vue'
 import BlobManager from './data-lifecycle/BlobManager.vue'
 import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
+import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
 
 Chart.register(...registerables)
 
-type TabKey = 'storage' | 'blobs' | 'attachments' | 'logs'
+type TabKey = 'storage' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
 
 const tabs: { key: TabKey; label: string; badge?: string }[] = [
   { key: 'storage', label: '存储总览' },
   { key: 'blobs', label: '大字段/Blob' },
   { key: 'attachments', label: '会话附件' },
+  { key: 'filesystem', label: '文件系统维护' },
   { key: 'logs', label: '请求日志（分区/归档）' },
 ]
 
@@ -216,6 +219,7 @@ const previewResult = ref<any>(null)
 const isLoading = ref(false)
 const distributionChart = ref<HTMLCanvasElement | null>(null)
 const storageRef = ref<any>(null)
+const filesystemRef = ref<any>(null)
 let chartInstance: Chart | null = null
 
 function formatNumber(n: number): string { return n.toLocaleString('zh-CN') }
@@ -244,6 +248,7 @@ async function refreshAll() {
       loadStats(),
       storageRef.value?.load?.(),
       storageRef.value?.loadTables?.(),
+      filesystemRef.value?.load?.(),
     ])
   } finally {
     isLoading.value = false
