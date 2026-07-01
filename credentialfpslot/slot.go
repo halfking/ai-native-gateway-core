@@ -107,7 +107,7 @@ func (c Config) resolveActiveGateSeconds() int {
 // resolveReclaimIdleSeconds returns the configured reclaim idle
 // threshold, falling back to DefaultReclaimIdleSeconds for
 // uninitialised / zero values.
-func (c Config) resolveReclaimIdleSeconds() int {
+func (c Config) resolveReclaimIdleSeconds() int { //nolint:unused
 	if c.ReclaimIdleSeconds <= 0 {
 		return DefaultReclaimIdleSeconds
 	}
@@ -118,7 +118,7 @@ func (c Config) resolveReclaimIdleSeconds() int {
 type Manager struct {
 	cfg    Config
 	client *redis.Client
-	mu     sync.Mutex
+	mu     sync.Mutex //nolint:unused
 
 	// reclaimLoop / reclaimLoopMu track the background goroutine that
 	// reclaims idle slots. See reclaim.go for the implementation.
@@ -187,7 +187,7 @@ func (m *Manager) DefaultLimit() int {
 // slotTTLSeconds returns the slot TTL. Hard-coded to 30 min; production
 // uses Redis-side TTL so the Go value is only relevant for the
 // in-memory fallback path.
-func (m *Manager) slotTTLSeconds() int {
+func (m *Manager) slotTTLSeconds() int { //nolint:unused
 	return slotTTLSeconds
 }
 
@@ -594,7 +594,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder}, true
 }
 
-func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool {
+func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool { //nolint:unused
 	acquired, err := acquireSlotScript.Run(ctx, m.client,
 		[]string{slotRedisKey(credentialID, slot), ""},
 		holder, slotTTLSeconds, 0, slot, m.cfg.resolveActiveGateSeconds(),

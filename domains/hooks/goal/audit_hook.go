@@ -91,7 +91,7 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 	}
 
 	// Check if already audited
-	if session.AuditResult != nil && len(session.AuditResult) > 0 {
+	if len(session.AuditResult) > 0 {
 		slog.Debug("session_already_audited", "session_id", req.SessionID)
 		return nil, nil
 	}

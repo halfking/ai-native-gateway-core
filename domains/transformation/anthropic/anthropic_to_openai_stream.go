@@ -579,7 +579,7 @@ func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) 
 
 // isKnownAnthropicEventType returns true if t is one of the Anthropic
 // Messages streaming event types.
-func isKnownAnthropicEventType(t string) bool {
+func isKnownAnthropicEventType(t string) bool { //nolint:unused
 	switch t {
 	case "message_start",
 		"message_delta",

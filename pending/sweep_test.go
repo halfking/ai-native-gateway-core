@@ -1,6 +1,7 @@
 package pending
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -40,7 +41,7 @@ func TestSplitEntryKey_Valid(t *testing.T) {
 // store is unavailable rather than panic.
 func TestListStaleInProgress_NilStore(t *testing.T) {
 	s := NewStore(nil, 0)
-	_, err := s.ListStaleInProgress(nil, time.Now().Add(-10*time.Minute), 100)
+	_, err := s.ListStaleInProgress(context.TODO(), time.Now().Add(-10*time.Minute), 100)
 	if err != ErrUnavailable {
 		t.Errorf("got %v, want ErrUnavailable", err)
 	}

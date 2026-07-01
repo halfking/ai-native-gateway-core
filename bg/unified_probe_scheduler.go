@@ -472,7 +472,7 @@ func (s *UnifiedProbeScheduler) markFailing(ctx context.Context, credID int64, r
 }
 
 // markSuspicious marks a model as suspicious (for external triggers)
-func (s *UnifiedProbeScheduler) markSuspicious(ctx context.Context, credID int64, rawModel string, reason string) {
+func (s *UnifiedProbeScheduler) markSuspicious(ctx context.Context, credID int64, rawModel string, reason string) { //nolint:unused
 	_, err := s.db.Exec(ctx, `SELECT unified_probe_mark_suspicious($1, $2, $3)`,
 		credID, rawModel, reason)
 	if err != nil {

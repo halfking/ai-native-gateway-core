@@ -60,7 +60,7 @@ func NewPGStore(pool *pgxpool.Pool) Store {
 
 // newPGStoreWithQuerier is the test seam. Production code MUST use
 // NewPGStore; tests inject a fakeQuerier via this constructor.
-func newPGStoreWithQuerier(q pgxQuerier) *pgStore {
+func newPGStoreWithQuerier(q pgxQuerier) *pgStore { //nolint:unused
 	return &pgStore{q: q}
 }
 

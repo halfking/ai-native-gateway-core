@@ -114,7 +114,7 @@ func splitSessionFieldList(raw string) []string {
 	return out
 }
 
-func extractSessionIDFromRequest(r *http.Request, body []byte) string {
+func extractSessionIDFromRequest(r *http.Request, body []byte) string { //nolint:unused
 	if sessionID := extractSessionIDFromHeaders(r); sessionID != "" {
 		return sessionID
 	}

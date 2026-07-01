@@ -39,7 +39,7 @@ func NewWriter(pool *pgxpool.Pool) *Writer {
 
 // newWriterWithDB builds a Writer against an arbitrary DBQuerier. Used by
 // tests (pgxmock) and by callers that already have a Tx-bound DBQuerier.
-func newWriterWithDB(db DBQuerier) *Writer {
+func newWriterWithDB(db DBQuerier) *Writer { //nolint:unused
 	return &Writer{dbPool: db}
 }
 

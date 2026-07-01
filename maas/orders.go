@@ -300,7 +300,7 @@ type scannable interface {
 	Scan(dest ...any) error
 }
 
-func scanOrderRow(rows scannable) (BillingOrder, error) {
+func scanOrderRow(rows scannable) (BillingOrder, error) { //nolint:unused
 	return scanOrderFromRow(rows)
 }
 

@@ -98,7 +98,7 @@ func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string,
 	return result
 }
 
-type toolUseCapableProvider struct {
+type toolUseCapableProvider struct { //nolint:unused
 	code string
 }
 
