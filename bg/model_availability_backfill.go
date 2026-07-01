@@ -121,13 +121,13 @@ func (w *AvailabilityCacheBackfill) run(ctx context.Context) {
 	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
-	w.RunOnce(ctx)
+	_, _ = w.RunOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.RunOnce(ctx)
+			_, _ = w.RunOnce(ctx)
 		}
 	}
 }

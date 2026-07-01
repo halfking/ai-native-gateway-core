@@ -153,7 +153,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 	archiveDir := filepath.Join(w.LogDir, "archive")
 	if dirExistsBG(archiveDir) {
 		deleteCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-		filepath.WalkDir(archiveDir, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(archiveDir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
@@ -176,7 +176,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 		}
 	}
 	backupCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-	filepath.WalkDir(w.LogDir, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(w.LogDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -217,7 +217,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, quot
 		size  int64
 	}
 	var items []fileItem
-	filepath.WalkDir(w.AttachmentDir, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(w.AttachmentDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
