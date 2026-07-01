@@ -262,7 +262,7 @@ func (h *SessionAnalyticsHandler) ListSessions(c echo.Context) error {
 	// 查询总数
 	countQuery := `SELECT COUNT(*) FROM session_summaries WHERE tenant_id = $1`
 	var total int
-	h.db.QueryRowContext(c.Request().Context(), countQuery, tenantID).Scan(&total)
+	_ = h.db.QueryRowContext(c.Request().Context(), countQuery, tenantID).Scan(&total)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"sessions":  sessions,
