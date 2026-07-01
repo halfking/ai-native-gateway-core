@@ -149,7 +149,7 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	}
 
 	br := bufioReader(upstreamResp.Body)
-	defer upstreamResp.Body.Close()
+	defer func() { _ = upstreamResp.Body.Close() }()
 
 	// pendingEvent 跟踪 Anthropic SSE 的 event: 行类型，等待对应的 data: 行
 	pendingEvent := ""
@@ -175,7 +175,7 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	// 发送 [DONE]（仅 OpenAI Chat Completions 客户端需要；Responses API
 	// 通过 response.completed 显式终止，不需要 [DONE] 哨兵）
 	if tc.ClientProtocol == "openai-chat" || tc.ClientProtocol == "openai" {
-		fmt.Fprintf(tc.W, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(tc.W, "data: [DONE]\n\n")
 		flusher.Flush()
 	}
 
