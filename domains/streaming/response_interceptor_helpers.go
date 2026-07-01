@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation
@@ -40,16 +41,24 @@ func FollowUpDepthFromContext(ctx context.Context) int {
 }
 
 // sessionFollowUpCounts tracks per-session follow-up invocations.
-// sync.Map is used for safe concurrent access.
-var sessionFollowUpCounts sync.Map // map[string]int
+// Stores *atomic.Int64 per sessionID so Add() is lock-free and race-free.
+var sessionFollowUpCounts sync.Map // map[string]*atomic.Int64
 
-// recordSessionFollowUp increments the per-session counter and returns true if
-// the new count is within MaxFollowUpsPerSession.
+// recordSessionFollowUp atomically increments the per-session counter.
+// Returns true if the new count is within MaxFollowUpsPerSession.
+//
+// Race-free: LoadOrStore guarantees the same *atomic.Int64 pointer for a
+// given sessionID, and atomic.Int64.Add is a single atomic RMW.
 func recordSessionFollowUp(sessionID string) bool {
-	v, _ := sessionFollowUpCounts.LoadOrStore(sessionID, 0)
-	count := v.(int) + 1
-	sessionFollowUpCounts.Store(sessionID, count)
-	return count <= MaxFollowUpsPerSession
+	actual, _ := sessionFollowUpCounts.LoadOrStore(sessionID, new(atomic.Int64))
+	counter := actual.(*atomic.Int64)
+	return counter.Add(1) <= int64(MaxFollowUpsPerSession)
+}
+
+// cleanupSessionFollowUps removes the counter for a session, freeing memory.
+// Called when a session ends to prevent unbounded map growth.
+func cleanupSessionFollowUps(sessionID string) {
+	sessionFollowUpCounts.Delete(sessionID)
 }
 
 // injectFollowUpRequest asynchronously sends a follow-up request to the LLM.
