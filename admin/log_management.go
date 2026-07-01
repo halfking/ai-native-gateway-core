@@ -49,25 +49,25 @@ type LogConfigResponse struct {
 	DeleteDays  int  `json:"delete_days"`  // 删除天数
 
 	// 运行时状态
-	LogFile      string `json:"log_file"`           // 当前日志文件路径
-	LogDir       string `json:"log_dir"`            // 日志目录
-	Enabled      bool   `json:"enabled"`            // 文件日志是否启用
-	HotReloadable bool  `json:"hot_reloadable"`     // 配置是否热加载生效
-	ConfigSource string `json:"config_source"`      // "db" | "env" | "default"
+	LogFile       string `json:"log_file"`       // 当前日志文件路径
+	LogDir        string `json:"log_dir"`        // 日志目录
+	Enabled       bool   `json:"enabled"`        // 文件日志是否启用
+	HotReloadable bool   `json:"hot_reloadable"` // 配置是否热加载生效
+	ConfigSource  string `json:"config_source"`  // "db" | "env" | "default"
 }
 
 // LogStatsResponse 日志目录占用统计
 type LogStatsResponse struct {
-	LogDir        string  `json:"log_dir"`
-	Exists        bool    `json:"exists"`
-	TotalFiles    int     `json:"total_files"`
-	TotalSizeBytes int64  `json:"total_size_bytes"`
-	TotalSizeHuman string `json:"total_size_human"`
-	ArchiveFiles  int     `json:"archive_files"`   // archive/ 子目录文件数
-	ArchiveSize   int64   `json:"archive_size"`    // archive/ 大小
-	OldestMtime   *time.Time `json:"oldest_mtime"`
-	NewestMtime   *time.Time `json:"newest_mtime"`
-	DiskUsagePct  float64 `json:"disk_usage_pct"`  // 日志占所在磁盘的%
+	LogDir         string     `json:"log_dir"`
+	Exists         bool       `json:"exists"`
+	TotalFiles     int        `json:"total_files"`
+	TotalSizeBytes int64      `json:"total_size_bytes"`
+	TotalSizeHuman string     `json:"total_size_human"`
+	ArchiveFiles   int        `json:"archive_files"` // archive/ 子目录文件数
+	ArchiveSize    int64      `json:"archive_size"`  // archive/ 大小
+	OldestMtime    *time.Time `json:"oldest_mtime"`
+	NewestMtime    *time.Time `json:"newest_mtime"`
+	DiskUsagePct   float64    `json:"disk_usage_pct"` // 日志占所在磁盘的%
 }
 
 // LogFilesListResponse 日志文件列表
@@ -98,13 +98,13 @@ type LogCleanupRequest struct {
 
 // LogOpResponse 归档/删除操作结果
 type LogOpResponse struct {
-	DryRun       bool     `json:"dry_run"`
-	FilesAffected int     `json:"files_affected"`
-	BytesFreed   int64    `json:"bytes_freed"`
-	BytesFreedHuman string `json:"bytes_freed_human"`
-	AffectedPaths []string `json:"affected_paths,omitempty"`
-	ArchiveFile  string   `json:"archive_file,omitempty"` // 归档产生的 tar.gz
-	Error        string   `json:"error,omitempty"`
+	DryRun          bool     `json:"dry_run"`
+	FilesAffected   int      `json:"files_affected"`
+	BytesFreed      int64    `json:"bytes_freed"`
+	BytesFreedHuman string   `json:"bytes_freed_human"`
+	AffectedPaths   []string `json:"affected_paths,omitempty"`
+	ArchiveFile     string   `json:"archive_file,omitempty"` // 归档产生的 tar.gz
+	Error           string   `json:"error,omitempty"`
 }
 
 // ── 配置 ──────────────────────────────────────────────────────────
@@ -124,16 +124,16 @@ func (h *Handler) handleLogConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) logConfigGet(w http.ResponseWriter, r *http.Request) {
 	cur := logging.ActiveConfig()
 	resp := LogConfigResponse{
-		MaxSizeMB:    cur.MaxSizeMB,
-		MaxBackups:   cur.MaxBackups,
-		MaxAgeDays:   cur.MaxAgeDays,
-		Compress:     cur.Compress,
-		LogFile:      cur.File,
-		Enabled:      cur.File != "",
+		MaxSizeMB:     cur.MaxSizeMB,
+		MaxBackups:    cur.MaxBackups,
+		MaxAgeDays:    cur.MaxAgeDays,
+		Compress:      cur.Compress,
+		LogFile:       cur.File,
+		Enabled:       cur.File != "",
 		HotReloadable: cur.File != "",
-		ConfigSource: "default",
-		ArchiveDays:  7,
-		DeleteDays:   30,
+		ConfigSource:  "default",
+		ArchiveDays:   7,
+		DeleteDays:    30,
 	}
 	if cur.File != "" {
 		resp.LogDir = filepath.Dir(cur.File)
@@ -526,10 +526,10 @@ func (h *Handler) handleLogArchiveList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type archiveItem struct {
-		Name       string    `json:"name"`
-		SizeBytes  int64     `json:"size_bytes"`
-		SizeHuman  string    `json:"size_human"`
-		ModTime    time.Time `json:"mod_time"`
+		Name      string    `json:"name"`
+		SizeBytes int64     `json:"size_bytes"`
+		SizeHuman string    `json:"size_human"`
+		ModTime   time.Time `json:"mod_time"`
 	}
 	items := make([]archiveItem, 0)
 	for _, e := range entries {

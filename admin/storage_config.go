@@ -41,11 +41,11 @@ type StorageConfigResponse struct {
 	AutoCleanupThreshold  int    `json:"auto_cleanup_threshold"`  // 触发水位
 
 	// 运行时实际状态
-	EffectiveDir     string  `json:"effective_dir"`       // 当前生效目录（绝对路径）
-	AttachmentDirEnv string  `json:"attachment_dir_env"`  // 环境变量原值
-	NeedsRestart     bool    `json:"needs_restart"`       // 是否有待重启生效的改动
-	CurrentDiskUsage float64 `json:"current_disk_usage"`  // 当前磁盘占用%
-	ConfigSource     string  `json:"config_source"`       // "db" | "env" | "default"
+	EffectiveDir     string  `json:"effective_dir"`      // 当前生效目录（绝对路径）
+	AttachmentDirEnv string  `json:"attachment_dir_env"` // 环境变量原值
+	NeedsRestart     bool    `json:"needs_restart"`      // 是否有待重启生效的改动
+	CurrentDiskUsage float64 `json:"current_disk_usage"` // 当前磁盘占用%
+	ConfigSource     string  `json:"config_source"`      // "db" | "env" | "default"
 }
 
 // StorageConfigUpdateRequest PUT 请求体（所有字段可选，nil=不改）
