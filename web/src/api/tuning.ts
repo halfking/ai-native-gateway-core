@@ -568,6 +568,163 @@ export function attachmentFilesystemCleanup(body: AttachmentFilesystemCleanupReq
   return req<AttachmentFilesystemCleanupResponse>('POST', '/api/admin/attachments/filesystem/cleanup', body)
 }
 
+// ── Storage Config (2026-07-02) ───────────────────────────────────────
+// 附件存储配置：目录/保留策略/水位/自动清理
+
+export interface StorageConfig {
+  attachment_dir_override: string
+  ttl_days: number
+  max_file_size_mb: number
+  disk_quota_percent: number
+  auto_cleanup_enabled: boolean
+  auto_cleanup_threshold: number
+  effective_dir: string
+  attachment_dir_env: string
+  needs_restart: boolean
+  current_disk_usage: number
+  config_source: string
+}
+
+export interface StorageConfigUpdate {
+  attachment_dir_override?: string
+  ttl_days?: number
+  max_file_size_mb?: number
+  disk_quota_percent?: number
+  auto_cleanup_enabled?: boolean
+  auto_cleanup_threshold?: number
+}
+
+export interface StorageTestPathResult {
+  path: string
+  abs_path: string
+  exists: boolean
+  can_create: boolean
+  writable: boolean
+  disk_total_bytes: number
+  disk_free_bytes: number
+  disk_usage_pct: number
+  ok: boolean
+  message: string
+}
+
+export function storageConfigGet() {
+  return req<StorageConfig>('GET', '/api/admin/storage/config')
+}
+
+export function storageConfigUpdate(body: StorageConfigUpdate) {
+  return req<StorageConfig>('PUT', '/api/admin/storage/config', body)
+}
+
+export function storageConfigTestPath(path: string) {
+  return req<StorageTestPathResult>('POST', '/api/admin/storage/config/test-path', { path })
+}
+
+// ── Log Management (2026-07-02) ───────────────────────────────────────
+// 日志文件统一管理：轮转配置热加载/文件列表/归档/删除
+
+export interface LogConfig {
+  max_size_mb: number
+  max_backups: number
+  max_age_days: number
+  compress: boolean
+  archive_days: number
+  delete_days: number
+  log_file: string
+  log_dir: string
+  enabled: boolean
+  hot_reloadable: boolean
+  config_source: string
+}
+
+export interface LogConfigUpdate {
+  max_size_mb?: number
+  max_backups?: number
+  max_age_days?: number
+  compress?: boolean
+  archive_days?: number
+  archive_delete_days?: number
+}
+
+export interface LogFile {
+  name: string
+  size_bytes: number
+  mod_time: string
+  is_current: boolean
+  is_compressed: boolean
+  is_archived: boolean
+  size_human: string
+}
+
+export interface LogFilesList {
+  files: LogFile[]
+  total: number
+  dir: string
+}
+
+export interface LogStats {
+  log_dir: string
+  exists: boolean
+  total_files: number
+  total_size_bytes: number
+  total_size_human: string
+  archive_files: number
+  archive_size: number
+  oldest_mtime: string | null
+  newest_mtime: string | null
+  disk_usage_pct: number
+}
+
+export interface LogOpRequest {
+  older_than_days?: number
+  dry_run?: boolean
+  scope?: string
+}
+
+export interface LogOpResult {
+  dry_run: boolean
+  files_affected: number
+  bytes_freed: number
+  bytes_freed_human: string
+  affected_paths?: string[]
+  archive_file?: string
+  error?: string
+}
+
+export interface LogArchiveItem {
+  name: string
+  size_bytes: number
+  size_human: string
+  mod_time: string
+}
+
+export function logConfigGet() {
+  return req<LogConfig>('GET', '/api/admin/logs/config')
+}
+
+export function logConfigUpdate(body: LogConfigUpdate) {
+  return req<LogConfig>('PUT', '/api/admin/logs/config', body)
+}
+
+export function logFilesList() {
+  return req<LogFilesList>('GET', '/api/admin/logs/files')
+}
+
+export function logStats() {
+  return req<LogStats>('GET', '/api/admin/logs/stats')
+}
+
+export function logArchive(body: LogOpRequest) {
+  return req<LogOpResult>('POST', '/api/admin/logs/archive', body)
+}
+
+export function logCleanup(body: LogOpRequest) {
+  return req<LogOpResult>('POST', '/api/admin/logs/cleanup', body)
+}
+
+export function logArchiveList() {
+  return req<{ archives: LogArchiveItem[]; total: number; dir: string; exists: boolean }>('GET', '/api/admin/logs/archive/list')
+}
+
 // ── Tuning proposals + accuracy (Phase 5) ──────────────────────────────
 //
 // Three endpoints are mounted by admin/auto_route_tuning.go:

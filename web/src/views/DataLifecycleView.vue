@@ -25,6 +25,8 @@
 
     <!-- Tab 内容 -->
     <StorageOverview v-show="activeTab === 'storage'" ref="storageRef" />
+    <StorageConfig v-show="activeTab === 'storage-config'" ref="storageConfigRef" />
+    <LogManagement v-show="activeTab === 'logs-mgmt'" ref="logMgmtRef" />
     <BlobManager v-show="activeTab === 'blobs'" />
     <AttachmentManager v-show="activeTab === 'attachments'" />
     <FilesystemMaintenance v-show="activeTab === 'filesystem'" ref="filesystemRef" />
@@ -199,16 +201,20 @@ import StorageOverview from './data-lifecycle/StorageOverview.vue'
 import BlobManager from './data-lifecycle/BlobManager.vue'
 import AttachmentManager from './data-lifecycle/AttachmentManager.vue'
 import FilesystemMaintenance from './data-lifecycle/FilesystemMaintenance.vue'
+import StorageConfig from './data-lifecycle/StorageConfig.vue'
+import LogManagement from './data-lifecycle/LogManagement.vue'
 
 Chart.register(...registerables)
 
-type TabKey = 'storage' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
+type TabKey = 'storage' | 'storage-config' | 'logs-mgmt' | 'blobs' | 'attachments' | 'filesystem' | 'logs'
 
 const tabs: { key: TabKey; label: string; badge?: string }[] = [
   { key: 'storage', label: '存储总览' },
-  { key: 'blobs', label: '大字段/Blob' },
+  { key: 'storage-config', label: '存储配置' },
+  { key: 'logs-mgmt', label: '日志管理' },
   { key: 'attachments', label: '会话附件' },
   { key: 'filesystem', label: '文件系统维护' },
+  { key: 'blobs', label: '大字段/Blob' },
   { key: 'logs', label: '请求日志（分区/归档）' },
 ]
 
@@ -220,6 +226,8 @@ const isLoading = ref(false)
 const distributionChart = ref<HTMLCanvasElement | null>(null)
 const storageRef = ref<any>(null)
 const filesystemRef = ref<any>(null)
+const storageConfigRef = ref<any>(null)
+const logMgmtRef = ref<any>(null)
 let chartInstance: Chart | null = null
 
 function formatNumber(n: number): string { return n.toLocaleString('zh-CN') }
@@ -249,6 +257,8 @@ async function refreshAll() {
       storageRef.value?.load?.(),
       storageRef.value?.loadTables?.(),
       filesystemRef.value?.load?.(),
+      storageConfigRef.value?.load?.(),
+      logMgmtRef.value?.load?.(),
     ])
   } finally {
     isLoading.value = false
