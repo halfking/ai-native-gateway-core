@@ -136,7 +136,15 @@ func IntegrateAutoControlSystem(db *sql.DB, chatHandler interface {
 	goalHook := goal.NewModeHook(goalConfig, goalStore, llmCaller)
 
 	// 7. Create audit hook
-	auditHook := goal.NewAuditHook(goalStore, llmCaller)
+	auditConfig := goal.AuditConfig{
+		Enabled:        getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", false),
+		UseAutoroute:   getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
+		FallbackModel:  getEnv("LLM_GATEWAY_GOAL_AUDIT_MODEL", "auto"),
+		AutoFixEnabled: getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),
+		MinConfidence:  0.7,
+		SettingsGetter: settingsAdapter,
+	}
+	auditHook := goal.NewAuditHook(goalStore, llmCaller, auditConfig)
 
 	// 8. Build interceptor chain
 	interceptorChain := response.NewInterceptorChain(
