@@ -72,7 +72,7 @@ type QualityCorrelationResponse struct {
 // handleQualityCorrelations: GET /auto-route/quality-correlations
 func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -80,7 +80,7 @@ func (h *AutoRouteHandlers) handleQualityCorrelations(w http.ResponseWriter, r *
 	if d := r.URL.Query().Get("days"); d != "" {
 		v, err := strconv.Atoi(d)
 		if err != nil || v <= 0 || v > 90 {
-			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
+			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_days_out_of_range")
 			return
 		}
 		days = v

@@ -19,8 +19,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 )
 
 // StorageRetentionWorker 监控磁盘水位并自动清理。
@@ -28,7 +26,7 @@ type StorageRetentionWorker struct {
 	// AttachmentStorage 附件存储实例。worker 每次 sweep 时通过 BaseDir()
 	// 动态读取当前生效目录，从而在运行时迁移目录后自动跟随，无需重启。
 	// 2026-07-02: 由 main.go 注入（替代原先的 AttachmentDir 字符串快照）。
-	AttachmentStorage *attachments.Storage
+	AttachmentStorage AttachmentStorageService
 	// LogDir 日志目录（可为空，表示文件日志未启用）
 	LogDir string
 
@@ -62,7 +60,7 @@ type StorageRetentionConfig struct {
 
 // NewStorageRetentionWorker 构造 worker。
 // attachmentStorage 为 nil 时附件清理空转（与旧 AttachmentDir=="" 行为一致）。
-func NewStorageRetentionWorker(attachmentStorage *attachments.Storage, logDir string, cfgProvider StorageRetentionConfigFunc) *StorageRetentionWorker {
+func NewStorageRetentionWorker(attachmentStorage AttachmentStorageService, logDir string, cfgProvider StorageRetentionConfigFunc) *StorageRetentionWorker {
 	return &StorageRetentionWorker{
 		AttachmentStorage: attachmentStorage,
 		LogDir:            logDir,

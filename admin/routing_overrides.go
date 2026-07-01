@@ -64,7 +64,7 @@ func (h *AutoRouteHandlers) handleRoutingOverridesCollection(w http.ResponseWrit
 	case http.MethodPost:
 		h.createRoutingOverride(w, r)
 	default:
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
 }
 
@@ -83,12 +83,12 @@ func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid override id")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_override_id")
 		return
 	}
 	if len(parts) == 2 && parts[1] == "extend" {
 		if r.Method != http.MethodPatch {
-			writeJSONErr(w, http.StatusMethodNotAllowed, "extend requires PATCH")
+			writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_extend_requires_patch")
 			return
 		}
 		h.extendRoutingOverride(w, r, id)
@@ -102,7 +102,7 @@ func (h *AutoRouteHandlers) handleRoutingOverrideItem(w http.ResponseWriter, r *
 	case http.MethodDelete:
 		h.deleteRoutingOverride(w, r, id)
 	default:
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
 }
 
@@ -236,7 +236,7 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	if res.RowsAffected() == 0 {
-		writeJSONErr(w, http.StatusNotFound, "override not found or already expired")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_override_not_found")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -266,7 +266,7 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	if body.ExpiresAt != nil && body.ExpiresAt.Before(time.Now()) {
-		writeJSONErr(w, http.StatusBadRequest, "expires_at must be in the future")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_expires_at_invalid")
 		return
 	}
 
@@ -299,7 +299,7 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 		return
 	}
 	if res.RowsAffected() == 0 {
-		writeJSONErr(w, http.StatusNotFound, "override not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_override_not_found")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -338,7 +338,7 @@ type AuditEntry struct {
 // handleRoutingOverridesAudit: GET /routing/overrides/audit
 func (h *AutoRouteHandlers) handleRoutingOverridesAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 

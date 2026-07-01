@@ -585,7 +585,7 @@ func createTarGzFromPaths(dest string, paths []string) error {
 		if strings.Contains(cleanPath, "..") {
 			continue // 跳过包含 .. 的路径
 		}
-		
+
 		fi, err := os.Stat(cleanPath)
 		if err != nil {
 			continue

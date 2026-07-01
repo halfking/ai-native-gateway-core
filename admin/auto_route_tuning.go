@@ -83,7 +83,7 @@ func (h *TuningHandlers) RegisterTuningRoutes(mux *http.ServeMux, adminWrap func
 // handleProposals: GET /tuning/proposals?status=pending&category=keyword_add&limit=50
 func (h *TuningHandlers) handleProposals(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -163,7 +163,7 @@ func (h *TuningHandlers) handleProposals(w http.ResponseWriter, r *http.Request)
 // handleProposalAction: POST /tuning/proposals/:id/{approve|reject}
 func (h *TuningHandlers) handleProposalAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -177,7 +177,7 @@ func (h *TuningHandlers) handleProposalAction(w http.ResponseWriter, r *http.Req
 
 	id, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid proposal id")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_proposal_id")
 		return
 	}
 
@@ -189,7 +189,7 @@ func (h *TuningHandlers) handleProposalAction(w http.ResponseWriter, r *http.Req
 		h.rejectProposal(w, r, id)
 	default:
 		// Static message — never echo the user-supplied action value.
-		writeJSONErr(w, http.StatusBadRequest, "unknown action (expected approve or reject)")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_unknown_action")
 	}
 }
 
@@ -221,7 +221,7 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 		FOR UPDATE
 	`, id).Scan(&category, &taskType, &proposalJSON, &evidenceJSON, &status)
 	if err == pgx.ErrNoRows {
-		writeJSONErr(w, http.StatusNotFound, "proposal not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_proposal_not_found")
 		return
 	}
 	if err != nil {
@@ -231,14 +231,14 @@ func (h *TuningHandlers) approveProposal(w http.ResponseWriter, r *http.Request,
 
 	// Reject if not pending (within the locked tx — no race possible).
 	if status != "pending" {
-		writeJSONErr(w, http.StatusConflict, "proposal is not in pending status")
+		writeJSONErrCtx(w, r, http.StatusConflict, "admin_proposal_not_pending")
 		return
 	}
 
 	// Parse + apply the proposal to tuning_params, all within the same tx.
 	var proposal map[string]any
 	if err := json.Unmarshal(proposalJSON, &proposal); err != nil {
-		writeJSONErr(w, http.StatusInternalServerError, "invalid proposal JSON")
+		writeJSONErrCtx(w, r, http.StatusInternalServerError, "admin_invalid_proposal_json")
 		return
 	}
 
@@ -430,7 +430,7 @@ func applyWeightAdjustInTx(ctx context.Context, tx pgx.Tx, proposal map[string]a
 // Returns a 7-day accuracy dashboard grouped by task_type and classifier.
 func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -438,7 +438,7 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 	if d := r.URL.Query().Get("days"); d != "" {
 		v, err := strconv.Atoi(d)
 		if err != nil || v <= 0 || v > 90 {
-			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
+			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_days_out_of_range")
 			return
 		}
 		days = v
@@ -526,7 +526,7 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 // rows have the same strategy label.
 func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -534,7 +534,7 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 	if d := r.URL.Query().Get("days"); d != "" {
 		v, err := strconv.Atoi(d)
 		if err != nil || v <= 0 || v > 90 {
-			writeJSONErr(w, http.StatusBadRequest, "days must be 1-90")
+			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_days_out_of_range")
 			return
 		}
 		days = v

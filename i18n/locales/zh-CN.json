@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "内部服务器错误"
+  },
+  "admin_method_not_allowed": {
+    "other": "不允许的请求方法"
+  },
+  "admin_invalid_json": {
+    "other": "无效的 JSON 正文"
+  },
+  "admin_not_found": {
+    "other": "未找到"
+  },
+  "admin_days_out_of_range": {
+    "other": "天数必须在 1-90 之间"
+  },
+  "admin_work_type_not_found": {
+    "other": "未找到工作类型"
+  },
+  "admin_invalid_profile": {
+    "other": "无效的配置文件设置"
+  },
+  "admin_unauthorized": {
+    "other": "未授权"
+  },
+  "admin_forbidden": {
+    "other": "禁止访问"
+  },
+  "admin_internal_error": {
+    "other": "内部服务器错误"
+  },
+  "admin_override_not_found": {
+    "other": "未找到覆盖规则"
+  },
+  "admin_request_not_found": {
+    "other": "未找到请求"
+  },
+  "admin_proposal_not_found": {
+    "other": "未找到提案"
+  },
+  "admin_key_already_exists": {
+    "other": "工作类型键已存在"
+  },
+  "admin_proposal_not_pending": {
+    "other": "提案不在待处理状态"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "无效的提案 ID"
+  },
+  "admin_invalid_override_id": {
+    "other": "无效的覆盖规则 ID"
+  },
+  "admin_limit_out_of_range": {
+    "other": "限制必须在 1 到 {{.Max}} 之间"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samples 必须在 1-1000 之间"
+  },
+  "admin_required_field_missing": {
+    "other": "缺少必填字段: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_at 必须是未来时间"
+  },
+  "admin_unknown_action": {
+    "other": "未知操作"
+  },
+  "admin_extend_requires_patch": {
+    "other": "扩展需要 PATCH 方法"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "无效的提案 JSON"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "每个工作类型最多允许 3 个模型路由"
   }
 }

@@ -37,6 +37,8 @@ const fsStats = ref<any>(null)
 // 修改目录后 PUT 会返回 migration_run_id，前端据此轮询迁移进度。
 const migration = ref<MigrationRun | null>(null)
 let migrationTimer: ReturnType<typeof setInterval> | null = null
+let pollCount = 0
+const MAX_POLLS = 900 // 30分钟 (900 * 2s)，防止迁移卡死时无限轮询
 
 const isMigrating = computed(() => migration.value?.status === 'running')
 const migrationPct = computed(() => {
@@ -157,6 +159,11 @@ async function checkMigrationState() {
 
 // 单次拉取迁移状态并决定是否继续轮询
 async function pollMigration() {
+  if (pollCount++ > MAX_POLLS) {
+    stopMigrationPolling()
+    saveMsg.value = '❌ 迁移超时（30分钟未完成），请检查服务端日志'
+    return
+  }
   try {
     const st = await getStorageMigrationState()
     migration.value = st.running || st.latest
@@ -180,6 +187,7 @@ async function pollMigration() {
 
 function startMigrationPolling() {
   if (migrationTimer) return
+  pollCount = 0  // 重置计数
   migrationTimer = setInterval(pollMigration, 2000)
 }
 

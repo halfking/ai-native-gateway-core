@@ -240,7 +240,7 @@ func buildFlowL23Query() string {
 // swapping at the source keeps the API contract aligned with the visual.
 func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -368,7 +368,7 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 // Middle column uses standard/canonical model names (same as matrix cols), not raw outbound names.
 func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -512,7 +512,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 // optionally filtered by task_type, with canonical names joined.
 func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -624,7 +624,7 @@ func (h *AnalyticsHandlers) handleModelTaskIndex(w http.ResponseWriter, r *http.
 // Path: /api/admin/auto-route/analytics/decision/{request_id}
 func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	prefix := "/api/admin/auto-route/analytics/decision/"
@@ -663,7 +663,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 		&autoDecision, &success, &latency,
 	)
 	if err == sql.ErrNoRows {
-		writeJSONErr(w, http.StatusNotFound, "request not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_request_not_found")
 		return
 	}
 	if err != nil {
@@ -773,7 +773,7 @@ func (h *AnalyticsHandlers) handleDecisionReplay(w http.ResponseWriter, r *http.
 // Query params: model (required, canonical or raw alias), window=24h|7d
 func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	model := strings.TrimSpace(r.URL.Query().Get("model"))

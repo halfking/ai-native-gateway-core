@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "Erreur interne du serveur"
+  },
+  "admin_method_not_allowed": {
+    "other": "Méthode non autorisée"
+  },
+  "admin_invalid_json": {
+    "other": "Corps JSON invalide"
+  },
+  "admin_not_found": {
+    "other": "Non trouvé"
+  },
+  "admin_days_out_of_range": {
+    "other": "Les jours doivent être entre 1 et 90"
+  },
+  "admin_work_type_not_found": {
+    "other": "Type de travail non trouvé"
+  },
+  "admin_invalid_profile": {
+    "other": "Paramètre de profil invalide"
+  },
+  "admin_unauthorized": {
+    "other": "Non autorisé"
+  },
+  "admin_forbidden": {
+    "other": "Interdit"
+  },
+  "admin_internal_error": {
+    "other": "Erreur interne du serveur"
+  },
+  "admin_override_not_found": {
+    "other": "Remplacement non trouvé"
+  },
+  "admin_request_not_found": {
+    "other": "Requête non trouvée"
+  },
+  "admin_proposal_not_found": {
+    "other": "Proposition non trouvée"
+  },
+  "admin_key_already_exists": {
+    "other": "La clé du type de travail existe déjà"
+  },
+  "admin_proposal_not_pending": {
+    "other": "La proposition n'est pas en attente"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "ID de proposition invalide"
+  },
+  "admin_invalid_override_id": {
+    "other": "ID de remplacement invalide"
+  },
+  "admin_limit_out_of_range": {
+    "other": "La limite doit être entre 1 et {{.Max}}"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samples doit être entre 1 et 1000"
+  },
+  "admin_required_field_missing": {
+    "other": "Champ requis manquant : {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_at doit être dans le futur"
+  },
+  "admin_unknown_action": {
+    "other": "Action inconnue"
+  },
+  "admin_extend_requires_patch": {
+    "other": "L'extension nécessite la méthode PATCH"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "JSON de proposition invalide"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "Maximum 3 routes de modèle autorisées par type de travail"
   }
 }
