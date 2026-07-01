@@ -1149,7 +1149,24 @@ func (h *ChatHandler) serveWithExecutor(
 		if keyInfo != nil {
 			apiKeyID = keyInfo.ID
 		}
-		newBody, wire, _ := h.maybeResolveAuto(&reqBody, bodyBytes, r, apiKeyID)
+		newBody, wire, shouldFail := h.maybeResolveAuto(&reqBody, bodyBytes, r, apiKeyID)
+		if shouldFail {
+			// 2026-07-01 P1: auto-route decider failed (DB / Redis / feature-flag
+			// outage). Surface a 502 with a transparent error_kind instead of
+			// silently rewriting the request to a fallback model. The original
+			// behaviour hid routing-data outages as "user picked the fallback
+			// model" rows in request_logs, which is exactly what the
+			// routing-error-transparency work is removing — see
+			// docs/2026-07-01-unknown-error-root-cause.md.
+			captureAndEmitFailure("auto_route_decider_failed",
+				fmt.Sprintf("auto-route decider failed for model '%s'", clientModel),
+				nil, nil)
+			markLogged()
+			writeErrorJSON(w, http.StatusBadGateway, requestID,
+				"auto-route temporarily unavailable; pass an explicit model name and retry",
+				"server_error", "auto_route_decider_failed")
+			return
+		}
 		if newBody != nil {
 			bodyBytes = newBody
 		}
@@ -2192,6 +2209,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		ResponsePreview:  responsePreviewPtr,
 		RequestBody:      requestBodyText,
 		ResponseBody:     responseBodyText,
+		// 2026-07-01 P0 fix: stream_chunks_sent / stream_chunk_errors are
+		// NOT NULL columns (migration 320). Initialize from logCtx (which
+		// increments via IncrementStreamChunksSent in the streaming
+		// callbacks) and fall back to 0 for non-streaming paths. Without
+		// these defaults the INSERT failed with SQLSTATE 23502 and
+		// request_logs_2026_07 stopped accepting new rows on 184.
+		StreamChunksSent:  intPtr(streamChunksSentFromLogCtx(logCtx)),
+		StreamChunkErrors: intPtr(streamChunkErrorsFromLogCtx(logCtx)),
 		// Round 47 compression v7 T-NEW-3: write the compression event
 		// captured by the executor's 4xx recovery (see
 		// executors.context_summarize.handleContextLengthRecovery) into
@@ -2708,14 +2733,15 @@ func (h *ChatHandler) recordFailedRequestDetailed(
 //
 // The mapping:
 //
-//	gateway RPM limit   → "gw_rpm_exceeded"
-//	gateway concurrent  → "gw_concurrent_exceeded"
-//	gateway TPM         → "gw_tpm_exceeded"
-//	key throttled       → "gw_key_throttled"
-//	budget exhausted    → "gw_budget_exhausted"
-//	upstream 429        → "rate_limit"        (unchanged)
-//	upstream 429/503    → "concurrent"        (unchanged)
-//	other early-exits   → errCode passthrough
+//	gateway RPM limit         → "gw_rpm_exceeded"
+//	gateway concurrent        → "gw_concurrent_exceeded"
+//	gateway TPM               → "gw_tpm_exceeded"
+//	key throttled             → "gw_key_throttled"
+//	budget exhausted          → "gw_budget_exhausted"
+//	auto-route decider failed → "gw_auto_route_decider_failed"
+//	upstream 429              → "rate_limit"        (unchanged)
+//	upstream 429/503          → "concurrent"        (unchanged)
+//	other early-exits         → errCode passthrough
 func mapGatewayErrorToDetail(errCode string) string {
 	switch errCode {
 	case "rate_limit_exceeded":
@@ -2750,6 +2776,8 @@ func mapGatewayErrorToDetail(errCode string) string {
 		return "gw_internal_panic"
 	case "chat_to_anthropic_conversion_error":
 		return "gw_chat_to_anthropic_conversion_error"
+	case "auto_route_decider_failed":
+		return "gw_auto_route_decider_failed"
 	default:
 		return errCode
 	}
@@ -2791,7 +2819,8 @@ func classifyFailureStage(errCode string) string {
 		"conversion_error",
 		"session_forbidden",
 		"internal_panic",
-		"chat_to_anthropic_conversion_error":
+		"chat_to_anthropic_conversion_error",
+		"auto_route_decider_failed":
 		return "gateway"
 	default:
 		return "upstream"
@@ -3652,6 +3681,49 @@ func boolToFloat(b bool) float64 {
 		return 1.0
 	}
 	return 0.0
+}
+
+// streamChunksSentFromLogCtx returns the count of stream chunks sent for
+// this request, defaulting to 0 when logCtx is nil (non-streaming path or
+// pre-init failure). Added 2026-07-01 to satisfy the NOT NULL constraint
+// on request_logs.stream_chunks_sent (migration 320) — without this
+// helper, BuildSuccessEntry used to leave reqLog.StreamChunksSent nil,
+// causing INSERT/UPDATE to fail with SQLSTATE 23502 and stopping all
+// new rows from being written on 184.
+func streamChunksSentFromLogCtx(c *RequestLogContext) int {
+	if c == nil {
+		return 0
+	}
+	if c.StreamChunksSent < 0 {
+		return 0
+	}
+	return c.StreamChunksSent
+}
+
+// StreamChunksSentFromLogCtxForTest is the test-only exported alias of
+// streamChunksSentFromLogCtx. The unexported version is kept because the
+// production call site is package-internal; tests outside the package
+// would otherwise need access to RequestLogContext internals.
+func StreamChunksSentFromLogCtxForTest(c *RequestLogContext) int {
+	return streamChunksSentFromLogCtx(c)
+}
+
+// streamChunkErrorsFromLogCtx mirrors streamChunksSentFromLogCtx for the
+// stream_chunk_errors column. Same NOT NULL rationale applies.
+func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
+	if c == nil {
+		return 0
+	}
+	if c.StreamChunkErrors < 0 {
+		return 0
+	}
+	return c.StreamChunkErrors
+}
+
+// StreamChunkErrorsFromLogCtxForTest is the test-only exported alias of
+// streamChunkErrorsFromLogCtx, mirroring StreamChunksSentFromLogCtxForTest.
+func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
+	return streamChunkErrorsFromLogCtx(c)
 }
 
 // resolveGatewayVersion reads the build version from /opt/llm-gateway-go/VERSION

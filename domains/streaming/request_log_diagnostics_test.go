@@ -207,3 +207,51 @@ func TestRequestLogContext_StreamChunksSentDefaultValue(t *testing.T) {
 		t.Errorf("Expected StreamChunksSent to be 0, got %d", *entry.StreamChunksSent)
 	}
 }
+
+// TestStreamChunksSentFromLogCtxNilSafe verifies the helpers added on
+// 2026-07-01 to keep BuildSuccessEntry from leaving StreamChunksSent nil.
+// Without these defaults the INSERT crashed with SQLSTATE 23502 against
+// request_logs_2026_07 (NOT NULL column added by migration 320) and
+// stopped every new row from being written on 184.
+//
+// Regression test for the P0 root cause documented at
+// docs/2026-07-01-unknown-error-root-cause.md.
+func TestStreamChunksSentFromLogCtxNilSafe(t *testing.T) {
+	if got := streaming.StreamChunksSentFromLogCtxForTest(nil); got != 0 {
+		t.Errorf("nil logCtx → want 0, got %d", got)
+	}
+
+	// Negative values are sentinel / uninitialised → coerce to 0.
+	ctx := &streaming.RequestLogContext{RequestID: "x", StartTime: time.Now()}
+	ctx.StreamChunksSent = -5
+	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 0 {
+		t.Errorf("negative count → want 0, got %d", got)
+	}
+
+	// Positive values are passed through untouched.
+	ctx.StreamChunksSent = 42
+	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 42 {
+		t.Errorf("positive count → want 42, got %d", got)
+	}
+
+	// Zero is also passed through (the column accepts 0 by default).
+	ctx.StreamChunksSent = 0
+	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 0 {
+		t.Errorf("zero → want 0, got %d", got)
+	}
+}
+
+func TestStreamChunkErrorsFromLogCtxNilSafe(t *testing.T) {
+	if got := streaming.StreamChunkErrorsFromLogCtxForTest(nil); got != 0 {
+		t.Errorf("nil logCtx → want 0, got %d", got)
+	}
+	ctx := &streaming.RequestLogContext{RequestID: "x", StartTime: time.Now()}
+	ctx.StreamChunkErrors = -1
+	if got := streaming.StreamChunkErrorsFromLogCtxForTest(ctx); got != 0 {
+		t.Errorf("negative count → want 0, got %d", got)
+	}
+	ctx.StreamChunkErrors = 7
+	if got := streaming.StreamChunkErrorsFromLogCtxForTest(ctx); got != 7 {
+		t.Errorf("positive count → want 7, got %d", got)
+	}
+}

@@ -619,14 +619,17 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
-		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id),
+client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_request_id),
 		-- 2026-06-30: upstream diagnostics (migration 320)
 		upstream_status_code = EXCLUDED.upstream_status_code,
 		client_timeout = EXCLUDED.client_timeout,
 		client_endpoint = EXCLUDED.client_endpoint,
 		stream_chunk_errors = EXCLUDED.stream_chunk_errors,
-		stream_chunks_sent = EXCLUDED.stream_chunks_sent
-`,
+		-- 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		-- COALESCE so a missing value from any code path falls back to 0
+		-- instead of crashing the INSERT with SQLSTATE 23502.
+		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0)
+	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
 		entry.ApplicationID,

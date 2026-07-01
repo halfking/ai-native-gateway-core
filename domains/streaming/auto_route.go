@@ -307,15 +307,32 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 
 	decision, err := h.decider.DecideWithFeatureFlags(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
-		slog.Warn("auto-route: decider failed, falling back",
+		// 2026-07-01 P1: surface the real failure instead of masking it.
+		//
+		// The previous behaviour ("log warn + silently rewrite to fallback
+		// model") made DB / Redis / feature-flag outages look like normal
+		// auto-route selections in request_logs. Operators saw streams of
+		// "auto-route fell back to chat-default" with no signal that the
+		// routing data layer was actually broken, which is exactly the
+		// class of misleading telemetry the routing-error-transparency
+		// work is fighting against
+		// (docs/2026-07-01-unknown-error-root-cause.md).
+		//
+		// Behaviour contract going forward:
+		//   1. Always emit ERROR (not WARN) — alerts can fire.
+		//   2. Return shouldFail=true so the handler emits 502 + a
+		//      transparent error_kind rather than writing a request_logs
+		//      row that looks like a successful auto-route selection.
+		//
+		// The fallback model rewrite is no longer applied here. Clients
+		// retrying with model="..." explicitly continue to work because
+		// auto-route resolution is opt-in via the magic "auto" model name.
+		slog.Error("auto-route: decider failed - routing data query error",
 			"error", err,
 			"task_hint", string(taskHint),
 			"profile_header", headerProfile,
 		)
-		// Fall back to a default chat model rather than 502 — clients
-		// should not be punished for the gateway's transient issues.
-		reqBody.Model = autoFallbackModel()
-		return rewriteBodyWithModel(rawBody, autoFallbackModel()), nil, false
+		return nil, nil, true
 	}
 
 	reqBody.Model = decision.ChosenModel
@@ -346,12 +363,12 @@ func rewriteBodyWithModel(body []byte, newModel string) []byte {
 // decisionToWire converts an autoroute.Decision to the wire format.
 func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 	wire := &autoRouteDecision{
-		TaskType:       string(d.TaskType),
-		Confidence:     d.Confidence,
-		Profile:        string(d.Profile),
-		Classifier:     d.Classifier,
-		Reason:         d.Reason,
-		ChosenModel:    d.ChosenModel,
+		TaskType:        string(d.TaskType),
+		Confidence:      d.Confidence,
+		Profile:         string(d.Profile),
+		Classifier:      d.Classifier,
+		Reason:          d.Reason,
+		ChosenModel:     d.ChosenModel,
 		ChosenRawModel:  d.ChosenRawModel,
 		ChosenCredID:    d.ChosenCredentialID,
 		EnabledFeatures: d.EnabledFeatures,
