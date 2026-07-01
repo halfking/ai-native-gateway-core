@@ -4,6 +4,7 @@ const KEY = 'llmgw_api_key'
 // JWT_KEY removed (rule 20 §6.1): JWT now in HttpOnly cookie
 const USER_KEY = 'llmgw_user_info'
 const PREFERRED_CHAT_KEY_PREFIX = 'llmgw_preferred_key_id:'
+const LOCALE_KEY = 'llmgw_locale'
 
 export interface UserInfo {
   id: number
@@ -20,6 +21,7 @@ export const store = reactive({
   apiKey: localStorage.getItem(KEY) ?? '',
   jwtToken: '', // in-memory only, not persisted
   userInfo: JSON.parse(localStorage.getItem(USER_KEY) ?? 'null') as UserInfo | null,
+  locale: localStorage.getItem(LOCALE_KEY) ?? 'zh-CN',
 })
 
 export function setApiKey(k: string) {
@@ -139,4 +141,14 @@ export function getCurrentTenantId(): string {
 // Platform ops UI: super_admin on default tenant (整站运维视图)
 export function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
+}
+
+// Locale management
+export function setLocale(locale: string) {
+  store.locale = locale
+  localStorage.setItem(LOCALE_KEY, locale)
+}
+
+export function getLocale(): string {
+  return store.locale
 }
