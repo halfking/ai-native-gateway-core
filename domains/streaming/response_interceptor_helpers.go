@@ -57,6 +57,8 @@ func recordSessionFollowUp(sessionID string) bool {
 
 // cleanupSessionFollowUps removes the counter for a session, freeing memory.
 // Called when a session ends to prevent unbounded map growth.
+//
+//nolint:unused // Reserved for future session cleanup logic
 func cleanupSessionFollowUps(sessionID string) {
 	sessionFollowUpCounts.Delete(sessionID)
 }

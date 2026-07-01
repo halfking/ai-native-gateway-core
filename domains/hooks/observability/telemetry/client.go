@@ -523,10 +523,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		-- 2026-06-26: client-supplied X-Request-Id (debug only;
 		-- request_logs.request_id is server-generated, see migration 054).
 		client_request_id,
-		-- 2026-06-30: upstream diagnostics (migration 320).
-		upstream_status_code, client_timeout, client_endpoint,
-		stream_chunk_errors, stream_chunks_sent
-	) VALUES (
+			-- 2026-06-30: upstream diagnostics (migration 320).
+			upstream_status_code, client_timeout, client_endpoint,
+			stream_chunk_errors, stream_chunks_sent,
+			-- 2026-07-01: 附件元数据 (migration 325)。JSONB 数组，
+			-- 存储从请求体提取的 base64/data-URI 附件元数据（路径/类型/大小/hash），
+			-- 附件实体文件已落盘，此处仅记录元信息。
+			attachments
+		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
@@ -552,9 +556,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$65,
 		CAST($66 AS jsonb),
 		$67,
-		$68, $69, $70, $71, $72
-		)
-			ON CONFLICT (request_id, ts) DO UPDATE SET
+			$68, $69, $70, $71, $72,
+			CAST($73 AS jsonb)
+			)
+				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
@@ -633,7 +638,10 @@ client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_req
 		-- 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
 		-- COALESCE so a missing value from any code path falls back to 0
 		-- instead of crashing the INSERT with SQLSTATE 23502.
-		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0)
+		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
+		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
+		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
+		attachments = COALESCE(request_logs.attachments, EXCLUDED.attachments)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -718,6 +726,8 @@ client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs.client_req
 		entry.ClientEndpoint,
 		entry.StreamChunkErrors,
 		entry.StreamChunksSent,
+		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
+		attachmentsArg(entry.Attachments),
 	)
 	if err != nil {
 		return err
@@ -1080,6 +1090,19 @@ func qualityFlagsArg(flags []string) any {
 func qualityActionsArg(raw json.RawMessage) any {
 	if len(raw) == 0 {
 		return []byte("{}")
+	}
+	return []byte(raw)
+}
+
+// attachmentsArg returns a value safe to bind to the NULLABLE
+// request_logs.attachments JSONB column. Unlike quality_flags /
+// quality_fix_actions this column has no NOT NULL constraint, so an
+// empty payload binds SQL NULL (NULL attachments == "无附件"), which
+// is the intended semantic. The CAST($73 AS jsonb) in the INSERT
+// accepts both NULL and a real JSON array.
+func attachmentsArg(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
 	}
 	return []byte(raw)
 }

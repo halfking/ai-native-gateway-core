@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -117,6 +118,13 @@ type Handler struct {
 
 	// approvalMgr (2026-06-27) 会话审批管理器，用于审批高风险会话
 	approvalMgr *sessionaudit.ApprovalManager
+
+	// attachmentHandler (2026-07-01, migration 325) 提供附件下载
+	// (GET /api/attachments/{path...}) 与按请求列出附件元数据
+	// (GET /api/logs/{request_id}/attachments) 的能力。nil 时附件下载
+	// 端点返回 503，按请求列表端点返回空数组。由 cmd/gateway/main.go
+	// 在 attachmentStorage 初始化成功后通过 SetAttachmentHandler 注入。
+	attachmentHandler *attachments.Handler
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -124,6 +132,12 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	return h
+}
+
+// SetAttachmentHandler wires the attachment download/list handler. Called
+// from cmd/gateway/main.go after attachmentStorage is successfully built.
+func (h *Handler) SetAttachmentHandler(ah *attachments.Handler) {
+	h.attachmentHandler = ah
 }
 
 // SetModelPolicy (Round 48, 2026-06-21) wires the tenant-scoped model
@@ -475,6 +489,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/usage/", admin(h.handleUsage))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// 2026-07-01 (migration 325): attachment file download.
+	// GET /api/attachments/{path...} streams an attachment file from the
+	// configured storage dir. Admin-authenticated so attachments are not
+	// publicly accessible. The handler is nil-safe (returns 503 when
+	// attachment storage was not configured at startup).
+	mux.HandleFunc("/api/attachments/", admin(h.handleAttachmentsDownload))
 	mux.HandleFunc("/api/catalog", h.superAdmin(h.handleCatalogRoot))
 	mux.HandleFunc("/api/catalog/", h.superAdmin(h.handleCatalog))
 	mux.HandleFunc("/api/tags", h.superAdmin(h.handleTags))
