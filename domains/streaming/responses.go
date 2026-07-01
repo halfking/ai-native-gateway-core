@@ -60,7 +60,7 @@ func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
 }
 
 func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var (
 		attemptLoggedFlag   bool

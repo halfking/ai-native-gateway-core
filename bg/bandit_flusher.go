@@ -112,7 +112,7 @@ func (f *BanditFlusher) Flush(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("prepare statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	updated := 0
 	for credIDStr, score := range scores {
