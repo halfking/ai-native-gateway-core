@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -192,22 +193,36 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 	user, role, _ := authIdentity(r)
 
 	// 逐项写入（只写非 nil 的字段）
-	setInt := func(key string, v *int, min, max int) {
+	setInt := func(key string, v *int, min, max int) error {
 		if v == nil {
-			return
+			return nil
 		}
 		if *v < min || *v > max {
-			return // 静默忽略越界值
+			return fmt.Errorf("%s 超出允许范围 [%d, %d]", key, min, max)
 		}
-		if _, err := store.Set(settings.ScopePlatform, key, *v); err == nil {
-			auditSettingChange(user, role, key, fmt.Sprintf("%d", *v))
+		if _, err := store.Set(settings.ScopePlatform, key, *v); err != nil {
+			return fmt.Errorf("保存 %s 失败: %v", key, err)
 		}
+		auditSettingChange(user, role, key, fmt.Sprintf("%d", *v))
+		return nil
 	}
 
-	setInt("storage.attachment_ttl_days", req.TTLDays, 1, 3650)
-	setInt("storage.attachment_max_size_mb", req.MaxFileSizeMB, 1, 200)
-	setInt("storage.disk_quota_percent", req.DiskQuotaPercent, 50, 99)
-	setInt("storage.auto_cleanup_threshold", req.AutoCleanupThreshold, 60, 99)
+	if err := setInt("storage.attachment_ttl_days", req.TTLDays, 1, 3650); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setInt("storage.attachment_max_size_mb", req.MaxFileSizeMB, 1, 200); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setInt("storage.disk_quota_percent", req.DiskQuotaPercent, 50, 99); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := setInt("storage.auto_cleanup_threshold", req.AutoCleanupThreshold, 60, 99); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if req.AutoCleanupEnabled != nil {
 		if _, err := store.Set(settings.ScopePlatform, "storage.auto_cleanup_enabled", *req.AutoCleanupEnabled); err == nil {
@@ -239,7 +254,7 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 					// 直接以错误形式返回，避免配置已改但文件无法落位。
 					if !dirUsable(toAbs) {
 						writeError(w, http.StatusBadRequest,
-							"目标目录不可用（不存在且无法创建，或权限不足）："+toAbs)
+							"目标目录不可用（不存在且无法创建，或权限不足）")
 						return
 					}
 					// TODO: 恢复 storage_migration.go 后启用此逻辑
@@ -267,6 +282,48 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 	h.pendingMigrationRunID.Store("")
 }
 
+// isPathSafe 检查路径是否在允许的安全区域内（防止路径遍历攻击）
+func isPathSafe(absPath string) bool {
+	// 白名单：只允许测试以下前缀的路径
+	safePrefixes := []string{
+		"/data/",
+		"/var/llm-gateway/",
+		"/opt/llm-gateway/",
+		"/tmp/llm-gateway/",
+		"./data/",
+		"./attachments/",
+	}
+	
+	// 黑名单：明确拒绝系统敏感目录
+	dangerousPrefixes := []string{
+		"/etc/",
+		"/root/",
+		"/home/",
+		"/usr/bin/",
+		"/usr/sbin/",
+		"/boot/",
+		"/sys/",
+		"/proc/",
+	}
+	
+	// 先检查黑名单
+	for _, prefix := range dangerousPrefixes {
+		if strings.HasPrefix(absPath, prefix) {
+			return false
+		}
+	}
+	
+	// 再检查白名单
+	for _, prefix := range safePrefixes {
+		if strings.HasPrefix(absPath, prefix) {
+			return true
+		}
+	}
+	
+	// 不在白名单中也拒绝
+	return false
+}
+
 // handleStorageTestPath POST /api/admin/storage/config/test-path
 func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -285,7 +342,13 @@ func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) 
 
 	abs, err := filepath.Abs(req.Path)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid path: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+
+	// 路径白名单验证：防止探测系统敏感目录
+	if !isPathSafe(abs) {
+		writeError(w, http.StatusForbidden, "路径不在允许的安全区域内")
 		return
 	}
 

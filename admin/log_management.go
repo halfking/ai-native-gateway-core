@@ -580,7 +580,13 @@ func createTarGzFromPaths(dest string, paths []string) error {
 	defer func() { _ = tw.Close() }()
 
 	for _, path := range paths {
-		fi, err := os.Stat(path)
+		// 路径清洗：防止路径遍历攻击
+		cleanPath := filepath.Clean(path)
+		if strings.Contains(cleanPath, "..") {
+			continue // 跳过包含 .. 的路径
+		}
+		
+		fi, err := os.Stat(cleanPath)
 		if err != nil {
 			continue
 		}
@@ -588,16 +594,20 @@ func createTarGzFromPaths(dest string, paths []string) error {
 		if err != nil {
 			continue
 		}
-		hdr.Name = filepath.Base(path)
+		// 使用清洗后的基础名称
+		hdr.Name = filepath.Base(cleanPath)
 		if err := tw.WriteHeader(hdr); err != nil {
 			continue
 		}
-		src, err := os.Open(path)
+		src, err := os.Open(cleanPath)
 		if err != nil {
 			continue
 		}
-		_, _ = io.Copy(tw, src)
-		_ = src.Close()
+		_, copyErr := io.Copy(tw, src)
+		closeErr := src.Close()
+		if copyErr != nil || closeErr != nil {
+			continue
+		}
 	}
 	return nil
 }
