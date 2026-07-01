@@ -4,11 +4,14 @@ import { useRoute } from 'vue-router'
 import {
   getRequestLogs,
   getRequestLogDetail,
+  getRequestAttachments,
+  attachmentURL,
   getSessionSummary,
   sessionSummaryToMemora,
   getKeys,
   type RequestLogRow,
   type RequestLogDetail,
+  type AttachmentInfo,
   type ApiKey,
   type RequestLogsResponse,
   type SessionSummaryResponse,
@@ -92,7 +95,13 @@ const compressionStats = computed(() => {
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref<RequestLogDetail | null>(null)
-const detailTab = ref<'request' | 'outbound' | 'response'>('request')
+const detailTab = ref<'request' | 'outbound' | 'response' | 'attachments'>('request')
+
+// 2026-07-01 (migration 325): 附件查看状态。
+// detail.attachments 由详情接口直接返回（无需额外请求）；attachmentsLightbox
+// 控制大图预览遮罩，attachmentsLightboxSrc 为当前大图的 URL。
+const attachmentsLightbox = ref(false)
+const attachmentsLightboxSrc = ref('')
 
 // Tenant info for display
 const tenantLabel = computed(() => {
@@ -342,6 +351,12 @@ function compressionLabel(row: RequestLogRow): { reason: string; strategy: strin
 
 const traceMode = computed(() =>
   Boolean(gwTaskFilter.value.trim() || gwSessionFilter.value.trim()),
+)
+
+// listColCount — 列表表头/空态占位的列数。基础 9 列（时间/脉络/调用方/路由/Token/
+// 延迟/压缩/状态/附件），trace 模式多一个序号列，非默认租户多一个积分列。
+const listColCount = computed(() =>
+  9 + (traceMode.value ? 1 : 0) + (isDefaultTenant() ? 0 : 1),
 )
 
 const taskSummary = computed(() => {
@@ -652,6 +667,8 @@ async function showDetail(requestId: string) {
   detailLoading.value = true
   detail.value = null
   detailTab.value = 'request'
+  attachmentsLightbox.value = false
+  attachmentsLightboxSrc.value = ''
   try {
     detail.value = await getRequestLogDetail(requestId)
   } catch (e: unknown) {
@@ -664,6 +681,60 @@ async function showDetail(requestId: string) {
 function closeDetail() {
   detailVisible.value = false
   detail.value = null
+  attachmentsLightbox.value = false
+  attachmentsLightboxSrc.value = ''
+}
+
+// ── 附件辅助 (migration 325) ──────────────────────────────────────
+// detailList 派生当前详情行（或刷新请求）的附件数组，空安全。
+function detailAttachments(): AttachmentInfo[] {
+  return (detail.value?.attachments as AttachmentInfo[] | null | undefined) ?? []
+}
+
+// isImageAttachment 判断附件是否为图片（用于缩略图 vs 文件图标）。
+function isImageAttachment(a: AttachmentInfo): boolean {
+  return a.type === 'image' || a.content_type.startsWith('image/')
+}
+
+// formatBytes 把字节数格式化为人类可读（KB/MB）。
+function formatBytes(n: number | undefined): string {
+  if (!n || n <= 0) return '—'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+// fileExt 从附件 path/content_type 推断显示用的扩展名。
+function fileExt(a: AttachmentInfo): string {
+  if (a.path) {
+    const m = a.path.match(/\.([a-z0-9]+)$/i)
+    if (m) return m[1].toUpperCase()
+  }
+  if (a.content_type && a.content_type.includes('/')) {
+    return a.content_type.split('/')[1].toUpperCase()
+  }
+  return 'FILE'
+}
+
+// openLightbox 点击图片缩略图放大查看。
+function openLightbox(a: AttachmentInfo) {
+  if (!isImageAttachment(a)) return
+  attachmentsLightboxSrc.value = attachmentURL(a.path)
+  attachmentsLightbox.value = true
+}
+
+// downloadAttachment 触发浏览器下载（非图片）或新窗口打开（图片）。
+// 图片走 attachment; inline 行为由后端 Content-Disposition 控制；
+// 这里统一用 <a download>，浏览器会处理内联/下载。
+function downloadAttachment(a: AttachmentInfo) {
+  const url = attachmentURL(a.path)
+  const link = document.createElement('a')
+  link.href = url
+  // 从 path 末段取文件名，保证下载扩展名正确
+  link.download = a.path ? a.path.split('/').pop() || 'attachment' : 'attachment'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }
 
 function formatJson(obj: any): string {
@@ -1084,11 +1155,12 @@ onMounted(async () => {
             <th class="col-lat">延迟</th>
             <th class="col-compress">压缩</th>
             <th class="col-status">状态</th>
+            <th class="col-attach">附件</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td :colspan="traceMode ? (isDefaultTenant() ? 9 : 10) : (isDefaultTenant() ? 8 : 9)">加载中…</td></tr>
-          <tr v-else-if="!rows.length"><td :colspan="traceMode ? (isDefaultTenant() ? 9 : 10) : (isDefaultTenant() ? 8 : 9)">无记录</td></tr>
+          <tr v-if="loading"><td :colspan="listColCount">加载中…</td></tr>
+          <tr v-else-if="!rows.length"><td :colspan="listColCount">无记录</td></tr>
           <tr
             v-for="r in rows"
             :key="r.request_id + r.ts"
@@ -1171,6 +1243,13 @@ onMounted(async () => {
             <td class="col-status" :style="{ color: statusColor(r) }" :title="statusTitle(r)">
               <div class="cell-line1">{{ statusLabel(r) }}</div>
               <div v-if="r.error_kind && r.request_status === 'failure'" class="cell-line2">{{ r.error_kind }}</div>
+            </td>
+            <td class="col-attach" :title="r.attachment_count ? `${r.attachment_count} 个附件` : '无附件'">
+              <span
+                v-if="r.attachment_count && r.attachment_count > 0"
+                class="attach-badge"
+              >📎 {{ r.attachment_count }}</span>
+              <span v-else class="cell-line1 muted">—</span>
             </td>
           </tr>
         </tbody>
@@ -1273,6 +1352,17 @@ onMounted(async () => {
                 </span>
               </button>
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
+              <!-- 2026-07-01 (migration 325): 附件标签按钮。仅在该请求含附件时显示，
+                   位于"响应内容"右侧。点击切换到附件列表面板（缩略图 + 下载）。 -->
+              <button
+                v-if="detailAttachments().length"
+                class="btn btn-sm"
+                :class="{ 'btn-primary': detailTab === 'attachments' }"
+                @click="detailTab = 'attachments'"
+              >
+                附件
+                <span class="outbound-diff-badge">{{ detailAttachments().length }}</span>
+              </button>
             </div>
           </div>
 
@@ -1319,6 +1409,49 @@ onMounted(async () => {
               <div v-else style="color:var(--muted)">(该请求未触发 v3 会话压缩：转发体 == 客户端请求体)</div>
             </template>
 
+            <!-- 2026-07-01 (migration 325): 附件列表面板。
+                 网格布局展示附件缩略图（图片）/ 文件图标（其他），每项含类型、大小、
+                 SHA256(截断)、路径，并提供下载/预览按钮。 -->
+            <template v-else-if="detailTab === 'attachments'">
+              <div v-if="detailAttachments().length" class="attachments-grid">
+                <div
+                  v-for="(att, idx) in detailAttachments()"
+                  :key="(att.path || '') + idx"
+                  class="attachment-card"
+                >
+                  <div class="attachment-thumb" @click="isImageAttachment(att) ? openLightbox(att) : downloadAttachment(att)">
+                    <img
+                      v-if="isImageAttachment(att)"
+                      :src="attachmentURL(att.path)"
+                      :alt="fileExt(att)"
+                      loading="lazy"
+                      class="attachment-img"
+                    />
+                    <div v-else class="attachment-file-icon">
+                      <span>{{ fileExt(att) }}</span>
+                    </div>
+                  </div>
+                  <div class="attachment-meta">
+                    <div class="attachment-line1">
+                      <span class="attachment-type">{{ att.content_type || att.type }}</span>
+                      <span class="attachment-size">{{ formatBytes(att.size) }}</span>
+                    </div>
+                    <div class="attachment-line2" :title="att.path">{{ att.path }}</div>
+                    <div v-if="att.hash" class="attachment-line2" :title="att.hash">SHA256: {{ shortHash(att.hash) }}</div>
+                    <div class="attachment-actions">
+                      <button class="btn btn-sm" @click="downloadAttachment(att)">下载</button>
+                      <button
+                        v-if="isImageAttachment(att)"
+                        class="btn btn-sm"
+                        @click="openLightbox(att)"
+                      >放大</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else style="color:var(--muted)">(无附件)</div>
+            </template>
+
             <template v-else>
               <template v-if="detail.response_body">
                 <template v-if="detail.response_body.choices">
@@ -1346,6 +1479,12 @@ onMounted(async () => {
             </template>
           </div>
         </template>
+
+        <!-- 2026-07-01 (migration 325): 附件大图预览遮罩。点击空白处或图片关闭。 -->
+        <div v-if="attachmentsLightbox" class="lightbox-backdrop" @click="attachmentsLightbox = false">
+          <img :src="attachmentsLightboxSrc" class="lightbox-img" @click.stop alt="attachment preview" />
+          <button class="btn btn-sm lightbox-close" @click="attachmentsLightbox = false">关闭</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1519,6 +1658,20 @@ onMounted(async () => {
   max-width: 180px;
   min-width: 120px;
 }
+/* 2026-07-01 (migration 325): 附件列 + 列表角标 */
+.col-attach {
+  min-width: 3rem;
+  text-align: center;
+}
+.attach-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(168, 85, 247, 0.12);
+  color: #c084fc;
+}
 /* v3 Outbound tab — highlight when outbound differs from request. */
 .outbound-diff-badge {
   display: inline-block;
@@ -1638,6 +1791,99 @@ onMounted(async () => {
   padding: 1px 4px;
   border-radius: 3px;
   background: var(--surface-primary, #16213e);
+}
+
+/* ── 2026-07-01 (migration 325): 附件详情面板 + 大图预览 ─────────── */
+.attachments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.attachment-card {
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-primary, #16213e);
+  display: flex;
+  flex-direction: column;
+}
+.attachment-thumb {
+  width: 100%;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d1b2a;
+  cursor: pointer;
+  overflow: hidden;
+}
+.attachment-thumb:hover {
+  background: #122438;
+}
+.attachment-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.attachment-file-icon {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+  padding: 16px 20px;
+  border: 1px dashed var(--border, #333);
+  border-radius: 6px;
+}
+.attachment-meta {
+  padding: 8px;
+  font-size: 11px;
+}
+.attachment-line1 {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.attachment-type {
+  color: var(--text-secondary, #6b7280);
+  font-family: var(--mono-font, ui-monospace, monospace);
+}
+.attachment-size {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.attachment-line2 {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  word-break: break-all;
+  margin-top: 2px;
+}
+.attachment-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+/* 大图预览遮罩 */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.lightbox-img {
+  max-width: 92vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: 4px;
+}
+.lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 24px;
 }
 </style>
 
