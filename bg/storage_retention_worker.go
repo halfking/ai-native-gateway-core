@@ -19,12 +19,16 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 )
 
 // StorageRetentionWorker 监控磁盘水位并自动清理。
 type StorageRetentionWorker struct {
-	// AttachmentDir 附件存储目录（运行时生效路径）
-	AttachmentDir string
+	// AttachmentStorage 附件存储实例。worker 每次 sweep 时通过 BaseDir()
+	// 动态读取当前生效目录，从而在运行时迁移目录后自动跟随，无需重启。
+	// 2026-07-02: 由 main.go 注入（替代原先的 AttachmentDir 字符串快照）。
+	AttachmentStorage *attachments.Storage
 	// LogDir 日志目录（可为空，表示文件日志未启用）
 	LogDir string
 
@@ -57,9 +61,10 @@ type StorageRetentionConfig struct {
 }
 
 // NewStorageRetentionWorker 构造 worker。
-func NewStorageRetentionWorker(attachmentDir, logDir string, cfgProvider StorageRetentionConfigFunc) *StorageRetentionWorker {
+// attachmentStorage 为 nil 时附件清理空转（与旧 AttachmentDir=="" 行为一致）。
+func NewStorageRetentionWorker(attachmentStorage *attachments.Storage, logDir string, cfgProvider StorageRetentionConfigFunc) *StorageRetentionWorker {
 	return &StorageRetentionWorker{
-		AttachmentDir:     attachmentDir,
+		AttachmentStorage: attachmentStorage,
 		LogDir:            logDir,
 		CheckInterval:     1 * time.Hour,
 		AttachmentTTLDays: 30,
@@ -70,6 +75,15 @@ func NewStorageRetentionWorker(attachmentDir, logDir string, cfgProvider Storage
 	}
 }
 
+// attachmentDir 返回当前附件目录（从 Storage 动态读取）。Storage 为 nil 时返回空串。
+// 每个 sweep 读取一次，保证目录热切换（迁移）后立即生效。
+func (w *StorageRetentionWorker) attachmentDir() string {
+	if w.AttachmentStorage == nil {
+		return ""
+	}
+	return w.AttachmentStorage.BaseDir()
+}
+
 // Start 启动后台 goroutine。
 func (w *StorageRetentionWorker) Start(ctx context.Context) {
 	cctx, cancel := context.WithCancel(ctx)
@@ -77,7 +91,7 @@ func (w *StorageRetentionWorker) Start(ctx context.Context) {
 	go w.run(cctx)
 	slog.Info("storage retention worker started",
 		"interval", w.CheckInterval.String(),
-		"attachment_dir", w.AttachmentDir,
+		"attachment_dir", w.attachmentDir(),
 		"log_dir", w.LogDir)
 }
 
@@ -116,8 +130,11 @@ func (w *StorageRetentionWorker) checkOnce(ctx context.Context) {
 		return
 	}
 
+	// 每次 sweep 读取当前附件目录（热切换后跟随）。
+	attachmentDir := w.attachmentDir()
+
 	// 检查附件目录所在磁盘水位
-	diskPct := w.diskUsagePercent(w.AttachmentDir)
+	diskPct := w.diskUsagePercent(attachmentDir)
 	if diskPct < cfg.AutoCleanupThreshold {
 		return // 未达阈值，无需清理
 	}
@@ -133,12 +150,12 @@ func (w *StorageRetentionWorker) checkOnce(ctx context.Context) {
 	}
 
 	// 2. 再清理附件（LRU 最老优先，至降到告警水位以下）
-	if w.AttachmentDir != "" {
-		w.cleanupAttachmentsLRU(ctx, cfg.DiskQuotaPercent)
+	if attachmentDir != "" {
+		w.cleanupAttachmentsLRU(ctx, attachmentDir, cfg.DiskQuotaPercent)
 	}
 
 	// 清理后复测
-	afterPct := w.diskUsagePercent(w.AttachmentDir)
+	afterPct := w.diskUsagePercent(attachmentDir)
 	slog.Info("storage retention: cleanup done",
 		"disk_usage_before_pct", diskPct,
 		"disk_usage_after_pct", afterPct)
@@ -204,8 +221,8 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 }
 
 // cleanupAttachmentsLRU 按 LRU（最老优先）清理附件至降到 quotaPct 以下
-func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, quotaPct float64) {
-	if w.AttachmentDir == "" || !dirExistsBG(w.AttachmentDir) {
+func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, attachmentDir string, quotaPct float64) {
+	if attachmentDir == "" || !dirExistsBG(attachmentDir) {
 		return
 	}
 	ttlCutoff := time.Now().AddDate(0, 0, -w.AttachmentTTLDays)
@@ -217,7 +234,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, quot
 		size  int64
 	}
 	var items []fileItem
-	_ = filepath.WalkDir(w.AttachmentDir, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(attachmentDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -235,7 +252,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, quot
 	// 按 mtime 升序（最老优先）
 	for i := 0; i < len(items); i++ {
 		// 检查是否已降到告警水位以下
-		if w.diskUsagePercent(w.AttachmentDir) < quotaPct {
+		if w.diskUsagePercent(attachmentDir) < quotaPct {
 			break
 		}
 		if rmErr := os.Remove(items[i].path); rmErr == nil {

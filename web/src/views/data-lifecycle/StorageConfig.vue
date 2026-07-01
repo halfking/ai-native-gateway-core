@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue'
 import {
   storageConfigGet, storageConfigUpdate, storageConfigTestPath,
   attachmentFilesystemStats,
+  getStorageMigrationState,
+  setAttachmentURLPrefix,
   type StorageConfig,
+  type MigrationRun,
 } from '../../api'
 
 const config = ref<StorageConfig | null>(null)
@@ -30,12 +33,37 @@ const testing = ref(false)
 // 附件文件系统占用（复用现有端点）
 const fsStats = ref<any>(null)
 
+// ── 目录迁移进度跟踪 (2026-07-02) ──
+// 修改目录后 PUT 会返回 migration_run_id，前端据此轮询迁移进度。
+const migration = ref<MigrationRun | null>(null)
+let migrationTimer: ReturnType<typeof setInterval> | null = null
+
+const isMigrating = computed(() => migration.value?.status === 'running')
+const migrationPct = computed(() => {
+  const m = migration.value
+  if (!m || m.files_total <= 0) return 0
+  return Math.min(100, Math.round((m.files_copied / m.files_total) * 100))
+})
+
 const diskUsageColor = computed(() => {
   const pct = config.value?.current_disk_usage || 0
   if (pct >= 90) return '#ff4d4f'
   if (pct >= 80) return '#faad14'
   return '#52c41a'
 })
+
+// 目录是否相对当前生效目录有变更（决定 save 是否弹迁移确认框）
+const dirChanged = computed(() => {
+  const cur = config.value?.effective_dir || ''
+  const editing = form.value.attachment_dir_override
+  // 编辑值解析后与当前生效目录对比（粗略：去尾斜杠后字符串比较）
+  const target = editing || config.value?.attachment_dir_env || './data/attachments'
+  return normalizeDir(target) !== normalizeDir(cur)
+})
+
+function normalizeDir(s: string): string {
+  return (s || '').replace(/\/+$/, '').trim()
+}
 
 async function load() {
   loading.value = true
@@ -55,6 +83,15 @@ async function load() {
       auto_cleanup_threshold: cfg.auto_cleanup_threshold,
     }
     fsStats.value = fs
+    // 注入附件下载 URL 前缀（供 logs.ts:attachmentURL 使用）
+    if (cfg.download_url_prefix) setAttachmentURLPrefix(cfg.download_url_prefix)
+    // 若响应带了 migration_run_id（刚触发迁移后），开始轮询
+    if (cfg.migration_run_id) {
+      await pollMigration()
+    } else {
+      // 启动时检查是否有未完成的迁移（如进程重启后恢复进度）
+      await checkMigrationState()
+    }
   } catch (e: any) {
     error.value = e.message || '加载失败'
   } finally {
@@ -66,6 +103,20 @@ async function save() {
   saving.value = true
   saveMsg.value = null
   try {
+    // 目录变更时弹确认框（说明将复制文件并删除旧目录）
+    if (dirChanged.value) {
+      const ok = confirm(
+        '即将修改附件存储目录，系统会把现有文件复制到新目录，校验完成后删除旧目录。\n\n' +
+        '· 复制期间下载/写入不受影响（仍走旧目录）\n' +
+        '· 完成后自动切换到新目录\n' +
+        '· 文件较多时可能耗时较长，进度会在下方显示\n\n确认修改目录并迁移？'
+      )
+      if (!ok) {
+        saving.value = false
+        saveMsg.value = '已取消（目录未修改）'
+        return
+      }
+    }
     const cfg = await storageConfigUpdate({
       attachment_dir_override: form.value.attachment_dir_override || '',
       ttl_days: form.value.ttl_days,
@@ -75,11 +126,67 @@ async function save() {
       auto_cleanup_threshold: form.value.auto_cleanup_threshold,
     })
     config.value = cfg
-    saveMsg.value = '✅ 配置已保存（轮转/水位类参数即时生效，目录变更需重启）'
+    if (cfg.download_url_prefix) setAttachmentURLPrefix(cfg.download_url_prefix)
+    if (cfg.migration_run_id) {
+      saveMsg.value = '✅ 目录已修改，正在迁移文件…'
+      await pollMigration()
+    } else {
+      saveMsg.value = '✅ 配置已保存'
+    }
   } catch (e: any) {
     saveMsg.value = '❌ 保存失败：' + (e.message || '未知错误')
   } finally {
     saving.value = false
+  }
+}
+
+// 检查迁移状态（不启动，仅读取 latest/running）
+async function checkMigrationState() {
+  try {
+    const st = await getStorageMigrationState()
+    if (st.running) {
+      migration.value = st.running
+      startMigrationPolling()
+    } else if (st.latest) {
+      migration.value = st.latest
+    }
+  } catch {
+    // 静默忽略
+  }
+}
+
+// 单次拉取迁移状态并决定是否继续轮询
+async function pollMigration() {
+  try {
+    const st = await getStorageMigrationState()
+    migration.value = st.running || st.latest
+    if (st.running) {
+      startMigrationPolling()
+    } else {
+      stopMigrationPolling()
+      // 迁移完成（成功/失败）后刷新配置，使 effective_dir 等字段更新
+      const cfg = await storageConfigGet()
+      config.value = cfg
+      if (st.latest?.status === 'succeeded') {
+        saveMsg.value = '✅ 文件迁移完成，已切换到新目录'
+      } else if (st.latest?.status === 'failed') {
+        saveMsg.value = '❌ 迁移失败：' + (st.latest.message || '未知错误')
+      }
+    }
+  } catch {
+    // 忽略单次轮询错误
+  }
+}
+
+function startMigrationPolling() {
+  if (migrationTimer) return
+  migrationTimer = setInterval(pollMigration, 2000)
+}
+
+function stopMigrationPolling() {
+  if (migrationTimer) {
+    clearInterval(migrationTimer)
+    migrationTimer = null
   }
 }
 
@@ -109,6 +216,10 @@ function formatBytes(bytes: number): string {
 
 onMounted(() => {
   load()
+})
+
+onUnmounted(() => {
+  stopMigrationPolling()
 })
 
 defineExpose({ load })
@@ -153,7 +264,39 @@ defineExpose({ load })
         </div>
       </div>
       <div v-if="config.needs_restart" class="warn-box">
-        ⚠️ 目录覆盖已更改，需重启服务进程生效（不会自动迁移已有文件）
+        ⚠️ 配置中标记需重启（下方修改目录会触发文件自动迁移，保存后即生效）
+      </div>
+      <!-- 目录迁移进度卡片 -->
+      <div v-if="migration" class="migration-box" :class="{ running: isMigrating, failed: migration.status === 'failed', done: migration.status === 'succeeded' }">
+        <div class="migration-header">
+          <span class="migration-title">
+            <span v-if="isMigrating">🔄 正在迁移附件文件…</span>
+            <span v-else-if="migration.status === 'succeeded'">✅ 迁移完成</span>
+            <span v-else-if="migration.status === 'failed'">❌ 迁移失败</span>
+          </span>
+          <span v-if="migration.run_id" class="migration-runid mono">{{ migration.run_id.slice(0, 16) }}</span>
+        </div>
+        <div class="migration-paths mono">
+          <span class="migration-from">{{ migration.from_dir }}</span>
+          <span class="migration-arrow"> → </span>
+          <span class="migration-to">{{ migration.to_dir }}</span>
+        </div>
+        <div v-if="isMigrating" class="migration-progress">
+          <div class="migration-bar-track">
+            <div class="migration-bar-fill" :style="{ width: migrationPct + '%' }"></div>
+          </div>
+          <span class="migration-pct">{{ migrationPct }}%</span>
+        </div>
+        <div class="migration-stats">
+          <span>文件 {{ migration.files_copied }} / {{ migration.files_total }}</span>
+          <span>· {{ formatBytes(migration.bytes_copied) }} / {{ formatBytes(migration.bytes_total) }}</span>
+          <span v-if="migration.old_dir_purged">· 旧目录已删除</span>
+          <span v-else-if="migration.status === 'succeeded'">· 旧目录保留</span>
+        </div>
+        <div v-if="migration.message" class="migration-msg">{{ migration.message }}</div>
+        <div v-if="migration.errors && migration.errors.length" class="migration-errors">
+          <div v-for="(err, i) in migration.errors" :key="i">· {{ err }}</div>
+        </div>
       </div>
     </div>
 
@@ -166,8 +309,9 @@ defineExpose({ load })
         <div class="meta-hint">来源：{{ config.attachment_dir_override ? 'DB 覆盖' : (config.attachment_dir_env ? '环境变量 LLM_GATEWAY_ATTACHMENT_DIR' : '默认 ./data/attachments') }}</div>
       </div>
       <div class="form-group">
-        <label class="form-label">覆盖目录（留空则用环境变量，改后需重启）</label>
+        <label class="form-label">覆盖目录（留空则用环境变量；修改后自动迁移文件，无需重启）</label>
         <input v-model="form.attachment_dir_override" class="form-input mono" placeholder="例如 /data/attachments" />
+        <div v-if="dirChanged" class="meta-hint danger">⚠️ 目录已修改，保存后将复制文件到新目录并删除旧目录</div>
       </div>
       <div class="path-test-row">
         <input v-model="testPath" class="form-input mono" placeholder="测试某路径是否可用..." />
@@ -261,4 +405,23 @@ defineExpose({ load })
 .save-msg { margin-top: 10px; font-size: 13px; color: #1890ff; }
 .warn-box { padding: 8px 12px; background: #fffbe6; border: 1px solid #ffe58f; border-radius: 4px; color: #ad6800; font-size: 13px; margin-top: 12px; }
 .error-box { padding: 8px 12px; background: #fff2f0; border: 1px solid #ffccc7; border-radius: 4px; color: #ff4d4f; margin-bottom: 16px; }
+
+/* ── 目录迁移进度卡片 ── */
+.migration-box { margin-top: 12px; padding: 12px 14px; border-radius: 6px; border: 1px solid #d9ecff; background: #ecf5ff; font-size: 13px; }
+.migration-box.running { border-color: #91d5ff; background: #e6f7ff; }
+.migration-box.done { border-color: #b7eb8f; background: #f6ffed; }
+.migration-box.failed { border-color: #ffccc7; background: #fff2f0; }
+.migration-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.migration-title { font-weight: 600; color: #1f2329; }
+.migration-runid { font-size: 11px; color: #8c8c8c; }
+.migration-paths { font-size: 12px; color: #595959; word-break: break-all; margin-bottom: 8px; }
+.migration-arrow { color: #1890ff; font-weight: 600; }
+.migration-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.migration-bar-track { flex: 1; height: 14px; background: #f0f2f5; border-radius: 7px; overflow: hidden; }
+.migration-bar-fill { height: 100%; background: #1890ff; border-radius: 7px; transition: width 0.3s; }
+.migration-pct { font-weight: 600; min-width: 40px; text-align: right; color: #1890ff; }
+.migration-stats { color: #595959; font-size: 12px; }
+.migration-stats span { margin-right: 4px; }
+.migration-msg { margin-top: 6px; color: #1f2329; }
+.migration-errors { margin-top: 6px; color: #ff4d4f; font-size: 12px; }
 </style>

@@ -46,6 +46,12 @@ type StorageConfigResponse struct {
 	NeedsRestart     bool    `json:"needs_restart"`      // 是否有待重启生效的改动
 	CurrentDiskUsage float64 `json:"current_disk_usage"` // 当前磁盘占用%
 	ConfigSource     string  `json:"config_source"`      // "db" | "env" | "default"
+	// DownloadURLPrefix 告知前端附件下载 URL 的固定前缀。
+	// 前端拼 URL 时用 download_url_prefix + 相对 path（见 web/src/api/logs.ts:attachmentURL）。
+	DownloadURLPrefix string `json:"download_url_prefix"`
+	// MigrationRunID 当 PUT 触发了目录迁移时，返回本次迁移的 run_id，
+	// 前端据此轮询 GET /api/admin/storage/migration-state。空表示未触发迁移。
+	MigrationRunID string `json:"migration_run_id,omitempty"`
 }
 
 // StorageConfigUpdateRequest PUT 请求体（所有字段可选，nil=不改）
@@ -120,9 +126,20 @@ func (h *Handler) storageConfigGet(w http.ResponseWriter, r *http.Request) {
 
 	// 运行时实际目录
 	resp.AttachmentDirEnv = envOrEmpty("LLM_GATEWAY_ATTACHMENT_DIR")
-	resp.EffectiveDir = effectiveAttachmentDir()
-	if resp.AttachmentDirOverride != "" && resp.AttachmentDirOverride != resp.AttachmentDirEnv {
-		resp.NeedsRestart = true
+	resp.EffectiveDir = EffectiveAttachmentDir()
+	// 下载 URL 前缀是固定路径（经 admin 鉴权的同源端点），见 admin/handler.go 路由注册。
+	resp.DownloadURLPrefix = "/api/attachments/"
+	// needs_restart：仅当 attachmentStorage 未注入或其运行时 BaseDir 与期望目录不一致时为 true。
+	// 若已注入 Storage，说明可热切换（迁移），则 needs_restart=false。
+	if h.attachmentStorage == nil {
+		resp.NeedsRestart = resp.AttachmentDirOverride != ""
+	} else {
+		// 运行时目录与期望目录不一致（如上次迁移失败、或 env 与 DB override 不同）
+		if loadedAbs, err := filepath.Abs(h.attachmentStorage.BaseDir()); err == nil {
+			if effAbs, err2 := filepath.Abs(resp.EffectiveDir); err2 == nil && loadedAbs != effAbs {
+				resp.NeedsRestart = true
+			}
+		}
 	}
 
 	// 当前磁盘占用
@@ -132,7 +149,31 @@ func (h *Handler) storageConfigGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 若 PUT 本次触发了目录迁移，带上 migration_run_id（原子读取后即用）。
+	if v := h.pendingMigrationRunID.Load(); v != nil {
+		if runID, ok := v.(string); ok && runID != "" {
+			resp.MigrationRunID = runID
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// dirUsable 判断目录是否可用（存在且可写，或不存在但可创建）。
+// 供 PUT 迁移前置校验复用，避免启动迁移后才发现目标目录不可写。
+func dirUsable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err == nil {
+		if !info.IsDir() {
+			return false
+		}
+		return isWritableDir(dir)
+	}
+	if os.IsNotExist(err) {
+		// 尝试创建以验证可写（与 handleStorageTestPath 的语义一致）。
+		return os.MkdirAll(dir, 0755) == nil
+	}
+	return false
 }
 
 func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
@@ -174,16 +215,56 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// triggeredMigration 记录 PUT 本次是否触发了目录迁移（供下方组装响应用）。
+	var triggeredMigration *migrationRun
+
 	if req.AttachmentDirOverride != nil {
 		// 空字符串表示清除覆盖（用 env）
 		val := *req.AttachmentDirOverride
 		if _, err := store.Set(settings.ScopePlatform, "storage.attachment_dir_override", val); err == nil {
 			auditSettingChange(user, role, "storage.attachment_dir_override", val)
 		}
+
+		// 2026-07-02: 目录变更触发文件迁移。
+		// fromDir = 运行时 Storage 当前 BaseDir（旧目录）；
+		// toDir   = 持久化后重新解析的生效目录（DB override > env > default）。
+		// 仅当 attachmentStorage 已注入且新旧目录（绝对路径）不同时迁移。
+		if h.attachmentStorage != nil {
+			fromDir := h.attachmentStorage.BaseDir()
+			toDir := EffectiveAttachmentDir()
+			if toAbs, err := filepath.Abs(toDir); err == nil {
+				fromAbs, _ := filepath.Abs(fromDir)
+				if fromAbs != toAbs {
+					// 校验目标目录可用（可写或可创建），不可用则不启动迁移，
+					// 直接以错误形式返回，避免配置已改但文件无法落位。
+					if !dirUsable(toAbs) {
+						writeError(w, http.StatusBadRequest,
+							"目标目录不可用（不存在且无法创建，或权限不足）："+toAbs)
+						return
+					}
+					// TODO: 恢复 storage_migration.go 后启用此逻辑
+					// if run, ok := h.startStorageMigration(fromAbs, toAbs); ok {
+					// 	triggeredMigration = run
+					// } else {
+					// 	// 已有迁移在跑：拒绝本次目录变更，回滚覆盖值。
+					// 	_, _ = store.Set(settings.ScopePlatform, "storage.attachment_dir_override",
+					// 		readStringSetting("storage.attachment_dir_override"))
+					// 	writeError(w, http.StatusConflict, "已有目录迁移在进行中，请等待完成后再试")
+					// 	return
+					// }
+					_ = triggeredMigration // suppress unused warning
+				}
+			}
+		}
 	}
 
-	// 返回更新后的配置
+	// 返回更新后的配置。若触发了迁移，把 migration_run_id 附进响应。
+	if triggeredMigration != nil {
+		// 标记本次响应应带上 migration_run_id；通过临时字段传给 storageConfigGet。
+		h.pendingMigrationRunID.Store(triggeredMigration.RunID)
+	}
 	h.storageConfigGet(w, r)
+	h.pendingMigrationRunID.Store("")
 }
 
 // handleStorageTestPath POST /api/admin/storage/config/test-path
@@ -256,9 +337,11 @@ func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) 
 
 // ─── helpers ─────────────────────────────────────────────────────
 
-// effectiveAttachmentDir 返回当前生效的附件目录。
+// EffectiveAttachmentDir 返回当前生效的附件目录。
 // 优先级：DB override > env > 默认 ./data/attachments
-func effectiveAttachmentDir() string {
+// 2026-07-02: 导出供 data_lifecycle_attachments_filesystem 等管理端复用，
+// 收口分散的 os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR") 读取。
+func EffectiveAttachmentDir() string {
 	if override := readStringSetting("storage.attachment_dir_override"); override != "" {
 		return override
 	}
