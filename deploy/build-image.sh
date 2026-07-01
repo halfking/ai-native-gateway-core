@@ -15,8 +15,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVICE_NAME="llm-gateway-go"
-REGISTRY="${REGISTRY:-registry.internal.example.com}"
-IMAGE_NAME="${REGISTRY}/kaixuan-platform-${SERVICE_NAME}"
+REGISTRY="${REGISTRY:-}"
+IMAGE_NAME="kx-${SERVICE_NAME}"
 
 # ── 解析参数 ───────────────────────────────────────────────────────
 TAG=""
