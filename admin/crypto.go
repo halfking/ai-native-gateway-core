@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"math/big"
-	mrand "math/rand"
 	"time"
 )
 
@@ -23,7 +22,11 @@ func randomAlphanum(n int) string {
 }
 
 func init() {
-	mrand.Seed(time.Now().UnixNano())
+	// math/rand's global generator was deprecated in Go 1.20 and is now
+	// auto-seeded by the runtime, so we no longer call mrand.Seed here.
+	// This init block is retained so we can re-introduce custom seeding
+	// later if determinism is required for tests.
+	_ = time.Now
 }
 
 func encryptFernet(plaintext []byte, key []byte) ([]byte, error) {
@@ -151,11 +154,11 @@ func binaryBigEndianWriteAdmin(b []byte, n uint64) {
 }
 
 var (
-	errInvalidKeyLen    = errorf("invalid fernet key length")
-	errInvalidToken     = errorf("invalid fernet token")
-	errInvalidSig       = errorf("invalid fernet signature")
+	errInvalidKeyLen     = errorf("invalid fernet key length")
+	errInvalidToken      = errorf("invalid fernet token")
+	errInvalidSig        = errorf("invalid fernet signature")
 	errInvalidCiphertext = errorf("invalid fernet ciphertext length")
-	errInvalidPadding   = errorf("invalid pkcs7 padding")
+	errInvalidPadding    = errorf("invalid pkcs7 padding")
 )
 
 type strErr string

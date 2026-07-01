@@ -45,6 +45,17 @@ func (a *irAdapterForTest) SerializeAnthropicResponse(irResp *ir.InternalRespons
 	return ir.SerializeAnthropicResponse(irResp, clientModel)
 }
 
+// Phase E (2026-07-01): Responses API methods (Responses client target).
+// Mirrors production irAdapter in cmd/gateway/main.go so the test mock
+// stays structurally compatible with IRConverter interface.
+func (a *irAdapterForTest) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	return chunk.SerializeResponses(itemID)
+}
+
+func (a *irAdapterForTest) SerializeResponsesResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeResponsesResponse(irResp, clientModel)
+}
+
 // TestIRConverter_Q3_OpenAI_To_Anthropic tests the Q3 path:
 // OpenAI client → irAdapter.ParseOpenAI → IR → irAdapter.SerializeAnthropic → Anthropic upstream.
 func TestIRConverter_Q3_OpenAI_To_Anthropic(t *testing.T) {
@@ -185,12 +196,12 @@ func TestIRConverter_Q3_OpenAI_To_Anthropic(t *testing.T) {
 // Anthropic client → irAdapter.ParseAnthropic → IR → irAdapter.SerializeOpenAI → OpenAI upstream.
 func TestIRConverter_Q2_Anthropic_To_OpenAI(t *testing.T) {
 	tests := []struct {
-		name         string
+		name          string
 		anthropicBody string
-		wantModel    string
-		wantSystem   string
-		wantMsgCount int
-		wantTools    bool
+		wantModel     string
+		wantSystem    string
+		wantMsgCount  int
+		wantTools     bool
 	}{
 		{
 			name: "basic message",
@@ -329,10 +340,10 @@ func TestIRConverter_FinalizeOpenAIUpstreamBody_IRPath(t *testing.T) {
 		RawModel:     "gpt-4o",
 	}
 	params := &ExecParams{
-		R:             req,
-		BodyBytes:     []byte(anthropicBody),
-		ClientModel:   "claude-3-5-sonnet",
-		OutboundModel: "gpt-4o",
+		R:              req,
+		BodyBytes:      []byte(anthropicBody),
+		ClientModel:    "claude-3-5-sonnet",
+		OutboundModel:  "gpt-4o",
 		ClientProtocol: "anthropic-messages",
 	}
 
@@ -385,10 +396,10 @@ func TestIRConverter_PrepareAnthropicRequestBody_IRPath(t *testing.T) {
 		RawModel:     "claude-3-5-sonnet",
 	}
 	params := &ExecParams{
-		R:             req,
-		BodyBytes:     []byte(openAIBody),
-		ClientModel:   "gpt-4o",
-		OutboundModel: "claude-3-5-sonnet",
+		R:              req,
+		BodyBytes:      []byte(openAIBody),
+		ClientModel:    "gpt-4o",
+		OutboundModel:  "claude-3-5-sonnet",
 		ClientProtocol: "openai-completions",
 	}
 
