@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
@@ -117,6 +118,9 @@ type Handler struct {
 
 	// approvalMgr (2026-06-27) 会话审批管理器，用于审批高风险会话
 	approvalMgr *sessionaudit.ApprovalManager
+	// attachmentStorage (2026-07-01) 附件存储（来自 domains/attachments.Storage），
+	// 用于 admin 端做存储目录的清理/统计。nil 表示附件功能未开启。
+	attachmentStorage *attachments.Storage
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -345,6 +349,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	mux.HandleFunc("/api/auth/logout", h.handleLogout)
+	mux.HandleFunc("/api/system/version", h.handleSystemVersion) // Public endpoint for frontend version display
 	// JWT-authenticated routes (JWT or admin key)
 	mux.Handle("/v1/keys/apply", h.admin(h.handleV1KeysApply))
 
@@ -448,7 +453,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/catalog/", h.superAdmin(h.handleCatalog))
 	mux.HandleFunc("/api/tags", h.superAdmin(h.handleTags))
 	mux.HandleFunc("/api/system/background-tasks", h.admin(h.handleSystemTasks))
-	mux.HandleFunc("/api/system/version", admin(h.handleSystemVersion))
+	// /api/system/version is registered as public route above
 	mux.HandleFunc("/api/system/memora-status", h.admin(h.handleMemoraStatus))
 	mux.HandleFunc("/api/system/memora-ping", h.admin(h.handleMemoraPing))
 	mux.HandleFunc("/api/system/memora-sink", h.admin(h.handleMemoraSinkControl))
