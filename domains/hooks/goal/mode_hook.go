@@ -163,7 +163,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 			}
 			if won {
 				return &response.InterceptResult{
-					InjectFollowUp: h.buildContinueMessage(req),
+					InjectFollowUp: h.buildContinueMessage(ctx, req),
 					Action:         "goal_continue",
 				}, nil
 			}
@@ -204,7 +204,7 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 		if won {
 			req := &response.InterceptRequest{SessionID: meta.SessionID, TenantID: meta.TenantID, ClientModel: meta.ClientModel}
 			return &response.EndResult{
-				InjectFollowUp: h.buildContinueMessage(req),
+				InjectFollowUp: h.buildContinueMessage(ctx, req),
 				Action:         "goal_continue",
 			}, nil
 		}
@@ -257,8 +257,8 @@ func (h *ModeHook) detectKeyword(req *response.InterceptRequest) (bool, string) 
 }
 
 // buildContinueMessage constructs a continuation request.
-func (h *ModeHook) buildContinueMessage(req *response.InterceptRequest) []byte {
-	prompts := NewPrompts(LocaleZhCN) // Default to Chinese, can be enhanced to detect from request
+func (h *ModeHook) buildContinueMessage(ctx context.Context, req *response.InterceptRequest) []byte {
+	prompts := NewPromptsFromContext(ctx) // locale resolved from request context
 	reqBody := map[string]interface{}{
 		"model":    req.ClientModel,
 		"messages": []map[string]string{{"role": "user", "content": prompts.ContinueNextStep()}},
@@ -275,7 +275,7 @@ func (h *ModeHook) triggerAudit(ctx context.Context, req *response.InterceptRequ
 		model = "auto"
 	}
 
-	prompts := NewPrompts(LocaleZhCN)
+	prompts := NewPromptsFromContext(ctx) // locale resolved from request context
 	auditPrompt := prompts.AuditStarted() + "\n" + `Review the task execution and return JSON:
 {"issues": [{"severity": "high/medium/low", "description": "...", "fix": "..."}], "summary": "Overall assessment"}`
 

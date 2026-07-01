@@ -82,7 +82,7 @@ func (h *TriggerHook) InterceptNonStream(ctx context.Context, req *response.Inte
 		"tokens_used", req.TokensUsed,
 	)
 
-	handoffMsg := h.buildHandoffMessage(req)
+	handoffMsg := h.buildHandoffMessage(ctx, req)
 
 	if h.db != nil {
 		record := &HandoffRecord{
@@ -137,7 +137,7 @@ func (h *TriggerHook) InterceptStreamEnd(ctx context.Context, meta *response.Str
 
 	slog.Info("handoff_triggered_after_stream", "session_id", meta.SessionID, "reason", reason)
 
-	handoffMsg := h.buildHandoffMessage(req)
+	handoffMsg := h.buildHandoffMessage(ctx, req)
 
 	if h.db != nil {
 		record := &HandoffRecord{
@@ -191,10 +191,10 @@ func (h *TriggerHook) shouldTriggerHandoff(ctx context.Context, req *response.In
 }
 
 // buildHandoffMessage constructs the handoff request.
-func (h *TriggerHook) buildHandoffMessage(req *response.InterceptRequest) []byte {
+func (h *TriggerHook) buildHandoffMessage(ctx context.Context, req *response.InterceptRequest) []byte {
 	skillName := h.loadSetting(req.TenantID, "handoff.auto_control.skill_name", h.config.SkillName).(string)
 
-	prompts := goal.NewPrompts(goal.LocaleZhCN) // Default to Chinese
+	prompts := goal.NewPromptsFromContext(ctx) // locale resolved from request context
 	content := fmt.Sprintf("/%s\n\n%s\nCurrent: tokens=%d, context=%d, messages=%d",
 		skillName,
 		prompts.HandoffPrompt(fmt.Sprintf("tokens=%d", req.TokensUsed)),

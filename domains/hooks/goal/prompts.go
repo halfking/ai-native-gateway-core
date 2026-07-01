@@ -2,21 +2,27 @@
 package goal
 
 import (
+	"context"
 	"fmt"
-	"strings"
+	"net/http"
+
+	"github.com/kaixuan/llm-gateway-go/i18n"
 )
 
-// Locale represents a language/region setting.
-type Locale string
+// Locale is an alias for i18n.Locale so existing call sites keep compiling
+// while locale resolution is unified through the i18n package.
+type Locale = i18n.Locale
 
+// Locale constants mirror the historical names; they map onto the canonical
+// i18n.Locale values.
 const (
-	LocaleZhCN Locale = "zh-CN" // Simplified Chinese
-	LocaleEnUS Locale = "en-US" // English (US)
+	LocaleZhCN = i18n.ZhCN // Simplified Chinese
+	LocaleEnUS = i18n.En   // English (US)
 )
 
 // Prompts contains all internationalized prompt templates.
 type Prompts struct {
-	locale Locale
+	locale i18n.Locale
 }
 
 // NewPrompts creates a prompts instance for the given locale.
@@ -25,6 +31,13 @@ func NewPrompts(locale Locale) *Prompts {
 		locale = LocaleZhCN // Default to Chinese
 	}
 	return &Prompts{locale: locale}
+}
+
+// NewPromptsFromContext resolves the locale from the request context (set by
+// the locale middleware) and builds a Prompts instance. This is the preferred
+// constructor for hooks that receive the request's context.Context.
+func NewPromptsFromContext(ctx context.Context) *Prompts {
+	return &Prompts{locale: i18n.LocaleFromContext(ctx)}
 }
 
 // ContinueNextStep returns the prompt for continuing to next step.
@@ -111,21 +124,21 @@ func (p *Prompts) AuditFailed(issueCount int) string {
 	}
 }
 
-// DetectLocaleFromRequest attempts to detect locale from request context.
-// Falls back to zh-CN if unable to determine.
+// DetectLocaleFromRequest is retained for backward compatibility but now
+// delegates to i18n's matcher-based detection. New code should use
+// NewPromptsFromContext (which reads the locale the middleware stored on the
+// request context) rather than calling this directly.
 func DetectLocaleFromRequest(acceptLanguage string) Locale {
 	if acceptLanguage == "" {
 		return LocaleZhCN
 	}
-
-	// Simple detection based on Accept-Language header
-	lower := strings.ToLower(acceptLanguage)
-	if strings.Contains(lower, "en") {
-		return LocaleEnUS
-	}
-	if strings.Contains(lower, "zh") {
+	// Construct a throwaway request so i18n.Detect can parse the header. This
+	// preserves the original signature while reusing the shared matcher.
+	r, _ := http.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Accept-Language", acceptLanguage)
+	loc := i18n.Detect(r, string(LocaleZhCN))
+	if loc == "" {
 		return LocaleZhCN
 	}
-
-	return LocaleZhCN // Default
+	return loc
 }
