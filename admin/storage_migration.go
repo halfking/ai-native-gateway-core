@@ -337,7 +337,7 @@ func collectMigrationFiles(dir string) ([]string, int64, error) {
 }
 
 // copyFile 复制单个文件，自动创建目标父目录。保留 0644 权限。
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
@@ -345,13 +345,17 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() {
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err
