@@ -179,7 +179,7 @@ func TestRotationProducesBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	scanner := bufio.NewScanner(gz)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	found := false
@@ -229,7 +229,7 @@ func waitForGzipMagic(t *testing.T, path string, timeout time.Duration) []byte {
 		f, err := os.Open(path)
 		if err == nil {
 			_, err := io.ReadFull(f, magic)
-			f.Close()
+			_ = f.Close()
 			if err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
 				return magic
 			}
@@ -264,7 +264,7 @@ func TestReconfigure(t *testing.T) {
 	if _, err := Init(cfg, slog.LevelInfo); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer Shutdown()
+	defer func() { _ = Shutdown() }()
 
 	// 热加载新参数
 	newCfg := Config{MaxSizeMB: 50, MaxBackups: 5, MaxAgeDays: 30, Compress: false}
@@ -293,7 +293,7 @@ func TestReconfigure(t *testing.T) {
 
 // TestReconfigure_NotEnabled 验证文件日志未启用时 Reconfigure 返回错误。
 func TestReconfigure_NotEnabled(t *testing.T) {
-	Shutdown() // 确保未启用
+	_ = Shutdown() // 确保未启用
 	err := Reconfigure(Config{MaxSizeMB: 50})
 	if err == nil {
 		t.Error("expected error when file logging not enabled")
@@ -309,7 +309,7 @@ func TestListFiles(t *testing.T) {
 	if _, err := Init(cfg, slog.LevelInfo); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer Shutdown()
+	defer func() { _ = Shutdown() }()
 
 	// 写一条日志，确保当前文件存在
 	slog.Info("test message")
@@ -354,7 +354,7 @@ func TestListFiles(t *testing.T) {
 
 // TestActiveConfig_Disabled 验证文件日志未启用时 ActiveConfig 返回空。
 func TestActiveConfig_Disabled(t *testing.T) {
-	Shutdown()
+	_ = Shutdown()
 	cfg := ActiveConfig()
 	if cfg.File != "" {
 		t.Errorf("File = %q, want empty when disabled", cfg.File)
