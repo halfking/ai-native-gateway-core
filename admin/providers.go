@@ -101,7 +101,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 		if decErr != nil {
 			healthStatus = "error"
 			errMsg = "decrypt failed"
-			results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg})
+			results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg}) //nolint:staticcheck // SA4010 false positive: results is read after loop
 			continue
 		}
 
@@ -120,7 +120,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 			WHERE id = $3
 		`, healthStatus, errMsg, credID)
 
-		results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg})
+		results = append(results, credResult{CredentialID: credID, Label: label, Status: healthStatus, Error: errMsg}) //nolint:staticcheck // SA4010 false positive: results is read after loop
 		checked++
 	}
 
@@ -308,11 +308,12 @@ func (h *Handler) handleProvidersRoot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		h.listProviders(w, r)
-	} else if r.Method == http.MethodPost {
+	case http.MethodPost:
 		h.createProvider(w, r)
-	} else {
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
@@ -328,11 +329,12 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 	remaining := path[len(stripPrefix):]
 
 	if remaining == "" {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			h.listProviders(w, r)
-		} else if r.Method == http.MethodPost {
+		case http.MethodPost:
 			h.createProvider(w, r)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
@@ -365,11 +367,12 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 
 	switch subPath {
 	case "":
-		if r.Method == http.MethodPatch {
+		switch r.Method {
+		case http.MethodPatch:
 			h.updateProvider(w, r, providerID)
-		} else if r.Method == http.MethodGet {
+		case http.MethodGet:
 			h.getProvider(w, r, providerID)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "probe-url":
@@ -391,19 +394,21 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "diagnose":
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			h.startDiagnose(w, r, providerID)
-		} else if r.Method == http.MethodGet {
+		case http.MethodGet:
 			h.getDiagnoseResult(w, r, providerID)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "models":
-		if r.Method == http.MethodDelete {
+		switch r.Method {
+		case http.MethodDelete:
 			h.clearProviderModels(w, r, providerID)
-		} else if r.Method == http.MethodGet || r.Method == http.MethodPost {
+		case http.MethodGet, http.MethodPost:
 			h.getProviderModels(w, r, providerID)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "models/":
@@ -1039,11 +1044,12 @@ func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error
 
 func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Request, providerID int, credPath string) {
 	if credPath == "" {
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			h.addCredential(w, r, providerID)
-		} else if r.Method == http.MethodGet {
+		case http.MethodGet:
 			h.listCredentials(w, r, providerID)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
@@ -1066,11 +1072,12 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 
 	switch subPath {
 	case "":
-		if r.Method == http.MethodPatch {
+		switch r.Method {
+		case http.MethodPatch:
 			h.updateCredential(w, r, providerID, credID)
-		} else if r.Method == http.MethodDelete {
+		case http.MethodDelete:
 			h.deleteCredential(w, r, providerID, credID)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case "reveal":

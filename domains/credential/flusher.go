@@ -103,7 +103,7 @@ func (f *BanditFlusher) Flush() {
 		f.mu.Unlock()
 		return
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck // Go standard pattern for commit-then-rollback
 
 	successCount := 0
 	failCount := 0

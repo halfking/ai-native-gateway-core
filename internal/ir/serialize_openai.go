@@ -243,10 +243,21 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 			}
 		case "image":
 			if block.Image != nil {
+				// 序列化回 OpenAI image_url 格式。
+				// 如果是从 Anthropic base64 转来的（URL 为空但 Data 有值），
+				// 重建 data URI 以保证 OpenAI 上游可读。
+				url := block.Image.URL
+				if url == "" && block.Image.Data != "" {
+					mt := block.Image.MediaType
+					if mt == "" {
+						mt = "image/png"
+					}
+					url = "data:" + mt + ";base64," + block.Image.Data
+				}
 				result = append(result, map[string]any{
 					"type": "image_url",
 					"image_url": map[string]any{
-						"url": block.Image.URL,
+						"url": url,
 					},
 				})
 			}

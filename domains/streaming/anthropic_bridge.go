@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -654,7 +654,7 @@ func readAnthropicSSEEvent(ctx context.Context, reader io.Reader) (eventType str
 			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		case strings.HasPrefix(line, ":"):
+		case strings.HasPrefix(line, ":"): //nolint:staticcheck // matches SSE comment lines (heartbeat)
 		}
 		if rerr != nil {
 			if len(dataLines) > 0 {
@@ -718,7 +718,7 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 		}
 		out["messages"] = rest
 	}
-	if src.ReasoningEffort != "" {
+	if src.ReasoningEffort != "" { //nolint:staticcheck // reasoning_effort mapping branch reserved for future per-model routing
 		// OpenAI's reasoning_effort is currently not a direct Anthropic
 		// parameter; map to thinking budget if model supports it.
 		// The executor decides per-model routing.

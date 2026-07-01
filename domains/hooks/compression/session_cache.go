@@ -149,7 +149,7 @@ type l1Entry struct {
 type SessionCache struct {
 	mu   sync.Mutex
 	l1   map[string]*l1Entry // key = tenantID+":"+gwSessionID
-	l1sz int //nolint:unused
+	l1sz int                 //nolint:unused
 
 	redis SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db    SessionCacheDB      // nil = L3 disabled (tests / no DB)

@@ -270,7 +270,7 @@ func (c *Checker) loadPIIPatterns() error {
 		}
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		pattern := &PIIPattern{}
@@ -340,7 +340,7 @@ func (c *Checker) loadToxicKeywords() error {
 		}
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		word := &ToxicKeyword{}

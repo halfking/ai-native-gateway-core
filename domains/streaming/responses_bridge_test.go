@@ -185,6 +185,187 @@ func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
 	assert.Contains(t, body, `\"city\":\"SF\"`)
 }
 
+// TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks covers
+// the realistic Anthropic tool-use case where the JSON arguments are
+// streamed across multiple input_json_delta events. Each subsequent
+// delta must carry the SAME item_id (the tool_use id from the
+// preceding content_block_start) so the Responses API client can
+// correlate the partial arguments to the correct function call.
+func TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_multi","usage":{"input_tokens":5,"output_tokens":0}}}` + "\n",
+		"\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_multi_xyz","name":"get_weather","input":{}}}` + "\n",
+		"\n",
+		// First chunk of arguments
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}` + "\n",
+		"\n",
+		// Second chunk — this is where the IR parser leaves tc.ID empty,
+		// so the bridge's toolCallIDs state must supply it.
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Tokyo\"}"}}` + "\n",
+		"\n",
+		// Third chunk
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}` + "\n",
+		"\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n",
+		"\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// Find all function_call_arguments.delta data lines and extract
+	// each one to verify they all carry the same item_id.
+	lines := strings.Split(body, "\n")
+	var argDeltas []string
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			argDeltas = append(argDeltas, payload)
+			_ = i // silence unused
+		}
+	}
+	require.GreaterOrEqual(t, len(argDeltas), 3,
+		"expected at least 3 args delta events, got %d", len(argDeltas))
+
+	// Every delta must carry the same item_id — that's the regression
+	// test for the toolCallIDs bridge state.
+	for i, payload := range argDeltas {
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &parsed))
+		itemID, _ := parsed["item_id"].(string)
+		assert.Equal(t, "toolu_multi_xyz", itemID,
+			"arg delta #%d item_id = %q, want toolu_multi_xyz (regression: bridge state must track id across chunks)", i, itemID)
+	}
+}
+
+// TestStreamAnthropicSSEToResponses_ToolUse_SecondToolCall verifies
+// that a second tool_use block (different Index) gets its own id
+// tracked independently, and that the bridge doesn't confuse the two.
+func TestStreamAnthropicSSEToResponses_ToolUse_SecondToolCall(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_m2","usage":{"input_tokens":5,"output_tokens":0}}}` + "\n",
+		"\n",
+		// First tool use — input is the partial JSON itself so the args
+		// delta will carry the real arguments (not just "{}").
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_first","name":"get_weather","input":{}}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"SF\"}"}}` + "\n",
+		"\n",
+		// Second tool use — its content_block_start emits an empty
+		// arguments delta, then the real args come through the delta.
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_second","name":"get_time","input":{}}}` + "\n",
+		"\n",
+		"event: content_block_delta\n",
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"tz\":\"UTC\"}"}}` + "\n",
+		"\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}` + "\n",
+		"\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n",
+		"\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// Collect every function_call_arguments.delta event keyed by item_id.
+	// (The bridge emits TWO events per tool: an empty one from the
+	// content_block_start with input:{}, and a real one from the
+	// content_block_delta with partial_json. We're interested in the
+	// one that carries the real arguments.)
+	lines := strings.Split(body, "\n")
+	allDeltas := map[string][]string{}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			itemID, _ := parsed["item_id"].(string)
+			delta, _ := parsed["delta"].(string)
+			allDeltas[itemID] = append(allDeltas[itemID], delta)
+		}
+	}
+
+	// The FIRST tool gets two delta events (empty + "{"city":"SF"}").
+	// The SECOND tool also gets two delta events (empty + "{"tz":"UTC"}").
+	// We assert the LAST (non-empty) delta for each item_id is correctly
+	// attributed.
+	require.NotEmpty(t, allDeltas["toolu_first"], "first tool should have deltas")
+	require.NotEmpty(t, allDeltas["toolu_second"], "second tool should have deltas")
+
+	// The empty {} delta from content_block_start precedes the real one,
+	// so the LAST delta carries the actual arguments.
+	lastFirst := allDeltas["toolu_first"][len(allDeltas["toolu_first"])-1]
+	lastSecond := allDeltas["toolu_second"][len(allDeltas["toolu_second"])-1]
+	assert.Equal(t, `{"city":"SF"}`, lastFirst,
+		"first tool's last delta should be its real args")
+	assert.Equal(t, `{"tz":"UTC"}`, lastSecond,
+		"second tool's last delta should be its real args")
+
+	// Every delta MUST be attributed to the correct item_id (no
+	// cross-contamination between the two tools).
+	assert.Equal(t, `{"city":"SF"}`, allDeltas["toolu_first"][len(allDeltas["toolu_first"])-1],
+		"toolu_first's last delta should be its real args")
+	assert.Equal(t, `{"tz":"UTC"}`, allDeltas["toolu_second"][len(allDeltas["toolu_second"])-1],
+		"toolu_second's last delta should be its real args")
+	assert.NotContains(t, allDeltas["toolu_second"][len(allDeltas["toolu_second"])-1], "SF",
+		"toolu_second should not have toolu_first's city value")
+	assert.NotContains(t, allDeltas["toolu_first"][len(allDeltas["toolu_first"])-1], "UTC",
+		"toolu_first should not have toolu_second's tz value")
+}
+
 // TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData ensures that
 // mislabeled upstream chunks (e.g. a proxy accidentally emitting OpenAI
 // chunks on an Anthropic SSE stream) are dropped, not forwarded.

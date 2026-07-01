@@ -116,9 +116,7 @@ func ConvertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 			"text": textContent,
 		})
 	}
-	for _, tc := range toolCalls {
-		contentBlocks = append(contentBlocks, tc)
-	}
+	contentBlocks = append(contentBlocks, toolCalls...)
 	if len(contentBlocks) == 0 {
 		contentBlocks = append(contentBlocks, map[string]any{"type": "text", "text": ""})
 	}

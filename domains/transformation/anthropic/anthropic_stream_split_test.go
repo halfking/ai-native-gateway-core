@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // streamSourceServer spins up an upstream HTTP server that emits the

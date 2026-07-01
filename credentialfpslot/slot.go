@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
+	"github.com/kaixuan/llm-gateway-go/domains/identity" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/redis/go-redis/v9"
 )
 
@@ -445,7 +445,7 @@ func (m *Manager) detailedStatsRedis(ctx context.Context, credentialID, limit in
 		getCmds[slot] = pipe.Get(ctx, key)
 		ttlCmds[slot] = pipe.TTL(ctx, key)
 	}
-	pipe.Exec(ctx)
+	_, _ = pipe.Exec(ctx) //nolint:errcheck // fire-and-forget pipe command, error propagated via subsequent read
 
 	for slot := 0; slot < limit; slot++ {
 		holder, err := getCmds[slot].Result()

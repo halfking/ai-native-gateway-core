@@ -18,17 +18,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
@@ -2003,7 +2003,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	var apiKeyID *int
-	var tenantID string = "default"
+	var tenantID = "default"
 	var applicationID *int
 	keyPrefix, keyOwner, appCode := "", "", ""
 	if keyInfo != nil {
@@ -2419,7 +2419,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// requests never had their completion_tokens/cache tokens extracted from the response.
 	// This caused request_logs to show NULL for completion_tokens and cache_*_tokens even
 	// when the upstream response contained a complete usage block.
-	if result.ResponseBody != nil && len(result.ResponseBody) > 0 {
+	if len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
 		if pt > 0 || ct > 0 {
 			// Only overwrite if not already set from streaming capture
@@ -3001,7 +3001,7 @@ func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, keyIn
 		return
 	}
 	var apiKeyID *int
-	var tenantID string = "default"
+	var tenantID = "default"
 	if keyInfo != nil {
 		apiKeyID = &keyInfo.ID
 		tenantID = keyInfo.TenantID

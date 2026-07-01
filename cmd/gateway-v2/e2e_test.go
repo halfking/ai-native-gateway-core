@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
-	"github.com/kaixuan/llm-gateway-go/domains/provider"
+	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/provider"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TestE2E_PipelineExecutes 端到端测试：HTTP 请求 → Pipeline → 响应

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"

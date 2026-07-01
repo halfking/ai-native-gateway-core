@@ -27,6 +27,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
 // databaseStorageInfo Postgres 实例维度的存储信息
@@ -350,9 +352,18 @@ func queryTableSizes(ctx context.Context, h *Handler, limit int) ([]tableSizeInf
 	return out, totalBytes, humanBytes(totalBytes), nil
 }
 
-// resolveLogDir 探测 lumberjack 日志目录。优先 ./var/log；找不到时
-// 退到当前工作目录。永远返回绝对路径，调用方不应当 panic。
+// resolveLogDir 探测 lumberjack 日志目录。
+// 2026-07-02: 优先读 logging.ActiveConfig().File 的真实目录（不再猜测）。
+// 兜底：探测常见候选路径 ./var/log、./logs、/var/log/llm-gateway-go。
+// 永远返回绝对路径，调用方不应当 panic。
 func resolveLogDir() (string, error) {
+	// 优先：从 lumberjack 运行时配置读真实路径
+	if cfg := logging.ActiveConfig(); cfg.File != "" {
+		abs, err := filepath.Abs(filepath.Dir(cfg.File))
+		if err == nil {
+			return abs, nil
+		}
+	}
 	candidates := []string{
 		"./var/log",
 		"./logs",

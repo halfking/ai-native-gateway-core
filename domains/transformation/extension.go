@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // IRExtensionExtractor 从客户端请求中提取非标参数。

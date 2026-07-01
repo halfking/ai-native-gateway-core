@@ -28,11 +28,12 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	remaining := r.URL.Path[len("/api/models/"):]
 
 	if remaining == "" {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			h.listModels(w, r)
-		} else if r.Method == http.MethodPost {
+		case http.MethodPost:
 			h.createModel(w, r)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
@@ -71,11 +72,12 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case subPath == "":
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			h.getModel(w, r, id)
-		} else if r.Method == http.MethodPatch {
+		case http.MethodPatch:
 			h.updateModel(w, r, id)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	case subPath == "aliases":
@@ -119,11 +121,12 @@ func (h *Handler) handleModelsRoot(w http.ResponseWriter, r *http.Request) {
 	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		h.listModels(w, r)
-	} else if r.Method == http.MethodPost {
+	case http.MethodPost:
 		h.createModel(w, r)
-	} else {
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

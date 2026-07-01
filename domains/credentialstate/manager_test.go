@@ -15,7 +15,7 @@ func TestManager_UpdateOnSuccess(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	ctx := context.Background()
+	ctx := context.Background() //nolint:staticcheck // SA4006: kept for test setup symmetry with future ctx-aware tests
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -54,7 +54,7 @@ func TestManager_UpdateOnFailure(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	ctx := context.Background()
+	ctx := context.Background() //nolint:staticcheck // SA4006: kept for test setup symmetry with future ctx-aware tests
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -98,7 +98,7 @@ func TestManager_CacheHierarchy(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	ctx := context.Background()
+	ctx := context.Background() //nolint:staticcheck // SA4006: kept for test setup symmetry with future ctx-aware tests
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -133,7 +133,7 @@ func TestManager_UpdateOnFailure_IgnoresCanceled(t *testing.T) {
 		t.Skip("skipping integration test")
 	}
 
-	ctx := context.Background()
+	ctx := context.Background() //nolint:staticcheck // SA4006: kept for test setup symmetry with future ctx-aware tests
 	db := setupTestDB(t)
 	defer db.Close()
 

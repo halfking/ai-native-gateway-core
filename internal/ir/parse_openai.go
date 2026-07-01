@@ -3,6 +3,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ParseOpenAI parses an OpenAI Chat Completions request body into InternalRequest.
@@ -208,20 +209,77 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 }
 
 // parseOpenAIImageBlock parses an OpenAI image_url content block.
+//
+// 增强逻辑（2026-07-01）：区分 HTTP(S) URL 和 data URI (base64)。
+// 原实现将所有 url 统一存入 ImageSource.URL，丢失了 base64 的 media type 和
+// data 信息，导致协议转换（OpenAI→Anthropic）时 base64 图片无法正确还原为
+// Anthropic 的 source={type:base64, media_type, data} 结构，上游 LLM 收到的
+// 图片不可用（这是"图片经网关后丢失"bug 的根因）。
+//
+// 现在：
+//   - data:image/png;base64,...  → Type="base64", MediaType+Data 被解析填充
+//   - https://example.com/x.png  → Type="url"
+//
+// URL 字段始终保留原始值（兼容旧序列化路径）。
 func parseOpenAIImageBlock(block map[string]any) *ImageSource {
 	img := &ImageSource{Type: "url"}
 
-	if urlObj, ok := block["image_url"].(map[string]any); ok {
-		if url, ok := urlObj["url"].(string); ok {
-			img.URL = url
-		}
-		if mt, ok := urlObj["detail"].(string); ok {
-			// detail can be "low", "high", "auto"
-			_ = mt
-		}
+	urlObj, ok := block["image_url"].(map[string]any)
+	if !ok {
+		return img
+	}
+
+	url, _ := urlObj["url"].(string)
+	img.URL = url
+
+	// detail can be "low", "high", "auto" — 暂不透传，保留兼容
+	if detail, ok := urlObj["detail"].(string); ok {
+		_ = detail
+	}
+
+	// 解析 data URI，填充 base64 专用字段
+	if mediaType, data, isBase64 := parseOpenAIDataURI(url); isBase64 {
+		img.Type = "base64"
+		img.MediaType = mediaType
+		img.Data = data
 	}
 
 	return img
+}
+
+// parseOpenAIDataURI 尽力解析 data URI，返回 (mediaType, base64Data, ok)。
+// 非严格校验：即使格式略有偏差也尽量提取 media type 和 data。
+// 非 data URI 直接返回 ok=false。
+//
+// 例如 "data:image/png;base64,iVBOR..." → ("image/png", "iVBOR...", true)
+func parseOpenAIDataURI(uri string) (mediaType, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", false
+	}
+	body := uri[len(prefix):]
+	comma := strings.IndexByte(body, ',')
+	if comma < 0 {
+		return "", "", false
+	}
+	header := body[:comma]
+	payload := body[comma+1:]
+
+	mediaType = "application/octet-stream"
+	isBase64 := false
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		switch {
+		case part == "base64":
+			isBase64 = true
+		case part != "" && !strings.Contains(part, "=") && strings.Contains(part, "/"):
+			mediaType = part
+		}
+	}
+	if !isBase64 || payload == "" {
+		return "", "", false
+	}
+	return mediaType, payload, true
 }
 
 // parseOpenAIToolCall parses an OpenAI tool_call.

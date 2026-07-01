@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
+	"github.com/kaixuan/llm-gateway-go/domain"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TestCachePipeline_PreAndPostStages 验证 Lookup/Save Hook 可拼装到 Pipeline 的

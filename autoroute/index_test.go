@@ -56,9 +56,10 @@ func TestIndex_Recommend_ThreeTierFunnel(t *testing.T) {
 	primaryCount := 0
 	secondaryCount := 0
 	for _, sc := range resultsSmall {
-		if sc.Candidate.Tier == "primary" {
+		switch sc.Candidate.Tier {
+		case "primary":
 			primaryCount++
-		} else if sc.Candidate.Tier == "secondary" {
+		case "secondary":
 			secondaryCount++
 		}
 	}

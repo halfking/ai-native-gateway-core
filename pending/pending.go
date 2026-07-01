@@ -199,8 +199,13 @@ func (s *Store) GetLatest(ctx context.Context, sessionID string) (*Response, str
 	if sessionID == "" {
 		return nil, "", false, errors.New("pending: SessionID required")
 	}
-	// ZRANGE with REV + LIMIT 1 = most-recent.
-	zs, err := s.rdb.ZRevRange(ctx, indexKey(sessionID), 0, 0).Result()
+	// ZRANGE with REV + LIMIT 1 = most-recent (Redis 6.2+).
+	zs, err := s.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   indexKey(sessionID),
+		Start: 0,
+		Stop:  0,
+		Rev:   true,
+	}).Result()
 	if err != nil {
 		return nil, "", false, fmt.Errorf("pending: zrevrange: %w", err)
 	}

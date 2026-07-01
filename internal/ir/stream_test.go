@@ -732,8 +732,8 @@ func TestRoundTrip_OpenAI_ToOpenAI(t *testing.T) {
 
 	// Compare JSON (order-independent)
 	var origMap, serMap map[string]any
-	json.Unmarshal([]byte(origJSON), &origMap)
-	json.Unmarshal([]byte(serJSON), &serMap)
+	_ = json.Unmarshal([]byte(origJSON), &origMap) //nolint:errcheck // best-effort JSON comparison in test
+	_ = json.Unmarshal([]byte(serJSON), &serMap)   //nolint:errcheck // best-effort JSON comparison in test
 
 	origBytes, _ := json.Marshal(origMap)
 	serBytes, _ := json.Marshal(serMap)

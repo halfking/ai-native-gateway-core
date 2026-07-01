@@ -8,9 +8,9 @@ package plugins
 import (
 	"context"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domain/governance"
-	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security"
+	"github.com/kaixuan/llm-gateway-go/domain"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain/governance"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	legacysec "github.com/kaixuan/llm-gateway-go/domains/hooks/security" //nolint:depguard
 )
 
 // PromptInjectionChecker 提示词注入检查插件。

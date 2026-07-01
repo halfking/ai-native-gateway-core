@@ -1,6 +1,6 @@
 package streaming
 
-import "github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+import "github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard
 
 func newAuditEvent(requestID string) *audit.EventBuilder {
 	b := audit.NewEvent()

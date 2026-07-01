@@ -29,27 +29,27 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/security"
-	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
-	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/domains/integration"
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
-	"github.com/kaixuan/llm-gateway-go/domains/provider"
-	"github.com/kaixuan/llm-gateway-go/domains/routing"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domain"                                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"           //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/security"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector" //nolint:depguard
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"      //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/identity"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/integration"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/provider"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 )

@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TriggerConfig contains configuration for handoff triggering.

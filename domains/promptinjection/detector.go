@@ -206,7 +206,7 @@ func (d *Detector) loadRules() error {
 		}
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		rule := &Rule{}
@@ -448,7 +448,7 @@ func (d *Detector) updatePolicyStats(ctx context.Context, tenantID string, block
 	if blocked {
 		blockedCount = 1
 	}
-	d.db.ExecContext(ctx, query, blockedCount, tenantID)
+	_, _ = d.db.ExecContext(ctx, query, blockedCount, tenantID) //nolint:errcheck // background counter update, failure logged elsewhere
 }
 
 // HeuristicEngine 启发式检测引擎

@@ -159,7 +159,7 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	}
 
 	b.mu.Lock()
-	firstCooling := b.coolingExpires.Sub(time.Now())
+	firstCooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 	if firstCooling < 898*time.Second || firstCooling > 902*time.Second {
 		t.Fatalf("expected ~900s cooling, got %v", firstCooling)
@@ -173,7 +173,7 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	b.RecordFailure(KindRateLimit) // half-open probe failure
 
 	b.mu.Lock()
-	secondCooling := b.coolingExpires.Sub(time.Now())
+	secondCooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 	if secondCooling < 898*time.Second || secondCooling > 902*time.Second {
 		t.Fatalf("expected ~900s cooling, got %v", secondCooling)
@@ -189,7 +189,7 @@ func TestTransientEscalation(t *testing.T) {
 	b.RecordFailure(KindTransient)
 
 	b.mu.Lock()
-	cooling := b.coolingExpires.Sub(time.Now())
+	cooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 	if cooling < 28*time.Second || cooling > 32*time.Second {
 		t.Fatalf("expected ~30s cooling after escalation, got %v", cooling)
@@ -351,7 +351,7 @@ func TestUpstreamDownExponentialBackoff(t *testing.T) {
 	b.RecordFailure(KindUpstreamDown)
 	b.RecordFailure(KindUpstreamDown)
 	b.mu.Lock()
-	c1 := b.coolingExpires.Sub(time.Now())
+	c1 := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 
 	if c1 < 28*time.Second || c1 > 32*time.Second {
@@ -366,7 +366,7 @@ func TestUpstreamDownExponentialBackoff(t *testing.T) {
 	b.RecordFailure(KindUpstreamDown)
 
 	b.mu.Lock()
-	c2 := b.coolingExpires.Sub(time.Now())
+	c2 := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 	if c2 < 58*time.Second || c2 > 62*time.Second {
 		t.Fatalf("expected ~60s cooling for second upstream_down, got %v", c2)
@@ -388,7 +388,7 @@ func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
 	}
 
 	b.mu.Lock()
-	cooling := b.coolingExpires.Sub(time.Now())
+	cooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
 	if cooling < 298*time.Second || cooling > 302*time.Second {
 		t.Fatalf("expected ~5min cooling for concurrent overload, got %v", cooling)

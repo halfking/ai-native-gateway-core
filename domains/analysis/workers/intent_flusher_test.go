@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 func TestIntentFlusher_FlushesPeriodically(t *testing.T) {

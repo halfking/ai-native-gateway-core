@@ -13,14 +13,14 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/domains/memory"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/pending"

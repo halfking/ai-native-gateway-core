@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,21 +35,21 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
-	"github.com/kaixuan/llm-gateway-go/domains/assets"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
@@ -316,6 +317,13 @@ func main() {
 		}
 		slog.Info("settings: registry initialised",
 			"platform_specs", len(settings.Global.AllSpecs()))
+
+		// 2026-07-02: 打通 settings_kv ↔ logging。
+		// 启动时 settings 已注册 log.* spec，读取 DB 中的覆盖值并应用到
+		// 已初始化的 lumberjack writer（热加载，无需重启）。
+		// 这样运维在 UI 改 log.max_size_mb 等配置后，重启即生效；
+		// 运行时改则通过 /api/admin/logs/config 的 Reconfigure 即时生效。
+		applyLogSettingsToLogging()
 
 		// Phase 3.2: Provider-level settings resolver
 		providerSettingsResolver = settings.NewProviderSettingsResolver(dbConn.Pool(), settings.Global)
@@ -1399,6 +1407,46 @@ func main() {
 			defer func() {
 				overrideRefresher.Stop()
 			}()
+
+			// 2026-07-02: 统一存储水位 worker。
+			// 定期检查磁盘水位，超阈值时按策略自动清理附件和日志。
+			// 受 storage.auto_cleanup_enabled 开关控制（默认关闭）。
+			attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
+			if attachmentDir == "" {
+				attachmentDir = "./data/attachments"
+			}
+			var logDirForWorker string
+			if lc := logging.ActiveConfig(); lc.File != "" {
+				logDirForWorker = filepath.Dir(lc.File)
+			}
+			retentionCfgProvider := func() bg.StorageRetentionConfig {
+				var c bg.StorageRetentionConfig
+				if b, _ := readBoolSettingPublic("storage.auto_cleanup_enabled"); b {
+					c.AutoCleanupEnabled = true
+				}
+				if v, _ := readIntSettingPublic("storage.auto_cleanup_threshold"); v > 0 {
+					c.AutoCleanupThreshold = float64(v)
+				} else {
+					c.AutoCleanupThreshold = 85
+				}
+				if v, _ := readIntSettingPublic("storage.disk_quota_percent"); v > 0 {
+					c.DiskQuotaPercent = float64(v)
+				} else {
+					c.DiskQuotaPercent = 80
+				}
+				return c
+			}
+			retentionWorker := bg.NewStorageRetentionWorker(attachmentDir, logDirForWorker, retentionCfgProvider)
+			if ttl, _ := readIntSettingPublic("storage.attachment_ttl_days"); ttl > 0 {
+				retentionWorker.AttachmentTTLDays = ttl
+			} else {
+				retentionWorker.AttachmentTTLDays = 30
+			}
+			if v, _ := readIntSettingPublic("log.delete_days"); v > 0 {
+				retentionWorker.LogDeleteDays = v
+			}
+			retentionWorker.Start(context.Background())
+			defer retentionWorker.Stop()
 			// Wire the store into the Decider so ban/pin logic
 			// runs on every decision.
 			decider.SetOverrideStore(overrideStore)
@@ -2128,4 +2176,105 @@ func (a *irAdapter) SerializeResponses(chunk *ir.StreamChunk, itemID string) str
 
 func (a *irAdapter) SerializeResponsesResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
 	return ir.SerializeResponsesResponse(irResp, clientModel)
+}
+
+// applyLogSettingsToLogging 从 settings_kv 读取 log.* 配置并应用到已初始化的
+// lumberjack writer（热加载）。在 settings registry 初始化后调用一次，使 DB 中
+// 持久化的日志轮转参数在启动时即生效。文件路径（log.file）不在热加载范围。
+//
+// 静默失败：任何读取/解析错误只记 warning，保留 env/YAML 默认值，不阻塞启动。
+func applyLogSettingsToLogging() {
+	cur := logging.ActiveConfig()
+	if cur.File == "" {
+		return // 文件日志未启用，无需同步
+	}
+	updated := false
+
+	if v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, "log.max_size_mb", ""); err == nil && src == "db" {
+		if n := parseIntSetting(v); n > 0 {
+			cur.MaxSizeMB = n
+			updated = true
+		}
+	}
+	if v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, "log.max_backups", ""); err == nil && src == "db" {
+		if n := parseIntSetting(v); n >= 0 {
+			cur.MaxBackups = n
+			updated = true
+		}
+	}
+	if v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, "log.max_age_days", ""); err == nil && src == "db" {
+		if n := parseIntSetting(v); n >= 0 {
+			cur.MaxAgeDays = n
+			updated = true
+		}
+	}
+	if v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, "log.compress", ""); err == nil && src == "db" {
+		if b, ok := parseBoolSetting(v); ok {
+			cur.Compress = b
+			updated = true
+		}
+	}
+
+	if updated {
+		if err := logging.Reconfigure(cur); err != nil {
+			slog.Warn("settings: apply log.* to logging failed", "error", err)
+		} else {
+			slog.Info("settings: log.* applied from DB (hot reload)",
+				"max_size_mb", cur.MaxSizeMB,
+				"max_backups", cur.MaxBackups,
+				"max_age_days", cur.MaxAgeDays,
+				"compress", cur.Compress)
+		}
+	}
+}
+
+// readIntSettingPublic 从 settings.Global 读 int 值（worker 配置用）。
+func readIntSettingPublic(key string) (int, string) {
+	if settings.Global == nil {
+		return 0, ""
+	}
+	v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, key, "")
+	if err != nil || len(v) == 0 {
+		return 0, ""
+	}
+	s := strings.Trim(string(v), `"`)
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, ""
+	}
+	return n, src
+}
+
+// readBoolSettingPublic 从 settings.Global 读 bool 值（worker 配置用）。
+func readBoolSettingPublic(key string) (bool, string) {
+	if settings.Global == nil {
+		return false, ""
+	}
+	v, src, err := settings.Global.EffectiveValue(settings.ScopePlatform, key, "")
+	if err != nil || len(v) == 0 {
+		return false, ""
+	}
+	s := strings.Trim(string(v), `"`)
+	return s == "true" || s == "1", src
+}
+
+// parseIntSetting 解析 settings_kv 返回的 JSON 值（可能是 "100" 或 100）。
+func parseIntSetting(raw json.RawMessage) int {
+	s := strings.Trim(string(raw), `"`)
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return -1
+}
+
+// parseBoolSetting 解析 settings_kv 返回的 JSON bool 值。
+func parseBoolSetting(raw json.RawMessage) (bool, bool) {
+	s := strings.Trim(string(raw), `"`)
+	switch strings.ToLower(s) {
+	case "true", "1":
+		return true, true
+	case "false", "0":
+		return false, true
+	}
+	return false, false
 }

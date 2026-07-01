@@ -14,9 +14,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
-	"github.com/kaixuan/llm-gateway-go/domains/memory"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -386,6 +386,27 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Attachment filesystem management endpoints (2026-07-01)
 	mux.HandleFunc("/api/admin/attachments/filesystem/stats", admin(h.handleAttachmentFilesystemStats))
 	mux.HandleFunc("/api/admin/attachments/filesystem/cleanup", h.superAdmin(h.handleAttachmentFilesystemCleanup))
+
+	// 2026-07-02: 补齐附件 DB 元数据管理路由（方法已实现，路由此前缺失）
+	mux.HandleFunc("/api/admin/attachments", admin(h.handleDataLifecycleAttachments))
+	mux.HandleFunc("/api/admin/attachments/stats", admin(h.handleDataLifecycleAttachmentStats))
+	mux.HandleFunc("/api/admin/attachments/policy", admin(h.handleDataLifecycleAttachmentPolicy))
+	mux.HandleFunc("/api/admin/attachments/cleanup/preview", admin(h.handleDataLifecycleAttachmentCleanupPreview))
+	mux.HandleFunc("/api/admin/attachments/cleanup/execute", h.superAdmin(h.handleDataLifecycleAttachmentCleanupExecute))
+	mux.HandleFunc("/api/admin/attachments/", admin(h.handleDataLifecycleAttachmentItem))
+
+	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
+	mux.HandleFunc("/api/admin/storage/config", admin(h.handleStorageConfig))
+	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
+
+	// 2026-07-02: 日志文件统一管理（轮转配置热加载/文件列表/归档/删除）
+	mux.HandleFunc("/api/admin/logs/config", admin(h.handleLogConfig))
+	mux.HandleFunc("/api/admin/logs/files", admin(h.handleLogFiles))
+	mux.HandleFunc("/api/admin/logs/stats", admin(h.handleLogStats))
+	mux.HandleFunc("/api/admin/logs/archive", h.superAdmin(h.handleLogArchive))
+	mux.HandleFunc("/api/admin/logs/cleanup", h.superAdmin(h.handleLogCleanup))
+	mux.HandleFunc("/api/admin/logs/archive/list", admin(h.handleLogArchiveList))
+
 
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).

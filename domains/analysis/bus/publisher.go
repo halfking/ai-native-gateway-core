@@ -16,7 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // Publisher 把分析事件落库（或其他持久层）。

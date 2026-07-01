@@ -129,7 +129,7 @@ func TestRebuildOpenAIAfterSummary_FailureModes(t *testing.T) {
 	// Empty summary → fail (return original body, false).
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 	ret, _ := extractOpenAI(body)
-	if newBody, ok := RebuildOpenAIAfterSummary(body, "", ret, 2); ok || newBody != nil {
+	if newBody, ok := RebuildOpenAIAfterSummary(body, "", ret, 2); ok || newBody != nil { //nolint:staticcheck // negative-path branch intentionally empty (verified below)
 		// When ok=false the function returns origBody (not nil), per v7 §7.
 		// The contract is: origBody returned when !ok. Allow either.
 	}

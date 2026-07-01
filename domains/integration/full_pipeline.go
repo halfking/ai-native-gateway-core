@@ -22,10 +22,10 @@
 package integration
 
 import (
-	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
-	"github.com/kaixuan/llm-gateway-go/domains/routing"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/routing"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // MinimalDeps 最小依赖。

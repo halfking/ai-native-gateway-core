@@ -350,11 +350,11 @@ func TestFetchModels_XiaomiMiMo_MockServer(t *testing.T) {
 	// Use a test server that returns the real Xiaomi format response
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
-			http.Error(w, "method not allowed", 405)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if auth := r.Header.Get("Authorization"); !strings.HasPrefix(auth, "Bearer ") {
-			http.Error(w, `{"error":"unauthorized"}`, 401)
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

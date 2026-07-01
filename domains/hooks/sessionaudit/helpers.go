@@ -3,7 +3,7 @@ package sessionaudithook
 import (
 	"fmt"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // 辅助函数（共享给 hook.go 和 approval_gate.go）

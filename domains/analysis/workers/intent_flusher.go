@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/assets"
+	"github.com/kaixuan/llm-gateway-go/domains/assets" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // IntentFlusher 周期 flush IntentWorker 计数到 store。

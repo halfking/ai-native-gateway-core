@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/redis/go-redis/v9"
 )
@@ -325,7 +325,7 @@ func TestDesignIntent_FNVHashIsStable(t *testing.T) {
 	// fnvHash maps string credential IDs to int credential slots. It MUST
 	// be stable across calls — otherwise the same credential could land on
 	// different semaphore slots and the rate limit would be ineffective.
-	if fnvHash("c1") != fnvHash("c1") {
+	if fnvHash("c1") != fnvHash("c1") { //nolint:staticcheck // SA4000: intentionally testing self-equality (asserting determinism)
 		t.Fatal("fnvHash must be deterministic")
 	}
 	if fnvHash("c1") == fnvHash("c2") {

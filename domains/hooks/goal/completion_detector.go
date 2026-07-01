@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // CompletionDetector detects task completion using multiple strategies.

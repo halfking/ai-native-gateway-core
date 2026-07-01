@@ -40,7 +40,7 @@ type archiveSpec struct {
 	day     int    // 1..7 — only run archiveOldPartitions on this day
 	fnName  string // SQL function name, e.g. "archive_request_logs"
 	label   string // human label for logs
-	enabled bool //nolint:unused
+	enabled bool   //nolint:unused
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {

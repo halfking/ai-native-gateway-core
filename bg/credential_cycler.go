@@ -237,10 +237,10 @@ func probeCredential(ctx context.Context, baseURL, apiKey string) (bool, string)
 		//nolint:errcheck // best-effort close
 		resp.Body.Close()
 
-		switch {
-		case resp.StatusCode == 200:
+		switch resp.StatusCode {
+		case 200:
 			return true, ""
-		case resp.StatusCode == 401 || resp.StatusCode == 403:
+		case 401, 403:
 			// Endpoint exists, but auth was rejected.
 			return false, httpStatusToMsg(resp.StatusCode, string(body))
 		}

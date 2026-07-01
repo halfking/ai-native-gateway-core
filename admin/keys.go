@@ -192,11 +192,12 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 	route := parseKeyActionRoute(remaining)
 
 	if route.kind == "root" {
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			h.createKey(w, r)
-		} else if r.Method == http.MethodGet {
+		case http.MethodGet:
 			h.listKeys(w, r)
-		} else {
+		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
@@ -294,7 +295,7 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 		for i, c := range idStr {
 			if c == '/' {
 				rest = idStr[i+1:]
-				idStr = idStr[:i]
+				idStr = idStr[:i] //nolint:staticcheck // rebind for clarity, downstream uses 'rest' not 'idStr'
 				break
 			}
 		}
@@ -321,13 +322,14 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "invalid id")
 				return
 			}
-			if r.Method == http.MethodDelete {
+			switch r.Method {
+			case http.MethodDelete:
 				h.deleteKey(w, r, id)
-			} else if r.Method == http.MethodGet {
+			case http.MethodGet:
 				h.getKeyDetail(w, r, id)
-			} else if r.Method == http.MethodPatch {
+			case http.MethodPatch:
 				h.patchKey(w, r, id)
-			} else {
+			default:
 				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
 		} else {
@@ -337,11 +339,12 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodPost {
+	switch r.Method {
+	case http.MethodPost:
 		h.createKey(w, r)
-	} else if r.Method == http.MethodGet {
+	case http.MethodGet:
 		h.listKeys(w, r)
-	} else {
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

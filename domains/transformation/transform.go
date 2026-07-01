@@ -218,12 +218,12 @@ func (m *Matrix) ruleMatches(rule map[string]any, ctx *TransformContext) bool {
 		}
 	}
 	if v, ok := match["canonical"]; ok {
-		if strings.ToLower(ctx.CanonicalName) != strings.ToLower(fmt.Sprint(v)) {
+		if !strings.EqualFold(ctx.CanonicalName, fmt.Sprint(v)) {
 			return false
 		}
 	}
 	if v, ok := match["family"]; ok {
-		if strings.ToLower(ctx.Family) != strings.ToLower(fmt.Sprint(v)) {
+		if !strings.EqualFold(ctx.Family, fmt.Sprint(v)) {
 			return false
 		}
 	}

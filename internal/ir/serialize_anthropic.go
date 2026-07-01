@@ -254,17 +254,43 @@ func serializeAnthropicContentBlock(block ContentBlock) map[string]any {
 		out["text"] = block.Text
 
 	case "image":
-		source := map[string]any{
-			"type": block.Image.Type,
+		// 根据 source.type 选择性输出字段，避免 base64 类型误带 url
+		// 或 url 类型误带 data。Anthropic API 要求：
+		//   type=base64 → media_type + data
+		//   type=url    → url
+		srcType := block.Image.Type
+		if srcType == "" {
+			// 兼容旧数据：有 Data 视为 base64，否则视为 url
+			if block.Image.Data != "" {
+				srcType = "base64"
+			} else {
+				srcType = "url"
+			}
 		}
-		if block.Image.MediaType != "" {
-			source["media_type"] = block.Image.MediaType
-		}
-		if block.Image.URL != "" {
-			source["url"] = block.Image.URL
-		}
-		if block.Image.Data != "" {
-			source["data"] = block.Image.Data
+		source := map[string]any{"type": srcType}
+		switch srcType {
+		case "base64":
+			if block.Image.MediaType != "" {
+				source["media_type"] = block.Image.MediaType
+			}
+			if block.Image.Data != "" {
+				source["data"] = block.Image.Data
+			}
+		case "url":
+			if block.Image.URL != "" {
+				source["url"] = block.Image.URL
+			}
+		default:
+			// 未知类型：尽量保留信息
+			if block.Image.MediaType != "" {
+				source["media_type"] = block.Image.MediaType
+			}
+			if block.Image.URL != "" {
+				source["url"] = block.Image.URL
+			}
+			if block.Image.Data != "" {
+				source["data"] = block.Image.Data
+			}
 		}
 		out["source"] = source
 

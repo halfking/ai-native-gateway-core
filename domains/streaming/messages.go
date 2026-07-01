@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
@@ -643,7 +643,7 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 				textParts = append(textParts, text)
 			}
 		case "tool_use":
-			args, _ := block["input"]
+			args := block["input"]
 			argsJSON, _ := json.Marshal(args)
 			toolCalls = append(toolCalls, map[string]any{
 				"id":   block["id"],
@@ -891,9 +891,7 @@ func convertChatResponseToAnthropic(body []byte, clientModel, requestID string) 
 			"text": textContent,
 		})
 	}
-	for _, tc := range toolCalls {
-		contentBlocks = append(contentBlocks, tc)
-	}
+	contentBlocks = append(contentBlocks, toolCalls...)
 	if len(contentBlocks) == 0 {
 		contentBlocks = append(contentBlocks, map[string]any{"type": "text", "text": ""})
 	}

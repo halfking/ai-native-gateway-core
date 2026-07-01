@@ -185,7 +185,7 @@ func TestExecuteArchivePartition(t *testing.T) {
 					if err == nil {
 						t.Errorf("Expected invalid month format, but parsed successfully")
 					}
-				} else if tableConfig == nil {
+				} else if tableConfig == nil { //nolint:staticcheck // table-not-found branch intentionally empty (expectation: skipped)
 					// Table not found - expected
 				}
 			} else {

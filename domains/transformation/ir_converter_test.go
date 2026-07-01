@@ -117,7 +117,7 @@ func TestTransportIRConverter_ParseOpenAI_ExtractsExtensions(t *testing.T) {
 	}
 
 	// 验证 Extensions 被填充
-	if req.Extensions == nil || len(req.Extensions) == 0 {
+	if len(req.Extensions) == 0 {
 		t.Fatal("Extensions should be populated")
 	}
 	if string(req.Extensions["custom_field"]) != `"value123"` {
@@ -139,7 +139,7 @@ func TestTransportIRConverter_ParseAnthropic_ExtractsExtensions(t *testing.T) {
 		t.Fatalf("ParseAnthropic: %v", err)
 	}
 
-	if req.Extensions == nil || len(req.Extensions) == 0 {
+	if len(req.Extensions) == 0 {
 		t.Fatal("Extensions should be populated")
 	}
 	if string(req.Extensions["thinking_budget"]) != `5000` {
@@ -226,7 +226,7 @@ func TestTransportIRConverter_ParseOpenAIResponse_ExtractsExtensions(t *testing.
 		t.Fatalf("ParseOpenAIResponse: %v", err)
 	}
 
-	if resp.Extensions == nil || len(resp.Extensions) == 0 {
+	if len(resp.Extensions) == 0 {
 		t.Fatal("Response Extensions should be populated")
 	}
 	if string(resp.Extensions["custom_resp"]) != `"xyz"` {

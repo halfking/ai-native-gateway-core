@@ -1,6 +1,7 @@
 package autoroute
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -56,15 +57,15 @@ func TestMemoryProfileStore_PutGet(t *testing.T) {
 	store := NewMemoryProfileStore()
 	store.now = func() (t2 time.Time) { return time.Unix(1_000_000, 0) }
 
-	_ = store.Put(nil, 42, ProfileCostFirst, 30*time.Minute)
+	_ = store.Put(context.TODO(), 42, ProfileCostFirst, 30*time.Minute)
 
-	got, ok := store.Get(nil, 42)
+	got, ok := store.Get(context.TODO(), 42)
 	if !ok || got != ProfileCostFirst {
 		t.Fatalf("got (%q, %v), want (cost_first, true)", got, ok)
 	}
 
 	// Other key → miss
-	if _, ok := store.Get(nil, 99); ok {
+	if _, ok := store.Get(context.TODO(), 99); ok {
 		t.Fatal("expected miss for unknown key")
 	}
 }
@@ -74,12 +75,12 @@ func TestMemoryProfileStore_Expiry(t *testing.T) {
 	currentTime := time.Unix(1_000_000, 0)
 	store.now = func() (t2 time.Time) { return currentTime }
 
-	_ = store.Put(nil, 42, ProfileSpeedFirst, 1*time.Minute)
+	_ = store.Put(context.TODO(), 42, ProfileSpeedFirst, 1*time.Minute)
 
 	// Advance clock past expiry
 	currentTime = currentTime.Add(2 * time.Minute)
 
-	_, ok := store.Get(nil, 42)
+	_, ok := store.Get(context.TODO(), 42)
 	if ok {
 		t.Fatal("expected miss after TTL expiry")
 	}
@@ -89,10 +90,10 @@ func TestMemoryProfileStore_Overwrite(t *testing.T) {
 	store := NewMemoryProfileStore()
 	store.now = func() (t2 time.Time) { return time.Unix(1_000_000, 0) }
 
-	_ = store.Put(nil, 42, ProfileCostFirst, 30*time.Minute)
-	_ = store.Put(nil, 42, ProfileSmart, 30*time.Minute)
+	_ = store.Put(context.TODO(), 42, ProfileCostFirst, 30*time.Minute)
+	_ = store.Put(context.TODO(), 42, ProfileSmart, 30*time.Minute)
 
-	got, ok := store.Get(nil, 42)
+	got, ok := store.Get(context.TODO(), 42)
 	if !ok || got != ProfileSmart {
 		t.Fatalf("got (%q, %v), want (smart, true) — overwrite failed", got, ok)
 	}

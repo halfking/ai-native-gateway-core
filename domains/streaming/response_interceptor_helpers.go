@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // injectFollowUpRequest asynchronously sends a follow-up request to the LLM.

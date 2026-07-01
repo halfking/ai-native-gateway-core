@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // Phase 1 Round-trip 测试：验证扩展属性在协议转换往返中无损保留。

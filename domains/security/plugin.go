@@ -10,8 +10,8 @@ package security
 import (
 	"context"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domain/governance"
+	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain/governance" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // Direction 插件运行方向。

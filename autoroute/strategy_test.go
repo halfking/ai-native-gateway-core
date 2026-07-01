@@ -1,6 +1,7 @@
 package autoroute
 
 import (
+	"context"
 	"testing"
 )
 
@@ -128,7 +129,7 @@ func TestEmptyKeywordSet_AllowsPatterns(t *testing.T) {
 	kw := emptyKeywordSet()
 	clf := NewHeuristicClassifier(DefaultHeuristicThresholds(), kw)
 
-	cls, err := clf.Classify(nil, ClassificationSignals{
+	cls, err := clf.Classify(context.TODO(), ClassificationSignals{
 		LastUserPrompt: "有一个水池，进水管每分钟进水10升，排水管每分钟排水8升。",
 		Language:       "zh",
 	})

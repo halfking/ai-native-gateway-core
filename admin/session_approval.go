@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // ApprovalListRequest 审批列表请求

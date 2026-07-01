@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
+	"github.com/kaixuan/llm-gateway-go/domain"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // LegacyTransport 使用直接转换实现协议转换（复用 relay 包）。

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TestRequestLogContext_UpstreamDiagnostics tests the new upstream diagnostic fields

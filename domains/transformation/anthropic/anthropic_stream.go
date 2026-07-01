@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -516,7 +516,7 @@ func writeSSE(w http.ResponseWriter, event string, payload any) { //nolint:unuse
 		return
 	}
 	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)))
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 }
 
 // flushBufferedText emits the accumulated text content of the first text

@@ -160,7 +160,7 @@ func (p *LarkCommandParser) FormatCommandResult(cmd *RemoteCommand) string {
 	// 结果或错误
 	if cmd.Status == CommandStatusFailed && cmd.Error != "" {
 		fmt.Fprintf(&builder, "\n**错误**: %s\n", cmd.Error)
-	} else if cmd.Result != nil && len(cmd.Result) > 0 {
+	} else if len(cmd.Result) > 0 {
 		builder.WriteString("\n**结果**:\n")
 		for key, value := range cmd.Result {
 			fmt.Fprintf(&builder, "- %s: %v\n", key, value)

@@ -21,7 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // IntentAggregate 单条 (tenant, kind) 累计记录。

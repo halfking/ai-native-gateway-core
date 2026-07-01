@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TestIntegration_Quadrants_Parity 验证 IR 和 Legacy 在 4 象限的输出语义等价。

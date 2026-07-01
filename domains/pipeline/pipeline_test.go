@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // mockHook 测试用 Hook

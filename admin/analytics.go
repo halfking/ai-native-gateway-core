@@ -396,8 +396,8 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
 	l12Args := []any{intervalStr}
-	if tenantFrag != "" {
-		// deferred injection happens after build*Query call
+	if tenantFrag != "" { //nolint:staticcheck // placeholder, deferred injection happens after build*Query call
+		// (intentionally empty — reserved for future use)
 	}
 
 	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
