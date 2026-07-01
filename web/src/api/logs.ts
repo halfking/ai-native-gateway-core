@@ -213,6 +213,19 @@ export function getRequestLogDetail(requestId: string) {
 // GET /api/attachments/{path...} 访问。path 是相对存储根目录的路径
 // (如 2026/07/req_xxx/abc.png)，即 AttachmentInfo.path。
 // 该端点经 admin 鉴权，浏览器 <img>/fetch 需带同源 cookie (credentials:same-origin)。
+//
+// 2026-07-02: 下载前缀可通过 setAttachmentURLPrefix() 注入（来自存储配置
+// download_url_prefix），默认固定 /api/attachments/。
+
+// attachmentURLPrefix 附件下载 URL 前缀，默认 /api/attachments/。
+// 由 StorageConfig.download_url_prefix 设置（当前固定值，预留可配置）。
+let attachmentURLPrefix = '/api/attachments/'
+
+// setAttachmentURLPrefix 设置附件下载 URL 前缀。空值恢复默认。
+// 在 StorageConfig 加载后调用，确保 prefix 与后端路由一致。
+export function setAttachmentURLPrefix(prefix: string) {
+  attachmentURLPrefix = prefix || '/api/attachments/'
+}
 
 // attachmentURL 返回附件的下载/预览 URL。注意 path 已是相对路径，无需再 encode
 // 其内的 /；只对最末段做编码以兼容特殊字符。这里整体 encode 后将 %2F 还原为 /，
@@ -220,7 +233,7 @@ export function getRequestLogDetail(requestId: string) {
 export function attachmentURL(path: string): string {
   if (!path) return ''
   // 整体编码后还原分隔符，保留目录结构
-  return '/api/attachments/' + encodeURIComponent(path).replace(/%2F/gi, '/')
+  return attachmentURLPrefix + encodeURIComponent(path).replace(/%2F/gi, '/')
 }
 
 // getRequestAttachments 列出某请求的附件元数据。

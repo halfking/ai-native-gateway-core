@@ -55,10 +55,9 @@ func (h *Handler) handleAttachmentFilesystemStats(w http.ResponseWriter, r *http
 		return
 	}
 
-	attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
-	if attachmentDir == "" {
-		attachmentDir = "./data/attachments"
-	}
+	// 2026-07-02: 统一走 EffectiveAttachmentDir（DB override > env > default），
+	// 与存储配置页保持一致，避免「改了目录但这里还读旧目录」的不一致。
+	attachmentDir := EffectiveAttachmentDir()
 
 	// 转为绝对路径
 	absDir, err := filepath.Abs(attachmentDir)
@@ -155,10 +154,8 @@ func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *ht
 		return
 	}
 
-	attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
-	if attachmentDir == "" {
-		attachmentDir = "./data/attachments"
-	}
+	// 2026-07-02: 同 stats 端点，走 EffectiveAttachmentDir 保持一致。
+	attachmentDir := EffectiveAttachmentDir()
 
 	absDir, err := filepath.Abs(attachmentDir)
 	if err != nil {

@@ -583,6 +583,11 @@ export interface StorageConfig {
   needs_restart: boolean
   current_disk_usage: number
   config_source: string
+  // 2026-07-02: 下载 URL 前缀（固定 /api/attachments/），供 attachmentURL() 复用。
+  download_url_prefix: string
+  // 2026-07-02: 当本次 PUT 触发了目录迁移时返回的 run_id（前端据此轮询进度）。
+  // 普通读取时为空字符串。
+  migration_run_id?: string
 }
 
 export interface StorageConfigUpdate {
@@ -617,6 +622,39 @@ export function storageConfigUpdate(body: StorageConfigUpdate) {
 
 export function storageConfigTestPath(path: string) {
   return req<StorageTestPathResult>('POST', '/api/admin/storage/config/test-path', { path })
+}
+
+// ── Storage Migration (2026-07-02) ────────────────────────────────────
+// 目录迁移异步进度：修改附件目录后，文件从旧目录复制到新目录，完成后
+// 删除旧目录。前端轮询 GET /api/admin/storage/migration-state 展示进度。
+
+export type MigrationStatus = 'idle' | 'running' | 'succeeded' | 'failed'
+
+export interface MigrationRun {
+  run_id: string
+  status: MigrationStatus
+  from_dir: string
+  to_dir: string
+  started_at: string
+  finished_at?: string
+  heartbeat_at?: string
+  files_total: number
+  files_copied: number
+  bytes_total: number
+  bytes_copied: number
+  files_deleted: number
+  old_dir_purged: boolean
+  errors?: string[]
+  message?: string
+}
+
+export interface MigrationStateResponse {
+  running: MigrationRun | null
+  latest: MigrationRun | null
+}
+
+export function getStorageMigrationState() {
+  return req<MigrationStateResponse>('GET', '/api/admin/storage/migration-state')
 }
 
 // ── Log Management (2026-07-02) ───────────────────────────────────────

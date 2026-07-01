@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -125,6 +126,18 @@ type Handler struct {
 	// 端点返回 503，按请求列表端点返回空数组。由 cmd/gateway/main.go
 	// 在 attachmentStorage 初始化成功后通过 SetAttachmentHandler 注入。
 	attachmentHandler *attachments.Handler
+	// attachmentStorage (2026-07-02) 持有附件文件系统存储实例，用于
+	// 运行时热切换目录（迁移）与文件系统统计。nil 表示未启用文件存储。
+	attachmentStorage *attachments.Storage
+	// migrationState / migrationMu 用于「存储目录迁移」的异步进度跟踪
+	// （复制旧目录→切换 BaseDir→删除旧目录）。lazy 初始化，与 provider
+	// refresh 的 providerRefreshState 同构。见 admin/storage_migration.go。
+	migrationState *migrationState
+	migrationMu    sync.Mutex
+	// pendingMigrationRunID 在 PUT /api/admin/storage/config 触发迁移后短暂
+	// 置位，供随后的 GET-assemble 响应带上 migration_run_id。atomic.Value
+	// 避免与并发 GET 竞争。每次 PUT 末尾复位为 ""。
+	pendingMigrationRunID atomic.Value // string
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -138,6 +151,12 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 // from cmd/gateway/main.go after attachmentStorage is successfully built.
 func (h *Handler) SetAttachmentHandler(ah *attachments.Handler) {
 	h.attachmentHandler = ah
+}
+
+// SetAttachmentStorage wires the attachment filesystem storage instance.
+// Called from cmd/gateway/main.go；用于运行时目录迁移与文件系统统计。
+func (h *Handler) SetAttachmentStorage(s *attachments.Storage) {
+	h.attachmentStorage = s
 }
 
 // SetModelPolicy (Round 48, 2026-06-21) wires the tenant-scoped model
@@ -412,6 +431,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", admin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
+	// 2026-07-02: 存储目录迁移进度查询（GET，供前端轮询迁移进度）
+	mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
 
 	// 2026-07-02: 日志文件统一管理（轮转配置热加载/文件列表/归档/删除）
 	mux.HandleFunc("/api/admin/logs/config", admin(h.handleLogConfig))
