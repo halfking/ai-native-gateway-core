@@ -116,6 +116,14 @@ type Config struct {
 	// Source: LLM_GATEWAY_ENV (also accepts GO_ENV / APP_ENV for parity).
 	DeployEnv string `yaml:"deploy_env" env:"LLM_GATEWAY_ENV"`
 
+	// DefaultLanguage is the BCP-47 language tag used when a request carries
+	// no usable X-Lang or Accept-Language header. It is the middle tier of the
+	// i18n locale resolution chain (see i18n.Detect): request headers first,
+	// then this default, then English as the ultimate fallback.
+	// Source: LLM_GATEWAY_DEFAULT_LANGUAGE. Examples: "en", "zh-CN", "ja".
+	// Empty defaults to "en".
+	DefaultLanguage string `yaml:"default_language" env:"LLM_GATEWAY_DEFAULT_LANGUAGE"`
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
 }
@@ -223,6 +231,7 @@ func Load() *Config {
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
 		EnableDisguise:                     false, // off by default; opt-in
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
+		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
 		// Log rotation: opt-in via LLM_GATEWAY_LOG_FILE. Defaults
 		// match the operator spec when file logging IS enabled:
 		// 100 MB × 10 files ≈ 1 GB ceiling, 7-day rolling
@@ -424,6 +433,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 		// Go's zero-value bool is ambiguous (this matches how
 		// EnablePreStreamKeepalive is handled above).
 		cfg.LogCompress = true
+	}
+	if other.DefaultLanguage != "" && os.Getenv("LLM_GATEWAY_DEFAULT_LANGUAGE") == "" {
+		cfg.DefaultLanguage = other.DefaultLanguage
 	}
 }
 

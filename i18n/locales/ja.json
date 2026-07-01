@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "APIキーがありません"
+  },
+  "invalid_key": {
+    "other": "APIキーが無効または期限切れです"
+  },
+  "missing_auth": {
+    "other": "Authorization ヘッダーが欠落しているか、形式が不正です"
+  },
+  "rate_limit_exceeded": {
+    "other": "レート制限を超過しました"
+  },
+  "budget_exhausted": {
+    "other": "予算を使い切りました。管理者にチャージをご依頼ください。"
+  },
+  "insufficient_credits": {
+    "other": "クレジットが不足しています。サブスクリプションまたはチャージパッケージをご購入ください。"
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "このセッションは該当 API キーの所有ではありません"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "セッション ID の割り当てに失敗しました"
+  },
+  "blocked": {
+    "other": "セキュリティポリシーによりリクエストがブロックされました：{{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "モデル「{{.Model}}」に利用可能なプロバイダがありません"
+  },
+  "meta_tool_error": {
+    "other": "メタツールの処理に失敗しました"
+  },
+  "provider_error": {
+    "other": "上流リクエストが失敗しました"
+  },
+  "internal_error": {
+    "other": "内部サーバーエラー"
+  }
+}
