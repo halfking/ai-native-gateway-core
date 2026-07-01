@@ -24,6 +24,8 @@ coverage/
 llm-gateway-go
 llm-gateway-go-linux
 llm-gateway-go-bin
+llm-gateway-go-linux-amd64
+llm-gateway-go-new
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
 # 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)
