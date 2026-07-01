@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domain/governance"
+	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain/governance" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 type fakeDetector struct {
@@ -77,7 +77,7 @@ func TestHook_BlockReturnsError(t *testing.T) {
 		t.Fatal("blocked should return error")
 	}
 	// OnError 应把 status 设 403
-	h.OnError(context.Background(), env, err)
+	_ = h.OnError(context.Background(), env, err) //nolint:errcheck // OnError is being tested for state mutation, not return
 	if env.StatusCode != 403 {
 		t.Fatalf("StatusCode = %d, want 403", env.StatusCode)
 	}

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TestStreamAnthropicSSEToOpenAI_ThinkingPlusToolUse_Opus4_8 walks the

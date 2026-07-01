@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/kaixuan/llm-gateway-go/domains/memory"
-	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
+	"github.com/kaixuan/llm-gateway-go/domains/memory"                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client" //nolint:depguard
 )
 
 // legacyMemoryServices wraps the memora client/sink (now in domains/memory/client)

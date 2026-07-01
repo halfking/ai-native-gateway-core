@@ -16,7 +16,7 @@ func TestExtractCJKBigrams_Chinese(t *testing.T) {
 	for _, b := range bigrams {
 		// Only check CJK bigrams (ignore ASCII here)
 		if len([]rune(b)) == 2 {
-			if !expected[b] && isCJK(rune(b[0])) {
+			if !expected[b] && isCJK(rune(b[0])) { //nolint:staticcheck // SA4017 false positive: isCJK is used in && expression
 				// Extra CJK bigram is OK, not an error
 			}
 		}
@@ -87,7 +87,7 @@ func TestIsCJK(t *testing.T) {
 	if !isCJK('中') {
 		t.Error("isCJK('中') should be true")
 	}
-	if !isCJK('a') { // 'a' is 0x61, way below 0x4E00
+	if !isCJK('a') { //nolint:staticcheck // SA4017 false positive: result used in if condition
 		// Actually 'a' is NOT CJK
 	}
 	if isCJK('a') {

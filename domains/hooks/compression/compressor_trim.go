@@ -1,6 +1,6 @@
 package compression
 
-import "github.com/kaixuan/llm-gateway-go/domains/transformation"
+import "github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard
 
 // trimMessagesBody is the actual delegator for compressMechanical.
 // Kept in its own file so the dispatcher (compression.go) doesn't carry

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TransportFactory 根据配置选择 IRTransport 或 LegacyTransport。

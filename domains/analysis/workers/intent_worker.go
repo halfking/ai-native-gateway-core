@@ -13,8 +13,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
-	"github.com/kaixuan/llm-gateway-go/domains/assets"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/assets"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // IntentWorker 意图分类 worker。

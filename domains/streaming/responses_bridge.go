@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -264,19 +264,40 @@ func StreamAnthropicSSEToResponses(
 		fullText     strings.Builder
 		finishReason string
 		chunkCount   int
+		// toolCallIDs maps Anthropic content_block index → tool_use id so
+		// subsequent input_json_delta events (which carry only the
+		// index + partial JSON, not the id) can be emitted with the
+		// correct item_id. The IR StreamChunk from
+		// ParseAnthropicStreamEvent sets tc.Index but leaves tc.ID empty
+		// for input_json_delta, so the bridge maintains this lookup.
+		toolCallIDs = make(map[int]string)
 	)
 
 	// writeChunkIR serializes one IR StreamChunk via the Responses API
 	// serializer, writes the SSE event(s) to the client, and updates
-	// the audit capturer + chunk counter.
+	// the audit capturer + chunk counter. Also fills in tc.ID for tool
+	// call argument deltas using the bridge's toolCallIDs state
+	// (Anthropic's input_json_delta events don't carry the tool_use
+	// id — only the index — so the IR chunk has an empty ID).
 	writeChunkIR := func(chunk *ir.StreamChunk) {
 		if chunk == nil {
 			return
 		}
+		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			for i := range chunk.Delta.ToolCalls {
+				tc := &chunk.Delta.ToolCalls[i]
+				if tc.Name != "" && tc.ID != "" {
+					toolCallIDs[tc.Index] = tc.ID
+				}
+				if tc.ID == "" {
+					if id, ok := toolCallIDs[tc.Index]; ok {
+						tc.ID = id
+					}
+				}
+			}
+		}
 		sseLine := chunk.SerializeResponses(scaffold.msgID)
 		if sseLine == "" {
-			// Done/Usage chunks emit no standalone event — orchestrator
-			// will surface usage in response.completed.
 			return
 		}
 		_, _ = io.WriteString(w, sseLine)
@@ -479,11 +500,30 @@ func StreamOpenAIToResponsesSSE(
 		fullText     strings.Builder
 		finishReason string
 		chunkCount   int
+		// OpenAI's tool_calls streaming protocol only carries the id
+		// in the FIRST chunk for a given index; subsequent chunks only
+		// carry the new arguments. The bridge maintains this lookup
+		// so each function_call_arguments.delta can reference the
+		// correct item_id (matching the Responses API contract).
+		toolCallIDs = make(map[int]string)
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
 		if chunk == nil {
 			return
+		}
+		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			for i := range chunk.Delta.ToolCalls {
+				tc := &chunk.Delta.ToolCalls[i]
+				if tc.Name != "" && tc.ID != "" {
+					toolCallIDs[tc.Index] = tc.ID
+				}
+				if tc.ID == "" {
+					if id, ok := toolCallIDs[tc.Index]; ok {
+						tc.ID = id
+					}
+				}
+			}
 		}
 		sseLine := chunk.SerializeResponses(scaffold.msgID)
 		if sseLine == "" {

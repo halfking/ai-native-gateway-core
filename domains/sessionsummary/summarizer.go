@@ -261,7 +261,7 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	messages := []SessionMessage{}
 	for rows.Next() {

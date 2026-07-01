@@ -163,20 +163,19 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	// tee: 同时写入临时文件和 hasher/counter
 	tee := io.MultiWriter(f, io.MultiWriter(hasher, counter))
 	if _, err := io.CopyBuffer(tee, limited, make([]byte, 64<<10)); err != nil {
-		f.Close()
-		os.Remove(tmpPath) // best-effort 清理临时文件
+		_ = f.Close()
+		_ = os.Remove(tmpPath) // best-effort 清理临时文件
 		return nil, fmt.Errorf("attachments: decode/write: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("attachments: fsync: %w", err)
 	}
-	f.Close()
-
+	_ = f.Close()
 	// 超过大小限制：删除临时文件并返回错误
 	if counter.n > maxSize {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("attachments: file too large (%d > %d)", counter.n, maxSize)
 	}
 
@@ -188,10 +187,10 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	// 去重：目标文件已存在则直接删除临时文件
 	deduped := false
 	if _, statErr := os.Stat(fullPath); statErr == nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		deduped = true
 	} else if renameErr := os.Rename(tmpPath, fullPath); renameErr != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("attachments: rename tmp -> final: %w", renameErr)
 	}
 

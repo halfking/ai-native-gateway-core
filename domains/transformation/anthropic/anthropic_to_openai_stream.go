@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -565,7 +565,7 @@ func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) 
 			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		case strings.HasPrefix(line, ":"):
+		case strings.HasPrefix(line, ":"): //nolint:staticcheck // SSE comment (heartbeat) detection
 			// SSE comment (heartbeat) — ignore.
 		}
 		if rerr != nil {

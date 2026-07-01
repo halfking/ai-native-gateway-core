@@ -128,7 +128,7 @@ data: {"type":"message_stop"}
 				} else if idStr == "" {
 					t.Errorf("Tool call chunk #%d has empty 'id' string", toolCallChunks)
 				} else {
-					toolCallIDs = append(toolCallIDs, idStr)
+					toolCallIDs = append(toolCallIDs, idStr) //nolint:staticcheck // SA4010 false positive: toolCallIDs read below
 					// The ID should match the one from content_block_start
 					if idStr != "toolu_xyz789" {
 						t.Errorf("Tool call chunk #%d has unexpected ID: got %q, want %q", toolCallChunks, idStr, "toolu_xyz789")

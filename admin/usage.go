@@ -16,24 +16,24 @@ func (h *Handler) handleUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	remaining := r.URL.Path[len("/api/usage/"):]
-	switch {
-	case remaining == "summary":
+	switch remaining {
+	case "summary":
 		h.usageSummary(w, r)
-	case remaining == "dashboard":
+	case "dashboard":
 		h.usageDashboard(w, r)
-	case remaining == "hot-keys":
+	case "hot-keys":
 		h.usageHotKeys(w, r)
-	case remaining == "by-provider":
+	case "by-provider":
 		h.usageByProvider(w, r)
-	case remaining == "by-model":
+	case "by-model":
 		h.usageByModel(w, r)
-	case remaining == "by-key":
+	case "by-key":
 		h.usageByKey(w, r)
-	case remaining == "by-application":
+	case "by-application":
 		h.usageByApplication(w, r)
-	case remaining == "by-tenant":
+	case "by-tenant":
 		h.usageByTenant(w, r)
-	case remaining == "tenants":
+	case "tenants":
 		h.listTenants(w, r)
 	default:
 		h.usageKeyDetail(w, r)

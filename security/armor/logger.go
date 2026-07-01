@@ -141,7 +141,7 @@ func (l *Logger) withTenantTx(ctx context.Context, tenantID string, fn func(pgx.
 	if err != nil {
 		return fmt.Errorf("armor logger: begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx) // safe if already committed
+	defer tx.Rollback(ctx) //nolint:errcheck // safe if already committed (Go standard pattern)
 
 	// Set RLS GUC
 	_, err = tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", tenantID)

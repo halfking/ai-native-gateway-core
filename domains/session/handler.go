@@ -234,11 +234,12 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetSessionByID(w http.ResponseWriter, r *http.Request, sessionID string) {
 	session, err := h.manager.Get(r.Context(), sessionID)
 	if err != nil {
-		if err == ErrSessionNotFound {
+		switch err {
+		case ErrSessionNotFound:
 			writeErrorJSON(w, http.StatusNotFound, "", "session not found", "session_error", "SESSION_NOT_FOUND")
-		} else if err == ErrSessionExpired {
+		case ErrSessionExpired:
 			writeErrorJSON(w, http.StatusGone, "", "session expired", "session_error", "SESSION_EXPIRED")
-		} else {
+		default:
 			writeErrorJSON(w, http.StatusInternalServerError, "", "failed to get session", "session_error", "SESSION_GET_FAILED")
 		}
 		return
