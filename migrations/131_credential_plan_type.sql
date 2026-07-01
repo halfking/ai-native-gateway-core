@@ -41,6 +41,7 @@ CREATE OR REPLACE VIEW v_routable_credential_models AS
 SELECT
     cmb.id AS binding_id,
     cmb.credential_id,
+    cmb.provider_model_id,
     pm.raw_model_name,
     cmb.available AS binding_available,
     c.status AS credential_status,
