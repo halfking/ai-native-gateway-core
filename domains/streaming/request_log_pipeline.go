@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
@@ -82,6 +83,10 @@ type RequestLogContext struct {
 	ClientEndpoint     string
 	StreamChunkErrors  int
 	StreamChunksSent   int
+
+	// 2026-07-01: 附件元数据字段 (migration 325)
+	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
+	Attachments []attachments.AttachmentMetadata
 
 	meta   requestAttemptMeta
 	logged bool
@@ -442,6 +447,14 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		streamChunksSentPtr = &c.StreamChunksSent
 	}
 
+	// 2026-07-01: 序列化附件元数据为 JSONB
+	var attachmentsJSON json.RawMessage
+	if len(c.Attachments) > 0 {
+		if b, err := json.Marshal(c.Attachments); err == nil {
+			attachmentsJSON = b
+		}
+	}
+
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,
 		TenantID:          tenantID,
@@ -473,6 +486,8 @@ func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, provid
 		ClientEndpoint:     clientEndpointPtr,
 		StreamChunkErrors:  streamChunkErrorsPtr,
 		StreamChunksSent:   streamChunksSentPtr,
+		// 2026-07-01: 附件元数据
+		Attachments: attachmentsJSON,
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
