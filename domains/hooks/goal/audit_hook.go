@@ -96,20 +96,26 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 		return nil, nil
 	}
 
-	// Perform audit
+// Perform audit
 	auditResult, err := a.performAudit(ctx, req, session)
 	if err != nil {
 		slog.Warn("audit_failed", "session_id", req.SessionID, "error", err)
 		return nil, err
 	}
 
-	// Store audit result - Note: We need to add UpdateSessionAudit method to GoalStore
-	// For now, just log the result
+	// Atomically persist audit result (UPDATE ... WHERE audit_result IS NULL).
+	// Only one caller wins the race; others see "already audited" and skip.
 	resultJSON, _ := json.Marshal(auditResult)
-	slog.Info("audit_result_generated",
-		"session_id", req.SessionID,
-		"result", string(resultJSON),
-	)
+	won, persistErr := a.db.UpdateSessionAudit(ctx, req.SessionID, resultJSON)
+	if persistErr != nil {
+		slog.Warn("audit_persist_failed", "session_id", req.SessionID, "error", persistErr)
+		// Fall through: still log the result so operators can see it.
+	}
+	if !won {
+		slog.Debug("audit_lost_race", "session_id", req.SessionID,
+			"reason", "another audit already persisted")
+		return nil, nil
+	}
 
 	// Log audit summary
 	slog.Info("audit_completed",

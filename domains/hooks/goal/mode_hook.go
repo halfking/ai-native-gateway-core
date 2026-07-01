@@ -84,6 +84,8 @@ type GoalStore interface {
 	UpdateSessionState(ctx context.Context, sessionID string, state State) error
 	IncrementAutoContinueCount(ctx context.Context, sessionID string) error
 	IncrementDecisionCount(ctx context.Context, sessionID string) error
+	UpdateSessionAudit(ctx context.Context, sessionID string, auditResult []byte) (bool, error)
+	AtomicAutoContinue(ctx context.Context, sessionID string, maxAllowed int) (bool, error)
 }
 
 // LLMCaller abstracts LLM invocation.
@@ -150,11 +152,21 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 		maxContinue := h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount)
 
 		if autoContinue && goalSession.AutoContinueCount < maxContinue {
-			_ = h.db.IncrementAutoContinueCount(ctx, req.SessionID)
-			return &response.InterceptResult{
-				InjectFollowUp: h.buildContinueMessage(req),
-				Action:         "goal_continue",
-			}, nil
+			// Use atomic CAS to prevent race: two concurrent requests both
+			// observing count N < max should only increment once.
+			won, err := h.db.AtomicAutoContinue(ctx, req.SessionID, maxContinue)
+			if err != nil {
+				slog.Warn("atomic_auto_continue_failed", "error", err, "session_id", req.SessionID)
+				// Fall back to non-atomic increment to avoid losing the continue
+				_ = h.db.IncrementAutoContinueCount(ctx, req.SessionID)
+				won = true
+			}
+			if won {
+				return &response.InterceptResult{
+					InjectFollowUp: h.buildContinueMessage(req),
+					Action:         "goal_continue",
+				}, nil
+			}
 		}
 	}
 
@@ -182,12 +194,20 @@ func (h *ModeHook) InterceptStreamEnd(ctx context.Context, meta *response.Stream
 	maxContinue := h.loadInt(meta.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount)
 
 	if autoContinue && goalSession.AutoContinueCount < maxContinue {
-		_ = h.db.IncrementAutoContinueCount(ctx, meta.SessionID)
-		req := &response.InterceptRequest{SessionID: meta.SessionID, TenantID: meta.TenantID, ClientModel: meta.ClientModel}
-		return &response.EndResult{
-			InjectFollowUp: h.buildContinueMessage(req),
-			Action:         "goal_continue",
-		}, nil
+		// Use atomic CAS to prevent race between concurrent requests.
+		won, err := h.db.AtomicAutoContinue(ctx, meta.SessionID, maxContinue)
+		if err != nil {
+			slog.Warn("atomic_auto_continue_failed", "error", err, "session_id", meta.SessionID)
+			_ = h.db.IncrementAutoContinueCount(ctx, meta.SessionID)
+			won = true
+		}
+		if won {
+			req := &response.InterceptRequest{SessionID: meta.SessionID, TenantID: meta.TenantID, ClientModel: meta.ClientModel}
+			return &response.EndResult{
+				InjectFollowUp: h.buildContinueMessage(req),
+				Action:         "goal_continue",
+			}, nil
+		}
 	}
 
 	return nil, nil
