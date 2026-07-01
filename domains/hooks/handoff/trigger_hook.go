@@ -65,7 +65,7 @@ func NewTriggerHook(config TriggerConfig, db HandoffStore) *TriggerHook {
 
 // InterceptNonStream checks if handoff should trigger for non-streaming responses.
 func (h *TriggerHook) InterceptNonStream(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
-	enabled := h.loadSetting(req.TenantID, "handoff.enabled", h.config.Enabled).(bool)
+	enabled := h.loadSetting(req.TenantID, "handoff.auto_control.enabled", h.config.Enabled).(bool)
 	if !enabled {
 		return nil, nil
 	}
@@ -115,7 +115,7 @@ func (h *TriggerHook) InterceptStreamChunk(ctx context.Context, chunk []byte, me
 
 // InterceptStreamEnd checks if handoff should trigger after streaming completes.
 func (h *TriggerHook) InterceptStreamEnd(ctx context.Context, meta *response.StreamMeta) (*response.EndResult, error) {
-	enabled := h.loadSetting(meta.TenantID, "handoff.enabled", h.config.Enabled).(bool)
+	enabled := h.loadSetting(meta.TenantID, "handoff.auto_control.enabled", h.config.Enabled).(bool)
 	if !enabled {
 		return nil, nil
 	}
@@ -169,20 +169,20 @@ func (h *TriggerHook) shouldTriggerHandoff(ctx context.Context, req *response.In
 		}
 	}
 
-	absThreshold := h.loadSetting(req.TenantID, "handoff.absolute_threshold", h.config.AbsoluteThreshold).(int)
+	absThreshold := h.loadSetting(req.TenantID, "handoff.auto_control.absolute_threshold", h.config.AbsoluteThreshold).(int)
 	if absThreshold > 0 && sessionTokens >= absThreshold {
 		return true, fmt.Sprintf("absolute_threshold:%d", absThreshold)
 	}
 
 	if req.ContextWindow > 0 {
-		pctThreshold := h.loadSetting(req.TenantID, "handoff.percentage_threshold", h.config.PercentageThreshold).(float64)
+		pctThreshold := h.loadSetting(req.TenantID, "handoff.auto_control.percentage_threshold", h.config.PercentageThreshold).(float64)
 		threshold := float64(req.ContextWindow) * pctThreshold
 		if sessionTokens >= int(threshold) {
 			return true, fmt.Sprintf("percentage_threshold:%.0f%%", pctThreshold*100)
 		}
 	}
 
-	msgThreshold := h.loadSetting(req.TenantID, "handoff.message_threshold", h.config.MessageThreshold).(int)
+	msgThreshold := h.loadSetting(req.TenantID, "handoff.auto_control.message_threshold", h.config.MessageThreshold).(int)
 	if msgThreshold > 0 && req.MessageCount >= msgThreshold {
 		return true, fmt.Sprintf("message_threshold:%d", msgThreshold)
 	}
@@ -192,7 +192,7 @@ func (h *TriggerHook) shouldTriggerHandoff(ctx context.Context, req *response.In
 
 // buildHandoffMessage constructs the handoff request.
 func (h *TriggerHook) buildHandoffMessage(req *response.InterceptRequest) []byte {
-	skillName := h.loadSetting(req.TenantID, "handoff.skill_name", h.config.SkillName).(string)
+	skillName := h.loadSetting(req.TenantID, "handoff.auto_control.skill_name", h.config.SkillName).(string)
 
 	prompts := goal.NewPrompts(goal.LocaleZhCN) // Default to Chinese
 	content := fmt.Sprintf("/%s\n\n%s\nCurrent: tokens=%d, context=%d, messages=%d",
@@ -251,12 +251,12 @@ func (s *PGStore) RecordHandoff(ctx context.Context, record *HandoffRecord) erro
 // GetSessionTokenCount gets cumulative token count for a session.
 func (s *PGStore) GetSessionTokenCount(ctx context.Context, sessionID string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(total_tokens_used, 0) FROM sessions WHERE session_id = $1", sessionID).Scan(&count)
+	err := s.db.QueryRowContext(ctx, "SELECT COALESCE(total_tokens_used, 0) FROM sessions WHERE id = $1", sessionID).Scan(&count)
 	return count, err
 }
 
 // UpdateSessionHandoffCount increments handoff count.
 func (s *PGStore) UpdateSessionHandoffCount(ctx context.Context, sessionID string) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE sessions SET handoff_count = handoff_count + 1, last_handoff_at = NOW() WHERE session_id = $1", sessionID)
+	_, err := s.db.ExecContext(ctx, "UPDATE sessions SET handoff_count = handoff_count + 1, last_handoff_at = NOW() WHERE id = $1", sessionID)
 	return err
 }

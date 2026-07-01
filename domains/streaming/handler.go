@@ -1899,8 +1899,13 @@ func (h *ChatHandler) serveWithExecutor(
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
 			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {
-				// Inject follow-up request asynchronously
-				go h.injectFollowUpRequest(context.Background(), gwSessionID, endResult.InjectFollowUp, endResult.Action)
+				// Inject follow-up request asynchronously.
+				// Carry the follow-up depth from the request context so
+				// recursive follow-ups are bounded by MaxFollowUpDepth.
+				// Detach from r.Context() (Background) since the response
+				// is already complete and r.Context() may be canceled.
+				followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
+				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action)
 			}
 		} else {
 			// For non-streaming, call InterceptNonStream
@@ -1913,8 +1918,10 @@ func (h *ChatHandler) serveWithExecutor(
 					return
 				}
 				if len(interceptResult.InjectFollowUp) > 0 {
-					// Inject follow-up request asynchronously
-					go h.injectFollowUpRequest(context.Background(), gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
+					// Inject follow-up request asynchronously.
+					// Carry the follow-up depth from the request context.
+					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action)
 				}
 			}
 		}

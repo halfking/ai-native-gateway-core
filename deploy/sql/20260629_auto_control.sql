@@ -1,13 +1,17 @@
 BEGIN;
 
--- Extend sessions table with handoff and goal tracking
+-- Extend sessions table with handoff and goal tracking.
+-- NOTE: sessions.id is the session identifier (VARCHAR(255), see
+-- geo_flow-sync-from-184.sql). We add handoff/goal tracking columns here.
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS handoff_count INT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS last_handoff_at TIMESTAMP,
     ADD COLUMN IF NOT EXISTS goal_mode_enabled BOOLEAN DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS total_tokens_used INT DEFAULT 0;
 
-CREATE INDEX IF NOT EXISTS idx_sessions_goal_mode ON sessions(goal_mode_enabled, last_activity_at)
+-- Index references last_handoff_at (added above) rather than the legacy
+-- sessions.last_activity integer column, which is unrelated to goal mode.
+CREATE INDEX IF NOT EXISTS idx_sessions_goal_mode ON sessions(goal_mode_enabled, last_handoff_at)
     WHERE goal_mode_enabled = true;
 
 -- Handoff logs table

@@ -4,19 +4,19 @@ package settings
 func HandoffSpecs() []Spec {
 	return []Spec{
 		{
-			Key:             "handoff.enabled",
-			EnvName:         "LLM_GATEWAY_HANDOFF_ENABLED",
+			Key:             "handoff.auto_control.enabled",
+			EnvName:         "LLM_GATEWAY_HANDOFF_AUTO_ENABLED",
 			Type:            TypeBool,
 			Scope:           ScopeTenant,
 			Category:        CategorySession,
 			Default:         false,
 			Description:     "启用自动Handoff功能",
-			DescriptionLong: "当会话上下文达到阈值时，自动触发handoff流程，保存状态并生成新会话提示词",
+			DescriptionLong: "当会话上下文达到阈值时，自动触发handoff流程，保存状态并生成新会话提示词。注意：此键与压缩模块的 handoff.enabled 不同。",
 			HotReload:       true,
 			DangerLevel:     Warning,
 		},
 		{
-			Key:             "handoff.absolute_threshold",
+			Key:             "handoff.auto_control.absolute_threshold",
 			EnvName:         "LLM_GATEWAY_HANDOFF_ABSOLUTE_THRESHOLD",
 			Type:            TypeInt,
 			Scope:           ScopeTenant,
@@ -31,7 +31,7 @@ func HandoffSpecs() []Spec {
 			DangerLevel:     Safe,
 		},
 		{
-			Key:             "handoff.percentage_threshold",
+			Key:             "handoff.auto_control.percentage_threshold",
 			EnvName:         "LLM_GATEWAY_HANDOFF_PERCENTAGE_THRESHOLD",
 			Type:            TypeFloat,
 			Scope:           ScopeTenant,
@@ -46,7 +46,7 @@ func HandoffSpecs() []Spec {
 			DangerLevel:     Safe,
 		},
 		{
-			Key:             "handoff.message_threshold",
+			Key:             "handoff.auto_control.message_threshold",
 			EnvName:         "LLM_GATEWAY_HANDOFF_MESSAGE_THRESHOLD",
 			Type:            TypeInt,
 			Scope:           ScopeTenant,
@@ -61,7 +61,7 @@ func HandoffSpecs() []Spec {
 			DangerLevel:     Safe,
 		},
 		{
-			Key:             "handoff.skill_name",
+			Key:             "handoff.auto_control.skill_name",
 			EnvName:         "LLM_GATEWAY_HANDOFF_SKILL_NAME",
 			Type:            TypeString,
 			Scope:           ScopePlatform,
