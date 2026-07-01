@@ -107,6 +107,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
+	// 2026-07-01: 添加 include_blocked 参数用于诊断
+	// 默认只返回可路由的候选，设置为 true 时显示所有候选（含 block_reason）
+	includeBlocked := queryString(r, "include_blocked") == "true"
 	// 2026-06-19 audit: walk the cross-form variant matrix so a
 	// request like "claude-sonnet-4.6" matches a DB canonical
 	// "claude-sonnet-4-6" (and the inverse).  The variant matrix is
@@ -265,13 +268,41 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			continue
 		}
+		// 2026-07-01: 优化 RuntimeRoutable 计算，考虑恢复时间
+		now := time.Now()
+		
+		// 检查 availability 状态（考虑恢复时间）
+		availabilityOK := c.AvailabilityState == "ready" || c.AvailabilityState == ""
+		if !availabilityOK && c.AvailabilityRecoverAt != nil {
+			// 解析恢复时间
+			if recoverTime, err := time.Parse(time.RFC3339, *c.AvailabilityRecoverAt); err == nil {
+				if recoverTime.Before(now) {
+					// 已过恢复时间，视为可用
+					availabilityOK = true
+				}
+			}
+		}
+		
+		// 检查 quota 状态（考虑恢复时间）
+		quotaOK := c.QuotaState == "ok" || c.QuotaState == ""
+		if !quotaOK && c.QuotaRecoverAt != nil {
+			// 解析恢复时间
+			if recoverTime, err := time.Parse(time.RFC3339, *c.QuotaRecoverAt); err == nil {
+				if recoverTime.Before(now) {
+					// 已过恢复时间，视为可用
+					quotaOK = true
+				}
+			}
+		}
+		
 		c.RuntimeRoutable = c.Available &&
 			c.CredentialStatus == "active" &&
 			c.LifecycleStatus == "active" &&
-			c.AvailabilityState == "ready" &&
-			c.QuotaState == "ok" &&
+			availabilityOK &&
+			quotaOK &&
 			c.CircuitState != "open"
 		c.Routable = c.RuntimeRoutable
+		
 		if !c.RuntimeRoutable {
 			if c.LifecycleStatus != "active" {
 				c.BlockReason = "lifecycle_" + c.LifecycleStatus
@@ -286,6 +317,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			} else {
 				c.BlockReason = "unknown"
 			}
+		}
+		
+		// 2026-07-01: 如果不包含被阻塞的候选，跳过不可路由的
+		if !includeBlocked && !c.Routable {
+			continue
 		}
 		c.BillingRound = provider.BillingRound(c.BillingMode)
 		pc := provider.Candidate{
