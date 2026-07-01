@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "内部サーバーエラー"
+  },
+  "admin_method_not_allowed": {
+    "other": "許可されていないメソッド"
+  },
+  "admin_invalid_json": {
+    "other": "無効なJSONボディ"
+  },
+  "admin_not_found": {
+    "other": "見つかりません"
+  },
+  "admin_days_out_of_range": {
+    "other": "日数は1〜90の範囲で指定してください"
+  },
+  "admin_work_type_not_found": {
+    "other": "ワークタイプが見つかりません"
+  },
+  "admin_invalid_profile": {
+    "other": "無効なプロファイル設定"
+  },
+  "admin_unauthorized": {
+    "other": "未認証"
+  },
+  "admin_forbidden": {
+    "other": "禁止されています"
+  },
+  "admin_internal_error": {
+    "other": "内部サーバーエラー"
+  },
+  "admin_override_not_found": {
+    "other": "オーバーライドが見つかりません"
+  },
+  "admin_request_not_found": {
+    "other": "リクエストが見つかりません"
+  },
+  "admin_proposal_not_found": {
+    "other": "提案が見つかりません"
+  },
+  "admin_key_already_exists": {
+    "other": "ワークタイプキーが既に存在します"
+  },
+  "admin_proposal_not_pending": {
+    "other": "提案は保留ステータスではありません"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "無効な提案ID"
+  },
+  "admin_invalid_override_id": {
+    "other": "無効なオーバーライドID"
+  },
+  "admin_limit_out_of_range": {
+    "other": "制限は1〜{{.Max}}の範囲で指定してください"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samplesは1〜1000の範囲で指定してください"
+  },
+  "admin_required_field_missing": {
+    "other": "必須フィールドが不足しています: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_atは将来の日時である必要があります"
+  },
+  "admin_unknown_action": {
+    "other": "不明なアクション"
+  },
+  "admin_extend_requires_patch": {
+    "other": "拡張にはPATCHメソッドが必要です"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "無効な提案JSON"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "ワークタイプごとに最大3つのモデルルートが許可されています"
   }
 }

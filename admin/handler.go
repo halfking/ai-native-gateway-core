@@ -128,7 +128,7 @@ type Handler struct {
 	attachmentHandler *attachments.Handler
 	// attachmentStorage (2026-07-02) 持有附件文件系统存储实例，用于
 	// 运行时热切换目录（迁移）与文件系统统计。nil 表示未启用文件存储。
-	attachmentStorage *attachments.Storage
+	attachmentStorage AttachmentStorageService
 	// migrationState / migrationMu 用于「存储目录迁移」的异步进度跟踪
 	// （复制旧目录→切换 BaseDir→删除旧目录）。lazy 初始化，与 provider
 	// refresh 的 providerRefreshState 同构。见 admin/storage_migration.go。
@@ -155,7 +155,7 @@ func (h *Handler) SetAttachmentHandler(ah *attachments.Handler) {
 
 // SetAttachmentStorage wires the attachment filesystem storage instance.
 // Called from cmd/gateway/main.go；用于运行时目录迁移与文件系统统计。
-func (h *Handler) SetAttachmentStorage(s *attachments.Storage) {
+func (h *Handler) SetAttachmentStorage(s AttachmentStorageService) {
 	h.attachmentStorage = s
 }
 

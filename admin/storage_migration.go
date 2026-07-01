@@ -29,10 +29,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 )
 
 // migrationStatus 迁移状态枚举（与 providerRefreshStatus 同构）。
@@ -121,11 +120,11 @@ func (h *Handler) startStorageMigration(fromDir, toDir string) (*migrationRun, b
 
 	st := h.getMigrationState()
 	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	if st.running != nil {
-		st.mu.Unlock()
 		return nil, false // 已有迁移在跑，拒绝
 	}
-	st.mu.Unlock()
 
 	now := time.Now()
 	hb := now
@@ -138,7 +137,8 @@ func (h *Handler) startStorageMigration(fromDir, toDir string) (*migrationRun, b
 		HeartbeatAt: &hb,
 		Message:     "正在收集待迁移文件…",
 	}
-	h.recordMigration(run)
+	// 在锁内直接设置 running，避免并发时间窗口
+	st.running = run
 
 	// detached context：客户端断开不中止迁移（与 providerRefresh 一致）
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -180,7 +180,7 @@ func (h *Handler) runMigration(ctx context.Context, run *migrationRun) {
 		return
 	}
 	if len(files) == 0 {
-		// 空目录：直接切换 + 跳过删除（RemoveAll 空目录也无妨）
+		// 空目录：直接切换，删除前再次校验是否仍为空（防迁移期间有新写入）
 		run.FilesTotal = 0
 		run.BytesTotal = 0
 		run.Message = "旧目录为空，直接切换"
@@ -189,8 +189,14 @@ func (h *Handler) runMigration(ctx context.Context, run *migrationRun) {
 			h.finishMigration(run, migrationFailed, "切换 BaseDir 失败: "+err.Error())
 			return
 		}
-		_ = os.RemoveAll(run.FromDir)
-		run.OldDirPurged = true
+		// 删除前再次检查是否为空
+		if entries, err := os.ReadDir(run.FromDir); err == nil && len(entries) > 0 {
+			slog.Warn("storage migration: fromDir 非空（迁移期间有新写入），跳过删除",
+				"dir", run.FromDir, "files", len(entries))
+		} else {
+			_ = os.RemoveAll(run.FromDir)
+			run.OldDirPurged = true
+		}
 		h.finishMigration(run, migrationSucceeded, "迁移完成（空目录）")
 		return
 	}
@@ -216,7 +222,13 @@ func (h *Handler) runMigration(ctx context.Context, run *migrationRun) {
 		}
 		dst := filepath.Join(run.ToDir, rel)
 		if err := copyFile(absPath, dst); err != nil {
-			run.Errors = append(run.Errors, fmt.Sprintf("copy %s: %v", rel, err))
+			errMsg := fmt.Sprintf("copy %s: %v", rel, err)
+			run.Errors = append(run.Errors, errMsg)
+			// 检测磁盘空间不足错误，提前终止避免继续占用空间
+			if strings.Contains(err.Error(), "no space left") || strings.Contains(err.Error(), "disk full") {
+				h.finishMigration(run, migrationFailed, "目标磁盘空间不足")
+				return
+			}
 			h.recordMigration(run)
 			continue
 		}
@@ -230,10 +242,11 @@ func (h *Handler) runMigration(ctx context.Context, run *migrationRun) {
 		h.recordMigration(run)
 	}
 
-	// 复制失败的文件若超过半数，判定为迁移失败（避免误切到残缺目录）
-	if len(run.Errors) > len(files)/2 && run.FilesCopied == 0 {
+	// 复制失败率检查：超过 20% 或绝对失败数超过 100 个时拒绝迁移，避免数据丢失
+	failureRate := float64(len(run.Errors)) / float64(len(files))
+	if failureRate > 0.2 || len(run.Errors) > 100 {
 		h.finishMigration(run, migrationFailed,
-			fmt.Sprintf("复制失败文件过多 (%d/%d)", len(run.Errors), len(files)))
+			fmt.Sprintf("复制失败率过高 (%.1f%%, %d/%d)", failureRate*100, len(run.Errors), len(files)))
 		return
 	}
 
@@ -333,15 +346,17 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
+	defer out.Close()
+
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
 		return err
 	}
-	return out.Close()
+	return nil
 }
 
 // verifyMigration 校验 toDir 的文件数与总字节数 ≥ 期望值。
@@ -368,7 +383,11 @@ func purgeOldDir(oldDir string, expectFiles int) (bool, error) {
 		return false, err
 	}
 	if len(got) < expectFiles {
-		return false, fmt.Errorf("旧目录文件数异常: got %d, want %d（拒绝删除）", len(got), expectFiles)
+		return false, fmt.Errorf("旧目录文件数不足: got %d, want %d（可能已被手动删除，拒绝删除）", len(got), expectFiles)
+	}
+	if len(got) > expectFiles {
+		// 迁移期间有新写入（理论上不应发生，因切换前仍走旧目录），警告但继续删除
+		slog.Warn("purgeOldDir: 旧目录文件数超预期", "got", len(got), "expected", expectFiles, "dir", oldDir)
 	}
 	return true, os.RemoveAll(oldDir)
 }
@@ -402,6 +421,3 @@ func (h *Handler) getStorageMigrationState(w http.ResponseWriter, r *http.Reques
 func (h *Handler) handleMigrationState(w http.ResponseWriter, r *http.Request) {
 	h.getStorageMigrationState(w, r)
 }
-
-// 编译期保证 attachments 包被引用（storage.SetBaseDir 在迁移中调用）。
-var _ = (*attachments.Storage)(nil)

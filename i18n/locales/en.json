@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "Internal server error"
+  },
+  "admin_method_not_allowed": {
+    "other": "Method not allowed"
+  },
+  "admin_invalid_json": {
+    "other": "Invalid JSON body"
+  },
+  "admin_not_found": {
+    "other": "Not found"
+  },
+  "admin_days_out_of_range": {
+    "other": "days must be 1-90"
+  },
+  "admin_work_type_not_found": {
+    "other": "work type not found"
+  },
+  "admin_invalid_profile": {
+    "other": "Invalid profile setting"
+  },
+  "admin_unauthorized": {
+    "other": "Unauthorized"
+  },
+  "admin_forbidden": {
+    "other": "Forbidden"
+  },
+  "admin_internal_error": {
+    "other": "Internal server error"
+  },
+  "admin_override_not_found": {
+    "other": "Override not found"
+  },
+  "admin_request_not_found": {
+    "other": "Request not found"
+  },
+  "admin_proposal_not_found": {
+    "other": "Proposal not found"
+  },
+  "admin_key_already_exists": {
+    "other": "Work type key already exists"
+  },
+  "admin_proposal_not_pending": {
+    "other": "Proposal is not in pending status"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "Invalid proposal ID"
+  },
+  "admin_invalid_override_id": {
+    "other": "Invalid override ID"
+  },
+  "admin_limit_out_of_range": {
+    "other": "Limit must be between 1 and {{.Max}}"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samples must be 1-1000"
+  },
+  "admin_required_field_missing": {
+    "other": "Required field missing: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_at must be in the future"
+  },
+  "admin_unknown_action": {
+    "other": "Unknown action"
+  },
+  "admin_extend_requires_patch": {
+    "other": "Extend requires PATCH method"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "Invalid proposal JSON"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "At most 3 model routes allowed per work type"
   }
 }
