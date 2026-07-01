@@ -152,7 +152,7 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 func normalizeSessionTitle(raw string) string {
 	s := strings.TrimSpace(raw)
 	s = reXMLLikeTag.ReplaceAllString(s, "")
-	s = strings.Trim(s, `"'「」『』"`)
+	s = strings.Trim(s, `"'「」『』`)
 	if idx := strings.IndexAny(s, "\n\r"); idx >= 0 {
 		s = strings.TrimSpace(s[:idx])
 	}
