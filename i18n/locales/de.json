@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "API-Schlüssel fehlt"
+  },
+  "invalid_key": {
+    "other": "API-Schlüssel ungültig oder abgelaufen"
+  },
+  "missing_auth": {
+    "other": "Authorization-Header fehlt oder ist fehlerhaft"
+  },
+  "rate_limit_exceeded": {
+    "other": "Ratenlimit überschritten"
+  },
+  "budget_exhausted": {
+    "other": "Budget erschöpft. Bitte wenden Sie sich an den Administrator zum Auffüllen."
+  },
+  "insufficient_credits": {
+    "other": "Guthaben unzureichend. Bitte abonnieren Sie oder kaufen Sie ein Aufladepaket."
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "Diese Sitzung gehört nicht zu diesem API-Schlüssel"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "Zuweisung der Sitzungs-ID fehlgeschlagen"
+  },
+  "blocked": {
+    "other": "Anforderung durch Sicherheitsrichtlinie blockiert: {{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "Kein verfügbarer Anbieter für Modell „{{.Model}}“"
+  },
+  "meta_tool_error": {
+    "other": "Verarbeitung des Meta-Tools fehlgeschlagen"
+  },
+  "provider_error": {
+    "other": "Upstream-Anforderung fehlgeschlagen"
+  },
+  "internal_error": {
+    "other": "Interner Serverfehler"
+  }
+}

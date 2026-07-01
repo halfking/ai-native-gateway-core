@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "مفتاح API مفقود"
+  },
+  "invalid_key": {
+    "other": "مفتاح API غير صالح أو منتهي الصلاحية"
+  },
+  "missing_auth": {
+    "other": "ترويسة Authorization مفقودة أو غير صحيحة"
+  },
+  "rate_limit_exceeded": {
+    "other": "تم تجاوز حد المعدل"
+  },
+  "budget_exhausted": {
+    "other": "تم استنفاد الميزانية. يرجى التواصل مع المسؤول لإعادة الشحن."
+  },
+  "insufficient_credits": {
+    "other": "الرصيد غير كافٍ. يرجى الاشتراك أو شراء حزمة شحن."
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "هذه الجلسة لا تنتمي إلى مفتاح API هذا"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "فشل تعيين معرّف الجلسة"
+  },
+  "blocked": {
+    "other": "تم حظر الطلب بواسطة سياسة الأمان: {{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "لا يوجد مزوّد متاح للنموذج «{{.Model}}»"
+  },
+  "meta_tool_error": {
+    "other": "فشلت معالجة الأداة الفوقية"
+  },
+  "provider_error": {
+    "other": "فشل الطلب الصاعد"
+  },
+  "internal_error": {
+    "other": "خطأ داخلي في الخادم"
+  }
+}

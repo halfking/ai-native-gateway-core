@@ -1,0 +1,41 @@
+{
+  "missing_key": {
+    "other": "Falta la clave de API"
+  },
+  "invalid_key": {
+    "other": "Clave de API no válida o caducada"
+  },
+  "missing_auth": {
+    "other": "Falta el encabezado Authorization o tiene un formato incorrecto"
+  },
+  "rate_limit_exceeded": {
+    "other": "Límite de frecuencia excedido"
+  },
+  "budget_exhausted": {
+    "other": "Presupuesto agotado. Contacte con el administrador para recargar."
+  },
+  "insufficient_credits": {
+    "other": "Créditos insuficientes. Suscríbase o compre un paquete de recarga."
+  },
+  "SESSION_FORBIDDEN": {
+    "other": "la sesión no pertenece a esta clave de API"
+  },
+  "SESSION_ASSIGN_FAILED": {
+    "other": "error al asignar el id de sesión"
+  },
+  "blocked": {
+    "other": "Solicitud bloqueada por la política de seguridad: {{.Reason}}"
+  },
+  "no_candidate": {
+    "other": "No hay proveedor disponible para el modelo «{{.Model}}»"
+  },
+  "meta_tool_error": {
+    "other": "Error en el procesamiento de la meta-herramienta"
+  },
+  "provider_error": {
+    "other": "falló la solicitud ascendente"
+  },
+  "internal_error": {
+    "other": "Error interno del servidor"
+  }
+}

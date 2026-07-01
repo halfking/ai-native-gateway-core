@@ -31,6 +31,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -780,7 +781,7 @@ func (h *ChatHandler) serveWithExecutor(
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
 			captureAndEmitFailure("missing_key", "missing api key", nil, nil)
-			writeErrorJSON(w, http.StatusUnauthorized, requestID, "Missing API key", "authentication_error", "missing_key")
+			writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgMissingKey, nil)
 			return
 		}
 		ki, verifyErr := h.keyVerifier.Verify(r.Context(), rawKey)
@@ -788,7 +789,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if _, ok := verifyErr.(*authentication.InvalidKeyError); ok {
 				captureAndEmitFailure("invalid_key", "invalid or expired api key", nil, nil)
 				w.Header().Set("WWW-Authenticate", "Bearer")
-				writeErrorJSON(w, http.StatusUnauthorized, requestID, "Invalid or expired API key", "authentication_error", "invalid_key")
+				writeErrorJSONCtx(r.Context(), w, http.StatusUnauthorized, requestID, "authentication_error", i18n.MsgInvalidKey, nil)
 				return
 			}
 			slog.Error("key verification RPC failed, rejecting request", "error", verifyErr)
@@ -3420,6 +3421,22 @@ func generateRequestID() string {
 
 func writeErrorJSON(w http.ResponseWriter, status int, requestID, msg, errType, code string) {
 	writeErrorJSONWithDebug(w, status, requestID, msg, errType, code, nil)
+}
+
+// writeErrorJSONCtx emits an error response whose message is translated via
+// i18n for the locale on ctx. messageKey is both the translation key and the
+// machine-readable "code" field value (they are kept aligned by convention —
+// see i18n messages.go), so callers pass a single token.
+//
+// templateData carries interpolation values for messages with placeholders
+// (e.g. {"Model": "gpt-4o"} for MsgNoCandidate); pass nil when none are needed.
+//
+// Use this instead of writeErrorJSON for any error whose code has a translation
+// entry. Sites whose code lacks a translation yet keep calling writeErrorJSON
+// directly (their inline English is the de-facto fallback).
+func writeErrorJSONCtx(ctx context.Context, w http.ResponseWriter, status int, requestID, errType, messageKey string, templateData map[string]any) {
+	msg := i18n.T(ctx, messageKey, templateData)
+	writeErrorJSON(w, status, requestID, msg, errType, messageKey)
 }
 
 func writeErrorJSONWithDebug(w http.ResponseWriter, status int, requestID, msg, errType, code string, debug map[string]any) {

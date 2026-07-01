@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+
+	"github.com/kaixuan/llm-gateway-go/i18n"
 )
 
 type AuthMiddleware struct {
@@ -49,7 +52,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 
 		auth := r.Header.Get("Authorization")
 		if len(auth) < 7 || auth[:7] != "Bearer " {
-			writeAuthUnauthorized(w, "Missing or malformed Authorization header")
+			writeAuthUnauthorized(r.Context(), w, i18n.MsgMissingAuth, "missing_key")
 			return
 		}
 		provided := auth[7:]
@@ -59,7 +62,7 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 				"remote", r.RemoteAddr,
 				"path", r.URL.Path,
 			)
-			writeAuthUnauthorized(w, "Invalid API key")
+			writeAuthUnauthorized(r.Context(), w, i18n.MsgInvalidKey, "invalid_key")
 			return
 		}
 
@@ -67,7 +70,11 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-func writeAuthUnauthorized(w http.ResponseWriter, msg string) {
+// writeAuthUnauthorized emits the canonical 401 authentication-error envelope.
+// messageKey is translated via i18n for the request's locale; code is the
+// machine-readable token kept stable for SDKs.
+func writeAuthUnauthorized(ctx context.Context, w http.ResponseWriter, messageKey, code string) {
+	msg := i18n.T(ctx, messageKey)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	//nolint:errcheck // HTTP write error non-recoverable
@@ -75,7 +82,7 @@ func writeAuthUnauthorized(w http.ResponseWriter, msg string) {
 		"error": map[string]any{
 			"message": msg,
 			"type":    "authentication_error",
-			"code":    "invalid_api_key",
+			"code":    code,
 		},
 	})
 }

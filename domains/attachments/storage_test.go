@@ -62,7 +62,7 @@ func TestSaveBase64Image_RoundTrip(t *testing.T) {
 	}
 
 	// 验证文件实际存在
-	full := filepath.Join(s.BaseDir, res.Path)
+	full := filepath.Join(s.BaseDir(), res.Path)
 	info, err := os.Stat(full)
 	if err != nil {
 		t.Fatalf("file not saved: %v", err)
