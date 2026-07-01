@@ -861,9 +861,13 @@ func main() {
 	if attachmentDir == "" {
 		attachmentDir = "./data/attachments"
 	}
-	if attachmentStorage, err := attachments.NewStorage(attachmentDir); err != nil {
+	// attachmentStorage 提升到外层作用域：admin mux 需要它构造下载/列表 handler。
+	// 初始化失败时为 nil，对应的 admin 端点会返回 503（见 admin/attachments_routes.go）。
+	var attachmentStorage *attachments.Storage
+	if storage, err := attachments.NewStorage(attachmentDir); err != nil {
 		slog.Warn("attachment storage init failed, extraction disabled", "error", err, "dir", attachmentDir)
 	} else {
+		attachmentStorage = storage
 		// 配置单文件大小上限
 		if maxSizeStr := os.Getenv("LLM_GATEWAY_ATTACHMENT_MAX_SIZE"); maxSizeStr != "" {
 			if maxSize, parseErr := strconv.ParseInt(maxSizeStr, 10, 64); parseErr == nil && maxSize > 0 {
@@ -927,6 +931,14 @@ func main() {
 		}
 		if discoverySvc != nil {
 			adminHandler.SetDiscoveryService(discoverySvc)
+		}
+		// 2026-07-01 (migration 325): 为 admin mux 注入附件下载/列表 handler，
+		// 使 GET /api/attachments/{path...} 与 GET /api/logs/{id}/attachments 可用。
+		// attachmentStorage 可能为 nil（启动时存储初始化失败），admin 端点对此 nil-safe。
+		if attachmentStorage != nil {
+			adminHandler.SetAttachmentHandler(attachments.NewHandler(attachmentStorage, dbConn.Pool()))
+			slog.Info("attachment download/list handler wired",
+				"dir", attachmentStorage.BaseDir)
 		}
 		chatHandler.SetFormatAnomalyRecorder(streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool()))
 		slog.Info("response format anomaly recorder wired")

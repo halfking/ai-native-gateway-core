@@ -84,12 +84,18 @@ type requestLogRow struct {
 	CompressionReason   *string         `json:"compression_reason,omitempty"`
 	CompressionMeta     json.RawMessage `json:"compression_meta,omitempty"`
 	ParentRequestID     *string         `json:"parent_request_id,omitempty"`
+	// 2026-07-01: 附件数量 (migration 325)。列表接口返回，
+	// 0 表示无附件（omitempty 省略 0，前端按 undefined/falsey 处理为无角标）。
+	AttachmentCount int `json:"attachment_count,omitempty"`
 }
 
 type requestLogDetail struct {
 	requestLogRow
 	RequestBody  any `json:"request_body"`
 	ResponseBody any `json:"response_body"`
+	// 2026-07-01: 完整附件元数据数组 (migration 325)。仅详情接口返回，
+	// 列表接口为节省载荷不加载。nil / 空数组表示无附件。
+	Attachments json.RawMessage `json:"attachments,omitempty"`
 }
 
 const requestLogStatusExpr = `COALESCE(
@@ -150,7 +156,11 @@ const requestLogsListCols = `
 	rl.outbound_token_est,
 	rl.compression_strategy,
 	rl.compression_reason,
-	rl.parent_request_id
+	rl.parent_request_id,
+	-- 2026-07-01: 附件数量 (migration 325)。列表只需数量以渲染角标，
+	-- 完整的 attachments JSONB 由 requestLogsDetailCols 在详情抽屉加载。
+	-- jsonb_array_length 对 NULL 返回 NULL，前端按 null 处理为"无附件"。
+	COALESCE(jsonb_array_length(rl.attachments), 0) AS attachment_count
 `
 
 // requestLogsDetailCols extends the list columns with the three JSONB blobs
@@ -159,7 +169,10 @@ const requestLogsListCols = `
 const requestLogsDetailCols = requestLogsListCols + `,
 	rl.outbound_body,
 	rl.outbound_msg_hashes,
-	rl.compression_meta
+	rl.compression_meta,
+	-- 2026-07-01: 完整附件元数据 JSONB 数组 (migration 325)，
+	-- 供详情抽屉的"附件"标签页渲染缩略图/下载链接。
+	rl.attachments
 `
 
 const requestLogsJoins = `
@@ -224,6 +237,16 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		h.handleSessionSummaryToMemora(w, r)
 		return
 	}
+	// 2026-07-01 (migration 325): /api/logs/{request_id}/attachments
+	// 列出某请求的附件元数据数组。request_id 本身不会等于 "attachments"，
+	// 故以 "/attachments" 后缀作为判别（mux 已保证 remaining 形如 {id}/... ）。
+	if strings.HasSuffix(remaining, "/attachments") {
+		requestID := strings.TrimSuffix(remaining, "/attachments")
+		if id, err := url.PathUnescape(strings.Trim(requestID, "/")); err == nil && id != "" {
+			h.listRequestAttachments(w, r, id)
+			return
+		}
+	}
 	h.getLog(w, r)
 }
 
@@ -265,6 +288,8 @@ func scanRequestListRow(rows interface {
 		// loaded by scanRequestDetailRow for the detail drawer).
 		&l.OutboundMsgCount, &l.OutboundTokenEst,
 		&l.CompressionStrategy, &l.CompressionReason, &l.ParentRequestID,
+		// 2026-07-01: attachment_count (migration 325)。
+		&l.AttachmentCount,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -565,6 +590,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.OutboundBody,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
+		// 2026-07-01: 完整附件元数据 JSONB (migration 325)。
+		&detail.Attachments,
 		&requestBodyRaw,
 		&responseBodyRaw,
 	)

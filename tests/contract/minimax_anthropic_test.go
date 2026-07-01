@@ -211,7 +211,7 @@ func TestMinimaxAnthropic_Stream_EventOrder(t *testing.T) {
 			t.Errorf("stream missing event %q\nfull stream:\n%s", evt, string(collected))
 			continue
 		}
-		if i < strings.Index(string(collected), "event: "+required[idx]) && idx > 0 {
+		if i < strings.Index(string(collected), "event: "+required[idx]) && idx > 0 { //nolint:staticcheck // SA9003: placeholder for ordering check
 			// rough ordering check: each required event must appear after the previous one
 		}
 		_ = i
