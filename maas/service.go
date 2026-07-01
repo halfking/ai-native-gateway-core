@@ -178,7 +178,6 @@ func (s *Service) ChargeRequest(ctx context.Context, tenantID, requestID, canoni
 		if err := s.writeLedger(ctx, tx, tenantID, "consume", -remaining, string(PoolPurchased), "request", requestID, ""); err != nil {
 			return 0, err
 		}
-		remaining = 0
 	}
 
 	var balance int64
@@ -312,14 +311,14 @@ func (s *Service) UpdateSettings(ctx context.Context, st Settings) error {
 
 // Plan is a subscription tier exposed to tenants.
 type Plan struct {
-	ID              int    `json:"id"`
-	Code            string `json:"code"`
-	Tier            string `json:"tier"`
-	Name            string `json:"name"`
-	PriceCents      int    `json:"price_cents"`
-	MonthlyCredits  int64  `json:"monthly_credits"`
-	Enabled         bool   `json:"enabled"`
-	SortOrder       int    `json:"sort_order"`
+	ID             int    `json:"id"`
+	Code           string `json:"code"`
+	Tier           string `json:"tier"`
+	Name           string `json:"name"`
+	PriceCents     int    `json:"price_cents"`
+	MonthlyCredits int64  `json:"monthly_credits"`
+	Enabled        bool   `json:"enabled"`
+	SortOrder      int    `json:"sort_order"`
 }
 
 // TopupPackage is a one-time credit bundle.
@@ -382,12 +381,12 @@ func (s *Service) ListTopupPackages(ctx context.Context, enabledOnly bool) ([]To
 
 // WalletView is the tenant-facing balance summary (three pools).
 type WalletView struct {
-	TenantID         string     `json:"tenant_id"`
-	QuotaRemaining   int64      `json:"quota_remaining"`
-	GrantedBalance   int64      `json:"granted_balance"`
-	PurchasedBalance int64      `json:"purchased_balance"`
-	BalanceCredits   int64      `json:"balance_credits"`
-	TotalAvailable   int64      `json:"total_available"`
+	TenantID         string            `json:"tenant_id"`
+	QuotaRemaining   int64             `json:"quota_remaining"`
+	GrantedBalance   int64             `json:"granted_balance"`
+	PurchasedBalance int64             `json:"purchased_balance"`
+	BalanceCredits   int64             `json:"balance_credits"`
+	TotalAvailable   int64             `json:"total_available"`
 	Subscription     *SubscriptionView `json:"subscription,omitempty"`
 }
 
@@ -402,8 +401,8 @@ type SubscriptionView struct {
 
 // AccountView combines wallet, subscription, and recent ledger for account center.
 type AccountView struct {
-	Wallet       WalletView    `json:"wallet"`
-	RecentLedger []LedgerEntry `json:"recent_ledger"`
+	Wallet       WalletView     `json:"wallet"`
+	RecentLedger []LedgerEntry  `json:"recent_ledger"`
 	RecentOrders []BillingOrder `json:"recent_orders"`
 }
 
@@ -473,14 +472,14 @@ func (s *Service) ensureWalletDirect(ctx context.Context, tenantID string) error
 
 // ModelRateRow is a public model listing entry with credit pricing and catalog metadata.
 type ModelRateRow struct {
-	CanonicalName     string  `json:"canonical_name"`
-	DisplayName       string  `json:"display_name"`
-	Vendor            string  `json:"vendor"`
-	Family            *string `json:"family,omitempty"`
-	FamilyDisplayName *string `json:"family_display_name,omitempty"`
-	ContextWindow     *int    `json:"context_window,omitempty"`
-	Modality          string  `json:"modality"`
-	BillingMode       string  `json:"billing_mode"`
+	CanonicalName        string  `json:"canonical_name"`
+	DisplayName          string  `json:"display_name"`
+	Vendor               string  `json:"vendor"`
+	Family               *string `json:"family,omitempty"`
+	FamilyDisplayName    *string `json:"family_display_name,omitempty"`
+	ContextWindow        *int    `json:"context_window,omitempty"`
+	Modality             string  `json:"modality"`
+	BillingMode          string  `json:"billing_mode"`
 	CreditsPer1MIn       int64   `json:"credits_per_1m_in"`
 	CreditsPer1MOut      int64   `json:"credits_per_1m_out"`
 	CreditsPer1MCacheIn  int64   `json:"credits_per_1m_cache_in"`

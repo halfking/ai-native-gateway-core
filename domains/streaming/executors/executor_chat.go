@@ -567,6 +567,22 @@ func (e *Executor) executeOpenAI(
 						params.Capture, nil,
 					)
 				}
+				// Phase E (2026-07-01): Responses API client target with
+				// an OpenAI-shaped upstream. Dispatch to the
+				// OpenAI→Responses bridge so the client receives
+				// `response.output_text.delta` events instead of raw
+				// `chat.completion.chunk` payloads (which the Responses
+				// API SDK rejects on schema validation).
+				if e.OpenAIToResponsesStream != nil &&
+					params.ClientProtocol == "openai-responses" &&
+					cand.Protocol != "anthropic-messages" {
+					streamOutcome = e.OpenAIToResponsesStream(
+						params.W, resp,
+						params.ClientModel, outboundModel,
+						params.R.Header.Get("X-Request-Id"),
+						params.Capture, nil,
+					)
+				}
 				// 2026-06-19 quality fix mode (017_quality_fix_mode.sql):
 				// relay/stream.go writes detected flags into the capture
 				// during the stream read loop. Pluck them out here so
@@ -706,7 +722,7 @@ func (e *Executor) executeOpenAI(
 			// itself also short-circuits on 'off' (defence in depth) but
 			// the routing-side guard keeps the no-op free of the JSON
 			// unmarshal pass in applyFixes.
-			qualityBody := respBody
+			var qualityBody []byte
 			var qualityFlags []string
 			var qualityActions []byte
 			var qualityScore *float64

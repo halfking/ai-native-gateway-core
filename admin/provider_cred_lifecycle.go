@@ -202,19 +202,19 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int) (ma
 	`, healthStatus, healthError, healthLatencyMs, modelsOk, apiModelsErr, credID)
 
 	return map[string]any{
-		"credential_id":          credID,
-		"health_status":          healthStatus,
-		"probe_ok":               probeOk,
-		"models_ok":              modelsOk,
-		"models_count":           modelsCount,
-		"health_latency_ms":      healthLatencyMs,
-		"health_error":           healthError,
-		"models_failure_reason":  apiModelsErr,
-		"models_error":           apiModelsErr,
-		"models_status":          modelsStatus,
-		"sample_models":          sampleModels,
-		"effective_source":       effectiveSource,
-		"discovery_strategy":     cred.discoveryStrategy,
+		"credential_id":            credID,
+		"health_status":            healthStatus,
+		"probe_ok":                 probeOk,
+		"models_ok":                modelsOk,
+		"models_count":             modelsCount,
+		"health_latency_ms":        healthLatencyMs,
+		"health_error":             healthError,
+		"models_failure_reason":    apiModelsErr,
+		"models_error":             apiModelsErr,
+		"models_status":            modelsStatus,
+		"sample_models":            sampleModels,
+		"effective_source":         effectiveSource,
+		"discovery_strategy":       cred.discoveryStrategy,
 		"models_endpoint_template": cred.modelsEndpointTpl,
 	}, nil
 }
@@ -298,17 +298,16 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 	`, credID, days).Scan(&reqCount, &promptTok, &compTok, &cost, &avgLatency, &successRate)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"credential_id":      credID,
-		"label":              label,
-		"status":             status,
-		"provider_name":      providerName,
-		"days":               days,
-		"request_count":      reqCount,
-		"prompt_tokens":      promptTok,
-		"completion_tokens":  compTok,
-		"cost_usd":           cost,
-		"avg_latency_ms":     avgLatency,
-		"success_rate":       successRate,
+		"credential_id":     credID,
+		"label":             label,
+		"status":            status,
+		"provider_name":     providerName,
+		"days":              days,
+		"request_count":     reqCount,
+		"prompt_tokens":     promptTok,
+		"completion_tokens": compTok,
+		"cost_usd":          cost,
+		"avg_latency_ms":    avgLatency,
+		"success_rate":      successRate,
 	})
 }
-

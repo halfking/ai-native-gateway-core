@@ -36,9 +36,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/provider"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming"
 )
 
 // captured holds everything a mock upstream observed so tests can assert.

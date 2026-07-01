@@ -26,13 +26,13 @@ type MessageType string
 const (
 	// MessageTypeApproval 审批消息
 	MessageTypeApproval MessageType = "approval"
-	
+
 	// MessageTypeAlert 告警消息
 	MessageTypeAlert MessageType = "alert"
-	
+
 	// MessageTypeInfo 信息消息
 	MessageTypeInfo MessageType = "info"
-	
+
 	// MessageTypeNotification 通知消息
 	MessageTypeNotification MessageType = "notification"
 )
@@ -43,13 +43,13 @@ type Priority string
 const (
 	// PriorityUrgent 紧急
 	PriorityUrgent Priority = "urgent"
-	
+
 	// PriorityHigh 高
 	PriorityHigh Priority = "high"
-	
+
 	// PriorityNormal 正常
 	PriorityNormal Priority = "normal"
-	
+
 	// PriorityLow 低
 	PriorityLow Priority = "low"
 )
@@ -58,37 +58,37 @@ const (
 type Message struct {
 	// ID 消息唯一标识
 	ID string
-	
+
 	// Type 消息类型
 	Type MessageType
-	
+
 	// Priority 优先级
 	Priority Priority
-	
+
 	// TenantID 租户ID
 	TenantID string
-	
+
 	// SessionID 会话ID
 	SessionID string
-	
+
 	// RequestID 请求ID
 	RequestID string
-	
+
 	// Title 消息标题
 	Title string
-	
+
 	// Content 消息内容
 	Content string
-	
+
 	// Metadata 元数据
 	Metadata map[string]any
-	
+
 	// Recipients 接收人列表（飞书openID或email）
 	Recipients []string
-	
+
 	// Actions 可执行的操作
 	Actions []Action
-	
+
 	// CreatedAt 创建时间
 	CreatedAt time.Time
 }
@@ -97,19 +97,19 @@ type Message struct {
 type Action struct {
 	// ID 操作唯一标识
 	ID string
-	
+
 	// Label 按钮文本
 	Label string
-	
+
 	// Type 操作类型（primary/danger/default）
 	Type string
-	
+
 	// URL 跳转链接（可选）
 	URL string
-	
+
 	// Confirm 是否需要确认
 	Confirm bool
-	
+
 	// ConfirmText 确认文本
 	ConfirmText string
 }
@@ -118,10 +118,10 @@ type Action struct {
 type CardHeader struct {
 	// Title 标题
 	Title string
-	
+
 	// Template 模板颜色（blue/green/red/orange/grey）
 	Template string
-	
+
 	// Icon 图标URL（可选）
 	Icon string
 }
@@ -132,19 +132,19 @@ type CardElementType string
 const (
 	// ElementTypeText 文本
 	ElementTypeText CardElementType = "text"
-	
+
 	// ElementTypeField 字段
 	ElementTypeField CardElementType = "field"
-	
+
 	// ElementTypeButton 按钮
 	ElementTypeButton CardElementType = "button"
-	
+
 	// ElementTypeDivider 分割线
 	ElementTypeDivider CardElementType = "divider"
-	
+
 	// ElementTypeImage 图片
 	ElementTypeImage CardElementType = "image"
-	
+
 	// ElementTypeNote 备注
 	ElementTypeNote CardElementType = "note"
 )
@@ -153,19 +153,19 @@ const (
 type CardElement struct {
 	// Type 元素类型
 	Type CardElementType
-	
+
 	// Text 文本内容
 	Text string
-	
+
 	// Fields 字段列表（用于field类型）
 	Fields []CardField
-	
+
 	// Actions 操作按钮列表（用于button类型）
 	Actions []CardAction
-	
+
 	// ImageURL 图片URL（用于image类型）
 	ImageURL string
-	
+
 	// Alt 图片替代文本
 	Alt string
 }
@@ -174,10 +174,10 @@ type CardElement struct {
 type CardField struct {
 	// Key 字段名
 	Key string
-	
+
 	// Value 字段值
 	Value string
-	
+
 	// Short 是否短字段（两列显示）
 	Short bool
 }
@@ -186,16 +186,16 @@ type CardField struct {
 type CardAction struct {
 	// ID 操作唯一标识
 	ID string
-	
+
 	// Text 按钮文本
 	Text string
-	
+
 	// Style 按钮样式（primary/danger/default）
 	Style string
-	
+
 	// URL 跳转URL（可选）
 	URL string
-	
+
 	// Value 携带的值
 	Value map[string]any
 }
@@ -204,16 +204,16 @@ type CardAction struct {
 type InteractiveCard struct {
 	// Header 头部
 	Header CardHeader
-	
+
 	// Elements 元素列表
 	Elements []CardElement
-	
+
 	// Actions 底部操作按钮
 	Actions []CardAction
-	
+
 	// CallbackURL 回调URL
 	CallbackURL string
-	
+
 	// Metadata 元数据
 	Metadata map[string]any
 }
@@ -222,22 +222,22 @@ type InteractiveCard struct {
 type Callback struct {
 	// ID 回调唯一标识
 	ID string
-	
+
 	// Action 触发的操作ID
 	Action string
-	
+
 	// User 操作用户
 	User CallbackUser
-	
+
 	// TenantID 租户ID
 	TenantID string
-	
+
 	// SessionID 会话ID
 	SessionID string
-	
+
 	// Data 携带的数据
 	Data map[string]any
-	
+
 	// Timestamp 时间戳
 	Timestamp time.Time
 }
@@ -246,13 +246,13 @@ type Callback struct {
 type CallbackUser struct {
 	// ID 用户ID
 	ID string
-	
+
 	// OpenID 飞书OpenID
 	OpenID string
-	
+
 	// Name 用户名
 	Name string
-	
+
 	// Email 邮箱
 	Email string
 }
@@ -261,13 +261,13 @@ type CallbackUser struct {
 type NotificationChannel interface {
 	// Name 返回渠道名称
 	Name() string
-	
+
 	// Send 发送普通消息
 	Send(ctx context.Context, msg *Message) error
-	
+
 	// SendCard 发送交互式卡片
 	SendCard(ctx context.Context, card *InteractiveCard) error
-	
+
 	// HandleCallback 处理回调
 	HandleCallback(ctx context.Context, callback *Callback) error
 }
@@ -276,28 +276,28 @@ type NotificationChannel interface {
 type ApprovalCard struct {
 	// SessionID 会话ID
 	SessionID string
-	
+
 	// TenantID 租户ID
 	TenantID string
-	
+
 	// RequestID 请求ID
 	RequestID string
-	
+
 	// ApprovalID 审批记录ID
 	ApprovalID string
-	
+
 	// RiskLevel 风险级别
 	RiskLevel string
-	
+
 	// DetectResult 检测结果
 	DetectResult *sessionaudit.DetectResult
-	
+
 	// Snapshot 请求快照
 	Snapshot *sessionaudit.RequestSnapshot
-	
+
 	// Actions 操作按钮
 	Actions []CardAction
-	
+
 	// CreatedAt 创建时间
 	CreatedAt time.Time
 }
@@ -316,7 +316,7 @@ func (ac *ApprovalCard) ToInteractiveCard() *InteractiveCard {
 	case "low":
 		headerTemplate = "green"
 	}
-	
+
 	card := &InteractiveCard{
 		Header: CardHeader{
 			Title:    "🔐 会话审批请求",
@@ -343,7 +343,7 @@ func (ac *ApprovalCard) ToInteractiveCard() *InteractiveCard {
 			"tenant_id":   ac.TenantID,
 		},
 	}
-	
+
 	// 添加检测结果
 	if ac.DetectResult != nil {
 		if len(ac.DetectResult.SensitiveWords) > 0 {
@@ -352,14 +352,14 @@ func (ac *ApprovalCard) ToInteractiveCard() *InteractiveCard {
 				Text: "⚠️ 敏感词: " + joinStrings(ac.DetectResult.SensitiveWords, ", "),
 			})
 		}
-		
+
 		if len(ac.DetectResult.Threats) > 0 {
 			card.Elements = append(card.Elements, CardElement{
 				Type: ElementTypeText,
 				Text: "🚨 威胁: " + formatThreats(ac.DetectResult.Threats),
 			})
 		}
-		
+
 		if ac.DetectResult.Reason != "" {
 			card.Elements = append(card.Elements, CardElement{
 				Type: ElementTypeNote,
@@ -367,7 +367,7 @@ func (ac *ApprovalCard) ToInteractiveCard() *InteractiveCard {
 			})
 		}
 	}
-	
+
 	return card
 }
 
@@ -375,19 +375,19 @@ func (ac *ApprovalCard) ToInteractiveCard() *InteractiveCard {
 type Recipient struct {
 	// ID 用户ID
 	ID string
-	
+
 	// Name 用户名
 	Name string
-	
+
 	// Email 邮箱
 	Email string
-	
+
 	// LarkOpenID 飞书OpenID
 	LarkOpenID string
-	
+
 	// DingTalkUserID 钉钉UserID
 	DingTalkUserID string
-	
+
 	// WeChatUserID 企业微信UserID
 	WeChatUserID string
 }
@@ -396,16 +396,16 @@ type Recipient struct {
 type RoutingRule struct {
 	// TenantID 租户ID
 	TenantID string
-	
+
 	// RiskLevel 风险级别
 	RiskLevel string
-	
+
 	// Recipients 接收人列表
 	Recipients []Recipient
-	
+
 	// Priority 优先级
 	Priority int
-	
+
 	// Enabled 是否启用
 	Enabled bool
 }
@@ -416,17 +416,17 @@ type RoutingRules []RoutingRule
 // Route 根据租户和风险级别路由到接收人
 func (rr RoutingRules) Route(tenantID, riskLevel string) []Recipient {
 	var recipients []Recipient
-	
+
 	for _, rule := range rr {
 		if !rule.Enabled {
 			continue
 		}
-		
+
 		if rule.TenantID == tenantID && rule.RiskLevel == riskLevel {
 			recipients = append(recipients, rule.Recipients...)
 		}
 	}
-	
+
 	return recipients
 }
 

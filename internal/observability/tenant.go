@@ -38,11 +38,11 @@ import (
 // Attribute keys (mirror scripts/_lib/otel-tenant-attrs.py; single
 // source of truth across the stack)
 const (
-	AttrTenantID            = "tenant.id"
-	AttrTenantShopIDs       = "tenant.shop_ids"
+	AttrTenantID             = "tenant.id"
+	AttrTenantShopIDs        = "tenant.shop_ids"
 	AttrKaixuanTenantPattern = "kaixuan.tenant.pattern"
-	AttrKaixuanAuthMethod   = "kaixuan.tenant.auth_method"
-	AttrKaixuanUserID       = "kaixuan.user.id"
+	AttrKaixuanAuthMethod    = "kaixuan.tenant.auth_method"
+	AttrKaixuanUserID        = "kaixuan.user.id"
 )
 
 // SetTenantAttrs (Pattern A) sets the required + recommended

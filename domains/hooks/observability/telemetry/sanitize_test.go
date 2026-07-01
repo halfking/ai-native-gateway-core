@@ -113,9 +113,9 @@ func TestSanitizeRequestLogEntry_JSONBFieldsNotEscaped(t *testing.T) {
 	backslashField := `hello\u4e2d`
 	mkPtr := func(s string) *string { return &s }
 	entry := &RequestLogEntry{
-		RequestBody:    mkPtr(jsonBody),
-		ResponseBody:   mkPtr(jsonBody),
-		ClientModel:    mkPtr(backslashField),
+		RequestBody:  mkPtr(jsonBody),
+		ResponseBody: mkPtr(jsonBody),
+		ClientModel:  mkPtr(backslashField),
 	}
 	sanitizeRequestLogEntry(entry)
 	if *entry.RequestBody != jsonBody {

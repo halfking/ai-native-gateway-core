@@ -33,7 +33,7 @@ func (h *Handler) handleClientConfigAudit(w http.ResponseWriter, r *http.Request
 	validActions := map[string]bool{
 		"generate":        true,
 		"download_script": true,
-		"copy_config":    true,
+		"copy_config":     true,
 		"manual_view":     true,
 	}
 	validTools := map[string]bool{

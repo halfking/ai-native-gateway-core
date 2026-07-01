@@ -549,8 +549,8 @@ func (h *Handler) checkTenantModelPolicy(w http.ResponseWriter, r *http.Request,
 	// policy can denylist a model not yet in the catalog —
 	// defence in depth), but we surface metadata when present.
 	var (
-		familyRaw  *string
-		modality   string
+		familyRaw *string
+		modality  string
 	)
 	err := h.db.QueryRow(ctx, `
 		SELECT mc.family, COALESCE(NULLIF(TRIM(mc.modality), ''), 'text')

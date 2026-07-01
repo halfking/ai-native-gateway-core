@@ -8,12 +8,12 @@ import (
 func TestComputeFeedback_SuccessCase(t *testing.T) {
 	// Fully successful, fast, cheap, no drift → high quality
 	sig := ComputeFeedback(FeedbackInput{
-		Success:        1.0,
-		LatencyMs:      200,
-		P95BaselineMs:  2000, // 10% of baseline → latency_score ≈ 0.9
-		CostUSD:        0.001,
+		Success:         1.0,
+		LatencyMs:       200,
+		P95BaselineMs:   2000, // 10% of baseline → latency_score ≈ 0.9
+		CostUSD:         0.001,
 		P75BaselineCost: 0.01, // 10% of baseline → cost_score ≈ 0.9
-		DriftFlag:      false,
+		DriftFlag:       false,
 	})
 
 	if sig.SuccessScore != 1.0 {
@@ -27,12 +27,12 @@ func TestComputeFeedback_SuccessCase(t *testing.T) {
 func TestComputeFeedback_FailureCase(t *testing.T) {
 	// Failed request → quality should be low regardless of latency/cost
 	sig := ComputeFeedback(FeedbackInput{
-		Success:        0.0,
-		LatencyMs:      100,
-		P95BaselineMs:  2000,
-		CostUSD:        0.001,
+		Success:         0.0,
+		LatencyMs:       100,
+		P95BaselineMs:   2000,
+		CostUSD:         0.001,
 		P75BaselineCost: 0.01,
-		DriftFlag:      false,
+		DriftFlag:       false,
 	})
 
 	if sig.SuccessScore != 0.0 {
@@ -63,12 +63,12 @@ func TestComputeFeedback_PartialSuccess(t *testing.T) {
 func TestComputeFeedback_UnknownBaselines(t *testing.T) {
 	// No baseline data → latency/cost scores should default to 0.5
 	sig := ComputeFeedback(FeedbackInput{
-		Success:        1.0,
-		LatencyMs:      5000,
-		P95BaselineMs:  0, // unknown
-		CostUSD:        1.0,
+		Success:         1.0,
+		LatencyMs:       5000,
+		P95BaselineMs:   0, // unknown
+		CostUSD:         1.0,
 		P75BaselineCost: 0, // unknown
-		DriftFlag:      false,
+		DriftFlag:       false,
 	})
 
 	if sig.LatencyScore != 0.5 {
@@ -130,9 +130,9 @@ func TestComputeFeedback_LatencyNormalization(t *testing.T) {
 
 func TestDetectSessionDrift(t *testing.T) {
 	tests := []struct {
-		name     string
-		prev     TaskType
-		curr     TaskType
+		name      string
+		prev      TaskType
+		curr      TaskType
 		wantDrift bool
 	}{
 		{"same_task", TaskReasoning, TaskReasoning, false},

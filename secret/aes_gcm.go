@@ -53,10 +53,10 @@ func NewKeyring(keys map[string][32]byte, current string) (*Keyring, error) {
 
 // KeyringFromEnv loads the keyring from environment variables.
 //
-//   Priority:
-//   1. KEYRING_JSON + KEYRING_CURRENT_KID
-//   2. CREDENTIAL_ENCRYPTION_KEY (base64url 32 bytes) → kid "legacy"
-//   3. SECRET_KEY SHA-256 → kid "legacy"
+//	Priority:
+//	1. KEYRING_JSON + KEYRING_CURRENT_KID
+//	2. CREDENTIAL_ENCRYPTION_KEY (base64url 32 bytes) → kid "legacy"
+//	3. SECRET_KEY SHA-256 → kid "legacy"
 func KeyringFromEnv(secretKey, credEncKey string) (*Keyring, error) {
 	rawJSON := strings.TrimSpace(os.Getenv("KEYRING_JSON"))
 	if rawJSON != "" {

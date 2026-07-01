@@ -30,10 +30,10 @@ func TestExpandToolIDs_CategoryWildcard(t *testing.T) {
 	tr := &ToolRegistry{
 		cache: &toolCache{
 			tools: map[string]*Tool{
-				"default:filesystem.read_file":       {ToolID: "filesystem.read_file", TenantID: "default"},
-				"default:filesystem.write_file":      {ToolID: "filesystem.write_file", TenantID: "default"},
-				"default:filesystem.list_directory":  {ToolID: "filesystem.list_directory", TenantID: "default"},
-				"default:network.http_get":           {ToolID: "network.http_get", TenantID: "default"},
+				"default:filesystem.read_file":      {ToolID: "filesystem.read_file", TenantID: "default"},
+				"default:filesystem.write_file":     {ToolID: "filesystem.write_file", TenantID: "default"},
+				"default:filesystem.list_directory": {ToolID: "filesystem.list_directory", TenantID: "default"},
+				"default:network.http_get":          {ToolID: "network.http_get", TenantID: "default"},
 			},
 			byCategory: map[string][]*Tool{
 				"default:filesystem": {
@@ -112,9 +112,9 @@ func TestExpandToolIDs_TenantOverride(t *testing.T) {
 	tr := &ToolRegistry{
 		cache: &toolCache{
 			tools: map[string]*Tool{
-				"default:filesystem.read_file":     {ToolID: "filesystem.read_file", TenantID: "default"},
-				"tenant1:filesystem.read_file":     {ToolID: "filesystem.read_file", TenantID: "tenant1"},
-				"tenant1:filesystem.custom_tool":   {ToolID: "filesystem.custom_tool", TenantID: "tenant1"},
+				"default:filesystem.read_file":   {ToolID: "filesystem.read_file", TenantID: "default"},
+				"tenant1:filesystem.read_file":   {ToolID: "filesystem.read_file", TenantID: "tenant1"},
+				"tenant1:filesystem.custom_tool": {ToolID: "filesystem.custom_tool", TenantID: "tenant1"},
 			},
 			byCategory: map[string][]*Tool{
 				"tenant1:filesystem": {

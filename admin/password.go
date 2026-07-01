@@ -35,6 +35,7 @@ func generateRandomPassword() (string, error) {
 //   - At least 1 uppercase letter
 //   - At least 1 lowercase letter
 //   - At least 1 digit
+//
 // Special characters are allowed but not required.
 func ValidatePasswordComplexity(pw string) error {
 	if len(pw) < 8 {

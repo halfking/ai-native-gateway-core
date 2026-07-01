@@ -14,76 +14,76 @@ import (
 )
 
 type requestLogRow struct {
-	Ts                 time.Time      `json:"ts"`
-	RequestID          string         `json:"request_id"`
-	APIKeyID           *int           `json:"api_key_id"`
-	EndUserID          *string        `json:"end_user_id"`
-	ClientModel        *string        `json:"client_model"`
-	OutboundModel      *string        `json:"outbound_model"`
-	CredentialID       *int           `json:"credential_id"`
-	CredentialLabel    *string        `json:"credential_label"`
-	ProviderID         *int           `json:"provider_id"`
-	ProviderName       *string        `json:"provider_name"`
-	ProviderCode       *string        `json:"provider_code"`
-	ClientProfile      *string        `json:"client_profile"`
-	RequestMode        *string        `json:"request_mode"`
-	PromptTokens       *int           `json:"prompt_tokens"`
-	CompletionTokens   *int           `json:"completion_tokens"`
-	CacheReadTokens    *int           `json:"cache_read_tokens"`
-	CacheWriteTokens   *int           `json:"cache_write_tokens"`
-	TotalTokens        *int           `json:"total_tokens"`
-	CostUSD            *float64       `json:"cost_usd"`
-	CostDisplay        *float64       `json:"cost_display"`
-	CostCurrency       *string        `json:"cost_currency"`
-	LatencyMs          *int           `json:"latency_ms"`
-	Success            bool           `json:"success"`
-	RequestStatus      string         `json:"request_status"`
-	ErrorKind          *string        `json:"error_kind"`
-	SearchText         *string        `json:"search_text"`
-	IdentityHash       *string        `json:"identity_hash"`
-	VirtualClientID    *string        `json:"virtual_client_id"`
-	VirtualIP          *string        `json:"virtual_ip"`
-	VirtualMAC         *string        `json:"virtual_mac"`
-	AffinityHit        *bool          `json:"affinity_hit"`
-	RequestChecksum    *string        `json:"request_checksum"`
-	ResponseChecksum   *string        `json:"response_checksum"`
-	TransformRuleID    *string `json:"transform_rule_id"`
-	EgressProtocol     *string `json:"egress_protocol"`
-	FailureStage       *string `json:"failure_stage"`
-	FailureDetailCode  *string `json:"failure_detail_code"`
+	Ts                time.Time `json:"ts"`
+	RequestID         string    `json:"request_id"`
+	APIKeyID          *int      `json:"api_key_id"`
+	EndUserID         *string   `json:"end_user_id"`
+	ClientModel       *string   `json:"client_model"`
+	OutboundModel     *string   `json:"outbound_model"`
+	CredentialID      *int      `json:"credential_id"`
+	CredentialLabel   *string   `json:"credential_label"`
+	ProviderID        *int      `json:"provider_id"`
+	ProviderName      *string   `json:"provider_name"`
+	ProviderCode      *string   `json:"provider_code"`
+	ClientProfile     *string   `json:"client_profile"`
+	RequestMode       *string   `json:"request_mode"`
+	PromptTokens      *int      `json:"prompt_tokens"`
+	CompletionTokens  *int      `json:"completion_tokens"`
+	CacheReadTokens   *int      `json:"cache_read_tokens"`
+	CacheWriteTokens  *int      `json:"cache_write_tokens"`
+	TotalTokens       *int      `json:"total_tokens"`
+	CostUSD           *float64  `json:"cost_usd"`
+	CostDisplay       *float64  `json:"cost_display"`
+	CostCurrency      *string   `json:"cost_currency"`
+	LatencyMs         *int      `json:"latency_ms"`
+	Success           bool      `json:"success"`
+	RequestStatus     string    `json:"request_status"`
+	ErrorKind         *string   `json:"error_kind"`
+	SearchText        *string   `json:"search_text"`
+	IdentityHash      *string   `json:"identity_hash"`
+	VirtualClientID   *string   `json:"virtual_client_id"`
+	VirtualIP         *string   `json:"virtual_ip"`
+	VirtualMAC        *string   `json:"virtual_mac"`
+	AffinityHit       *bool     `json:"affinity_hit"`
+	RequestChecksum   *string   `json:"request_checksum"`
+	ResponseChecksum  *string   `json:"response_checksum"`
+	TransformRuleID   *string   `json:"transform_rule_id"`
+	EgressProtocol    *string   `json:"egress_protocol"`
+	FailureStage      *string   `json:"failure_stage"`
+	FailureDetailCode *string   `json:"failure_detail_code"`
 	// 2026-06-19 T-NEW-7: the SOLE home for the upstream finish_reason
 	// (stop, tool_calls, length, end_turn, function_call, max_tokens, …).
 	// Distinct from FailureDetailCode which is now reserved for actual
 	// failure / interruption codes.  Populated for BOTH success and
 	// failure rows.  See db/migrations/018_upstream_finish_reason.sql.
 	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
-	RequestPreview     *string `json:"request_preview"`
-	TransformSummary   *string        `json:"transform_summary"`
-	ResponsePreview    *string        `json:"response_preview"`
-	StreamFirstChunkMs *int           `json:"stream_first_chunk_ms"`
-	StreamChunkCount   *int           `json:"stream_chunk_count"`
-	StreamDoneReceived *bool          `json:"stream_done_received"`
-	StreamInterrupted  *bool          `json:"stream_interrupted"`
-	StreamDoneSent     *bool          `json:"stream_done_sent"`
-	UsageSource        *string        `json:"usage_source"`
-	GwSessionID        *string        `json:"gw_session_id"`
-	GwTaskID           *string        `json:"gw_task_id"`
-	APIKeyPrefix       *string        `json:"api_key_prefix"`
-	APIKeyOwnerUser    *string        `json:"api_key_owner_user"`
-	ApplicationCode    *string        `json:"application_code"`
-	CanonicalName      *string        `json:"canonical_name"`
-	ProviderModel      *string        `json:"provider_model"`
-	TraceSeq           *int           `json:"trace_seq,omitempty"`
-	CreditsCharged     *int64         `json:"credits_charged"`
+	RequestPreview       *string `json:"request_preview"`
+	TransformSummary     *string `json:"transform_summary"`
+	ResponsePreview      *string `json:"response_preview"`
+	StreamFirstChunkMs   *int    `json:"stream_first_chunk_ms"`
+	StreamChunkCount     *int    `json:"stream_chunk_count"`
+	StreamDoneReceived   *bool   `json:"stream_done_received"`
+	StreamInterrupted    *bool   `json:"stream_interrupted"`
+	StreamDoneSent       *bool   `json:"stream_done_sent"`
+	UsageSource          *string `json:"usage_source"`
+	GwSessionID          *string `json:"gw_session_id"`
+	GwTaskID             *string `json:"gw_task_id"`
+	APIKeyPrefix         *string `json:"api_key_prefix"`
+	APIKeyOwnerUser      *string `json:"api_key_owner_user"`
+	ApplicationCode      *string `json:"application_code"`
+	CanonicalName        *string `json:"canonical_name"`
+	ProviderModel        *string `json:"provider_model"`
+	TraceSeq             *int    `json:"trace_seq,omitempty"`
+	CreditsCharged       *int64  `json:"credits_charged"`
 	// v3 (2026-06-19) session-level outbound body fields.
-	OutboundBody            json.RawMessage `json:"outbound_body,omitempty"`
-	OutboundMsgCount        *int            `json:"outbound_msg_count,omitempty"`
-	OutboundTokenEst        *int            `json:"outbound_token_est,omitempty"`
-	OutboundMsgHashes       json.RawMessage `json:"outbound_msg_hashes,omitempty"`
-	CompressionStrategy     *string         `json:"compression_strategy,omitempty"`
-	CompressionReason       *string         `json:"compression_reason,omitempty"`
-	CompressionMeta         json.RawMessage `json:"compression_meta,omitempty"`
-	ParentRequestID         *string         `json:"parent_request_id,omitempty"`
+	OutboundBody        json.RawMessage `json:"outbound_body,omitempty"`
+	OutboundMsgCount    *int            `json:"outbound_msg_count,omitempty"`
+	OutboundTokenEst    *int            `json:"outbound_token_est,omitempty"`
+	OutboundMsgHashes   json.RawMessage `json:"outbound_msg_hashes,omitempty"`
+	CompressionStrategy *string         `json:"compression_strategy,omitempty"`
+	CompressionReason   *string         `json:"compression_reason,omitempty"`
+	CompressionMeta     json.RawMessage `json:"compression_meta,omitempty"`
+	ParentRequestID     *string         `json:"parent_request_id,omitempty"`
 }
 
 type requestLogDetail struct {
@@ -108,6 +108,7 @@ const requestLogStatusExpr = `COALESCE(
 //   - outbound_body       (~11.6 kB/row avg, up to 592 kB/row)
 //   - outbound_msg_hashes (~0.6 kB/row)
 //   - compression_meta    (~0.17 kB/row)
+//
 // Those three are only needed in the detail drawer and are therefore only
 // SELECTed by requestLogsDetailCols (used by getLog). The small siblings
 // (outbound_msg_count / outbound_token_est / compression_strategy /
@@ -577,8 +578,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error": map[string]any{
-				"detail":    "query failed",
-				"db_error":  err.Error(),
+				"detail":     "query failed",
+				"db_error":   err.Error(),
 				"request_id": requestID,
 			},
 		})

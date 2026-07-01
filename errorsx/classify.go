@@ -11,21 +11,21 @@ import (
 type ErrorKind string
 
 const (
-	KindTransient       ErrorKind = "transient"
-	KindTimeout         ErrorKind = "timeout"
-	KindNetwork         ErrorKind = "network"
-	KindRateLimit       ErrorKind = "rate_limit"
-	KindAuth            ErrorKind = "auth"
-	KindQuota           ErrorKind = "quota"
-	KindUpstreamDown    ErrorKind = "upstream_down"
-	KindCanceled        ErrorKind = "canceled"
-	KindConcurrent      ErrorKind = "concurrent"
-	KindAuthRevoked     ErrorKind = "auth_revoked"
-	KindQuotaPeriodic   ErrorKind = "quota_periodic"
-	KindQuotaBalance    ErrorKind = "quota_balance"
-	KindQuotaPermanent  ErrorKind = "quota_permanent"
-	KindModelNotFound   ErrorKind = "model_not_found"
-	KindStreamTimeout   ErrorKind = "stream_timeout"
+	KindTransient      ErrorKind = "transient"
+	KindTimeout        ErrorKind = "timeout"
+	KindNetwork        ErrorKind = "network"
+	KindRateLimit      ErrorKind = "rate_limit"
+	KindAuth           ErrorKind = "auth"
+	KindQuota          ErrorKind = "quota"
+	KindUpstreamDown   ErrorKind = "upstream_down"
+	KindCanceled       ErrorKind = "canceled"
+	KindConcurrent     ErrorKind = "concurrent"
+	KindAuthRevoked    ErrorKind = "auth_revoked"
+	KindQuotaPeriodic  ErrorKind = "quota_periodic"
+	KindQuotaBalance   ErrorKind = "quota_balance"
+	KindQuotaPermanent ErrorKind = "quota_permanent"
+	KindModelNotFound  ErrorKind = "model_not_found"
+	KindStreamTimeout  ErrorKind = "stream_timeout"
 	// KindToolCallIdMismatch: client echoed a tool_call_id that the
 	// upstream did not recognise. The most common cause is the agent
 	// framework losing the id field during streaming accumulation of
@@ -46,7 +46,7 @@ const (
 	// silently slide-window trim a too-long conversation, but the proxy
 	// path was historically returning the raw 400 because no client-side
 	// trim was applied.
-	KindContextLength ErrorKind = "context_length_exceeded"
+	KindContextLength      ErrorKind = "context_length_exceeded"
 	KindUnsupportedFeature ErrorKind = "unsupported_feature"
 )
 
@@ -63,20 +63,20 @@ const (
 // We keep the CJK alternative because a few domestic providers localise
 // the error string rather than returning the canonical English form.
 var contextLengthRe = regexp.MustCompile(
-	`(?i)(context[ _-]?length[ _-]?exceeded|`+
-		`maximum context length|`+
-		`context[ _-]?window[ _-]?(exceeded|is)|`+
-		`prompt is too long|`+
-		`input is too long|`+
-		`too many (input )?tokens|`+
-		`tokens? exceed|`+
-		`reduce the length|`+
+	`(?i)(context[ _-]?length[ _-]?exceeded|` +
+		`maximum context length|` +
+		`context[ _-]?window[ _-]?(exceeded|is)|` +
+		`prompt is too long|` +
+		`input is too long|` +
+		`too many (input )?tokens|` +
+		`tokens? exceed|` +
+		`reduce the length|` +
 		`maximum number of tokens)`,
 )
 var contextLengthCJKRe = regexp.MustCompile(
-	`上下文(长度)?(超出|超过|超限)|`+
-		`tokens? (过多|超限|超过)|`+
-		`输入(过长|太长)|`+
+	`上下文(长度)?(超出|超过|超限)|` +
+		`tokens? (过多|超限|超过)|` +
+		`输入(过长|太长)|` +
 		`超出(模型)?(最大)?(上下文|长度|限制)`,
 )
 
@@ -113,9 +113,9 @@ var modelNotFoundCJKRe = regexp.MustCompile(
 )
 
 var unsupportedFeatureRe = regexp.MustCompile(
-	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|`+
-		`(tool|function)[- _]?call(ing|s)? (is )?not supported|`+
-		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|`+
+	`(?i)((does not|doesn'?t) support (coding plan|tool|function|tools|function call)|` +
+		`(tool|function)[- _]?call(ing|s)? (is )?not supported|` +
+		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|` +
 		`当前模型不支持)`,
 )
 
@@ -130,18 +130,18 @@ var unsupportedFeatureRe = regexp.MustCompile(
 // apply the 5-minute cooling policy and immediately route to the next
 // candidate credential instead of retrying the same overloaded one.
 var concurrentOverloadRe = regexp.MustCompile(
-	`(?i)(concurrent.{0,30}(limit|exceed|over|too many|reach|max)|`+
-		`too many (concurrent|requests|connections)|`+
-		`(engine|server|service|api) (overloaded|too busy|busy)|`+
-		`(server|service|upstream) (is )?(overload|under pressure)|`+
-		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|`+
-		`request(ed|s)? too (fast|frequent|many)|`+
+	`(?i)(concurrent.{0,30}(limit|exceed|over|too many|reach|max)|` +
+		`too many (concurrent|requests|connections)|` +
+		`(engine|server|service|api) (overloaded|too busy|busy)|` +
+		`(server|service|upstream) (is )?(overload|under pressure)|` +
+		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|` +
+		`request(ed|s)? too (fast|frequent|many)|` +
 		`slow down|try again later|backoff)`,
 )
 var concurrentOverloadCJKRe = regexp.MustCompile(
-	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|`+
-		`请求.{0,10}(过快|频繁|太多)|`+
-		`服务.{0,10}(繁忙|过载|压力|降级)|`+
+	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|` +
+		`请求.{0,10}(过快|频繁|太多)|` +
+		`服务.{0,10}(繁忙|过载|压力|降级)|` +
 		`稍后重试|限流`,
 )
 

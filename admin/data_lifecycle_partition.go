@@ -302,7 +302,7 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 
 	if req.DryRun {
 		// For dry run, just check if partition exists and count rows
-		partitionName := fmt.Sprintf("%s_%s", req.TableName, archiveDate.Format("2006_01"))
+		partitionName := req.TableName + "_" + archiveDate.Format("2006_01")
 		countQuery := fmt.Sprintf(`
 			SELECT COUNT(*) 
 			FROM pg_class 
@@ -447,7 +447,7 @@ func (h *Handler) executeArchivePartition(ctx context.Context, req archivePartit
 	defer cancel()
 
 	if req.DryRun {
-		partitionName := fmt.Sprintf("%s_%s", req.TableName, archiveDate.Format("2006_01"))
+		partitionName := req.TableName + "_" + archiveDate.Format("2006_01")
 		countQuery := fmt.Sprintf(`
 			SELECT COUNT(*) 
 			FROM pg_class 

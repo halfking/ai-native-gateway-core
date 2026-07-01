@@ -111,8 +111,6 @@ func TestStreamAnthropicSSEToOpenAI_WithThinkBlock(t *testing.T) {
 	}
 }
 
-
-
 func TestStreamAnthropicSSEToOpenAI_PingDropped(t *testing.T) {
 	events := strings.Join([]string{
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_04\",\"model\":\"M\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
@@ -134,8 +132,6 @@ func TestStreamAnthropicSSEToOpenAI_PingDropped(t *testing.T) {
 		t.Errorf("ping event leaked into OpenAI output:\n%s", rec.Body.String())
 	}
 }
-
-
 
 func collectContent(chunks []map[string]any) string {
 	var s string

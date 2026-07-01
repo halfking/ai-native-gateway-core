@@ -21,8 +21,9 @@ type auditLogEntry struct {
 
 // handleListAuditLogs returns paginated audit log entries (super_admin only).
 // Query params:
-//   page (default 1), size (default 50, max 200)
-//   actor (LIKE), action (LIKE), from/to (RFC3339 timestamp)
+//
+//	page (default 1), size (default 50, max 200)
+//	actor (LIKE), action (LIKE), from/to (RFC3339 timestamp)
 func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

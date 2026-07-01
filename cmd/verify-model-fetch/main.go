@@ -197,5 +197,3 @@ func runChatProbe(h *admin.Handler, credID int, model string) {
 	fmt.Println("--- response body ---")
 	fmt.Println(string(body))
 }
-
-

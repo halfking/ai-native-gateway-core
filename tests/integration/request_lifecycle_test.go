@@ -8,16 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // TestRequestLifecycle_CompleteFlow tests the full request lifecycle
 // from CreateInitial to Update to UpdateSync, against a real PostgreSQL database.
 //
 // To run this test:
-//   export LLM_GATEWAY_PG_URL=<your-postgres-dsn-with-credentials>
-//   go test -tags=integration ./tests/integration -v -run TestRequestLifecycle
+//
+//	export LLM_GATEWAY_PG_URL=<your-postgres-dsn-with-credentials>
+//	go test -tags=integration ./tests/integration -v -run TestRequestLifecycle
 func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -88,9 +89,9 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 
 		// Trigger async update
 		rl.Update(&telemetry.LogUpdate{
-			RequestID: reqID,
-			Stage:     telemetry.StageCompleted,
-			Status:    telemetry.StatusSuccess,
+			RequestID:           reqID,
+			Stage:               telemetry.StageCompleted,
+			Status:              telemetry.StatusSuccess,
 			CompressionStrategy: "delta_append",
 			CompressionMeta: map[string]interface{}{
 				"msg_count": 5,

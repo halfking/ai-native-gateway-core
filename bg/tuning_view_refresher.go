@@ -19,17 +19,18 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TuningViewRefresher periodically calls REFRESH MATERIALIZED VIEW
 // CONCURRENTLY on the two pre-aggregated views.
 type TuningViewRefresher struct {
-	pool  *pgxpool.Pool
-	tick  time.Duration
-	stop  chan struct{}
-	done  chan struct{}
+	pool     *pgxpool.Pool
+	tick     time.Duration
+	stop     chan struct{}
+	done     chan struct{}
 	stopOnce sync.Once
 }
 

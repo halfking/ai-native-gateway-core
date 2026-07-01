@@ -78,13 +78,13 @@ type requestLogInput struct {
 	// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 	// New column is the SOLE home for the upstream finish_reason.
 	UpstreamFinishReason *string `json:"upstream_finish_reason,omitempty"`
-	TransformRuleID    *string  `json:"transform_rule_id,omitempty"`
-	EgressProtocol     *string  `json:"egress_protocol,omitempty"`
-	RequestPreview     *string  `json:"request_preview,omitempty"`
-	TransformSummary   *string  `json:"transform_summary,omitempty"`
-	ResponsePreview    *string  `json:"response_preview,omitempty"`
-	RequestBody        *string  `json:"request_body,omitempty"`
-	ResponseBody       *string  `json:"response_body,omitempty"`
+	TransformRuleID      *string `json:"transform_rule_id,omitempty"`
+	EgressProtocol       *string `json:"egress_protocol,omitempty"`
+	RequestPreview       *string `json:"request_preview,omitempty"`
+	TransformSummary     *string `json:"transform_summary,omitempty"`
+	ResponsePreview      *string `json:"response_preview,omitempty"`
+	RequestBody          *string `json:"request_body,omitempty"`
+	ResponseBody         *string `json:"response_body,omitempty"`
 }
 
 type batchEntry struct {
@@ -432,10 +432,10 @@ func (h *Handler) handleTelemetryBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":              "ok",
-		"decision_log_count":  decCount,
-		"request_log_count":   reqCount,
-		"errors":              errCount,
+		"status":             "ok",
+		"decision_log_count": decCount,
+		"request_log_count":  reqCount,
+		"errors":             errCount,
 	})
 }
 

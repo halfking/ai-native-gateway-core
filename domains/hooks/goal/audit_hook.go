@@ -19,27 +19,27 @@ type AuditHook struct {
 
 // AuditConfig contains audit hook configuration.
 type AuditConfig struct {
-	Enabled            bool
-	UseAutoroute       bool
-	FallbackModel      string
-	AutoFixEnabled     bool
-	MinConfidence      float64
-	SettingsGetter     SettingsGetter
+	Enabled        bool
+	UseAutoroute   bool
+	FallbackModel  string
+	AutoFixEnabled bool
+	MinConfidence  float64
+	SettingsGetter SettingsGetter
 }
 
 // AuditResult represents the result of a code audit.
 type AuditResult struct {
-	Passed     bool              `json:"passed"`
-	Confidence float64           `json:"confidence"`
-	Issues     []AuditIssue      `json:"issues,omitempty"`
+	Passed      bool              `json:"passed"`
+	Confidence  float64           `json:"confidence"`
+	Issues      []AuditIssue      `json:"issues,omitempty"`
 	Suggestions []AuditSuggestion `json:"suggestions,omitempty"`
-	Summary    string            `json:"summary"`
+	Summary     string            `json:"summary"`
 }
 
 // AuditIssue represents a single audit finding.
 type AuditIssue struct {
-	Severity    string `json:"severity"`    // critical, high, medium, low
-	Category    string `json:"category"`    // security, performance, style, etc.
+	Severity    string `json:"severity"` // critical, high, medium, low
+	Category    string `json:"category"` // security, performance, style, etc.
 	Description string `json:"description"`
 	Location    string `json:"location,omitempty"`
 }
@@ -106,7 +106,7 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 	// Store audit result - Note: We need to add UpdateSessionAudit method to GoalStore
 	// For now, just log the result
 	resultJSON, _ := json.Marshal(auditResult)
-	slog.Info("audit_result_generated", 
+	slog.Info("audit_result_generated",
 		"session_id", req.SessionID,
 		"result", string(resultJSON),
 	)

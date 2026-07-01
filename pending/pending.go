@@ -69,12 +69,12 @@ type Response struct {
 	TenantID      string `json:"tenant_id"`
 	RequestID     string `json:"request_id"`
 	Status        Status `json:"status"`
-	Body          string `json:"body,omitempty"`         // SSE text or JSON body
-	ContentType   string `json:"content_type"`          // "text/event-stream" | "application/json"
+	Body          string `json:"body,omitempty"` // SSE text or JSON body
+	ContentType   string `json:"content_type"`   // "text/event-stream" | "application/json"
 	ProviderID    int    `json:"provider_id"`
 	CredentialID  int    `json:"credential_id"`
-	RequestHash   string `json:"request_hash"`           // sha256 of request body (anti-tamper)
-	CreatedAt     int64  `json:"created_at"`             // unix seconds
+	RequestHash   string `json:"request_hash"` // sha256 of request body (anti-tamper)
+	CreatedAt     int64  `json:"created_at"`   // unix seconds
 	CompletedAt   int64  `json:"completed_at,omitempty"`
 	BytesBuffered int    `json:"bytes_buffered"`
 	IsStream      bool   `json:"is_stream"`
@@ -269,9 +269,9 @@ func (s *Store) ListStaleInProgress(ctx context.Context, staleBefore time.Time, 
 	staleBeforeUnix := staleBefore.Unix()
 	pattern := keyPrefix + ":*"
 	var (
-		cursor   uint64
-		results  []StaleEntry
-		seen     = make(map[string]struct{})
+		cursor  uint64
+		results []StaleEntry
+		seen    = make(map[string]struct{})
 	)
 	for {
 		keys, nextCursor, err := s.rdb.Scan(ctx, cursor, pattern, batchSize).Result()
@@ -356,20 +356,20 @@ func splitEntryKey(k string) (sessionID, requestID string, ok bool) {
 // write persists the response (hash + index) atomically. Internal.
 func (s *Store) write(ctx context.Context, r *Response) error {
 	fields := map[string]any{
-		"session_id":      r.SessionID,
-		"tenant_id":       r.TenantID,
-		"request_id":      r.RequestID,
-		"status":          string(r.Status),
-		"body":            r.Body,
-		"content_type":    r.ContentType,
-		"provider_id":     r.ProviderID,
-		"credential_id":   r.CredentialID,
-		"request_hash":    r.RequestHash,
-		"created_at":      r.CreatedAt,
-		"completed_at":    r.CompletedAt,
-		"bytes_buffered":  r.BytesBuffered,
-		"is_stream":       r.IsStream,
-		"error_message":   r.ErrorMessage,
+		"session_id":     r.SessionID,
+		"tenant_id":      r.TenantID,
+		"request_id":     r.RequestID,
+		"status":         string(r.Status),
+		"body":           r.Body,
+		"content_type":   r.ContentType,
+		"provider_id":    r.ProviderID,
+		"credential_id":  r.CredentialID,
+		"request_hash":   r.RequestHash,
+		"created_at":     r.CreatedAt,
+		"completed_at":   r.CompletedAt,
+		"bytes_buffered": r.BytesBuffered,
+		"is_stream":      r.IsStream,
+		"error_message":  r.ErrorMessage,
 	}
 	pipe := s.rdb.Pipeline()
 	pipe.HSet(ctx, entryKey(r.SessionID, r.RequestID), fields)

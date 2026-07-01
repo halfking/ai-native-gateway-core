@@ -36,34 +36,34 @@ type Rule struct {
 
 // Policy 租户策略
 type Policy struct {
-	TenantID                string
-	Enabled                 bool
-	DetectionMode           string
-	EnableBasicRules        bool
-	EnableAdvancedRules     bool
-	EnableHeuristics        bool
-	EnableMLModel           bool
-	ScoreThresholdLog       int
-	ScoreThresholdWarn      int
-	ScoreThresholdSanitize  int
-	ScoreThresholdBlock     int
-	ActionOnLowRisk         string
-	ActionOnMediumRisk      string
-	ActionOnHighRisk        string
-	WhitelistPatterns       []string
-	WhitelistUsers          []string
+	TenantID               string
+	Enabled                bool
+	DetectionMode          string
+	EnableBasicRules       bool
+	EnableAdvancedRules    bool
+	EnableHeuristics       bool
+	EnableMLModel          bool
+	ScoreThresholdLog      int
+	ScoreThresholdWarn     int
+	ScoreThresholdSanitize int
+	ScoreThresholdBlock    int
+	ActionOnLowRisk        string
+	ActionOnMediumRisk     string
+	ActionOnHighRisk       string
+	WhitelistPatterns      []string
+	WhitelistUsers         []string
 }
 
 // DetectionResult 检测结果
 type DetectionResult struct {
-	Score           int                    `json:"score"`
-	RiskLevel       string                 `json:"risk_level"`
-	MatchedRules    []MatchedRule          `json:"matched_rules"`
-	DetectionLayers map[string]bool        `json:"detection_layers"`
-	ActionTaken     string                 `json:"action_taken"`
-	Blocked         bool                   `json:"blocked"`
-	Evidence        string                 `json:"evidence"`
-	Recommendation  string                 `json:"recommendation"`
+	Score           int             `json:"score"`
+	RiskLevel       string          `json:"risk_level"`
+	MatchedRules    []MatchedRule   `json:"matched_rules"`
+	DetectionLayers map[string]bool `json:"detection_layers"`
+	ActionTaken     string          `json:"action_taken"`
+	Blocked         bool            `json:"blocked"`
+	Evidence        string          `json:"evidence"`
+	Recommendation  string          `json:"recommendation"`
 }
 
 // MatchedRule 匹配的规则
@@ -313,20 +313,20 @@ func (d *Detector) getPolicy(ctx context.Context, tenantID string) (*Policy, err
 	if err == sql.ErrNoRows {
 		// 返回默认策略
 		return &Policy{
-			TenantID:                tenantID,
-			Enabled:                 true,
-			DetectionMode:           "observe",
-			EnableBasicRules:        true,
-			EnableAdvancedRules:     true,
-			EnableHeuristics:        true,
-			EnableMLModel:           false,
-			ScoreThresholdLog:       3,
-			ScoreThresholdWarn:      6,
-			ScoreThresholdSanitize:  8,
-			ScoreThresholdBlock:     10,
-			ActionOnLowRisk:         "log",
-			ActionOnMediumRisk:      "warn",
-			ActionOnHighRisk:        "block",
+			TenantID:               tenantID,
+			Enabled:                true,
+			DetectionMode:          "observe",
+			EnableBasicRules:       true,
+			EnableAdvancedRules:    true,
+			EnableHeuristics:       true,
+			EnableMLModel:          false,
+			ScoreThresholdLog:      3,
+			ScoreThresholdWarn:     6,
+			ScoreThresholdSanitize: 8,
+			ScoreThresholdBlock:    10,
+			ActionOnLowRisk:        "log",
+			ActionOnMediumRisk:     "warn",
+			ActionOnHighRisk:       "block",
 		}, nil
 	}
 

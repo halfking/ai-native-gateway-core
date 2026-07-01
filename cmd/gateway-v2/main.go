@@ -30,7 +30,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
+	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -38,7 +38,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/security"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
+	sessioninspector "github.com/kaixuan/llm-gateway-go/domains/hooks/session-inspector"
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/tools"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"

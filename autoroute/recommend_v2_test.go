@@ -351,10 +351,10 @@ func abs(x float64) float64 {
 func TestRecommendV2_LegacyScoringBranch(t *testing.T) {
 	old := globalFeatureFlags
 	globalFeatureFlags = &FeatureFlags{
-		UseSimplifiedScoring:    false,
-		UseHotTop3Pool:          false,
-		Use48hFallback:          false,
-		UseCacheRevalidation:    false,
+		UseSimplifiedScoring:     false,
+		UseHotTop3Pool:           false,
+		Use48hFallback:           false,
+		UseCacheRevalidation:     false,
 		UseChannelQualityRouting: false,
 	}
 	defer func() { globalFeatureFlags = old }()

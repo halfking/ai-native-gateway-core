@@ -9,12 +9,12 @@ import (
 // `{"error": {...}}` envelope used by OpenAI / Anthropic / most
 // proxy-style upstreams. The fields are deliberately permissive:
 //   - Type:    the upstream's semantic classification
-//              (e.g. "service_unavailable", "insufficient_quota")
+//     (e.g. "service_unavailable", "insufficient_quota")
 //   - Code:    the upstream's machine-readable code when Type is
-//              absent (some upstreams use one or the other, never both)
+//     absent (some upstreams use one or the other, never both)
 //   - Message: human-readable reason
 //   - Param:   optional structured field (kept so a future audit
-//              column can surface it without re-parsing the body)
+//     column can surface it without re-parsing the body)
 type jsonErrorBody struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`

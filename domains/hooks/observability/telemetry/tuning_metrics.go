@@ -197,10 +197,10 @@ func RecordLLMCircuitBreakerState(consecutive int, open bool) {
 // RecordStrategySignal updates the per-strategy gauges. Called from
 // the tuning signal writer after a successful batch insert.
 //
-//   strategy  — Strategy string (baseline_heuristic / pattern_layered / llm_fallback)
-//   taskType  — the classified task type
-//   quality   — quality_score from the signal
-//   success   — true if the request succeeded
+//	strategy  — Strategy string (baseline_heuristic / pattern_layered / llm_fallback)
+//	taskType  — the classified task type
+//	quality   — quality_score from the signal
+//	success   — true if the request succeeded
 func RecordStrategySignal(strategy, taskType string, quality float64, success bool) {
 	if strategy == "" {
 		strategy = "pattern_layered" // default for A/B disabled

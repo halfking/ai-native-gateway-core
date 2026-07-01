@@ -60,8 +60,8 @@ func isMetaTool(name string) bool {
 //   - (modified, true, nil)   — meta-tools replaced with the full set
 //   - (original, false, nil)  — no meta-tools, body unchanged
 //   - (original, false, err)  — DB error; caller should treat as a
-//                               passthrough so a metatool outage cannot
-//                               break real requests
+//     passthrough so a metatool outage cannot
+//     break real requests
 func (i *MetaToolInterceptor) InterceptRequest(ctx context.Context, body []byte) ([]byte, bool, error) {
 	if i.handler == nil {
 		return body, false, nil

@@ -472,6 +472,189 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 	return content
 }
 
+// SerializeResponsesResponse serializes an InternalResponse into a complete
+// OpenAI Responses API response body (non-stream). Used for /v1/responses
+// when upstream is OpenAI Chat Completions or Anthropic Messages.
+//
+// The Responses API wraps message content in an `output[]` array whose
+// items are typed (`message` | `function_call` | `reasoning`). Reasoning
+// content is emitted as a separate `reasoning` item ahead of any text or
+// tool-call items so SDK clients can render the thinking trace distinctly.
+//
+// ID strategy:
+//   - response.id  ← ir.ID when set, else "resp_" + short hash of model+time
+//   - message.id   ← "msg_" + short hash derived from respID
+//   - function_call.id ← "{msgID}_fc_{index}"
+//
+// Phase E (2026-07-01): adds the Responses API slot to the IR response
+// serializer matrix (alongside SerializeOpenAIResponse /
+// SerializeAnthropicResponse), so adding the protocol stays O(N) — one
+// new serializer, no handler rewrite.
+func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byte, error) {
+	if ir == nil {
+		return nil, fmt.Errorf("response is nil")
+	}
+
+	model := ir.Model
+	if clientModel != "" {
+		model = clientModel
+	}
+
+	respID := ir.ID
+	if respID == "" {
+		respID = "resp_" + shortIDFromSeed(model+":"+time.Now().Format(time.RFC3339Nano))
+	}
+	msgID := "msg_" + shortIDFromSeed(respID)
+
+	created := ir.Created
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+
+	status := mapFinishReasonToResponsesStatus(ir.FinishReason)
+
+	output := buildResponsesResponseOutput(ir, msgID, status)
+
+	resp := map[string]any{
+		"id":         respID,
+		"object":     "response",
+		"created_at": created,
+		"model":      model,
+		"status":     status,
+		"output":     output,
+		"usage": map[string]any{
+			"input_tokens":  ir.Usage.PromptTokens,
+			"output_tokens": ir.Usage.CompletionTokens,
+			"total_tokens":  ir.Usage.TotalTokens,
+		},
+	}
+
+	return json.Marshal(resp)
+}
+
+// buildResponsesResponseOutput assembles the Responses API `output[]` array
+// from IR. Ordering mirrors what domains/streaming/responses.go previously
+// hand-wrote: reasoning first (if any), then either a single message item
+// or one function_call item per tool call.
+func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []map[string]any {
+	output := make([]map[string]any, 0, 2)
+
+	if ir.ReasoningContent != "" {
+		output = append(output, map[string]any{
+			"type": "reasoning",
+			"id":   msgID + "_reasoning",
+			"summary": []map[string]any{{
+				"type": "summary_text",
+				"text": ir.ReasoningContent,
+			}},
+		})
+	}
+
+	// Aggregate text content from IR.Content blocks (type=text).
+	textContent := ""
+	for _, c := range ir.Content {
+		if c.Type == "text" {
+			textContent += c.Text
+		}
+	}
+
+	if len(ir.ToolCalls) > 0 {
+		for index, tc := range ir.ToolCalls {
+			item := map[string]any{
+				"type":      "function_call",
+				"id":        msgID + "_fc_" + itoa(index),
+				"call_id":   tc.ID,
+				"name":      tc.Name,
+				"arguments": tc.Arguments,
+				"status":    "completed",
+			}
+			output = append(output, item)
+		}
+		return output
+	}
+
+	output = append(output, map[string]any{
+		"type":   "message",
+		"id":     msgID,
+		"status": status,
+		"role":   "assistant",
+		"content": []map[string]any{{
+			"type":        "output_text",
+			"text":        textContent,
+			"annotations": []any{},
+		}},
+	})
+	return output
+}
+
+// mapFinishReasonToResponsesStatus maps the unified (OpenAI-form)
+// finish_reason to a Responses API status string.
+func mapFinishReasonToResponsesStatus(reason string) string {
+	switch reason {
+	case "length", "max_tokens":
+		return "incomplete"
+	case "content_filter", "refusal":
+		return "incomplete"
+	default:
+		// "stop" / "end_turn" / "tool_calls" / "tool_use" / "" → completed
+		return "completed"
+	}
+}
+
+// itoa is a small strconv-free integer formatter for tool call indices.
+// Tool calls rarely exceed a handful per response, so a tiny allocation-free
+// path keeps the hot serializer simple.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var buf [20]byte
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
+}
+
+// shortIDFromSeed hashes a seed string (model name, response id, timestamp)
+// into a 24-char alphanumeric suffix suitable for use in Responses API
+// response.id / message.id fields. Uses FNV-1a — fast, allocation-free,
+// and the IDs don't need to be cryptographically random (they are opaque
+// to the client and only need to be unique within a single response).
+func shortIDFromSeed(seed string) string {
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+		alphabet        = "0123456789abcdefghijklmnopqrstuvwxyz"
+	)
+	h := offset64
+	for i := 0; i < len(seed); i++ {
+		h ^= uint64(seed[i])
+		h *= prime64
+	}
+	// Expand to 24 chars by chaining FNV rounds with salt mixing so
+	// adjacent seeds don't share long prefixes in the output.
+	out := make([]byte, 24)
+	var salt uint64
+	for i := 0; i < 24; i++ {
+		salt = salt*31 + uint64(i+1)
+		h ^= salt
+		h *= prime64
+		out[i] = alphabet[h%uint64(len(alphabet))]
+	}
+	return string(out)
+}
+
 // ─── Finish reason helpers ───────────────────────────────────────────────────
 
 // mapAnthropicFinishReason converts Anthropic stop reasons to OpenAI form.

@@ -18,11 +18,11 @@ import (
 // Returns the original & compressed session for comparison display.
 
 type MessageView struct {
-	Index     int    `json:"index"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	ToolCalls string `json:"tool_calls,omitempty"`
-	TokenCount int   `json:"token_count"`
+	Index      int    `json:"index"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCalls  string `json:"tool_calls,omitempty"`
+	TokenCount int    `json:"token_count"`
 }
 
 type CacheInfo struct {
@@ -42,18 +42,18 @@ type SessionStats struct {
 }
 
 type SessionCompareData struct {
-	SessionID     string        `json:"session_id"`
-	TenantID      string        `json:"tenant_id"`
-	OriginalMsgs  []MessageView `json:"original_msgs"`
+	SessionID      string        `json:"session_id"`
+	TenantID       string        `json:"tenant_id"`
+	OriginalMsgs   []MessageView `json:"original_msgs"`
 	CompressedMsgs []MessageView `json:"compressed_msgs"`
-	ResponseMsgs  []MessageView `json:"response_msgs"`
-	CacheInfo     CacheInfo     `json:"cache_info"`
-	Stats         SessionStats  `json:"stats"`
-	IsCompressed  bool          `json:"is_compressed"`
-	ContextUsage  float64       `json:"context_usage"`
-	ContextWindow int           `json:"context_window"`
-	ModelUsed     string        `json:"model_used"`
-	MsgCount      int           `json:"msg_count"`
+	ResponseMsgs   []MessageView `json:"response_msgs"`
+	CacheInfo      CacheInfo     `json:"cache_info"`
+	Stats          SessionStats  `json:"stats"`
+	IsCompressed   bool          `json:"is_compressed"`
+	ContextUsage   float64       `json:"context_usage"`
+	ContextWindow  int           `json:"context_window"`
+	ModelUsed      string        `json:"model_used"`
+	MsgCount       int           `json:"msg_count"`
 }
 
 // SessionCompareAPI handles session comparison endpoints.
@@ -103,8 +103,8 @@ func (api *SessionCompareAPI) HandleCompare(w http.ResponseWriter, r *http.Reque
 
 	if data == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
-			"status":    "error",
-			"message":   "Session not found",
+			"status":     "error",
+			"message":    "Session not found",
 			"session_id": sessionID,
 		})
 		return
@@ -150,14 +150,14 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 
 	for rows.Next() {
 		var (
-			requestID, clientModel, outboundModel string
+			requestID, clientModel, outboundModel   string
 			requestBody, outboundBody, responseBody *string
-			compressionStrategy                   *string
-			compressionMeta                       *string
-			outboundMsgCount                      *int
-			outboundTokenEst                      *int
-			createdAt                             time.Time
-			providerID                            *int
+			compressionStrategy                     *string
+			compressionMeta                         *string
+			outboundMsgCount                        *int
+			outboundTokenEst                        *int
+			createdAt                               time.Time
+			providerID                              *int
 		)
 
 		err := rows.Scan(
@@ -385,18 +385,18 @@ func truncateStr(s string, max int) string {
 // Performs a handoff: saves session state, returns new session prompt.
 
 type HandoffRequest struct {
-	SessionID     string `json:"session_id"`
-	TenantID      string `json:"tenant_id"`
-	CreateNew     bool   `json:"create_new"`
+	SessionID string `json:"session_id"`
+	TenantID  string `json:"tenant_id"`
+	CreateNew bool   `json:"create_new"`
 }
 
 type HandoffResponse struct {
-	Status          string `json:"status"`
-	SessionID       string `json:"session_id"`
-	HandoffSummary  string `json:"handoff_summary"`
-	NewSessionID    string `json:"new_session_id,omitempty"`
-	NewSessionHint  string `json:"new_session_hint,omitempty"`
-	CompletedTasks  int    `json:"completed_tasks"`
+	Status         string `json:"status"`
+	SessionID      string `json:"session_id"`
+	HandoffSummary string `json:"handoff_summary"`
+	NewSessionID   string `json:"new_session_id,omitempty"`
+	NewSessionHint string `json:"new_session_hint,omitempty"`
+	CompletedTasks int    `json:"completed_tasks"`
 }
 
 // HandoffAPI handles session handoff endpoints.

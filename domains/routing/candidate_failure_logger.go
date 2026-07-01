@@ -1,4 +1,3 @@
-
 // Package routing — candidate_failure_logger.go
 //
 // 2026-06-23 Phase 2 (P1) of the minimax-m3 transient-error fix:

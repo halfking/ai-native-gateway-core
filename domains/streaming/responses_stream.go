@@ -70,13 +70,13 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	flusher.Flush()
 
 	outputItem := map[string]any{
-		"type": "response.output_item.added",
+		"type":         "response.output_item.added",
 		"output_index": 0,
 		"item": map[string]any{
-			"type":   "message",
-			"id":     msgID,
-			"status": "in_progress",
-			"role":   "assistant",
+			"type":    "message",
+			"id":      msgID,
+			"status":  "in_progress",
+			"role":    "assistant",
 			"content": []any{},
 		},
 	}
@@ -264,7 +264,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 
 	doneItem := map[string]any{
-		"type": "response.output_item.done",
+		"type":         "response.output_item.done",
 		"output_index": 0,
 		"item": map[string]any{
 			"type":   "message",
@@ -327,13 +327,13 @@ func writeResponsesIncomplete(w http.ResponseWriter, flusher http.Flusher, respI
 	incompleteResp := map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{
-			"id":         respID,
-			"object":     "response",
-			"created_at": createdAt,
-			"model":      clientModel,
-			"status":     "incomplete",
+			"id":                 respID,
+			"object":             "response",
+			"created_at":         createdAt,
+			"model":              clientModel,
+			"status":             "incomplete",
 			"incomplete_details": map[string]any{"reason": reason},
-			"output":     output,
+			"output":             output,
 		},
 	}
 	writeSSE(w, "response.completed", incompleteResp)

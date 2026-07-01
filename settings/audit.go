@@ -135,4 +135,3 @@ func FromHTTPRequest(r *http.Request, user, role string) string {
 	_ = role
 	return ip
 }
-

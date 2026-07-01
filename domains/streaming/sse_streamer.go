@@ -28,7 +28,7 @@ type SSEStreamer struct {
 // NewSSEStreamer 构造一个 SSE 流式器。
 func NewSSEStreamer() *SSEStreamer {
 	return &SSEStreamer{
-		ChunkTimeout:  5 * time.Second,
+		ChunkTimeout:   5 * time.Second,
 		ErrSendTimeout: errors.New("streaming: client send timeout"),
 	}
 }

@@ -75,10 +75,10 @@ func TestNormalizeRouteKey(t *testing.T) {
 
 func TestNormalizeModelRef(t *testing.T) {
 	tests := []struct {
-		in              string
-		wantProvider    string
-		wantBaseModel   string
-		wantVersion     string
+		in            string
+		wantProvider  string
+		wantBaseModel string
+		wantVersion   string
 	}{
 		// After Step 1: baseModel is just NormalizeRouteKey(in),
 		// version is always "" (no family-specific extraction).

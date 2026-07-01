@@ -22,42 +22,42 @@ func NewSessionAnalyticsHandler(db *sql.DB) *SessionAnalyticsHandler {
 
 // AnalyticsSessionSummary 会话摘要
 type AnalyticsSessionSummary struct {
-	SessionKey              string    `json:"session_key"`
-	TenantID                string    `json:"tenant_id"`
-	FirstRequestAt          time.Time `json:"first_request_at"`
-	LastRequestAt           time.Time `json:"last_request_at"`
-	DurationSeconds         int       `json:"duration_seconds"`
-	RequestCount            int       `json:"request_count"`
-	SuccessCount            int       `json:"success_count"`
-	ErrorCount              int       `json:"error_count"`
-	TotalCostUSD            float64   `json:"total_cost_usd"`
-	InputCostUSD            float64   `json:"input_cost_usd"`
-	OutputCostUSD           float64   `json:"output_cost_usd"`
-	TotalPromptTokens       int64     `json:"total_prompt_tokens"`
-	TotalCompletionTokens   int64     `json:"total_completion_tokens"`
-	TotalTokens             int64     `json:"total_tokens"`
-	AvgLatencyMs            int       `json:"avg_latency_ms"`
-	MinLatencyMs            *int      `json:"min_latency_ms"`
-	MaxLatencyMs            *int      `json:"max_latency_ms"`
-	ModelsUsed              []string  `json:"models_used"`
-	PrimaryModel            *string   `json:"primary_model"`
-	ModelSwitchCount        int       `json:"model_switch_count"`
-	Title                   *string   `json:"title"`
-	Summary                 *string   `json:"summary"`
-	KeyTopics               []string  `json:"key_topics"`
-	UserIntent              *string   `json:"user_intent"`
-	QualityScore            *int      `json:"quality_score"`
-	ComplianceStatus        string    `json:"compliance_status"`
-	ComplianceIssuesCount   int       `json:"compliance_issues_count"`
-	PromptInjectionDetected bool      `json:"prompt_injection_detected"`
-	PIIDetected             bool      `json:"pii_detected"`
-	ToxicOutputDetected     bool      `json:"toxic_output_detected"`
-	WorkTypes               []string  `json:"work_types"`
-	Providers               []string  `json:"providers"`
-	ClientModels            []string  `json:"client_models"`
+	SessionKey              string     `json:"session_key"`
+	TenantID                string     `json:"tenant_id"`
+	FirstRequestAt          time.Time  `json:"first_request_at"`
+	LastRequestAt           time.Time  `json:"last_request_at"`
+	DurationSeconds         int        `json:"duration_seconds"`
+	RequestCount            int        `json:"request_count"`
+	SuccessCount            int        `json:"success_count"`
+	ErrorCount              int        `json:"error_count"`
+	TotalCostUSD            float64    `json:"total_cost_usd"`
+	InputCostUSD            float64    `json:"input_cost_usd"`
+	OutputCostUSD           float64    `json:"output_cost_usd"`
+	TotalPromptTokens       int64      `json:"total_prompt_tokens"`
+	TotalCompletionTokens   int64      `json:"total_completion_tokens"`
+	TotalTokens             int64      `json:"total_tokens"`
+	AvgLatencyMs            int        `json:"avg_latency_ms"`
+	MinLatencyMs            *int       `json:"min_latency_ms"`
+	MaxLatencyMs            *int       `json:"max_latency_ms"`
+	ModelsUsed              []string   `json:"models_used"`
+	PrimaryModel            *string    `json:"primary_model"`
+	ModelSwitchCount        int        `json:"model_switch_count"`
+	Title                   *string    `json:"title"`
+	Summary                 *string    `json:"summary"`
+	KeyTopics               []string   `json:"key_topics"`
+	UserIntent              *string    `json:"user_intent"`
+	QualityScore            *int       `json:"quality_score"`
+	ComplianceStatus        string     `json:"compliance_status"`
+	ComplianceIssuesCount   int        `json:"compliance_issues_count"`
+	PromptInjectionDetected bool       `json:"prompt_injection_detected"`
+	PIIDetected             bool       `json:"pii_detected"`
+	ToxicOutputDetected     bool       `json:"toxic_output_detected"`
+	WorkTypes               []string   `json:"work_types"`
+	Providers               []string   `json:"providers"`
+	ClientModels            []string   `json:"client_models"`
 	LastSummarizedAt        *time.Time `json:"last_summarized_at"`
-	CreatedAt               time.Time `json:"created_at"`
-	UpdatedAt               time.Time `json:"updated_at"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 // AnalyticsSessionStats 会话统计
@@ -75,33 +75,33 @@ type AnalyticsSessionStats struct {
 
 // AnalyticsSessionDetail 会话详情
 type AnalyticsSessionDetail struct {
-	Summary  AnalyticsSessionSummary  `json:"summary"`
-	Timeline []RequestEvent  `json:"timeline"`
-	Analysis SessionAnalysis `json:"analysis"`
+	Summary  AnalyticsSessionSummary `json:"summary"`
+	Timeline []RequestEvent          `json:"timeline"`
+	Analysis SessionAnalysis         `json:"analysis"`
 }
 
 // RequestEvent 请求事件
 type RequestEvent struct {
-	RequestID        string     `json:"request_id"`
-	CreatedAt        time.Time  `json:"created_at"`
-	Status           string     `json:"status"`
-	ClientModel      string     `json:"client_model"`
-	UpstreamModel    string     `json:"upstream_model"`
-	PromptTokens     int        `json:"prompt_tokens"`
-	CompletionTokens int        `json:"completion_tokens"`
-	TotalCost        float64    `json:"total_cost"`
-	LatencyMs        int        `json:"latency_ms"`
-	WorkType         *string    `json:"work_type"`
-	Provider         *string    `json:"provider"`
-	ErrorMessage     *string    `json:"error_message"`
+	RequestID        string    `json:"request_id"`
+	CreatedAt        time.Time `json:"created_at"`
+	Status           string    `json:"status"`
+	ClientModel      string    `json:"client_model"`
+	UpstreamModel    string    `json:"upstream_model"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalCost        float64   `json:"total_cost"`
+	LatencyMs        int       `json:"latency_ms"`
+	WorkType         *string   `json:"work_type"`
+	Provider         *string   `json:"provider"`
+	ErrorMessage     *string   `json:"error_message"`
 }
 
 // SessionAnalysis 会话分析
 type SessionAnalysis struct {
-	ModelSwitches     []ModelSwitch         `json:"model_switches"`
-	ComplianceIssues  []ComplianceIssue     `json:"compliance_issues"`
-	CostBreakdown     CostBreakdown         `json:"cost_breakdown"`
-	TokenDistribution TokenDistribution     `json:"token_distribution"`
+	ModelSwitches     []ModelSwitch     `json:"model_switches"`
+	ComplianceIssues  []ComplianceIssue `json:"compliance_issues"`
+	CostBreakdown     CostBreakdown     `json:"cost_breakdown"`
+	TokenDistribution TokenDistribution `json:"token_distribution"`
 }
 
 // ModelSwitch 模型切换
@@ -167,7 +167,7 @@ func (h *SessionAnalyticsHandler) ListSessions(c echo.Context) error {
 	if orderBy == "" {
 		orderBy = "last_request_at"
 	}
-	
+
 	// 验证排序列
 	if err := ValidateOrderByColumn("session_summaries", orderBy); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid order by: "+err.Error())
@@ -433,11 +433,11 @@ func (h *SessionAnalyticsHandler) buildSessionAnalysis(ctx context.Context, tena
 	// 成本分解
 	for _, event := range timeline {
 		analysis.CostBreakdown.TotalCost += event.TotalCost
-		
+
 		if event.UpstreamModel != "" {
 			analysis.CostBreakdown.ByModel[event.UpstreamModel] += event.TotalCost
 		}
-		
+
 		if event.Provider != nil && *event.Provider != "" {
 			analysis.CostBreakdown.ByProvider[*event.Provider] += event.TotalCost
 		}
@@ -450,7 +450,7 @@ func (h *SessionAnalyticsHandler) buildSessionAnalysis(ctx context.Context, tena
 	for _, event := range timeline {
 		analysis.TokenDistribution.PromptTokens += int64(event.PromptTokens)
 		analysis.TokenDistribution.CompletionTokens += int64(event.CompletionTokens)
-		
+
 		if event.UpstreamModel != "" {
 			analysis.TokenDistribution.ByModel[event.UpstreamModel] += int64(event.PromptTokens + event.CompletionTokens)
 		}

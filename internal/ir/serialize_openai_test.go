@@ -82,8 +82,8 @@ func TestSerializeOpenAI_AllSamplingFields(t *testing.T) {
 
 func TestSerializeOpenAI_StopSequences(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
-		Stop:   []string{"END", "STOP"},
+		Model: "gpt-4o",
+		Stop:  []string{"END", "STOP"},
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
 		},
@@ -148,7 +148,7 @@ func TestSerializeOpenAI_SystemPrompt(t *testing.T) {
 
 func TestSerializeOpenAI_Tools(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
+		Model: "gpt-4o",
 		Tools: []ToolDefinition{
 			{
 				Name:        "get_weather",
@@ -199,7 +199,7 @@ func TestSerializeOpenAI_ToolChoice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ir := &InternalRequest{
-				Model:     "gpt-4o",
+				Model:      "gpt-4o",
 				ToolChoice: tt.tc,
 				Messages: []Message{
 					{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
@@ -238,7 +238,7 @@ func TestSerializeOpenAI_ToolChoice(t *testing.T) {
 
 func TestSerializeOpenAI_AssistantWithToolCalls(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
+		Model: "gpt-4o",
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "weather"}}},
 			{
@@ -290,7 +290,7 @@ func TestSerializeOpenAI_AssistantWithToolCalls(t *testing.T) {
 
 func TestSerializeOpenAI_ToolRoleMessage(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
+		Model: "gpt-4o",
 		Messages: []Message{
 			{
 				Role:       "tool",
@@ -333,14 +333,14 @@ func TestSerializeOpenAI_OpenAIOnlyFields(t *testing.T) {
 	n := 2
 
 	ir := &InternalRequest{
-		Model:             "gpt-4o",
-		FrequencyPenalty:  &fp,
-		PresencePenalty:   &pp,
+		Model:            "gpt-4o",
+		FrequencyPenalty: &fp,
+		PresencePenalty:  &pp,
 		Logprobs:         &lp,
-		TopLogprobs:       &tlp,
-		Seed:              &seed,
-		N:                 n,
-		User:              "user123",
+		TopLogprobs:      &tlp,
+		Seed:             &seed,
+		N:                n,
+		User:             "user123",
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
 		},
@@ -381,7 +381,7 @@ func TestSerializeOpenAI_OpenAIOnlyFields(t *testing.T) {
 
 func TestSerializeOpenAI_ResponseFormat(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
+		Model: "gpt-4o",
 		ResponseFormat: &ResponseFormat{
 			Type:   "json_object",
 			Schema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`),
@@ -416,7 +416,7 @@ func TestSerializeOpenAI_NilRequest(t *testing.T) {
 
 func TestSerializeOpenAI_ImageContent(t *testing.T) {
 	ir := &InternalRequest{
-		Model:  "gpt-4o",
+		Model: "gpt-4o",
 		Messages: []Message{
 			{
 				Role: "user",

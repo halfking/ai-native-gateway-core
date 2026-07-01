@@ -56,15 +56,15 @@ func (s State) String() string {
 type ErrorKind = errorsx.ErrorKind
 
 var (
-	KindTransient      = errorsx.KindTransient
-	KindTimeout        = errorsx.KindTimeout
-	KindNetwork        = errorsx.KindNetwork
-	KindRateLimit      = errorsx.KindRateLimit
-	KindAuth           = errorsx.KindAuth
-	KindQuota          = errorsx.KindQuota
-	KindUpstreamDown   = errorsx.KindUpstreamDown
-	KindStreamTimeout  = errorsx.KindStreamTimeout
-	KindConcurrent     = errorsx.KindConcurrent
+	KindTransient     = errorsx.KindTransient
+	KindTimeout       = errorsx.KindTimeout
+	KindNetwork       = errorsx.KindNetwork
+	KindRateLimit     = errorsx.KindRateLimit
+	KindAuth          = errorsx.KindAuth
+	KindQuota         = errorsx.KindQuota
+	KindUpstreamDown  = errorsx.KindUpstreamDown
+	KindStreamTimeout = errorsx.KindStreamTimeout
+	KindConcurrent    = errorsx.KindConcurrent
 )
 
 const (
@@ -96,14 +96,14 @@ const (
 
 // Default cooling policies per error kind.
 var defaultPolicies = map[ErrorKind]CoolingPolicy{
-	KindTransient:      {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindTimeout:        {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindNetwork:        {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindRateLimit:      {InitialCooling: 900 * time.Second, MaxCooling: 900 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
-	KindAuth:           {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
-	KindQuota:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
-	KindUpstreamDown:   {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	KindStreamTimeout:  {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindTransient:     {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindTimeout:       {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindNetwork:       {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindRateLimit:     {InitialCooling: 900 * time.Second, MaxCooling: 900 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	KindAuth:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindQuota:         {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindUpstreamDown:  {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	KindStreamTimeout: {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	// KindConcurrent: upstream reports "service overloaded / too many
 	// concurrent requests". Apply a fixed 5-minute cooling window so the
 	// credential is taken out of rotation long enough for the upstream's

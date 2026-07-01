@@ -8,24 +8,24 @@ import (
 // ParseOpenAI parses an OpenAI Chat Completions request body into InternalRequest.
 func ParseOpenAI(body []byte) (*InternalRequest, error) {
 	var src struct {
-		Model             string          `json:"model"`
-		Messages         json.RawMessage `json:"messages"`
-		MaxTokens        *int            `json:"max_tokens"`
-		MaxCompletionTokens *int          `json:"max_completion_tokens,omitempty"`
-		Temperature      *float64        `json:"temperature,omitempty"`
-		TopP             *float64        `json:"top_p,omitempty"`
-		Stop             json.RawMessage `json:"stop,omitempty"`
-		Stream           *bool           `json:"stream,omitempty"`
-		Tools            json.RawMessage `json:"tools,omitempty"`
-		ToolChoice       json.RawMessage `json:"tool_choice,omitempty"`
-		FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
-		PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
-		LogProbs         *bool           `json:"logprobs,omitempty"`
-		TopLogProbs      *int            `json:"top_logprobs,omitempty"`
-		Seed             *int64          `json:"seed,omitempty"`
-		ResponseFormat   json.RawMessage `json:"response_format,omitempty"`
-		N                *int            `json:"n,omitempty"`
-		User             string          `json:"user,omitempty"`
+		Model               string          `json:"model"`
+		Messages            json.RawMessage `json:"messages"`
+		MaxTokens           *int            `json:"max_tokens"`
+		MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
+		Temperature         *float64        `json:"temperature,omitempty"`
+		TopP                *float64        `json:"top_p,omitempty"`
+		Stop                json.RawMessage `json:"stop,omitempty"`
+		Stream              *bool           `json:"stream,omitempty"`
+		Tools               json.RawMessage `json:"tools,omitempty"`
+		ToolChoice          json.RawMessage `json:"tool_choice,omitempty"`
+		FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
+		PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
+		LogProbs            *bool           `json:"logprobs,omitempty"`
+		TopLogProbs         *int            `json:"top_logprobs,omitempty"`
+		Seed                *int64          `json:"seed,omitempty"`
+		ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
+		N                   *int            `json:"n,omitempty"`
+		User                string          `json:"user,omitempty"`
 	}
 
 	if err := json.Unmarshal(body, &src); err != nil {
@@ -37,11 +37,11 @@ func ParseOpenAI(body []byte) (*InternalRequest, error) {
 		SourceProtocol:   ProtocolOpenAIChat,
 		FrequencyPenalty: src.FrequencyPenalty,
 		PresencePenalty:  src.PresencePenalty,
-		Logprobs:        src.LogProbs,
-		TopLogprobs:     src.TopLogProbs,
-		Seed:            src.Seed,
-		N:               derefInt(src.N),
-		User:            src.User,
+		Logprobs:         src.LogProbs,
+		TopLogprobs:      src.TopLogProbs,
+		Seed:             src.Seed,
+		N:                derefInt(src.N),
+		User:             src.User,
 	}
 
 	if src.MaxTokens != nil {

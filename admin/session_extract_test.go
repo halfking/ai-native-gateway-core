@@ -133,9 +133,9 @@ func TestHandleSessionContextRoutes_MethodNotAllowed(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/api/system/session-context/abc/extract-to-memora"}, // extract requires POST
-		{"POST", "/api/system/session-context/abc/extraction-status"},  // status requires GET
-		{"PUT", "/api/system/session-context/abc/summarize-title"},   // whatever the default
+		{"GET", "/api/system/session-context/abc/extract-to-memora"},  // extract requires POST
+		{"POST", "/api/system/session-context/abc/extraction-status"}, // status requires GET
+		{"PUT", "/api/system/session-context/abc/summarize-title"},    // whatever the default
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {

@@ -35,15 +35,15 @@ type TransformContext struct {
 
 // TransformResult holds the resolved transform for a request.
 type TransformResult struct {
-	EgressPreference     []string
-	OutboundModel        string
-	StripHeaders         []string
-	InjectHeaders        map[string]string
-	Passthrough          []string
-	PassthroughFields    []string
-	StripRequestFields   []string
-	DisguiseProfileID    string
-	MatchedRule          string
+	EgressPreference   []string
+	OutboundModel      string
+	StripHeaders       []string
+	InjectHeaders      map[string]string
+	Passthrough        []string
+	PassthroughFields  []string
+	StripRequestFields []string
+	DisguiseProfileID  string
+	MatchedRule        string
 }
 
 // Matrix loads and evaluates request transform rules.

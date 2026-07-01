@@ -464,10 +464,11 @@ func EstimateTokens(bodyBytes []byte) int {
 // internal overhead — see v7 §2.
 //
 // Examples:
-//   ThresholdBytes(128000, 0.8) → 358400  (cand.ContextWindow=128000)
-//   ThresholdBytes( 64000, 0.8) → 179200
-//   ThresholdBytes(256000, 0.8) → 716800
-//   ThresholdBytes(     0, _)   → 0      (skip)
+//
+//	ThresholdBytes(128000, 0.8) → 358400  (cand.ContextWindow=128000)
+//	ThresholdBytes( 64000, 0.8) → 179200
+//	ThresholdBytes(256000, 0.8) → 716800
+//	ThresholdBytes(     0, _)   → 0      (skip)
 func ThresholdBytes(contextWindow int, fraction float64) int {
 	if contextWindow <= 0 {
 		return 0

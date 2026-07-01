@@ -13,9 +13,9 @@ func TestCalcCredits_fourDimensions(t *testing.T) {
 
 func TestGlobalEffective_discount(t *testing.T) {
 	st := Settings{
-		BaseCreditsPer1M: 10000,
+		BaseCreditsPer1M:    10000,
 		BaseCreditsPer1MOut: 12000,
-		GlobalDiscount: 0.8,
+		GlobalDiscount:      0.8,
 	}
 	g := globalEffective(st)
 	if g.In != 8000 || g.Out != 9600 {

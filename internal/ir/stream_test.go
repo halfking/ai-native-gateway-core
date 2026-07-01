@@ -422,6 +422,296 @@ func TestStreamChunk_SerializeAnthropic_Done(t *testing.T) {
 	}
 }
 
+// ─── SerializeResponses Tests ────────────────────────────────────────────────
+//
+// Phase E (2026-07-01): Responses API serializer. Verifies the per-chunk
+// event shape (text / reasoning / tool-call / error) and the deliberate
+// no-op for Done/Usage (orchestrator emits response.completed).
+
+func TestStreamChunk_SerializeResponses_Nil(t *testing.T) {
+	var chunk *StreamChunk
+	if got := chunk.SerializeResponses("msg_123"); got != "" {
+		t.Errorf("nil receiver should return empty string, got %q", got)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Delta_Text(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeDelta,
+		Delta: &StreamDelta{
+			Content: "Hello",
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_test_123")
+
+	if !strings.Contains(output, "event: response.output_text.delta") {
+		t.Errorf("expected event: response.output_text.delta in output, got %q", output)
+	}
+	if !strings.Contains(output, `"type":"response.output_text.delta"`) {
+		t.Errorf("expected type=response.output_text.delta in JSON, got %q", output)
+	}
+	if !strings.Contains(output, `"item_id":"msg_test_123"`) {
+		t.Errorf("expected item_id=msg_test_123, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"Hello"`) {
+		t.Errorf("expected delta=Hello, got %q", output)
+	}
+	if !strings.HasSuffix(output, "\n\n") {
+		t.Errorf("expected output to end with \\n\\n, got %q", output)
+	}
+
+	// Parse JSON payload to assert structural shape
+	payload := extractResponsesData(t, output, "response.output_text.delta")
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+	if parsed["type"] != "response.output_text.delta" {
+		t.Errorf("type = %v, want response.output_text.delta", parsed["type"])
+	}
+	if parsed["item_id"] != "msg_test_123" {
+		t.Errorf("item_id = %v, want msg_test_123", parsed["item_id"])
+	}
+	if parsed["output_index"] != float64(0) {
+		t.Errorf("output_index = %v, want 0", parsed["output_index"])
+	}
+	if parsed["content_index"] != float64(0) {
+		t.Errorf("content_index = %v, want 0", parsed["content_index"])
+	}
+	if parsed["delta"] != "Hello" {
+		t.Errorf("delta = %v, want Hello", parsed["delta"])
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Delta_Reasoning(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeDelta,
+		Delta: &StreamDelta{
+			ReasoningContent: "thinking...",
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_r_123")
+
+	if !strings.Contains(output, "event: response.reasoning_text.delta") {
+		t.Errorf("expected event: response.reasoning_text.delta in output, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"thinking..."`) {
+		t.Errorf("expected delta=thinking..., got %q", output)
+	}
+
+	// Should NOT also emit text delta in same chunk
+	if strings.Contains(output, "response.output_text.delta") {
+		t.Errorf("reasoning chunk should not emit response.output_text.delta, got %q", output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Delta_ToolCallStart(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeDelta,
+		Delta: &StreamDelta{
+			ToolCalls: []StreamToolCallDelta{
+				{
+					Index: 0,
+					ID:    "fc_abc123",
+					Type:  "function",
+					Name:  "get_weather",
+				},
+			},
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_t_123")
+
+	if !strings.Contains(output, "event: response.output_item.added") {
+		t.Errorf("expected event: response.output_item.added, got %q", output)
+	}
+	if !strings.Contains(output, `"name":"get_weather"`) {
+		t.Errorf("expected name=get_weather, got %q", output)
+	}
+	if !strings.Contains(output, `"id":"fc_abc123"`) {
+		t.Errorf("expected id=fc_abc123, got %q", output)
+	}
+	if !strings.Contains(output, `"type":"function_call"`) {
+		t.Errorf("expected type=function_call, got %q", output)
+	}
+	if !strings.Contains(output, `"status":"in_progress"`) {
+		t.Errorf("expected status=in_progress, got %q", output)
+	}
+
+	// New tool call should NOT also emit function_call_arguments.delta
+	if strings.Contains(output, "response.function_call_arguments.delta") {
+		t.Errorf("name-only chunk should not emit function_call_arguments.delta, got %q", output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Delta_ToolCallArgs(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeDelta,
+		Delta: &StreamDelta{
+			ToolCalls: []StreamToolCallDelta{
+				{
+					Index:     0,
+					ID:        "fc_abc123",
+					Arguments: `{"city":"SF"}`,
+				},
+			},
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_t_456")
+
+	if !strings.Contains(output, "event: response.function_call_arguments.delta") {
+		t.Errorf("expected event: response.function_call_arguments.delta, got %q", output)
+	}
+	if !strings.Contains(output, `"item_id":"fc_abc123"`) {
+		t.Errorf("expected item_id=fc_abc123, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"{\"city\":\"SF\"}"`) {
+		t.Errorf("expected delta JSON string, got %q", output)
+	}
+
+	// Args-only chunk should NOT emit output_item.added (already added earlier)
+	if strings.Contains(output, "response.output_item.added") {
+		t.Errorf("args-only chunk should not emit response.output_item.added, got %q", output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Delta_CombinedTextAndReasoning(t *testing.T) {
+	// Some upstreams (Anthropic extended thinking) interleave text and
+	// reasoning in the same delta chunk — serializer must emit BOTH events.
+	chunk := &StreamChunk{
+		Type: ChunkTypeDelta,
+		Delta: &StreamDelta{
+			Content:          "visible",
+			ReasoningContent: "hidden",
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_combo")
+
+	if !strings.Contains(output, "event: response.output_text.delta") {
+		t.Errorf("expected text delta event, got %q", output)
+	}
+	if !strings.Contains(output, "event: response.reasoning_text.delta") {
+		t.Errorf("expected reasoning delta event, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"visible"`) {
+		t.Errorf("expected delta=visible, got %q", output)
+	}
+	if !strings.Contains(output, `"delta":"hidden"`) {
+		t.Errorf("expected delta=hidden, got %q", output)
+	}
+
+	// Exactly two SSE events (2 × event: lines)
+	if got, want := strings.Count(output, "event: "), 2; got != want {
+		t.Errorf("event count = %d, want %d (output=%q)", got, want, output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Done_IsEmpty(t *testing.T) {
+	chunk := &StreamChunk{
+		Type:           ChunkTypeDone,
+		SourceProtocol: ProtocolAnthropicMessages,
+	}
+
+	if got := chunk.SerializeResponses("msg_done"); got != "" {
+		t.Errorf("Done chunk should return empty (orchestrator emits response.completed), got %q", got)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Usage_IsEmpty(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeUsage,
+		Usage: &StreamUsage{
+			PromptTokens:     10,
+			CompletionTokens: 20,
+			TotalTokens:      30,
+		},
+	}
+
+	if got := chunk.SerializeResponses("msg_usage"); got != "" {
+		t.Errorf("Usage chunk should return empty (orchestrator accumulates for response.completed), got %q", got)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Error(t *testing.T) {
+	chunk := &StreamChunk{
+		Type: ChunkTypeError,
+		Error: &StreamError{
+			Type:    "rate_limit_exceeded",
+			Message: "Too many requests",
+			Code:    "rate_limit",
+		},
+	}
+
+	output := chunk.SerializeResponses("msg_err")
+
+	if !strings.Contains(output, "event: error") {
+		t.Errorf("expected event: error, got %q", output)
+	}
+	if !strings.Contains(output, `"type":"rate_limit_exceeded"`) {
+		t.Errorf("expected error.type=rate_limit_exceeded, got %q", output)
+	}
+	if !strings.Contains(output, `"message":"Too many requests"`) {
+		t.Errorf("expected error.message, got %q", output)
+	}
+	if !strings.Contains(output, `"code":"rate_limit"`) {
+		t.Errorf("expected error.code, got %q", output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_Error_NilError(t *testing.T) {
+	// Defensive: error type without Error struct should not crash
+	chunk := &StreamChunk{Type: ChunkTypeError}
+	if got := chunk.SerializeResponses("msg_x"); got != "" {
+		t.Errorf("Error chunk with nil Error struct should return empty, got %q", got)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_DefaultItemID(t *testing.T) {
+	// Empty itemID falls back to a placeholder so the wire payload is valid
+	chunk := &StreamChunk{
+		Type:  ChunkTypeDelta,
+		Delta: &StreamDelta{Content: "x"},
+	}
+	output := chunk.SerializeResponses("")
+	if !strings.Contains(output, `"item_id":"msg_stream"`) {
+		t.Errorf("empty itemID should default to msg_stream, got %q", output)
+	}
+}
+
+func TestStreamChunk_SerializeResponses_DeltaWithNilDelta(t *testing.T) {
+	chunk := &StreamChunk{Type: ChunkTypeDelta}
+	if got := chunk.SerializeResponses("msg_x"); got != "" {
+		t.Errorf("Delta chunk with nil Delta struct should return empty, got %q", got)
+	}
+}
+
+// extractResponsesData parses the data: line for the given event type out of
+// an SSE output blob. Mirrors the structure produced by SerializeResponses
+// (`event: <type>\ndata: {json}\n\n`).
+func extractResponsesData(t *testing.T, output, eventType string) string {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	var sawEvent bool
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			if strings.TrimPrefix(line, "event: ") == eventType {
+				sawEvent = true
+				continue
+			}
+			sawEvent = false
+		case strings.HasPrefix(line, "data: ") && sawEvent:
+			return strings.TrimPrefix(line, "data: ")
+		}
+	}
+	t.Fatalf("no data line found for event %q in output:\n%s", eventType, output)
+	return ""
+}
+
 // ─── Round-trip Tests ───────────────────────────────────────────────────────
 
 func TestRoundTrip_OpenAI_ToOpenAI(t *testing.T) {

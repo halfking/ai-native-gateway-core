@@ -110,7 +110,7 @@ func TestToolRegistry_GetCategory(t *testing.T) {
 	// 测试：获取 filesystem 分类
 	tools, err := tr.GetCategory(ctx, "default", "filesystem")
 	require.NoError(t, err)
-	
+
 	if len(tools) > 0 {
 		// 验证工具 ID 格式
 		for _, tool := range tools {

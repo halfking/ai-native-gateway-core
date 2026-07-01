@@ -31,7 +31,7 @@ func TestDetailedStats_Empty(t *testing.T) {
 	m.Acquire(ctx, credID, &limit, "sess-a", "tenant1")
 	m.Acquire(ctx, credID, &limit, "sess-b", "tenant1")
 
-	_, holders, details, healthy = m.DetailedStats(ctx, credID, &limit)
+	_, holders, _, healthy = m.DetailedStats(ctx, credID, &limit)
 	if healthy != 2 {
 		t.Errorf("expected 2 healthy, got %d", healthy)
 	}

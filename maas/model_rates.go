@@ -10,26 +10,26 @@ import (
 
 // AdminModelRateRow is one canonical model with effective and custom credit rates.
 type AdminModelRateRow struct {
-	CanonicalID     int        `json:"canonical_id"`
-	CanonicalName   string     `json:"canonical_name"`
-	DisplayName     string     `json:"display_name"`
-	Vendor          string     `json:"vendor"`
-	Family          *string    `json:"family"`
-	Status          string     `json:"status"`
-	CreditsPer1MIn  int64      `json:"credits_per_1m_in"`
-	CreditsPer1MOut int64      `json:"credits_per_1m_out"`
-	CreditsPer1MCacheIn  int64 `json:"credits_per_1m_cache_in"`
-	CreditsPer1MCacheOut int64 `json:"credits_per_1m_cache_out"`
-	ManualIn        bool       `json:"manual_in"`
-	ManualOut       bool       `json:"manual_out"`
-	ManualCacheIn   bool       `json:"manual_cache_in"`
-	ManualCacheOut  bool       `json:"manual_cache_out"`
-	IsCustom        bool       `json:"is_custom"`
-	CustomIn        *int64     `json:"custom_credits_per_1m_in"`
-	CustomOut       *int64     `json:"custom_credits_per_1m_out"`
-	CustomCacheIn   *int64     `json:"custom_credits_per_1m_cache_in"`
-	CustomCacheOut  *int64     `json:"custom_credits_per_1m_cache_out"`
-	UpdatedAt       *time.Time `json:"updated_at"`
+	CanonicalID          int        `json:"canonical_id"`
+	CanonicalName        string     `json:"canonical_name"`
+	DisplayName          string     `json:"display_name"`
+	Vendor               string     `json:"vendor"`
+	Family               *string    `json:"family"`
+	Status               string     `json:"status"`
+	CreditsPer1MIn       int64      `json:"credits_per_1m_in"`
+	CreditsPer1MOut      int64      `json:"credits_per_1m_out"`
+	CreditsPer1MCacheIn  int64      `json:"credits_per_1m_cache_in"`
+	CreditsPer1MCacheOut int64      `json:"credits_per_1m_cache_out"`
+	ManualIn             bool       `json:"manual_in"`
+	ManualOut            bool       `json:"manual_out"`
+	ManualCacheIn        bool       `json:"manual_cache_in"`
+	ManualCacheOut       bool       `json:"manual_cache_out"`
+	IsCustom             bool       `json:"is_custom"`
+	CustomIn             *int64     `json:"custom_credits_per_1m_in"`
+	CustomOut            *int64     `json:"custom_credits_per_1m_out"`
+	CustomCacheIn        *int64     `json:"custom_credits_per_1m_cache_in"`
+	CustomCacheOut       *int64     `json:"custom_credits_per_1m_cache_out"`
+	UpdatedAt            *time.Time `json:"updated_at"`
 }
 
 // AdminModelRatesResponse bundles global knobs with per-model rows.

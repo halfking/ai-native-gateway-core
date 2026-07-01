@@ -39,13 +39,13 @@ import (
 
 // StripResult describes what was removed from a body.
 type StripResult struct {
-	ToolCallsRemoved  int `json:"tool_calls_removed"`
-	ToolResultsRemoved int `json:"tool_results_removed"`
-	ThinkingRemoved   int `json:"thinking_removed"`
-	MessagesRemoved   int `json:"messages_removed"`
-	BytesBefore       int `json:"bytes_before"`
-	BytesAfter        int `json:"bytes_after"`
-	DidStrip          bool `json:"did_strip"`
+	ToolCallsRemoved   int  `json:"tool_calls_removed"`
+	ToolResultsRemoved int  `json:"tool_results_removed"`
+	ThinkingRemoved    int  `json:"thinking_removed"`
+	MessagesRemoved    int  `json:"messages_removed"`
+	BytesBefore        int  `json:"bytes_before"`
+	BytesAfter         int  `json:"bytes_after"`
+	DidStrip           bool `json:"did_strip"`
 }
 
 // StripToolInfo removes completed tool rounds and thinking blocks from

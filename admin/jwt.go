@@ -26,7 +26,8 @@ type JWTClaims struct {
 // default).
 //
 // Precedence (SSOT: admin/auth_params.go EnvJWTSecret, EnvSecretKey):
-//   LLM_GATEWAY_JWT_SECRET env → fallbackKey (cfg.SecretKey).
+//
+//	LLM_GATEWAY_JWT_SECRET env → fallbackKey (cfg.SecretKey).
 func jwtSecret(fallbackKey string) []byte {
 	if s := os.Getenv("LLM_GATEWAY_JWT_SECRET"); s != "" {
 		return []byte(s)

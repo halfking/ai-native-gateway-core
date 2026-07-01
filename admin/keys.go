@@ -644,26 +644,26 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type key struct {
-		ID                   int        `json:"id"`
-		KeyPrefix            string     `json:"key_prefix"`
-		OwnerUser            *string    `json:"owner_user"`
-		Enabled              bool       `json:"enabled"`
-		Status               string     `json:"status"`
-		ExpiresAt            *time.Time `json:"expires_at"`
-		BudgetUSD            *float64   `json:"budget_usd"`
-		RateLimitRPM         *int       `json:"rate_limit_rpm"`
-		ApplicationCode      string     `json:"application_code"`
-		IsSystem             bool       `json:"is_system"`
-		DefaultClientProfile *string    `json:"default_client_profile"`
-		LastUsedAt           *time.Time `json:"last_used_at"`
-		Remark               *string    `json:"remark"`
-		TotalRequests        int64      `json:"total_requests"`
-		TotalPromptTokens    int64      `json:"total_prompt_tokens"`
-		TotalCompletionTokens int64     `json:"total_completion_tokens"`
-		TotalCostUSD         float64    `json:"total_cost_usd"`
-		LastRequestAt        *time.Time `json:"last_request_at"`
-		TenantID             string     `json:"tenant_id"`
-		KeyAlias             *string    `json:"key_alias"`
+		ID                    int        `json:"id"`
+		KeyPrefix             string     `json:"key_prefix"`
+		OwnerUser             *string    `json:"owner_user"`
+		Enabled               bool       `json:"enabled"`
+		Status                string     `json:"status"`
+		ExpiresAt             *time.Time `json:"expires_at"`
+		BudgetUSD             *float64   `json:"budget_usd"`
+		RateLimitRPM          *int       `json:"rate_limit_rpm"`
+		ApplicationCode       string     `json:"application_code"`
+		IsSystem              bool       `json:"is_system"`
+		DefaultClientProfile  *string    `json:"default_client_profile"`
+		LastUsedAt            *time.Time `json:"last_used_at"`
+		Remark                *string    `json:"remark"`
+		TotalRequests         int64      `json:"total_requests"`
+		TotalPromptTokens     int64      `json:"total_prompt_tokens"`
+		TotalCompletionTokens int64      `json:"total_completion_tokens"`
+		TotalCostUSD          float64    `json:"total_cost_usd"`
+		LastRequestAt         *time.Time `json:"last_request_at"`
+		TenantID              string     `json:"tenant_id"`
+		KeyAlias              *string    `json:"key_alias"`
 	}
 	keys := make([]key, 0)
 	for rows.Next() {
@@ -961,17 +961,17 @@ func (h *Handler) getKeyDetail(w http.ResponseWriter, r *http.Request, id int) {
 	includeRevoked := includeRevokedKeys(r)
 
 	var k struct {
-		ID                   int      `json:"id"`
-		KeyPrefix            string   `json:"key_prefix"`
-		OwnerUser            *string  `json:"owner_user"`
-		Enabled              bool     `json:"enabled"`
-		BudgetUSD            *float64 `json:"budget_usd"`
-		RateLimitRPM         *int     `json:"rate_limit_rpm"`
-		RateLimitConcurrent  *int     `json:"rate_limit_concurrent"`
-		RateLimitTPM         *int     `json:"rate_limit_tpm"`
-		ApplicationCode      string   `json:"application_code"`
-		TenantID             string   `json:"tenant_id"`
-		KeyAlias             *string  `json:"key_alias"`
+		ID                  int      `json:"id"`
+		KeyPrefix           string   `json:"key_prefix"`
+		OwnerUser           *string  `json:"owner_user"`
+		Enabled             bool     `json:"enabled"`
+		BudgetUSD           *float64 `json:"budget_usd"`
+		RateLimitRPM        *int     `json:"rate_limit_rpm"`
+		RateLimitConcurrent *int     `json:"rate_limit_concurrent"`
+		RateLimitTPM        *int     `json:"rate_limit_tpm"`
+		ApplicationCode     string   `json:"application_code"`
+		TenantID            string   `json:"tenant_id"`
+		KeyAlias            *string  `json:"key_alias"`
 	}
 	err := h.db.QueryRow(ctx, `
 		SELECT ak.id, COALESCE(ak.key_prefix,''), ak.owner_user, ak.enabled,
@@ -1413,7 +1413,6 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	if req.KeyAlias != nil {
 		sets = append(sets, fmt.Sprintf("key_alias = $%d", argIdx))
 		args = append(args, *req.KeyAlias)
-		argIdx++
 	}
 
 	if len(sets) == 0 {
@@ -1441,4 +1440,3 @@ func (h *Handler) patchKey(w http.ResponseWriter, r *http.Request, id int) {
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
-

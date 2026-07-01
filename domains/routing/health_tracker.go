@@ -156,8 +156,8 @@ func (h *HealthTracker) OnError(ctx context.Context, credentialID int, model str
 				"model", model,
 				"error", err)
 		}
-		}()
-	}
+	}()
+}
 
 // shouldIgnoreForHealthTracking returns true if the error kind should not
 // be counted against credential health metrics. Client-side errors (user
