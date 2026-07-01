@@ -19,7 +19,7 @@ func TestAnthropicRequestToChat_SimpleMessage(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	if v["model"] != "gpt-4" {
 		t.Errorf("model = %v, want 'gpt-4'", v["model"])
@@ -57,7 +57,7 @@ func TestAnthropicRequestToChat_SystemMessage(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	msgs := v["messages"].([]any)
 	if len(msgs) != 2 {
@@ -98,7 +98,7 @@ func TestAnthropicRequestToChat_ContentBlocks(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	msgs := v["messages"].([]any)
 	msg := msgs[0].(map[string]any)
@@ -135,7 +135,7 @@ func TestAnthropicRequestToChat_ToolUse(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	msgs := v["messages"].([]any)
 	msg := msgs[0].(map[string]any)
@@ -186,7 +186,7 @@ func TestAnthropicRequestToChat_ToolResult(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	msgs := v["messages"].([]any)
 	msg := msgs[0].(map[string]any)
@@ -226,7 +226,7 @@ func TestAnthropicRequestToChat_Tools(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	tools, ok := v["tools"].([]any)
 	if !ok || len(tools) != 1 {
@@ -284,7 +284,7 @@ func TestAnthropicRequestToChat_ToolChoice(t *testing.T) {
 			}
 			var v map[string]any
 			//nolint:errcheck // test parse, non-critical
-			json.Unmarshal(out, &v)
+			_ = json.Unmarshal(out, &v)
 
 			switch want := tc.want.(type) {
 			case string:
@@ -314,7 +314,7 @@ func TestAnthropicRequestToChat_MetadataUserID(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	if v["user"] != "user-789" {
 		t.Errorf("user = %v, want 'user-789'", v["user"])
@@ -339,7 +339,7 @@ func TestAnthropicRequestToChat_StopSequences(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	stop, ok := v["stop"].([]any)
 	if !ok || len(stop) != 2 {
@@ -363,7 +363,7 @@ func TestAnthropicRequestToChat_TopKDropped(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 
 	// top_k should be silently dropped (OpenAI doesn't support it)
 	if _, ok := v["top_k"]; ok {
