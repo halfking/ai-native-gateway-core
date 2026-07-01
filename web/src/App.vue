@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { store, clearAll, clearMustChangePasswordFlag, isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from './store'
 import { logout as apiLogout } from './api/auth'
 import LoginModal from './components/LoginModal.vue'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
+import LanguageSelector from './components/LanguageSelector.vue'
 import { useLoginModal } from './composables/useLoginModal'
 import { useSidebar } from './composables/useSidebar'
 import { useNavAccordion } from './composables/useNavAccordion'
 import { NAV_GROUPS, NAV_PRIMARY_ITEMS, visibleNavGroups, visibleNavItems, isNavItemActive } from './config/appNav'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const { showLoginModal, openLogin, closeLogin } = useLoginModal()
@@ -116,7 +119,7 @@ function openChangePassword() {
 function handleChangePasswordSuccess() {
   clearMustChangePasswordFlag()
   showChangePassword.value = false
-  passwordSuccessMessage.value = '密码修改成功'
+  passwordSuccessMessage.value = t('password.changeSuccess')
 }
 </script>
 
@@ -259,7 +262,7 @@ function handleChangePasswordSuccess() {
         </svg>
         <span>LLM Gateway</span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">登录</button>
+      <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login') }}</button>
     </header>
     <main class="guest-main">
       <RouterView />

@@ -1,4 +1,4 @@
-import { store, clearApiKey, clearAll, authBearer } from '../store'
+import { store, clearApiKey, clearAll, authBearer, getLocale } from '../store'
 import type { UserInfo } from '../store'
 
 // _core.ts — v6.0 audit T12 (2026-06-22)
@@ -20,6 +20,8 @@ export function headers(method: string): Record<string, string> {
   if (method !== 'GET') {
     h['Content-Type'] = 'application/json'
   }
+  // Add Accept-Language header for i18n support
+  h['Accept-Language'] = getLocale()
   const bearer = authBearer()
   if (bearer) h['Authorization'] = `Bearer ${bearer}`
   return h
@@ -74,4 +76,4 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
 // their function signatures (e.g. ApiKey, UserInfo). Keeping them here
 // avoids circular imports between api/* and store.
 export type { UserInfo }
-export { store, clearApiKey, clearAll, authBearer }
+export { store, clearApiKey, clearAll, authBearer, getLocale }
