@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
-	"github.com/kaixuan/llm-gateway-go/domains/identity"
-	"github.com/kaixuan/llm-gateway-go/domains/session"
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/resolve"
 )
 
@@ -488,14 +488,15 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 		messages = append(messages, map[string]any{"role": "system", "content": req.Instructions})
 	}
 
-	var rawInput json.RawMessage = req.Input
+	var rawInput = req.Input
 	if len(rawInput) > 0 {
-		if rawInput[0] == '"' {
+		switch rawInput[0] {
+		case '"':
 			var s string
 			if json.Unmarshal(rawInput, &s) == nil {
 				messages = append(messages, map[string]any{"role": "user", "content": s})
 			}
-		} else if rawInput[0] == '[' {
+		case '[':
 			var items []map[string]any
 			if json.Unmarshal(rawInput, &items) == nil {
 				for _, item := range items {

@@ -58,6 +58,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -138,6 +142,14 @@ func (c Config) Validate() error {
 // It is nil until Init() succeeds with a non-empty File.
 var effectiveLogWriter io.Writer
 
+// activeLogger 持有当前 lumberjack 实例引用，用于运行时热加载（Reconfigure）。
+// nil 表示文件日志未启用。
+var (
+	activeLogger *lumberjack.Logger
+	activeConfig Config
+	loggerMu     sync.RWMutex
+)
+
 // Init installs the file-based rotation writer as the destination
 // of the default slog handler. If cfg.File is empty, Init is a
 // no-op and slog keeps its existing handler (typically stderr).
@@ -176,6 +188,10 @@ func Init(cfg Config, level slog.Level) (io.Writer, error) {
 	// interchangeably; JSON records are identical line-for-line.
 	mw := io.MultiWriter(lj, os.Stderr)
 	effectiveLogWriter = lj
+	loggerMu.Lock()
+	activeLogger = lj
+	activeConfig = cfg
+	loggerMu.Unlock()
 
 	handler := slog.NewJSONHandler(mw, &slog.HandlerOptions{
 		Level: level,
@@ -204,21 +220,132 @@ func Shutdown() error {
 		Sync() error
 		Close() error
 	}
+	var firstErr error
 	if c, ok := effectiveLogWriter.(syncCloser); ok {
-		var firstErr error
 		if err := c.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
 			firstErr = err
 		}
 		if err := c.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		return firstErr
 	}
-	return nil
+	loggerMu.Lock()
+	activeLogger = nil
+	activeConfig = Config{}
+	effectiveLogWriter = nil
+	loggerMu.Unlock()
+	return firstErr
 }
 
 // Writer returns the active file writer, or nil if file logging is
 // disabled. Useful for tests that need to inspect rotated files.
 func Writer() io.Writer {
 	return effectiveLogWriter
+}
+
+// ActiveConfig 返回当前生效的日志配置（线程安全）。
+// 文件日志未启用时返回的 Config.File 为空。
+func ActiveConfig() Config {
+	loggerMu.RLock()
+	defer loggerMu.RUnlock()
+	return activeConfig
+}
+
+// Reconfigure 在运行时修改 lumberjack 的轮转参数（MaxSize/MaxBackups/
+// MaxAge/Compress），立即生效，无需重启服务进程。
+//
+// 注意：
+//   - 仅当文件日志已启用（activeLogger != nil）时生效
+//   - 修改的是同一个 lumberjack.Logger 实例的字段，下一次 Write/Rotate
+//     即应用新参数
+//   - File（日志文件路径）变更不在热加载范围——改路径需要重建 writer，
+//     避免竞态，调用方应通过重启生效
+//   - 返回 nil 表示成功；err 非 nil 时配置未改动
+func Reconfigure(cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+	if activeLogger == nil {
+		return errors.New("logging: file logging is not enabled, cannot reconfigure")
+	}
+	// 只热加载轮转参数，不改文件路径（避免并发写竞态）
+	activeLogger.MaxSize = cfg.MaxSizeMB
+	activeLogger.MaxBackups = cfg.MaxBackups
+	activeLogger.MaxAge = cfg.MaxAgeDays
+	activeLogger.Compress = cfg.Compress
+	// 保留原 File 和 LocalTime
+	activeConfig.MaxSizeMB = cfg.MaxSizeMB
+	activeConfig.MaxBackups = cfg.MaxBackups
+	activeConfig.MaxAgeDays = cfg.MaxAgeDays
+	activeConfig.Compress = cfg.Compress
+	slog.Info("logging: reconfigured (hot reload)",
+		"max_size_mb", cfg.MaxSizeMB,
+		"max_backups", cfg.MaxBackups,
+		"max_age_days", cfg.MaxAgeDays,
+		"compress", cfg.Compress)
+	return nil
+}
+
+// LogFileInfo 描述单个日志文件（当前文件或轮转备份）。
+type LogFileInfo struct {
+	Name         string    `json:"name"`          // 文件名（不含目录）
+	SizeBytes    int64     `json:"size_bytes"`    // 字节数
+	ModTime      time.Time `json:"mod_time"`      // 最后修改时间
+	IsCurrent    bool      `json:"is_current"`    // 是否为当前活动日志
+	IsCompressed bool      `json:"is_compressed"` // 是否已 gzip 压缩（.gz）
+	IsArchived   bool      `json:"is_archived"`   // 是否在 archive/ 子目录
+}
+
+// ListFiles 列出当前日志目录下的所有日志文件（含轮转备份和归档）。
+// 文件日志未启用时返回空切片和 nil 错误。
+// 结果按 ModTime 倒序（最新在前）。
+func ListFiles() ([]LogFileInfo, error) {
+	loggerMu.RLock()
+	cfg := activeConfig
+	loggerMu.RUnlock()
+	if cfg.File == "" {
+		return nil, nil
+	}
+	dir := filepath.Dir(cfg.File)
+	currentName := filepath.Base(cfg.File)
+	return scanLogDir(dir, currentName)
+}
+
+// scanLogDir 扫描日志目录，汇总文件信息。导出以便测试。
+func scanLogDir(dir, currentName string) ([]LogFileInfo, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []LogFileInfo
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		name := e.Name()
+		// 只收录 .log 和 .log.gz 文件，忽略无关文件
+		if !strings.HasSuffix(name, ".log") && !strings.HasSuffix(name, ".log.gz") &&
+			!strings.HasSuffix(name, ".gz") {
+			continue
+		}
+		out = append(out, LogFileInfo{
+			Name:         name,
+			SizeBytes:    info.Size(),
+			ModTime:      info.ModTime(),
+			IsCurrent:    name == currentName,
+			IsCompressed: strings.HasSuffix(name, ".gz"),
+			IsArchived:   false,
+		})
+	}
+	// 倒序：最新在前
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ModTime.After(out[j].ModTime)
+	})
+	return out, nil
 }

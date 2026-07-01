@@ -59,7 +59,7 @@ func (pr *Prober) MarkSuccess(providerID string) error {
 		return err
 	}
 	p.ConsecutiveFails = 0
-	if p.Status() == StatusDegraded || p.Status() == StatusUnhealthy {
+	if p.Status() == StatusDegraded || p.Status() == StatusUnhealthy { //nolint:staticcheck // status-change branch reserved for future Save call
 		// 状态改变需要 Save
 	}
 	p.LastHealthCheck = time.Now()

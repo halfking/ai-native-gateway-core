@@ -8,7 +8,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // TransportLayer 是网络中转领域的统一接口。

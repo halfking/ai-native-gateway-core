@@ -3,8 +3,8 @@ package plugins
 import (
 	"context"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domain/governance"
+	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain/governance" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // SensitiveInputChecker 输入敏感信息检查（PR-V4-03 占位）。

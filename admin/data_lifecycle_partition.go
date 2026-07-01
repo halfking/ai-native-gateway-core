@@ -303,12 +303,12 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 	if req.DryRun {
 		// For dry run, just check if partition exists and count rows
 		partitionName := req.TableName + "_" + archiveDate.Format("2006_01")
-		countQuery := fmt.Sprintf(`
+		countQuery := `
 			SELECT COUNT(*) 
 			FROM pg_class 
 			WHERE relname = $1 
 				AND relnamespace = 'public'::regnamespace
-		`)
+		`
 		var exists int
 		err := h.db.QueryRow(ctx, countQuery, partitionName).Scan(&exists)
 		if err != nil || exists == 0 {
@@ -347,9 +347,10 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 			resp.Error = err.Error()
 		} else {
 			resp.Status = status
-			if status == "success" {
+			switch status {
+			case "success":
 				resp.Message = fmt.Sprintf("Successfully migrated %d rows to columnar storage", resp.RowsMigrated)
-			} else if status == "skipped" {
+			case "skipped":
 				resp.Message = "Partition not found or already archived"
 			}
 		}
@@ -448,12 +449,12 @@ func (h *Handler) executeArchivePartition(ctx context.Context, req archivePartit
 
 	if req.DryRun {
 		partitionName := req.TableName + "_" + archiveDate.Format("2006_01")
-		countQuery := fmt.Sprintf(`
+		countQuery := `
 			SELECT COUNT(*) 
 			FROM pg_class 
 			WHERE relname = $1 
 				AND relnamespace = 'public'::regnamespace
-		`)
+		`
 		var exists int
 		err := h.db.QueryRow(timeoutCtx, countQuery, partitionName).Scan(&exists)
 		if err != nil || exists == 0 {
@@ -490,9 +491,10 @@ func (h *Handler) executeArchivePartition(ctx context.Context, req archivePartit
 			resp.Error = err.Error()
 		} else {
 			resp.Status = status
-			if status == "success" {
+			switch status {
+			case "success":
 				resp.Message = fmt.Sprintf("Successfully migrated %d rows to columnar storage", resp.RowsMigrated)
-			} else if status == "skipped" {
+			case "skipped":
 				resp.Message = "Partition not found or already archived"
 			}
 		}

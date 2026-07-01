@@ -253,3 +253,110 @@ func readDir(t *testing.T, dir string) []string {
 	}
 	return out
 }
+
+// TestReconfigure 验证运行时热加载轮转参数。
+// Init 后调 Reconfigure，确认 ActiveConfig 反映新值，且 lumberjack 实例字段已更新。
+func TestReconfigure(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "test.log")
+
+	cfg := Config{File: logFile, MaxSizeMB: 100, MaxBackups: 10, MaxAgeDays: 7, Compress: true}
+	if _, err := Init(cfg, slog.LevelInfo); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer Shutdown()
+
+	// 热加载新参数
+	newCfg := Config{MaxSizeMB: 50, MaxBackups: 5, MaxAgeDays: 30, Compress: false}
+	if err := Reconfigure(newCfg); err != nil {
+		t.Fatalf("Reconfigure: %v", err)
+	}
+
+	active := ActiveConfig()
+	if active.MaxSizeMB != 50 {
+		t.Errorf("MaxSizeMB = %d, want 50", active.MaxSizeMB)
+	}
+	if active.MaxBackups != 5 {
+		t.Errorf("MaxBackups = %d, want 5", active.MaxBackups)
+	}
+	if active.MaxAgeDays != 30 {
+		t.Errorf("MaxAgeDays = %d, want 30", active.MaxAgeDays)
+	}
+	if active.Compress != false {
+		t.Errorf("Compress = %v, want false", active.Compress)
+	}
+	// File 路径不应被 Reconfigure 改动
+	if active.File != logFile {
+		t.Errorf("File = %q, want %q (should not change)", active.File, logFile)
+	}
+}
+
+// TestReconfigure_NotEnabled 验证文件日志未启用时 Reconfigure 返回错误。
+func TestReconfigure_NotEnabled(t *testing.T) {
+	Shutdown() // 确保未启用
+	err := Reconfigure(Config{MaxSizeMB: 50})
+	if err == nil {
+		t.Error("expected error when file logging not enabled")
+	}
+}
+
+// TestListFiles 验证列出日志文件。
+func TestListFiles(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "gateway.log")
+
+	cfg := Config{File: logFile, MaxSizeMB: 100, MaxBackups: 10, MaxAgeDays: 7}
+	if _, err := Init(cfg, slog.LevelInfo); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer Shutdown()
+
+	// 写一条日志，确保当前文件存在
+	slog.Info("test message")
+	// 创建一个模拟的轮转备份文件
+	backup := filepath.Join(dir, "gateway-2026-01-01.log.gz")
+	if err := os.WriteFile(backup, []byte("fake gzip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 创建一个无关文件（应被忽略）
+	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("ignore"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := ListFiles()
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 log files, got %d: %+v", len(files), files)
+	}
+
+	// 找到当前文件和备份
+	var current, backupFile *LogFileInfo
+	for i := range files {
+		if files[i].IsCurrent {
+			current = &files[i]
+		}
+		if files[i].IsCompressed {
+			backupFile = &files[i]
+		}
+	}
+	if current == nil {
+		t.Error("no current log file found")
+	}
+	if backupFile == nil {
+		t.Error("no compressed backup found")
+	}
+	if backupFile != nil && !strings.HasSuffix(backupFile.Name, ".gz") {
+		t.Errorf("backup name = %q, want .gz suffix", backupFile.Name)
+	}
+}
+
+// TestActiveConfig_Disabled 验证文件日志未启用时 ActiveConfig 返回空。
+func TestActiveConfig_Disabled(t *testing.T) {
+	Shutdown()
+	cfg := ActiveConfig()
+	if cfg.File != "" {
+		t.Errorf("File = %q, want empty when disabled", cfg.File)
+	}
+}

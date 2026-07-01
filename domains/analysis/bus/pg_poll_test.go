@@ -8,7 +8,7 @@ import (
 
 	pgxmock "github.com/pashagolub/pgxmock/v4"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 func TestNewPGPollFunc_NilDBReturnsEmpty(t *testing.T) {

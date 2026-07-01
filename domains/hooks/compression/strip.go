@@ -178,7 +178,7 @@ func filterMessages(msgs []json.RawMessage, remove map[int]bool, result *StripRe
 	// Remove last round from the removal set (keep it for continuity)
 	delete(remove, lastCompletedRoundEnd)
 	for k := range remove {
-		if k >= lastCompletedRoundEnd-2 && k <= lastCompletedRoundEnd {
+		if k >= lastCompletedRoundEnd-2 && k <= lastCompletedRoundEnd { //nolint:staticcheck // placeholder, near-last-round branch reserved for future use
 			// Keep this round too (it's near the last one)
 		}
 	}

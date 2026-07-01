@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/memory"
+	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // Sink is a bounded, async, fire-and-forget writer that funnels request

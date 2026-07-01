@@ -66,10 +66,8 @@ func TestStreamCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 
 	// 冷却后 → HalfOpen。使用轮询避免 CI 调度抖动导致假红。
 	afterDeadline := time.Now().Add(40 * time.Millisecond)
-	for {
-		if cb.State() == CircuitHalfOpen {
-			break
-		}
+	for cb.State() != CircuitHalfOpen {
+
 		if time.Now().After(afterDeadline) {
 			t.Fatalf("after cooldown state = %s, want half-open", cb.State())
 		}

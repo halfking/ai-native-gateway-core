@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // IntentAnalyzer tests
@@ -139,7 +139,7 @@ func TestSecurityHook_OnError(t *testing.T) {
 	h := NewSecurityHook(NewIntentAnalyzer(0.5), NewThreatDetector(7))
 	env := domain.NewRequestEnvelope(context.Background(), nil)
 	err := errors.New("blocked")
-	if h.OnError(context.Background(), env, err); err == nil {
+	if h.OnError(context.Background(), env, err); err == nil { //nolint:errcheck // intentionally testing that err propagates
 		t.Error("OnError should propagate error")
 	}
 	if env.StatusCode != 403 {

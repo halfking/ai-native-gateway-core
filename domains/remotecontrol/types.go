@@ -16,8 +16,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionstate"
+	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // CommandType 指令类型

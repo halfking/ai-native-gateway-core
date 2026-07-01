@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 func TestNoopPublisher_PublishIsNil(t *testing.T) {

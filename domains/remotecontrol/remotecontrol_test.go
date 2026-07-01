@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionstate"
+	"github.com/kaixuan/llm-gateway-go/domain"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // MockSessionManager 模拟会话管理器

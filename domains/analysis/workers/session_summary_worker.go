@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/kaixuan/llm-gateway-go/domain/analysis"
+	"github.com/kaixuan/llm-gateway-go/domain/analysis" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 // SessionSummarizer 是 Summarizer.GenerateSummary 的最小接口。
