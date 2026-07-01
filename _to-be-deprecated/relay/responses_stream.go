@@ -192,7 +192,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			writeSSE(w, "response.output_text.delta", deltaEvent)
 			lastSend = time.Now()
 			if capture != nil {
-				capture.ObservePayload(fmt.Sprintf(`{"delta":%q,"item_id":%q}`, textDelta, msgID), "", false)
+				capture.ObservePayload(fmt.Sprintf(`{"type":"response.output_text.delta","delta":%q,"item_id":%q}`, textDelta, msgID), "", false)
 			}
 		}
 	}
