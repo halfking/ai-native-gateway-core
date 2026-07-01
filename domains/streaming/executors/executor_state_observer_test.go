@@ -63,7 +63,7 @@ func (m *mockStateObserver) getFailures() []failureCall {
 	return append([]failureCall(nil), m.failures...)
 }
 
-func (m *mockStateObserver) reset() {
+func (m *mockStateObserver) reset() { //nolint:unused
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.successes = nil

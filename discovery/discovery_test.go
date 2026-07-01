@@ -17,7 +17,7 @@ import (
 
 // ── Helper: start a test postgres  ────────────────────────────────────────
 
-func testDB(t *testing.T) *pgxpool.Pool {
+func testDB(t *testing.T) *pgxpool.Pool { //nolint:unused
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

@@ -891,7 +891,7 @@ func startAnalysisLoopIfConfigured(deps *v2DispatchDeps) {
 
 // analysisSubscribedWorkerTypes 是 Loop 默认订阅的事件类型（PR-V4-09）。
 // 当前仅 IntentWorker；将来扩展时改这里。
-func analysisSubscribedWorkerTypes() []analysis.EventType {
+func analysisSubscribedWorkerTypes() []analysis.EventType { //nolint:unused
 	return []analysis.EventType{
 		analysis.EventRequestCompleted,
 	}

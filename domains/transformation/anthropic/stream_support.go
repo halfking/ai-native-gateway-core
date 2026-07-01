@@ -309,7 +309,7 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 // safeFlush is a small wrapper around flusher.Flush that recovers
 // from "flush after close" panics. Used in the streaming hot path
 // where the client may have disconnected between write and flush.
-func safeFlush(flusher http.Flusher) {
+func safeFlush(flusher http.Flusher) { //nolint:unused
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Debug("flush after close", "recover", r)
@@ -320,7 +320,7 @@ func safeFlush(flusher http.Flusher) {
 
 // safeWriteSSE wraps io.WriteString with a panic-recovery so a
 // client disconnect mid-stream does not crash the worker.
-func safeWriteSSE(w io.Writer, line string) {
+func safeWriteSSE(w io.Writer, line string) { //nolint:unused
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Debug("write after close", "recover", r)

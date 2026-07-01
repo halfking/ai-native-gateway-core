@@ -9,7 +9,7 @@ import (
 // HealthChecker 健康检查器
 type HealthChecker struct {
 	store *InMemoryStore
-	mu    sync.Mutex
+	mu    sync.Mutex //nolint:unused
 	// checkInterval 上次检查后至少 N 毫秒才能再次检查
 	checkInterval time.Duration
 	// failThreshold 连续失败 N 次标记 unhealthy

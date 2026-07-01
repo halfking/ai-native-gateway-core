@@ -164,7 +164,7 @@ func redisKey(metric string, keyID int) string {
 }
 
 // rpmSHAFallback computes the expected SHA without loading (for re-use after NOSCRIPT).
-func rpmSHAFallback() string {
+func rpmSHAFallback() string { //nolint:unused
 	h := sha1.Sum([]byte(rpmLua))
 	return hex.EncodeToString(h[:])
 }

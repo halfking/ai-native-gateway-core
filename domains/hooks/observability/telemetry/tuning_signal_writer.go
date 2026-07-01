@@ -80,7 +80,7 @@ type commandTag interface {
 // pgxPoolAdapter wraps a *pgxpool.Pool to satisfy the poolExec interface.
 // We intentionally accept the pool indirectly to keep this file free of
 // the pgxpool import (the existing Client has it).
-type pgxPoolAdapter struct {
+type pgxPoolAdapter struct { //nolint:unused
 	exec func(ctx context.Context, sql string, args ...any) (PgxTag, error)
 }
 

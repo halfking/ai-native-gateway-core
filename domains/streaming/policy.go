@@ -135,7 +135,7 @@ func resolveCanonical(
 // request is rejected by the policy checker.  The message
 // deliberately does NOT echo tenant_id to the client (privacy —
 // see docs/.../tenant-model-policy.md §3.2).
-func writeModelForbiddenError(w http.ResponseWriter, requestID, canonical string) {
+func writeModelForbiddenError(w http.ResponseWriter, requestID, canonical string) { //nolint:unused
 	msg := fmt.Sprintf("Model '%s' is not available for your account", canonical)
 	writeErrorJSON(w, http.StatusForbidden, requestID, msg, "permission_error", "model_forbidden")
 }

@@ -670,7 +670,7 @@ func formatAnthropicToolBlocks(content json.RawMessage) string {
 	return strings.TrimSpace(b.String())
 }
 
-func messageRoleAndText(raw json.RawMessage) (role, text string) {
+func messageRoleAndText(raw json.RawMessage) (role, text string) { //nolint:unused
 	return messageRoleAndSummary(raw)
 }
 
@@ -882,7 +882,7 @@ func messageHasAnthropicToolResult(raw json.RawMessage) bool {
 	return false
 }
 
-func tailMessages(messages []json.RawMessage, keepRecentPairs int) []json.RawMessage {
+func tailMessages(messages []json.RawMessage, keepRecentPairs int) []json.RawMessage { //nolint:unused
 	return tailMessagesToolAware(messages, keepRecentPairs)
 }
 
@@ -1191,7 +1191,7 @@ func cwLogVal(cw *int) int {
 }
 
 // classifyContextLengthFromStatus helps tests; re-export pattern from errorsx.
-func classifyContextLengthFromStatus(status int, body []byte) bool {
+func classifyContextLengthFromStatus(status int, body []byte) bool { //nolint:unused
 	return errorsx.IsContextLength(errorsx.ClassifyErrorWithBody(status, body))
 }
 

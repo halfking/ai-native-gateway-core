@@ -38,7 +38,7 @@ func Enhance(ctx context.Context, original ToolSpec, opts EnhanceOptions) (*Enha
 	if err != nil {
 		return nil, fmt.Errorf("specboost: llm call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

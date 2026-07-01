@@ -10,7 +10,7 @@ import (
 )
 
 // setupTestDB creates an in-memory test database with schema.
-func setupTestDB(t *testing.T) *sql.DB {
+func setupTestDB(t *testing.T) *sql.DB { //nolint:unused
 	t.Helper()
 
 	// Use a real PostgreSQL connection for testing

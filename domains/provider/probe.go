@@ -9,7 +9,7 @@ import (
 // Prober 健康探测器
 type Prober struct {
 	store *InMemoryStore
-	mu    sync.Mutex
+	mu    sync.Mutex //nolint:unused
 	// failThreshold 连续失败 N 次标记 unhealthy
 	failThreshold int
 }

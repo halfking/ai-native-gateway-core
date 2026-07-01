@@ -199,7 +199,7 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage) string {
 			content = content[:500] + "..."
 		}
 
-		sb.WriteString(fmt.Sprintf("\n[消息 %d - %s]:\n%s\n", i+1, role, content))
+		fmt.Fprintf(&sb, "\n[消息 %d - %s]:\n%s\n", i+1, role, content)
 	}
 
 	sb.WriteString("---\n")
