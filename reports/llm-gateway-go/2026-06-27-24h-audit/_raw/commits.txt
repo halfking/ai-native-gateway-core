@@ -1,0 +1,54 @@
+207badf0bf95054a44df487d733dbe3af4888b1e 2026-06-27 03:50:58 +0800 fix(executors): add miniredis to credentialfpslot tests
+22613c1faef162c74dc0dffaeb3ac3b91604d12b 2026-06-27 03:46:45 +0800 test(executors): fix force-unpin redis setup
+e7d4deb6ef53f195f84fe299e454e45e566b7001 2026-06-27 03:44:20 +0800 fix(telemetry): qualify request_logs client_request_id in upsert
+6b2ba0e28ae1e3d114e32651701e7e4299e06570 2026-06-27 03:35:35 +0800 fix(telemetry): unblock request_logs upsert conflict branch
+6a2e5fcdc03ecf93adbf40414d4c4258ca6f19ca 2026-06-27 02:48:52 +0800 fix(disguise): restore NewRedisPool constructor compatibility
+f1c541330b9f0c8f23c3143a99078de0ce9872c8 2026-06-27 02:35:08 +0800 feat(web): explain session alias mapping preview
+0e4a5dbf5ed195e3433a97d4860fa362b83c0f91 2026-06-27 02:18:19 +0800 refactor(gateway): isolate legacy memora wiring
+905c147615ae2a62394f2a5e048f9ab1d6eda582 2026-06-27 02:16:32 +0800 feat(web): preview session alias extraction examples
+d85acdd8069cdc791abd11c865a32efc9c95e977 2026-06-27 01:40:56 +0800 refactor(admin): move memora readable search to memory package
+a1edfb006431cb423eed0c05d30816caca2fce88 2026-06-27 01:15:47 +0800 refactor(admin): move session extraction to live memory package
+91edb69a95c5534c914eb782ec96b0143c2ba31d 2026-06-27 01:11:41 +0800 feat(web): add tag editor for session alias setting
+0ffa7466e69d26e46fba5b55f60261b11b0b478f 2026-06-27 00:58:09 +0800 fix(telemetry): disambiguate request_logs update row match
+f12b55172a187dee753cf50e633cbb8222c872b1 2026-06-27 00:56:22 +0800 feat(settings): hot-reload session id body aliases
+c4e1ae477470bf6dcb8ae047e67ebd05698cc453 2026-06-27 00:53:25 +0800 fix(telemetry): qualify request_logs update predicate
+a059c265962ecf83ed3e6a9bb56a39d3396734b1 2026-06-27 00:47:35 +0800 fix(telemetry): remove target alias from request_logs update
+b35bb7502b9c6582ec1db19ccf20d40ae36f048e 2026-06-27 00:35:29 +0800 fix(telemetry): unblock failure-path request_log updates
+726070b93c3ef7623665a39a98368e9475d340ca 2026-06-27 00:30:50 +0800 fix(telemetry): unblock failure-path request_log updates
+12866e30d04b91a741832e124464fca91d700f77 2026-06-27 00:11:49 +0800 feat(config): support session id alias arrays
+0babc2ffa74fc19e018e2d205757fc3c81dfa777 2026-06-26 23:46:58 +0800 feat(config): wire session id body alias config
+acfe7b58e5a5e111c1d5c4ffa6169cca1a4a28fc 2026-06-26 23:43:03 +0800 fix(telemetry): server-generated request_id + client_request_id column
+c353ce5f8f37248a44123436245aa13eece0e08d 2026-06-26 23:18:58 +0800 feat(streaming): allow configurable session id aliases
+55370acba1f685319d49323bed4e5903ea96b2af 2026-06-26 22:55:28 +0800 fix(streaming): complete gw_session_id coverage across all paths
+295e32efb1ba7293e30cbbc478440f0e59506f6f 2026-06-26 22:46:29 +0800 fix(streaming): extract session ids from frontend aliases
+dae39bb68caecfda7576796b0867f63745c6a082 2026-06-26 22:37:40 +0800 refactor(memory): extract live memora contract
+465804ef677dd73c6aceb0aef557654144295648 2026-06-26 22:23:09 +0800 fix(streaming): assign gateway session ids for no-id requests
+c59a9f52d0a6f093e00496eb984c4d991585fb4e 2026-06-26 17:54:31 +0800 refactor(gateway): remove relay runtime dependency from v2 pipeline
+2d493c853f353bfdc453fc97746c92f86783b16b 2026-06-26 17:00:28 +0800 test(streaming): cover responses and anthropic bridge flows
+71510850873fc106947d60c9f335fba94be2c48f 2026-06-26 16:40:05 +0800 feat(gateway): cut over cmd/gateway from deprecated to live packages
+212cc5d3e25e16f46a14acb2836bca29497a0599 2026-06-26 15:56:26 +0800 refactor(llmgw): Phase 1.5 旧代码替换审计 — 复用成熟代码, 移除 _to-be-deprecated/transport
+681e037c1da412e6aa0bc33b36e4b7d05fbbe711 2026-06-26 15:50:46 +0800 feat(admin): harden credential monitor detail UX
+49614500fdaf6b8f971cb7ea3d46d585b97fc490 2026-06-26 15:36:13 +0800 feat(deploy/sql): Phase 22 extension, role & columnar sync
+a3a78360cdaccd4f9035edb639639bbd49b23d32 2026-06-26 15:20:16 +0800 feat(deploy/sql): Phase 21 schema reconciliation sync scripts
+7060773d578f3f01ace56864ce930d4ccd91b21c 2026-06-26 15:07:45 +0800 feat(streaming): add live tools and minimax-field helpers
+052d602c95321325cc4613b77291c1889a6ea87b 2026-06-26 13:41:13 +0800 fix(transport): tolerate prometheus duplicate registration
+fef4122a35a772206d06c28cb00ea9de79ff0dba 2026-06-26 12:45:16 +0800 feat(streaming): add live ResponsesHandler ServeHTTP
+2de745fe33430c1900680247d02b633012a49ce2 2026-06-26 12:44:28 +0800 feat(gateway-v2): add /v1/models endpoint + endpoint completion roadmap
+048336fa54262e7d3f9d24ce3c8f9f44e0a937b9 2026-06-26 12:22:23 +0800 chore(docker): swap mockserver for nginx + add credential detail loading skeleton
+de36f69a6923b119d09c81bf7d68a2e15c439e21 2026-06-26 12:21:51 +0800 feat(streaming): add live responses conversion helpers
+983dcc581b47487b5415235aa6cd8b68f82e0c35 2026-06-26 12:21:20 +0800 docs(architecture): add legacy replacement audit + migration manifest update
+7d1abc64292025d06c3846715b7be396d32faf02 2026-06-26 12:20:59 +0800 feat(admin): bump credential monitor schema to v5
+e9861917454d869326c2fd9b818b0d40af98ad14 2026-06-26 12:20:38 +0800 feat(gateway-v2): upgrade default demo model to gpt-4o
+225bfc1267c4776721a2a4d0ef3c312b09994072 2026-06-26 12:20:20 +0800 chore(gitignore): ignore gateway-v2 binary
+0203872cdc1f6b0b512ecaa1d0f781821599a76f 2026-06-26 06:09:01 +0800 feat(streaming): port models and static handlers
+d5a8356c47acc890cb96d7a663cb07e418e45136 2026-06-26 06:02:20 +0800 fix(gateway): keep compressor wiring on legacy runtime
+6503da9804dd0ce6b2a2049cd9700ad03763015d 2026-06-26 05:53:48 +0800 fix(routing+version): fail-open route nodes + robust version parsing + local migrate baseline
+d9d3c605dee5ed2929445ecea2f834f22062d508 2026-06-26 05:51:01 +0800 feat(streaming): add live session routing support
+dee94b28ec75565ca118a1c8403e3f77d11af7dc 2026-06-26 05:45:08 +0800 fix(routing): fail-open when all route nodes disabled + archive version parser/migration script refinements
+bcb91796b6c21fed1e39e74a43a34d26fd9f6ed1 2026-06-26 05:37:59 +0800 feat(executors): add live route node health tracking
+e25eb2bad0817f10fb575a65bc5b9c85471e1476 2026-06-26 05:32:00 +0800 feat(credential): Bandit async flush + version parser fix + archive_request_logs migration 053
+c50e844bb20f660b5446f4f6c77cf1ef8fd7864a 2026-06-26 05:21:21 +0800 feat(routing): move route node health to credentialfpslot
+f43586e02324737a7e569f1dce7c6932b790e4f0 2026-06-26 04:47:53 +0800 feat(bg): BanditFlusher 持久化 Thompson Sampling scorer state
+67fa7405360635d1465bb2de3bf03a3c9a38678b 2026-06-26 04:46:28 +0800 feat(routing): Thompson Sampling Bandit scorer in domains/streaming/executors (seq 696)
+ade53601fd1f427c1d09010551cc621cd6a6ec6a 2026-06-26 04:37:27 +0800 chore(version): bump build metadata after 184 deploy prep (seq 695)
+67340e579135dbf96de71dc824c43e8bb314c386 2026-06-26 04:30:13 +0800 refactor(llmgw): R1.13 cutover — move 14 legacy packages to _to-be-deprecated and rewrite imports

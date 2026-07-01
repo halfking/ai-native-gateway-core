@@ -1,0 +1,161 @@
+COMMIT 207badf0 fix(executors): add miniredis to credentialfpslot tests
+ 1 file changed, 28 insertions(+), 22 deletions(-)
+
+COMMIT 22613c1f test(executors): fix force-unpin redis setup
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+COMMIT e7d4deb6 fix(telemetry): qualify request_logs client_request_id in upsert
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+COMMIT 6b2ba0e2 fix(telemetry): unblock request_logs upsert conflict branch
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+COMMIT 6a2e5fcd fix(disguise): restore NewRedisPool constructor compatibility
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+COMMIT f1c54133 feat(web): explain session alias mapping preview
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+COMMIT 0e4a5dbf refactor(gateway): isolate legacy memora wiring
+ 2 files changed, 108 insertions(+), 21 deletions(-)
+
+COMMIT 905c1476 feat(web): preview session alias extraction examples
+ 3 files changed, 82 insertions(+), 1 deletion(-)
+
+COMMIT d85acdd8 refactor(admin): move memora readable search to memory package
+ 4 files changed, 120 insertions(+), 25 deletions(-)
+
+COMMIT a1edfb00 refactor(admin): move session extraction to live memory package
+ 4 files changed, 184 insertions(+), 24 deletions(-)
+
+COMMIT 91edb69a feat(web): add tag editor for session alias setting
+ 1 file changed, 105 insertions(+), 1 deletion(-)
+
+COMMIT 0ffa7466 fix(telemetry): disambiguate request_logs update row match
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+COMMIT f12b5517 feat(settings): hot-reload session id body aliases
+ 4 files changed, 126 insertions(+), 32 deletions(-)
+
+COMMIT c4e1ae47 fix(telemetry): qualify request_logs update predicate
+ 1 file changed, 2 insertions(+)
+
+COMMIT a059c265 fix(telemetry): remove target alias from request_logs update
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+COMMIT b35bb750 fix(telemetry): unblock failure-path request_log updates
+ 1 file changed, 16 insertions(+)
+
+COMMIT 726070b9 fix(telemetry): unblock failure-path request_log updates
+ 2 files changed, 148 insertions(+), 64 deletions(-)
+
+COMMIT 12866e30 feat(config): support session id alias arrays
+ 5 files changed, 124 insertions(+), 12 deletions(-)
+
+COMMIT 0babc2ff feat(config): wire session id body alias config
+ 4 files changed, 27 insertions(+), 17 deletions(-)
+
+COMMIT acfe7b58 fix(telemetry): server-generated request_id + client_request_id column
+ 12 files changed, 408 insertions(+), 25 deletions(-)
+
+COMMIT c353ce5f feat(streaming): allow configurable session id aliases
+ 5 files changed, 226 insertions(+), 407 deletions(-)
+
+COMMIT 55370acb fix(streaming): complete gw_session_id coverage across all paths
+ 7 files changed, 312 insertions(+), 32 deletions(-)
+
+COMMIT 295e32ef fix(streaming): extract session ids from frontend aliases
+ 3 files changed, 107 insertions(+), 4 deletions(-)
+
+COMMIT dae39bb6 refactor(memory): extract live memora contract
+ 7 files changed, 391 insertions(+), 29 deletions(-)
+
+COMMIT 465804ef fix(streaming): assign gateway session ids for no-id requests
+ 7 files changed, 468 insertions(+), 25 deletions(-)
+
+COMMIT c59a9f52 refactor(gateway): remove relay runtime dependency from v2 pipeline
+ 1 file changed, 8 insertions(+), 9 deletions(-)
+
+COMMIT 2d493c85 test(streaming): cover responses and anthropic bridge flows
+ 1 file changed, 147 insertions(+)
+
+COMMIT 71510850 feat(gateway): cut over cmd/gateway from deprecated to live packages
+ 4 files changed, 797 insertions(+), 190 deletions(-)
+
+COMMIT 212cc5d3 refactor(llmgw): Phase 1.5 旧代码替换审计 — 复用成熟代码, 移除 _to-be-deprecated/transport
+ 12 files changed, 630 insertions(+), 38 deletions(-)
+
+COMMIT 681e037c feat(admin): harden credential monitor detail UX
+ 4 files changed, 194 insertions(+), 44 deletions(-)
+
+COMMIT 49614500 feat(deploy/sql): Phase 22 extension, role & columnar sync
+ 4 files changed, 358 insertions(+)
+
+COMMIT a3a78360 feat(deploy/sql): Phase 21 schema reconciliation sync scripts
+ 22 files changed, 4998 insertions(+)
+
+COMMIT 7060773d feat(streaming): add live tools and minimax-field helpers
+ 2 files changed, 203 insertions(+)
+
+COMMIT 052d602c fix(transport): tolerate prometheus duplicate registration
+ 1 file changed, 48 insertions(+), 26 deletions(-)
+
+COMMIT fef4122a feat(streaming): add live ResponsesHandler ServeHTTP
+ 1 file changed, 345 insertions(+)
+
+COMMIT 2de745fe feat(gateway-v2): add /v1/models endpoint + endpoint completion roadmap
+ 3 files changed, 271 insertions(+), 4 deletions(-)
+
+COMMIT 048336fa chore(docker): swap mockserver for nginx + add credential detail loading skeleton
+ 2 files changed, 101 insertions(+), 11 deletions(-)
+
+COMMIT de36f69a feat(streaming): add live responses conversion helpers
+ 4 files changed, 575 insertions(+)
+
+COMMIT 983dcc58 docs(architecture): add legacy replacement audit + migration manifest update
+ 3 files changed, 127 insertions(+), 20 deletions(-)
+
+COMMIT 7d1abc64 feat(admin): bump credential monitor schema to v5
+ 3 files changed, 168 insertions(+), 134 deletions(-)
+
+COMMIT e9861917 feat(gateway-v2): upgrade default demo model to gpt-4o
+ 2 files changed, 24 insertions(+), 2 deletions(-)
+
+COMMIT 225bfc12 chore(gitignore): ignore gateway-v2 binary
+ 1 file changed, 1 insertion(+)
+
+COMMIT 0203872c feat(streaming): port models and static handlers
+ 3 files changed, 159 insertions(+), 2 deletions(-)
+
+COMMIT d5a8356c fix(gateway): keep compressor wiring on legacy runtime
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+COMMIT 6503da98 fix(routing+version): fail-open route nodes + robust version parsing + local migrate baseline
+ 3 files changed, 86 insertions(+), 52 deletions(-)
+
+COMMIT d9d3c605 feat(streaming): add live session routing support
+ 4 files changed, 264 insertions(+), 7 deletions(-)
+
+COMMIT dee94b28 fix(routing): fail-open when all route nodes disabled + archive version parser/migration script refinements
+ 6 files changed, 149 insertions(+), 4 deletions(-)
+
+COMMIT bcb91796 feat(executors): add live route node health tracking
+ 6 files changed, 241 insertions(+), 14 deletions(-)
+
+COMMIT e25eb2ba feat(credential): Bandit async flush + version parser fix + archive_request_logs migration 053
+ 7 files changed, 388 insertions(+), 4 deletions(-)
+
+COMMIT c50e844b feat(routing): move route node health to credentialfpslot
+ 8 files changed, 508 insertions(+), 101 deletions(-)
+
+COMMIT f43586e0 feat(bg): BanditFlusher 持久化 Thompson Sampling scorer state
+ 2 files changed, 401 insertions(+)
+
+COMMIT 67fa7405 feat(routing): Thompson Sampling Bandit scorer in domains/streaming/executors (seq 696)
+ 3 files changed, 124 insertions(+), 6 deletions(-)
+
+COMMIT ade53601 chore(version): bump build metadata after 184 deploy prep (seq 695)
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+COMMIT 67340e57 refactor(llmgw): R1.13 cutover — move 14 legacy packages to _to-be-deprecated and rewrite imports
+ 356 files changed, 2476 insertions(+), 474 deletions(-)
