@@ -111,7 +111,7 @@ func TestResponsesStreamSSE_Events(t *testing.T) {
 
 	resp, err := http.Post(upstream.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"gpt-4o","messages":[],"stream":true}`))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()

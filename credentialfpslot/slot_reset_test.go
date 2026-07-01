@@ -12,7 +12,7 @@ import (
 func TestResetSlots_Redis(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cfg := Config{Enabled: true, DefaultLimit: 5}
 	m := New(cfg, client)
@@ -98,7 +98,7 @@ func TestResetSlots_Disabled(t *testing.T) {
 func TestResetSlots_UnlimitedCredential(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cfg := Config{Enabled: true, DefaultLimit: 5}
 	m := New(cfg, client)
@@ -143,7 +143,7 @@ func TestResetSlots_UnlimitedCredential(t *testing.T) {
 func TestResetSlots_PartialOccupancy(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cfg := Config{Enabled: true, DefaultLimit: 10}
 	m := New(cfg, client)
@@ -191,7 +191,7 @@ func TestResetSlots_ExpiredSlotsStillCounted(t *testing.T) {
 	// Redis already GC'd them).
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	cfg := Config{Enabled: true, DefaultLimit: 5}
 	m := New(cfg, client)

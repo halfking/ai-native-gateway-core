@@ -61,7 +61,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"attachment not found")
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// 获取文件信息用于 Content-Length 和 Last-Modified
 	fullPath, _ := h.storage.FullPath(relPath)

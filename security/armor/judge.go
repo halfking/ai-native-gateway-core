@@ -293,7 +293,7 @@ func (h *httpJudge) Score(ctx context.Context, req ScoreRequest) (ScoreResponse,
 	if err != nil {
 		return ScoreResponse{}, fmt.Errorf("armor: judge HTTP call failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024)) // 64KB cap; judge replies are tiny
 	if err != nil {

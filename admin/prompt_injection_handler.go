@@ -223,7 +223,7 @@ func (h *PromptInjectionHandler) ListRules(w http.ResponseWriter, r *http.Reques
 		h.writeError(w, http.StatusInternalServerError, "Failed to list rules: "+err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	rules := []PromptInjectionRule{}
 	for rows.Next() {
@@ -336,7 +336,7 @@ func (h *PromptInjectionHandler) ListDetections(w http.ResponseWriter, r *http.R
 		h.writeError(w, http.StatusInternalServerError, "Failed to list detections: "+err.Error())
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	detections := []PromptInjectionDetection{}
 	for rows.Next() {

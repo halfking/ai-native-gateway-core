@@ -12,7 +12,7 @@ import (
 func TestReclaim_Redis_IdleSlotIsDeleted(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	m := New(Config{Enabled: true, DefaultLimit: 5}, client)
 	ctx := context.Background()
@@ -64,7 +64,7 @@ func TestReclaim_Redis_IdleSlotIsDeleted(t *testing.T) {
 func TestReclaim_FreshSlotsNotReclaimed(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	m := New(Config{Enabled: true, DefaultLimit: 5}, client)
 	ctx := context.Background()
