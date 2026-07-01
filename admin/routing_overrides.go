@@ -21,6 +21,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	controlrouting "github.com/kaixuan/llm-gateway-go/control/routing"
+	queryrouting "github.com/kaixuan/llm-gateway-go/query/routing"
 )
 
 // OverrideWire is the JSON wire format for routing_overrides rows.
@@ -110,45 +113,32 @@ func (h *AutoRouteHandlers) listRoutingOverrides(w http.ResponseWriter, r *http.
 	taskType := r.URL.Query().Get("task_type")
 	profile := r.URL.Query().Get("profile")
 
-	q := `SELECT id, task_type, profile, mode, model_chosen, reason, created_by, expires_at, created_at, updated_at
-	      FROM routing_overrides WHERE 1=1`
-	args := []any{}
-	if activeOnly {
-		q += ` AND (expires_at IS NULL OR expires_at > NOW())`
-	}
-	if taskType != "" {
-		args = append(args, taskType)
-		q += fmt.Sprintf(" AND task_type = $%d", len(args))
-	}
-	if profile != "" {
-		args = append(args, profile)
-		q += fmt.Sprintf(" AND profile = $%d", len(args))
-	}
-	q += " ORDER BY task_type, profile, mode, model_chosen"
-
-	rows, err := h.db.Query(r.Context(), q, args...)
+	rows, err := queryrouting.NewHandler(h.db).List(r.Context(), queryrouting.ListRoutesQuery{
+		ActiveOnly: activeOnly,
+		TaskType:   taskType,
+		Profile:    profile,
+	})
 	if err != nil {
 		writeInternalErr(w, err)
 		return
 	}
-	defer rows.Close()
 
-	var out []OverrideWire
-	for rows.Next() {
-		var row OverrideWire
-		var mode string
-		if err := rows.Scan(&row.ID, &row.TaskType, &row.Profile, &mode,
-			&row.ModelChosen, &row.Reason, &row.CreatedBy,
-			&row.ExpiresAt, &row.CreatedAt, &row.UpdatedAt); err != nil {
-			writeInternalErr(w, err)
-			return
-		}
-		row.Mode = mode
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		writeInternalErr(w, err)
-		return
+	// Translate query.RouteDTO -> admin.OverrideWire to keep the wire
+	// format byte-for-byte identical. Drop OverrideWire in B2+.
+	out := make([]OverrideWire, 0, len(rows))
+	for _, dto := range rows {
+		out = append(out, OverrideWire{
+			ID:          dto.ID,
+			TaskType:    dto.TaskType,
+			Profile:     dto.Profile,
+			Mode:        dto.Mode,
+			ModelChosen: dto.ModelChosen,
+			Reason:      dto.Reason,
+			CreatedBy:   dto.CreatedBy,
+			ExpiresAt:   dto.ExpiresAt,
+			CreatedAt:   dto.CreatedAt,
+			UpdatedAt:   dto.UpdatedAt,
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -166,83 +156,43 @@ func (h *AutoRouteHandlers) createRoutingOverride(w http.ResponseWriter, r *http
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid body: %v", err))
 		return
 	}
-	if strings.TrimSpace(req.TaskType) == "" {
-		writeJSONErr(w, http.StatusBadRequest, "task_type is required")
-		return
-	}
-	if req.Profile == "" {
-		req.Profile = "smart"
-	}
-	if req.Profile != "smart" && req.Profile != "speed_first" && req.Profile != "cost_first" {
-		writeJSONErr(w, http.StatusBadRequest, "profile must be smart| speed_first| cost_first")
-		return
-	}
-	if req.Mode != "pin" && req.Mode != "ban" {
-		writeJSONErr(w, http.StatusBadRequest, "mode must be 'pin' or 'ban'")
-		return
-	}
-	if req.Mode == "ban" && (req.ModelChosen == nil || *req.ModelChosen == "") {
-		writeJSONErr(w, http.StatusBadRequest, "ban mode requires model_chosen")
-		return
-	}
-	if strings.TrimSpace(req.Reason) == "" {
-		writeJSONErr(w, http.StatusBadRequest, "reason is required (audit trail)")
-		return
-	}
 
 	createdBy := requestUser(r)
 	if createdBy == "" {
 		createdBy = "admin"
 	}
 
-	// P7.9: wrap in a transaction that sets the actor GUC so the
-	// audit trigger records the right admin user.
-	ctx := r.Context()
-	tx, err := h.db.Begin(ctx)
+	newID, err := controlrouting.NewHandler(h.db).Create(r.Context(), controlrouting.CreateRouteCommand{
+		TaskType:    req.TaskType,
+		Profile:     req.Profile,
+		Mode:        req.Mode,
+		ModelChosen: req.ModelChosen,
+		Reason:      req.Reason,
+		CreatedBy:   createdBy,
+		ExpiresAt:   req.ExpiresAt,
+	})
 	if err != nil {
-		writeInternalErr(w, err)
-		return
-	}
-	//nolint:errcheck // deferred rollback, best-effort
-	defer tx.Rollback(ctx)
-	escapedActor := strings.ReplaceAll(createdBy, "'", "''")
-	if _, err := tx.Exec(ctx, "SET LOCAL app.current_admin = '"+escapedActor+"'"); err != nil {
-		writeInternalErr(w, err)
-		return
-	}
-
-	var newID int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO routing_overrides
-		    (task_type, profile, mode, model_chosen, reason, created_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id
-	`, req.TaskType, req.Profile, req.Mode, req.ModelChosen, req.Reason, createdBy, req.ExpiresAt).Scan(&newID)
-	if err != nil {
-		if isUniqueViolation(err) {
-			writeJSONErr(w, http.StatusConflict, "an override with the same (task_type, profile, model_chosen, mode) already exists")
-			return
+		switch {
+		case controlrouting.IsValidationError(err):
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+		case controlrouting.IsDuplicateError(err):
+			writeJSONErr(w, http.StatusConflict,
+				"an override with the same (task_type, profile, model_chosen, mode) already exists")
+		default:
+			writeInternalErr(w, err)
 		}
-		writeInternalErr(w, err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		writeInternalErr(w, err)
 		return
 	}
 
-	// Application-level audit log (P7.9). The trigger records
-	// action/actor in routing_overrides_audit; this also records
-	// the IP and UA in routing_audit_log.details for security
-	// audit.
+	// Application-level audit log (P7.9).
 	h.writeAuditLog(r, "override.create", newID, map[string]any{
 		"task_type":    req.TaskType,
 		"profile":      req.Profile,
 		"mode":         req.Mode,
 		"model_chosen": req.ModelChosen,
 		"reason":       req.Reason,
-		"ip":          clientIP(r),
-		"ua":          r.UserAgent(),
+		"ip":           clientIP(r),
+		"ua":           r.UserAgent(),
 	})
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -295,8 +245,8 @@ func (h *AutoRouteHandlers) deleteRoutingOverride(w http.ResponseWriter, r *http
 	}
 	h.writeAuditLog(r, "override.delete", id, map[string]any{
 		"reason": "soft delete (set expires_at to 1s ago)",
-		"ip":    clientIP(r),
-		"ua":    r.UserAgent(),
+		"ip":     clientIP(r),
+		"ua":     r.UserAgent(),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
@@ -358,8 +308,8 @@ func (h *AutoRouteHandlers) extendRoutingOverride(w http.ResponseWriter, r *http
 	}
 	h.writeAuditLog(r, "override.extend", id, map[string]any{
 		"new_expires_at": body.ExpiresAt,
-		"ip":            clientIP(r),
-		"ua":            r.UserAgent(),
+		"ip":             clientIP(r),
+		"ua":             r.UserAgent(),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
