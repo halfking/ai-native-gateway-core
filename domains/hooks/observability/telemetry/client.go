@@ -200,6 +200,11 @@ type RequestLogEntry struct {
 	ClientEndpoint     *string `json:"client_endpoint,omitempty"`
 	StreamChunkErrors  *int    `json:"stream_chunk_errors,omitempty"`
 	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
+
+	// 2026-07-01: 附件元数据（migration 325）
+	// 从请求体中提取的 base64/data-URI 附件元数据，存储到 request_logs.attachments JSONB。
+	// 附件实体文件已保存到文件系统（按 SHA256 hash 去重），此处仅记录路径、大小、类型等元信息。
+	Attachments json.RawMessage `json:"attachments,omitempty"`
 }
 
 func NewClient() *Client {

@@ -36,6 +36,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"
 	"github.com/kaixuan/llm-gateway-go/domains/assets"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
@@ -808,6 +809,31 @@ func main() {
 		maasSvc := maas.NewService(dbConn.Pool())
 		chatHandler.SetMaas(maasSvc)
 		slog.Info("maas credits billing enabled")
+	}
+
+	// ── Attachment Extractor (2026-07-01) ───────────────────────────────
+	// 从请求体中提取 base64/data-URI 附件并保存到文件系统。
+	// 配置项：
+	//   LLM_GATEWAY_ATTACHMENT_DIR: 存储根目录 (默认 ./data/attachments)
+	//   LLM_GATEWAY_ATTACHMENT_MAX_SIZE: 单文件上限 (默认 10MB)
+	attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
+	if attachmentDir == "" {
+		attachmentDir = "./data/attachments"
+	}
+	if attachmentStorage, err := attachments.NewStorage(attachmentDir); err != nil {
+		slog.Warn("attachment storage init failed, extraction disabled", "error", err, "dir", attachmentDir)
+	} else {
+		// 配置单文件大小上限
+		if maxSizeStr := os.Getenv("LLM_GATEWAY_ATTACHMENT_MAX_SIZE"); maxSizeStr != "" {
+			if maxSize, parseErr := strconv.ParseInt(maxSizeStr, 10, 64); parseErr == nil && maxSize > 0 {
+				attachmentStorage.MaxSize = maxSize
+			}
+		}
+		attachmentExtractor := attachments.NewExtractor(attachmentStorage)
+		chatHandler.SetAttachmentExtractor(attachmentExtractor)
+		slog.Info("attachment extractor enabled",
+			"dir", attachmentStorage.BaseDir,
+			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────
