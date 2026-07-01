@@ -212,7 +212,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, quot
 
 	// 收集所有过期文件（按 mtime 升序 = 最老优先）
 	type fileItem struct {
-		path string
+		path  string
 		mtime time.Time
 		size  int64
 	}

@@ -407,7 +407,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/logs/cleanup", h.superAdmin(h.handleLogCleanup))
 	mux.HandleFunc("/api/admin/logs/archive/list", admin(h.handleLogArchiveList))
 
-
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).
 	h.registerSettingsRoutes(mux)

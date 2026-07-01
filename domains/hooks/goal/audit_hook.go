@@ -96,7 +96,7 @@ func (a *AuditHook) InterceptNonStream(ctx context.Context, req *response.Interc
 		return nil, nil
 	}
 
-// Perform audit
+	// Perform audit
 	auditResult, err := a.performAudit(ctx, req, session)
 	if err != nil {
 		slog.Warn("audit_failed", "session_id", req.SessionID, "error", err)
