@@ -21,7 +21,7 @@ func TestAnthropicToChat_ThinkingBlocksDropped(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 	if msg["content"] != "hi there" {
@@ -58,7 +58,7 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 
@@ -102,7 +102,7 @@ func TestAnthropicToChat_NoThinkingBlocks(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 
@@ -133,7 +133,7 @@ func TestAnthropicToChat_ThinkingWithToolCalls(t *testing.T) {
 	}
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 
@@ -164,7 +164,7 @@ func TestAnthropicToChat_ToolUseToToolCalls(t *testing.T) {
 	out, _ := ConvertAnthropicResponseToChat(in, "x")
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
 	tcs := msg["tool_calls"].([]any)
@@ -196,7 +196,7 @@ func TestAnthropicToChat_StopReasonMapping(t *testing.T) {
 		out, _ := ConvertAnthropicResponseToChat(in, "x")
 		var v map[string]any
 		//nolint:errcheck // test parse, non-critical
-		json.Unmarshal(out, &v)
+		_ = json.Unmarshal(out, &v)
 		choice := v["choices"].([]any)[0].(map[string]any)
 		if choice["finish_reason"] != tc.want {
 			t.Errorf("%s -> %s, want %s", tc.from, choice["finish_reason"], tc.want)
@@ -209,7 +209,7 @@ func TestAnthropicToChat_UsageMapped(t *testing.T) {
 	out, _ := ConvertAnthropicResponseToChat(in, "x")
 	var v map[string]any
 	//nolint:errcheck // test parse, non-critical
-	json.Unmarshal(out, &v)
+	_ = json.Unmarshal(out, &v)
 	usage := v["usage"].(map[string]any)
 	if int(usage["prompt_tokens"].(float64)) != 42 {
 		t.Errorf("prompt_tokens = %v, want 42", usage["prompt_tokens"])

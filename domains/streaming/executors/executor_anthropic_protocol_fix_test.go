@@ -77,7 +77,7 @@ func TestPrepareAnthropicRequestBody_OpenAIToAnthropic(t *testing.T) {
 		ChatToAnthropic: func(body []byte) ([]byte, error) {
 			// Simple mock: just mark that conversion happened
 			var req map[string]any
-			json.Unmarshal(body, &req)
+			_ = json.Unmarshal(body, &req)
 			req["_converted"] = true
 			return json.Marshal(req)
 		},
@@ -103,7 +103,7 @@ func TestPrepareAnthropicRequestBody_OpenAIToAnthropic(t *testing.T) {
 	}
 
 	var resultJSON map[string]any
-	json.Unmarshal(result, &resultJSON)
+	_ = json.Unmarshal(result, &resultJSON)
 
 	// Should have been converted
 	if converted, ok := resultJSON["_converted"].(bool); !ok || !converted {

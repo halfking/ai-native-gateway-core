@@ -27,7 +27,7 @@ data: {"type":"message_stop"}
 `
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Write([]byte(anthropicSSE))
+		_, _ = w.Write([]byte(anthropicSSE))
 	}))
 	defer upstream.Close()
 
@@ -44,14 +44,14 @@ data: {"type":"message_stop"}
 			continue
 		}
 		var chunk map[string]interface{}
-		json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk)
+		_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &chunk)
 		if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 			choice := choices[0].(map[string]interface{})
 			if delta, ok := choice["delta"].(map[string]interface{}); ok {
 				if tc, ok := delta["tool_calls"]; ok {
 					b, _ := json.Marshal(tc)
 					var tcs []map[string]interface{}
-					json.Unmarshal(b, &tcs)
+					_ = json.Unmarshal(b, &tcs)
 					for _, t := range tcs {
 						if idx, ok := t["index"].(float64); ok {
 							indices = append(indices, int(idx))
