@@ -529,6 +529,45 @@ export function attachmentItem(requestID: string) {
   }>('GET', `/api/admin/attachments/${requestID}`)
 }
 
+// ── Attachment Filesystem Management (2026-07-01) ──────────────────────
+// 管理附件文件系统：目录大小、磁盘空间、按时间清理文件
+
+export interface AttachmentFilesystemStats {
+  attachment_dir: string
+  total_files: number
+  total_size_bytes: number
+  total_size_human: string
+  oldest_file_time: string | null
+  disk_total_bytes: number
+  disk_used_bytes: number
+  disk_avail_bytes: number
+  disk_usage_percent: number
+  disk_warning_level: 'safe' | 'warning' | 'danger'
+}
+
+export interface AttachmentFilesystemCleanupRequest {
+  older_than_days: number
+  dry_run: boolean
+  reason: string
+}
+
+export interface AttachmentFilesystemCleanupResponse {
+  dry_run: boolean
+  files_deleted: number
+  bytes_freed: number
+  bytes_freed_human: string
+  deleted_paths?: string[]
+  error?: string
+}
+
+export function attachmentFilesystemStats() {
+  return req<AttachmentFilesystemStats>('GET', '/api/admin/attachments/filesystem/stats')
+}
+
+export function attachmentFilesystemCleanup(body: AttachmentFilesystemCleanupRequest) {
+  return req<AttachmentFilesystemCleanupResponse>('POST', '/api/admin/attachments/filesystem/cleanup', body)
+}
+
 // ── Tuning proposals + accuracy (Phase 5) ──────────────────────────────
 //
 // Three endpoints are mounted by admin/auto_route_tuning.go:
