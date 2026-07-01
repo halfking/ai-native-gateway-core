@@ -376,6 +376,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions", admin(h.handleDataLifecyclePartitions))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive", h.superAdmin(h.handleDataLifecycleArchivePartition))
 	mux.HandleFunc("/api/admin/data-lifecycle/partitions/archive-batch", h.superAdmin(h.handleDataLifecycleArchiveBatch))
+	// Storage overview endpoints (2026-07-01)
+	mux.HandleFunc("/api/admin/data-lifecycle/storage", admin(h.handleDataLifecycleStorage))
+	mux.HandleFunc("/api/admin/data-lifecycle/storage/tables", admin(h.handleDataLifecycleTableSizes))
+	// Blob management endpoints (2026-07-01)
+	mux.HandleFunc("/api/admin/data-lifecycle/blobs/top", admin(h.handleDataLifecycleBlobTop))
+	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/preview", admin(h.handleDataLifecycleBlobCleanupPreview))
+	mux.HandleFunc("/api/admin/data-lifecycle/blobs/cleanup/execute", h.superAdmin(h.handleDataLifecycleBlobCleanupExecute))
+	// Attachment filesystem management endpoints (2026-07-01)
+	mux.HandleFunc("/api/admin/attachments/filesystem/stats", admin(h.handleAttachmentFilesystemStats))
+	mux.HandleFunc("/api/admin/attachments/filesystem/cleanup", h.superAdmin(h.handleAttachmentFilesystemCleanup))
 
 	// settings-management (Q1: B, Q2: A, Q3: B): 4 platform + 4 tenant endpoints.
 	// Tenant endpoints require super_admin (enforced inside the handler).

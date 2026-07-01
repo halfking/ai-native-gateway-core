@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
@@ -322,6 +323,11 @@ type ChatHandler struct {
 	// when context limits are reached and goal-mode continuous execution.
 	// nil disables response interception (default).
 	responseInterceptor ResponseInterceptor
+
+	// attachmentExtractor (2026-07-01) extracts base64/data-URI attachments
+	// from incoming requests and saves them to the filesystem before forwarding.
+	// nil disables attachment extraction (attachments remain inline in request body).
+	attachmentExtractor *attachments.Extractor
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -591,6 +597,15 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 // response format issues (used to detect provider API changes).
 func (h *ChatHandler) SetFormatAnomalyRecorder(recorder *FormatAnomalyRecorder) {
 	h.anomalyRecorder = recorder
+}
+
+// SetAttachmentExtractor (2026-07-01) wires the attachment extractor.
+// When set, the handler extracts base64/data-URI attachments from incoming
+// requests and saves them to the filesystem before forwarding to upstream.
+// The extracted metadata is written to request_logs.attachments JSONB column.
+// nil disables attachment extraction (attachments remain inline).
+func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
+	h.attachmentExtractor = extractor
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -980,6 +995,22 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	if len(bodyBytes) > 0 {
 		logCtx.Body = bodyBytes
+
+		// ── Attachment extraction (2026-07-01) ──────────────────────────
+		// 收到请求后立即提取并保存附件到文件系统。这样即使后续转发/记录失败，
+		// 附件依然可追溯。提取失败不阻塞请求转发（best-effort）。
+		if h.attachmentExtractor != nil {
+			extractResult := h.attachmentExtractor.ExtractFromOpenAIBody(requestID, bodyBytes)
+			if extractResult != nil && extractResult.Saved > 0 {
+				// 将提取的元数据暂存到 logCtx，后续写入 request_logs.attachments JSONB
+				logCtx.Attachments = extractResult.Attachments
+				slog.Debug("attachments: extracted from request",
+					"request_id", requestID,
+					"found", extractResult.TotalFound,
+					"saved", extractResult.Saved,
+					"failed", extractResult.Failed)
+			}
+		}
 	}
 	if len(bodyBytes) > maxBodySize {
 		// body_too_large already has body captured (it's in bodyBytes)
