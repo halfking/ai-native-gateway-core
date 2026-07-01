@@ -25,6 +25,26 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	// Score based on field presence
 	var openAIScore, anthropicScore float64
 
+	// ── 决定性独占字段检测（2026-07-01 修复）──────────────────────
+	// 某些字段是某协议独占的——对方 API 根本不接受。存在这些字段时是
+	// 决定性信号，能盖过 messages[]（两协议共有）等中性字段的噪声。
+	// 这修复了 documents/top_k/stop_sequences/metadata.user_id 等强
+	// Anthropic 信号被 messages[] 的 OpenAI 噪声（0.3 分，归一化 0.1875）
+	// 盖过导致的误判。
+	anthropicExclusive := 0 // Anthropic 独占字段计数
+	for _, k := range []string{"system", "thinking", "cache_control",
+		"documents", "top_k", "stop_sequences"} {
+		if _, ok := keys[k]; ok {
+			anthropicExclusive++
+		}
+	}
+	// metadata.user_id 也是 Anthropic 独占
+	if meta, ok := keys["metadata"].(map[string]any); ok {
+		if _, ok := meta["user_id"]; ok {
+			anthropicExclusive++
+		}
+	}
+
 	// OpenAI Chat Completions distinctive fields
 	if _, ok := keys["messages"]; ok {
 		openAIScore += 0.3
@@ -145,17 +165,28 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	}
 
 	// If model hint strongly suggests one protocol, use it
+	//
+	// Phase E (2026-07-01): body shape (messages[] = openai-chat
+	// marker) is authoritative. The model hint is a tiebreaker ONLY
+	// when the body has signals for one protocol but not the other.
+	// When both protocols have body signals, defer to the body-score
+	// comparison below — picking anthropic based on model hint would
+	// mis-classify Chat Completions bodies that include anthropic
+	// extension fields (system, thinking, etc.) and cause the
+	// executor to skip the Q3 OpenAI translator.
+	//
+	// True Anthropic Messages bodies — those with strong anthropic
+	// signals AND no messages[] — never reach this code path
+	// because they're sent through /v1/messages, not /v1/chat/completions.
 	if modelHint != "" {
-		// When body scores are low/ambiguous, model hint is decisive
-		if modelHint == "anthropic" && anthropicScore >= 0.1 {
-			// Model says anthropic and body also has anthropic signals
+		if modelHint == "anthropic" && openAIScore == 0 && anthropicScore > 0 {
 			return ProtocolAnthropicMessages, 0.7, nil
 		}
-		if modelHint == "openai" && openAIScore >= 0.1 {
+		if modelHint == "openai" && anthropicScore == 0 && openAIScore > 0 {
 			return ProtocolOpenAIChat, 0.7, nil
 		}
-		// When body is ambiguous (both scores low), model hint wins
-		if openAIScore < 0.2 && anthropicScore < 0.2 {
+		// Body is completely empty: model hint is the only signal.
+		if openAIScore == 0 && anthropicScore == 0 {
 			if modelHint == "anthropic" {
 				return ProtocolAnthropicMessages, 0.6, nil
 			}
@@ -164,6 +195,14 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	}
 
 	// Determine winner based on body scores
+	//
+	// 2026-07-01 修复：多个 Anthropic 独占字段同时出现是决定性强信号。
+	// 单个字段（如 system）可能是 OpenAI 客户端扩展，但 system+thinking、
+	// documents+cache_control 等组合几乎只可能是真正的 Anthropic Messages
+	// 请求。阈值 ≥2 区分这两类场景，避免 messages[] 噪声误判。
+	if anthropicExclusive >= 2 {
+		return ProtocolAnthropicMessages, maxF(anthropicScore, 0.7), nil
+	}
 	if openAIScore > anthropicScore {
 		if openAIScore < 0.15 {
 			return "unknown", openAIScore, nil
@@ -251,4 +290,12 @@ func containsBody(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// maxF 返回两个 float64 中的较大者（用于置信度计算）。
+func maxF(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }

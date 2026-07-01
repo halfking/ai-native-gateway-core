@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domain"
+	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
 func TestLegacyTransport_Convert_Q1_OpenAIToOpenAI(t *testing.T) {
@@ -150,9 +150,31 @@ func TestIRProtocolDetector_Detect(t *testing.T) {
 	if proto != "openai-chat" {
 		t.Errorf("Detect(openai) = %s, want openai-chat (conf=%v)", proto, conf)
 	}
+	// Phase E (2026-07-01) regression fix: the shared "anthropicBody"
+	// fixture in ir_transport_test.go is a Chat Completions body
+	// (`messages[]` array, no `system` field) with a Claude model name.
+	// Body shape is the canonical Chat Completions marker, so detection
+	// must return openai-chat. Previously the model name hint won and
+	// detection returned anthropic-messages, which made the executor
+	// skip the Q3 OpenAI translator for chat completion requests routed
+	// to anthropic upstream — leaking raw Anthropic SSE to the client.
 	proto2, _ := d.Detect([]byte(anthropicBody), nil)
-	if proto2 != "anthropic-messages" {
-		t.Errorf("Detect(anthropic) = %s, want anthropic-messages", proto2)
+	if proto2 != "openai-chat" {
+		t.Errorf("Detect(chat_completions_with_claude_model) = %s, want openai-chat "+
+			"(body shape is decisive over model hint)", proto2)
+	}
+	// Truly Anthropic Messages body — has `system` + `thinking` +
+	// `cache_control` (carries +0.8 raw → 0.38 normalized anthropicScore)
+	// AND `messages[]` (carries +0.1875 normalized openAIScore).
+	// anthropicScore wins, model hint "claude" reinforces. With
+	// Phase E (2026-07-01) detect.go fixes, the model hint only
+	// overrides the body-score winner when the body is empty or has
+	// signals for only one protocol — neither applies here, but the
+	// raw scores still favor anthropic.
+	realAnthropicBody := `{"model":"claude-sonnet-4","system":"You are a helpful assistant.","thinking":{"type":"enabled"},"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":"hi"}]}`
+	proto3, _ := d.Detect([]byte(realAnthropicBody), nil)
+	if proto3 != "anthropic-messages" {
+		t.Errorf("Detect(real_anthropic) = %s, want anthropic-messages", proto3)
 	}
 }
 
