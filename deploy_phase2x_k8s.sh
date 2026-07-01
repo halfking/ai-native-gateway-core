@@ -26,6 +26,7 @@ tar czf ${TEMP_TARBALL} \
     --exclude='*.log' \
     --exclude='coverage' \
     --exclude='.DS_Store' \
+    --exclude='._*' \
     .
 echo "✓ 打包完成: $(ls -lh ${TEMP_TARBALL} | awk '{print $5}')"
 echo ""
@@ -80,7 +81,7 @@ echo "  → 导出当前 deployment 配置..."
 kubectl get deployment llm-gateway-go-deployment -n pms-test -o yaml > /tmp/llm-gateway-deployment-phase2x.yaml
 
 echo "  → 修改镜像..."
-sed -i "s|image: kx-llm-gateway-go:.*|image: kx-llm-gateway-go:gitsha-0d5aec70|" /tmp/llm-gateway-deployment-phase2x.yaml
+sed -i "s|image: .*kx-llm-gateway-go:.*|image: 127.0.0.1:5000/kx-llm-gateway-go:gitsha-${GIT_SHA}|" /tmp/llm-gateway-deployment-phase2x.yaml
 sed -i 's|imagePullPolicy: Never|imagePullPolicy: IfNotPresent|' /tmp/llm-gateway-deployment-phase2x.yaml
 
 echo "  → 应用配置..."
