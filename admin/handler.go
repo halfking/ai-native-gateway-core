@@ -429,13 +429,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/attachments/", admin(h.handleDataLifecycleAttachmentItem))
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
-	mux.HandleFunc("/api/admin/storage/config", admin(h.handleStorageConfig))
+	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
 	// 2026-07-02: 存储目录迁移进度查询（GET，供前端轮询迁移进度）
 	mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
 
 	// 2026-07-02: 日志文件统一管理（轮转配置热加载/文件列表/归档/删除）
-	mux.HandleFunc("/api/admin/logs/config", admin(h.handleLogConfig))
+	mux.HandleFunc("/api/admin/logs/config", h.superAdmin(h.handleLogConfig))
 	mux.HandleFunc("/api/admin/logs/files", admin(h.handleLogFiles))
 	mux.HandleFunc("/api/admin/logs/stats", admin(h.handleLogStats))
 	mux.HandleFunc("/api/admin/logs/archive", h.superAdmin(h.handleLogArchive))
