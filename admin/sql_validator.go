@@ -137,9 +137,5 @@ func IsSQLInjectionAttempt(input string) bool {
 		}
 	}
 
-	if strings.Contains(input, "#") {
-		return true
-	}
-
-	return false
+	return strings.Contains(input, "#")
 }
