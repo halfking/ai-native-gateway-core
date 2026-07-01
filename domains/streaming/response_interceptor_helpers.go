@@ -7,44 +7,111 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation
 )
+
+// MaxFollowUpDepth is the maximum recursion depth for follow-up requests.
+// This prevents infinite loops where a follow-up triggers another handoff
+// or goal continue, which would otherwise amplify cost/load indefinitely.
+const MaxFollowUpDepth = 5
+
+// MaxFollowUpsPerSession is the hard ceiling on total follow-up invocations
+// for a single session, regardless of depth. Defense in depth against runaway
+// cost amplification.
+const MaxFollowUpsPerSession = 50
+
+// followUpDepthKey is the context key for follow-up depth tracking.
+type followUpDepthKey struct{}
+
+// withFollowUpDepth returns a child context with the depth counter.
+func withFollowUpDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, followUpDepthKey{}, depth)
+}
+
+// FollowUpDepthFromContext returns the current follow-up depth (0 for new requests).
+func FollowUpDepthFromContext(ctx context.Context) int {
+	if v, ok := ctx.Value(followUpDepthKey{}).(int); ok {
+		return v
+	}
+	return 0
+}
+
+// sessionFollowUpCounts tracks per-session follow-up invocations.
+// sync.Map is used for safe concurrent access.
+var sessionFollowUpCounts sync.Map // map[string]int
+
+// recordSessionFollowUp increments the per-session counter and returns true if
+// the new count is within MaxFollowUpsPerSession.
+func recordSessionFollowUp(sessionID string) bool {
+	v, _ := sessionFollowUpCounts.LoadOrStore(sessionID, 0)
+	count := v.(int) + 1
+	sessionFollowUpCounts.Store(sessionID, count)
+	return count <= MaxFollowUpsPerSession
+}
 
 // injectFollowUpRequest asynchronously sends a follow-up request to the LLM.
 // Used by response interceptors for automatic handoff and goal-mode continuation.
+//
+// SAFETY: This function is intentionally conservative. It enforces:
+//  1. A maximum recursion depth (MaxFollowUpDepth) to prevent infinite loops
+//  2. A per-session invocation ceiling (MaxFollowUpsPerSession)
+//  3. Panic recovery so a single misbehaving follow-up doesn't kill the worker
+//
+// The 100ms sleep at the start is a cheap per-call rate limit.
 func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID string, followUpBody []byte, action string) {
 	if len(followUpBody) == 0 {
+		return
+	}
+
+	// 1. Depth check: prevent recursive loops.
+	depth := FollowUpDepthFromContext(ctx)
+	if depth >= MaxFollowUpDepth {
+		slog.Warn("follow_up_max_depth_exceeded",
+			"session_id", sessionID,
+			"depth", depth,
+			"action", action,
+		)
+		return
+	}
+
+	// 2. Per-session invocation ceiling.
+	if !recordSessionFollowUp(sessionID) {
+		slog.Warn("follow_up_per_session_limit",
+			"session_id", sessionID,
+			"action", action,
+		)
 		return
 	}
 
 	slog.Info("injecting_follow_up_request",
 		"session_id", sessionID,
 		"action", action,
+		"depth", depth,
 		"body_size", len(followUpBody),
 	)
 
-	// Rate limit: prevent infinite loops
-	// TODO: Add proper rate limiting per session
+	// Light rate limit.
 	time.Sleep(100 * time.Millisecond)
 
-	// Create a synthetic HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", "/v1/chat/completions", bytes.NewReader(followUpBody))
+	// Create a synthetic HTTP request with incremented depth.
+	childCtx := withFollowUpDepth(ctx, depth+1)
+	req, err := http.NewRequestWithContext(childCtx, "POST", "/v1/chat/completions", bytes.NewReader(followUpBody))
 	if err != nil {
 		slog.Error("follow_up_request_create_failed", "error", err, "session_id", sessionID)
 		return
 	}
 
-	// Set required headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Gw-Session-Id", sessionID)
 	req.Header.Set("X-Gw-Follow-Up-Action", action)
+	req.Header.Set("X-Gw-Follow-Up-Depth", "1")
 
-	// Use a response recorder to capture the response
+	// Response recorder captures the result for logging.
 	rr := httptest.NewRecorder()
 
-	// Execute the request through the handler
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("follow_up_request_panic", "error", r, "session_id", sessionID)
@@ -53,11 +120,17 @@ func (h *ChatHandler) injectFollowUpRequest(ctx context.Context, sessionID strin
 
 	h.ServeHTTP(rr, req)
 
+	// Log outcome with status and body snippet (truncated to 256 bytes).
 	if rr.Code >= 400 {
+		bodySnippet := rr.Body.String()
+		if len(bodySnippet) > 256 {
+			bodySnippet = bodySnippet[:256] + "..."
+		}
 		slog.Warn("follow_up_request_failed",
 			"session_id", sessionID,
 			"action", action,
 			"status_code", rr.Code,
+			"body", bodySnippet,
 		)
 	} else {
 		slog.Info("follow_up_request_completed",
@@ -81,21 +154,17 @@ func extractMessageCount(body []byte) int {
 
 // extractTotalTokens extracts total token count from response or stream capture.
 func extractTotalTokens(responseBody []byte, capture *audit.StreamCapture) int {
-	// Try stream capture first (more accurate for streaming)
 	if capture != nil {
 		m := capture.SummaryAsMap()
 		if total, ok := m["total_tokens"].(int); ok && total > 0 {
 			return total
 		}
-		// Fallback: sum prompt + completion
 		prompt, _ := m["prompt_tokens"].(int)
 		completion, _ := m["completion_tokens"].(int)
 		if sum := prompt + completion; sum > 0 {
 			return sum
 		}
 	}
-
-	// Try response body for non-streaming
 	var resp struct {
 		Usage struct {
 			TotalTokens int `json:"total_tokens"`
@@ -104,7 +173,6 @@ func extractTotalTokens(responseBody []byte, capture *audit.StreamCapture) int {
 	if err := json.Unmarshal(responseBody, &resp); err == nil {
 		return resp.Usage.TotalTokens
 	}
-
 	return 0
 }
 

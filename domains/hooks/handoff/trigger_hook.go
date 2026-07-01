@@ -123,9 +123,11 @@ func (h *TriggerHook) InterceptStreamEnd(ctx context.Context, meta *response.Str
 	req := &response.InterceptRequest{
 		SessionID:     meta.SessionID,
 		TenantID:      meta.TenantID,
+		ClientModel:   meta.ClientModel,
 		TokensUsed:    meta.TokensUsed,
 		ContextWindow: meta.ContextWindow,
 		MessageCount:  meta.MessageCount,
+		IsStreaming:   true,
 	}
 
 	shouldTrigger, reason := h.shouldTriggerHandoff(ctx, req)
