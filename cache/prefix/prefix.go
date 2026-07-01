@@ -2,21 +2,23 @@
 // KV-cache (prefix-cache) hit rates across requests in the same session.
 //
 // Why this package exists:
-//   Modern LLM providers (OpenAI, Anthropic, Google, DeepSeek, Moonshot ...)
-//   all do some form of prefix caching: if the FIRST N tokens of a request
-//   match a recently-seen prefix, the provider skips recomputing their KV
-//   cache, cutting latency and (for Anthropic) cost. The catch: the match is
-//   BYTES-EXACT from the start of the request. If a request shuffles its
-//   messages (e.g. puts the newest user turn before the system prompt, or
-//   interleaves tool definitions with conversation), the prefix diverges and
-//   the cache misses — even though the CONTENT is identical.
+//
+//	Modern LLM providers (OpenAI, Anthropic, Google, DeepSeek, Moonshot ...)
+//	all do some form of prefix caching: if the FIRST N tokens of a request
+//	match a recently-seen prefix, the provider skips recomputing their KV
+//	cache, cutting latency and (for Anthropic) cost. The catch: the match is
+//	BYTES-EXACT from the start of the request. If a request shuffles its
+//	messages (e.g. puts the newest user turn before the system prompt, or
+//	interleaves tool definitions with conversation), the prefix diverges and
+//	the cache misses — even though the CONTENT is identical.
 //
 // What this package does:
-//   Stabilize() reorders an OpenAI-compatible or Anthropic-compatible message
-//   list so that the STABLE part (system prompt + tool definitions + the
-//   oldest conversation turns) comes first, and the VOLATILE part (the most
-//   recent user turn, tool results that change every call) comes last. This
-//   maximizes the byte-stable prefix length, which maximizes cache hits.
+//
+//	Stabilize() reorders an OpenAI-compatible or Anthropic-compatible message
+//	list so that the STABLE part (system prompt + tool definitions + the
+//	oldest conversation turns) comes first, and the VOLATILE part (the most
+//	recent user turn, tool results that change every call) comes last. This
+//	maximizes the byte-stable prefix length, which maximizes cache hits.
 //
 // What this package does NOT do:
 //   - It does NOT inject cache_control markers (that is session.CacheInjector's
@@ -27,9 +29,10 @@
 //     semantics); it only groups them as a block.
 //
 // Domain boundary (refactor plan §2.2 ⑦ cache/):
-//   prefix/ OWNS: message ordering by stability class
-//   prefix/ does NOT own: cache_control injection (sessions/), cache key
-//   computation (future cache/kv/), semantic dedup (cache/semantic/).
+//
+//	prefix/ OWNS: message ordering by stability class
+//	prefix/ does NOT own: cache_control injection (sessions/), cache key
+//	computation (cache/kv/), semantic dedup (cache/semantic/).
 //
 // Stability is a soft hint, not a correctness contract: Stabilize MUST keep
 // the conversation semantically equivalent. It never reorders turns WITHIN
