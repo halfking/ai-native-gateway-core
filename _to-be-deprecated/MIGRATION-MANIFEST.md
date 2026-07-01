@@ -242,7 +242,20 @@ llmgw::verify_chain
 `relay/`、`routing/`、`compressor/` 之间的依赖链。删除这些包前必须先完成
 旧链路整体切断或继续重写内部 imports。
 
-### 5.3 仍在顶层但不是删除候选
+### 5.3 2026-07-01 Phase 0 收尾新增候选废弃
+
+| 路径 | 状态 | 决策文档 |
+|------|------|---------|
+| `_to-be-deprecated/flowcontrol-候选废弃-20260701/` | 孤立包 (无外部 import) | commit 7a9e1941 |
+| `_to-be-deprecated/taskmanagement-候选废弃-20260701/` | 孤立包 (无外部 import) | commit 7a9e1941 |
+| `_to-be-deprecated/compliance-候选废弃-20260701/` | 孤立包 (无外部 import) | opencode-agent 提交 |
+| `_to-be-deprecated/llmclient-候选废弃-20260701/` | 孤立包 (无外部 import) | opencode-agent 提交 |
+| `_to-be-deprecated/notification-候选废弃-20260701/` | 孤立包 (1624 行 LarkBotChannel 完整实现) | `docs/产品方案/2026-07-01-notification-decision.md` |
+
+所有上述包均符合"完整实现 + 0 外部 import"模式，统一加日期后缀
+`*-候选废弃-20260701/`。待 owner 复核后可安全删除。
+
+### 5.4 仍在顶层但不是删除候选
 
 | 路径 | 状态 |
 |------|------|
@@ -255,5 +268,5 @@ llmgw::verify_chain
 
 ---
 
-**最后更新**: 2026-06-26
-**下次更新**: R1.13 切流量完成后 (预计 2026-07+)
+**最后更新**: 2026-07-01
+**下次更新**: Phase 2 Go module 拆分时 review 所有 `*-候选废弃-20260701/` 做最终去留
