@@ -187,7 +187,7 @@ func (g *AutoTitleGenerator) extractTitleFromPreview(preview string) string {
 
 	// Step 5: Light normalization (remove quotes, excessive spaces)
 	// Do NOT use normalizeSessionTitle yet - it removes brackets
-	title = strings.Trim(title, `"'「」『』""`)
+	title = strings.Trim(title, `"'「」『』"`)
 	title = strings.Join(strings.Fields(title), " ")
 
 	// Step 6: Final validation (relaxed - allow brackets for IDE prefix)

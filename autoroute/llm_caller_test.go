@@ -64,8 +64,8 @@ func TestCircuitBreakerCaller_TripsOnConsecutiveFailures(t *testing.T) {
 	// Trip the breaker with 3 failures
 	for i := 0; i < 3; i++ {
 		_, err := cb.Call(context.Background(), "p")
-		if !errors.Is(err, failingErr) {
-			t.Fatalf("call %d: want failingErr, got %v", i, err)
+		if !errors.Is(err, errFailing) {
+			t.Fatalf("call %d: want errFailing, got %v", i, err)
 		}
 	}
 	// Next call should be rejected without invoking the inner
@@ -77,8 +77,8 @@ func TestCircuitBreakerCaller_TripsOnConsecutiveFailures(t *testing.T) {
 	// Wait for cooldown, then it should retry and fail again
 	time.Sleep(60 * time.Millisecond)
 	_, err = cb.Call(context.Background(), "p")
-	if !errors.Is(err, failingErr) {
-		t.Errorf("after cooldown, want failingErr, got %v", err)
+	if !errors.Is(err, errFailing) {
+		t.Errorf("after cooldown, want errFailing, got %v", err)
 	}
 }
 
@@ -88,7 +88,7 @@ func TestCircuitBreakerCaller_ResetsOnSuccess(t *testing.T) {
 		return callFunc(func(ctx context.Context, prompt string) (string, error) {
 			counter++
 			if counter <= 2 {
-				return "", failingErr
+				return "", errFailing
 			}
 			return "reasoning", nil
 		})
@@ -255,12 +255,12 @@ func TestNewLLMFallbackClassifierWithCaller_NilCallerUsesDisabled(t *testing.T) 
 
 // ── helpers ────────────────────────────────────────────────────
 
-var failingErr = errors.New("simulated LLM failure")
+var errFailing = errors.New("simulated LLM failure")
 
 type failingCaller struct{}
 
 func (failingCaller) Call(_ context.Context, _ string) (string, error) {
-	return "", failingErr
+	return "", errFailing
 }
 
 type callFunc func(ctx context.Context, prompt string) (string, error)
