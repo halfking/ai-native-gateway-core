@@ -349,8 +349,9 @@ func parseVersionString(raw string) map[string]any {
 		if m := regexp.MustCompile(`g([0-9a-f]{7,40})`).FindStringSubmatch(raw); len(m) == 2 {
 			gitSHA = m[1]
 		} else {
+			reSHA := regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 			for _, p := range strings.Split(raw, "-") {
-				if ok, _ := regexp.MatchString(`^[0-9a-f]{7,40}$`, p); ok {
+				if reSHA.MatchString(p) {
 					gitSHA = p
 					break
 				}
@@ -358,8 +359,9 @@ func parseVersionString(raw string) map[string]any {
 		}
 	}
 	if ok, _ := regexp.MatchString(`^(\d{8}|\d{4}-\d{2}-\d{2})$`, buildDate); !ok {
+		reDate := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 		for _, p := range strings.Split(raw, "-") {
-			if ok, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, p); ok {
+			if reDate.MatchString(p) {
 				buildDate = p
 				break
 			}
