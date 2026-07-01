@@ -119,10 +119,11 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 
 // UpdateOnFailure 请求失败时更新状态（含闪断保护）
 func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string) {
-	// 2026-07-01: 用户取消不应计入凭据错误统计
-	// 用户主动取消请求（如客户端中断、超时取消等）不是凭据本身的问题，
-	// 不应触发探测或标记凭据为不可用。直接跳过。
-	if errKind == errorsx.KindCanceled {
+	// 2026-07-01: 过滤不应计入凭据错误统计的情况
+	// 1. 用户取消（KindCanceled）：用户主动取消请求，不是凭据问题
+	// 2. 客户端错误（IsClientBug）：包括 model_not_found, tool_call_id_mismatch, unsupported_feature
+	//    这些是客户端使用问题，不应惩罚凭据
+	if errKind == errorsx.KindCanceled || errorsx.IsClientBug(errKind) {
 		return
 	}
 

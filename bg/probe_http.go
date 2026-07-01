@@ -42,14 +42,14 @@ var probeBackoff = []time.Duration{0, 10 * time.Second, 15 * time.Second, 30 * t
 
 // httpProbeResult is the structured outcome of a single HTTP probe attempt.
 type httpProbeResult struct {
-	status         string             // ok, network, auth, http_4xx, http_5xx, skipped
-	category       probeCategory
-	httpStatus     int
-	errCode        string
-	errMsg         string
-	latencyMs      int
-	modelListed    bool   // model was found in the response body (piggy-back)
-	modelIDs       []string // all model IDs from the response (used to evaluate modelListed)
+	status      string // ok, network, auth, http_4xx, http_5xx, skipped
+	category    probeCategory
+	httpStatus  int
+	errCode     string
+	errMsg      string
+	latencyMs   int
+	modelListed bool     // model was found in the response body (piggy-back)
+	modelIDs    []string // all model IDs from the response (used to evaluate modelListed)
 }
 
 var (
@@ -142,9 +142,9 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 		return httpProbeResult{
 			status: "auth", category: probeCategoryProviderError,
 			httpStatus: httpStatus,
-			errCode: http.StatusText(httpStatus),
-			errMsg: truncateProbeBody(body, 500),
-			latencyMs: latencyMs,
+			errCode:    http.StatusText(httpStatus),
+			errMsg:     truncateProbeBody(body, 500),
+			latencyMs:  latencyMs,
 		}
 	case httpStatus == 402:
 		// Payment required — quota exhausted.
@@ -154,9 +154,9 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 		return httpProbeResult{
 			status: quotaKind, category: probeCategoryProviderError,
 			httpStatus: httpStatus,
-			errCode:   errCode,
-			errMsg:    errMsg,
-			latencyMs: latencyMs,
+			errCode:    errCode,
+			errMsg:     errMsg,
+			latencyMs:  latencyMs,
 		}
 	case httpStatus == 404:
 		// Could be endpoint_id_required (Volcano Ark) or genuine model_not_found.
@@ -164,9 +164,9 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 			return httpProbeResult{
 				status: "skipped", category: probeCategorySkipped,
 				httpStatus: httpStatus,
-				errCode: probeutil.EndpointIDRequiredErrCode,
-				errMsg:  "model requires endpoint ID: " + truncateProbeBody(body, 300),
-				latencyMs: latencyMs,
+				errCode:    probeutil.EndpointIDRequiredErrCode,
+				errMsg:     "model requires endpoint ID: " + truncateProbeBody(body, 300),
+				latencyMs:  latencyMs,
 			}
 		}
 		// For Layer 1 GET /v1/models: 404 means the URL is wrong (not model unavailable).
@@ -174,9 +174,9 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 		return httpProbeResult{
 			status: "model_not_found", category: probeCategoryModelUnavailable,
 			httpStatus: httpStatus,
-			errCode:   "model_not_found",
-			errMsg:    truncateProbeBody(body, 500),
-			latencyMs: latencyMs,
+			errCode:    "model_not_found",
+			errMsg:     truncateProbeBody(body, 500),
+			latencyMs:  latencyMs,
 		}
 	case httpStatus == 429:
 		// Rate limited: classify into 5h/weekly/monthly based on body.
@@ -185,9 +185,9 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 		return httpProbeResult{
 			status: rlKind, category: probeCategoryProviderError,
 			httpStatus: httpStatus,
-			errCode:   errCode,
-			errMsg:    errMsg,
-			latencyMs: latencyMs,
+			errCode:    errCode,
+			errMsg:     errMsg,
+			latencyMs:  latencyMs,
 		}
 	case httpStatus >= 400 && httpStatus < 500:
 		// Other 4xx (400, 422, etc.) — genuine model problem for chat ping,
@@ -196,26 +196,31 @@ func classifyHTTPResponse(httpStatus int, body string, latencyMs int) httpProbeR
 		return httpProbeResult{
 			status: "http_4xx", category: probeCategoryModelUnavailable,
 			httpStatus: httpStatus,
-			errCode:   errCode,
-			errMsg:    errMsg,
-			latencyMs: latencyMs,
+			errCode:    errCode,
+			errMsg:     errMsg,
+			latencyMs:  latencyMs,
 		}
 	case httpStatus >= 500:
 		// Server errors are provider-side, not model availability.
 		return httpProbeResult{
 			status: "http_5xx", category: probeCategoryProviderError,
 			httpStatus: httpStatus,
-			errCode:   http.StatusText(httpStatus),
-			errMsg:    truncateProbeBody(body, 500),
-			latencyMs: latencyMs,
+			errCode:    http.StatusText(httpStatus),
+			errMsg:     truncateProbeBody(body, 500),
+			latencyMs:  latencyMs,
 		}
 	default:
+		// 2026-07-01: Use specific HTTP status text instead of generic "unknown"
+		statusText := http.StatusText(httpStatus)
+		if statusText == "" {
+			statusText = fmt.Sprintf("http_%d", httpStatus)
+		}
 		return httpProbeResult{
-			status: "unknown", category: probeCategoryProviderError,
+			status: statusText, category: probeCategoryProviderError,
 			httpStatus: httpStatus,
-			errCode:   http.StatusText(httpStatus),
-			errMsg:    truncateProbeBody(body, 500),
-			latencyMs: latencyMs,
+			errCode:    statusText,
+			errMsg:     truncateProbeBody(body, 500),
+			latencyMs:  latencyMs,
 		}
 	}
 }
@@ -294,10 +299,10 @@ func parseErrorCodeAndMessage(body string) (string, string) {
 
 // 5h / week / month patterns for rate limit classification.
 var (
-	re5h     = regexp.MustCompile(`(?i)(5\s*h(our)?|5\s*小时|per\s*5\s*h)`)
-	reWeek   = regexp.MustCompile(`(?i)(week|周)`)
-	reMonth  = regexp.MustCompile(`(?i)(month|月|30\s*day)`)
-	reMinute = regexp.MustCompile(`(?i)(per\s*minute|per\s*min|tpm|rpm|requests\s*per\s*minute|tokens\s*per\s*minute)`)
+	re5h      = regexp.MustCompile(`(?i)(5\s*h(our)?|5\s*小时|per\s*5\s*h)`)
+	reWeek    = regexp.MustCompile(`(?i)(week|周)`)
+	reMonth   = regexp.MustCompile(`(?i)(month|月|30\s*day)`)
+	reMinute  = regexp.MustCompile(`(?i)(per\s*minute|per\s*min|tpm|rpm|requests\s*per\s*minute|tokens\s*per\s*minute)`)
 	reBalance = regexp.MustCompile(`(?i)(balance|insufficient|quota|exceeded|payment)`)
 )
 
