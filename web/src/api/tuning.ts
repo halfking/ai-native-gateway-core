@@ -300,6 +300,235 @@ export function dataLifecycleMetrics() {
   return req<DataLifecycleMetricsResponse>('GET', '/api/admin/data-lifecycle/metrics')
 }
 
+// ── Storage overview (2026-07-01) ──────────────────────────────────
+//
+// DB vs 本机磁盘对比 + 表级 Top-N 占用 + 本机日志目录大小。
+// 用于 /admin/data-lifecycle 第一屏。
+
+export interface DatabaseStorageInfo {
+  database_bytes: number
+  database_human: string
+  total_bytes: number
+  total_human: string
+  tables_bytes: number
+  indexes_bytes: number
+  toast_bytes: number
+  server_version?: string
+}
+
+export interface FilesystemInfo {
+  path: string
+  total_bytes: number
+  total_human: string
+  used_bytes: number
+  used_human: string
+  free_bytes: number
+  free_human: string
+  used_percent: number
+}
+
+export interface LocalDirInfo {
+  path: string
+  exists: boolean
+  files: number
+  size_bytes: number
+  size_human: string
+  oldest_mtime: number
+  newest_mtime: number
+}
+
+export interface StorageOverview {
+  database: DatabaseStorageInfo
+  filesystem: FilesystemInfo
+  local_logs?: LocalDirInfo
+  warnings: string[]
+  collected_at: string
+}
+
+export function dataLifecycleStorage() {
+  return req<StorageOverview>('GET', '/api/admin/data-lifecycle/storage')
+}
+
+export interface TableSizeInfo {
+  table: string
+  schema: string
+  rows: number
+  total_bytes: number
+  total_human: string
+  index_bytes: number
+  toast_bytes: number
+  percent_of_db: number
+  is_partitioned: boolean
+}
+
+export interface TableSizesResponse {
+  tables: TableSizeInfo[]
+  total_bytes: number
+  total_human: string
+  collected_at: string
+}
+
+export function dataLifecycleTableSizes(limit = 20) {
+  return req<TableSizesResponse>('GET', `/api/admin/data-lifecycle/storage/tables?limit=${limit}`)
+}
+
+// ── Blob 管理 (2026-07-01) ─────────────────────────────────────────
+//
+// request_logs.request_body / outbound_body 当作"附件"管：按大小/年龄
+// 列出 Top-N 大字段，预览/执行清理（置 NULL，保留元数据）。
+
+export interface BlobRow {
+  request_id: string
+  session_key: string
+  tenant_id: string
+  occurred_at: string
+  request_body_bytes: number
+  outbound_body_bytes: number
+  total_bytes: number
+  total_human: string
+  model?: string
+}
+
+export interface BlobTopResponse {
+  rows: BlobRow[]
+  total_bytes: number
+  total_human: string
+  collected_at: string
+}
+
+export function dataLifecycleBlobTop(limit = 20) {
+  return req<BlobTopResponse>('GET', `/api/admin/data-lifecycle/blobs/top?limit=${limit}`)
+}
+
+export interface BlobCleanupRequest {
+  older_than_days?: number
+  larger_than_kb?: number
+  scope?: 'all' | 'current'
+}
+
+export interface BlobCleanupResponse {
+  affected_rows: number
+  request_body_affected: number
+  outbound_affected: number
+  estimated_freed_bytes: number
+  estimated_freed_human: string
+  executed: boolean
+  warning_message?: string
+  started_at: string
+  finished_at?: string
+}
+
+export function dataLifecycleBlobCleanupPreview(body: BlobCleanupRequest) {
+  return req<BlobCleanupResponse>('POST', '/api/admin/data-lifecycle/blobs/cleanup/preview', body)
+}
+
+export function dataLifecycleBlobCleanupExecute(body: BlobCleanupRequest) {
+  return req<BlobCleanupResponse>('POST', '/api/admin/data-lifecycle/blobs/cleanup/execute', body)
+}
+
+// ── 附件管理 (2026-07-01) ──────────────────────────────────────────
+//
+// request_logs.attachments (JSONB 列) 的列表 / 统计 / 策略 / 清理预览 / 清理执行。
+// 本端点只清理 JSONB 元数据（置 NULL），不删除文件系统实体文件。
+
+export interface AttachmentListItem {
+  request_id: string
+  ts: string
+  tenant_id: string
+  client_model: string
+  success: boolean
+  attachments: any[] // JSONB 数组
+}
+
+export interface AttachmentListResponse {
+  items: AttachmentListItem[]
+  limit: number
+  offset: number
+  count: number
+}
+
+export function attachmentList(params: { since?: string; until?: string; limit?: number; offset?: number } = {}) {
+  const q = new URLSearchParams()
+  if (params.since) q.set('since', params.since)
+  if (params.until) q.set('until', params.until)
+  if (params.limit) q.set('limit', String(params.limit))
+  if (params.offset) q.set('offset', String(params.offset))
+  const qs = q.toString()
+  return req<AttachmentListResponse>('GET', `/api/admin/attachments${qs ? '?' + qs : ''}`)
+}
+
+export interface AttachmentStatBucket {
+  type: string
+  content_type: string
+  count: number
+  total_bytes: number
+}
+
+export interface AttachmentStatsResponse {
+  breakdown: AttachmentStatBucket[]
+  total_count: number
+  total_bytes: number
+}
+
+export function attachmentStats() {
+  return req<AttachmentStatsResponse>('GET', '/api/admin/attachments/stats')
+}
+
+export interface AttachmentPolicyInfo {
+  retention_days: number
+  max_size_bytes: number
+  auto_cleanup: boolean
+  delete_filesystem: boolean
+  description: string
+}
+
+export interface AttachmentPolicyResponse {
+  policy: AttachmentPolicyInfo
+  note: string
+}
+
+export function attachmentPolicyGet() {
+  return req<AttachmentPolicyResponse>('GET', '/api/admin/attachments/policy')
+}
+
+export interface AttachmentCleanupRequest {
+  older_than_days: number
+}
+
+export interface AttachmentCleanupPreviewResponse {
+  older_than_days: number
+  affected_records: number
+  total_bytes: number
+  dry_run: true
+  action: string
+}
+
+export interface AttachmentCleanupExecuteResponse {
+  older_than_days: number
+  rows_affected: number
+  action: string
+  filesystem_files: string
+}
+
+export function attachmentCleanupPreview(body: AttachmentCleanupRequest) {
+  return req<AttachmentCleanupPreviewResponse>('POST', '/api/admin/attachments/cleanup/preview', body)
+}
+
+export function attachmentCleanupExecute(body: AttachmentCleanupRequest) {
+  return req<AttachmentCleanupExecuteResponse>('POST', '/api/admin/attachments/cleanup/execute', body)
+}
+
+export function attachmentItem(requestID: string) {
+  return req<{
+    request_id: string
+    ts: string
+    tenant_id: string
+    client_model: string
+    success: boolean
+    attachments: any[]
+  }>('GET', `/api/admin/attachments/${requestID}`)
+}
+
 // ── Tuning proposals + accuracy (Phase 5) ──────────────────────────────
 //
 // Three endpoints are mounted by admin/auto_route_tuning.go:

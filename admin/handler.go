@@ -14,7 +14,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
@@ -118,9 +117,6 @@ type Handler struct {
 
 	// approvalMgr (2026-06-27) 会话审批管理器，用于审批高风险会话
 	approvalMgr *sessionaudit.ApprovalManager
-	// attachmentStorage (2026-07-01) 附件存储（来自 domains/attachments.Storage），
-	// 用于 admin 端做存储目录的清理/统计。nil 表示附件功能未开启。
-	attachmentStorage *attachments.Storage
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
