@@ -27,8 +27,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // defaultWindowFraction matches LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION

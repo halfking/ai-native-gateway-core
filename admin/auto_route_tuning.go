@@ -512,7 +512,6 @@ func (h *TuningHandlers) handleAccuracy(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-
 // handleStrategies: GET /tuning/strategies?days=7
 //
 // Returns a per-strategy A/B comparison breakdown:
@@ -662,12 +661,12 @@ func (h *TuningHandlers) handleStrategies(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"window_days":   days,
-		"summary":       summary,
-		"breakdown":     breakdown,
-		"ab_verdict":    verdict,
-		"ab_enabled":    autoroute.IsABTestEnabled(),
+		"window_days":     days,
+		"summary":         summary,
+		"breakdown":       breakdown,
+		"ab_verdict":      verdict,
+		"ab_enabled":      autoroute.IsABTestEnabled(),
 		"ab_baseline_pct": autoroute.BaselinePctPublic(),
-		"generated_at":  time.Now().UTC(),
+		"generated_at":    time.Now().UTC(),
 	})
 }

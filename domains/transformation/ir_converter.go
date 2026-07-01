@@ -24,6 +24,10 @@ type IRConverterAdapter interface {
 	ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error)
 	SerializeOpenAIResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 	SerializeAnthropicResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
+	// Stream direction (Phase E, 2026-07-01): Responses API slot.
+	SerializeResponses(chunk *ir.StreamChunk, itemID string) string
+	// Non-stream response direction (Phase E, 2026-07-01).
+	SerializeResponsesResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 }
 
 // ErrConverterCircuitOpen is returned when the transport converter circuit
@@ -255,6 +259,43 @@ func (c *TransportIRConverter) SerializeAnthropicResponse(r *ir.InternalResponse
 		return nil, err
 	}
 	out, err := c.inner.SerializeAnthropicResponse(r, clientModel)
+	if err != nil {
+		c.recordErr()
+		return nil, err
+	}
+	out = c.restoreExtensions(out, r.Extensions)
+	c.recordOK()
+	return out, nil
+}
+
+// ─── Responses API direction (Phase E, 2026-07-01) ───
+//
+// No ParseResponses* method is added because no upstream speaks Responses
+// API yet (gateway→gateway Responses→Responses is a future Phase). Only
+// the Serialize direction is needed: it produces the wire payload the
+// client receives when ClientProtocol == "openai-responses".
+//
+// Both methods restore non-standard Extensions fields on the output body,
+// mirroring the existing OpenAI/Anthropic response serializers.
+
+func (c *TransportIRConverter) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	if err := c.circuitCheck(); err != nil {
+		return ""
+	}
+	// Stream direction: extensions are not restored here (SSE line-level
+	// round-trip would be lossy and the Responses API stream shape is
+	// owned by the IR serializer). The bridge / orchestrator may still
+	// surface extensions via a final response.completed event if needed.
+	out := c.inner.SerializeResponses(chunk, itemID)
+	c.recordOK()
+	return out
+}
+
+func (c *TransportIRConverter) SerializeResponsesResponse(r *ir.InternalResponse, clientModel string) ([]byte, error) {
+	if err := c.circuitCheck(); err != nil {
+		return nil, ErrConverterCircuitOpen
+	}
+	out, err := c.inner.SerializeResponsesResponse(r, clientModel)
 	if err != nil {
 		c.recordErr()
 		return nil, err

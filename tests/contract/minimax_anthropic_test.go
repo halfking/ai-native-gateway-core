@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	minimaxAnthropicBase  = "https://api.minimaxi.com/anthropic"
-	minimaxAnthropicVer   = "2023-06-01"
+	minimaxAnthropicBase   = "https://api.minimaxi.com/anthropic"
+	minimaxAnthropicVer    = "2023-06-01"
 	envMinimaxAnthropicKey = "PROVIDER_CONTRACT_KEY"
 )
 
@@ -75,9 +75,9 @@ func TestMinimaxAnthropic_NonStream_Envelope(t *testing.T) {
 		"x-api-key":         key,
 		"anthropic-version": minimaxAnthropicVer,
 	}, map[string]any{
-		"model":     "MiniMax-M2.7",
+		"model":      "MiniMax-M2.7",
 		"max_tokens": 32,
-		"messages":  []map[string]any{{"role": "user", "content": "ping"}},
+		"messages":   []map[string]any{{"role": "user", "content": "ping"}},
 	})
 	if status != 200 {
 		t.Fatalf("status=%d body=%s", status, body)
@@ -102,8 +102,8 @@ func TestMinimaxAnthropic_NonStream_Envelope(t *testing.T) {
 	}
 }
 
-// 2. Non-stream tool_use — confirms tool_use content block shape is identical to
-//    official Anthropic (id, name, input).
+//  2. Non-stream tool_use — confirms tool_use content block shape is identical to
+//     official Anthropic (id, name, input).
 func TestMinimaxAnthropic_NonStream_ToolUse(t *testing.T) {
 	key := minimaxAnthropicKey(t)
 	status, body := postJSON(t, minimaxAnthropicBase+"/v1/messages", map[string]string{
@@ -124,9 +124,9 @@ func TestMinimaxAnthropic_NonStream_ToolUse(t *testing.T) {
 	}
 	var resp struct {
 		Content []struct {
-			Type string         `json:"type"`
-			ID   string         `json:"id"`
-			Name string         `json:"name"`
+			Type  string         `json:"type"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
 			Input map[string]any `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
@@ -135,9 +135,9 @@ func TestMinimaxAnthropic_NonStream_ToolUse(t *testing.T) {
 		t.Fatalf("unmarshal: %v body=%s", err, body)
 	}
 	var toolUse *struct {
-		Type string         `json:"type"`
-		ID   string         `json:"id"`
-		Name string         `json:"name"`
+		Type  string         `json:"type"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
 		Input map[string]any `json:"input"`
 	}
 	for i := range resp.Content {
@@ -163,9 +163,9 @@ func TestMinimaxAnthropic_NonStream_ToolUse(t *testing.T) {
 	}
 }
 
-// 3. Stream — confirms SSE event order and shape.
-//    Expected order: message_start, ping, content_block_start(s),
-//    content_block_delta(s), content_block_stop(s), message_delta, message_stop.
+//  3. Stream — confirms SSE event order and shape.
+//     Expected order: message_start, ping, content_block_start(s),
+//     content_block_delta(s), content_block_stop(s), message_delta, message_stop.
 func TestMinimaxAnthropic_Stream_EventOrder(t *testing.T) {
 	key := minimaxAnthropicKey(t)
 	req, _ := http.NewRequest("POST", minimaxAnthropicBase+"/v1/messages", strings.NewReader(
@@ -223,16 +223,16 @@ func TestMinimaxAnthropic_Stream_EventOrder(t *testing.T) {
 	}
 }
 
-// 4. Error envelope — 401 on bad key confirms Anthropic-shaped error body
-//    (type, error.type, error.message) which our errorsx classifier can parse.
+//  4. Error envelope — 401 on bad key confirms Anthropic-shaped error body
+//     (type, error.type, error.message) which our errorsx classifier can parse.
 func TestMinimaxAnthropic_Error_401(t *testing.T) {
 	status, body := postJSON(t, minimaxAnthropicBase+"/v1/messages", map[string]string{
 		"x-api-key":         "sk-bogus",
 		"anthropic-version": minimaxAnthropicVer,
 	}, map[string]any{
-		"model":     "MiniMax-M2.7",
+		"model":      "MiniMax-M2.7",
 		"max_tokens": 8,
-		"messages":  []map[string]any{{"role": "user", "content": "hi"}},
+		"messages":   []map[string]any{{"role": "user", "content": "hi"}},
 	})
 	if status != 401 {
 		t.Fatalf("status=%d, want 401; body=%s", status, body)
@@ -255,9 +255,9 @@ func TestMinimaxAnthropic_Error_401(t *testing.T) {
 	}
 }
 
-// 5. /v1/models — confirms anthropic endpoint ALSO supports models listing
-//    (Anthropic-official does not, but minimax does — this changes our
-//    discovery skip-rule in discovery.go:297).
+//  5. /v1/models — confirms anthropic endpoint ALSO supports models listing
+//     (Anthropic-official does not, but minimax does — this changes our
+//     discovery skip-rule in discovery.go:297).
 func TestMinimaxAnthropic_ModelsEndpoint(t *testing.T) {
 	key := minimaxAnthropicKey(t)
 	req, _ := http.NewRequest("GET", minimaxAnthropicBase+"/v1/models", nil)
@@ -298,9 +298,9 @@ func TestMinimaxAnthropic_ModelsEndpoint(t *testing.T) {
 	}
 }
 
-// 6. thinking block — minimax mandates that the first content block is
-//    always type=thinking (their hard rule, NOT Anthropic's). Pinning this
-//    so any future gateway change that drops/strips thinking is caught.
+//  6. thinking block — minimax mandates that the first content block is
+//     always type=thinking (their hard rule, NOT Anthropic's). Pinning this
+//     so any future gateway change that drops/strips thinking is caught.
 func TestMinimaxAnthropic_ThinkingBlockMandatory(t *testing.T) {
 	key := minimaxAnthropicKey(t)
 	status, body := postJSON(t, minimaxAnthropicBase+"/v1/messages", map[string]string{
@@ -330,9 +330,9 @@ func TestMinimaxAnthropic_ThinkingBlockMandatory(t *testing.T) {
 	}
 }
 
-// 7. soft-mismatch — posting an unknown model name still returns 200
-//    with a real model echoed back. This is the silent-fallback behavior
-//    that AnthropicExecutor.CheckSoftMismatch relies on for diagnostics.
+//  7. soft-mismatch — posting an unknown model name still returns 200
+//     with a real model echoed back. This is the silent-fallback behavior
+//     that AnthropicExecutor.CheckSoftMismatch relies on for diagnostics.
 func TestMinimaxAnthropic_SoftMismatch(t *testing.T) {
 	key := minimaxAnthropicKey(t)
 	const bogus = "MiniMax-XYZ-NONEXISTENT"

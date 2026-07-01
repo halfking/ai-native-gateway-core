@@ -81,6 +81,19 @@ type AnthropicToOpenAIFunc func(body []byte) ([]byte, error)
 // anthropic upstream). pc is the optional pending-store capturer.
 type AnthropicToOpenAISSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
+// AnthropicToResponsesSSEFunc is the streaming counterpart that reads
+// Anthropic-format SSE upstream and writes OpenAI Responses API SSE to w.
+// Used by executeAnthropic when ClientProtocol == "openai-responses"
+// (Phase E, 2026-07-01). Same signature as AnthropicToOpenAISSEFunc
+// so the executor wiring is symmetric.
+type AnthropicToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+
+// OpenAIToResponsesSSEFunc is the streaming counterpart that reads
+// OpenAI chat.completion.chunk SSE upstream and writes OpenAI Responses
+// API SSE to w. Used by executeOpenAI when ClientProtocol ==
+// "openai-responses" (Phase E, 2026-07-01).
+type OpenAIToResponsesSSEFunc func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
 // chat.completion JSON body. Wired from main.go.
@@ -172,6 +185,13 @@ type IRConverter interface {
 	ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error)
 	SerializeOpenAIResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 	SerializeAnthropicResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
+	// Stream direction (Phase E, 2026-07-01): Responses API slot.
+	// Adds the /v1/responses client target to the IR matrix; the parser
+	// is intentionally absent because no upstream speaks Responses API
+	// yet (gateway-to-gateway Responses→Responses is a future Phase).
+	SerializeResponses(chunk *ir.StreamChunk, itemID string) string
+	// Non-stream response direction (Phase E, 2026-07-01).
+	SerializeResponsesResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 }
 
 // RequestLogEmitter (2026-06-20) is the minimum interface needed by
@@ -231,6 +251,17 @@ type Executor struct {
 	// path falls back to PassthroughStream which the OpenAI client
 	// can't parse.
 	AnthropicToOpenAIStream AnthropicToOpenAISSEFunc
+	// AnthropicToResponsesStream (Phase E, 2026-07-01) is the streaming
+	// bridge from Anthropic SSE upstream to OpenAI Responses API SSE.
+	// Used by executeAnthropic when ClientProtocol == "openai-responses".
+	// Wired from main.go via streaming.StreamAnthropicSSEToResponses.
+	AnthropicToResponsesStream AnthropicToResponsesSSEFunc
+	// OpenAIToResponsesStream (Phase E, 2026-07-01) is the streaming
+	// bridge from OpenAI chat.completion.chunk SSE upstream to OpenAI
+	// Responses API SSE. Used by executeOpenAI when ClientProtocol ==
+	// "openai-responses". Wired from main.go via
+	// streaming.StreamOpenAIToResponsesSSE.
+	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
 	// AnthropicToChatResponse is the Q3 non-stream counterpart:
 	// converts an Anthropic Messages JSON body into an OpenAI
 	// chat.completion JSON body. Used by executeAnthropic when

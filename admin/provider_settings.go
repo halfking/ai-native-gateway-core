@@ -114,9 +114,9 @@ func (h *Handler) getProviderSetting(w http.ResponseWriter, r *http.Request, pro
 func (h *Handler) setProviderSetting(w http.ResponseWriter, r *http.Request, providerID int, settingKey string) {
 	// Validate settingKey is in allowed list
 	allowedKeys := map[string]bool{
-		"compression.mode":            true,
-		"cache.enabled":               true,
-		"format_conversion.enabled":   true,
+		"compression.mode":          true,
+		"cache.enabled":             true,
+		"format_conversion.enabled": true,
 	}
 
 	if !allowedKeys[settingKey] {

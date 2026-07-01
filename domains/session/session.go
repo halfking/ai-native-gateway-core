@@ -27,22 +27,22 @@ type Device struct {
 }
 
 type CacheInfo struct {
-	OpenAICheckpoint   string `json:"openai_checkpoint,omitempty"`
+	OpenAICheckpoint    string `json:"openai_checkpoint,omitempty"`
 	AnthropicCacheToken string `json:"anthropic_cache_token,omitempty"`
 }
 
 type Session struct {
-	SessionID      string    `json:"session_id"`
-	SessionKey     string    `json:"session_key"`
-	APIKeyID       int       `json:"api_key_id"`
-	TenantID       string    `json:"tenant_id"`
-	TaskID         string    `json:"task_id"`
-	Namespace      string    `json:"namespace"`
-	Devices        []Device  `json:"devices"`
-	ProviderCache  CacheInfo `json:"provider_cache_info"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastActive     time.Time `json:"last_active"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	SessionID        string    `json:"session_id"`
+	SessionKey       string    `json:"session_key"`
+	APIKeyID         int       `json:"api_key_id"`
+	TenantID         string    `json:"tenant_id"`
+	TaskID           string    `json:"task_id"`
+	Namespace        string    `json:"namespace"`
+	Devices          []Device  `json:"devices"`
+	ProviderCache    CacheInfo `json:"provider_cache_info"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastActive       time.Time `json:"last_active"`
+	ExpiresAt        time.Time `json:"expires_at"`
 	LastCredentialID string    `json:"last_credential_id,omitempty"`
 }
 
@@ -269,7 +269,7 @@ func (sm *Manager) Migrate(ctx context.Context, sessionID string, newDeviceSeed 
 	devicesJSON, _ := json.Marshal(session.Devices)
 	//nolint:errcheck // best-effort cache write, non-critical
 	sm.redis.HSet(ctx, "session:"+sessionID, map[string]any{
-		"devices":      string(devicesJSON),
+		"devices":     string(devicesJSON),
 		"last_active": session.LastActive.Format(time.RFC3339),
 	})
 

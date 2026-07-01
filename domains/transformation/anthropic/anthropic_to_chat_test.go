@@ -61,12 +61,12 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
-	
+
 	// Content should only have text blocks
 	if msg["content"] != "final answer" {
 		t.Errorf("content = %v, want 'final answer'", msg["content"])
 	}
-	
+
 	// Reasoning content should have both thinking blocks joined
 	reasoning, ok := msg["reasoning_content"].(string)
 	if !ok {
@@ -76,7 +76,7 @@ func TestAnthropicToChat_MultipleThinkingBlocks(t *testing.T) {
 	if reasoning != want {
 		t.Errorf("reasoning_content = %q, want %q", reasoning, want)
 	}
-	
+
 	// Check metadata
 	meta := v["_kxg_meta"].(map[string]any)
 	if int(meta["thinking_blocks_count"].(float64)) != 2 {
@@ -105,12 +105,12 @@ func TestAnthropicToChat_NoThinkingBlocks(t *testing.T) {
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
-	
+
 	// Should not have reasoning_content
 	if _, ok := msg["reasoning_content"]; ok {
 		t.Errorf("reasoning_content should not exist when no thinking blocks")
 	}
-	
+
 	// Should not have _kxg_meta when no thinking
 	if _, ok := v["_kxg_meta"]; ok {
 		t.Errorf("_kxg_meta should not exist when no thinking blocks")
@@ -136,18 +136,18 @@ func TestAnthropicToChat_ThinkingWithToolCalls(t *testing.T) {
 	json.Unmarshal(out, &v)
 	choice := v["choices"].([]any)[0].(map[string]any)
 	msg := choice["message"].(map[string]any)
-	
+
 	// Should have reasoning_content
 	if reasoning, ok := msg["reasoning_content"].(string); !ok || reasoning != "reasoning about tool usage" {
 		t.Errorf("reasoning_content = %v, want 'reasoning about tool usage'", msg["reasoning_content"])
 	}
-	
+
 	// Should have tool_calls
 	toolCalls, ok := msg["tool_calls"].([]any)
 	if !ok || len(toolCalls) != 1 {
 		t.Errorf("tool_calls = %v, want 1 tool call", msg["tool_calls"])
 	}
-	
+
 	// Finish reason should be tool_calls
 	if choice["finish_reason"] != "tool_calls" {
 		t.Errorf("finish_reason = %v, want 'tool_calls'", choice["finish_reason"])

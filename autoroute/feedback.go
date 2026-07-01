@@ -63,11 +63,11 @@ type FeedbackInput struct {
 
 // FeedbackSignal is the computed quality assessment for one request.
 type FeedbackSignal struct {
-	SuccessScore  float64 // 0-1
-	LatencyScore  float64 // 0-1
-	CostScore     float64 // 0-1
-	QualityScore  float64 // 0-1 composite
-	DriftFlag     bool
+	SuccessScore float64 // 0-1
+	LatencyScore float64 // 0-1
+	CostScore    float64 // 0-1
+	QualityScore float64 // 0-1 composite
+	DriftFlag    bool
 }
 
 // ComputeFeedback calculates the per-request quality signal from raw metrics.

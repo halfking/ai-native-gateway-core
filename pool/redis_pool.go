@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	redisPoolTTL                = 5 * time.Minute
-	redisPoolKeyPrefix          = "llmgw:pool:"
-	redisPoolActiveKeyPrefix    = "llmgw:pool:act:"
-	redisPoolFailKeySuffix      = ":fail"
-	redisFailTTL                = 10 * time.Minute
-	maxPoolRetries              = 3
-	poolRetryBackoff            = 10 * time.Millisecond
+	redisPoolTTL             = 5 * time.Minute
+	redisPoolKeyPrefix       = "llmgw:pool:"
+	redisPoolActiveKeyPrefix = "llmgw:pool:act:"
+	redisPoolFailKeySuffix   = ":fail"
+	redisFailTTL             = 10 * time.Minute
+	maxPoolRetries           = 3
+	poolRetryBackoff         = 10 * time.Millisecond
 )
 
 // Lua scripts for atomic pool operations

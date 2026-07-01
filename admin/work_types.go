@@ -126,12 +126,11 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// rows are admitted alongside TRUE auto requests.
 	wtArgs := []any{}
 	wtArgIdx := 1
-	wtTenantFrag, wtTenantArgs, wtNextArg := tenantLogsClause(r, wtArgIdx)
+	wtTenantFrag, wtTenantArgs, _ := tenantLogsClause(r, wtArgIdx)
 	wtTenantWhere := ""
 	if wtTenantFrag != "" {
 		wtTenantWhere = wtTenantFrag
 		wtArgs = append(wtArgs, wtTenantArgs...)
-		wtArgIdx = wtNextArg
 	}
 	wtDirect := map[string]int{}
 	rows, err := h.db.Query(ctx, `

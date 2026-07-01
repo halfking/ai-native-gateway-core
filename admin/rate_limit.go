@@ -11,7 +11,7 @@ type RateLimiter struct {
 	mu     sync.Mutex
 	counts map[string]*window
 	limit  int
-	win time.Duration
+	win    time.Duration
 }
 
 type window struct {
@@ -25,7 +25,7 @@ func NewRateLimiter(limit int, win time.Duration) *RateLimiter {
 	return &RateLimiter{
 		counts: make(map[string]*window),
 		limit:  limit,
-		win: win,
+		win:    win,
 	}
 }
 

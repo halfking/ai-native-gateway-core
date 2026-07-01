@@ -16,7 +16,7 @@ func TestApprovalCard_ToInteractiveCard(t *testing.T) {
 		ApprovalID: "appr_789",
 		RiskLevel:  "high",
 		DetectResult: &sessionaudit.DetectResult{
-			Score: 8,
+			Score:          8,
 			SensitiveWords: []string{"敏感词1", "敏感词2"},
 			Threats: []sessionaudit.Threat{
 				{
@@ -34,25 +34,25 @@ func TestApprovalCard_ToInteractiveCard(t *testing.T) {
 		},
 		CreatedAt: time.Now(),
 	}
-	
+
 	interactiveCard := card.ToInteractiveCard()
-	
+
 	if interactiveCard == nil {
 		t.Fatal("expected interactive card, got nil")
 	}
-	
+
 	if interactiveCard.Header.Title != "🔐 会话审批请求" {
 		t.Errorf("expected title '🔐 会话审批请求', got %s", interactiveCard.Header.Title)
 	}
-	
+
 	if interactiveCard.Header.Template != "orange" {
 		t.Errorf("expected template 'orange' for high risk, got %s", interactiveCard.Header.Template)
 	}
-	
+
 	if len(interactiveCard.Elements) == 0 {
 		t.Error("expected elements, got none")
 	}
-	
+
 	if len(interactiveCard.Actions) != 2 {
 		t.Errorf("expected 2 actions, got %d", len(interactiveCard.Actions))
 	}
@@ -86,19 +86,19 @@ func TestRoutingRules_Route(t *testing.T) {
 			Enabled: false, // 未启用
 		},
 	}
-	
+
 	// 测试匹配规则
 	recipients := rules.Route("tenant_001", "high")
 	if len(recipients) != 2 {
 		t.Errorf("expected 2 recipients, got %d", len(recipients))
 	}
-	
+
 	// 测试未启用的规则
 	recipients = rules.Route("tenant_002", "high")
 	if len(recipients) != 0 {
 		t.Errorf("expected 0 recipients for disabled rule, got %d", len(recipients))
 	}
-	
+
 	// 测试不存在的规则
 	recipients = rules.Route("tenant_003", "high")
 	if len(recipients) != 0 {
@@ -117,15 +117,15 @@ func TestApprovalRoutingTable(t *testing.T) {
 			Enabled: true,
 		},
 	}
-	
+
 	table := NewApprovalRoutingTable(rules)
-	
+
 	// 测试路由
 	recipients := table.Route("tenant_001", "high")
 	if len(recipients) != 1 {
 		t.Errorf("expected 1 recipient, got %d", len(recipients))
 	}
-	
+
 	// 添加新规则
 	table.AddRule(RoutingRule{
 		TenantID:  "tenant_001",
@@ -135,12 +135,12 @@ func TestApprovalRoutingTable(t *testing.T) {
 		},
 		Enabled: true,
 	})
-	
+
 	recipients = table.Route("tenant_001", "medium")
 	if len(recipients) != 1 {
 		t.Errorf("expected 1 recipient after adding rule, got %d", len(recipients))
 	}
-	
+
 	// 删除规则
 	table.RemoveRule("tenant_001", "high")
 	recipients = table.Route("tenant_001", "high")
@@ -164,7 +164,7 @@ func TestRiskLevelFromScore(t *testing.T) {
 		{3, "low"},
 		{0, "low"},
 	}
-	
+
 	for _, tt := range tests {
 		result := riskLevelFromScore(tt.score)
 		if result != tt.expected {
@@ -187,7 +187,7 @@ func TestPriorityFromScore(t *testing.T) {
 		{4, PriorityLow},
 		{0, PriorityLow},
 	}
-	
+
 	for _, tt := range tests {
 		result := priorityFromScore(tt.score)
 		if result != tt.expected {
@@ -235,9 +235,9 @@ func TestLarkBotChannel_ConvertToLarkCard(t *testing.T) {
 		AppID:     "test_app_id",
 		AppSecret: "test_secret",
 	}
-	
+
 	channel := NewLarkBotChannel(config, nil)
-	
+
 	card := &InteractiveCard{
 		Header: CardHeader{
 			Title:    "测试卡片",
@@ -263,34 +263,34 @@ func TestLarkBotChannel_ConvertToLarkCard(t *testing.T) {
 			{ID: "action1", Text: "按钮1", Style: "primary"},
 		},
 	}
-	
+
 	larkCard := channel.convertToLarkCard(card)
-	
+
 	if larkCard == nil {
 		t.Fatal("expected lark card, got nil")
 	}
-	
+
 	// 验证header
 	header, ok := larkCard["header"].(map[string]any)
 	if !ok {
 		t.Fatal("expected header in lark card")
 	}
-	
+
 	title, ok := header["title"].(map[string]any)
 	if !ok {
 		t.Fatal("expected title in header")
 	}
-	
+
 	if title["content"] != "测试卡片" {
 		t.Errorf("expected title '测试卡片', got %v", title["content"])
 	}
-	
+
 	// 验证elements
 	elements, ok := larkCard["elements"].([]map[string]any)
 	if !ok {
 		t.Fatal("expected elements in lark card")
 	}
-	
+
 	if len(elements) < 3 {
 		t.Errorf("expected at least 3 elements, got %d", len(elements))
 	}
@@ -300,32 +300,32 @@ func TestCallbackServer_RegisterHandler(t *testing.T) {
 	config := LarkBotConfig{
 		VerificationToken: "test_token",
 	}
-	
+
 	server := NewCallbackServer(config)
-	
+
 	handlerCalled := false
 	server.RegisterHandler("test_action", func(ctx context.Context, callback *Callback) error {
 		handlerCalled = true
 		return nil
 	})
-	
+
 	// 模拟回调
 	callback := &Callback{
 		Action: "test_action",
 		Data:   make(map[string]any),
 	}
-	
+
 	// 注意：这里只是测试注册，实际的HTTP处理需要更复杂的测试
 	if server.handlers["test_action"] == nil {
 		t.Error("expected handler to be registered")
 	}
-	
+
 	// 调用处理器
 	err := server.handlers["test_action"](context.Background(), callback)
 	if err != nil {
 		t.Errorf("handler failed: %v", err)
 	}
-	
+
 	if !handlerCalled {
 		t.Error("expected handler to be called")
 	}
@@ -337,19 +337,19 @@ func TestFormatHelpers(t *testing.T) {
 	if score != "8/10" {
 		t.Errorf("expected '8/10', got %s", score)
 	}
-	
+
 	// 测试 joinStrings
 	joined := joinStrings([]string{"a", "b", "c"}, ", ")
 	if joined != "a, b, c" {
 		t.Errorf("expected 'a, b, c', got %s", joined)
 	}
-	
+
 	// 测试空数组
 	joined = joinStrings([]string{}, ", ")
 	if joined != "" {
 		t.Errorf("expected empty string, got %s", joined)
 	}
-	
+
 	// 测试 formatThreats
 	threats := []sessionaudit.Threat{
 		{Type: "type1", Severity: 5},

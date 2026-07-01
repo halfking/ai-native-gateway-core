@@ -17,8 +17,8 @@ import (
 // needs a live Redis) so these tests run in the sessions package's
 // own `go test` invocation without external dependencies.
 type stubPendingStore struct {
-	getFn     func(ctx context.Context, sessionID, requestID string) (*PendingEntry, bool, error)
-	latestFn  func(ctx context.Context, sessionID string) (*PendingEntry, string, bool, error)
+	getFn    func(ctx context.Context, sessionID, requestID string) (*PendingEntry, bool, error)
+	latestFn func(ctx context.Context, sessionID string) (*PendingEntry, string, bool, error)
 }
 
 func (s *stubPendingStore) Get(ctx context.Context, sessionID, requestID string) (*PendingEntry, bool, error) {

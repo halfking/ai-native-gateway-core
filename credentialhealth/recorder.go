@@ -15,9 +15,9 @@ import (
 // CallEntry represents a single LLM call result in the sliding window.
 type CallEntry struct {
 	RequestID string `json:"rid"`
-	Timestamp int64  `json:"ts"`  // unix milliseconds
+	Timestamp int64  `json:"ts"` // unix milliseconds
 	Success   bool   `json:"ok"`
-	LatencyMs int    `json:"lat"` // milliseconds
+	LatencyMs int    `json:"lat"`           // milliseconds
 	ErrorKind string `json:"err,omitempty"` // empty if success
 }
 
@@ -96,7 +96,7 @@ func (r *Recorder) GetRecent(ctx context.Context, credentialID int, model string
 	}
 
 	key := r.redisKey(credentialID, model)
-	
+
 	// Read all entries from LIST (0 to maxSize-1)
 	results, err := r.client.LRange(ctx, key, 0, int64(r.maxSize-1)).Result()
 	if err == redis.Nil {

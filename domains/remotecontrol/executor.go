@@ -39,18 +39,18 @@ func (e *DefaultCommandExecutor) Execute(ctx context.Context, cmd *RemoteCommand
 	if cmd == nil {
 		return fmt.Errorf("command is nil")
 	}
-	
+
 	// 生成ID
 	if cmd.ID == "" {
 		cmd.ID = uuid.New().String()
 	}
-	
+
 	// 设置初始状态
 	cmd.Status = CommandStatusExecuting
 	cmd.CreatedAt = time.Now()
 	now := time.Now()
 	cmd.ExecutedAt = &now
-	
+
 	// 1. 权限检查
 	if !e.authChecker.CanExecute(cmd.IssuerID, cmd.Type, cmd.TenantID) {
 		cmd.Status = CommandStatusFailed
@@ -58,16 +58,16 @@ func (e *DefaultCommandExecutor) Execute(ctx context.Context, cmd *RemoteCommand
 		e.logCommand(ctx, cmd)
 		return fmt.Errorf("permission denied for user %s to execute %s", cmd.IssuerID, cmd.Type)
 	}
-	
+
 	// 2. 审计记录
 	e.logCommand(ctx, cmd)
-	
+
 	slog.Info("executing remote command",
 		"command_id", cmd.ID,
 		"type", cmd.Type,
 		"session_id", cmd.SessionID,
 		"issuer", cmd.IssuerName)
-	
+
 	// 3. 执行指令
 	var err error
 	switch cmd.Type {
@@ -86,31 +86,31 @@ func (e *DefaultCommandExecutor) Execute(ctx context.Context, cmd *RemoteCommand
 	default:
 		err = fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
-	
+
 	// 4. 更新指令状态
 	completedAt := time.Now()
 	cmd.CompletedAt = &completedAt
-	
+
 	if err != nil {
 		cmd.Status = CommandStatusFailed
 		cmd.Error = err.Error()
-		
+
 		slog.Error("command execution failed",
 			"command_id", cmd.ID,
 			"type", cmd.Type,
 			"error", err)
 	} else {
 		cmd.Status = CommandStatusCompleted
-		
+
 		slog.Info("command execution completed",
 			"command_id", cmd.ID,
 			"type", cmd.Type,
 			"duration_ms", completedAt.Sub(*cmd.ExecutedAt).Milliseconds())
 	}
-	
+
 	// 5. 记录最终状态
 	e.logCommand(ctx, cmd)
-	
+
 	return err
 }
 
@@ -119,12 +119,12 @@ func (e *DefaultCommandExecutor) pauseSession(ctx context.Context, cmd *RemoteCo
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 暂停会话
 	if err := e.sessionMgr.PauseSession(ctx, cmd.SessionID); err != nil {
 		return fmt.Errorf("failed to pause session: %w", err)
 	}
-	
+
 	// 获取会话状态
 	state, err := e.sessionMgr.GetSessionState(ctx, cmd.SessionID)
 	if err != nil {
@@ -136,7 +136,7 @@ func (e *DefaultCommandExecutor) pauseSession(ctx context.Context, cmd *RemoteCo
 			"message":       "session paused successfully",
 		}
 	}
-	
+
 	return nil
 }
 
@@ -145,12 +145,12 @@ func (e *DefaultCommandExecutor) resumeSession(ctx context.Context, cmd *RemoteC
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 恢复会话
 	if err := e.sessionMgr.ResumeSession(ctx, cmd.SessionID); err != nil {
 		return fmt.Errorf("failed to resume session: %w", err)
 	}
-	
+
 	// 获取会话状态
 	state, err := e.sessionMgr.GetSessionState(ctx, cmd.SessionID)
 	if err != nil {
@@ -162,7 +162,7 @@ func (e *DefaultCommandExecutor) resumeSession(ctx context.Context, cmd *RemoteC
 			"message":       "session resumed successfully",
 		}
 	}
-	
+
 	return nil
 }
 
@@ -171,24 +171,24 @@ func (e *DefaultCommandExecutor) terminateSession(ctx context.Context, cmd *Remo
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 获取终止原因
 	reason := "terminated by operator"
 	if r, ok := cmd.Parameters["reason"].(string); ok && r != "" {
 		reason = r
 	}
-	
+
 	// 终止会话
 	if err := e.sessionMgr.TerminateSession(ctx, cmd.SessionID, reason); err != nil {
 		return fmt.Errorf("failed to terminate session: %w", err)
 	}
-	
+
 	cmd.Result = map[string]any{
 		"session_id": cmd.SessionID,
 		"reason":     reason,
 		"message":    "session terminated successfully",
 	}
-	
+
 	return nil
 }
 
@@ -197,27 +197,27 @@ func (e *DefaultCommandExecutor) inspectSession(ctx context.Context, cmd *Remote
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 获取会话状态
 	state, err := e.sessionMgr.GetSessionState(ctx, cmd.SessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session state: %w", err)
 	}
-	
+
 	// 构建检查结果
 	snapshot := state.GetSnapshot()
-	
+
 	cmd.Result = map[string]any{
-		"session_id":     cmd.SessionID,
-		"current_state":  snapshot.CurrentState,
-		"current_phase":  snapshot.CurrentPhase,
-		"state_history":  snapshot.History,
-		"metrics":        snapshot.Metrics,
-		"metadata":       snapshot.Metadata,
-		"created_at":     snapshot.CreatedAt,
-		"inspected_at":   time.Now(),
+		"session_id":    cmd.SessionID,
+		"current_state": snapshot.CurrentState,
+		"current_phase": snapshot.CurrentPhase,
+		"state_history": snapshot.History,
+		"metrics":       snapshot.Metrics,
+		"metadata":      snapshot.Metadata,
+		"created_at":    snapshot.CreatedAt,
+		"inspected_at":  time.Now(),
 	}
-	
+
 	return nil
 }
 
@@ -226,16 +226,16 @@ func (e *DefaultCommandExecutor) modifySession(ctx context.Context, cmd *RemoteC
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 获取会话
 	session, err := e.sessionMgr.GetSession(ctx, cmd.SessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
 	}
-	
+
 	// 修改会话参数（从Parameters中读取）
 	modified := make(map[string]any)
-	
+
 	// 示例：修改元数据
 	if metadata, ok := cmd.Parameters["metadata"].(map[string]any); ok {
 		for key, value := range metadata {
@@ -246,13 +246,13 @@ func (e *DefaultCommandExecutor) modifySession(ctx context.Context, cmd *RemoteC
 			modified[key] = value
 		}
 	}
-	
+
 	cmd.Result = map[string]any{
 		"session_id": cmd.SessionID,
 		"modified":   modified,
 		"message":    "session modified successfully",
 	}
-	
+
 	return nil
 }
 
@@ -261,20 +261,20 @@ func (e *DefaultCommandExecutor) statusSession(ctx context.Context, cmd *RemoteC
 	if cmd.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	
+
 	// 获取会话状态
 	state, err := e.sessionMgr.GetSessionState(ctx, cmd.SessionID)
 	if err != nil {
 		return fmt.Errorf("failed to get session state: %w", err)
 	}
-	
+
 	cmd.Result = map[string]any{
 		"session_id":    cmd.SessionID,
 		"current_state": state.GetState(),
 		"current_phase": state.GetPhase(),
 		"is_terminal":   state.IsTerminal(),
 	}
-	
+
 	return nil
 }
 
@@ -283,7 +283,7 @@ func (e *DefaultCommandExecutor) logCommand(ctx context.Context, cmd *RemoteComm
 	if e.auditLogger == nil {
 		return
 	}
-	
+
 	if err := e.auditLogger.LogCommand(ctx, cmd); err != nil {
 		slog.Error("failed to log command", "command_id", cmd.ID, "error", err)
 	}
@@ -316,13 +316,13 @@ func (c *SimpleAuthorizationChecker) CanExecute(issuerID string, cmdType Command
 	if err != nil {
 		return false
 	}
-	
+
 	// 获取需要的权限
 	permission, ok := CommandTypeToPermission[cmdType]
 	if !ok {
 		return false
 	}
-	
+
 	// 检查角色是否有权限
 	return HasPermission(Role(role), permission)
 }
@@ -334,7 +334,7 @@ func (c *SimpleAuthorizationChecker) GetUserRole(issuerID string, tenantID strin
 			return string(role), nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("user role not found")
 }
 

@@ -32,13 +32,13 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 
 	go func() {
 		defer close(v.done)
-		
+
 		// Run immediately on startup
 		v.runOnce(ctx)
-		
+
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
-		
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -48,7 +48,7 @@ func (v *ModelConfigValidator) Start(ctx context.Context) {
 			}
 		}
 	}()
-	
+
 	slog.Info("model_config_validator started", "interval", "30m")
 }
 
@@ -64,17 +64,17 @@ func (v *ModelConfigValidator) Stop() {
 // runOnce performs a single validation and auto-fix pass.
 func (v *ModelConfigValidator) runOnce(ctx context.Context) {
 	slog.Debug("model_config_validator: starting validation pass")
-	
+
 	// Fix 1: Auto-fill outbound_model_name for volcano-ark providers
 	if err := v.autoFillVolcanoOutboundNames(ctx); err != nil {
 		slog.Warn("model_config_validator: autoFillVolcanoOutboundNames failed", "error", err)
 	}
-	
+
 	// Fix 2: Detect and log mismatched endpoint names
 	if err := v.detectMismatchedEndpoints(ctx); err != nil {
 		slog.Warn("model_config_validator: detectMismatchedEndpoints failed", "error", err)
 	}
-	
+
 	slog.Debug("model_config_validator: validation pass completed")
 }
 
@@ -83,7 +83,7 @@ func (v *ModelConfigValidator) runOnce(ctx context.Context) {
 func (v *ModelConfigValidator) autoFillVolcanoOutboundNames(ctx context.Context) error {
 	timeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	
+
 	result, err := v.db.Exec(timeout, `
 		UPDATE provider_models pm
 		SET outbound_model_name = COALESCE(pm.standardized_name, pm.raw_model_name),
@@ -93,17 +93,17 @@ func (v *ModelConfigValidator) autoFillVolcanoOutboundNames(ctx context.Context)
 		  AND p.code LIKE 'volcano%'
 		  AND (pm.outbound_model_name IS NULL OR pm.outbound_model_name = '')
 	`)
-	
+
 	if err != nil {
 		return err
 	}
-	
+
 	rowsAffected := result.RowsAffected()
 	if rowsAffected > 0 {
 		slog.Info("model_config_validator: auto-filled volcano outbound_model_name",
 			"rows_updated", rowsAffected)
 	}
-	
+
 	return nil
 }
 
@@ -112,7 +112,7 @@ func (v *ModelConfigValidator) autoFillVolcanoOutboundNames(ctx context.Context)
 func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) error {
 	timeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	
+
 	rows, err := v.db.Query(timeout, `
 		SELECT pm.id, p.display_name, pm.raw_model_name, 
 		       pm.standardized_name, pm.outbound_model_name
@@ -126,12 +126,12 @@ func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) er
 		  AND pm.lifecycle_status = 'active'
 		LIMIT 10
 	`)
-	
+
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	
+
 	var mismatchCount int
 	for rows.Next() {
 		var id int
@@ -139,7 +139,7 @@ func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) er
 		if err := rows.Scan(&id, &providerName, &rawName, &stdName, &outboundName); err != nil {
 			continue
 		}
-		
+
 		mismatchCount++
 		slog.Warn("model_config_validator: potential endpoint mismatch detected",
 			"provider_model_id", id,
@@ -149,12 +149,12 @@ func (v *ModelConfigValidator) detectMismatchedEndpoints(ctx context.Context) er
 			"outbound_model_name", outboundName,
 			"hint", "verify that outbound_model_name matches the actual upstream API endpoint")
 	}
-	
+
 	if mismatchCount > 0 {
 		slog.Info("model_config_validator: detected endpoint mismatches",
 			"count", mismatchCount,
 			"action", "review logs above for details")
 	}
-	
+
 	return nil
 }

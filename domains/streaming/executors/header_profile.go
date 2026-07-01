@@ -17,9 +17,9 @@ type headerProfile struct {
 }
 
 type HeaderProfileCache struct {
-	mu      sync.RWMutex
-	cache   map[string]*headerProfile
-	dbPool  *pgxpool.Pool
+	mu     sync.RWMutex
+	cache  map[string]*headerProfile
+	dbPool *pgxpool.Pool
 }
 
 func NewHeaderProfileCache(dbPool *pgxpool.Pool) *HeaderProfileCache {

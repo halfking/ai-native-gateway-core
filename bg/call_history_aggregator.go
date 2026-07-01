@@ -60,7 +60,7 @@ func NewCallHistoryAggregator(
 // Start begins the aggregation loop.
 func (a *CallHistoryAggregator) Start(ctx context.Context) {
 	slog.Info("call_history_aggregator started", "interval", a.interval)
-	
+
 	go func() {
 		ticker := time.NewTicker(a.interval)
 		defer ticker.Stop()

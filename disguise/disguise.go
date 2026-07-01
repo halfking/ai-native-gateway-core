@@ -15,11 +15,11 @@ import (
 )
 
 type Profile struct {
-	Name                    string `yaml:"name"`
-	DeviceIDNormalize       bool   `yaml:"device_id_normalize"`
-	BillingHeaderStrip      bool   `yaml:"billing_header_strip"`
-	EnvBlockNormalize       bool   `yaml:"env_block_normalize"`
-	ProcessMetricsNormalize bool   `yaml:"process_metrics_normalize"`
+	Name                    string   `yaml:"name"`
+	DeviceIDNormalize       bool     `yaml:"device_id_normalize"`
+	BillingHeaderStrip      bool     `yaml:"billing_header_strip"`
+	EnvBlockNormalize       bool     `yaml:"env_block_normalize"`
+	ProcessMetricsNormalize bool     `yaml:"process_metrics_normalize"`
 	ExtraStripHeaders       []string `yaml:"extra_strip_headers"`
 }
 

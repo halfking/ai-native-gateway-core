@@ -148,7 +148,6 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	if modality := queryString(r, "modality"); modality != "" {
 		where = append(where, fmt.Sprintf("mc.modality = $%d", argIdx))
 		args = append(args, modality)
-		argIdx++
 	}
 
 	rows, err := h.db.Query(ctx, fmt.Sprintf(`
@@ -196,54 +195,54 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-		type model struct {
-			ID             int        `json:"id"`
-			CanonicalName  string     `json:"canonical_name"`
-			DisplayName    string     `json:"display_name"`
-			Family         *string    `json:"family"`
-			Vendor         string     `json:"vendor"`
-			Modality       string     `json:"modality"`
-			ContextWindow  *int       `json:"context_window"`
-			ParametersB    *float64   `json:"parameters_b"`
-			Notes          *string    `json:"notes"`
-			Status         string     `json:"status"`
-			DisabledReason *string    `json:"disabled_reason"`
-			Source         *string    `json:"source"`
-			Tags           []string   `json:"tags"`
-			TagsLocked     bool       `json:"tags_locked"`
-			TagsUpdatedAt  *time.Time `json:"tags_updated_at"`
-			UpdatedAt      *time.Time `json:"updated_at"`
-			AliasCount     int        `json:"alias_count"`
-			OfferCount     int        `json:"offer_count"`
-			// 新增（需求 #3/#4）：8 维评分相关字段
-			ReleasedAt   *time.Time `json:"released_at"`
-			Strengths    []string   `json:"strengths"`
-			VersionRank  *int       `json:"version_rank"`
-			CostTier     *string    `json:"cost_tier"`
-		}
+	type model struct {
+		ID             int        `json:"id"`
+		CanonicalName  string     `json:"canonical_name"`
+		DisplayName    string     `json:"display_name"`
+		Family         *string    `json:"family"`
+		Vendor         string     `json:"vendor"`
+		Modality       string     `json:"modality"`
+		ContextWindow  *int       `json:"context_window"`
+		ParametersB    *float64   `json:"parameters_b"`
+		Notes          *string    `json:"notes"`
+		Status         string     `json:"status"`
+		DisabledReason *string    `json:"disabled_reason"`
+		Source         *string    `json:"source"`
+		Tags           []string   `json:"tags"`
+		TagsLocked     bool       `json:"tags_locked"`
+		TagsUpdatedAt  *time.Time `json:"tags_updated_at"`
+		UpdatedAt      *time.Time `json:"updated_at"`
+		AliasCount     int        `json:"alias_count"`
+		OfferCount     int        `json:"offer_count"`
+		// 新增（需求 #3/#4）：8 维评分相关字段
+		ReleasedAt  *time.Time `json:"released_at"`
+		Strengths   []string   `json:"strengths"`
+		VersionRank *int       `json:"version_rank"`
+		CostTier    *string    `json:"cost_tier"`
+	}
 	models := make([]model, 0)
 	for rows.Next() {
 		var m model
 		var family *string
 		var dbVendor string
-			if err := rows.Scan(
-				&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
-				&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
-				&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
-				&dbVendor, &m.AliasCount, &m.OfferCount,
-				&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
-			); err != nil {
+		if err := rows.Scan(
+			&m.ID, &m.CanonicalName, &m.DisplayName, &family, &m.Modality,
+			&m.ContextWindow, &m.ParametersB, &m.Notes, &m.Status, &m.DisabledReason, &m.Source,
+			&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
+			&dbVendor, &m.AliasCount, &m.OfferCount,
+			&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
+		); err != nil {
 			slog.Error("listModels scan failed", "error", err)
 			continue
 		}
-			m.Family = family
-			if m.Tags == nil {
-				m.Tags = []string{}
-			}
-			if m.Strengths == nil {
-				m.Strengths = []string{}
-			}
-			familyID := ""
+		m.Family = family
+		if m.Tags == nil {
+			m.Tags = []string{}
+		}
+		if m.Strengths == nil {
+			m.Strengths = []string{}
+		}
+		familyID := ""
 		if family != nil {
 			familyID = *family
 		}
@@ -263,11 +262,11 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		CanonicalName   string   `json:"canonical_name"`
-		DisplayName     *string  `json:"display_name"`
-		Modality        string   `json:"modality"`
-		InputPriceCNY   *float64 `json:"input_price_cny"`
-		OutputPriceCNY  *float64 `json:"output_price_cny"`
+		CanonicalName  string   `json:"canonical_name"`
+		DisplayName    *string  `json:"display_name"`
+		Modality       string   `json:"modality"`
+		InputPriceCNY  *float64 `json:"input_price_cny"`
+		OutputPriceCNY *float64 `json:"output_price_cny"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -388,25 +387,25 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 	}
 
 	type offerRow struct {
-		ProviderID        int      `json:"provider_id"`
-		ProviderName      string   `json:"provider_name"`
-		CatalogCode       *string  `json:"catalog_code"`
-		BaseURL           *string  `json:"base_url"`
-		ProviderEnabled   bool     `json:"provider_enabled"`
-		CredentialID      int      `json:"credential_id"`
-		CredentialLabel   *string  `json:"credential_label"`
-		CredentialStatus  *string  `json:"credential_status"`
-		HealthStatus      *string  `json:"health_status"`
-		ConcurrencyLimit  *int     `json:"concurrency_limit"`
-		RawModelName      string   `json:"raw_model_name"`
-		StandardizedName  *string  `json:"standardized_name"`
-		P95LatencyMs      *float64 `json:"p95_latency_ms"`
-		SuccessRate       *float64 `json:"success_rate"`
-		Available         *bool    `json:"available"`
-		InputPrice        *float64 `json:"input_price"`
-		OutputPrice       *float64 `json:"output_price"`
-		CacheReadPrice    *float64 `json:"cache_read_price"`
-		CacheWritePrice   *float64 `json:"cache_write_price"`
+		ProviderID       int      `json:"provider_id"`
+		ProviderName     string   `json:"provider_name"`
+		CatalogCode      *string  `json:"catalog_code"`
+		BaseURL          *string  `json:"base_url"`
+		ProviderEnabled  bool     `json:"provider_enabled"`
+		CredentialID     int      `json:"credential_id"`
+		CredentialLabel  *string  `json:"credential_label"`
+		CredentialStatus *string  `json:"credential_status"`
+		HealthStatus     *string  `json:"health_status"`
+		ConcurrencyLimit *int     `json:"concurrency_limit"`
+		RawModelName     string   `json:"raw_model_name"`
+		StandardizedName *string  `json:"standardized_name"`
+		P95LatencyMs     *float64 `json:"p95_latency_ms"`
+		SuccessRate      *float64 `json:"success_rate"`
+		Available        *bool    `json:"available"`
+		InputPrice       *float64 `json:"input_price"`
+		OutputPrice      *float64 `json:"output_price"`
+		CacheReadPrice   *float64 `json:"cache_read_price"`
+		CacheWritePrice  *float64 `json:"cache_write_price"`
 	}
 	offers := make([]offerRow, 0)
 	offerRows, err := h.db.Query(ctx, `
@@ -457,39 +456,39 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 	}
 
 	resp := map[string]any{
-		"id":              m.ID,
-		"canonical_name":  m.CanonicalName,
-		"display_name":    m.DisplayName,
-		"family":          m.Family,
-		"modality":        m.Modality,
-		"context_window":  m.ContextWindow,
-		"parameters_b":    m.ParametersB,
-		"notes":           m.Notes,
-		"status":          m.Status,
-		"disabled_reason": m.DisabledReason,
-		"source":          m.Source,
-		"tags":            m.Tags,
-		"tags_locked":     m.TagsLocked,
-		"tags_updated_at": m.TagsUpdatedAt,
-		"created_at":      m.CreatedAt,
-		"updated_at":      m.UpdatedAt,
-		"input_price_cny": m.InputPriceCNY,
+		"id":               m.ID,
+		"canonical_name":   m.CanonicalName,
+		"display_name":     m.DisplayName,
+		"family":           m.Family,
+		"modality":         m.Modality,
+		"context_window":   m.ContextWindow,
+		"parameters_b":     m.ParametersB,
+		"notes":            m.Notes,
+		"status":           m.Status,
+		"disabled_reason":  m.DisabledReason,
+		"source":           m.Source,
+		"tags":             m.Tags,
+		"tags_locked":      m.TagsLocked,
+		"tags_updated_at":  m.TagsUpdatedAt,
+		"created_at":       m.CreatedAt,
+		"updated_at":       m.UpdatedAt,
+		"input_price_cny":  m.InputPriceCNY,
 		"output_price_cny": m.OutputPriceCNY,
 		// 新增（需求 #3/#4）：8 维评分相关字段
-		"released_at":   m.ReleasedAt,
-		"strengths":     m.Strengths,
-		"version_rank":  m.VersionRank,
-		"cost_tier":     m.CostTier,
-		"aliases":       aliases,
-		"offers":        offers,
+		"released_at":  m.ReleasedAt,
+		"strengths":    m.Strengths,
+		"version_rank": m.VersionRank,
+		"cost_tier":    m.CostTier,
+		"aliases":      aliases,
+		"offers":       offers,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName *string    `json:"display_name"`
-		Status      *string    `json:"status"`
+		DisplayName *string `json:"display_name"`
+		Status      *string `json:"status"`
 		// 新增（需求 #3/#4）：8 维评分相关字段更新
 		ReleasedAt  *time.Time `json:"released_at"`
 		Strengths   *[]string  `json:"strengths"`
@@ -826,13 +825,13 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":            aliasID,
-		"canonical_id":  modelID,
-		"raw_name":      req.RawName,
-		"quantization":  quantization,
-		"surface":       surface,
-		"status":        "active",
-		"notes":         notes,
+		"id":           aliasID,
+		"canonical_id": modelID,
+		"raw_name":     req.RawName,
+		"quantization": quantization,
+		"surface":      surface,
+		"status":       "active",
+		"notes":        notes,
 	})
 }
 
@@ -875,12 +874,12 @@ func (h *Handler) createAliasesBulk(w http.ResponseWriter, r *http.Request, mode
 			continue
 		}
 		created = append(created, map[string]any{
-			"id":             aliasID,
-			"canonical_id":   modelID,
-			"raw_name":       name,
-			"status":         "active",
+			"id":              aliasID,
+			"canonical_id":    modelID,
+			"raw_name":        name,
+			"status":          "active",
 			"client_profiles": req.ClientProfiles,
-			"notes":          notes,
+			"notes":           notes,
 		})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

@@ -56,14 +56,14 @@ const (
 // 参考: config/config.go → ValidateAuthSecrets()
 
 const (
-	EnvAPIKey             = "LLM_GATEWAY_API_KEY"            // 数据面静态门
-	EnvAdminToken         = "LLM_GATEWAY_ADMIN_API_KEY"      // ops 端点
-	EnvJWTSecret          = "LLM_GATEWAY_JWT_SECRET"         // JWT 签名密钥
-	EnvSecretKey          = "LLM_GATEWAY_SECRET_KEY"         // JWT 回退密钥
-	EnvCookieSecure       = "LLM_GATEWAY_COOKIE_SECURE"      // cookie Secure flag 覆盖
-	EnvJWTExpiry          = "LLM_GATEWAY_JWT_EXPIRY"         // JWT TTL 覆写
-	EnvDeployEnv          = "LLM_GATEWAY_ENV"                // 部署环境 (production → fail-closed)
-	EnvCORSOrigins        = "LLM_GATEWAY_CORS_ORIGINS"       // 跨域源 allowlist
+	EnvAPIKey       = "LLM_GATEWAY_API_KEY"       // 数据面静态门
+	EnvAdminToken   = "LLM_GATEWAY_ADMIN_API_KEY" // ops 端点
+	EnvJWTSecret    = "LLM_GATEWAY_JWT_SECRET"    // JWT 签名密钥
+	EnvSecretKey    = "LLM_GATEWAY_SECRET_KEY"    // JWT 回退密钥
+	EnvCookieSecure = "LLM_GATEWAY_COOKIE_SECURE" // cookie Secure flag 覆盖
+	EnvJWTExpiry    = "LLM_GATEWAY_JWT_EXPIRY"    // JWT TTL 覆写
+	EnvDeployEnv    = "LLM_GATEWAY_ENV"           // 部署环境 (production → fail-closed)
+	EnvCORSOrigins  = "LLM_GATEWAY_CORS_ORIGINS"  // 跨域源 allowlist
 )
 
 // ── JWT 参数 (rule 20 §5) ──────────────────────────────────────────────────

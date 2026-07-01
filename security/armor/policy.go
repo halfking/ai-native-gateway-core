@@ -44,9 +44,9 @@ var AllChecks = []string{CheckPromptInject, CheckPII, CheckHallucinate}
 // by tenant_id key. There is no cross-tenant policy table.
 type Policy struct {
 	TenantID           string             `json:"tenant_id"`
-	EnabledChecks      []string           `json:"enabled_checks"`         // subset of AllChecks
-	PerCheckThresholds map[string]float64 `json:"per_check_thresholds"`   // check → [0,1]
-	Mode               Mode               `json:"mode"`                   // v1 always "observe" after normalize
+	EnabledChecks      []string           `json:"enabled_checks"`       // subset of AllChecks
+	PerCheckThresholds map[string]float64 `json:"per_check_thresholds"` // check → [0,1]
+	Mode               Mode               `json:"mode"`                 // v1 always "observe" after normalize
 }
 
 // DefaultPolicy returns a policy with EVERYTHING OFF. This is the safe

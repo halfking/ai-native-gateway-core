@@ -150,9 +150,9 @@ func AnalyzeTasks(msgs []map[string]any) *TaskAnalysisResult {
 			}
 			// Completion signal: previous task ends here
 			boundaries = append(boundaries, TaskBoundary{
-				StartIdx:   lastEnd + 1,
-				EndIdx:     signal.MessageIdx - 1,
-				Completed:  true,
+				StartIdx:    lastEnd + 1,
+				EndIdx:      signal.MessageIdx - 1,
+				Completed:   true,
 				Description: signal.Signal,
 			})
 			result.CompletedCount++
@@ -168,9 +168,9 @@ func AnalyzeTasks(msgs []map[string]any) *TaskAnalysisResult {
 	// Add active task (from last completion to end)
 	if lastEnd < len(msgs)-1 {
 		boundaries = append(boundaries, TaskBoundary{
-			StartIdx:   lastEnd + 1,
-			EndIdx:     len(msgs) - 1,
-			Completed:  false,
+			StartIdx:    lastEnd + 1,
+			EndIdx:      len(msgs) - 1,
+			Completed:   false,
 			Description: "active_task",
 		})
 		result.ActiveCount++

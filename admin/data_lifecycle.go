@@ -11,22 +11,22 @@ import (
 
 // Data lifecycle stats for UI display
 type dataLifecycleStats struct {
-	TotalRows        int64            `json:"total_rows"`
-	TotalSizeBytes   int64            `json:"total_size_bytes"`
-	TotalSizeHuman   string           `json:"total_size_human"`
-	HotData          *dataSegment     `json:"hot_data"`   // 0-7 days
-	WarmData         *dataSegment     `json:"warm_data"`  // 7-30 days
-	ColdData         *dataSegment     `json:"cold_data"`  // 30-90 days
-	ExpiredData      *dataSegment     `json:"expired_data"` // >90 days
-	ByTenant         []tenantDataStats `json:"by_tenant"`
-	GrowthTrend      []dailyGrowth    `json:"growth_trend"`
+	TotalRows      int64             `json:"total_rows"`
+	TotalSizeBytes int64             `json:"total_size_bytes"`
+	TotalSizeHuman string            `json:"total_size_human"`
+	HotData        *dataSegment      `json:"hot_data"`     // 0-7 days
+	WarmData       *dataSegment      `json:"warm_data"`    // 7-30 days
+	ColdData       *dataSegment      `json:"cold_data"`    // 30-90 days
+	ExpiredData    *dataSegment      `json:"expired_data"` // >90 days
+	ByTenant       []tenantDataStats `json:"by_tenant"`
+	GrowthTrend    []dailyGrowth     `json:"growth_trend"`
 }
 
 type dataSegment struct {
-	Rows          int64   `json:"rows"`
-	SizeBytes     int64   `json:"size_bytes"`
-	SizeHuman     string  `json:"size_human"`
-	Days          int     `json:"days"`
+	Rows           int64   `json:"rows"`
+	SizeBytes      int64   `json:"size_bytes"`
+	SizeHuman      string  `json:"size_human"`
+	Days           int     `json:"days"`
 	PercentOfTotal float64 `json:"percent_of_total"`
 }
 
@@ -93,7 +93,7 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		SizeBytes int64
 		SizeHuman string
 	}
-	
+
 	segmentQuery := `
 		WITH total AS (
 			SELECT COUNT(*) AS total_count FROM request_logs WHERE 1=1` + tenantFilter + `
@@ -146,19 +146,19 @@ func (h *Handler) handleDataLifecycleStats(w http.ResponseWriter, r *http.Reques
 		if err := segmentRows.Scan(&sr.Segment, &sr.Rows, &sr.SizeBytes, &sr.SizeHuman); err != nil {
 			continue
 		}
-		
+
 		pct := 0.0
 		if stats.TotalRows > 0 {
 			pct = float64(sr.Rows) / float64(stats.TotalRows) * 100
 		}
-		
+
 		seg := &dataSegment{
 			Rows:           sr.Rows,
 			SizeBytes:      sr.SizeBytes,
 			SizeHuman:      sr.SizeHuman,
 			PercentOfTotal: pct,
 		}
-		
+
 		switch sr.Segment {
 		case "hot":
 			seg.Days = 7
@@ -275,18 +275,18 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	defer cancel()
 
 	isTenantAdmin := IsTenantAdmin(r)
-	
+
 	// Build where clause with parameterized queries
 	whereClause := "WHERE 1=1"
 	args := []interface{}{}
 	argIdx := 1
-	
+
 	if isTenantAdmin {
 		whereClause += " AND tenant_id = $" + strconv.Itoa(argIdx)
 		args = append(args, GetTenantID(r))
 		argIdx++
 	}
-	
+
 	if req.From != "" {
 		whereClause += " AND ts >= $" + strconv.Itoa(argIdx) + "::date"
 		args = append(args, req.From)
@@ -295,7 +295,6 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 	if req.To != "" {
 		whereClause += " AND ts < $" + strconv.Itoa(argIdx) + "::date + INTERVAL '1 day'"
 		args = append(args, req.To)
-		argIdx++
 	}
 
 	var resp cleanupPreviewResponse
@@ -306,7 +305,7 @@ func (h *Handler) handleDataLifecycleCleanupPreview(w http.ResponseWriter, r *ht
 			pg_size_pretty((pg_total_relation_size('request_logs') * COUNT(*)::numeric / NULLIF((SELECT COUNT(*) FROM request_logs), 0))::bigint) AS freed_human
 		FROM request_logs
 		`+whereClause, args...).Scan(&resp.AffectedRows, &resp.EstimatedFreedBytes, &resp.EstimatedFreedHuman)
-	
+
 	if err != nil {
 		slog.Warn("cleanup_preview failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")

@@ -170,17 +170,17 @@ func TestPatternLayer_CreativeWriting(t *testing.T) {
 	clf := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
 
 	tests := []struct {
-		name string
+		name   string
 		prompt string
-		want TaskType
+		want   TaskType
 	}{
 		{
-			name: "写一首诗",
+			name:   "写一首诗",
 			prompt: "帮我写一首关于秋天的诗",
 			want:   TaskCreative,
 		},
 		{
-			name: "写一个故事",
+			name:   "写一个故事",
 			prompt: "给我写一个关于冒险的故事",
 			want:   TaskCreative,
 		},

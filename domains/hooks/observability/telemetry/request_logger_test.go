@@ -12,19 +12,19 @@ import (
 func TestRequestLogger_Enabled(t *testing.T) {
 	rl := &RequestLogger{
 		config: &RequestLoggerConfig{Enabled: true},
-		db:    nil,
+		db:     nil,
 	}
 	assert.True(t, rl.Enabled())
 
 	rl = &RequestLogger{
 		config: nil,
-		db:    nil,
+		db:     nil,
 	}
 	assert.False(t, rl.Enabled())
 
 	rl = &RequestLogger{
 		config: &RequestLoggerConfig{Enabled: false},
-		db:    nil,
+		db:     nil,
 	}
 	assert.False(t, rl.Enabled())
 }
@@ -32,7 +32,7 @@ func TestRequestLogger_Enabled(t *testing.T) {
 func TestRequestLogger_CreateInitial_NoDB(t *testing.T) {
 	rl := &RequestLogger{
 		config: &RequestLoggerConfig{Enabled: true},
-		db:    nil,
+		db:     nil,
 	}
 	err := rl.CreateInitial(context.Background(), &InitialRequest{
 		RequestID:   "test-123",
@@ -45,8 +45,8 @@ func TestRequestLogger_CreateInitial_NoDB(t *testing.T) {
 
 func TestRequestLogger_Update_NoDB(t *testing.T) {
 	rl := &RequestLogger{
-		config:    &RequestLoggerConfig{Enabled: true},
-		db:        nil,
+		config:     &RequestLoggerConfig{Enabled: true},
+		db:         nil,
 		asyncQueue: make(chan *LogUpdate, 100),
 	}
 	rl.Update(&LogUpdate{
@@ -59,7 +59,7 @@ func TestRequestLogger_Update_NoDB(t *testing.T) {
 func TestRequestLogger_UpdateSync_NoDB(t *testing.T) {
 	rl := &RequestLogger{
 		config: &RequestLoggerConfig{Enabled: true},
-		db:    nil,
+		db:     nil,
 	}
 	err := rl.UpdateSync(context.Background(), &LogUpdate{
 		RequestID: "test-123",
@@ -71,10 +71,10 @@ func TestRequestLogger_UpdateSync_NoDB(t *testing.T) {
 
 func TestRequestLogger_Update_NonBlocking(t *testing.T) {
 	rl := &RequestLogger{
-		config:    &RequestLoggerConfig{Enabled: true, QueueSize: 1},
-		db:        nil,
+		config:     &RequestLoggerConfig{Enabled: true, QueueSize: 1},
+		db:         nil,
 		asyncQueue: make(chan *LogUpdate, 1),
-		done:      make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 	rl.Update(&LogUpdate{RequestID: "test-1", Stage: StageCompressed})
 	rl.Update(&LogUpdate{RequestID: "test-2", Stage: StageCompressed})
@@ -106,10 +106,10 @@ func TestRequestLogger_UpdateBuilder(t *testing.T) {
 func TestRequestLogger_UpdateBuilder_LogAsync(t *testing.T) {
 	queue := make(chan *LogUpdate, 10)
 	rl := &RequestLogger{
-		config:    &RequestLoggerConfig{Enabled: true},
-		db:        nil,
+		config:     &RequestLoggerConfig{Enabled: true},
+		db:         nil,
 		asyncQueue: queue,
-		done:      make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 	t.Logf("rl.config.Enabled = %v, queue cap = %d, queue len = %d", rl.config.Enabled, cap(queue), len(queue))
 	t.Logf("rl.Enabled() = %v", rl.Enabled())
@@ -133,7 +133,7 @@ func TestRequestLogger_UpdateBuilder_LogAsync(t *testing.T) {
 func TestRequestLogger_UpdateBuilder_LogSync(t *testing.T) {
 	rl := &RequestLogger{
 		config: &RequestLoggerConfig{Enabled: true},
-		db:    nil,
+		db:     nil,
 	}
 
 	err := NewRequestLogger(nil, nil).NewUpdateBuilder().
@@ -190,11 +190,11 @@ func TestRequestLogger_NewRequestLogger_CustomConfig(t *testing.T) {
 func TestRequestLogger_Stop(t *testing.T) {
 	queue := make(chan *LogUpdate, 10)
 	rl := &RequestLogger{
-		config:    &RequestLoggerConfig{Enabled: true, QueueSize: 10},
-		db:        nil,
+		config:     &RequestLoggerConfig{Enabled: true, QueueSize: 10},
+		db:         nil,
 		asyncQueue: queue,
-		done:      make(chan struct{}),
-		wg:        sync.WaitGroup{},
+		done:       make(chan struct{}),
+		wg:         sync.WaitGroup{},
 	}
 	rl.wg.Add(1)
 	go rl.worker()

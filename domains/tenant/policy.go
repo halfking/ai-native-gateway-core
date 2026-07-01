@@ -31,19 +31,19 @@ func (c *PolicyChecker) CheckModelAccess(ctx context.Context, tenantID, model st
 	c.mu.RLock()
 	policy, ok := c.policies[tenantID]
 	c.mu.RUnlock()
-	
+
 	if !ok {
 		// No policy configured - allow by default
 		return nil
 	}
-	
+
 	// Check blacklist first
 	for _, blocked := range policy.BlockedModels {
 		if blocked == model {
 			return fmt.Errorf("model %s is blocked for tenant %s", model, tenantID)
 		}
 	}
-	
+
 	// If whitelist exists, model must be in it
 	if len(policy.AllowedModels) > 0 {
 		found := false
@@ -57,7 +57,7 @@ func (c *PolicyChecker) CheckModelAccess(ctx context.Context, tenantID, model st
 			return fmt.Errorf("model %s is not allowed for tenant %s", model, tenantID)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -65,17 +65,17 @@ func (c *PolicyChecker) CheckModelAccess(ctx context.Context, tenantID, model st
 func (c *PolicyChecker) IsFeatureEnabled(tenantID, feature string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	policy, ok := c.policies[tenantID]
 	if !ok {
 		return true // Default enabled
 	}
-	
+
 	for _, enabled := range policy.EnabledFeatures {
 		if enabled == feature {
 			return true
 		}
 	}
-	
+
 	return false
 }

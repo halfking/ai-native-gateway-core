@@ -74,8 +74,8 @@ const (
 type StateChange struct {
 	From      SessionState   `json:"from"`
 	To        SessionState   `json:"to"`
-	Event     string         `json:"event"`      // 触发事件名称
-	Reason    string         `json:"reason"`     // 转换原因
+	Event     string         `json:"event"`  // 触发事件名称
+	Reason    string         `json:"reason"` // 转换原因
 	Timestamp time.Time      `json:"timestamp"`
 	Metadata  map[string]any `json:"metadata,omitempty"` // 附加信息
 }
@@ -137,14 +137,14 @@ type TransitionAction func(ctx *TransitionContext) error
 
 // TransitionContext 转换上下文
 type TransitionContext struct {
-	SessionID  string
-	TenantID   string
-	From       SessionState
-	To         SessionState
-	Event      string
-	Metadata   map[string]any
-	Timestamp  time.Time
-	StateMeta  map[string]any // 状态机的元数据
+	SessionID string
+	TenantID  string
+	From      SessionState
+	To        SessionState
+	Event     string
+	Metadata  map[string]any
+	Timestamp time.Time
+	StateMeta map[string]any // 状态机的元数据
 }
 
 // SessionTransition 状态转换规则
@@ -158,10 +158,10 @@ type SessionTransition struct {
 
 // SessionMetrics 会话指标
 type SessionMetrics struct {
-	StateEnterTime  map[SessionState]time.Time // 进入每个状态的时间
+	StateEnterTime  map[SessionState]time.Time     // 进入每个状态的时间
 	StateDurations  map[SessionState]time.Duration // 在每个状态的持续时间
-	TransitionCount int // 状态转换次数
-	ErrorCount      int // 错误次数
+	TransitionCount int                            // 状态转换次数
+	ErrorCount      int                            // 错误次数
 }
 
 // NewSessionMetrics 创建会话指标

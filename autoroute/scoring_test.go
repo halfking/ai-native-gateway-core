@@ -6,18 +6,18 @@ import (
 
 func TestScore_Balanced(t *testing.T) {
 	c := Candidate{
-		CredentialID:       1,
-		CanonicalName:      "claude-sonnet-4.5",
-		UnitPriceInPer1M:   3.0,
-		UnitPriceOutPer1M:  15.0,
-		SuccessRate:        0.95,
-		P95LatencyMs:       800,
-		PressureRatio:      0.2,
-		ConcurrencyLimit:   50,
-		ActiveSessions:     10,
-		ContextWindow:      200_000,
-		TaskMatchScore:     0.66,
-		Tags:               []string{"reasoning", "code"},
+		CredentialID:      1,
+		CanonicalName:     "claude-sonnet-4.5",
+		UnitPriceInPer1M:  3.0,
+		UnitPriceOutPer1M: 15.0,
+		SuccessRate:       0.95,
+		P95LatencyMs:      800,
+		PressureRatio:     0.2,
+		ConcurrencyLimit:  50,
+		ActiveSessions:    10,
+		ContextWindow:     200_000,
+		TaskMatchScore:    0.66,
+		Tags:              []string{"reasoning", "code"},
 	}
 	sigs := ClassificationSignals{
 		EstimatedTokens: 4000,
@@ -171,13 +171,13 @@ func TestPercentile(t *testing.T) {
 
 func TestParseTagsJSONB(t *testing.T) {
 	cases := map[string][]string{
-		`["reasoning","code"]`:                {"reasoning", "code"},
-		`[]`:                                  nil,
-		`null`:                                nil,
-		"":                                    nil,
-		`["a","b","c"]`:                       {"a", "b", "c"},
-		`  ["reasoning", "code"]  `:           {"reasoning", "code"},
-		`not json`:                            nil,
+		`["reasoning","code"]`:      {"reasoning", "code"},
+		`[]`:                        nil,
+		`null`:                      nil,
+		"":                          nil,
+		`["a","b","c"]`:             {"a", "b", "c"},
+		`  ["reasoning", "code"]  `: {"reasoning", "code"},
+		`not json`:                  nil,
 	}
 	for in, want := range cases {
 		got := parseTagsJSONB(in)

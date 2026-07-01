@@ -44,29 +44,29 @@ type ToxicKeyword struct {
 
 // Policy 输出合规策略
 type Policy struct {
-	TenantID              string
-	Enabled               bool
-	EnforcementMode       string
-	CheckPII              bool
-	CheckToxicity         bool
-	CheckBias             bool
-	CheckHallucination    bool
-	PIIThreshold          float64
-	ToxicityThreshold     float64
-	BiasThreshold         float64
+	TenantID               string
+	Enabled                bool
+	EnforcementMode        string
+	CheckPII               bool
+	CheckToxicity          bool
+	CheckBias              bool
+	CheckHallucination     bool
+	PIIThreshold           float64
+	ToxicityThreshold      float64
+	BiasThreshold          float64
 	HallucinationThreshold float64
-	ActionOnPII           string
-	ActionOnToxicity      string
-	ActionOnBias          string
-	ActionOnHallucination string
-	AutoRedact            bool
-	RedactEmail           bool
-	RedactPhone           bool
-	RedactIDCard          bool
-	RedactCreditCard      bool
-	StrictMode            bool
-	LogAllOutputs         bool
-	WhitelistPatterns     []string
+	ActionOnPII            string
+	ActionOnToxicity       string
+	ActionOnBias           string
+	ActionOnHallucination  string
+	AutoRedact             bool
+	RedactEmail            bool
+	RedactPhone            bool
+	RedactIDCard           bool
+	RedactCreditCard       bool
+	StrictMode             bool
+	LogAllOutputs          bool
+	WhitelistPatterns      []string
 }
 
 // ComplianceResult 合规检查结果
@@ -403,28 +403,28 @@ func (c *Checker) getPolicy(ctx context.Context, tenantID string) (*Policy, erro
 
 	if err == sql.ErrNoRows {
 		return &Policy{
-			TenantID:              tenantID,
-			Enabled:               true,
-			EnforcementMode:       "observe",
-			CheckPII:              true,
-			CheckToxicity:         true,
-			CheckBias:             false,
-			CheckHallucination:    false,
-			PIIThreshold:          0.7,
-			ToxicityThreshold:     0.7,
-			BiasThreshold:         0.6,
+			TenantID:               tenantID,
+			Enabled:                true,
+			EnforcementMode:        "observe",
+			CheckPII:               true,
+			CheckToxicity:          true,
+			CheckBias:              false,
+			CheckHallucination:     false,
+			PIIThreshold:           0.7,
+			ToxicityThreshold:      0.7,
+			BiasThreshold:          0.6,
 			HallucinationThreshold: 0.7,
-			ActionOnPII:           "redact",
-			ActionOnToxicity:      "warn",
-			ActionOnBias:          "log",
-			ActionOnHallucination: "log",
-			AutoRedact:            true,
-			RedactEmail:           true,
-			RedactPhone:           true,
-			RedactIDCard:          true,
-			RedactCreditCard:      true,
-			StrictMode:            false,
-			LogAllOutputs:         false,
+			ActionOnPII:            "redact",
+			ActionOnToxicity:       "warn",
+			ActionOnBias:           "log",
+			ActionOnHallucination:  "log",
+			AutoRedact:             true,
+			RedactEmail:            true,
+			RedactPhone:            true,
+			RedactIDCard:           true,
+			RedactCreditCard:       true,
+			StrictMode:             false,
+			LogAllOutputs:          false,
 		}, nil
 	}
 

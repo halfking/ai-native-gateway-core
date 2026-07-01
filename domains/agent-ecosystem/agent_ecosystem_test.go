@@ -66,11 +66,11 @@ func TestRegistry_FindByCapability_Hit(t *testing.T) {
 		},
 	})
 	_ = r.Register(&Agent{
-		ID: "a2",
+		ID:           "a2",
 		Capabilities: []*Capability{{Name: "translate"}},
 	})
 	_ = r.Register(&Agent{
-		ID: "a3",
+		ID:           "a3",
 		Capabilities: []*Capability{{Name: "search"}},
 	})
 	hits := r.FindByCapability("translate")

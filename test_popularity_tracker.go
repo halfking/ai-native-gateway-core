@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 package main
@@ -15,10 +16,10 @@ import (
 func main() {
 	// 从环境变量读取数据库连接
 	dbURL := "postgres://llm_gateway:password@localhost:5432/llm_gateway?sslmode=disable"
-	
+
 	fmt.Println("=== Phase 2 热度追踪器功能测试 ===")
 	fmt.Println()
-	
+
 	// 连接数据库
 	fmt.Println("1. 连接数据库...")
 	ctx := context.Background()
@@ -27,13 +28,13 @@ func main() {
 		log.Fatalf("连接失败: %v\n提示: 修改 dbURL 为实际数据库地址", err)
 	}
 	defer pool.Close()
-	
+
 	if err := pool.Ping(ctx); err != nil {
 		log.Fatalf("Ping 失败: %v", err)
 	}
 	fmt.Println("   ✓ 数据库连接成功")
 	fmt.Println()
-	
+
 	// 检查 request_logs 表
 	fmt.Println("2. 检查 request_logs 表结构...")
 	var exists bool
@@ -47,7 +48,7 @@ func main() {
 		log.Fatalf("request_logs 表不存在: %v", err)
 	}
 	fmt.Println("   ✓ request_logs 表存在")
-	
+
 	// 检查索引
 	var indexCount int
 	err = pool.QueryRow(ctx, `
@@ -65,7 +66,7 @@ func main() {
 		fmt.Printf("   ✓ 找到 %d 个 created_at 相关索引\n", indexCount)
 	}
 	fmt.Println()
-	
+
 	// 检查数据量
 	fmt.Println("3. 检查最近1小时数据...")
 	var totalRows, distinctModels, withModel int
@@ -84,18 +85,18 @@ func main() {
 	fmt.Printf("   不同模型数: %d\n", distinctModels)
 	fmt.Printf("   有模型标识的: %d (%.1f%%)\n", withModel, float64(withModel)/float64(totalRows)*100)
 	fmt.Println()
-	
+
 	// 创建 tracker
 	fmt.Println("4. 创建 ModelPopularityTracker...")
 	tracker := credentialstate.NewModelPopularityTracker(pool)
 	fmt.Println("   ✓ Tracker 创建成功")
 	fmt.Println()
-	
+
 	// 手动执行一次刷新
 	fmt.Println("5. 执行热度统计查询...")
 	start := time.Now()
 	err = pool.QueryRow(ctx, `SELECT 1`).Scan(new(int)) // warm up
-	
+
 	start = time.Now()
 	rows, err := pool.Query(ctx, `
 		SELECT client_model, COUNT(*) AS request_count
@@ -110,13 +111,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("查询失败: %v", err)
 	}
-	
+
 	type modelStat struct {
 		model string
 		count int
 	}
 	var stats []modelStat
-	
+
 	for rows.Next() {
 		var ms modelStat
 		if err := rows.Scan(&ms.model, &ms.count); err != nil {
@@ -127,11 +128,11 @@ func main() {
 	}
 	rows.Close()
 	duration := time.Since(start)
-	
+
 	fmt.Printf("   ✓ 查询完成，耗时: %v\n", duration)
 	fmt.Printf("   ✓ 找到 %d 个活跃模型\n", len(stats))
 	fmt.Println()
-	
+
 	// 显示 TOP 10
 	fmt.Println("6. TOP 10 热门模型：")
 	fmt.Println("   模型名称                                   请求数    推荐间隔")
@@ -153,7 +154,7 @@ func main() {
 		fmt.Printf("   %-40s  %6d    %8v  %s\n", ms.model, ms.count, interval, tier)
 	}
 	fmt.Println()
-	
+
 	// 性能评估
 	fmt.Println("7. 性能评估：")
 	if duration > 1*time.Second {
@@ -163,11 +164,11 @@ func main() {
 	} else {
 		fmt.Printf("   ✓ 查询耗时 %v，性能良好\n", duration)
 	}
-	
+
 	if totalRows > 10000 {
 		fmt.Printf("   ℹ 1小时数据量: %d 行，属于中高负载\n", totalRows)
 	}
-	
+
 	fmt.Println()
 	fmt.Println("=== 测试完成 ===")
 	fmt.Println()

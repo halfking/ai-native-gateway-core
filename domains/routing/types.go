@@ -33,7 +33,7 @@ type Candidate struct {
 // Decision 路由决策。
 //
 // 一次路由调用应产生一个 Decision；Selected 为 nil 表示路由未决
-//（如没有可用 candidate），Pipeline 应继续后续阶段。
+// （如没有可用 candidate），Pipeline 应继续后续阶段。
 type Decision struct {
 	// Selected 选中的凭据（nil = 路由未决）
 	Selected *Candidate

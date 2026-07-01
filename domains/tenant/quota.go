@@ -31,16 +31,16 @@ func (c *QuotaChecker) CheckQuota(ctx context.Context, tenantID string, tokensRe
 	c.mu.RLock()
 	_, ok := c.quotas[tenantID]
 	c.mu.RUnlock()
-	
+
 	if !ok {
 		// No quota configured - allow by default
 		return nil
 	}
-	
+
 	// TODO: Implement actual quota tracking with Redis/DB
 	// This is a placeholder implementation
 	_ = tokensRequested
-	
+
 	return nil
 }
 
@@ -48,11 +48,11 @@ func (c *QuotaChecker) CheckQuota(ctx context.Context, tenantID string, tokensRe
 func (c *QuotaChecker) GetQuota(tenantID string) (*TenantQuota, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	quota, ok := c.quotas[tenantID]
 	if !ok {
 		return nil, fmt.Errorf("no quota configured for tenant %s", tenantID)
 	}
-	
+
 	return quota, nil
 }

@@ -8,9 +8,15 @@ import (
 
 func TestNewBrokenProbeReviver_Defaults(t *testing.T) {
 	w := NewBrokenProbeReviver(nil, 0, 0)
-	if w == nil { t.Fatal("nil") }
-	if w.interval != 30*time.Minute { t.Errorf("interval=%v want 30m", w.interval) }
-	if w.reviveAfter != 30*time.Minute { t.Errorf("reviveAfter=%v want 30m", w.reviveAfter) }
+	if w == nil {
+		t.Fatal("nil")
+	}
+	if w.interval != 30*time.Minute {
+		t.Errorf("interval=%v want 30m", w.interval)
+	}
+	if w.reviveAfter != 30*time.Minute {
+		t.Errorf("reviveAfter=%v want 30m", w.reviveAfter)
+	}
 }
 
 func TestBrokenProbeReviver_Revive_NilPool(t *testing.T) {

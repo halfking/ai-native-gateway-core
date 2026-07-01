@@ -43,9 +43,9 @@ func TestHeuristicClassifier_LongContext(t *testing.T) {
 func TestHeuristicClassifier_Agent(t *testing.T) {
 	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
 	res, err := c.Classify(context.Background(), ClassificationSignals{
-		ToolCount:       5,
-		HasToolResults:  true,
-		LastUserPrompt:  "find the file and replace the value",
+		ToolCount:      5,
+		HasToolResults: true,
+		LastUserPrompt: "find the file and replace the value",
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -246,7 +246,7 @@ func TestHeuristicClassifier_CodeFoundInLargePrompt(t *testing.T) {
 	res, err := c.Classify(context.Background(), ClassificationSignals{
 		SystemPrompt:    largeSystem,
 		LastUserPrompt:  "Write a Python function",
-		EstimatedTokens: 20_000,  // below long_context threshold so code path runs
+		EstimatedTokens: 20_000, // below long_context threshold so code path runs
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)

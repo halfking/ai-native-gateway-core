@@ -39,12 +39,12 @@ func NewApprovalNotifier(
 func (n *ApprovalNotifier) NotifyApproval(ctx context.Context, record *sessionaudit.ApprovalRecord) error {
 	// 1. 根据租户/风险级别路由到对应审批人
 	approvers := n.routingTable.Route(record.TenantID, riskLevelFromScore(record.DetectResult.Score))
-	
+
 	if len(approvers) == 0 {
 		slog.Warn("no approvers found", "tenant_id", record.TenantID, "risk_level", riskLevelFromScore(record.DetectResult.Score))
 		return fmt.Errorf("no approvers found for tenant %s", record.TenantID)
 	}
-	
+
 	// 2. 构建审批卡片
 	card := &ApprovalCard{
 		SessionID:    record.SessionID,
@@ -85,9 +85,9 @@ func (n *ApprovalNotifier) NotifyApproval(ctx context.Context, record *sessionau
 		},
 		CreatedAt: time.Now(),
 	}
-	
+
 	interactiveCard := card.ToInteractiveCard()
-	
+
 	// 3. 提取接收人的OpenID
 	recipients := make([]string, 0, len(approvers))
 	for _, approver := range approvers {
@@ -95,27 +95,27 @@ func (n *ApprovalNotifier) NotifyApproval(ctx context.Context, record *sessionau
 			recipients = append(recipients, approver.LarkOpenID)
 		}
 	}
-	
+
 	if len(recipients) == 0 {
 		return fmt.Errorf("no valid recipients found")
 	}
-	
+
 	// 添加接收人到卡片元数据
 	if interactiveCard.Metadata == nil {
 		interactiveCard.Metadata = make(map[string]any)
 	}
 	interactiveCard.Metadata["recipients"] = recipients
-	
+
 	// 4. 发送卡片
 	if err := n.channel.SendCard(ctx, interactiveCard); err != nil {
 		return fmt.Errorf("failed to send approval card: %w", err)
 	}
-	
+
 	slog.Info("approval notification sent",
 		"approval_id", record.ID,
 		"session_id", record.SessionID,
 		"recipients_count", len(recipients))
-	
+
 	return nil
 }
 
@@ -126,50 +126,50 @@ func (n *ApprovalNotifier) HandleApprovalCallback(ctx context.Context, callback 
 	if !ok {
 		return fmt.Errorf("approval_id not found in callback data")
 	}
-	
+
 	userID := callback.User.OpenID
 	userName := callback.User.Name
-	
+
 	slog.Info("handling approval callback",
 		"action", action,
 		"approval_id", approvalID,
 		"user", userName)
-	
+
 	switch action {
 	case "approve":
 		reason := fmt.Sprintf("批准人: %s", userName)
 		if reasonText, ok := callback.Data["reason"].(string); ok && reasonText != "" {
 			reason += fmt.Sprintf(" - %s", reasonText)
 		}
-		
+
 		if err := n.approvalMgr.Approve(ctx, approvalID, callback.TenantID, userID, reason); err != nil {
 			return fmt.Errorf("failed to approve: %w", err)
 		}
-		
+
 		// 发送确认消息
 		n.sendConfirmation(ctx, callback.User, "审批已批准", "✅ 您已批准此审批请求")
-		
+
 	case "reject":
 		reason := fmt.Sprintf("拒绝人: %s", userName)
 		if reasonText, ok := callback.Data["reason"].(string); ok && reasonText != "" {
 			reason += fmt.Sprintf(" - %s", reasonText)
 		}
-		
+
 		if err := n.approvalMgr.Reject(ctx, approvalID, callback.TenantID, userID, reason); err != nil {
 			return fmt.Errorf("failed to reject: %w", err)
 		}
-		
+
 		// 发送确认消息
 		n.sendConfirmation(ctx, callback.User, "审批已拒绝", "❌ 您已拒绝此审批请求")
-		
+
 	case "detail":
 		// 发送详细信息
 		return n.sendDetailCard(ctx, approvalID, callback.User)
-		
+
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
-	
+
 	return nil
 }
 
@@ -184,7 +184,7 @@ func (n *ApprovalNotifier) sendConfirmation(ctx context.Context, user CallbackUs
 		Recipients: []string{user.OpenID},
 		CreatedAt:  time.Now(),
 	}
-	
+
 	if err := n.channel.Send(ctx, msg); err != nil {
 		slog.Error("failed to send confirmation", "user", user.Name, "error", err)
 	}
@@ -197,7 +197,7 @@ func (n *ApprovalNotifier) sendDetailCard(ctx context.Context, approvalID string
 	if err != nil {
 		return fmt.Errorf("failed to get approval record: %w", err)
 	}
-	
+
 	// 构建详细卡片
 	card := &InteractiveCard{
 		Header: CardHeader{
@@ -224,7 +224,7 @@ func (n *ApprovalNotifier) sendDetailCard(ctx context.Context, approvalID string
 			"recipients": []string{user.OpenID},
 		},
 	}
-	
+
 	// 添加检测结果
 	if record.DetectResult != nil {
 		card.Elements = append(card.Elements, CardElement{
@@ -234,14 +234,14 @@ func (n *ApprovalNotifier) sendDetailCard(ctx context.Context, approvalID string
 				{Key: "决策", Value: string(record.DetectResult.Decision), Short: true},
 			},
 		})
-		
+
 		if len(record.DetectResult.SensitiveWords) > 0 {
 			card.Elements = append(card.Elements, CardElement{
 				Type: ElementTypeText,
 				Text: "⚠️ 敏感词: " + joinStrings(record.DetectResult.SensitiveWords, ", "),
 			})
 		}
-		
+
 		if len(record.DetectResult.Threats) > 0 {
 			threatsText := ""
 			for _, threat := range record.DetectResult.Threats {
@@ -253,7 +253,7 @@ func (n *ApprovalNotifier) sendDetailCard(ctx context.Context, approvalID string
 			})
 		}
 	}
-	
+
 	// 添加快照信息
 	if record.Snapshot != nil {
 		card.Elements = append(card.Elements, CardElement{
@@ -267,7 +267,7 @@ func (n *ApprovalNotifier) sendDetailCard(ctx context.Context, approvalID string
 			},
 		})
 	}
-	
+
 	return n.channel.SendCard(ctx, card)
 }
 

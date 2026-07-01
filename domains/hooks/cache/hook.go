@@ -31,9 +31,10 @@ const MetaKeyCacheHit = "cache_hit"
 //   - OnError: 缓存错误**透传**（不静默吞），由调用方决定是否降级
 //
 // 短路语义：
-//   命中后 Pipeline 仍可继续（不直接 return error）；但调用方可以
-//   在执行 Upstream 阶段前检查 env.UpstreamResponse != nil 跳过真正调用。
-//   本 Hook 不修改 env.Error，避免破坏 Pipeline 整体错误流。
+//
+//	命中后 Pipeline 仍可继续（不直接 return error）；但调用方可以
+//	在执行 Upstream 阶段前检查 env.UpstreamResponse != nil 跳过真正调用。
+//	本 Hook 不修改 env.Error，避免破坏 Pipeline 整体错误流。
 type CacheLookupHook struct {
 	store Store
 }

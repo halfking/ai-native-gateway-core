@@ -150,10 +150,10 @@ func (s *Service) Status() map[string]any {
 		latest["trigger"] = s.trigger
 		latest["started_at"] = s.startedAt.Format(time.RFC3339)
 		latest["summary"] = map[string]any{
-			"added":    s.discovered,
-			"updated":  0,
-			"skipped":  0,
-			"failed":   0,
+			"added":       s.discovered,
+			"updated":     0,
+			"skipped":     0,
+			"failed":      0,
 			"duration_ms": 0,
 		}
 	}
@@ -165,11 +165,11 @@ func (s *Service) Status() map[string]any {
 		running["id"] = 0
 	}
 	return map[string]any{
-		"running":     running,
-		"latest":      latest,
-		"interval_s":  int(s.interval.Seconds()),
-		"discovered":  s.discovered,
-		"last_run":    s.lastRun.Format(time.RFC3339),
+		"running":    running,
+		"latest":     latest,
+		"interval_s": int(s.interval.Seconds()),
+		"discovered": s.discovered,
+		"last_run":   s.lastRun.Format(time.RFC3339),
 	}
 }
 

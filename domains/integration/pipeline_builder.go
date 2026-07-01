@@ -14,8 +14,8 @@ import (
 
 // BuildRequestPipeline 构造完整的请求管道。
 // 包含两个 stage：
-//   1. authentication (sequential)
-//   2. pre_routing (parallel: identity + session)
+//  1. authentication (sequential)
+//  2. pre_routing (parallel: identity + session)
 func BuildRequestPipeline(
 	identityBuilder *identity.IdentityBuilder,
 	apiKeyVerifier *authentication.Verifier,

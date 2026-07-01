@@ -334,11 +334,11 @@ func (h *Handler) MigrateSession(w http.ResponseWriter, r *http.Request) {
 
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
-		"session_id":   session.SessionID,
-		"session_key":  session.SessionKey,
-		"migrated_to":  newDeviceSeed,
-		"devices":      session.Devices,
-		"expires_at":   session.ExpiresAt.Format(time.RFC3339),
+		"session_id":  session.SessionID,
+		"session_key": session.SessionKey,
+		"migrated_to": newDeviceSeed,
+		"devices":     session.Devices,
+		"expires_at":  session.ExpiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -386,7 +386,7 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 	if requestID != "" {
 		entry, found, err = h.pendingStore.Get(r.Context(), sessionID, requestID)
 	} else {
-		entry, requestID, found, err = h.pendingStore.GetLatest(r.Context(), sessionID)
+		_, _, found, err = h.pendingStore.GetLatest(r.Context(), sessionID)
 	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusServiceUnavailable, "",

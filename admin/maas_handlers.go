@@ -345,9 +345,9 @@ func (h *Handler) handleMaasPublicSettings(w http.ResponseWriter, r *http.Reques
 	}
 	// Tenants see conversion knobs only, not internal cost data.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cents_per_credit":     st.CentsPerCredit,
-		"base_credits_per_1m":  st.BaseCreditsPer1M,
-		"currency_display":     st.CurrencyDisplay,
+		"cents_per_credit":    st.CentsPerCredit,
+		"base_credits_per_1m": st.BaseCreditsPer1M,
+		"currency_display":    st.CurrencyDisplay,
 	})
 }
 

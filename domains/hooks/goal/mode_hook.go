@@ -35,17 +35,17 @@ const (
 
 // ModeConfig contains goal mode configuration.
 type ModeConfig struct {
-	Enabled                bool
-	DetectionMode          DetectionMode
-	AutoSelectRecommended  bool
-	AutoContinueOnPause    bool
-	MaxRetryCount          int
-	MaxAutoContinueCount   int
-	UseAutorouteForAudit   bool
-	UseAutorouteForIntent  bool
-	FallbackAuditModel     string
-	AutoFixEnabled         bool
-	SettingsGetter         SettingsGetter
+	Enabled               bool
+	DetectionMode         DetectionMode
+	AutoSelectRecommended bool
+	AutoContinueOnPause   bool
+	MaxRetryCount         int
+	MaxAutoContinueCount  int
+	UseAutorouteForAudit  bool
+	UseAutorouteForIntent bool
+	FallbackAuditModel    string
+	AutoFixEnabled        bool
+	SettingsGetter        SettingsGetter
 }
 
 // SettingsGetter retrieves tenant-specific settings.
@@ -138,7 +138,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
 	if completed {
 		slog.Info("task_completed", "session_id", req.SessionID, "confidence", confidence, "reason", reason)
 		_ = h.db.UpdateSessionState(ctx, req.SessionID, StateCompleted)
-		
+
 		useAutoroute := h.loadBool(req.TenantID, "goal.use_autoroute_for_audit", h.config.UseAutorouteForAudit)
 		if useAutoroute {
 			return h.triggerAudit(ctx, req, goalSession)

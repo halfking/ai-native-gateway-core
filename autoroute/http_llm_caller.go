@@ -100,9 +100,9 @@ func NewHTTPLlmCaller(cfg HTTPLlmCallerConfig) *HTTPLlmCaller {
 // the configured /chat/completions endpoint and returns the raw
 // response text. Errors are categorised:
 //
-//   context.DeadlineExceeded  — request timed out
-//   ErrLLMHTTPNonOK (wrapped)  — server returned non-2xx
-//   other                      — network / parse error
+//	context.DeadlineExceeded  — request timed out
+//	ErrLLMHTTPNonOK (wrapped)  — server returned non-2xx
+//	other                      — network / parse error
 func (h *HTTPLlmCaller) Call(ctx context.Context, prompt string) (string, error) {
 	if h.cfg.Endpoint == "" {
 		return "", errors.New("autoroute: HTTPLlmCaller endpoint not configured")
@@ -183,10 +183,11 @@ func (h *HTTPLlmCaller) Call(ctx context.Context, prompt string) (string, error)
 // LLM fallback is enabled. When disabled, returns (DisabledCaller{}, false).
 //
 // Env vars (all optional except Endpoint):
-//   LLMGatewayAutoLLMEndpoint  — base URL, e.g. https://llmgateway.internal.example.com/v1
-//   LLMGatewayAutoLLMApiKey   — bearer token (or "env:OPENAI_API_KEY" to use $OPENAI_API_KEY)
-//   LLMGatewayAutoLLMModel    — model name (default: gpt-4o-mini)
-//   LLMGatewayAutoLLMTimeout  — seconds, default 3
+//
+//	LLMGatewayAutoLLMEndpoint  — base URL, e.g. https://llmgateway.internal.example.com/v1
+//	LLMGatewayAutoLLMApiKey   — bearer token (or "env:OPENAI_API_KEY" to use $OPENAI_API_KEY)
+//	LLMGatewayAutoLLMModel    — model name (default: gpt-4o-mini)
+//	LLMGatewayAutoLLMTimeout  — seconds, default 3
 func BuildHTTPLlmCallerFromEnv(envLookup func(string) string) (LLMCaller, bool) {
 	if envLookup == nil {
 		envLookup = func(k string) string { return "" }

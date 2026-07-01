@@ -42,13 +42,13 @@ func NewSessionStateMachine(sessionID, tenantID string) *SessionStateMachine {
 		metrics:      NewSessionMetrics(),
 		createdAt:    time.Now(),
 	}
-	
+
 	// 注册默认转换规则
 	sm.registerDefaultTransitions()
-	
+
 	// 记录初始状态
 	sm.metrics.StateEnterTime[StateInitialized] = time.Now()
-	
+
 	return sm
 }
 
@@ -60,98 +60,98 @@ func (sm *SessionStateMachine) registerDefaultTransitions() {
 		To:    StateActive,
 		Event: EventAuthenticated,
 	})
-	
+
 	// Active → Pending: 缓存未命中
 	sm.RegisterTransition(SessionTransition{
 		From:  StateActive,
 		To:    StatePending,
 		Event: EventCacheMiss,
 	})
-	
+
 	// Pending → Active: 缓存命中（从其他来源）
 	sm.RegisterTransition(SessionTransition{
 		From:  StatePending,
 		To:    StateActive,
 		Event: EventCacheHit,
 	})
-	
+
 	// Pending → ToolExecuting: 需要工具执行
 	sm.RegisterTransition(SessionTransition{
 		From:  StatePending,
 		To:    StateToolExecuting,
 		Event: EventToolRequired,
 	})
-	
+
 	// ToolExecuting → Pending: 工具执行完成，等待匹配
 	sm.RegisterTransition(SessionTransition{
 		From:  StateToolExecuting,
 		To:    StatePending,
 		Event: EventToolCompleted,
 	})
-	
+
 	// ToolExecuting → Active: 工具执行完成，直接继续
 	sm.RegisterTransition(SessionTransition{
 		From:  StateToolExecuting,
 		To:    StateActive,
 		Event: EventToolCompleted,
 	})
-	
+
 	// ToolExecuting → Error: 工具执行失败
 	sm.RegisterTransition(SessionTransition{
 		From:  StateToolExecuting,
 		To:    StateError,
 		Event: EventToolFailed,
 	})
-	
+
 	// Pending → Completed: 从Pending直接完成
 	sm.RegisterTransition(SessionTransition{
 		From:  StatePending,
 		To:    StateCompleted,
 		Event: EventCompleted,
 	})
-	
+
 	// Active → Suspended: 高风险检测，需要审批
 	sm.RegisterTransition(SessionTransition{
 		From:  StateActive,
 		To:    StateSuspended,
 		Event: EventHighRiskDetected,
 	})
-	
+
 	// Suspended → Active: 审批通过
 	sm.RegisterTransition(SessionTransition{
 		From:  StateSuspended,
 		To:    StateActive,
 		Event: EventApprovalGranted,
 	})
-	
+
 	// Suspended → Aborted: 审批拒绝
 	sm.RegisterTransition(SessionTransition{
 		From:  StateSuspended,
 		To:    StateAborted,
 		Event: EventApprovalRejected,
 	})
-	
+
 	// Active → Completed: 会话正常结束
 	sm.RegisterTransition(SessionTransition{
 		From:  StateActive,
 		To:    StateCompleted,
 		Event: EventCompleted,
 	})
-	
+
 	// Active → Error: 处理异常
 	sm.RegisterTransition(SessionTransition{
 		From:  StateActive,
 		To:    StateError,
 		Event: EventError,
 	})
-	
+
 	// Error → Active: 错误恢复
 	sm.RegisterTransition(SessionTransition{
 		From:  StateError,
 		To:    StateActive,
 		Event: EventRecovered,
 	})
-	
+
 	// 任何状态 → Aborted: 用户取消或超时
 	allStates := []SessionState{
 		StateInitialized, StateActive, StatePending, StateToolExecuting,
@@ -169,7 +169,7 @@ func (sm *SessionStateMachine) registerDefaultTransitions() {
 			Event: EventTimeout,
 		})
 	}
-	
+
 	// 任何非终态 → Terminating
 	for _, state := range allStates {
 		if !state.IsTerminal() {
@@ -180,7 +180,7 @@ func (sm *SessionStateMachine) registerDefaultTransitions() {
 			})
 		}
 	}
-	
+
 	// Terminating → Aborted
 	sm.RegisterTransition(SessionTransition{
 		From:  StateTerminating,
@@ -194,11 +194,11 @@ func (sm *SessionStateMachine) registerDefaultTransitions() {
 func (sm *SessionStateMachine) RegisterTransition(t SessionTransition) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	if sm.transitions[t.From] == nil {
 		sm.transitions[t.From] = make([]SessionTransition, 0)
 	}
-	
+
 	// 检查是否已存在相同的 From+Event 组合，如果存在则替换
 	replaced := false
 	for i, existing := range sm.transitions[t.From] {
@@ -208,7 +208,7 @@ func (sm *SessionStateMachine) RegisterTransition(t SessionTransition) {
 			break
 		}
 	}
-	
+
 	if !replaced {
 		sm.transitions[t.From] = append(sm.transitions[t.From], t)
 	}
@@ -227,20 +227,20 @@ func (sm *SessionStateMachine) RegisterTransition(t SessionTransition) {
 func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionEvent, reason string, metadata map[string]any) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	currentState := sm.currentState
-	
+
 	// 检查是否为终态
 	if currentState.IsTerminal() {
 		return fmt.Errorf("cannot transition from terminal state: %s", currentState)
 	}
-	
+
 	// 查找匹配的转换规则
 	transitions, ok := sm.transitions[currentState]
 	if !ok {
 		return fmt.Errorf("no transitions defined for state: %s", currentState)
 	}
-	
+
 	var matchedTransition *SessionTransition
 	for i := range transitions {
 		if transitions[i].Event == event {
@@ -248,11 +248,11 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 			break
 		}
 	}
-	
+
 	if matchedTransition == nil {
 		return fmt.Errorf("no transition found for event %s in state %s", event, currentState)
 	}
-	
+
 	// 构建转换上下文
 	transCtx := &TransitionContext{
 		SessionID: sm.sessionID,
@@ -264,7 +264,7 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 		Timestamp: time.Now(),
 		StateMeta: sm.metadata,
 	}
-	
+
 	// 检查转换条件
 	if matchedTransition.Condition != nil {
 		if !matchedTransition.Condition(transCtx) {
@@ -272,14 +272,14 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 				currentState, matchedTransition.To, event)
 		}
 	}
-	
+
 	// 执行转换动作
 	if matchedTransition.Action != nil {
 		if err := matchedTransition.Action(transCtx); err != nil {
 			return fmt.Errorf("transition action failed: %w", err)
 		}
 	}
-	
+
 	// 更新指标
 	now := time.Now()
 	if enterTime, ok := sm.metrics.StateEnterTime[currentState]; ok {
@@ -288,11 +288,11 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 	}
 	sm.metrics.StateEnterTime[matchedTransition.To] = now
 	sm.metrics.TransitionCount++
-	
+
 	if matchedTransition.To == StateError {
 		sm.metrics.ErrorCount++
 	}
-	
+
 	// 记录状态变更
 	change := StateChange{
 		From:      currentState,
@@ -303,13 +303,13 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 		Metadata:  metadata,
 	}
 	sm.history = append(sm.history, change)
-	
+
 	// 更新当前状态
 	sm.currentState = matchedTransition.To
-	
+
 	// 根据状态更新阶段
 	sm.updatePhase(matchedTransition.To)
-	
+
 	return nil
 }
 
@@ -357,7 +357,7 @@ func (sm *SessionStateMachine) SetPhase(phase SessionPhase) {
 func (sm *SessionStateMachine) GetHistory() []StateChange {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	history := make([]StateChange, len(sm.history))
 	copy(history, sm.history)
 	return history
@@ -367,21 +367,21 @@ func (sm *SessionStateMachine) GetHistory() []StateChange {
 func (sm *SessionStateMachine) GetMetrics() SessionMetrics {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	metrics := SessionMetrics{
 		StateEnterTime:  make(map[SessionState]time.Time),
 		StateDurations:  make(map[SessionState]time.Duration),
 		TransitionCount: sm.metrics.TransitionCount,
 		ErrorCount:      sm.metrics.ErrorCount,
 	}
-	
+
 	for k, v := range sm.metrics.StateEnterTime {
 		metrics.StateEnterTime[k] = v
 	}
 	for k, v := range sm.metrics.StateDurations {
 		metrics.StateDurations[k] = v
 	}
-	
+
 	return metrics
 }
 
@@ -424,30 +424,30 @@ func (sm *SessionStateMachine) CreatedAt() time.Time {
 
 // Snapshot 获取当前状态快照
 type Snapshot struct {
-	SessionID    string                `json:"session_id"`
-	TenantID     string                `json:"tenant_id"`
-	CurrentState SessionState          `json:"current_state"`
-	CurrentPhase SessionPhase          `json:"current_phase"`
-	History      []StateChange         `json:"history"`
-	Metrics      SessionMetrics        `json:"metrics"`
-	Metadata     map[string]any        `json:"metadata"`
-	CreatedAt    time.Time             `json:"created_at"`
-	SnapshotAt   time.Time             `json:"snapshot_at"`
+	SessionID    string         `json:"session_id"`
+	TenantID     string         `json:"tenant_id"`
+	CurrentState SessionState   `json:"current_state"`
+	CurrentPhase SessionPhase   `json:"current_phase"`
+	History      []StateChange  `json:"history"`
+	Metrics      SessionMetrics `json:"metrics"`
+	Metadata     map[string]any `json:"metadata"`
+	CreatedAt    time.Time      `json:"created_at"`
+	SnapshotAt   time.Time      `json:"snapshot_at"`
 }
 
 // GetSnapshot 获取状态机快照
 func (sm *SessionStateMachine) GetSnapshot() Snapshot {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	history := make([]StateChange, len(sm.history))
 	copy(history, sm.history)
-	
+
 	metadata := make(map[string]any)
 	for k, v := range sm.metadata {
 		metadata[k] = v
 	}
-	
+
 	return Snapshot{
 		SessionID:    sm.sessionID,
 		TenantID:     sm.tenantID,

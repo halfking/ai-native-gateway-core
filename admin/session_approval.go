@@ -333,10 +333,10 @@ func (h *Handler) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
 // GET /v1/approvals/:id/status
 //
 // NET-004 fix:
-//   1. 不再信 X-Tenant-ID header（任何客户端都能伪造）——租户从 JWT/AuthContext 拿
-//   2. 跨租户与"不存在"统一返回 404 + 通用响应体，防枚举
-//   3. 无 AuthContext（完全匿名）的请求直接 404（修复前 silent success）
-//   4. 错误信息脱敏为 "approval not found"
+//  1. 不再信 X-Tenant-ID header（任何客户端都能伪造）——租户从 JWT/AuthContext 拿
+//  2. 跨租户与"不存在"统一返回 404 + 通用响应体，防枚举
+//  3. 无 AuthContext（完全匿名）的请求直接 404（修复前 silent success）
+//  4. 错误信息脱敏为 "approval not found"
 //
 // 安全假设：approval_id 即使不可猜，泄漏一个就足以让外人持续枚举——
 // 必须依靠 tenant 隔离 + 错误响应一致性来增加攻击成本。

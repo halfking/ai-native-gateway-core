@@ -2,7 +2,9 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAnthropicResponse_TextOnly(t *testing.T) {
@@ -307,5 +309,427 @@ func TestSerializeAnthropicResponse_EmptyContent(t *testing.T) {
 	first, ok := contentRaw[0].(map[string]any)
 	if !ok || first["type"] != "text" {
 		t.Errorf("content[0]: got %+v", first)
+	}
+}
+
+// ─── SerializeResponsesResponse Tests ────────────────────────────────────────
+//
+// Phase E (2026-07-01): non-stream Responses API serializer. Mirrors the
+// shape that domains/streaming/responses.go:convertChatResponseToResponses
+// previously hand-wrote, but driven entirely from the IR superset.
+
+func TestSerializeResponsesResponse_Nil(t *testing.T) {
+	_, err := SerializeResponsesResponse(nil, "gpt-4o")
+	if err == nil {
+		t.Error("nil IR should return error")
+	}
+}
+
+func TestSerializeResponsesResponse_TextOnly(t *testing.T) {
+	ir := &InternalResponse{
+		ID:           "resp_abc123",
+		Model:        "gpt-4o",
+		Created:      1234567890,
+		Role:         "assistant",
+		Content:      []ResponseContentBlock{{Type: "text", Text: "Hello world"}},
+		FinishReason: "stop",
+		Usage:        ResponseUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+
+	if parsed["object"] != "response" {
+		t.Errorf("object = %v, want response", parsed["object"])
+	}
+	if parsed["status"] != "completed" {
+		t.Errorf("status = %v, want completed", parsed["status"])
+	}
+	if parsed["model"] != "gpt-4o" {
+		t.Errorf("model = %v, want gpt-4o", parsed["model"])
+	}
+	if parsed["created_at"] != float64(1234567890) {
+		t.Errorf("created_at = %v, want 1234567890", parsed["created_at"])
+	}
+	if !strings.HasPrefix(parsed["id"].(string), "resp_") {
+		t.Errorf("id should start with resp_, got %v", parsed["id"])
+	}
+
+	usage, ok := parsed["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage missing or wrong type: %v", parsed["usage"])
+	}
+	if usage["input_tokens"] != float64(10) {
+		t.Errorf("input_tokens = %v, want 10", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(5) {
+		t.Errorf("output_tokens = %v, want 5", usage["output_tokens"])
+	}
+	if usage["total_tokens"] != float64(15) {
+		t.Errorf("total_tokens = %v, want 15", usage["total_tokens"])
+	}
+
+	output, ok := parsed["output"].([]any)
+	if !ok {
+		t.Fatalf("output missing or wrong type: %v", parsed["output"])
+	}
+	if len(output) != 1 {
+		t.Fatalf("output length = %d, want 1", len(output))
+	}
+	item, ok := output[0].(map[string]any)
+	if !ok {
+		t.Fatalf("output[0] wrong type: %T", output[0])
+	}
+	if item["type"] != "message" {
+		t.Errorf("output[0].type = %v, want message", item["type"])
+	}
+	if item["role"] != "assistant" {
+		t.Errorf("output[0].role = %v, want assistant", item["role"])
+	}
+	if item["status"] != "completed" {
+		t.Errorf("output[0].status = %v, want completed", item["status"])
+	}
+
+	content, ok := item["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("output[0].content wrong: %v", item["content"])
+	}
+	part := content[0].(map[string]any)
+	if part["type"] != "output_text" {
+		t.Errorf("content[0].type = %v, want output_text", part["type"])
+	}
+	if part["text"] != "Hello world" {
+		t.Errorf("content[0].text = %v, want Hello world", part["text"])
+	}
+}
+
+func TestSerializeResponsesResponse_WithReasoning(t *testing.T) {
+	ir := &InternalResponse{
+		ID:               "resp_r1",
+		Model:            "claude-opus-4-8",
+		Role:             "assistant",
+		ReasoningContent: "Let me think carefully...",
+		Content:          []ResponseContentBlock{{Type: "text", Text: "42"}},
+		FinishReason:     "stop",
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+
+	output := parsed["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output length = %d, want 2 (reasoning + message)", len(output))
+	}
+	// First item must be reasoning (matches pre-fix ordering in responses.go).
+	reasoning, ok := output[0].(map[string]any)
+	if !ok || reasoning["type"] != "reasoning" {
+		t.Errorf("output[0] should be reasoning, got %+v", output[0])
+	}
+	summary := reasoning["summary"].([]any)
+	if len(summary) != 1 {
+		t.Fatalf("summary length = %d, want 1", len(summary))
+	}
+	sumText := summary[0].(map[string]any)
+	if sumText["type"] != "summary_text" {
+		t.Errorf("summary[0].type = %v, want summary_text", sumText["type"])
+	}
+	if sumText["text"] != "Let me think carefully..." {
+		t.Errorf("summary[0].text = %v", sumText["text"])
+	}
+
+	// Second item must be the message.
+	msg, ok := output[1].(map[string]any)
+	if !ok || msg["type"] != "message" {
+		t.Errorf("output[1] should be message, got %+v", output[1])
+	}
+}
+
+func TestSerializeResponsesResponse_WithToolCalls(t *testing.T) {
+	ir := &InternalResponse{
+		ID:    "resp_t1",
+		Model: "gpt-4o",
+		Role:  "assistant",
+		ToolCalls: []ResponseToolCall{
+			{ID: "call_abc", Name: "get_weather", Arguments: `{"city":"SF"}`},
+		},
+		FinishReason: "tool_calls",
+		Usage:        ResponseUsage{PromptTokens: 10, CompletionTokens: 8, TotalTokens: 18},
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+
+	output := parsed["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output length = %d, want 1 (single function_call item)", len(output))
+	}
+	item := output[0].(map[string]any)
+	if item["type"] != "function_call" {
+		t.Errorf("output[0].type = %v, want function_call", item["type"])
+	}
+	if item["status"] != "completed" {
+		t.Errorf("output[0].status = %v, want completed", item["status"])
+	}
+	if item["name"] != "get_weather" {
+		t.Errorf("output[0].name = %v, want get_weather", item["name"])
+	}
+	if item["arguments"] != `{"city":"SF"}` {
+		t.Errorf("output[0].arguments = %v", item["arguments"])
+	}
+	if item["call_id"] != "call_abc" {
+		t.Errorf("output[0].call_id = %v, want call_abc", item["call_id"])
+	}
+	if !strings.HasPrefix(item["id"].(string), "msg_") {
+		t.Errorf("output[0].id should start with msg_, got %v", item["id"])
+	}
+	if !strings.Contains(item["id"].(string), "_fc_0") {
+		t.Errorf("output[0].id should contain _fc_0 (first tool call), got %v", item["id"])
+	}
+
+	// Status should be "completed" since tool_calls finish_reason maps to completed.
+	if parsed["status"] != "completed" {
+		t.Errorf("status = %v, want completed", parsed["status"])
+	}
+}
+
+func TestSerializeResponsesResponse_MultipleToolCalls(t *testing.T) {
+	ir := &InternalResponse{
+		ID:    "resp_t2",
+		Model: "gpt-4o",
+		Role:  "assistant",
+		ToolCalls: []ResponseToolCall{
+			{ID: "call_a", Name: "get_weather", Arguments: `{"city":"SF"}`},
+			{ID: "call_b", Name: "get_time", Arguments: `{"tz":"UTC"}`},
+		},
+		FinishReason: "tool_calls",
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	output := parsed["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output length = %d, want 2 (two function_call items)", len(output))
+	}
+
+	ids := []string{
+		output[0].(map[string]any)["id"].(string),
+		output[1].(map[string]any)["id"].(string),
+	}
+	if ids[0] == ids[1] {
+		t.Errorf("two tool calls should have distinct IDs, both got %q", ids[0])
+	}
+	if !strings.Contains(ids[0], "_fc_0") {
+		t.Errorf("first tool id should contain _fc_0, got %q", ids[0])
+	}
+	if !strings.Contains(ids[1], "_fc_1") {
+		t.Errorf("second tool id should contain _fc_1, got %q", ids[1])
+	}
+}
+
+func TestSerializeResponsesResponse_LengthMapsToIncomplete(t *testing.T) {
+	ir := &InternalResponse{
+		ID:           "resp_l1",
+		Model:        "gpt-4o",
+		Role:         "assistant",
+		Content:      []ResponseContentBlock{{Type: "text", Text: "truncated..."}},
+		FinishReason: "length",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	if parsed["status"] != "incomplete" {
+		t.Errorf("status = %v, want incomplete (length → incomplete)", parsed["status"])
+	}
+	// Message item should also be marked incomplete.
+	item := parsed["output"].([]any)[0].(map[string]any)
+	if item["status"] != "incomplete" {
+		t.Errorf("message.status = %v, want incomplete", item["status"])
+	}
+}
+
+func TestSerializeResponsesResponse_ContentFilterMapsToIncomplete(t *testing.T) {
+	ir := &InternalResponse{
+		ID:           "resp_cf1",
+		Model:        "gpt-4o",
+		Role:         "assistant",
+		Content:      []ResponseContentBlock{{Type: "text", Text: ""}},
+		FinishReason: "content_filter",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	if parsed["status"] != "incomplete" {
+		t.Errorf("status = %v, want incomplete", parsed["status"])
+	}
+}
+
+func TestSerializeResponsesResponse_ClientModelOverride(t *testing.T) {
+	ir := &InternalResponse{
+		ID:    "resp_m1",
+		Model: "upstream-model",
+		Role:  "assistant",
+		Content: []ResponseContentBlock{
+			{Type: "text", Text: "x"},
+		},
+		FinishReason: "stop",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "client-model-v3")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+	if parsed["model"] != "client-model-v3" {
+		t.Errorf("model override: got %v, want client-model-v3", parsed["model"])
+	}
+}
+
+func TestSerializeResponsesResponse_EmptyIRIDGeneratesDeterministicIDs(t *testing.T) {
+	ir := &InternalResponse{
+		Model:        "gpt-4o",
+		Role:         "assistant",
+		Content:      []ResponseContentBlock{{Type: "text", Text: "x"}},
+		FinishReason: "stop",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	respID := parsed["id"].(string)
+	if !strings.HasPrefix(respID, "resp_") {
+		t.Errorf("auto-generated respID should start with resp_, got %q", respID)
+	}
+	// Length sanity: "resp_" (5) + 24 chars = 29
+	if len(respID) != 5+24 {
+		t.Errorf("respID length = %d, want 29, got %q", len(respID), respID)
+	}
+
+	item := parsed["output"].([]any)[0].(map[string]any)
+	msgID := item["id"].(string)
+	if !strings.HasPrefix(msgID, "msg_") {
+		t.Errorf("auto-generated msgID should start with msg_, got %q", msgID)
+	}
+	if len(msgID) != 4+24 {
+		t.Errorf("msgID length = %d, want 28, got %q", len(msgID), msgID)
+	}
+}
+
+func TestSerializeResponsesResponse_EmptyContentNoToolCalls(t *testing.T) {
+	// Empty IR (no text, no tool calls) — must still produce a valid
+	// Responses object with a single message item containing empty text.
+	ir := &InternalResponse{
+		ID:           "resp_empty",
+		Model:        "gpt-4o",
+		Role:         "assistant",
+		FinishReason: "stop",
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	output := parsed["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output length = %d, want 1", len(output))
+	}
+	item := output[0].(map[string]any)
+	if item["type"] != "message" {
+		t.Errorf("type = %v, want message", item["type"])
+	}
+	content := item["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content length = %d, want 1", len(content))
+	}
+	part := content[0].(map[string]any)
+	if part["text"] != "" {
+		t.Errorf("text = %v, want empty string", part["text"])
+	}
+}
+
+func TestSerializeResponsesResponse_AggregatesMultipleTextBlocks(t *testing.T) {
+	// Multiple text blocks (rare, but possible from concatenated streams)
+	// should be joined into a single output_text part.
+	ir := &InternalResponse{
+		ID:    "resp_multi",
+		Model: "gpt-4o",
+		Role:  "assistant",
+		Content: []ResponseContentBlock{
+			{Type: "text", Text: "Hello "},
+			{Type: "text", Text: "world"},
+		},
+		FinishReason: "stop",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	item := parsed["output"].([]any)[0].(map[string]any)
+	content := item["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("content length = %d, want 1 (texts joined)", len(content))
+	}
+	part := content[0].(map[string]any)
+	if part["text"] != "Hello world" {
+		t.Errorf("joined text = %v, want 'Hello world'", part["text"])
+	}
+}
+
+func TestSerializeResponsesResponse_DefaultCreatedAt(t *testing.T) {
+	// When IR doesn't provide Created, the serializer stamps time.Now().
+	ir := &InternalResponse{
+		ID:    "resp_ts",
+		Model: "gpt-4o",
+		Role:  "assistant",
+		Content: []ResponseContentBlock{
+			{Type: "text", Text: "x"},
+		},
+		FinishReason: "stop",
+	}
+
+	body, _ := SerializeResponsesResponse(ir, "")
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+
+	created, ok := parsed["created_at"].(float64)
+	if !ok {
+		t.Fatalf("created_at missing or wrong type: %v", parsed["created_at"])
+	}
+	if created <= 0 {
+		t.Errorf("created_at = %v, want positive unix timestamp", created)
+	}
+	now := float64(time.Now().Unix())
+	if created > now+1 || created < now-5 {
+		t.Errorf("created_at = %v, want ~%v (within 5s of now)", created, now)
 	}
 }

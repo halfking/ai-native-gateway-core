@@ -62,8 +62,8 @@ func TestEstimator_NeedsCompression_GateLogic(t *testing.T) {
 	e := NewEstimator()
 	// Default fraction 0.8 over 128K window = 358400 byte trigger.
 	cases := []struct {
-		name      string
-		bodySize  int
+		name         string
+		bodySize     int
 		wantCompress bool
 	}{
 		{"under_128k_threshold", 100000, false},

@@ -15,7 +15,7 @@ func TestResolveUsageTimeRange_DefaultDays(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	now := time.Now().UTC()
-	if end.After(now.Add(2*time.Second)) {
+	if end.After(now.Add(2 * time.Second)) {
 		t.Errorf("end should be ~now, got %v (now=%v)", end, now)
 	}
 	// start should be roughly 7 days before now, but truncated to midnight.

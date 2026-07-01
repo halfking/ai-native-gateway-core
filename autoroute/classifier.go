@@ -3,14 +3,14 @@
 // When a client sets `"model": "auto"` in their OpenAI-compatible request,
 // the gateway instead:
 //
-//   1. Extracts signals from the request body (system prompt, message
-//      count, estimated tokens, tool definitions, image parts, …)
-//   2. Classifies the request into one of 8 task types
-//      (chat/reasoning/code/agent/creative/long_context/vision/function_call)
-//   3. Reads the live 5-min rolled-up index from credential_model_index
-//      to find the best credential for the given profile × task type
-//   4. Returns the chosen model's response, with a structured
-//      X-Gw-Auto-Decision header that documents the decision
+//  1. Extracts signals from the request body (system prompt, message
+//     count, estimated tokens, tool definitions, image parts, …)
+//  2. Classifies the request into one of 8 task types
+//     (chat/reasoning/code/agent/creative/long_context/vision/function_call)
+//  3. Reads the live 5-min rolled-up index from credential_model_index
+//     to find the best credential for the given profile × task type
+//  4. Returns the chosen model's response, with a structured
+//     X-Gw-Auto-Decision header that documents the decision
 //
 // Public API entry points (used by relay/handler.go):
 //
@@ -26,8 +26,8 @@
 //
 // Failure mode:
 //
-//   If classification fails entirely (heuristic + LLM), the gateway
-//   falls back to the cheapest available chat model and logs a warning.
+//	If classification fails entirely (heuristic + LLM), the gateway
+//	falls back to the cheapest available chat model and logs a warning.
 package autoroute
 
 import (
@@ -168,8 +168,8 @@ type Classification struct {
 
 // TaskScore pairs a task type with its computed score.
 type TaskScore struct {
-	Task  TaskType   `json:"task"`
-	Score float64    `json:"score"` // 0.0-1.0 normalised
+	Task  TaskType `json:"task"`
+	Score float64  `json:"score"` // 0.0-1.0 normalised
 }
 
 // HeuristicThresholds groups all tunable thresholds used by
@@ -351,10 +351,10 @@ func (c *HeuristicClassifier) effectiveLongContextTokens() int {
 //
 //  3. Pattern-based scoring (regex layer):
 //     - Compiled patterns (see patterns.go) match structural
-//       cues like "每分钟...多少" (math word-problem) or "def foo"
-//       (function definition). Each match assigns a weight 0.55-0.70.
+//     cues like "每分钟...多少" (math word-problem) or "def foo"
+//     (function definition). Each match assigns a weight 0.55-0.70.
 //     - This layer catches requests that express a task type via
-//       *structure* rather than vocabulary (the "水池问题" gap).
+//     *structure* rather than vocabulary (the "水池问题" gap).
 //
 //  4. Keyword-based scoring (channels sum to 1.0):
 //     - reasoning channel: keywords in Reasoning
@@ -449,7 +449,7 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 			Secondary:  []TaskScore{{Task: TaskAgent, Score: conf}},
 			Signals:    sigs,
 			Classifier: "heuristic",
-			Reason:     fmt.Sprintf("tool_count=%d (>= %d) + has_tool_results=true",
+			Reason: fmt.Sprintf("tool_count=%d (>= %d) + has_tool_results=true",
 				sigs.ToolCount, c.thresholds.AgentToolThreshold),
 		}, nil
 	}

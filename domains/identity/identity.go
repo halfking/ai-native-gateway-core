@@ -30,14 +30,14 @@ const (
 // ClientFingerprint holds raw normalised fingerprint fields extracted from
 // the request.  Mirrors Python's ClientFingerprint dataclass.
 type ClientFingerprint struct {
-	DeviceSeed      string
-	MachineID       string
-	RuntimeName     string
-	RuntimeVersion  string
-	OSName          string
-	OSArch          string
-	UserAgent       string
-	ClientProfile   string
+	DeviceSeed     string
+	MachineID      string
+	RuntimeName    string
+	RuntimeVersion string
+	OSName         string
+	OSArch         string
+	UserAgent      string
+	ClientProfile  string
 }
 
 // PrimarySeed returns the highest-priority stable seed, falling back to a

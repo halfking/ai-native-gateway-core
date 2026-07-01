@@ -80,7 +80,6 @@ func (h *Handler) listCatalog(w http.ResponseWriter, r *http.Request) {
 	if tier := queryString(r, "tier"); tier != "" {
 		sql += fmt.Sprintf(` AND tier = $%d`, argIdx)
 		args = append(args, tier)
-		argIdx++
 	}
 	if !queryBool(r, "include_hidden") {
 		sql += ` AND hidden = FALSE`

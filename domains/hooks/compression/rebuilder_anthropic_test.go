@@ -22,7 +22,7 @@ func TestRebuildAnthropicAfterSummary_StringSystem(t *testing.T) {
 		t.Fatal("rebuild must succeed")
 	}
 	var got struct {
-		System   string          `json:"system"`
+		System   string            `json:"system"`
 		Messages []json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(newBody, &got); err != nil {

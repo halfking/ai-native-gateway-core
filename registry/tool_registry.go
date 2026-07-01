@@ -12,8 +12,8 @@ import (
 
 // toolCache 进程内缓存
 type toolCache struct {
-	tools       map[string]*Tool         // key: "tenant_id:tool_id"
-	byCategory  map[string][]*Tool       // key: "tenant_id:category"
+	tools       map[string]*Tool           // key: "tenant_id:tool_id"
+	byCategory  map[string][]*Tool         // key: "tenant_id:category"
 	policies    map[string][]*TenantPolicy // key: tenant_id
 	lastRefresh time.Time
 }
@@ -246,7 +246,7 @@ func (tr *ToolRegistry) ExpandToolIDs(ctx context.Context, tenantID string, tool
 		// Case 2: 分类通配 "category.*"
 		if len(pattern) > 2 && pattern[len(pattern)-2:] == ".*" {
 			category := pattern[:len(pattern)-2]
-			
+
 			// 先尝试租户工具
 			catKey := tenantID + ":" + category
 			if tools, ok := tr.cache.byCategory[catKey]; ok {
@@ -257,7 +257,7 @@ func (tr *ToolRegistry) ExpandToolIDs(ctx context.Context, tenantID string, tool
 					}
 				}
 			}
-			
+
 			// 回退到 default
 			defaultCatKey := "default:" + category
 			if tools, ok := tr.cache.byCategory[defaultCatKey]; ok {
@@ -280,7 +280,7 @@ func (tr *ToolRegistry) ExpandToolIDs(ctx context.Context, tenantID string, tool
 				result = append(result, pattern)
 				continue
 			}
-			
+
 			// 回退到 default
 			defaultKey := "default:" + pattern
 			if _, ok := tr.cache.tools[defaultKey]; ok {
