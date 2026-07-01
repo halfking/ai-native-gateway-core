@@ -34,7 +34,7 @@ import (
 // keep in sync via deploy/sql/20260613-minimax-m3-context-window-512k.sql.
 const MinimaxM3ContextWindow = 512_000
 
-const maxBodySize = 32 << 20
+const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
 
 // providerResolver is the subset of *provider.Client the routing executor
 // depends on. Defined as an interface so compaction tests can swap in a
