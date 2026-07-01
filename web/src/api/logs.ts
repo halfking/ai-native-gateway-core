@@ -90,11 +90,31 @@ export interface RequestLogRow {
   upstream_finish_reason: string | null
   failure_detail_code: string | null
   failure_stage: string | null
+
+  // 2026-07-01 (migration 325): 附件数量。列表接口返回，0/undefined 表示无附件。
+  // 前端据此在"状态"列后渲染附件角标 (📎 N)。详情接口额外返回完整 attachments 数组。
+  attachment_count?: number
+}
+
+// AttachmentInfo 描述单个附件的元数据 (migration 325, request_logs.attachments 元素)。
+// 附件实体文件由网关落盘，前端通过 GET /api/attachments/{path} 下载/预览。
+export interface AttachmentInfo {
+  type: 'image' | 'file'            // 附件类型：图片 / 其他文件
+  content_type: string              // MIME 类型，如 image/png
+  size: number                      // 解码后字节数
+  path: string                      // 文件系统相对路径 (相对存储根目录)，如 2026/07/req_xxx/abc.png
+  hash: string                      // 内容 SHA256（用于去重/完整性校验）
+  original_url?: string             // 原始引用 (data URI 截断至200字符；HTTP URL 原样)
+  message_index?: number            // 所在 message 的索引
+  block_index?: number              // 在该 message content 数组中的块索引
+  created_at?: string               // 保存时间
 }
 
 export interface RequestLogDetail extends RequestLogRow {
   request_body: any | null
   response_body: any | null
+  // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。
+  attachments?: AttachmentInfo[] | null
 }
 
 export interface RequestLogsResponse {
@@ -185,6 +205,31 @@ export function getRequestLogs(params: {
 
 export function getRequestLogDetail(requestId: string) {
   return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
+}
+
+// 2026-07-01 (migration 325): 附件相关辅助。
+//
+// 附件实体文件由网关落盘 (LLM_GATEWAY_ATTACHMENT_DIR)，通过
+// GET /api/attachments/{path...} 访问。path 是相对存储根目录的路径
+// (如 2026/07/req_xxx/abc.png)，即 AttachmentInfo.path。
+// 该端点经 admin 鉴权，浏览器 <img>/fetch 需带同源 cookie (credentials:same-origin)。
+
+// attachmentURL 返回附件的下载/预览 URL。注意 path 已是相对路径，无需再 encode
+// 其内的 /；只对最末段做编码以兼容特殊字符。这里整体 encode 后将 %2F 还原为 /，
+// 保证目录层级不被破坏。
+export function attachmentURL(path: string): string {
+  if (!path) return ''
+  // 整体编码后还原分隔符，保留目录结构
+  return '/api/attachments/' + encodeURIComponent(path).replace(/%2F/gi, '/')
+}
+
+// getRequestAttachments 列出某请求的附件元数据。
+// GET /api/logs/{request_id}/attachments → { request_id, attachments[], count }
+export function getRequestAttachments(requestId: string) {
+  return req<{ request_id: string; attachments: AttachmentInfo[]; count: number }>(
+    'GET',
+    `/api/logs/${encodeURIComponent(requestId)}/attachments`,
+  )
 }
 
 export function getRequestLogTopModels(params: { from?: string; to?: string; limit?: number } = {}) {
