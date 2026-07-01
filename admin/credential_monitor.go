@@ -822,7 +822,7 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		writeError(w, http.StatusInternalServerError, "begin tx: "+err.Error())
 		return
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(context.Background()) //nolint:errcheck // commit 之后 rollback 报错是 Go 标准模式
 
 	// Lock the binding row for the duration of the tx so concurrent toggles
 	// and the auto probe runner cannot interleave.

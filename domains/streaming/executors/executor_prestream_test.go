@@ -77,7 +77,7 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 			if readyCount.Load() == 0 {
 				firstContentBeforeReady.Store(true)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			buf := make([]byte, 4096)
 			n, _ := resp.Body.Read(buf)
 			_, _ = w.Write(buf[:n])

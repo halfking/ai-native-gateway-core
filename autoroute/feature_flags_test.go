@@ -35,10 +35,10 @@ func TestDefaultFeatureFlags_ChannelQualityOn(t *testing.T) {
 func TestLoadFeatureFlagsFromEnv_DefaultOn(t *testing.T) {
 	// 确保未设置 AUTO_USE_CHANNEL_QUALITY_ROUTING
 	orig, hadOrig := os.LookupEnv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
-	os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
+	_ = os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
 	defer func() {
 		if hadOrig {
-			os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
+			_ = os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
 		}
 	}()
 
@@ -51,12 +51,12 @@ func TestLoadFeatureFlagsFromEnv_DefaultOn(t *testing.T) {
 // TestLoadFeatureFlagsFromEnv_OptOutFalse 验证显式 env=false 能 opt-out。
 func TestLoadFeatureFlagsFromEnv_OptOutFalse(t *testing.T) {
 	orig, hadOrig := os.LookupEnv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
-	os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", "false")
+	_ = os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", "false")
 	defer func() {
 		if hadOrig {
-			os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
+			_ = os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
 		} else {
-			os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
+			_ = os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
 		}
 	}()
 
@@ -69,12 +69,12 @@ func TestLoadFeatureFlagsFromEnv_OptOutFalse(t *testing.T) {
 // TestLoadFeatureFlagsFromEnv_ExplicitOn 验证显式 env=true 仍为 true。
 func TestLoadFeatureFlagsFromEnv_ExplicitOn(t *testing.T) {
 	orig, hadOrig := os.LookupEnv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
-	os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", "true")
+	_ = os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", "true")
 	defer func() {
 		if hadOrig {
-			os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
+			_ = os.Setenv("AUTO_USE_CHANNEL_QUALITY_ROUTING", orig)
 		} else {
-			os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
+			_ = os.Unsetenv("AUTO_USE_CHANNEL_QUALITY_ROUTING")
 		}
 	}()
 

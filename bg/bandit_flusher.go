@@ -89,7 +89,7 @@ func (f *BanditFlusher) Flush(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Prepare update statement
 	stmt, err := tx.PrepareContext(ctx, `

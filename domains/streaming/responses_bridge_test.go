@@ -55,7 +55,7 @@ func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 
 	resp, err := http.Get(srv.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
@@ -127,7 +127,7 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
@@ -171,7 +171,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
@@ -212,7 +212,7 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
@@ -250,7 +250,7 @@ func TestStreamOpenAIToResponsesSSE_FullFlow(t *testing.T) {
 
 	resp, err := http.Get(srv.URL)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
@@ -304,7 +304,7 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
@@ -336,7 +336,7 @@ func TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
 	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)

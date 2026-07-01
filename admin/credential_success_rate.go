@@ -90,7 +90,7 @@ func HandleCredentialSuccessRates(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	}
 }
 
@@ -153,7 +153,7 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 			"new_samples", newSamples)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"deleted":     deleted,
 			"new_rate":    newRate,
 			"new_samples": newSamples,

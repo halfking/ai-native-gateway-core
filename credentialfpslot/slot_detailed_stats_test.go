@@ -44,7 +44,7 @@ func TestDetailedStats_Empty(t *testing.T) {
 func TestDetailedStats_Redis(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	m := New(Config{DefaultLimit: 2, Enabled: true}, client)
 	ctx := context.Background()

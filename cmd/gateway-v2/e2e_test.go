@@ -28,7 +28,7 @@ func TestE2E_PipelineExecutes(t *testing.T) {
 	}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 
 	handler := httpHandler(deps)
 
@@ -146,7 +146,7 @@ func TestE2E_IntegrationWithAllHooks(t *testing.T) {
 	}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 
 	// 注册一个 agent
 	if err := deps.AgentReg.Register(&agentecosystem.Agent{
@@ -248,7 +248,7 @@ func TestE2E_ModelsEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("list_all", func(t *testing.T) {
@@ -335,7 +335,7 @@ func TestE2E_ModelByIDEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("existing_model", func(t *testing.T) {
@@ -417,7 +417,7 @@ func TestE2E_ChatCompletionsEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true, EnableSecurity: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("valid_request", func(t *testing.T) {
@@ -524,7 +524,7 @@ func TestE2E_MessagesEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true, EnableSecurity: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("valid_request", func(t *testing.T) {
@@ -637,7 +637,7 @@ func TestE2E_CompletionsEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("valid_request", func(t *testing.T) {
@@ -719,7 +719,7 @@ func TestE2E_ResponsesEndpoint(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("string_input", func(t *testing.T) {
@@ -866,7 +866,7 @@ func TestE2E_ErrorFormats(t *testing.T) {
 	cfg := &v2Config{EnableCache: true}
 	deps := newDeps(cfg)
 	deps.Pipeline = buildPipeline(deps)
-	defer deps.AuditWriter.Close()
+	defer func() { _ = deps.AuditWriter.Close() }()
 	handler := httpHandler(deps)
 
 	t.Run("chat_completions_invalid_JSON_returns_openai_format", func(t *testing.T) {

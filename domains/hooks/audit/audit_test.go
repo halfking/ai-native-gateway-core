@@ -49,7 +49,7 @@ func TestInMemorySink_Emit(t *testing.T) {
 func TestBatchWriter_Append(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 10, 1*time.Hour)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.Append(&Event{RequestID: "r1"})
 	if got := w.BufferedCount(); got != 1 {
@@ -60,7 +60,7 @@ func TestBatchWriter_Append(t *testing.T) {
 func TestBatchWriter_FlushOnSize(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 3, 1*time.Hour)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	for i := 0; i < 3; i++ {
 		w.Append(&Event{RequestID: "r"})
@@ -75,7 +75,7 @@ func TestBatchWriter_FlushOnSize(t *testing.T) {
 func TestBatchWriter_FlushOnInterval(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 100, 100*time.Millisecond)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	w.Append(&Event{RequestID: "r"})
 	time.Sleep(250 * time.Millisecond) // 等定时 flush
@@ -100,7 +100,7 @@ func TestBatchWriter_CloseFlushes(t *testing.T) {
 func TestAuditLogHook_AllowAction(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 10, 1*time.Hour)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	hook := NewAuditLogHook(w)
 
 	env := domain.NewRequestEnvelope(context.Background(), nil)
@@ -117,7 +117,7 @@ func TestAuditLogHook_AllowAction(t *testing.T) {
 func TestAuditLogHook_DenyAction(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 100, 1*time.Hour)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	hook := NewAuditLogHook(w)
 
 	env := domain.NewRequestEnvelope(context.Background(), nil)
@@ -142,7 +142,7 @@ func TestAuditLogHook_DenyAction(t *testing.T) {
 func TestAuditLogHook_ModifyAction(t *testing.T) {
 	sink := NewInMemorySink()
 	w := NewBatchWriter(sink, 100, 1*time.Hour)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	hook := NewAuditLogHook(w)
 
 	env := domain.NewRequestEnvelope(context.Background(), nil)
