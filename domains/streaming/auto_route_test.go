@@ -147,3 +147,62 @@ func assertFloat(t *testing.T, m map[string]any, key string, want float64) {
 	}
 }
 
+// TestMaybeResolveAuto_NoDecider_StillFallsBack pins the legacy "decider
+// not wired" fallback contract that the 2026-07-01 P1 fix preserves.
+// When autoroute is disabled (the common case in environments that don't
+// opt into the v2.0 routing pipeline), model=auto must still be rewritten
+// to autoFallbackModel() so clients don't suddenly start seeing 502s.
+// This test guards against an accidental regression where the new
+// shouldFail semantics are applied to the nil-decider path too.
+func TestMaybeResolveAuto_NoDecider_StillFallsBack(t *testing.T) {
+	h := &ChatHandler{} // no decider
+
+	reqBody := &chatRequestBody{
+		Model: autoRequestMagic,
+	}
+	rawBody := []byte(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`)
+
+	body, wire, shouldFail := h.maybeResolveAuto(reqBody, rawBody, nil, 0)
+
+	if shouldFail {
+		t.Fatalf("no-decider path must not signal failure, got shouldFail=true")
+	}
+	if body == nil {
+		t.Fatal("expected rewritten body when decider is nil")
+	}
+	if wire != nil {
+		t.Errorf("wire must be nil when decider is nil, got %+v", wire)
+	}
+	if reqBody.Model != autoFallbackModel() {
+		t.Errorf("reqBody.Model must be rewritten to %q when decider is nil, got %q",
+			autoFallbackModel(), reqBody.Model)
+	}
+}
+
+// TestMaybeResolveAuto_NonAutoRequest_NoOp covers the hot path: when the
+// client passes a real model name (not the "auto" magic string),
+// maybeResolveAuto must short-circuit and return (nil, nil, false) so the
+// caller can keep using the original body without any rewrite.
+func TestMaybeResolveAuto_NonAutoRequest_NoOp(t *testing.T) {
+	h := &ChatHandler{}
+
+	reqBody := &chatRequestBody{
+		Model: "gpt-4.1",
+	}
+	rawBody := []byte(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hi"}]}`)
+
+	body, wire, shouldFail := h.maybeResolveAuto(reqBody, rawBody, nil, 0)
+
+	if shouldFail {
+		t.Errorf("non-auto request must not signal failure")
+	}
+	if body != nil {
+		t.Errorf("non-auto request must not return a rewritten body, got %d bytes", len(body))
+	}
+	if wire != nil {
+		t.Errorf("non-auto request must not return a wire decision, got %+v", wire)
+	}
+	if reqBody.Model != "gpt-4.1" {
+		t.Errorf("reqBody.Model must remain untouched, got %q", reqBody.Model)
+	}
+}
