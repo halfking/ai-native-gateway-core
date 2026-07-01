@@ -647,3 +647,83 @@ func TestResponsesScaffold_RoundTrip(t *testing.T) {
 	assert.Equal(t, "output_text", part["type"])
 	assert.Equal(t, "Hello world", part["text"])
 }
+
+// TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks covers
+// the OpenAI tool_calls streaming protocol where the tool id is sent
+// only in the FIRST chunk and subsequent chunks carry only the
+// incremental arguments. The bridge must track the id across chunks
+// so every function_call_arguments.delta event references the same
+// item_id (matching the Responses API contract).
+func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
+	upstreamBody := strings.Join([]string{
+		// First chunk: has id + name + empty args
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_xyz","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}` + "\n\n",
+		// Subsequent chunks: incremental args only, no id
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"SF\"}"}}]},"finish_reason":null}]}` + "\n\n",
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":"tool_calls"}]}` + "\n\n",
+		`data: [DONE]` + "\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
+	require.False(t, out.Interrupted)
+
+	body := rec.Body.String()
+
+	// Find all function_call_arguments.delta events. The bridge emits
+	// exactly 2 deltas for our test data: one with `{"city":` and one
+	// with `"SF"}`. Together they form the full arguments `{"city":"SF"}`.
+	lines := strings.Split(body, "\n")
+	var argDeltas []string
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &parsed); err != nil {
+			continue
+		}
+		if parsed["type"] == "response.function_call_arguments.delta" {
+			argDeltas = append(argDeltas, strings.TrimPrefix(line, "data: "))
+		}
+	}
+	require.GreaterOrEqual(t, len(argDeltas), 2,
+		"expected at least 2 args delta events, got %d", len(argDeltas))
+
+	// Every delta must carry the same item_id.
+	for i, payload := range argDeltas {
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &parsed))
+		itemID, _ := parsed["item_id"].(string)
+		assert.Equal(t, "call_xyz", itemID,
+			"arg delta #%d item_id = %q, want call_xyz (regression: bridge state must track id across chunks)",
+			i, itemID)
+	}
+
+	// The first output_item.added event should also carry call_xyz as id.
+	assert.Contains(t, body, `"id":"call_xyz"`,
+		"first output_item.added should have tool call id call_xyz")
+
+	// The concatenated delta text reconstructs the JSON args.
+	var fullDelta strings.Builder
+	for _, payload := range argDeltas {
+		var parsed map[string]any
+		_ = json.Unmarshal([]byte(payload), &parsed)
+		if d, ok := parsed["delta"].(string); ok {
+			fullDelta.WriteString(d)
+		}
+	}
+	assert.Equal(t, `{"city":"SF"}`, fullDelta.String(),
+		"concatenated deltas should form the full JSON arguments")
+}
