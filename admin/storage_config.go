@@ -257,17 +257,15 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 							"目标目录不可用（不存在且无法创建，或权限不足）")
 						return
 					}
-					// TODO: 恢复 storage_migration.go 后启用此逻辑
-					// if run, ok := h.startStorageMigration(fromAbs, toAbs); ok {
-					// 	triggeredMigration = run
-					// } else {
-					// 	// 已有迁移在跑：拒绝本次目录变更，回滚覆盖值。
-					// 	_, _ = store.Set(settings.ScopePlatform, "storage.attachment_dir_override",
-					// 		readStringSetting("storage.attachment_dir_override"))
-					// 	writeError(w, http.StatusConflict, "已有目录迁移在进行中，请等待完成后再试")
-					// 	return
-					// }
-					_ = triggeredMigration // suppress unused warning
+					if run, ok := h.startStorageMigration(fromAbs, toAbs); ok {
+						triggeredMigration = run
+					} else {
+						// 已有迁移在跑：拒绝本次目录变更，回滚覆盖值。
+						_, _ = store.Set(settings.ScopePlatform, "storage.attachment_dir_override",
+							readStringSetting("storage.attachment_dir_override"))
+						writeError(w, http.StatusConflict, "已有目录迁移在进行中，请等待完成后再试")
+						return
+					}
 				}
 			}
 		}
@@ -293,7 +291,7 @@ func isPathSafe(absPath string) bool {
 		"./data/",
 		"./attachments/",
 	}
-	
+
 	// 黑名单：明确拒绝系统敏感目录
 	dangerousPrefixes := []string{
 		"/etc/",
@@ -305,21 +303,21 @@ func isPathSafe(absPath string) bool {
 		"/sys/",
 		"/proc/",
 	}
-	
+
 	// 先检查黑名单
 	for _, prefix := range dangerousPrefixes {
 		if strings.HasPrefix(absPath, prefix) {
 			return false
 		}
 	}
-	
+
 	// 再检查白名单
 	for _, prefix := range safePrefixes {
 		if strings.HasPrefix(absPath, prefix) {
 			return true
 		}
 	}
-	
+
 	// 不在白名单中也拒绝
 	return false
 }

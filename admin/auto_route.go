@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/i18n"
 )
 
 // AutoRouteHandlers groups the 5 admin endpoints for autoroute.
@@ -110,7 +111,7 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 //   - profile : filter by auto_profile (optional)
 func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	limit := 50
@@ -228,7 +229,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 //   - top          : limit to top-N by composite score (default 100)
 func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	canonicalID := r.URL.Query().Get("canonical_id")
@@ -358,7 +359,7 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 // Persists to api_key_auto_profile. Idempotent.
 func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut && r.Method != http.MethodPost {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -438,7 +439,7 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 // though hundreds of explicit-model rows sat in the table.
 func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -574,7 +575,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 // mode without bg workers).
 func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	if h.indexRefresher == nil {
@@ -602,7 +603,7 @@ func (h *AutoRouteHandlers) handleRefresh(w http.ResponseWriter, r *http.Request
 //   - top        : limit rows (default 50)
 func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	apiKeyID := r.URL.Query().Get("api_key_id")
@@ -713,7 +714,7 @@ func (h *AutoRouteHandlers) handleCustomerCost(w http.ResponseWriter, r *http.Re
 //   - top          : limit rows (default 50)
 func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	canonicalID := r.URL.Query().Get("canonical_id")
@@ -803,12 +804,33 @@ func writeJSONOk(w http.ResponseWriter, v interface{}) {
 // pgx error messages can leak schema/table/column names — useful for
 // an attacker doing reconnaissance. The generic message goes to the
 // client; the detailed err is logged server-side via writeInternalErr.
+//
+// DEPRECATED: prefer writeJSONErrCtx for i18n-aware responses.
 func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]string{
 			"message": msg,
+			"type":    "admin_error",
+		},
+	})
+}
+
+// writeJSONErrCtx serialises an i18n-aware error envelope. The message is
+// translated for the locale carried by r.Context() (set by the locale
+// middleware). The messageKey should be one of the i18n message constants.
+//
+// For calls that need interpolation (e.g. "Model {{.Model}} not found"),
+// pass templateData as the optional 4th argument.
+func writeJSONErrCtx(w http.ResponseWriter, r *http.Request, status int, messageKey string, templateData ...map[string]any) {
+	msg := i18n.T(r.Context(), messageKey, templateData...)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{
+			"message": msg,
+			"code":    messageKey, // stable machine-readable token
 			"type":    "admin_error",
 		},
 	})

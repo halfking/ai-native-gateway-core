@@ -833,56 +833,58 @@ onUnmounted(() => {
 
 <template>
   <div class="page-container">
-    <!-- Unified top bar: title + auto-refresh + filters + batch actions,
-         ALL in a single horizontal row (per 2026-06-24 request).
-         No max-width / auto-margin on .page-container so the whole content
-         area is top-left aligned and stretches across the full available
-         width instead of being centered with a 1200px cap. -->
-    <div class="top-bar">
-      <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
-      <h1>凭据监控</h1>
-      <div class="refresh-group">
-        <label>
-          <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
-          自动刷新
-        </label>
-        <select v-model.number="refreshInterval" class="field-input">
-          <option :value="10">10秒</option>
-          <option :value="30">30秒</option>
-          <option :value="60">60秒</option>
+    <!-- Top bar: split into two rows to prevent overflow.
+         Row 1: title + auto-refresh controls
+         Row 2: filters + batch actions -->
+    <div class="top-bar-wrapper">
+      <div class="top-bar top-bar-primary">
+        <router-link to="/routing-v2" class="back-link">← 路由全景</router-link>
+        <h1>凭据监控</h1>
+        <div class="refresh-group">
+          <label>
+            <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
+            自动刷新
+          </label>
+          <select v-model.number="refreshInterval" class="field-input">
+            <option :value="10">10秒</option>
+            <option :value="30">30秒</option>
+            <option :value="60">60秒</option>
+          </select>
+          <button class="btn btn-primary btn-sm" @click="load">手动刷新</button>
+          <span class="refresh-meta">列表 {{ loading ? '刷新中...' : formatRefreshAt(lastListRefreshAt) }}</span>
+          <span class="refresh-meta">{{ formatCacheMeta(listMeta) }}</span>
+        </div>
+      </div>
+
+      <div class="top-bar top-bar-secondary">
+        <span class="label">可用性</span>
+        <select v-model="availStateFilter" class="field-input">
+          <option value="">全部</option>
+          <option value="ready">ready</option>
+          <option value="degraded">degraded</option>
+          <option value="cooling">cooling</option>
+          <option value="unreachable">unreachable</option>
         </select>
-        <button class="btn btn-primary btn-sm" @click="load">手动刷新</button>
-        <span class="refresh-meta">列表 {{ loading ? '刷新中...' : formatRefreshAt(lastListRefreshAt) }}</span>
-        <span class="refresh-meta">{{ formatCacheMeta(listMeta) }}</span>
+        <span class="label">健康</span>
+        <select v-model="healthFilter" class="field-input">
+          <option value="">全部</option>
+          <option value="healthy">healthy</option>
+          <option value="warning">warning</option>
+          <option value="unreachable">unreachable</option>
+        </select>
+        <div class="quick-filter-group">
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'none' ? 'qf-active' : ''" @click="quickFilter = 'none'">全部</button>
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'broken' ? 'qf-active qf-bad' : ''" @click="quickFilter = 'broken'">只看 broken</button>
+          <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
+          批量恢复 ({{ selectedIds.size }})
+        </button>
+        <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
+          批量降级 ({{ selectedIds.size }})
+        </button>
       </div>
-      <span class="tb-sep" aria-hidden="true"></span>
-      <span class="label">可用性</span>
-      <select v-model="availStateFilter" class="field-input">
-        <option value="">全部</option>
-        <option value="ready">ready</option>
-        <option value="degraded">degraded</option>
-        <option value="cooling">cooling</option>
-        <option value="unreachable">unreachable</option>
-      </select>
-      <span class="label">健康</span>
-      <select v-model="healthFilter" class="field-input">
-        <option value="">全部</option>
-        <option value="healthy">healthy</option>
-        <option value="warning">warning</option>
-        <option value="unreachable">unreachable</option>
-      </select>
-      <div class="quick-filter-group">
-        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'none' ? 'qf-active' : ''" @click="quickFilter = 'none'">全部</button>
-        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'broken' ? 'qf-active qf-bad' : ''" @click="quickFilter = 'broken'">只看 broken</button>
-        <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
-      </div>
-      <span class="spacer"></span>
-      <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
-        批量恢复 ({{ selectedIds.size }})
-      </button>
-      <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
-        批量降级 ({{ selectedIds.size }})
-      </button>
     </div>
 
     <!-- Summary cards -->
@@ -1636,11 +1638,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* Outer layout — top-left aligned, stretches across the full available
-   width (per 2026-06-24 request). The global .main-body already supplies
-   24px padding, so we don't add our own, and we don't cap the width with
-   max-width + auto margins (which used to center the content and leave
-   big gutters on wide screens). */
+/* Outer layout — top-left aligned, stretches across the full available width. */
 .page-container {
   display: flex;
   flex-direction: column;
@@ -1648,11 +1646,15 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-/* Unified top bar — title + refresh + ALL filters + batch actions in a
-   single horizontal row (per 2026-06-24 request). Previously split into
-   two stacked rows (.top-bar-head + .filter-toolbar); now everything
-   shares one row with a vertical separator between the "page-level"
-   controls (title/refresh) and the "data-level" controls (filters/batch). */
+/* Top bar wrapper — split into two rows to prevent horizontal overflow.
+   Row 1 (primary): title + auto-refresh controls
+   Row 2 (secondary): filters + batch actions */
+.top-bar-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .top-bar {
   padding: 6px 10px;
   background: var(--card);
@@ -1661,12 +1663,21 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
+  flex-wrap: wrap;
   font-size: 11px;
   color: var(--muted);
 }
 .top-bar > * { flex-shrink: 0; }
+
+/* Primary row: prevent wrapping for core controls */
+.top-bar-primary {
+  flex-wrap: nowrap;
+}
+
+/* Secondary row: allow wrapping if needed */
+.top-bar-secondary {
+  flex-wrap: wrap;
+}
 .back-link {
   font-size: 11px;
   color: var(--muted);

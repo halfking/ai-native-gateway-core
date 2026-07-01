@@ -55,7 +55,7 @@ func (h *WorkTypeHandlers) handleRoot(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		h.createWorkType(w, r)
 	default:
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
 }
 
@@ -63,7 +63,7 @@ func (h *WorkTypeHandlers) handleSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/admin/work-types/")
 	rest = strings.Trim(rest, "/")
 	if rest == "" {
-		writeJSONErr(w, http.StatusNotFound, "not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_not_found")
 		return
 	}
 
@@ -79,11 +79,11 @@ func (h *WorkTypeHandlers) handleSub(w http.ResponseWriter, r *http.Request) {
 			h.putRoutes(w, r, key)
 			return
 		}
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	if suffix != "" {
-		writeJSONErr(w, http.StatusNotFound, "not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_not_found")
 		return
 	}
 
@@ -95,13 +95,13 @@ func (h *WorkTypeHandlers) handleSub(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		h.deleteWorkType(w, r, key)
 	default:
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 	}
 }
 
 func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 
@@ -286,7 +286,7 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 
 func (h *WorkTypeHandlers) handleSyncFromACC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSONErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONErrCtx(w, r, http.StatusMethodNotAllowed, "admin_method_not_allowed")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -394,7 +394,7 @@ func (h *WorkTypeHandlers) getWorkType(w http.ResponseWriter, r *http.Request, k
 	wt, err := h.fetchWorkType(ctx, key)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSONErr(w, http.StatusNotFound, "work type not found")
+			writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 			return
 		}
 		writeInternalErr(w, err)
@@ -413,7 +413,7 @@ func (h *WorkTypeHandlers) getWorkType(w http.ResponseWriter, r *http.Request, k
 func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request) {
 	var req workTypeConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_json")
 		return
 	}
 	req.Key = strings.TrimSpace(req.Key)
@@ -425,7 +425,7 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 		req.DefaultProfile = "smart"
 	}
 	if req.DefaultProfile != "smart" && req.DefaultProfile != "speed_first" && req.DefaultProfile != "cost_first" {
-		writeJSONErr(w, http.StatusBadRequest, "default_profile must be smart, speed_first, or cost_first")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_profile")
 		return
 	}
 	if req.Tags == nil {
@@ -447,7 +447,7 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 		req.Tags, req.PromptKeywords, req.ACCTaskType, req.Enabled, req.SortOrder)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			writeJSONErr(w, http.StatusConflict, "work type key already exists")
+			writeJSONErrCtx(w, r, http.StatusConflict, "admin_key_already_exists")
 			return
 		}
 		writeInternalErr(w, err)
@@ -465,7 +465,7 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request, key string) {
 	var req map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONErr(w, http.StatusBadRequest, "invalid JSON body")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_json")
 		return
 	}
 
@@ -492,7 +492,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 				return
 			}
 			if jsonKey == "default_profile" && s != "smart" && s != "speed_first" && s != "cost_first" {
-				writeJSONErr(w, http.StatusBadRequest, "default_profile must be smart, speed_first, or cost_first")
+				writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_profile")
 				return
 			}
 			setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argN))
@@ -555,7 +555,7 @@ func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeJSONErr(w, http.StatusNotFound, "work type not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 		return
 	}
 
@@ -579,7 +579,7 @@ func (h *WorkTypeHandlers) deleteWorkType(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		writeJSONErr(w, http.StatusNotFound, "work type not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 		return
 	}
 	writeJSONOk(w, map[string]interface{}{"key": key, "enabled": false, "deleted": true})
@@ -601,7 +601,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		filtered = append(filtered, rt)
 	}
 	if len(filtered) > 3 {
-		writeJSONErr(w, http.StatusBadRequest, "at most 3 model routes allowed per work type")
+		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_max_routes_exceeded")
 		return
 	}
 	routes = filtered
@@ -615,7 +615,7 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		return
 	}
 	if !exists {
-		writeJSONErr(w, http.StatusNotFound, "work type not found")
+		writeJSONErrCtx(w, r, http.StatusNotFound, "admin_work_type_not_found")
 		return
 	}
 

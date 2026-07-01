@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "خطأ داخلي في الخادم"
+  },
+  "admin_method_not_allowed": {
+    "other": "الطريقة غير مسموح بها"
+  },
+  "admin_invalid_json": {
+    "other": "نص JSON غير صالح"
+  },
+  "admin_not_found": {
+    "other": "غير موجود"
+  },
+  "admin_days_out_of_range": {
+    "other": "يجب أن تكون الأيام بين 1 و 90"
+  },
+  "admin_work_type_not_found": {
+    "other": "نوع العمل غير موجود"
+  },
+  "admin_invalid_profile": {
+    "other": "إعداد الملف الشخصي غير صالح"
+  },
+  "admin_unauthorized": {
+    "other": "غير مصرح"
+  },
+  "admin_forbidden": {
+    "other": "محظور"
+  },
+  "admin_internal_error": {
+    "other": "خطأ في الخادم الداخلي"
+  },
+  "admin_override_not_found": {
+    "other": "التجاوز غير موجود"
+  },
+  "admin_request_not_found": {
+    "other": "الطلب غير موجود"
+  },
+  "admin_proposal_not_found": {
+    "other": "الاقتراح غير موجود"
+  },
+  "admin_key_already_exists": {
+    "other": "مفتاح نوع العمل موجود بالفعل"
+  },
+  "admin_proposal_not_pending": {
+    "other": "الاقتراح ليس في حالة الانتظار"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "معرف الاقتراح غير صالح"
+  },
+  "admin_invalid_override_id": {
+    "other": "معرف التجاوز غير صالح"
+  },
+  "admin_limit_out_of_range": {
+    "other": "يجب أن يكون الحد بين 1 و {{.Max}}"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "يجب أن يكون min_samples بين 1 و 1000"
+  },
+  "admin_required_field_missing": {
+    "other": "الحقل المطلوب مفقود: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "يجب أن يكون expires_at في المستقبل"
+  },
+  "admin_unknown_action": {
+    "other": "إجراء غير معروف"
+  },
+  "admin_extend_requires_patch": {
+    "other": "التمديد يتطلب طريقة PATCH"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "JSON الاقتراح غير صالح"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "الحد الأقصى 3 مسارات نموذج مسموح بها لكل نوع عمل"
   }
 }

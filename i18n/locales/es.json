@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "Error interno del servidor"
+  },
+  "admin_method_not_allowed": {
+    "other": "Método no permitido"
+  },
+  "admin_invalid_json": {
+    "other": "Cuerpo JSON inválido"
+  },
+  "admin_not_found": {
+    "other": "No encontrado"
+  },
+  "admin_days_out_of_range": {
+    "other": "Los días deben estar entre 1 y 90"
+  },
+  "admin_work_type_not_found": {
+    "other": "Tipo de trabajo no encontrado"
+  },
+  "admin_invalid_profile": {
+    "other": "Configuración de perfil inválida"
+  },
+  "admin_unauthorized": {
+    "other": "No autorizado"
+  },
+  "admin_forbidden": {
+    "other": "Prohibido"
+  },
+  "admin_internal_error": {
+    "other": "Error interno del servidor"
+  },
+  "admin_override_not_found": {
+    "other": "Anulación no encontrada"
+  },
+  "admin_request_not_found": {
+    "other": "Solicitud no encontrada"
+  },
+  "admin_proposal_not_found": {
+    "other": "Propuesta no encontrada"
+  },
+  "admin_key_already_exists": {
+    "other": "La clave del tipo de trabajo ya existe"
+  },
+  "admin_proposal_not_pending": {
+    "other": "La propuesta no está en estado pendiente"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "ID de propuesta inválido"
+  },
+  "admin_invalid_override_id": {
+    "other": "ID de anulación inválido"
+  },
+  "admin_limit_out_of_range": {
+    "other": "El límite debe estar entre 1 y {{.Max}}"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samples debe estar entre 1 y 1000"
+  },
+  "admin_required_field_missing": {
+    "other": "Falta campo requerido: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_at debe estar en el futuro"
+  },
+  "admin_unknown_action": {
+    "other": "Acción desconocida"
+  },
+  "admin_extend_requires_patch": {
+    "other": "La extensión requiere el método PATCH"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "JSON de propuesta inválido"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "Máximo 3 rutas de modelo permitidas por tipo de trabajo"
   }
 }

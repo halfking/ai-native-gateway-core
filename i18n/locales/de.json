@@ -37,5 +37,77 @@
   },
   "internal_error": {
     "other": "Interner Serverfehler"
+  },
+  "admin_method_not_allowed": {
+    "other": "Methode nicht erlaubt"
+  },
+  "admin_invalid_json": {
+    "other": "Ungültiger JSON-Body"
+  },
+  "admin_not_found": {
+    "other": "Nicht gefunden"
+  },
+  "admin_days_out_of_range": {
+    "other": "Tage müssen zwischen 1 und 90 liegen"
+  },
+  "admin_work_type_not_found": {
+    "other": "Arbeitstyp nicht gefunden"
+  },
+  "admin_invalid_profile": {
+    "other": "Ungültige Profileinstellung"
+  },
+  "admin_unauthorized": {
+    "other": "Nicht autorisiert"
+  },
+  "admin_forbidden": {
+    "other": "Verboten"
+  },
+  "admin_internal_error": {
+    "other": "Interner Serverfehler"
+  },
+  "admin_override_not_found": {
+    "other": "Überschreibung nicht gefunden"
+  },
+  "admin_request_not_found": {
+    "other": "Anfrage nicht gefunden"
+  },
+  "admin_proposal_not_found": {
+    "other": "Vorschlag nicht gefunden"
+  },
+  "admin_key_already_exists": {
+    "other": "Arbeitstypschlüssel existiert bereits"
+  },
+  "admin_proposal_not_pending": {
+    "other": "Vorschlag hat nicht den Status 'ausstehend'"
+  },
+  "admin_invalid_proposal_id": {
+    "other": "Ungültige Vorschlags-ID"
+  },
+  "admin_invalid_override_id": {
+    "other": "Ungültige Überschreibungs-ID"
+  },
+  "admin_limit_out_of_range": {
+    "other": "Limit muss zwischen 1 und {{.Max}} liegen"
+  },
+  "admin_min_samples_out_of_range": {
+    "other": "min_samples muss zwischen 1 und 1000 liegen"
+  },
+  "admin_required_field_missing": {
+    "other": "Erforderliches Feld fehlt: {{.Field}}"
+  },
+  "admin_expires_at_invalid": {
+    "other": "expires_at muss in der Zukunft liegen"
+  },
+  "admin_unknown_action": {
+    "other": "Unbekannte Aktion"
+  },
+  "admin_extend_requires_patch": {
+    "other": "Erweiterung erfordert PATCH-Methode"
+  },
+  "admin_invalid_proposal_json": {
+    "other": "Ungültiges Vorschlags-JSON"
+  },
+  "admin_max_routes_exceeded": {
+    "other": "Pro Arbeitstyp sind maximal 3 Modellrouten erlaubt"
   }
 }
