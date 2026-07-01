@@ -99,10 +99,10 @@ func TestConvertChatResponseToResponses(t *testing.T) {
 func TestResponsesStreamSSE_Events(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n")
-		fmt.Fprintf(w, "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n")
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\" there\"}}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}

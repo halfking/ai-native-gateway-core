@@ -220,12 +220,12 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 
 func parseInt64(s string, dst *int64) {
 	var v int64
-	fmt.Sscanf(s, "%d", &v)
+	_, _ = fmt.Sscanf(s, "%d", &v)
 	*dst = v
 }
 
 func parseInt(s string, dst *int) {
 	var v int
-	fmt.Sscanf(s, "%d", &v)
+	_, _ = fmt.Sscanf(s, "%d", &v)
 	*dst = v
 }

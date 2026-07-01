@@ -38,7 +38,7 @@ data: {"type":"message_stop"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(anthropicSSE))
+		_, _ = w.Write([]byte(anthropicSSE))
 	}))
 	defer upstream.Close()
 
