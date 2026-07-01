@@ -102,7 +102,7 @@ func isValidTenantCode(code string) bool {
 	}
 	// First char must be alphanumeric (not - or _)
 	first := code[0]
-	if !((first >= 'a' && first <= 'z') || (first >= '0' && first <= '9')) {
+	if (first < 'a' || first > 'z') && (first < '0' || first > '9') {
 		return false
 	}
 	for i := 0; i < len(code); i++ {
