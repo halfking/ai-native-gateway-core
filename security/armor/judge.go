@@ -23,7 +23,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -216,7 +215,6 @@ type httpJudge struct {
 	httpClient *http.Client  // injectable for testing (httptest.Server)
 	logger     *slog.Logger  // never logs apiKey (MUST NOT be logged)
 	timeout    time.Duration // per-call timeout; defaults to 5s
-	mu         sync.Mutex    // guards httpClient reuse, not state //nolint:unused
 }
 
 // NOTE on apiKey: stored on the struct (not in context) because (a) it is

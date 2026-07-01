@@ -570,7 +570,7 @@ func extractResponseSummary(body string) string {
 			if len(content) > 100 {
 				content = content[:100] + "..."
 			}
-			return content
+			return content //nolint:staticcheck // SA4004: intentionally return first choice only
 		}
 	}
 	return ""

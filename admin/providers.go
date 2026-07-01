@@ -94,7 +94,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 			continue
 		}
 
-		healthStatus := "unknown"
+		var healthStatus string
 		errMsg := ""
 
 		decrypted, decErr := h.decryptCredStr(string(ciphertext))
