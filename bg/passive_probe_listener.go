@@ -150,6 +150,8 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 	defer cancel()
 
 	// Step 1: accumulate new transient-class errors into counters.
+	// 2026-07-01: Filter out gateway-side errors (failure_stage='gateway')
+	// to avoid counting rate limits/concurrent limits imposed by the gateway itself.
 	_, err := l.db.Exec(timeout, `
 		INSERT INTO passive_probe_state
 		    (credential_id, raw_model_name, error_kind,
@@ -158,7 +160,7 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		SELECT
 		    rl.credential_id,
 		    COALESCE(rl.outbound_model, rl.client_model) AS raw_model_name,
-		    COALESCE(rl.error_kind, 'unknown') AS error_kind,
+		    rl.error_kind,
 		    COUNT(*), COUNT(*), 0,
 		    MIN(rl.ts), NOW(),
 		    LEFT(COALESCE(MAX(rl.response_body::text), ''), 200)
@@ -166,15 +168,17 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		LEFT JOIN passive_probe_state pps
 		    ON pps.credential_id = rl.credential_id
 		    AND pps.raw_model_name = COALESCE(rl.outbound_model, rl.client_model)
-		    AND pps.error_kind = COALESCE(rl.error_kind, 'unknown')
+		    AND pps.error_kind = rl.error_kind
 		    AND pps.last_seen_at > NOW() - INTERVAL '45 seconds'
 		WHERE rl.success = FALSE
 		  AND rl.ts > NOW() - INTERVAL '5 minutes'
 		  AND rl.error_kind = ANY($1)
+		  AND rl.error_kind IS NOT NULL
+		  AND COALESCE(rl.failure_stage, 'upstream') = 'upstream'
 		  AND rl.credential_id IS NOT NULL
 		  AND rl.outbound_model IS NOT NULL
 		  AND pps.credential_id IS NULL
-		GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model), COALESCE(rl.error_kind, 'unknown')
+		GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model), rl.error_kind
 		ON CONFLICT (credential_id, raw_model_name, error_kind)
 		DO UPDATE SET
 		    consecutive_count     = passive_probe_state.consecutive_count + EXCLUDED.consecutive_count,

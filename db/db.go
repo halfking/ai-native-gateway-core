@@ -1931,7 +1931,7 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 20 THEN 'warning'
 		        WHEN ROUND(failing_count * 100.0 / NULLIF(total_credentials, 0), 1) > 10 THEN 'degraded'
 		        WHEN ROUND(healthy_count * 100.0 / NULLIF(total_credentials, 0), 1) >= 90 THEN 'healthy'
-		        ELSE 'unknown'
+		        ELSE 'normal'
 		    END as overall_health
 		FROM model_stats
 		ORDER BY
@@ -1958,13 +1958,13 @@ func (d *DB) ensureProbeHealthDashboardViews(ctx context.Context) {
 		    MAX(EXTRACT(EPOCH FROM (NOW() - sub.last_attempt_at))) as max_wait_seconds
 		FROM (
 		    SELECT
-		        CASE
-		            WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		            WHEN mps.state = 'suspicious' THEN 'suspicious'
-		            WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-		            WHEN mps.state = 'healthy_confirmed' THEN 'watchdog'
-		            ELSE 'unknown'
-		        END as probe_priority,
+		    CASE
+		        WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+		        WHEN mps.state = 'suspicious' THEN 'suspicious'
+		        WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		        WHEN mps.state = 'healthy_confirmed' THEN 'watchdog'
+		        ELSE NULL
+		    END as probe_priority,
 		        mps.state,
 		        mps.next_retry_at,
 		        mps.last_attempt_at
