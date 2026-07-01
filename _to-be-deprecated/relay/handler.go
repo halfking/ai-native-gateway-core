@@ -44,7 +44,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const maxBodySize = 32 << 20
+const maxBodySize = 128 << 20 // 128MB - increased for large context models like claude-opus-4-8 (1M context)
 
 func MaxBodySize() int { return maxBodySize }
 
