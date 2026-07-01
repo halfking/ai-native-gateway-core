@@ -3,10 +3,10 @@
 // Operator visibility into the pending response cache. Three
 // endpoints:
 //
-//   GET    /api/admin/pending-responses              list (paged, filterable)
-//   GET    /api/admin/pending-responses/{sessionID}  detail
-//   DELETE /api/admin/pending-responses/{sessionID}  manual cleanup
-//   GET    /api/admin/pending-responses/stats         aggregate counts
+//	GET    /api/admin/pending-responses              list (paged, filterable)
+//	GET    /api/admin/pending-responses/{sessionID}  detail
+//	DELETE /api/admin/pending-responses/{sessionID}  manual cleanup
+//	GET    /api/admin/pending-responses/stats         aggregate counts
 //
 // All endpoints require admin auth (the existing h.admin wrap).
 // Tenant isolation: the list endpoint scopes by tenant_id when
@@ -88,10 +88,10 @@ func (a *pendingStoreAdapter) list(ctx pendingListContext) ([]listEntry, error) 
 	for _, e := range raw {
 		age := time.Now().Unix() - e.CreatedAt
 		results = append(results, listEntry{
-			SessionID: e.SessionID,
-			RequestID: e.RequestID,
-			Status:    "in_progress",
-			CreatedAt: e.CreatedAt,
+			SessionID:  e.SessionID,
+			RequestID:  e.RequestID,
+			Status:     "in_progress",
+			CreatedAt:  e.CreatedAt,
 			AgeSeconds: age,
 		})
 	}
@@ -141,10 +141,11 @@ func pageBounds(r *http.Request) (limit, offset int) {
 // handlePendingList implements GET /api/admin/pending-responses.
 //
 // Query params:
-//   ?status=in_progress|completed|failed   filter
-//   ?session_id=gw_xxx                    exact session
-//   ?limit=N (1..500, default 50)         page size
-//   ?offset=N (default 0)                 page offset
+//
+//	?status=in_progress|completed|failed   filter
+//	?session_id=gw_xxx                    exact session
+//	?limit=N (1..500, default 50)         page size
+//	?offset=N (default 0)                 page offset
 //
 // Returns: {"entries": [...], "limit": N, "offset": N, "count": N}
 //
@@ -228,17 +229,17 @@ func (h *Handler) handlePendingDetail(w http.ResponseWriter, r *http.Request, se
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"session_id":    entry.SessionID,
-		"request_id":    requestID,
-		"status":        entry.Status,
-		"provider_id":   entry.ProviderID,
-		"credential_id": entry.CredentialID,
-		"is_stream":     entry.IsStream,
-		"created_at":    entry.CreatedAt,
-		"completed_at":  entry.CompletedAt,
+		"session_id":     entry.SessionID,
+		"request_id":     requestID,
+		"status":         entry.Status,
+		"provider_id":    entry.ProviderID,
+		"credential_id":  entry.CredentialID,
+		"is_stream":      entry.IsStream,
+		"created_at":     entry.CreatedAt,
+		"completed_at":   entry.CompletedAt,
 		"bytes_buffered": entry.BytesBuffered,
-		"age_seconds":   age,
-		"error_message": entry.ErrorMessage,
+		"age_seconds":    age,
+		"error_message":  entry.ErrorMessage,
 	})
 }
 
@@ -319,9 +320,9 @@ func (h *Handler) handlePendingStats(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"total":              len(all),
-		"by_status":          byStatus,
-		"oldest_created_at":  oldestCreatedAt,
+		"total":             len(all),
+		"by_status":         byStatus,
+		"oldest_created_at": oldestCreatedAt,
 	})
 }
 

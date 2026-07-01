@@ -14,10 +14,10 @@
 //	available / unavailable  (2小时后再次→suspicious)
 //
 // Key features:
-//   1. available/unavailable 状态在2小时后自动过期为 suspicious
-//   2. suspicious 状态的模型由后台异步探测
-//   3. 同一凭据最多2个并发探测线程
-//   4. 探测结果记录到 model_probe_runs
+//  1. available/unavailable 状态在2小时后自动过期为 suspicious
+//  2. suspicious 状态的模型由后台异步探测
+//  3. 同一凭据最多2个并发探测线程
+//  4. 探测结果记录到 model_probe_runs
 //
 // Spec: 2026-06-28-suspicious-state-auto-expiry
 package bg
@@ -270,7 +270,7 @@ func (r *SuspiciousProbeRunner) probeModel(ctx context.Context, t suspiciousTarg
 	}
 
 	desc := providercap.Resolve(t.Protocol, "")
-	
+
 	// Use the same probing logic as the main model probe runner
 	// For simplicity, we'll do a models list probe
 	mode := ProbeModeModelsList

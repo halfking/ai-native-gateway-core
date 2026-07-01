@@ -15,10 +15,10 @@ import (
 // This batches writes to reduce database load while keeping historical data
 // for Thompson Sampling relatively fresh.
 type BanditFlusher struct {
-	Scorer       *credential.BanditScorer
-	DB           *sql.DB
+	Scorer        *credential.BanditScorer
+	DB            *sql.DB
 	FlushInterval time.Duration
-	cancel       context.CancelFunc
+	cancel        context.CancelFunc
 }
 
 // NewBanditFlusher creates a new Bandit state flusher.

@@ -48,7 +48,7 @@ func (w *BrokenProbeReviver) Start(ctx context.Context) {
 			case <-ticker.C:
 				if err := w.revive(ctx); err != nil {
 					slog.Error("broken_probe_reviver failed", "error", err)
-			}
+				}
 			}
 		}
 	}()

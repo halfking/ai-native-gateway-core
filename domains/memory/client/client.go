@@ -1,4 +1,3 @@
-
 // Package memora integrates the Memora / MemOS memory service as a
 // context-compression oracle for llm-gateway-go.
 //
@@ -14,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"time"
+
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
@@ -274,9 +274,9 @@ func (c *Client) SmartSearch(ctx context.Context, userID, query string, topK int
 		return c.searchWithTimeout(ctx, userID, query, topK, c.searchTimeout)
 	}
 	var raw struct {
-		Code      int    `json:"code"`
-		Message   string `json:"message"`
-		Reranked  []struct {
+		Code     int    `json:"code"`
+		Message  string `json:"message"`
+		Reranked []struct {
 			ID     string  `json:"id"`
 			Memory string  `json:"memory"`
 			Score  float64 `json:"score"`

@@ -148,7 +148,7 @@ func backtestKeywordAdd(ctx context.Context, pool *pgxpool.Pool, proposal map[st
 	defer rows.Close()
 
 	type sample struct {
-		requestID, taskType, prompt string
+		requestID, taskType, prompt  string
 		confidence, success, quality float64
 	}
 

@@ -517,7 +517,6 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	if search := queryString(r, "search"); search != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("p.display_name ILIKE $%d", argIdx))
 		args = append(args, search+"%")
-		argIdx++
 	}
 
 	whereSQL := strings.Join(whereClauses, " AND ")

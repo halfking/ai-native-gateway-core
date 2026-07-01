@@ -8,19 +8,19 @@ import (
 // Tool 表示工具定义
 type Tool struct {
 	ID         int64           `json:"id"`
-	ToolID     string          `json:"tool_id"`      // "filesystem.read_file"
-	TenantID   string          `json:"tenant_id"`    // "default" or "tenant_xxx"
-	Category   string          `json:"category"`     // "filesystem"
-	ToolName   string          `json:"tool_name"`    // "read_file"
-	Definition json.RawMessage `json:"definition"`   // 完整工具定义 JSON
+	ToolID     string          `json:"tool_id"`    // "filesystem.read_file"
+	TenantID   string          `json:"tenant_id"`  // "default" or "tenant_xxx"
+	Category   string          `json:"category"`   // "filesystem"
+	ToolName   string          `json:"tool_name"`  // "read_file"
+	Definition json.RawMessage `json:"definition"` // 完整工具定义 JSON
 	Enabled    bool            `json:"enabled"`
 	Priority   int             `json:"priority"`
 	Version    int             `json:"version"`
 
 	// Phase 3.2: 版本管理
-	DeprecationDate  *time.Time     `json:"deprecation_date,omitempty"`
-	SupersededBy     string         `json:"superseded_by,omitempty"`
-	MinClientVersion string         `json:"min_client_version,omitempty"`
+	DeprecationDate  *time.Time      `json:"deprecation_date,omitempty"`
+	SupersededBy     string          `json:"superseded_by,omitempty"`
+	MinClientVersion string          `json:"min_client_version,omitempty"`
 	BreakingChanges  json.RawMessage `json:"breaking_changes,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
@@ -42,15 +42,15 @@ func (t *Tool) IsSuperseded() bool {
 
 // TenantPolicy 租户工具策略
 type TenantPolicy struct {
-	ID         int64     `json:"id"`
-	TenantID   string    `json:"tenant_id"`
-	ToolPattern string   `json:"tool_pattern"` // "filesystem.*" or "filesystem.read_file"
-	PolicyType string    `json:"policy_type"`  // "allow" or "deny"
-	Reason     string    `json:"reason,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	CreatedBy  string    `json:"created_by,omitempty"`
+	ID          int64     `json:"id"`
+	TenantID    string    `json:"tenant_id"`
+	ToolPattern string    `json:"tool_pattern"` // "filesystem.*" or "filesystem.read_file"
+	PolicyType  string    `json:"policy_type"`  // "allow" or "deny"
+	Reason      string    `json:"reason,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedBy   string    `json:"created_by,omitempty"`
 }
 
 // UsageStats 工具使用统计

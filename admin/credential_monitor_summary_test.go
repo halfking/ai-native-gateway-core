@@ -6,20 +6,20 @@ import (
 
 // TestDeriveModelEffectiveState_PriorityOrder covers the 5-state priority chain.
 // Priority (first match wins):
-//   1. credentialManualDisabled (整凭据被禁用) -> "manual_disabled"
-//   2. binding_unavailable_reason == "manual_offline" -> "manual_disabled"
-//   3. probe_state == "broken_confirmed" -> "probe_broken"
-//   4. offer_available == false -> "offer_missing"
-//   5. binding_available == false -> "binding_missing"
-//   6. default -> "available"
+//  1. credentialManualDisabled (整凭据被禁用) -> "manual_disabled"
+//  2. binding_unavailable_reason == "manual_offline" -> "manual_disabled"
+//  3. probe_state == "broken_confirmed" -> "probe_broken"
+//  4. offer_available == false -> "offer_missing"
+//  5. binding_available == false -> "binding_missing"
+//  6. default -> "available"
 func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 	mkStr := func(s string) *string { return &s }
 
 	tests := []struct {
-		name                    string
-		ms                      *CredentialModelStatus
+		name                     string
+		ms                       *CredentialModelStatus
 		credentialManualDisabled bool
-		want                    string
+		want                     string
 	}{
 		{
 			name: "整凭据 manual_disabled 优先级最高",
@@ -29,7 +29,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:       "broken_confirmed",
 			},
 			credentialManualDisabled: true,
-			want:                    "manual_disabled",
+			want:                     "manual_disabled",
 		},
 		{
 			name: "per-model manual_offline 优先级高于 probe_broken",
@@ -40,7 +40,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:               "broken_confirmed",
 			},
 			credentialManualDisabled: false,
-			want:                    "manual_disabled",
+			want:                     "manual_disabled",
 		},
 		{
 			name: "probe_broken 优先级高于 offer_missing",
@@ -50,7 +50,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:       "broken_confirmed",
 			},
 			credentialManualDisabled: false,
-			want:                    "probe_broken",
+			want:                     "probe_broken",
 		},
 		{
 			name: "offer_missing",
@@ -60,7 +60,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:       "healthy_confirmed",
 			},
 			credentialManualDisabled: false,
-			want:                    "offer_missing",
+			want:                     "offer_missing",
 		},
 		{
 			name: "binding_missing",
@@ -71,7 +71,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:               "healthy_confirmed",
 			},
 			credentialManualDisabled: false,
-			want:                    "binding_missing",
+			want:                     "binding_missing",
 		},
 		{
 			name: "available 全部正常",
@@ -81,7 +81,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:       "healthy_confirmed",
 			},
 			credentialManualDisabled: false,
-			want:                    "available",
+			want:                     "available",
 		},
 		{
 			name: "probe unknown + binding 缺失 = binding_missing (probe 不参与后 3 档)",
@@ -92,7 +92,7 @@ func TestDeriveModelEffectiveState_PriorityOrder(t *testing.T) {
 				ProbeState:               "unknown",
 			},
 			credentialManualDisabled: false,
-			want:                    "binding_missing",
+			want:                     "binding_missing",
 		},
 	}
 

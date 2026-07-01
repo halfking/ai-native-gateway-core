@@ -78,7 +78,6 @@ func resolveModelsEndpointURL(baseURL string, template *string) (url string, exp
 	if tpl == "" {
 		return "", true
 	}
-	explicitTemplate = true
 	if strings.HasPrefix(tpl, "http://") || strings.HasPrefix(tpl, "https://") {
 		return tpl, true
 	}
@@ -167,21 +166,21 @@ func mergeModelIDs(live, manifest []string) []string {
 
 // CredentialModelFetchResult is one row from VerifyAllCredentialModelFetches.
 type CredentialModelFetchResult struct {
-	ProviderID   int    `json:"provider_id"`
-	ProviderCode string `json:"provider_code"`
-	ProviderName string `json:"provider_name"`
-	CredentialID int    `json:"credential_id"`
-	Label        string `json:"label"`
-	BaseURL      string `json:"base_url"`
-	CatalogCode  string `json:"catalog_code"`
-	Template     string `json:"models_endpoint_template"`
-	Strategy     string `json:"discovery_strategy"`
-	ResolvedURL  string `json:"resolved_url"`
-	Source       string `json:"source"`
-	ModelCount   int    `json:"model_count"`
+	ProviderID   int      `json:"provider_id"`
+	ProviderCode string   `json:"provider_code"`
+	ProviderName string   `json:"provider_name"`
+	CredentialID int      `json:"credential_id"`
+	Label        string   `json:"label"`
+	BaseURL      string   `json:"base_url"`
+	CatalogCode  string   `json:"catalog_code"`
+	Template     string   `json:"models_endpoint_template"`
+	Strategy     string   `json:"discovery_strategy"`
+	ResolvedURL  string   `json:"resolved_url"`
+	Source       string   `json:"source"`
+	ModelCount   int      `json:"model_count"`
 	SampleModels []string `json:"sample_models"`
-	OK           bool   `json:"ok"`
-	Error        string `json:"error,omitempty"`
+	OK           bool     `json:"ok"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // VerifyAllCredentialModelFetches probes every active credential using the
@@ -221,11 +220,11 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 	var out []CredentialModelFetchResult
 	for rows.Next() {
 		var (
-			providerID, credID                                    int
+			providerID, credID                                   int
 			providerCode, providerName, label, baseURL, protocol string
-			catalogCode, template, strategy                       string
-			secretCipher                                          []byte
-			manifestJSON                                          *string
+			catalogCode, template, strategy                      string
+			secretCipher                                         []byte
+			manifestJSON                                         *string
 		)
 		if err := rows.Scan(&providerID, &providerCode, &providerName,
 			&credID, &label, &baseURL, &protocol, &catalogCode, &secretCipher,
@@ -364,7 +363,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 
 	models, source, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 	if len(models) == 0 {
-		msg := "no models returned"
+		var msg string
 		if fErr != nil {
 			msg = fErr.Error()
 		} else {
@@ -697,4 +696,3 @@ func (h *Handler) updateCredHealth(ctx context.Context, credentialID int, status
 		slog.Debug("updateCredHealth failed", "credential_id", credentialID, "error", err)
 	}
 }
-

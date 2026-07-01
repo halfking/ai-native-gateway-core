@@ -6,8 +6,8 @@ import (
 
 func TestDetectProtocol_OpenAIBody(t *testing.T) {
 	tests := []struct {
-		name  string
-		body  string
+		name string
+		body string
 	}{
 		{
 			name: "basic messages",
@@ -69,8 +69,8 @@ func TestDetectProtocol_OpenAIBody(t *testing.T) {
 
 func TestDetectProtocol_AnthropicBody(t *testing.T) {
 	tests := []struct {
-		name  string
-		body  string
+		name string
+		body string
 	}{
 		{
 			name: "with system",
@@ -129,9 +129,9 @@ func TestDetectProtocol_AnthropicBody(t *testing.T) {
 func TestDetectProtocol_ModelBasedDetection(t *testing.T) {
 	// When body is ambiguous, model name should help
 	tests := []struct {
-		name        string
-		body        string
-		wantProto   string
+		name      string
+		body      string
+		wantProto string
 	}{
 		{
 			name:      "claude in model",
@@ -192,9 +192,9 @@ func TestDetectProtocol_UnknownBody(t *testing.T) {
 
 func TestDetectProtocolByURL(t *testing.T) {
 	tests := []struct {
-		name     string
-		body     string
-		url      string
+		name      string
+		body      string
+		url       string
 		wantProto string
 	}{
 		{

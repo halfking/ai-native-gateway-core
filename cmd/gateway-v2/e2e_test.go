@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
+	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability"

@@ -212,8 +212,8 @@ func TestHook_Execute_ChainsMultipleInspectors(t *testing.T) {
 		SessionID: "s1",
 		TenantID:  "t1",
 		Metadata: map[string]any{
-			MetaKeyRequestCount:  100,
-			MetaKeyTokenCount:    500,
+			MetaKeyRequestCount: 100,
+			MetaKeyTokenCount:   500,
 			MetaKeyLastActiveAt: time.Now().Add(-2 * time.Hour),
 		},
 	}
@@ -254,8 +254,8 @@ func TestHook_Execute_NoFindings(t *testing.T) {
 	env := &domain.PipelineRequest{
 		SessionID: "s1",
 		Metadata: map[string]any{
-			MetaKeyRequestCount:  5,
-			MetaKeyTokenCount:    100,
+			MetaKeyRequestCount: 5,
+			MetaKeyTokenCount:   100,
 			MetaKeyLastActiveAt: time.Now(),
 		},
 	}
@@ -336,8 +336,8 @@ func TestHook_SnapshotFieldPropagation(t *testing.T) {
 		SessionID: "s-xyz",
 		TenantID:  "t-9",
 		Metadata: map[string]any{
-			MetaKeyRequestCount:  42,
-			MetaKeyTokenCount:    7777,
+			MetaKeyRequestCount: 42,
+			MetaKeyTokenCount:   7777,
 			MetaKeyLastActiveAt: time.Now().Truncate(time.Second),
 		},
 	}

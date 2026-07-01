@@ -174,7 +174,7 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 			case "tool_result":
 				// Anthropic tool_result → OpenAI tool role message
 				toolUseID, _ := b["tool_use_id"].(string)
-				
+
 				// content can be string or array
 				var resultContent string
 				switch rc := b["content"].(type) {
@@ -194,7 +194,7 @@ func convertAnthropicMessageToChat(m any) (map[string]any, bool) {
 					}
 					resultContent = strings.Join(parts, "\n")
 				}
-				
+
 				toolResult = &map[string]any{
 					"role":         "tool",
 					"tool_call_id": toolUseID,

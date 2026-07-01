@@ -30,12 +30,12 @@ import (
 
 // AuditTrimmer periodically deletes expired audit rows.
 type AuditTrimmer struct {
-	pool     *pgxpool.Pool
+	pool      *pgxpool.Pool
 	retention time.Duration // how long to keep rows (default 90d)
-	tick     time.Duration
-	stop     chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
+	tick      time.Duration
+	stop      chan struct{}
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 // NewAuditTrimmer constructs the worker with default 90-day

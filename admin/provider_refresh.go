@@ -41,17 +41,19 @@ func bgPickProbeModel(ctx context.Context, db *pgxpool.Pool, credID int) (pickPr
 // ── Per-provider model list refresh (force fetch from vendor API) ───────
 //
 // POST /api/providers/{id}/refresh-models
-//   202 Accepted    : { "accepted": true, "reason": "started", "run": {...} }
-//   404             : provider not found
-//   503             : discovery service not available
+//
+//	202 Accepted    : { "accepted": true, "reason": "started", "run": {...} }
+//	404             : provider not found
+//	503             : discovery service not available
 //
 // GET /api/providers/{id}/refresh-models
-//   200             : { "running": {...} | null, "latest": {...} | null }
+//
+//	200             : { "running": {...} | null, "latest": {...} | null }
 //
 // The endpoint differs from the global /api/models/discover in two ways:
-//   1. scope is restricted to a single provider (and its credentials)
-//   2. it tracks per-provider status so the UI can show a live progress
-//      message ("正在从供应商读取数据…") and re-fetch offers on success.
+//  1. scope is restricted to a single provider (and its credentials)
+//  2. it tracks per-provider status so the UI can show a live progress
+//     message ("正在从供应商读取数据…") and re-fetch offers on success.
 type providerRefreshStatus string
 
 const (
@@ -62,17 +64,17 @@ const (
 )
 
 type providerRefreshRun struct {
-	RunID             string                `json:"run_id"`
-	ProviderID        int                   `json:"provider_id"`
-	Status            providerRefreshStatus `json:"status"`
-	StartedAt         time.Time             `json:"started_at"`
-	FinishedAt        *time.Time            `json:"finished_at,omitempty"`
-	HeartbeatAt       *time.Time            `json:"heartbeat_at,omitempty"`
-	CredentialsScanned int                  `json:"credentials_scanned"`
-	ModelsUpserted     int                  `json:"models_upserted"`
-	CredentialsFailed  int                  `json:"credentials_failed"`
-	Errors             []string             `json:"errors,omitempty"`
-	Message            string               `json:"message,omitempty"`
+	RunID              string                `json:"run_id"`
+	ProviderID         int                   `json:"provider_id"`
+	Status             providerRefreshStatus `json:"status"`
+	StartedAt          time.Time             `json:"started_at"`
+	FinishedAt         *time.Time            `json:"finished_at,omitempty"`
+	HeartbeatAt        *time.Time            `json:"heartbeat_at,omitempty"`
+	CredentialsScanned int                   `json:"credentials_scanned"`
+	ModelsUpserted     int                   `json:"models_upserted"`
+	CredentialsFailed  int                   `json:"credentials_failed"`
+	Errors             []string              `json:"errors,omitempty"`
+	Message            string                `json:"message,omitempty"`
 }
 
 type providerRefreshState struct {

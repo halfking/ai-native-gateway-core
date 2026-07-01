@@ -172,8 +172,9 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 		}
 	}
 
-	// 发送 [DONE]（仅 OpenAI 客户端需要）
-	if tc.ClientProtocol == "openai-chat" {
+	// 发送 [DONE]（仅 OpenAI Chat Completions 客户端需要；Responses API
+	// 通过 response.completed 显式终止，不需要 [DONE] 哨兵）
+	if tc.ClientProtocol == "openai-chat" || tc.ClientProtocol == "openai" {
 		fmt.Fprintf(tc.W, "data: [DONE]\n\n")
 		flusher.Flush()
 	}
@@ -286,16 +287,41 @@ func (t *IRTransport) parseUpstreamChunk(protocol string, line []byte, eventType
 }
 
 // serializeClientChunk 将 IR StreamChunk 序列化为客户端协议 SSE 数据。
+//
+// Phase E (2026-07-01): added "openai-responses" branch. Responses API SSE
+// uses named events (`event: response.output_text.delta` etc.) so we must
+// NOT wrap the IR serializer output in `data: %s\n\n` like OpenAI Chat —
+// the IR Responses serializer already emits the full `event:` + `data:` +
+// blank-line structure itself.
+//
+// itemID is derived from requestID the same way domains/streaming/responses.go
+// does (msg_<8..24 of requestID>), keeping wire IDs stable across reroutes.
 func (t *IRTransport) serializeClientChunk(tc *domain.TransportContext, env *domain.RequestEnvelope, chunk *ir.StreamChunk) string {
 	switch tc.ClientProtocol {
 	case "openai-chat", "openai":
 		return chunk.SerializeOpenAI(env.RequestID, tc.ClientModel, env.CreatedAt.Unix())
 	case "anthropic-messages", "anthropic":
 		return chunk.SerializeAnthropic(env.RequestID, tc.ClientModel)
+	case "openai-responses", "responses":
+		itemID := deriveResponsesMessageID(env.RequestID)
+		return chunk.SerializeResponses(itemID)
 	default:
 		slog.Warn("ir_transport: unsupported client protocol", "protocol", tc.ClientProtocol)
 		return ""
 	}
+}
+
+// deriveResponsesMessageID produces the msg_xxx item_id used as
+// response.output_text.delta's item_id. Mirrors the existing convention
+// in domains/streaming/responses.go:msgID (requestID[8:24] when long).
+func deriveResponsesMessageID(requestID string) string {
+	if requestID == "" {
+		return "msg_stream"
+	}
+	if len(requestID) > 24 {
+		return "msg_" + requestID[8:24]
+	}
+	return "msg_" + requestID
 }
 
 // parseRequest 解析客户端请求到 IR。
@@ -335,12 +361,19 @@ func parseResponse(protocol string, body []byte) (*ir.InternalResponse, error) {
 }
 
 // serializeResponse 从 IR 序列化到客户端协议。
+//
+// Phase E (2026-07-01): added "openai-responses" / "responses" branch for
+// the Responses API client target. Used when /v1/responses client hits a
+// non-Anthropic, non-OpenAI upstream (or when the transport-IR pipeline is
+// preferred over the legacy hand-written convertChatResponseToResponses).
 func serializeResponse(protocol string, resp *ir.InternalResponse, clientModel string) ([]byte, error) {
 	switch protocol {
 	case "openai-chat", "openai":
 		return ir.SerializeOpenAIResponse(resp, clientModel)
 	case "anthropic-messages", "anthropic":
 		return ir.SerializeAnthropicResponse(resp, clientModel)
+	case "openai-responses", "responses":
+		return ir.SerializeResponsesResponse(resp, clientModel)
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}

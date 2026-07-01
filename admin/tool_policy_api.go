@@ -156,11 +156,11 @@ func (api *PolicyAPI) HandleList(w http.ResponseWriter, r *http.Request) {
 	policies := []map[string]any{}
 	for rows.Next() {
 		var (
-			id                              int64
-			tid, pattern, ptype, createdBy  string
-			reason                          *string
-			enabled                         bool
-			createdAt, updatedAt            time.Time
+			id                             int64
+			tid, pattern, ptype, createdBy string
+			reason                         *string
+			enabled                        bool
+			createdAt, updatedAt           time.Time
 		)
 		err := rows.Scan(&id, &tid, &pattern, &ptype, &reason, &enabled, &createdAt, &updatedAt, &createdBy)
 		if err != nil {
@@ -235,8 +235,8 @@ func (api *PolicyAPI) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "ok",
-		"deleted_id":  id,
+		"status":        "ok",
+		"deleted_id":    id,
 		"rows_affected": tag.RowsAffected(),
 	})
 }
@@ -354,23 +354,23 @@ func (api *UsageStatsAPI) HandleStats(w http.ResponseWriter, r *http.Request) {
 	stats := []map[string]any{}
 	for rows.Next() {
 		var (
-			tid, ttenantID                  string
-			usageDate                       time.Time
+			tid, ttenantID                    string
+			usageDate                         time.Time
 			callCount, successCount, errCount int64
-			avgLatency                      int
-			lastCalled                      *time.Time
+			avgLatency                        int
+			lastCalled                        *time.Time
 		)
 		err := rows.Scan(&tid, &ttenantID, &usageDate, &callCount, &successCount, &errCount, &avgLatency, &lastCalled)
 		if err != nil {
 			continue
 		}
 		entry := map[string]any{
-			"tool_id":       tid,
-			"tenant_id":     ttenantID,
-			"usage_date":    usageDate,
-			"call_count":    callCount,
-			"success_count": successCount,
-			"error_count":   errCount,
+			"tool_id":        tid,
+			"tenant_id":      ttenantID,
+			"usage_date":     usageDate,
+			"call_count":     callCount,
+			"success_count":  successCount,
+			"error_count":    errCount,
 			"avg_latency_ms": avgLatency,
 		}
 		if lastCalled != nil {
@@ -453,9 +453,9 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 	tools := []map[string]any{}
 	for rows.Next() {
 		var (
-			tid, ttenantID            string
-			calls, success, errCount  int64
-			avgLatency                int
+			tid, ttenantID           string
+			calls, success, errCount int64
+			avgLatency               int
 		)
 		err := rows.Scan(&tid, &ttenantID, &calls, &success, &errCount, &avgLatency)
 		if err != nil {
@@ -480,4 +480,3 @@ func (api *UsageStatsAPI) HandleTopTools(w http.ResponseWriter, r *http.Request)
 		"tenant_id": tenantID,
 	})
 }
-

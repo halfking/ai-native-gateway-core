@@ -40,7 +40,7 @@ func TestPassiveProbe_TransientErrorTracking(t *testing.T) {
 			 success, error_kind, ts, provider_id)
 			VALUES 
 			($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, "test-tenant", 1, 999, "minimax-m3", "minimax-m3", 
+		`, "test-tenant", 1, 999, "minimax-m3", "minimax-m3",
 			false, "transient", now.Add(-time.Duration(i)*time.Minute), 1)
 		require.NoError(t, err)
 	}
@@ -209,7 +209,7 @@ func TestPassiveProbe_TransientKindsTracked(t *testing.T) {
 			 success, error_kind, ts, provider_id)
 			VALUES 
 			($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, "test-tenant", 1, 999, "test-model", "test-model", 
+		`, "test-tenant", 1, 999, "test-model", "test-model",
 			false, kind, now.Add(-1*time.Minute), 1)
 		require.NoError(t, err)
 	}

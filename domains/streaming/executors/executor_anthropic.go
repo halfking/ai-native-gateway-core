@@ -49,6 +49,10 @@ type AnthropicExecutor struct {
 	// (preserving the pre-fix behavior; the OpenAI client will fail to
 	// parse the result, but a misconfig won't take the service down).
 	OpenAITranslator func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
+	// ResponsesTranslator (Phase E, 2026-07-01) converts Anthropic SSE
+	// upstream into OpenAI Responses API SSE events. Wired only when
+	// ClientProtocol == "openai-responses".
+	ResponsesTranslator func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) StreamOutcome
 	// ChatResponseConverter converts an Anthropic Messages JSON body
 	// into an OpenAI chat.completion JSON body for the Q3 non-stream
 	// path. When nil, the Q3 non-stream path falls back to passthrough
@@ -131,25 +135,40 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// Without this branch the OpenAI client receives a Messages-format
 	// JSON body (with `content[].text` and `stop_reason`) and reports
 	// "供应商错误" to the end-user.
+	//
+	// Phase E (2026-07-01): Responses API client target. The wire
+	// shape differs (output[] with message / function_call / reasoning
+	// items, not chat.completion.choices[]), so dispatch to
+	// IR.SerializeResponsesResponse when ClientProtocol == "openai-responses".
 	if a.ClientProtocol != "anthropic-messages" {
-		// Phase D (2026-06-22): Use IR when available (ParseAnthropicResponse →
-		// SerializeOpenAIResponse), falling back to the legacy callback.
 		if a.IR != nil {
 			irResp, irErr := a.IR.ParseAnthropicResponse(body)
 			if irErr == nil {
-				converted, serErr := a.IR.SerializeOpenAIResponse(irResp, clientModel)
+				var converted []byte
+				var serErr error
+				if a.ClientProtocol == "openai-responses" {
+					converted, serErr = a.IR.SerializeResponsesResponse(irResp, clientModel)
+				} else {
+					converted, serErr = a.IR.SerializeOpenAIResponse(irResp, clientModel)
+				}
 				if serErr == nil {
 					body = converted
 				} else {
-					slog.Warn("ir serialize openai response failed; forwarding raw body",
-						"error", serErr)
+					slog.Warn("ir serialize response failed; forwarding raw body",
+						"error", serErr,
+						"client_protocol", a.ClientProtocol)
 				}
 			} else {
 				slog.Warn("ir parse anthropic response failed; forwarding raw body",
 					"error", irErr)
 			}
 		} else if a.ChatResponseConverter != nil {
-			// Legacy path: use the ChatResponseConverter callback
+			// Legacy path: use the ChatResponseConverter callback.
+			// Note: legacy callback emits OpenAI Chat Completions shape
+			// regardless of ClientProtocol, so legacy mode with a
+			// Responses API client would still produce the wrong shape.
+			// This is acceptable pre-IR behavior; the IR path is the
+			// recommended mode for Responses API clients.
 			converted, convErr := a.ChatResponseConverter(body, clientModel)
 			if convErr == nil {
 				body = converted
@@ -282,7 +301,19 @@ func (a *AnthropicExecutor) StreamResponse(w http.ResponseWriter, resp *http.Res
 	// event: ... lines. Falls back to PassthroughStream if the
 	// translator hook isn't wired (defensive: a misconfig shouldn't
 	// take the service down).
-	if a.ClientProtocol != "anthropic-messages" {
+	//
+	// Phase E (2026-07-01): Responses API routing. When ClientProtocol
+	// is "openai-responses", dispatch to ResponsesTranslator instead so
+	// the client receives `response.output_text.delta` events instead of
+	// `chat.completion.chunk`. Translator selection priority:
+	//   1. ResponsesTranslator (Responses client target)
+	//   2. OpenAITranslator (Chat Completions client target)
+	//   3. PassthroughStream (defensive fallback)
+	if a.ClientProtocol == "openai-responses" {
+		if a.ResponsesTranslator != nil {
+			return a.ResponsesTranslator(w, resp, "", "", "", nil)
+		}
+	} else if a.ClientProtocol != "anthropic-messages" {
 		if a.OpenAITranslator != nil {
 			return a.OpenAITranslator(w, resp, "", "", "", nil)
 		}
@@ -540,6 +571,20 @@ func (e *Executor) executeAnthropic(
 		}
 		ae.OpenAITranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
+		}
+	}
+	// Phase E (2026-07-01): wire ResponsesTranslator when the client
+	// uses the Responses API. This is the streaming counterpart of the
+	// IR-based non-stream response path that runs through
+	// SerializeResponsesResponse (see executor_anthropic.go:WriteNonStreamResponse).
+	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == "openai-responses" {
+		clientModel := params.ClientModel
+		requestID := ""
+		if params.R != nil {
+			requestID = params.R.Header.Get("X-Request-Id")
+		}
+		ae.ResponsesTranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
+			return e.AnthropicToResponsesStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
 	}
 	if e.AnthropicToChatResponse != nil && params.ClientProtocol != "anthropic-messages" {

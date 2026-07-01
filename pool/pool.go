@@ -106,10 +106,10 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		proxy = http.ProxyFromEnvironment
 	}
 	transport := &http.Transport{
-		Proxy: proxy,
-		MaxIdleConns:        maxConnsPerHost,
-		MaxIdleConnsPerHost: maxIdleConnsPerHost,
-		IdleConnTimeout:     idleConnTimeout,
+		Proxy:                 proxy,
+		MaxIdleConns:          maxConnsPerHost,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: 60 * time.Second,
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,

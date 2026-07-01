@@ -40,13 +40,16 @@ func TestProviderSettingsResolver_Get_NilDBSafe(t *testing.T) {
 	}{
 		{"Get", func() (interface{}, bool) { return r.Get(ctx, 1, "any.key") }},
 		{"GetString", func() (interface{}, bool) {
-			v, ok := r.GetString(ctx, 1, "any.key"); return v, ok
+			v, ok := r.GetString(ctx, 1, "any.key")
+			return v, ok
 		}},
 		{"GetBool", func() (interface{}, bool) {
-			v, ok := r.GetBool(ctx, 1, "any.key"); return v, ok
+			v, ok := r.GetBool(ctx, 1, "any.key")
+			return v, ok
 		}},
 		{"GetInt64", func() (interface{}, bool) {
-			v, ok := r.GetInt64(ctx, 1, "any.key"); return v, ok
+			v, ok := r.GetInt64(ctx, 1, "any.key")
+			return v, ok
 		}},
 	}
 	for _, tt := range tests {

@@ -1,7 +1,7 @@
 // Package upstreamurl is the single source of truth (SSoT) for constructing
 // upstream LLM provider API endpoint URLs from a base URL.
 //
-// Why this package exists
+// # Why this package exists
 //
 // Before this package, llm-gateway-go had API endpoint construction logic
 // duplicated across at least 11 call sites in 7 files (e.g.
@@ -18,10 +18,11 @@
 // The fix is to centralize the rules in one package. All upstream URL
 // construction MUST go through the functions here. The functions all
 // run the standard 2-step base-URL cleanup:
-//   1. trim trailing /
-//   2. strip one well-known completion suffix if present
-//      (e.g. `/v1/chat/completions`, `/v1/messages`)
-//   3. strip a trailing /vN (e.g. /v1, /v2, /v3, /v4) via regex
+//  1. trim trailing /
+//  2. strip one well-known completion suffix if present
+//     (e.g. `/v1/chat/completions`, `/v1/messages`)
+//  3. strip a trailing /vN (e.g. /v1, /v2, /v3, /v4) via regex
+//
 // and then append the canonical endpoint path for the given Endpoint.
 //
 // Mirrors services/llm-gateway/app/services/free_pool_probe.py

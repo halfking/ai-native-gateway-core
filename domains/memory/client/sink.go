@@ -1,4 +1,3 @@
-
 package client
 
 import (
@@ -8,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
 )
 
@@ -26,10 +26,10 @@ import (
 // Counters (Enqueued/Dropped/Errored) are exposed via Stats() for the
 // gateway's /healthz, /api/system/memora-status, or metrics endpoint.
 type Sink struct {
-	client   *Client
-	queue    chan WriteOp
-	workers  int
-	wg       sync.WaitGroup
+	client  *Client
+	queue   chan WriteOp
+	workers int
+	wg      sync.WaitGroup
 
 	enqueued  atomic.Uint64
 	dropped   atomic.Uint64
@@ -140,16 +140,16 @@ func (s *Sink) Enqueue(op WriteOp) {
 
 // Stats returns counters for /healthz / observability.
 type Stats struct {
-	Enqueued         uint64 `json:"enqueued"`
-	Dropped          uint64 `json:"dropped"`
-	Processed        uint64 `json:"processed"`
-	Errored          uint64 `json:"errored"`
-	QueueLen         int    `json:"queue_len"`
-	QueueCap         int    `json:"queue_cap"`
-	ConsecutiveErrors int64 `json:"consecutive_errors"`
-	LastError        string `json:"last_error"`
-	LastErrorAt      string `json:"last_error_at"`
-	Paused           bool   `json:"paused"`
+	Enqueued          uint64 `json:"enqueued"`
+	Dropped           uint64 `json:"dropped"`
+	Processed         uint64 `json:"processed"`
+	Errored           uint64 `json:"errored"`
+	QueueLen          int    `json:"queue_len"`
+	QueueCap          int    `json:"queue_cap"`
+	ConsecutiveErrors int64  `json:"consecutive_errors"`
+	LastError         string `json:"last_error"`
+	LastErrorAt       string `json:"last_error_at"`
+	Paused            bool   `json:"paused"`
 }
 
 func (s *Sink) Stats() Stats {
@@ -251,18 +251,18 @@ func (s *Sink) recordError(err error) {
 // inject "[Gateway injected Memora context …]" snippets into a request
 // body to satisfy a 4xx context_length recovery. Persisting those
 // snippets as Memora user/assistant facts would:
-//   1. Pollute the L1 fact store with gateway-generated content, not user
-//      content (distorts "what the user actually said" signals).
-//   2. Feed the same injected snippet back into a later compaction call
-//      (loop: gateway → Memora → L1 fact → snippet → Memora → …).
+//  1. Pollute the L1 fact store with gateway-generated content, not user
+//     content (distorts "what the user actually said" signals).
+//  2. Feed the same injected snippet back into a later compaction call
+//     (loop: gateway → Memora → L1 fact → snippet → Memora → …).
 //
 // filterOpMessages strips any message whose content starts with the
 // canonical gateway-injection prefix (compressor.CompactionSummaryPrefix
 // + memora.compactionSnippetPrefix). Centralised here so every caller
 // benefits without each having to remember to filter.
 const (
-	gatewayInjectedPrefixOpenAI  = "[Gateway compacted conversation summary"
-	gatewayInjectedPrefixMemora  = "[Gateway injected Memora context"
+	gatewayInjectedPrefixOpenAI = "[Gateway compacted conversation summary"
+	gatewayInjectedPrefixMemora = "[Gateway injected Memora context"
 )
 
 func (s *Sink) filterOpMessages(msgs []memory.Message) []memory.Message {

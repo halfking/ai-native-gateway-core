@@ -198,7 +198,6 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 		where += " AND (pg_column_size(request_body) > $" + strconv.Itoa(argIdx) +
 			" * 1024 OR pg_column_size(outbound_body) > $" + strconv.Itoa(argIdx) + " * 1024)"
 		args = append(args, req.LargerThanKB)
-		argIdx++
 	}
 
 	startedAt := time.Now().UTC()

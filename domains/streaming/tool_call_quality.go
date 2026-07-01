@@ -10,19 +10,19 @@ import (
 // Quality fix mode constants — mirror the providers.quality_fix_mode
 // column CHECK constraint (see db/migrations/017_quality_fix_mode.sql).
 const (
-	QualityModeOff         = "off"
-	QualityModeDetectOnly  = "detect_only"
-	QualityModeFix         = "fix"
+	QualityModeOff        = "off"
+	QualityModeDetectOnly = "detect_only"
+	QualityModeFix        = "fix"
 )
 
 // Quality flag constants — stable identifiers used in
 // request_logs.quality_flags. Add new tags here, never inline string
 // literals, so dashboards and SQL aggregations stay consistent.
 const (
-	QualityFlagEmptyToolName      = "empty_tool_name"
-	QualityFlagDuplicateToolID    = "duplicate_tool_call_id"
-	QualityFlagXMLInToolCalls     = "xml_in_tool_calls"
-	QualityFlagEmptyToolNameAll   = "all_empty_tool_names"
+	QualityFlagEmptyToolName    = "empty_tool_name"
+	QualityFlagDuplicateToolID  = "duplicate_tool_call_id"
+	QualityFlagXMLInToolCalls   = "xml_in_tool_calls"
+	QualityFlagEmptyToolNameAll = "all_empty_tool_names"
 )
 
 // QualityFixResult is the output of ProcessNonStreamBody. Callers
@@ -56,9 +56,10 @@ func (r QualityFixResult) FixActionsJSON() []byte {
 // body in place. Returns (possibly rewritten body, signals).
 //
 // Behaviour by mode:
-//   off         : no work, returns (body, empty result).
-//   detect_only : scan only; body returned byte-identical.
-//   fix         : scan + rewrite; renamed/dropped counts recorded.
+//
+//	off         : no work, returns (body, empty result).
+//	detect_only : scan only; body returned byte-identical.
+//	fix         : scan + rewrite; renamed/dropped counts recorded.
 //
 // This is the canonical entry point — both the routing executor and
 // tests should funnel through here so a new check is added in ONE place.
@@ -195,11 +196,11 @@ func ProcessStreamLine(line string, mode string, accFlags []string, seenIDs map[
 
 // chatQualityReport is the internal scan result for a non-stream body.
 type chatQualityReport struct {
-	Flags             []string
-	EmptyNameCount    int
-	DuplicateIDCount  int
-	AllEmptyName      bool
-	HasStructuredTC   bool
+	Flags            []string
+	EmptyNameCount   int
+	DuplicateIDCount int
+	AllEmptyName     bool
+	HasStructuredTC  bool
 }
 
 // analyzeChatBody walks a chat.completion JSON body and reports
@@ -391,6 +392,7 @@ func reportToResult(rep chatQualityReport, bodyChanged bool) QualityFixResult {
 //   - 0.00 when `all_empty_tool_names` (whole response was unusable
 //     before the fix)
 //   - 0.30 when only `duplicate_tool_call_id` (less severe)
+//
 // Future tuning: weight by number of affected tool_calls vs total.
 func computeScore(rep chatQualityReport) float64 {
 	if len(rep.Flags) == 0 {

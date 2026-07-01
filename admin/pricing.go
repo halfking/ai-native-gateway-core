@@ -19,10 +19,10 @@ func (h *Handler) handlePricing(w http.ResponseWriter, r *http.Request) {
 
 	// Block write operations for tenant_admin (import, bulk-update, copy, auto-inherit)
 	writeEndpoints := map[string]bool{
-		"import":         true,
-		"bulk-update":    true,
-		"copy":           true,
-		"auto-inherit":   true,
+		"import":       true,
+		"bulk-update":  true,
+		"copy":         true,
+		"auto-inherit": true,
 	}
 
 	remaining := r.URL.Path[len("/api/pricing/"):]
@@ -32,24 +32,24 @@ func (h *Handler) handlePricing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	switch {
-	case remaining == "tree":
+	switch remaining {
+	case "tree":
 		h.pricingTree(w, r)
-	case remaining == "summary":
+	case "summary":
 		h.pricingSummary(w, r)
-	case remaining == "bulk-update":
+	case "bulk-update":
 		h.pricingBulkUpdate(w, r)
-	case remaining == "export":
+	case "export":
 		h.pricingExport(w, r)
-	case remaining == "import":
+	case "import":
 		h.pricingImport(w, r)
-	case remaining == "table":
+	case "table":
 		h.pricingTable(w, r)
-	case remaining == "stats/window":
+	case "stats/window":
 		h.pricingStatsWindow(w, r)
-	case remaining == "copy":
+	case "copy":
 		h.pricingCopy(w, r)
-	case remaining == "auto-inherit":
+	case "auto-inherit":
 		h.pricingAutoInherit(w, r)
 	default:
 		http.NotFound(w, r)
@@ -102,7 +102,6 @@ func (h *Handler) pricingTree(w http.ResponseWriter, r *http.Request) {
 	if v := queryString(r, "search"); v != "" {
 		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx)
 		args = append(args, v)
-		argIdx++
 	}
 
 	query := fmt.Sprintf(`
@@ -135,31 +134,31 @@ func (h *Handler) pricingTree(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type offerEntry struct {
-		OfferID           int      `json:"offer_id"`
-		RawModelName      string   `json:"raw_model_name"`
-		PriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
-		PriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
-		CacheReadPrice    *float64 `json:"cache_read_price_per_1m"`
-		CacheWritePrice   *float64 `json:"cache_write_price_per_1m"`
-		Currency          *string  `json:"currency"`
-		BillingMode       *string  `json:"billing_mode"`
-		PricingSource     *string  `json:"pricing_source"`
-		PricingUpdatedAt  *time.Time `json:"pricing_updated_at"`
-		Available         bool     `json:"available"`
-		RoutingTier       *int     `json:"routing_tier"`
-		Weight            *int     `json:"weight"`
-		LastSeenAt        *time.Time `json:"last_seen_at"`
-		SuccessRate       float64  `json:"success_rate"`
-		P95LatencyMs      int      `json:"p95_latency_ms"`
-		CredentialID      int      `json:"credential_id"`
-		CredentialLabel   string   `json:"credential_label"`
-		CredentialStatus  string   `json:"credential_status"`
-		BalanceUSD        *float64 `json:"balance_usd"`
-		PoolGroup         *string  `json:"pool_group"`
-		ProviderID        int      `json:"provider_id"`
-		ProviderName      string   `json:"provider_name"`
-		CatalogCode       string   `json:"catalog_code"`
-		CatalogDisplayName string  `json:"catalog_display_name"`
+		OfferID            int        `json:"offer_id"`
+		RawModelName       string     `json:"raw_model_name"`
+		PriceInPer1M       *float64   `json:"unit_price_in_per_1m"`
+		PriceOutPer1M      *float64   `json:"unit_price_out_per_1m"`
+		CacheReadPrice     *float64   `json:"cache_read_price_per_1m"`
+		CacheWritePrice    *float64   `json:"cache_write_price_per_1m"`
+		Currency           *string    `json:"currency"`
+		BillingMode        *string    `json:"billing_mode"`
+		PricingSource      *string    `json:"pricing_source"`
+		PricingUpdatedAt   *time.Time `json:"pricing_updated_at"`
+		Available          bool       `json:"available"`
+		RoutingTier        *int       `json:"routing_tier"`
+		Weight             *int       `json:"weight"`
+		LastSeenAt         *time.Time `json:"last_seen_at"`
+		SuccessRate        float64    `json:"success_rate"`
+		P95LatencyMs       int        `json:"p95_latency_ms"`
+		CredentialID       int        `json:"credential_id"`
+		CredentialLabel    string     `json:"credential_label"`
+		CredentialStatus   string     `json:"credential_status"`
+		BalanceUSD         *float64   `json:"balance_usd"`
+		PoolGroup          *string    `json:"pool_group"`
+		ProviderID         int        `json:"provider_id"`
+		ProviderName       string     `json:"provider_name"`
+		CatalogCode        string     `json:"catalog_code"`
+		CatalogDisplayName string     `json:"catalog_display_name"`
 	}
 
 	type familyGroup struct {
@@ -234,17 +233,17 @@ func (h *Handler) pricingSummary(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	var summary struct {
-		TotalOffers       int `json:"total_offers"`
-		PricedIn          int `json:"priced_in"`
-		PricedOut         int `json:"priced_out"`
-		PricedCacheRead   int `json:"priced_cache_read"`
-		PricedCacheWrite  int `json:"priced_cache_write"`
-		CNYOffers         int `json:"cny_offers"`
-		USDOffers         int `json:"usd_offers"`
-		FreeOffers        int `json:"free_offers"`
-		CanonicalCovered  int `json:"canonical_covered"`
-		TotalCanonical    int `json:"total_canonical"`
-		FreeCredentials   int `json:"free_credentials"`
+		TotalOffers      int `json:"total_offers"`
+		PricedIn         int `json:"priced_in"`
+		PricedOut        int `json:"priced_out"`
+		PricedCacheRead  int `json:"priced_cache_read"`
+		PricedCacheWrite int `json:"priced_cache_write"`
+		CNYOffers        int `json:"cny_offers"`
+		USDOffers        int `json:"usd_offers"`
+		FreeOffers       int `json:"free_offers"`
+		CanonicalCovered int `json:"canonical_covered"`
+		TotalCanonical   int `json:"total_canonical"`
+		FreeCredentials  int `json:"free_credentials"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
@@ -332,7 +331,6 @@ func (h *Handler) pricingBulkUpdate(w http.ResponseWriter, r *http.Request) {
 		if u.BillingMode != nil {
 			setClauses = append(setClauses, fmt.Sprintf("billing_mode = $%d", argIdx))
 			args = append(args, *u.BillingMode)
-			argIdx++
 		}
 
 		query := fmt.Sprintf("UPDATE model_offers SET %s WHERE id = $1", strings.Join(setClauses, ", "))
@@ -468,12 +466,12 @@ func (h *Handler) pricingImport(w http.ResponseWriter, r *http.Request) {
 		argIdx := 2
 
 		fields := map[string]string{
-			"unit_price_in_per_1m":  "float",
-			"unit_price_out_per_1m": "float",
-			"cache_read_price_per_1m": "float",
+			"unit_price_in_per_1m":     "float",
+			"unit_price_out_per_1m":    "float",
+			"cache_read_price_per_1m":  "float",
 			"cache_write_price_per_1m": "float",
-			"currency":    "string",
-			"billing_mode": "string",
+			"currency":                 "string",
+			"billing_mode":             "string",
 		}
 
 		for col, typ := range fields {
@@ -539,18 +537,18 @@ func (h *Handler) pricingStatsWindow(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type windowStat struct {
-		CredentialID     int      `json:"credential_id"`
-		RawModel         string   `json:"raw_model"`
-		Requests         int      `json:"requests"`
-		Successes        int      `json:"successes"`
-		Failures         int      `json:"failures"`
-		SuccessRate      float64  `json:"success_rate"`
-		LatencyP50Ms     *int     `json:"latency_p50_ms"`
-		LatencyP95Ms     *int     `json:"latency_p95_ms"`
-		LatencyP99Ms     *int     `json:"latency_p99_ms"`
-		PromptTokens     int      `json:"prompt_tokens"`
-		CompletionTokens int      `json:"completion_tokens"`
-		CostUSD          float64  `json:"cost_usd"`
+		CredentialID     int     `json:"credential_id"`
+		RawModel         string  `json:"raw_model"`
+		Requests         int     `json:"requests"`
+		Successes        int     `json:"successes"`
+		Failures         int     `json:"failures"`
+		SuccessRate      float64 `json:"success_rate"`
+		LatencyP50Ms     *int    `json:"latency_p50_ms"`
+		LatencyP95Ms     *int    `json:"latency_p95_ms"`
+		LatencyP99Ms     *int    `json:"latency_p99_ms"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		CostUSD          float64 `json:"cost_usd"`
 	}
 
 	stats := make([]windowStat, 0)
@@ -640,7 +638,6 @@ func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {
 	if v := queryString(r, "search"); v != "" {
 		where += fmt.Sprintf(" AND (mc.canonical_name ILIKE '%%' || $%d || '%%' OR mo.raw_model_name ILIKE '%%' || $%d || '%%')", argIdx, argIdx)
 		args = append(args, v)
-		argIdx++
 	}
 
 	// Count
@@ -680,29 +677,29 @@ func (h *Handler) pricingTable(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type tableRow struct {
-		CanonicalName     string   `json:"canonical_name"`
-		OfferID           int      `json:"offer_id"`
-		RawModelName      string   `json:"raw_model_name"`
-		PriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
-		PriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
-		CacheReadPrice    *float64 `json:"cache_read_price_per_1m"`
-		CacheWritePrice   *float64 `json:"cache_write_price_per_1m"`
-		Currency          *string  `json:"currency"`
-		BillingMode       *string  `json:"billing_mode"`
-		PricingSource     *string  `json:"pricing_source"`
-		PricingUpdatedAt  *time.Time `json:"pricing_updated_at"`
-		Available         bool     `json:"available"`
-		RoutingTier       *int     `json:"routing_tier"`
-		Weight            *int     `json:"weight"`
-		SuccessRate       float64  `json:"success_rate"`
-		P95LatencyMs      int      `json:"p95_latency_ms"`
-		CredentialID      int      `json:"credential_id"`
-		CredentialLabel   string   `json:"credential_label"`
-		CredentialStatus  string   `json:"credential_status"`
-		BalanceUSD        *float64 `json:"balance_usd"`
-		PoolGroup         *string  `json:"pool_group"`
-		ProviderID        int      `json:"provider_id"`
-		ProviderName      string   `json:"provider_name"`
+		CanonicalName    string     `json:"canonical_name"`
+		OfferID          int        `json:"offer_id"`
+		RawModelName     string     `json:"raw_model_name"`
+		PriceInPer1M     *float64   `json:"unit_price_in_per_1m"`
+		PriceOutPer1M    *float64   `json:"unit_price_out_per_1m"`
+		CacheReadPrice   *float64   `json:"cache_read_price_per_1m"`
+		CacheWritePrice  *float64   `json:"cache_write_price_per_1m"`
+		Currency         *string    `json:"currency"`
+		BillingMode      *string    `json:"billing_mode"`
+		PricingSource    *string    `json:"pricing_source"`
+		PricingUpdatedAt *time.Time `json:"pricing_updated_at"`
+		Available        bool       `json:"available"`
+		RoutingTier      *int       `json:"routing_tier"`
+		Weight           *int       `json:"weight"`
+		SuccessRate      float64    `json:"success_rate"`
+		P95LatencyMs     int        `json:"p95_latency_ms"`
+		CredentialID     int        `json:"credential_id"`
+		CredentialLabel  string     `json:"credential_label"`
+		CredentialStatus string     `json:"credential_status"`
+		BalanceUSD       *float64   `json:"balance_usd"`
+		PoolGroup        *string    `json:"pool_group"`
+		ProviderID       int        `json:"provider_id"`
+		ProviderName     string     `json:"provider_name"`
 	}
 
 	items := make([]tableRow, 0)
@@ -737,8 +734,8 @@ func (h *Handler) pricingCopy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		SourceOfferID  int    `json:"source_offer_id"`
-		TargetOfferIDs []int  `json:"target_offer_ids"`
+		SourceOfferID  int      `json:"source_offer_id"`
+		TargetOfferIDs []int    `json:"target_offer_ids"`
 		CopyFields     []string `json:"copy_fields"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -752,7 +749,7 @@ func (h *Handler) pricingCopy(w http.ResponseWriter, r *http.Request) {
 	// Get source
 	var source struct {
 		PriceIn, PriceOut, CacheRead, CacheWrite *float64
-		Currency, BillingMode *string
+		Currency, BillingMode                    *string
 	}
 	err := h.db.QueryRow(ctx, `
 		SELECT unit_price_in_per_1m, unit_price_out_per_1m,

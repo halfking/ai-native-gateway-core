@@ -187,7 +187,7 @@ func TestCompress_ModeAutoThreshold_TriggersOnBigBody(t *testing.T) {
 func TestCompress_ModeAutoThreshold_UnknownWindowNoCompress(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_COMPRESSION_MODE", "1")
 	c := NewCompressor()
-	body := make([]byte, 1_000_000) // huge
+	body := make([]byte, 1_000_000)                       // huge
 	_, _, strategy, _, didCompress := c.Compress(body, 0) // unknown window
 	if didCompress {
 		t.Error("unknown context window must not trigger compression")

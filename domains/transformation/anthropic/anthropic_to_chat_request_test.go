@@ -102,7 +102,7 @@ func TestAnthropicRequestToChat_ContentBlocks(t *testing.T) {
 
 	msgs := v["messages"].([]any)
 	msg := msgs[0].(map[string]any)
-	
+
 	// Multiple text blocks should be joined with newline
 	want := "first part\nsecond part"
 	if msg["content"] != want {

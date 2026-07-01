@@ -102,8 +102,8 @@ rules:
 	m := New(path)
 
 	ctx := &TransformContext{
-		ClientProfile:  "roocode",
-		CanonicalName:  "claude-sonnet-4.6",
+		ClientProfile: "roocode",
+		CanonicalName: "claude-sonnet-4.6",
 	}
 	res := m.Resolve(ctx)
 	if res.OutboundModel != "" {
@@ -111,9 +111,9 @@ rules:
 	}
 
 	ctx2 := &TransformContext{
-		ClientProfile:  "roocode",
-		ClientModel:    "claude-sonnet-4-6",
-		CanonicalName:  "claude-sonnet-4-6",
+		ClientProfile: "roocode",
+		ClientModel:   "claude-sonnet-4-6",
+		CanonicalName: "claude-sonnet-4-6",
 	}
 	res2 := m.Resolve(ctx2)
 	if res2.OutboundModel != "claude-sonnet-4-6-20260523" {

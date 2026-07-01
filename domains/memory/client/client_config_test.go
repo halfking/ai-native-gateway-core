@@ -1,4 +1,3 @@
-
 // Package client - client_config_test.go (2026-06-20)
 //
 // Unit tests for the M1 dual-host configuration: SmartSearchBaseURL +

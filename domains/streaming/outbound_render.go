@@ -3,8 +3,8 @@ package streaming
 import (
 	"strings"
 
-	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // renderOutboundFromTransform mirrors Python prepare_candidate → render_outbound_model().

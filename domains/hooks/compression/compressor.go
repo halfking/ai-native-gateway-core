@@ -36,12 +36,13 @@ import (
 )
 
 // Mode is the three-state compression gate (v7 §2).
-//   ModeOff           (0)  → never compress
-//   ModeAutoThreshold (1)  → pre-request gate, dynamic threshold
-//   ModeOn4xx         (2)  → only after upstream context_length_exceeded 4xx
-//   ModeDeltaOnly     (3)  → v4: only delta-append, no compression
-//   ModeSmart         (4)  → v4: intelligent (strip + task-analysis + summary)
-//   ModeAggressive    (5)  → v4: always strip + compress when possible
+//
+//	ModeOff           (0)  → never compress
+//	ModeAutoThreshold (1)  → pre-request gate, dynamic threshold
+//	ModeOn4xx         (2)  → only after upstream context_length_exceeded 4xx
+//	ModeDeltaOnly     (3)  → v4: only delta-append, no compression
+//	ModeSmart         (4)  → v4: intelligent (strip + task-analysis + summary)
+//	ModeAggressive    (5)  → v4: always strip + compress when possible
 type Mode int
 
 const (
@@ -138,10 +139,10 @@ func LoadMode() Mode {
 type CompressionReason string
 
 const (
-	ReasonNone             CompressionReason = ""
-	ReasonAutoThreshold    CompressionReason = "mode_1_auto_threshold"
-	ReasonOn4xx            CompressionReason = "mode_2_on_4xx"
-	ReasonWarmupSkipped    CompressionReason = "mode_warmup_skipped"
+	ReasonNone          CompressionReason = ""
+	ReasonAutoThreshold CompressionReason = "mode_1_auto_threshold"
+	ReasonOn4xx         CompressionReason = "mode_2_on_4xx"
+	ReasonWarmupSkipped CompressionReason = "mode_warmup_skipped"
 )
 
 // CompressionStrategy is the canonical value written to
@@ -149,11 +150,11 @@ const (
 type CompressionStrategy string
 
 const (
-	StrategyNone              CompressionStrategy = ""
-	StrategyMechanicalTrim    CompressionStrategy = "mechanical_trim"
-	StrategyMemoraL1Inject    CompressionStrategy = "memora_l1_inject"
-	StrategyLLMSummary        CompressionStrategy = "llm_summary"
-	StrategyNoop              CompressionStrategy = "noop"
+	StrategyNone           CompressionStrategy = ""
+	StrategyMechanicalTrim CompressionStrategy = "mechanical_trim"
+	StrategyMemoraL1Inject CompressionStrategy = "memora_l1_inject"
+	StrategyLLMSummary     CompressionStrategy = "llm_summary"
+	StrategyNoop           CompressionStrategy = "noop"
 )
 
 // Meta is the compression telemetry payload written to
@@ -161,21 +162,21 @@ const (
 // Only the fields the dispatcher actually fills are populated; downstream
 // helpers (LLM summary call site) may add latency_ms / model_used.
 type Meta struct {
-	TokensBefore        *int     `json:"tokens_before,omitempty"`
-	TokensAfter         *int     `json:"tokens_after,omitempty"`
-	BytesBefore         int      `json:"bytes_before"`
-	BytesAfter          int      `json:"bytes_after,omitempty"`
-	ContextWindowUsed   *int     `json:"context_window_used,omitempty"`
-	ThresholdBytes      int      `json:"threshold_bytes,omitempty"`
-	DroppedMessages     *int     `json:"dropped_messages,omitempty"`
-	SummaryChars        *int     `json:"summary_chars,omitempty"`
-	ModelUsed           string   `json:"model_used,omitempty"`
-	LatencyMs           int      `json:"latency_ms,omitempty"`
-	MemoraFactsUsed     *int     `json:"memora_facts_used,omitempty"`
-	WarmupSkipped       bool     `json:"warmup_skipped,omitempty"`
-	FirstUserRetained   bool     `json:"first_user_retained"`
-	SystemRetained      bool     `json:"system_retained"`
-	ReasonDetail        string   `json:"reason_detail,omitempty"`
+	TokensBefore      *int   `json:"tokens_before,omitempty"`
+	TokensAfter       *int   `json:"tokens_after,omitempty"`
+	BytesBefore       int    `json:"bytes_before"`
+	BytesAfter        int    `json:"bytes_after,omitempty"`
+	ContextWindowUsed *int   `json:"context_window_used,omitempty"`
+	ThresholdBytes    int    `json:"threshold_bytes,omitempty"`
+	DroppedMessages   *int   `json:"dropped_messages,omitempty"`
+	SummaryChars      *int   `json:"summary_chars,omitempty"`
+	ModelUsed         string `json:"model_used,omitempty"`
+	LatencyMs         int    `json:"latency_ms,omitempty"`
+	MemoraFactsUsed   *int   `json:"memora_facts_used,omitempty"`
+	WarmupSkipped     bool   `json:"warmup_skipped,omitempty"`
+	FirstUserRetained bool   `json:"first_user_retained"`
+	SystemRetained    bool   `json:"system_retained"`
+	ReasonDetail      string `json:"reason_detail,omitempty"`
 }
 
 // Marshal serializes Meta to JSON bytes suitable for
@@ -243,11 +244,11 @@ func (c *Compressor) ShouldCompressPreRequest(body []byte, contextWindow int) bo
 
 // Compress runs the compression flow for the given body. It is the
 // single entry point that:
-//   1. Decides whether compression should fire (per mode + heuristics)
-//   2. For mode=1: gates on body size vs context window
-//   3. Returns the rewritten body (or original if no-op) plus the
-//      telemetry envelope (reason, strategy, meta) the caller writes
-//      to request_logs.compression_*.
+//  1. Decides whether compression should fire (per mode + heuristics)
+//  2. For mode=1: gates on body size vs context window
+//  3. Returns the rewritten body (or original if no-op) plus the
+//     telemetry envelope (reason, strategy, meta) the caller writes
+//     to request_logs.compression_*.
 //
 // v7 §3.4 says the dispatcher orchestrates three tiers
 // (mechanical → memora L1 → llm summary). T8 lays the scaffolding for
@@ -258,12 +259,13 @@ func (c *Compressor) ShouldCompressPreRequest(body []byte, contextWindow int) bo
 // reason_detail pointing the caller at the post-error recovery flow.
 //
 // Returns:
-//   newBody        — original body if no compression, otherwise the
-//                     rebuilt body (mechanical trim today)
-//   reason         — ReasonNone | ReasonAutoThreshold | ReasonOn4xx | ReasonWarmupSkipped
-//   strategy       — StrategyNone | StrategyMechanicalTrim | StrategyNoop | ...
-//   meta           — telemetry payload (JSONB-ready)
-//   didCompress    — true iff the body was rewritten
+//
+//	newBody        — original body if no compression, otherwise the
+//	                  rebuilt body (mechanical trim today)
+//	reason         — ReasonNone | ReasonAutoThreshold | ReasonOn4xx | ReasonWarmupSkipped
+//	strategy       — StrategyNone | StrategyMechanicalTrim | StrategyNoop | ...
+//	meta           — telemetry payload (JSONB-ready)
+//	didCompress    — true iff the body was rewritten
 func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, reason CompressionReason, strategy CompressionStrategy, meta Meta, didCompress bool) {
 	meta = Meta{
 		BytesBefore:       len(body),

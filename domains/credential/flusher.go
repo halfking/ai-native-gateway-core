@@ -7,21 +7,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"log/slog"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // BanditFlusher periodically flushes Bandit state updates to the database.
 // It batches updates to reduce database write pressure.
 type BanditFlusher struct {
-	db      *pgxpool.Pool
-	bandit  *BanditScorer
-	ticker  *time.Ticker
-	stop    chan struct{}
-	wg      sync.WaitGroup
-	mu      sync.Mutex
-	dirty   map[string]bool // credentialID (string) -> needs flush
-	
+	db     *pgxpool.Pool
+	bandit *BanditScorer
+	ticker *time.Ticker
+	stop   chan struct{}
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	dirty  map[string]bool // credentialID (string) -> needs flush
+
 	flushInterval time.Duration
 	batchSize     int
 }
@@ -78,7 +79,7 @@ func (f *BanditFlusher) Flush() {
 		f.mu.Unlock()
 		return
 	}
-	
+
 	// Snapshot dirty set and clear it
 	dirtyCredIDs := make([]string, 0, len(f.dirty))
 	for credID := range f.dirty {
@@ -86,11 +87,11 @@ func (f *BanditFlusher) Flush() {
 	}
 	f.dirty = make(map[string]bool)
 	f.mu.Unlock()
-	
+
 	// Batch write to database
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	tx, err := f.db.Begin(ctx)
 	if err != nil {
 		slog.Error("bandit flush: begin tx failed", "error", err)
@@ -103,10 +104,10 @@ func (f *BanditFlusher) Flush() {
 		return
 	}
 	defer tx.Rollback(ctx)
-	
+
 	successCount := 0
 	failCount := 0
-	
+
 	for _, credIDStr := range dirtyCredIDs {
 		credID, err := strconv.Atoi(credIDStr)
 		if err != nil {
@@ -114,23 +115,23 @@ func (f *BanditFlusher) Flush() {
 			failCount++
 			continue
 		}
-		
+
 		// Get current score from bandit
 		score := f.bandit.GetScore(credIDStr)
-		
+
 		// Calculate average latency
 		var avgLatency int64
 		if score.SuccessRequests > 0 {
 			avgLatency = score.TotalLatencyMs / score.SuccessRequests
 		}
-		
+
 		// Calculate 429 penalty with decay
 		penalty := score.RateLimitPenalty
 		if !score.LastRateLimitHit.IsZero() {
 			hoursSince := time.Since(score.LastRateLimitHit).Hours()
 			penalty *= math.Exp(-hoursSince / 24.0) // 24h half-life
 		}
-		
+
 		_, err = tx.Exec(ctx, `
 			UPDATE api_keys 
 			SET 
@@ -165,7 +166,7 @@ func (f *BanditFlusher) Flush() {
 		}
 		successCount++
 	}
-	
+
 	if err := tx.Commit(ctx); err != nil {
 		slog.Error("bandit flush: commit failed", "error", err)
 		// Restore dirty set
@@ -176,10 +177,10 @@ func (f *BanditFlusher) Flush() {
 		f.mu.Unlock()
 		return
 	}
-	
-	slog.Info("bandit flush completed", 
-		"total", len(dirtyCredIDs), 
-		"success", successCount, 
+
+	slog.Info("bandit flush completed",
+		"total", len(dirtyCredIDs),
+		"success", successCount,
 		"failed", failCount)
 }
 
@@ -196,9 +197,9 @@ func nullTime(t time.Time) *time.Time {
 func (f *BanditFlusher) MarkDirty(credentialID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	
+
 	f.dirty[credentialID] = true
-	
+
 	// Flush early if batch size reached
 	if len(f.dirty) >= f.batchSize {
 		go f.Flush()

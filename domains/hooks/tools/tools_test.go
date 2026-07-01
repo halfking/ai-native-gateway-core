@@ -112,8 +112,8 @@ func TestToolInterceptionHook_PropagatesInterceptorError(t *testing.T) {
 }
 
 type recordingInterceptor struct {
-	count        int
-	sawInjected  bool
+	count       int
+	sawInjected bool
 }
 
 func (r *recordingInterceptor) Name() string { return "recording" }

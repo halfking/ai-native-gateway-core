@@ -40,9 +40,9 @@ func TestGetPresetWeights(t *testing.T) {
 
 func TestRoutingWeights_Normalize(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  RoutingWeights
-		want   RoutingWeights
+		name  string
+		input RoutingWeights
+		want  RoutingWeights
 	}{
 		{
 			name:  "already normalized",
@@ -111,10 +111,10 @@ func TestExpectedReliability(t *testing.T) {
 		beta  float64
 		want  float64
 	}{
-		{alpha: 1.0, beta: 1.0, want: 0.5},    // Uniform prior
+		{alpha: 1.0, beta: 1.0, want: 0.5},          // Uniform prior
 		{alpha: 10.0, beta: 1.0, want: 10.0 / 11.0}, // High success
 		{alpha: 1.0, beta: 10.0, want: 1.0 / 11.0},  // High failure
-		{alpha: 5.0, beta: 5.0, want: 0.5},    // Equal
+		{alpha: 5.0, beta: 5.0, want: 0.5},          // Equal
 	}
 
 	for _, tt := range tests {
@@ -203,14 +203,14 @@ func TestBenchmarkIntelligenceRank(t *testing.T) {
 		modelName string
 		maxRank   int // Maximum acceptable rank
 	}{
-		{"gpt-4o", 10},                 // Should be top tier
-		{"claude-3.5-sonnet", 10},      // Should be top tier
-		{"gpt-4-turbo", 10},            // Should be top tier
-		{"gemini-1.5-pro", 10},         // Should be top tier
-		{"llama-3.3-70b", 20},          // Should be good
-		{"claude-3-haiku", 30},         // Should be mid-tier
-		{"qwen-2.5-72b", 30},           // Should be mid-tier
-		{"unknown-model-xyz", 100},     // Unknown should get default
+		{"gpt-4o", 10},             // Should be top tier
+		{"claude-3.5-sonnet", 10},  // Should be top tier
+		{"gpt-4-turbo", 10},        // Should be top tier
+		{"gemini-1.5-pro", 10},     // Should be top tier
+		{"llama-3.3-70b", 20},      // Should be good
+		{"claude-3-haiku", 30},     // Should be mid-tier
+		{"qwen-2.5-72b", 30},       // Should be mid-tier
+		{"unknown-model-xyz", 100}, // Unknown should get default
 	}
 
 	for _, tt := range tests {

@@ -487,6 +487,39 @@ func main() {
 			saveCapturedPending(pendingStore, pc, resp)
 			return outcome
 		}
+		// Phase E (2026-07-01): Responses API client target. Wired only
+		// when the handler sets ClientProtocol == "openai-responses" —
+		// currently set by domains/streaming/responses.go for /v1/responses.
+		routingExec.AnthropicToResponsesStream = func(
+			w http.ResponseWriter,
+			resp *http.Response,
+			clientModel, outboundModel, requestID string,
+			cap *audit.StreamCapture,
+			pcAny any,
+		) executors.StreamOutcome {
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
+			}
+			outcome := streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			saveCapturedPending(pendingStore, pc, resp)
+			return outcome
+		}
+		routingExec.OpenAIToResponsesStream = func(
+			w http.ResponseWriter,
+			resp *http.Response,
+			clientModel, outboundModel, requestID string,
+			cap *audit.StreamCapture,
+			pcAny any,
+		) executors.StreamOutcome {
+			var pc *streaming.PendingCapturer
+			if pendingStore != nil && streaming.ClientHasSessionID(w, resp) {
+				pc = streaming.NewPendingCapturer(0)
+			}
+			outcome := streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			saveCapturedPending(pendingStore, pc, resp)
+			return outcome
+		}
 		routingExec.SanitizeAnthropicTools = streaming.SanitizeAnthropicToolsInBody
 		routingExec.NormalizeOpenAITools = streaming.NormalizeToolsInChatBody
 		routingExec.StripMinimaxFields = streaming.StripMinimaxFieldsBody
@@ -2083,4 +2116,16 @@ func (a *irAdapter) SerializeOpenAIResponse(irResp *ir.InternalResponse, clientM
 
 func (a *irAdapter) SerializeAnthropicResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
 	return ir.SerializeAnthropicResponse(irResp, clientModel)
+}
+
+// Phase E (2026-07-01): Responses API serializer. Implements streaming.IRConverter
+// for the Responses API client target (ClientProtocol == "openai-responses").
+// The stream serializer is per-chunk and emits ONE OR MORE Responses SSE events;
+// the response serializer produces the complete non-stream body.
+func (a *irAdapter) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	return chunk.SerializeResponses(itemID)
+}
+
+func (a *irAdapter) SerializeResponsesResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	return ir.SerializeResponsesResponse(irResp, clientModel)
 }

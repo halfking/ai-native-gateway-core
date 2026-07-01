@@ -68,11 +68,11 @@ func (l *AutoRouteRealtimeListener) Stop() {
 
 // run is the main LISTEN loop. It:
 //
-//   1. Acquires a long-lived connection from the pool
-//   2. Issues LISTEN auto_route_refresh
-//   3. Waits for notifications with a timeout (so we can re-check debounce)
-//   4. When notified, schedules a debounced refresh
-//   5. Loop
+//  1. Acquires a long-lived connection from the pool
+//  2. Issues LISTEN auto_route_refresh
+//  3. Waits for notifications with a timeout (so we can re-check debounce)
+//  4. When notified, schedules a debounced refresh
+//  5. Loop
 func (l *AutoRouteRealtimeListener) run(ctx context.Context) {
 	defer close(l.done)
 

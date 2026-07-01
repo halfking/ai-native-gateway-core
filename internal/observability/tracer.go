@@ -58,8 +58,8 @@ import (
 //
 // Environment variables:
 //   - OTEL_EXPORTER_OTLP_ENDPOINT  e.g., "http://localhost:4318"
-//                                  (the HTTP receiver of an OTel
-//                                  collector or Jaeger all-in-one)
+//     (the HTTP receiver of an OTel
+//     collector or Jaeger all-in-one)
 //   - OTEL_SERVICE_NAME            defaults to the `serviceName` arg
 //   - OTEL_SERVICE_VERSION         defaults to the `version` arg
 //   - OTEL_EXPORTER_OTLP_HEADERS    optional, e.g., "Authorization=Bearer ..."

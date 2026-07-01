@@ -80,10 +80,10 @@ const (
 // One Spec is registered at package init() time per setting; the runtime
 // Registry uses Spec to validate, type-check, and route storage backends.
 type Spec struct {
-	Key    string
-	EnvName string // e.g. "LLM_GATEWAY_COMPRESSION_MODE"
-	Type   ValueType
-	Scope  Scope
+	Key      string
+	EnvName  string // e.g. "LLM_GATEWAY_COMPRESSION_MODE"
+	Type     ValueType
+	Scope    Scope
 	Category Category
 
 	// Default value (used when DB and env both miss).

@@ -112,9 +112,9 @@ func TestSaveBase64Image_InvalidDataURI(t *testing.T) {
 
 	cases := []string{
 		"not-a-data-uri",
-		"data:image/png;base64,",      // 空 payload
-		"http://example.com/x.png",    // 非 data URI
-		"data:image/png,iVBOR",        // 非 base64（无 ;base64 标记）
+		"data:image/png;base64,",   // 空 payload
+		"http://example.com/x.png", // 非 data URI
+		"data:image/png,iVBOR",     // 非 base64（无 ;base64 标记）
 	}
 	for _, c := range cases {
 		_, err := s.SaveBase64Image("req", c, 0, 0)
@@ -173,10 +173,10 @@ func TestSafeJoin_DirectoryTraversal(t *testing.T) {
 
 func TestSanitizeRequestID(t *testing.T) {
 	cases := map[string]string{
-		"abc-123_DEF": "abc-123_DEF",
-		"../etc/passwd":  "etcpasswd",
-		"":               "unknown",
-		"a/b\\c;d":       "abcd",
+		"abc-123_DEF":   "abc-123_DEF",
+		"../etc/passwd": "etcpasswd",
+		"":              "unknown",
+		"a/b\\c;d":      "abcd",
 	}
 	for in, want := range cases {
 		if got := sanitizeRequestID(in); got != want {
@@ -196,7 +196,7 @@ func TestParseDataURI(t *testing.T) {
 		{"data:application/pdf;base64,zzz", "application/pdf", true},
 		{"data:;base64,foo", "application/octet-stream", true}, // 无 media type
 		{"https://example.com/x.png", "", false},
-		{"data:image/png,abc", "", false}, // 非 base64
+		{"data:image/png,abc", "", false},     // 非 base64
 		{"data:image/png;base64,", "", false}, // 空 payload
 	}
 	for _, c := range cases {

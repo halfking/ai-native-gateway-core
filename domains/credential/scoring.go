@@ -10,11 +10,11 @@ import (
 type RoutingStrategy string
 
 const (
-	StrategyBalanced  RoutingStrategy = "balanced"  // 均衡：可靠性、速度、智能各占 1/3
-	StrategySmartest  RoutingStrategy = "smartest"  // 最聪明：优先智能，其次可靠性
-	StrategyFastest   RoutingStrategy = "fastest"   // 最快：优先速度，其次可靠性
-	StrategyReliable  RoutingStrategy = "reliable"  // 最可靠：优先可靠性，其次速度
-	StrategyCustom    RoutingStrategy = "custom"    // 自定义权重
+	StrategyBalanced RoutingStrategy = "balanced" // 均衡：可靠性、速度、智能各占 1/3
+	StrategySmartest RoutingStrategy = "smartest" // 最聪明：优先智能，其次可靠性
+	StrategyFastest  RoutingStrategy = "fastest"  // 最快：优先速度，其次可靠性
+	StrategyReliable RoutingStrategy = "reliable" // 最可靠：优先可靠性，其次速度
+	StrategyCustom   RoutingStrategy = "custom"   // 自定义权重
 )
 
 // RoutingWeights 路由权重配置
@@ -153,6 +153,7 @@ func ConfidenceInterval(alpha, beta float64) (lower, upper float64) {
 // 参数:
 //   - alpha, beta: 当前后验参数
 //   - decayFactor: 衰减因子 (0-1)，越小衰减越强
+//
 // 返回: 衰减后的 alpha, beta
 func ThompsonSamplingDecay(alpha, beta, decayFactor float64) (newAlpha, newBeta float64) {
 	if decayFactor <= 0 || decayFactor >= 1 {
@@ -200,7 +201,7 @@ func BenchmarkIntelligenceRank(modelName string) int {
 	}
 
 	modelLower := toLower(modelName)
-	
+
 	// 按顺序匹配（长模式优先）
 	for _, entry := range rankings {
 		if contains(modelLower, entry.pattern) {
@@ -260,18 +261,18 @@ func indexOfSubstring(s, substr string) int {
 
 // ScoreSnapshot 评分快照（用于日志/监控）
 type ScoreSnapshot struct {
-	CredentialID     string  `json:"credential_id"`
-	Reliability      float64 `json:"reliability"`
-	Speed            float64 `json:"speed"`
-	Intelligence     float64 `json:"intelligence"`
-	Headroom         float64 `json:"headroom"`
-	RateLimitFactor  float64 `json:"rate_limit_factor"`
-	CombinedScore    float64 `json:"combined_score"`
-	TotalRequests    int64   `json:"total_requests"`
-	SuccessRate      float64 `json:"success_rate"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms"`
-	RateLimitHits    int     `json:"rate_limit_hits"`
-	QuotaRemaining   *int64  `json:"quota_remaining,omitempty"`
+	CredentialID    string  `json:"credential_id"`
+	Reliability     float64 `json:"reliability"`
+	Speed           float64 `json:"speed"`
+	Intelligence    float64 `json:"intelligence"`
+	Headroom        float64 `json:"headroom"`
+	RateLimitFactor float64 `json:"rate_limit_factor"`
+	CombinedScore   float64 `json:"combined_score"`
+	TotalRequests   int64   `json:"total_requests"`
+	SuccessRate     float64 `json:"success_rate"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
+	RateLimitHits   int     `json:"rate_limit_hits"`
+	QuotaRemaining  *int64  `json:"quota_remaining,omitempty"`
 }
 
 // SnapshotScore 生成评分快照

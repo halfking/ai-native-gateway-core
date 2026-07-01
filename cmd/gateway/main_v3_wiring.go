@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/memory"
+	memclient "github.com/kaixuan/llm-gateway-go/domains/memory/client"
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/provider"

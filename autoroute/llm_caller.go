@@ -205,7 +205,7 @@ func (m *CallerMetrics) RecordBreakerOpen() {
 
 // InstrumentedCaller wraps an LLMCaller with metric collection.
 type InstrumentedCaller struct {
-	Inner  LLMCaller
+	Inner   LLMCaller
 	Metrics *CallerMetrics
 }
 
@@ -221,7 +221,7 @@ func NewInstrumentedCaller(inner LLMCaller) *InstrumentedCaller {
 //   - "failure"        — Inner returned a non-timeout error
 //   - "timeout"        — ctx.DeadlineExceeded or context cancelled
 //   - "breaker_open"   — inner caller is a CircuitBreakerCaller
-//                         that rejected the call
+//     that rejected the call
 func (i *InstrumentedCaller) Call(ctx context.Context, prompt string) (string, error) {
 	start := time.Now()
 	resp, err := i.Inner.Call(ctx, prompt)

@@ -42,11 +42,11 @@ func TestTruncateStr(t *testing.T) {
 		max   int
 		want  string
 	}{
-		{"hello", 10, "hello"},        // len < max -> unchanged
-		{"hello", 5, "hello"},         // len == max -> unchanged
-		{"hello world", 5, "hello"},   // len > max -> truncated
-		{"", 10, ""},                  // empty -> empty
-		{"abc", 0, ""},                // max=0 -> ""
+		{"hello", 10, "hello"},      // len < max -> unchanged
+		{"hello", 5, "hello"},       // len == max -> unchanged
+		{"hello world", 5, "hello"}, // len > max -> truncated
+		{"", 10, ""},                // empty -> empty
+		{"abc", 0, ""},              // max=0 -> ""
 		{strings.Repeat("x", 1000), 100, strings.Repeat("x", 100)},
 	}
 	for _, tt := range tests {

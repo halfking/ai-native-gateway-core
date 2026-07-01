@@ -35,14 +35,14 @@ type BanditScore struct {
 	IntelligenceRank int // 1-100, 越小越聪明
 
 	// 429 惩罚
-	RateLimitHits     int       // 429 次数
-	LastRateLimitHit  time.Time // 最后一次 429 时间
-	RateLimitPenalty  float64   // 当前惩罚值 (0-10)
-	
+	RateLimitHits    int       // 429 次数
+	LastRateLimitHit time.Time // 最后一次 429 时间
+	RateLimitPenalty float64   // 当前惩罚值 (0-10)
+
 	// 配额保护
-	QuotaRemaining    *int64    // 剩余配额 (如果已知)
-	QuotaTotal        *int64    // 总配额
-	LastQuotaUpdate   time.Time
+	QuotaRemaining  *int64 // 剩余配额 (如果已知)
+	QuotaTotal      *int64 // 总配额
+	LastQuotaUpdate time.Time
 
 	LastScored time.Time
 	LastSample float64 // 最后一次采样值 (debug 用)
@@ -171,9 +171,9 @@ func (b *BanditScorer) Sample(credID string) float64 {
 	// 综合得分（参考 freellmapi 的 combineScore）
 	// 默认权重: reliability=0.4, speed=0.3, intelligence=0.3
 	const (
-		wReliability   = 0.4
-		wSpeed         = 0.3
-		wIntelligence  = 0.3
+		wReliability  = 0.4
+		wSpeed        = 0.3
+		wIntelligence = 0.3
 	)
 
 	combined := reliability*wReliability + speed*wSpeed + intelligence*wIntelligence

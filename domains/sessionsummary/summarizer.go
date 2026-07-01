@@ -32,9 +32,9 @@ type CompletionOption func(*CompletionConfig)
 
 // CompletionConfig LLM 完成配置
 type CompletionConfig struct {
-	Model       string
-	MaxTokens   int
-	Temperature float64
+	Model        string
+	MaxTokens    int
+	Temperature  float64
 	SystemPrompt string
 }
 
@@ -52,11 +52,11 @@ type SessionSummary struct {
 
 // SessionMessage 会话中的单条消息
 type SessionMessage struct {
-	RequestID   string    `json:"request_id"`
-	Role        string    `json:"role"`
-	Content     string    `json:"content"`
-	Model       string    `json:"model"`
-	Timestamp   time.Time `json:"timestamp"`
+	RequestID string    `json:"request_id"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	Model     string    `json:"model"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NewSummarizer 创建会话总结器

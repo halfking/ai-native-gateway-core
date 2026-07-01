@@ -16,9 +16,9 @@ type TestEvent struct {
 	val int
 }
 
-func (e *TestEvent) Type() string { return e.typ }
+func (e *TestEvent) Type() string         { return e.typ }
 func (e *TestEvent) Timestamp() time.Time { return e.ts }
-func (e *TestEvent) Value() int { return e.val }
+func (e *TestEvent) Value() int           { return e.val }
 
 func newTestEvent(typ string, val int) *TestEvent {
 	return &TestEvent{typ: typ, ts: time.Now(), val: val}

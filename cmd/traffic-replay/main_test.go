@@ -53,10 +53,10 @@ func TestIsCrossFamily(t *testing.T) {
 
 func TestSplitBySignificance(t *testing.T) {
 	results := []replayResult{
-		{From: "gpt-4o", To: "claude-3-5-sonnet", Count: 10}, // significant
-		{From: "gpt-4o", To: "gpt-4o-2024-08-06", Count: 5},  // minor
+		{From: "gpt-4o", To: "claude-3-5-sonnet", Count: 10},    // significant
+		{From: "gpt-4o", To: "gpt-4o-2024-08-06", Count: 5},     // minor
 		{From: "claude-3-5-sonnet", To: "gemini-pro", Count: 3}, // significant
-		{From: "gpt-4o-mini", To: "gpt-4o", Count: 2},          // minor
+		{From: "gpt-4o-mini", To: "gpt-4o", Count: 2},           // minor
 	}
 	minor, significant := splitBySignificance(results)
 	if significant != 13 {

@@ -219,9 +219,9 @@ func TestSerializeAnthropic_Tools(t *testing.T) {
 
 func TestSerializeAnthropic_ToolChoice(t *testing.T) {
 	tests := []struct {
-		name     string
-		tc       *ToolChoice
-		want     any
+		name string
+		tc   *ToolChoice
+		want any
 	}{
 		{"auto", &ToolChoice{Type: "auto"}, "auto"},
 		{"none", &ToolChoice{Type: "none"}, "none"},
@@ -232,8 +232,8 @@ func TestSerializeAnthropic_ToolChoice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ir := &InternalRequest{
-				Model:     "claude-sonnet-4-20250514",
-				MaxTokens: 1024,
+				Model:      "claude-sonnet-4-20250514",
+				MaxTokens:  1024,
 				ToolChoice: tt.tc,
 				Messages: []Message{
 					{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},
@@ -276,7 +276,7 @@ func TestSerializeAnthropic_ToolUseBlocks(t *testing.T) {
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "weather"}}},
 			{
-				Role:    "assistant",
+				Role: "assistant",
 				Content: []ContentBlock{
 					{Type: "text", Text: "I'll check that for you."},
 					{Type: "tool_use", ToolUse: &ToolUse{ID: "toolu_123", Name: "get_weather", Input: json.RawMessage(`{"location":"Tokyo"}`)}},
@@ -324,7 +324,7 @@ func TestSerializeAnthropic_ToolResultBlocks(t *testing.T) {
 		MaxTokens: 1024,
 		Messages: []Message{
 			{
-				Role:    "user",
+				Role: "user",
 				Content: []ContentBlock{
 					{Type: "tool_result", ToolResult: &ToolResult{
 						ToolUseID: "toolu_123",
@@ -426,7 +426,7 @@ func TestSerializeAnthropic_ThinkingBlock(t *testing.T) {
 		MaxTokens: 1024,
 		Messages: []Message{
 			{
-				Role:    "assistant",
+				Role: "assistant",
 				Content: []ContentBlock{
 					{Type: "thinking", Thinking: &ThinkingBlock{Thinking: "Let me calculate..."}},
 					{Type: "text", Text: "The answer is 4."},
@@ -528,9 +528,9 @@ func TestSerializeAnthropic_Documents(t *testing.T) {
 		MaxTokens: 1024,
 		Documents: []Document{
 			{
-				Type: "document",
+				Type:   "document",
 				Source: DocumentSource{Type: "text", Data: "This is a document."},
-				Title: "Test Doc",
+				Title:  "Test Doc",
 			},
 		},
 		Messages: []Message{
@@ -578,7 +578,7 @@ func TestSerializeAnthropic_RoundTrip(t *testing.T) {
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "What's the weather?"}}},
 			{
-				Role:    "assistant",
+				Role: "assistant",
 				Content: []ContentBlock{
 					{Type: "thinking", Thinking: &ThinkingBlock{Thinking: "Let me check..."}},
 					{Type: "text", Text: "I'll check that for you."},
@@ -645,7 +645,7 @@ func BenchmarkSerializeAnthropic(b *testing.B) {
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "What's the weather?"}}},
 			{
-				Role:    "assistant",
+				Role: "assistant",
 				Content: []ContentBlock{
 					{Type: "thinking", Thinking: &ThinkingBlock{Thinking: "Let me check..."}},
 					{Type: "text", Text: "I'll check that for you."},
@@ -653,7 +653,7 @@ func BenchmarkSerializeAnthropic(b *testing.B) {
 				},
 			},
 			{
-				Role:    "user",
+				Role: "user",
 				Content: []ContentBlock{
 					{Type: "tool_result", ToolResult: &ToolResult{
 						ToolUseID: "toolu_123",

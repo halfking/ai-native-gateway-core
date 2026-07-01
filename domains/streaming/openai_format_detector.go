@@ -21,25 +21,25 @@ import (
 // Returns true if the data appears to be OpenAI format and should be dropped.
 func isOpenAIFormatData(data []byte) bool {
 	dataStr := string(data)
-	
+
 	// Quick exit: if data is too short, it can't be a valid event
 	if len(dataStr) < 10 {
 		return false
 	}
-	
+
 	// Check 1: Contains "choices" field as a top-level key (most common OpenAI indicator)
 	// Use more specific pattern to avoid false positives when "choices" appears in text content
 	if strings.Contains(dataStr, `"choices":[`) || strings.Contains(dataStr, `"choices": [`) {
 		return true
 	}
-	
-	// Check 2: Contains both "object" and "chat.completion" 
+
+	// Check 2: Contains both "object" and "chat.completion"
 	// (OpenAI chat completion signature)
-	if strings.Contains(dataStr, `"object"`) && 
-	   strings.Contains(dataStr, `"chat.completion`) {
+	if strings.Contains(dataStr, `"object"`) &&
+		strings.Contains(dataStr, `"chat.completion`) {
 		return true
 	}
-	
+
 	// Check 3: Contains "created" as a numeric field
 	// Anthropic uses "created_at" with ISO8601 strings, not unix timestamps
 	// Pattern: "created":1234567890 (numeric follows)
@@ -54,7 +54,7 @@ func isOpenAIFormatData(data []byte) bool {
 			}
 		}
 	}
-	
+
 	return false
 }
 

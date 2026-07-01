@@ -97,8 +97,8 @@ func TestModelsURLCandidates(t *testing.T) {
 			name: "xiaomi ends in /v1",
 			in:   "https://token-plan-cn.xiaomimimo.com/v1",
 			want: []string{
-				"https://token-plan-cn.xiaomimimo.com/v1/models", // root+v1/models
-				"https://token-plan-cn.xiaomimimo.com/v1/models", // normalized/models
+				"https://token-plan-cn.xiaomimimo.com/v1/models",    // root+v1/models
+				"https://token-plan-cn.xiaomimimo.com/v1/models",    // normalized/models
 				"https://token-plan-cn.xiaomimimo.com/v1/v1/models", // normalized+v1/models
 			},
 		},

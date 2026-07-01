@@ -23,20 +23,20 @@ import (
 // ── Static Catalog (mirrors Python free_pool_signup_hub.py) ────────────────
 
 type signupPlatform struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Category      string   `json:"category"`
-	SignupURL     string   `json:"signup_url"`
-	APIKeyURL     string   `json:"api_key_url"`
-	BaseURL       string   `json:"base_url"`
-	CatalogCode   string   `json:"catalog_code"`
-	DisplayName   string   `json:"display_name"`
-	ModelsHint    string   `json:"models_hint"`
-	Notes         string   `json:"notes"`
-	Difficulty    string   `json:"difficulty"`
-	NeedsEmail    bool     `json:"needs_email"`
-	EnvVars       []string `json:"env_vars"`
-	Tags          []string `json:"tags"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Category    string   `json:"category"`
+	SignupURL   string   `json:"signup_url"`
+	APIKeyURL   string   `json:"api_key_url"`
+	BaseURL     string   `json:"base_url"`
+	CatalogCode string   `json:"catalog_code"`
+	DisplayName string   `json:"display_name"`
+	ModelsHint  string   `json:"models_hint"`
+	Notes       string   `json:"notes"`
+	Difficulty  string   `json:"difficulty"`
+	NeedsEmail  bool     `json:"needs_email"`
+	EnvVars     []string `json:"env_vars"`
+	Tags        []string `json:"tags"`
 }
 
 type signupTool struct {
@@ -309,8 +309,8 @@ var auditRules = []map[string]any{
 // ── Discovery State (in-memory singleton) ─────────────────────────────────
 
 type freePoolDiscoveryState struct {
-	IntervalSec int                    `json:"interval_sec"`
-	LastResult  map[string]any         `json:"last_result"`
+	IntervalSec int            `json:"interval_sec"`
+	LastResult  map[string]any `json:"last_result"`
 }
 
 var discoveryState = &freePoolDiscoveryState{
@@ -377,21 +377,21 @@ func (h *Handler) handleFreePoolSignupHub(w http.ResponseWriter, r *http.Request
 	platforms := make([]map[string]any, 0, len(signupPlatforms))
 	for _, p := range signupPlatforms {
 		row := map[string]any{
-			"id":               p.ID,
-			"name":             p.Name,
-			"category":         p.Category,
-			"signup_url":       p.SignupURL,
-			"api_key_url":      p.APIKeyURL,
-			"base_url":         p.BaseURL,
-			"catalog_code":     p.CatalogCode,
-			"display_name":     p.DisplayName,
-			"models_hint":      p.ModelsHint,
-			"notes":            p.Notes,
-			"difficulty":       p.Difficulty,
-			"needs_email":      p.NeedsEmail,
-			"env_vars":         p.EnvVars,
-			"tags":             p.Tags,
-			"pool_registered":  p.CatalogCode != "" && registered[p.CatalogCode],
+			"id":              p.ID,
+			"name":            p.Name,
+			"category":        p.Category,
+			"signup_url":      p.SignupURL,
+			"api_key_url":     p.APIKeyURL,
+			"base_url":        p.BaseURL,
+			"catalog_code":    p.CatalogCode,
+			"display_name":    p.DisplayName,
+			"models_hint":     p.ModelsHint,
+			"notes":           p.Notes,
+			"difficulty":      p.Difficulty,
+			"needs_email":     p.NeedsEmail,
+			"env_vars":        p.EnvVars,
+			"tags":            p.Tags,
+			"pool_registered": p.CatalogCode != "" && registered[p.CatalogCode],
 		}
 		platforms = append(platforms, row)
 	}
@@ -623,13 +623,13 @@ func (h *Handler) handleFreePoolTempEmailPoll(w http.ResponseWriter, r *http.Req
 
 var (
 	probeBlockedHosts = map[string]bool{
-		"localhost":      true,
-		"127.0.0.1":      true,
-		"0.0.0.0":        true,
-		"llmgateway.internal.example.com":   true,
-		"authentication.internal.example.com":  true,
-		"acc.internal.example.com":   true,
-		"mcp.internal.example.com":   true,
+		"localhost":                           true,
+		"127.0.0.1":                           true,
+		"0.0.0.0":                             true,
+		"llmgateway.internal.example.com":     true,
+		"authentication.internal.example.com": true,
+		"acc.internal.example.com":            true,
+		"mcp.internal.example.com":            true,
 	}
 	probePrivateNets = []*net.IPNet{
 		mustCIDR("10.0.0.0/8"),
@@ -866,20 +866,20 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req struct {
-		SignupURL          string   `json:"signup_url"`
-		BaseURL            string   `json:"base_url"`
-		APIKey             string   `json:"api_key"`
-		DisplayName        string   `json:"display_name"`
-		CatalogCode        string   `json:"catalog_code"`
-		Models             []string `json:"models"`
-		Protocol           string   `json:"protocol"`
-		Source             string   `json:"source"`
-		SourceDetail       string   `json:"source_detail"`
-		Label              string   `json:"label"`
-		PlatformID         string   `json:"platform_id"`
-		ProbeFirst         bool     `json:"probe_first"`
-		Save               bool     `json:"save"`
-		NoAPIKeyRequired   bool     `json:"no_api_key_required"`
+		SignupURL        string   `json:"signup_url"`
+		BaseURL          string   `json:"base_url"`
+		APIKey           string   `json:"api_key"`
+		DisplayName      string   `json:"display_name"`
+		CatalogCode      string   `json:"catalog_code"`
+		Models           []string `json:"models"`
+		Protocol         string   `json:"protocol"`
+		Source           string   `json:"source"`
+		SourceDetail     string   `json:"source_detail"`
+		Label            string   `json:"label"`
+		PlatformID       string   `json:"platform_id"`
+		ProbeFirst       bool     `json:"probe_first"`
+		Save             bool     `json:"save"`
+		NoAPIKeyRequired bool     `json:"no_api_key_required"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1077,12 +1077,12 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 	keys := make([]map[string]any, 0)
 	for rows.Next() {
 		var (
-			credID, providerID                       int
-			credLabel, credStatus, availState        string
-			quotaState, acqSource, acqDetail, tags   string
-			ciphertext                               []byte
-			createdAt, updatedAt                     time.Time
-			catalogCode, providerName, baseURL       string
+			credID, providerID                     int
+			credLabel, credStatus, availState      string
+			quotaState, acqSource, acqDetail, tags string
+			ciphertext                             []byte
+			createdAt, updatedAt                   time.Time
+			catalogCode, providerName, baseURL     string
 		)
 		if err := rows.Scan(&credID, &credLabel, &credStatus, &availState,
 			&quotaState, &acqSource, &acqDetail, &tags, &ciphertext,
@@ -1102,22 +1102,22 @@ func (h *Handler) handleFreePoolListKeys(w http.ResponseWriter, r *http.Request)
 		}
 
 		keys = append(keys, map[string]any{
-			"credential_id":       credID,
-			"credential_label":    credLabel,
-			"credential_status":   credStatus,
-			"availability_state":  availState,
-			"quota_state":         quotaState,
-			"acquisition_source":  acqSource,
-			"acquisition_detail":  acqDetail,
-			"tags":                tags,
-			"has_secret":          hasSecret,
-			"key_masked":          masked,
-			"created_at":          createdAt,
-			"updated_at":          updatedAt,
-			"provider_id":         providerID,
-			"catalog_code":        catalogCode,
-			"provider_name":       providerName,
-			"base_url":            baseURL,
+			"credential_id":      credID,
+			"credential_label":   credLabel,
+			"credential_status":  credStatus,
+			"availability_state": availState,
+			"quota_state":        quotaState,
+			"acquisition_source": acqSource,
+			"acquisition_detail": acqDetail,
+			"tags":               tags,
+			"has_secret":         hasSecret,
+			"key_masked":         masked,
+			"created_at":         createdAt,
+			"updated_at":         updatedAt,
+			"provider_id":        providerID,
+			"catalog_code":       catalogCode,
+			"provider_name":      providerName,
+			"base_url":           baseURL,
 		})
 	}
 
@@ -1342,7 +1342,7 @@ func (h *Handler) handleFreePoolAddKeysBulk(w http.ResponseWriter, r *http.Reque
 	}
 
 	h.logAudit(r, "free_pool_bulk_add_keys", map[string]any{
-		"total":     len(req.Keys),
+		"total":      len(req.Keys),
 		"registered": registered,
 	})
 

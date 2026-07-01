@@ -8,7 +8,7 @@ import "testing"
 // Unicode (e.g. 'É' -> 'É' 不是 'é'). 这是性能优化 (避免 import strings),
 // 不是 bug, 但需要 pin.
 func TestStringsToLower(t *testing.T) {
-tests := []struct {
+	tests := []struct {
 		name string
 		in   string
 		want string
@@ -48,13 +48,13 @@ func TestStringsContains(t *testing.T) {
 		{"hello world", "hello", true},
 		{"hello world", "lo wo", true},
 		{"hello world", "missing", false},
-		{"hello", "", true},             // empty substring always matches
-		{"", "anything", false},         // empty s, non-empty substr
-		{"", "", true},                  // both empty
-		{"abc", "abcdef", false},        // substr longer than s
-		{"abc", "abc", true},            // exact match
-		{"ABC", "abc", false},            // case-sensitive (stringsToLower 不联动)
-		{"abc", "ABC", false},            // 反向 case-sensitive
+		{"hello", "", true},      // empty substring always matches
+		{"", "anything", false},  // empty s, non-empty substr
+		{"", "", true},           // both empty
+		{"abc", "abcdef", false}, // substr longer than s
+		{"abc", "abc", true},     // exact match
+		{"ABC", "abc", false},    // case-sensitive (stringsToLower 不联动)
+		{"abc", "ABC", false},    // 反向 case-sensitive
 	}
 	for _, tt := range tests {
 		name := tt.s + "/" + tt.substr

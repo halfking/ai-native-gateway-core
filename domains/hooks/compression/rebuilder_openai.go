@@ -104,7 +104,7 @@ func RebuildOpenAIAfterSummary(body []byte, summary string, ret *Retained, keepR
 	// {"messages":[...], "model":"...", "stream":..., "tools":[...]}
 	// Other top-level keys are preserved verbatim.
 	var probe struct {
-		Model    string          `json:"model"`
+		Model    string            `json:"model"`
 		Messages []json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {

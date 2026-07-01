@@ -76,19 +76,21 @@ func scoreVersionRecency(c Candidate, task TaskType) float64 {
 //   - strengths 是运营人工标注的优势方向，更精准（如 "math"/"long_context"/"multimodal"）
 //
 // 公式：
-//   required = 任务类型所需的优势方向集合（定义见下）
-//   hits = |required ∩ candidate.strengths|
-//   score = (hits / |required|) × 100，至少 50（避免未标注模型被过度惩罚）
+//
+//	required = 任务类型所需的优势方向集合（定义见下）
+//	hits = |required ∩ candidate.strengths|
+//	score = (hits / |required|) × 100，至少 50（避免未标注模型被过度惩罚）
 //
 // 任务 → 优势方向映射：
-//   reasoning    : ["reasoning", "math", "logic"]
-//   code         : ["code", "programming"]
-//   agent        : ["agent", "tool_use"]
-//   creative     : ["creative", "writing"]
-//   long_context : ["long_context"]
-//   vision       : ["vision", "multimodal"]
-//   function_call: ["tool_use", "function_call"]
-//   chat         : []  (无特定要求，返回 75 基准分)
+//
+//	reasoning    : ["reasoning", "math", "logic"]
+//	code         : ["code", "programming"]
+//	agent        : ["agent", "tool_use"]
+//	creative     : ["creative", "writing"]
+//	long_context : ["long_context"]
+//	vision       : ["vision", "multimodal"]
+//	function_call: ["tool_use", "function_call"]
+//	chat         : []  (无特定要求，返回 75 基准分)
 func scoreStrengthMatch(c Candidate, task TaskType) float64 {
 	required := requiredStrengthsForTask(task)
 	if len(required) == 0 {

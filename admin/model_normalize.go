@@ -15,8 +15,8 @@ func normalizeModelName(raw string) string {
 }
 
 type modelAliasIndex struct {
-	rawToCanon   map[string]string
-	canonToRaws  map[string][]string
+	rawToCanon  map[string]string
+	canonToRaws map[string][]string
 }
 
 func loadModelAliasIndex(ctx context.Context, db *pgxpool.Pool) (*modelAliasIndex, error) {

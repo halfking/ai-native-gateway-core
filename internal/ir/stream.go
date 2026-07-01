@@ -716,6 +716,142 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 	}
 }
 
+// SerializeResponses serializes StreamChunk IR to OpenAI Responses API SSE
+// format. Emits ONE OR MORE events per call depending on chunk content:
+//
+//   - ChunkTypeDelta (text):
+//     event: response.output_text.delta
+//
+//   - ChunkTypeDelta (reasoning):
+//     event: response.reasoning_text.delta
+//
+//   - ChunkTypeDelta (tool calls):
+//     event: response.output_item.added           (when Name is non-empty, i.e. new tool call)
+//     event: response.function_call_arguments.delta (when Arguments is non-empty)
+//
+//   - ChunkTypeError:
+//     event: error
+//
+//   - ChunkTypeUsage / ChunkTypeDone:
+//     ""  (no standalone event — orchestrator accumulates usage and emits
+//     response.completed with full context)
+//
+// Caller (the bridge/orchestrator) is responsible for the surrounding
+// response.created / response.output_item.added / response.content_part.added
+// scaffolding at the start, and response.output_text.done /
+// response.output_item.done / response.completed at the end.
+//
+// itemID is the `item_id` for the message item that holds the delta.
+// For tool calls, each tool call gets its own id surfaced via tc.ID and
+// is referenced as item_id in subsequent function_call_arguments.delta events.
+//
+// Phase E (2026-07-01): adds the Responses API slot to the IR serializer
+// matrix (alongside SerializeOpenAI / SerializeAnthropic), so adding the
+// protocol stays O(N) — one new serializer, no bridge rewrite.
+func (c *StreamChunk) SerializeResponses(itemID string) string {
+	if c == nil {
+		return ""
+	}
+
+	if itemID == "" {
+		itemID = "msg_stream"
+	}
+
+	switch c.Type {
+	case ChunkTypeDone, ChunkTypeUsage:
+		// Orchestrator (bridge) handles these: response.completed aggregates
+		// accumulated usage; no standalone SSE event here.
+		return ""
+
+	case ChunkTypeError:
+		if c.Error == nil {
+			return ""
+		}
+		body := map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    c.Error.Type,
+				"message": c.Error.Message,
+				"code":    c.Error.Code,
+			},
+		}
+		data, _ := json.Marshal(body)
+		return fmt.Sprintf("event: error\ndata: %s\n\n", data)
+
+	case ChunkTypeDelta:
+		if c.Delta == nil {
+			return ""
+		}
+
+		var output strings.Builder
+
+		// 1) Text content → response.output_text.delta
+		if c.Delta.Content != "" {
+			body := map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       itemID,
+				"output_index":  0,
+				"content_index": 0,
+				"delta":         c.Delta.Content,
+			}
+			data, _ := json.Marshal(body)
+			output.WriteString(fmt.Sprintf("event: response.output_text.delta\ndata: %s\n\n", data))
+		}
+
+		// 2) Reasoning content → response.reasoning_text.delta
+		if c.Delta.ReasoningContent != "" {
+			body := map[string]any{
+				"type":          "response.reasoning_text.delta",
+				"item_id":       itemID,
+				"output_index":  0,
+				"content_index": 0,
+				"delta":         c.Delta.ReasoningContent,
+			}
+			data, _ := json.Marshal(body)
+			output.WriteString(fmt.Sprintf("event: response.reasoning_text.delta\ndata: %s\n\n", data))
+		}
+
+		// 3) Tool calls → response.output_item.added (new) +
+		//                 response.function_call_arguments.delta (continued args)
+		for _, tc := range c.Delta.ToolCalls {
+			if tc.Name != "" {
+				// New tool call — surface as output_item.added so the
+				// client's response.output[] grows.
+				body := map[string]any{
+					"type":         "response.output_item.added",
+					"output_index": tc.Index,
+					"item": map[string]any{
+						"type":      "function_call",
+						"id":        tc.ID,
+						"call_id":   tc.ID,
+						"name":      tc.Name,
+						"arguments": "",
+						"status":    "in_progress",
+					},
+				}
+				data, _ := json.Marshal(body)
+				output.WriteString(fmt.Sprintf("event: response.output_item.added\ndata: %s\n\n", data))
+			}
+			if tc.Arguments != "" {
+				// Continue existing tool call's argument stream.
+				body := map[string]any{
+					"type":         "response.function_call_arguments.delta",
+					"item_id":      tc.ID,
+					"output_index": tc.Index,
+					"delta":        tc.Arguments,
+				}
+				data, _ := json.Marshal(body)
+				output.WriteString(fmt.Sprintf("event: response.function_call_arguments.delta\ndata: %s\n\n", data))
+			}
+		}
+
+		return output.String()
+
+	default:
+		return ""
+	}
+}
+
 // ─── Finish reason helpers ──────────────────────────────────────────────────
 
 // mapAnthropicFinishReasonToOpenAI converts Anthropic stop reasons to OpenAI form.

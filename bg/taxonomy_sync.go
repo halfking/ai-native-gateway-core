@@ -19,13 +19,13 @@ type TaxonomyFamily struct {
 }
 
 type TaxonomyVersion struct {
-	CanonicalName   string   `yaml:"canonical_name"`
-	DisplayName     string   `yaml:"display_name"`
-	Modality        string   `yaml:"modality"`
-	ContextWindow   int      `yaml:"context_window"`
-	ParametersB     *float64 `yaml:"parameters_b"`
-	Aliases         []string `yaml:"aliases"`
-	Capabilities    []string `yaml:"capabilities"`
+	CanonicalName string   `yaml:"canonical_name"`
+	DisplayName   string   `yaml:"display_name"`
+	Modality      string   `yaml:"modality"`
+	ContextWindow int      `yaml:"context_window"`
+	ParametersB   *float64 `yaml:"parameters_b"`
+	Aliases       []string `yaml:"aliases"`
+	Capabilities  []string `yaml:"capabilities"`
 }
 
 type TaxonomyDoc struct {

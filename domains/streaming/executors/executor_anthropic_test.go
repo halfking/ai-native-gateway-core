@@ -496,7 +496,7 @@ func TestAnthropicExecutor_Q4PassthroughSkipsQualityHook(t *testing.T) {
 		return body, nil, nil, nil
 	}
 	ae := &AnthropicExecutor{
-		ClientProtocol: "anthropic-messages", // Q4 path
+		ClientProtocol:          "anthropic-messages", // Q4 path
 		QualityProcessNonStream: hook,
 	}
 	anthropicBody := []byte(`{"content":[{"type":"tool_use","id":"x","name":"","input":{}}],"stop_reason":"tool_use"}`)

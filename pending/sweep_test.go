@@ -10,10 +10,10 @@ import (
 // hash vs. the ZSET index key.
 func TestSplitEntryKey_Valid(t *testing.T) {
 	tests := []struct {
-		key       string
-		wantSid   string
-		wantRid   string
-		wantOk    bool
+		key     string
+		wantSid string
+		wantRid string
+		wantOk  bool
 	}{
 		{"pending_response:sess_abc:req_xyz", "sess_abc", "req_xyz", true},
 		{"pending_response:index:sess_abc", "", "", false}, // index key

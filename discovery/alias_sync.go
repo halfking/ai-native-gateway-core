@@ -10,8 +10,12 @@ import (
 )
 
 type AliasSyncService struct {
-	db       interface {
-		Query(ctx context.Context, q string, args ...any) (interface{ Next() bool; Scan(...any) error; Close() error }, error)
+	db interface {
+		Query(ctx context.Context, q string, args ...any) (interface {
+			Next() bool
+			Scan(...any) error
+			Close() error
+		}, error)
 		QueryRow(ctx context.Context, q string, args ...any) interface{ Scan(...any) error }
 		Exec(ctx context.Context, q string, args ...any) error
 	}
@@ -29,7 +33,11 @@ type AliasSyncResult struct {
 }
 
 func NewAliasSyncService(db interface {
-	Query(ctx context.Context, q string, args ...any) (interface{ Next() bool; Scan(...any) error; Close() error }, error)
+	Query(ctx context.Context, q string, args ...any) (interface {
+		Next() bool
+		Scan(...any) error
+		Close() error
+	}, error)
 	QueryRow(ctx context.Context, q string, args ...any) interface{ Scan(...any) error }
 	Exec(ctx context.Context, q string, args ...any) error
 }, interval time.Duration) *AliasSyncService {
@@ -122,9 +130,9 @@ func (s *AliasSyncService) runSync(ctx context.Context) (*AliasSyncResult, error
 
 func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *AliasSyncResult) error {
 	type aliasRow struct {
-		ID           int
-		RawName      string
-		CanonicalID  int
+		ID            int
+		RawName       string
+		CanonicalID   int
 		CanonicalName string
 	}
 

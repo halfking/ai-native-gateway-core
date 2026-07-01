@@ -1,7 +1,9 @@
 package admin
 
-import "strings"
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMemoraSessionsSQLUsesIntervalCast(t *testing.T) {
 	const marker = "interval '1 hour'"

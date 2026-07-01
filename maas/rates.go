@@ -64,9 +64,9 @@ type ModelRateValues struct {
 }
 
 type storedModelRates struct {
-	In, Out, CacheIn, CacheOut       *int64
-	ManualIn, ManualOut              bool
-	ManualCacheIn, ManualCacheOut    bool
+	In, Out, CacheIn, CacheOut    *int64
+	ManualIn, ManualOut           bool
+	ManualCacheIn, ManualCacheOut bool
 }
 
 func effectiveModelRates(stored storedModelRates, global BaseRateSet) ModelRateValues {

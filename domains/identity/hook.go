@@ -50,7 +50,7 @@ func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRe
 
 	var tenantID string
 	var appID, apiKeyID *int
-	
+
 	if env.APIKey != nil {
 		tenantID = env.APIKey.TenantID
 		if env.APIKey.ID != "" {

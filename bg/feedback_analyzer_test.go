@@ -66,12 +66,12 @@ func TestExtractCJKBigrams_Empty(t *testing.T) {
 
 func TestExtractASCIIBigrams(t *testing.T) {
 	tests := []struct {
-		input      string
+		input       string
 		minExpected int
 	}{
-		{"hello world foo bar", 3},       // 4 words → 3 bigrams
-		{"a ab abc abcd", 1},              // only "abc" "abcd" qualify (>=3 chars)
-		{"single", 0},                     // 1 word → 0 bigrams
+		{"hello world foo bar", 3}, // 4 words → 3 bigrams
+		{"a ab abc abcd", 1},       // only "abc" "abcd" qualify (>=3 chars)
+		{"single", 0},              // 1 word → 0 bigrams
 		{"", 0},
 	}
 	for _, tt := range tests {

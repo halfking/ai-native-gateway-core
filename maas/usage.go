@@ -26,13 +26,13 @@ type UsageTrendRow struct {
 
 // UsageSummary aggregates tenant MaaS consumption from request_logs.
 type UsageSummary struct {
-	Days          int               `json:"days"`
-	TenantID      string            `json:"tenant_id"`
-	TotalRequests int64             `json:"total_requests"`
-	TotalCredits  int64             `json:"total_credits"`
-	TotalCostUSD  float64           `json:"total_cost_usd,omitempty"`
-	ByModel       []UsageModelRow   `json:"by_model"`
-	Trend         []UsageTrendRow   `json:"trend"`
+	Days          int             `json:"days"`
+	TenantID      string          `json:"tenant_id"`
+	TotalRequests int64           `json:"total_requests"`
+	TotalCredits  int64           `json:"total_credits"`
+	TotalCostUSD  float64         `json:"total_cost_usd,omitempty"`
+	ByModel       []UsageModelRow `json:"by_model"`
+	Trend         []UsageTrendRow `json:"trend"`
 }
 
 // ClampUsageDays bounds the days query parameter for usage summary.

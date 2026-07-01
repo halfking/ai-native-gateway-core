@@ -214,7 +214,6 @@ func (h *PromptInjectionHandler) ListRules(w http.ResponseWriter, r *http.Reques
 	if enabled != "" {
 		query += " AND enabled = $" + strconv.Itoa(argCount)
 		args = append(args, enabled == "true")
-		argCount++
 	}
 
 	query += " ORDER BY severity DESC, rule_type, category"

@@ -411,19 +411,26 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		BodyBytes:            chatBodyBytes,
 		IsStream:             isStream,
 		SuppressSuccessWrite: !isStream,
-		ClientProtocol:       "openai-completions",
-		ClientModel:          clientModel,
-		OutboundModel:        outboundForLog,
-		ClientID:             clientID,
-		Transform:            txResult,
-		Resolution:           modelResolution,
-		Candidates:           candidates,
-		Policy:               policy,
-		AuditBuilder:         auditBuilder,
-		Capture:              streamCapture,
-		ToolsRequested:       false,
-		StreamWrapper:        responsesStreamWrapper(requestID, clientModel, explicitOutbound, streamCapture),
-		StickyKey:            buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+		// Phase E (2026-07-01): was incorrectly "openai-completions",
+		// which caused executor_anthropic.go to use the Q3 OpenAI
+		// translator (Anthropic→chat.completion.chunk) for /v1/responses
+		// clients, instead of the IR-based Responses translator.
+		ClientProtocol: "openai-responses",
+		ClientModel:    clientModel,
+		OutboundModel:  outboundForLog,
+		ClientID:       clientID,
+		Transform:      txResult,
+		Resolution:     modelResolution,
+		Candidates:     candidates,
+		Policy:         policy,
+		AuditBuilder:   auditBuilder,
+		Capture:        streamCapture,
+		ToolsRequested: false,
+		// StreamWrapper intentionally unset. The executor routes via
+		// AnthropicToResponsesStream / OpenAIToResponsesStream based on
+		// ClientProtocol + cand.Protocol — see executor_anthropic.go:StreamResponse
+		// and executor_chat.go's Responses bridge block.
+		StickyKey: buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
 				return keyInfo.ID

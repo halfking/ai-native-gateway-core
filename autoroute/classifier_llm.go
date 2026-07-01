@@ -45,23 +45,23 @@ func (c *LLMFallbackClassifier) Name() string { return "llm" }
 //
 // Prompt template:
 //
-//   You are a request classifier. Choose ONE task type from this list
-//   that best matches the user's request:
-//     - chat          : ordinary conversation
-//     - reasoning     : math, logic, multi-step analysis
-//     - code          : code generation, debugging, refactoring
-//     - agent         : multi-step agentic workflow with many tools
-//     - creative      : writing, translation, summarisation
-//     - long_context  : very long document (>50k tokens)
-//     - vision        : request contains image input
-//     - function_call : 1-2 tool/function calls
+//	You are a request classifier. Choose ONE task type from this list
+//	that best matches the user's request:
+//	  - chat          : ordinary conversation
+//	  - reasoning     : math, logic, multi-step analysis
+//	  - code          : code generation, debugging, refactoring
+//	  - agent         : multi-step agentic workflow with many tools
+//	  - creative      : writing, translation, summarisation
+//	  - long_context  : very long document (>50k tokens)
+//	  - vision        : request contains image input
+//	  - function_call : 1-2 tool/function calls
 //
-//   Return ONLY the task type string, nothing else.
+//	Return ONLY the task type string, nothing else.
 //
-//   User prompt:
-//   """
-//   <last user prompt>
-//   """
+//	User prompt:
+//	"""
+//	<last user prompt>
+//	"""
 //
 // We deliberately don't pass the full system prompt to keep the
 // classifier call cheap (<500 tokens in, ~5 tokens out).

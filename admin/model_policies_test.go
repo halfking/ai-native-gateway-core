@@ -186,8 +186,8 @@ func TestHandleTenantModelPolicies_MethodNotAllowed(t *testing.T) {
 // "model-policies/audit", which never matched the bare `sub == "model-policies"`
 // check. The request then fell through to the generic switch and returned:
 //
-//   GET  .../model-policies/audit  → 404 "unknown sub-resource: model-policies/audit"
-//   POST .../model-policies/check  → 405 "method not allowed" (POST ≠ GET)
+//	GET  .../model-policies/audit  → 404 "unknown sub-resource: model-policies/audit"
+//	POST .../model-policies/check  → 405 "method not allowed" (POST ≠ GET)
 //
 // handleTenants has a `h.db == nil → 503` guard at the very top, so a
 // black-box HTTP test cannot distinguish correct routing from the broken

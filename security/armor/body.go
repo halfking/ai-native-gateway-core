@@ -44,7 +44,7 @@ func (h *httpJudge) buildBody(req ScoreRequest) (*bytes.Reader, error) {
 
 // judgeReply is the inner JSON the LLM is instructed to emit.
 type judgeReply struct {
-	Score  *float64 `json:"score"`  // pointer so "missing" is distinguishable from 0
+	Score  *float64 `json:"score"` // pointer so "missing" is distinguishable from 0
 	Reason string   `json:"reason"`
 }
 

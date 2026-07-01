@@ -18,10 +18,10 @@ import (
 type Protocol string
 
 const (
-	ProtocolOpenAI     Protocol = "openai"
-	ProtocolAnthropic  Protocol = "anthropic"
-	ProtocolAzure      Protocol = "azure"
-	ProtocolCustom     Protocol = "custom"
+	ProtocolOpenAI    Protocol = "openai"
+	ProtocolAnthropic Protocol = "anthropic"
+	ProtocolAzure     Protocol = "azure"
+	ProtocolCustom    Protocol = "custom"
 )
 
 // Provider 供应商

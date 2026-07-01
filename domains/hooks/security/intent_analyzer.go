@@ -35,9 +35,9 @@ func (a *IntentAnalyzer) Analyze(content string) *Intent {
 	}
 
 	return &Intent{
-		Type:    intentType,
-		Score:   score,
-		Reason:  reason,
+		Type:   intentType,
+		Score:  score,
+		Reason: reason,
 	}
 }
 

@@ -239,10 +239,10 @@ func TestGLM52FormatConversion(t *testing.T) {
 	t.Run("anthropic_response_to_openai", func(t *testing.T) {
 		// Simulate an Anthropic response that needs conversion back
 		anthropicResp := map[string]interface{}{
-			"id":          "msg-123",
-			"type":        "message",
-			"role":        "assistant",
-			"model":       "glm-5.2",
+			"id":    "msg-123",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "glm-5.2",
 			"content": []map[string]interface{}{
 				{"type": "text", "text": "Hello back"},
 			},
@@ -293,7 +293,7 @@ func TestGLM52StreamEventParsing(t *testing.T) {
 			// Check for problematic patterns
 			eventType, hasType := data["type"].(string)
 			choices, hasChoices := data["choices"].([]interface{})
-			
+
 			t.Logf("Event type: %q, has choices: %v", eventType, hasChoices)
 
 			if hasChoices {

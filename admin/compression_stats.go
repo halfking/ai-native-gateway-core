@@ -80,12 +80,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 
 	aggArgs := []any{from, to, !tenantFilter}
 	aggArgIdx := 4
-	tenantFrag, tenantArgs, nextArg := tenantLogsClause(r, aggArgIdx)
+	tenantFrag, tenantArgs, _ := tenantLogsClause(r, aggArgIdx)
 	aggWhere := ""
 	if tenantFrag != "" {
 		aggWhere = tenantFrag
 		aggArgs = append(aggArgs, tenantArgs...)
-		aggArgIdx = nextArg
 	}
 
 	aggRows, err := h.db.Query(ctx, `

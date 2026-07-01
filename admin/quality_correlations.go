@@ -30,12 +30,13 @@ package admin
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // QualityCorrelationRow is a single bucket row.

@@ -44,10 +44,10 @@ var vendorCanonicalFamilies = map[string]string{
 	// Anthropic — all "claude-*" collapse to "anthropic-claude"
 	"claude": "anthropic-claude",
 	// OpenAI — gpt-*, o1/o3/o4 collapse to "openai-gpt"
-	"gpt":  "openai-gpt",
-	"o1":   "openai-gpt",
-	"o3":   "openai-gpt",
-	"o4":   "openai-gpt",
+	"gpt": "openai-gpt",
+	"o1":  "openai-gpt",
+	"o3":  "openai-gpt",
+	"o4":  "openai-gpt",
 	// Meta — llama/llama2/llama3 collapse to "meta-llama"
 	"llama":  "meta-llama",
 	"llama2": "meta-llama",

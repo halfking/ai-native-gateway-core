@@ -112,9 +112,9 @@ func TestCacheLookupHook_Hit(t *testing.T) {
 	})
 	h := NewCacheLookupHook(store)
 	env := &domain.PipelineRequest{
-		TenantID:          "t1",
+		TenantID:           "t1",
 		TransformedRequest: body,
-		Metadata:          map[string]any{MetaKeyModel: "gpt-4"},
+		Metadata:           map[string]any{MetaKeyModel: "gpt-4"},
 	}
 	if err := h.Execute(context.Background(), env); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -135,9 +135,9 @@ func TestCacheLookupHook_Miss(t *testing.T) {
 	store := NewInMemoryStore()
 	h := NewCacheLookupHook(store)
 	env := &domain.PipelineRequest{
-		TenantID:          "t1",
+		TenantID:           "t1",
 		TransformedRequest: []byte("body"),
-		Metadata:          map[string]any{MetaKeyModel: "gpt-4"},
+		Metadata:           map[string]any{MetaKeyModel: "gpt-4"},
 	}
 	if err := h.Execute(context.Background(), env); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -180,9 +180,9 @@ func (e *errStore) Delete(CacheKey) error                   { return e.err }
 func TestCacheLookupHook_StoreError_Propagates(t *testing.T) {
 	h := NewCacheLookupHook(&errStore{err: errors.New("boom")})
 	env := &domain.PipelineRequest{
-		TenantID:          "t1",
+		TenantID:           "t1",
 		TransformedRequest: []byte("b"),
-		Metadata:          map[string]any{MetaKeyModel: "gpt-4"},
+		Metadata:           map[string]any{MetaKeyModel: "gpt-4"},
 	}
 	err := h.Execute(context.Background(), env)
 	if err == nil {
@@ -207,7 +207,7 @@ func TestCacheSaveHook_Saves_WhenMissed(t *testing.T) {
 	h := NewCacheSaveHook(store, time.Minute)
 	body := []byte("body")
 	env := &domain.PipelineRequest{
-		TenantID:          "t1",
+		TenantID:           "t1",
 		TransformedRequest: body,
 		UpstreamResponse:   []byte(`{"reply":"hello"}`),
 		Metadata:           map[string]any{MetaKeyModel: "gpt-4", MetaKeyCacheHit: false},
@@ -258,7 +258,7 @@ func TestCacheSaveHook_StoreError_OnErrorSwallows(t *testing.T) {
 	store := &errStore{err: errors.New("save boom")}
 	h := NewCacheSaveHook(store, time.Minute)
 	env := &domain.PipelineRequest{
-		TenantID:          "t1",
+		TenantID:           "t1",
 		TransformedRequest: []byte("b"),
 		UpstreamResponse:   []byte(`{}`),
 		Metadata:           map[string]any{MetaKeyModel: "gpt-4", MetaKeyCacheHit: false},

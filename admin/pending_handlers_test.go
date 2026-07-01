@@ -120,9 +120,9 @@ func TestPendingSubrouter_RejectsSubPath(t *testing.T) {
 // values fall back to safe defaults (50 / 0).
 func TestPageBounds_PinsDefaultsAndCaps(t *testing.T) {
 	cases := []struct {
-		name                string
-		query               string
-		wantLimit, wantOff  int
+		name               string
+		query              string
+		wantLimit, wantOff int
 	}{
 		{"no query", "", 50, 0},
 		{"limit=10", "limit=10", 10, 0},

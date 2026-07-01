@@ -17,24 +17,24 @@ const (
 	StageTransformed   = 2
 	StageExecuting     = 3
 	StageCompleted     = 4
-	StageCompressFail = 10
+	StageCompressFail  = 10
 	StageTransformFail = 11
 	StageExecuteFail   = 12
 	StageResponseFail  = 13
 )
 
 const (
-	StatusPending  = "pending"
-	StatusSuccess  = "success"
-	StatusFailure  = "failure"
+	StatusPending = "pending"
+	StatusSuccess = "success"
+	StatusFailure = "failure"
 )
 
 type RequestLogger struct {
 	db         *pgxpool.Pool
 	asyncQueue chan *LogUpdate
-	config    *RequestLoggerConfig
-	wg        sync.WaitGroup
-	done      chan struct{}
+	config     *RequestLoggerConfig
+	wg         sync.WaitGroup
+	done       chan struct{}
 }
 
 type RequestLoggerConfig struct {
@@ -57,7 +57,7 @@ type LogUpdate struct {
 	Status               string
 	Error                string
 	OutboundBody         []byte
-	CompressionStrategy   string
+	CompressionStrategy  string
 	CompressionMeta      map[string]interface{}
 	CompletionTokens     int
 	PromptTokens         int
@@ -84,8 +84,8 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 	rl := &RequestLogger{
 		db:         pool,
 		asyncQueue: make(chan *LogUpdate, cfg.QueueSize),
-		config:    cfg,
-		done:      make(chan struct{}),
+		config:     cfg,
+		done:       make(chan struct{}),
 	}
 	rl.wg.Add(1)
 	go rl.worker()

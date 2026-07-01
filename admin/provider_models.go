@@ -41,23 +41,23 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	defer rows.Close()
 
 	type modelOffer struct {
-		ID                int        `json:"id"`
-		CredentialID      int        `json:"credential_id"`
-		CredentialLabel   string     `json:"credential_label"`
-		RawModelName      string     `json:"raw_model_name"`
-		StandardizedName  string     `json:"standardized_name"`
-		CanonicalID       *int       `json:"canonical_id"`
-		DisplayName       string     `json:"display_name"`
-		Available         bool       `json:"available"`
-		UnavailableReason *string    `json:"unavailable_reason"`
-		UnavailableAt     *time.Time `json:"unavailable_at"`
-		P95LatencyMs      *int       `json:"p95_latency_ms"`
-		SuccessRate       *float64   `json:"success_rate"`
-		InputPrice        *float64   `json:"input_price"`
-		OutputPrice       *float64   `json:"output_price"`
-		LastSeenAt        *time.Time `json:"last_seen_at"`
-		RoutingTier       string     `json:"routing_tier"`
-		AvailabilitySource string    `json:"availability_source"`
+		ID                 int        `json:"id"`
+		CredentialID       int        `json:"credential_id"`
+		CredentialLabel    string     `json:"credential_label"`
+		RawModelName       string     `json:"raw_model_name"`
+		StandardizedName   string     `json:"standardized_name"`
+		CanonicalID        *int       `json:"canonical_id"`
+		DisplayName        string     `json:"display_name"`
+		Available          bool       `json:"available"`
+		UnavailableReason  *string    `json:"unavailable_reason"`
+		UnavailableAt      *time.Time `json:"unavailable_at"`
+		P95LatencyMs       *int       `json:"p95_latency_ms"`
+		SuccessRate        *float64   `json:"success_rate"`
+		InputPrice         *float64   `json:"input_price"`
+		OutputPrice        *float64   `json:"output_price"`
+		LastSeenAt         *time.Time `json:"last_seen_at"`
+		RoutingTier        string     `json:"routing_tier"`
+		AvailabilitySource string     `json:"availability_source"`
 	}
 
 	var offers []modelOffer
@@ -138,14 +138,14 @@ func classifyAvailability(available bool, reason *string) string {
 
 func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
 	var req struct {
-		Q             *string   `json:"q"`
-		Available     *bool     `json:"available"`
-		UnavailReason *string   `json:"unavailable_reason"`
-		CredentialID  *int      `json:"credential_id"`
-		MinSuccess    *float64  `json:"min_success_rate"`
-		MaxP95Latency *int      `json:"max_p95_latency"`
-		Page          int       `json:"page"`
-		PageSize      int       `json:"page_size"`
+		Q             *string  `json:"q"`
+		Available     *bool    `json:"available"`
+		UnavailReason *string  `json:"unavailable_reason"`
+		CredentialID  *int     `json:"credential_id"`
+		MinSuccess    *float64 `json:"min_success_rate"`
+		MaxP95Latency *int     `json:"max_p95_latency"`
+		Page          int      `json:"page"`
+		PageSize      int      `json:"page_size"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -231,23 +231,23 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	defer rows.Close()
 
 	type modelOffer struct {
-		ID                int        `json:"id"`
-		CredentialID      int        `json:"credential_id"`
-		CredentialLabel   string     `json:"credential_label"`
-		RawModelName      string     `json:"raw_model_name"`
-		StandardizedName  string     `json:"standardized_name"`
-		CanonicalID       *int       `json:"canonical_id"`
-		DisplayName       string     `json:"display_name"`
-		Available         bool       `json:"available"`
-		UnavailableReason *string    `json:"unavailable_reason"`
-		UnavailableAt     *time.Time `json:"unavailable_at"`
-		P95LatencyMs      *int       `json:"p95_latency_ms"`
-		SuccessRate       *float64   `json:"success_rate"`
-		InputPrice        *float64   `json:"input_price"`
-		OutputPrice       *float64   `json:"output_price"`
-		LastSeenAt        *time.Time `json:"last_seen_at"`
-		RoutingTier       string     `json:"routing_tier"`
-		AvailabilitySource string    `json:"availability_source"`
+		ID                 int        `json:"id"`
+		CredentialID       int        `json:"credential_id"`
+		CredentialLabel    string     `json:"credential_label"`
+		RawModelName       string     `json:"raw_model_name"`
+		StandardizedName   string     `json:"standardized_name"`
+		CanonicalID        *int       `json:"canonical_id"`
+		DisplayName        string     `json:"display_name"`
+		Available          bool       `json:"available"`
+		UnavailableReason  *string    `json:"unavailable_reason"`
+		UnavailableAt      *time.Time `json:"unavailable_at"`
+		P95LatencyMs       *int       `json:"p95_latency_ms"`
+		SuccessRate        *float64   `json:"success_rate"`
+		InputPrice         *float64   `json:"input_price"`
+		OutputPrice        *float64   `json:"output_price"`
+		LastSeenAt         *time.Time `json:"last_seen_at"`
+		RoutingTier        string     `json:"routing_tier"`
+		AvailabilitySource string     `json:"availability_source"`
 	}
 
 	offers := make([]modelOffer, 0)
@@ -433,5 +433,3 @@ func queryIntPtr(r *http.Request, key string) *int {
 	}
 	return &v
 }
-
-

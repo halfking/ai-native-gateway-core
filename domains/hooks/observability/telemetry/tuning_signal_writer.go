@@ -80,7 +80,9 @@ type commandTag interface {
 // pgxPoolAdapter wraps a *pgxpool.Pool to satisfy the poolExec interface.
 // We intentionally accept the pool indirectly to keep this file free of
 // the pgxpool import (the existing Client has it).
-type pgxPoolAdapter struct{ exec func(ctx context.Context, sql string, args ...any) (PgxTag, error) }
+type pgxPoolAdapter struct {
+	exec func(ctx context.Context, sql string, args ...any) (PgxTag, error)
+}
 
 type PgxTag interface{ RowsAffected() int64 }
 
@@ -330,9 +332,9 @@ func MarshalTuningPayload(v any) ([]byte, error) {
 // invert the existing dependency graph). Keep weights in sync with
 // autoroute.DefaultFeedbackWeights().
 //
-//  quality = 0.4*success + 0.3*latency_score + 0.2*cost_score + 0.1*(1-drift)
-//  latency_score = 1 - clamp(latency/p95, 0, 1)  (default 0.5 if p95==0)
-//  cost_score    = 1 - clamp(cost/p75, 0, 1)     (default 0.5 if p75==0)
+//	quality = 0.4*success + 0.3*latency_score + 0.2*cost_score + 0.1*(1-drift)
+//	latency_score = 1 - clamp(latency/p95, 0, 1)  (default 0.5 if p95==0)
+//	cost_score    = 1 - clamp(cost/p75, 0, 1)     (default 0.5 if p75==0)
 func ComputeTuningSignalQuality(success bool, latencyMs, p95BaselineMs int, costUSD, p75Baseline float64, drift bool) float64 {
 	successF := 0.0
 	if success {

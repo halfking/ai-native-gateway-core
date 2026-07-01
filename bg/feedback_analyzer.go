@@ -40,9 +40,9 @@ const (
 	minWeightSamples  = 20
 
 	// Quality thresholds
-	lowQualityThreshold  = 0.5 // requests below this are "low quality"
-	highPredictedMatch   = 0.7 // predicted match above this but low actual success
-	lowActualSuccess     = 0.6 // actual success below this triggers weight proposal
+	lowQualityThreshold = 0.5 // requests below this are "low quality"
+	highPredictedMatch  = 0.7 // predicted match above this but low actual success
+	lowActualSuccess    = 0.6 // actual success below this triggers weight proposal
 )
 
 // FeedbackAnalyzer runs the daily tuning analysis.
@@ -139,12 +139,12 @@ func (a *FeedbackAnalyzer) AnalyzeOnce(ctx context.Context) error {
 // requests that are not yet in the keyword set.
 //
 // Strategy:
-//   1. Query tuning_signals for heuristic-classified requests with
-//      quality_score < 0.5 in the analysis window.
-//   2. Extract bigrams and trigrams from the user prompt preview.
-//   3. Filter out terms already in the current keyword set.
-//   4. For terms appearing >= minKeywordSamples times, generate a
-//      keyword_add proposal.
+//  1. Query tuning_signals for heuristic-classified requests with
+//     quality_score < 0.5 in the analysis window.
+//  2. Extract bigrams and trigrams from the user prompt preview.
+//  3. Filter out terms already in the current keyword set.
+//  4. For terms appearing >= minKeywordSamples times, generate a
+//     keyword_add proposal.
 func (a *FeedbackAnalyzer) discoverKeywordCandidates(ctx context.Context) (int, error) {
 	windowStart := time.Now().UTC().Add(-a.AnalysisWindow)
 
@@ -242,11 +242,11 @@ func (a *FeedbackAnalyzer) discoverKeywordCandidates(ctx context.Context) (int, 
 			"channel": mapTaskToChannel(key.task),
 		})
 		evidenceJSON, _ := json.Marshal(map[string]any{
-			"sample_count": count,
-			"window_days":  int(a.AnalysisWindow.Hours() / 24),
+			"sample_count":      count,
+			"window_days":       int(a.AnalysisWindow.Hours() / 24),
 			"quality_threshold": lowQualityThreshold,
-			"rationale":    rationale,
-			"confidence":   float64(count) / float64(count+20), // Bayesian-ish
+			"rationale":         rationale,
+			"confidence":        float64(count) / float64(count+20), // Bayesian-ish
 		})
 
 		_, err = a.db.Exec(ctx, `
@@ -304,11 +304,11 @@ func (a *FeedbackAnalyzer) discoverWeightAdjustments(ctx context.Context) (int, 
 		if predictedMatch > highPredictedMatch && actualSuccess < lowActualSuccess {
 			// Suggest reducing the Match weight for the smart profile
 			proposalJSON, _ := json.Marshal(map[string]any{
-				"key":       "weights.smart",
-				"dimension": "match",
-				"old":       25,
-				"new":       20,
-				"profile":   "smart",
+				"key":          "weights.smart",
+				"dimension":    "match",
+				"old":          25,
+				"new":          20,
+				"profile":      "smart",
 				"canonical_id": canonicalID,
 			})
 			rationale := fmt.Sprintf(
@@ -316,12 +316,12 @@ func (a *FeedbackAnalyzer) discoverWeightAdjustments(ctx context.Context) (int, 
 				canonicalID, taskType, predictedMatch, actualSuccess, samples,
 			)
 			evidenceJSON, _ := json.Marshal(map[string]any{
-				"sample_count":      samples,
-				"avg_quality":       avgQuality,
-				"actual_success":    actualSuccess,
-				"predicted_match":   predictedMatch,
-				"rationale":         rationale,
-				"confidence":        0.8,
+				"sample_count":    samples,
+				"avg_quality":     avgQuality,
+				"actual_success":  actualSuccess,
+				"predicted_match": predictedMatch,
+				"rationale":       rationale,
+				"confidence":      0.8,
 			})
 
 			_, err := a.db.Exec(ctx, `

@@ -17,9 +17,9 @@ type Extractor struct {
 	// async 是否异步保存。异步模式下 ExtractAttachments 立即返回空列表，
 	// 保存结果在后台 goroutine 中通过 callback 回传。
 	// 异步用于对延迟敏感的路径（如转发前的热路径）。
-	async     bool
-	callback  func(requestID string, attachments []AttachmentMetadata)
-	wg        sync.WaitGroup
+	async    bool
+	callback func(requestID string, attachments []AttachmentMetadata)
+	wg       sync.WaitGroup
 }
 
 // NewExtractor 构造提取器。storage 为 nil 时 ExtractAttachments 只扫描不保存。
