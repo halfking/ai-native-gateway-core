@@ -226,8 +226,8 @@ func (h *Handler) handleStorageTestPath(w http.ResponseWriter, r *http.Request) 
 			// 尝试创建临时文件测试可写
 			tmp := filepath.Join(abs, ".gw_test_writable")
 			if f, wErr := os.Create(tmp); wErr == nil {
-				f.Close()
-				os.Remove(tmp)
+				_ = f.Close()
+				_ = os.Remove(tmp)
 				resp.Writable = true
 			}
 		}

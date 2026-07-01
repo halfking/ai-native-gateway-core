@@ -281,7 +281,7 @@ func (h *Handler) handleLogStats(w http.ResponseWriter, r *http.Request) {
 
 	// 主目录统计（排除 archive/）
 	var oldest, newest *time.Time
-	filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
 		if err != nil || fi.IsDir() {
 			return nil
 		}
@@ -401,7 +401,7 @@ func (h *Handler) handleLogArchive(w http.ResponseWriter, r *http.Request) {
 		}
 		// 删除原文件
 		for _, c := range candidates {
-			os.Remove(c.path)
+			_ = os.Remove(c.path)
 		}
 		resp.ArchiveFile = archivePath
 		slog.Info("logs: archived",
@@ -498,7 +498,7 @@ func (h *Handler) handleLogCleanup(w http.ResponseWriter, r *http.Request) {
 
 	if !req.DryRun {
 		for _, c := range candidates {
-			os.Remove(c.path)
+			_ = os.Remove(c.path)
 		}
 		slog.Info("logs: cleanup executed",
 			"files", len(candidates), "bytes", resp.BytesFreed, "scope", req.Scope)
@@ -572,12 +572,12 @@ func createTarGzFromPaths(dest string, paths []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gw := gzip.NewWriter(f)
-	defer gw.Close()
+	defer func() { _ = gw.Close() }()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	defer func() { _ = tw.Close() }()
 
 	for _, path := range paths {
 		fi, err := os.Stat(path)
@@ -597,7 +597,7 @@ func createTarGzFromPaths(dest string, paths []string) error {
 			continue
 		}
 		_, _ = io.Copy(tw, src)
-		src.Close()
+		_ = src.Close()
 	}
 	return nil
 }
