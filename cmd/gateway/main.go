@@ -936,6 +936,7 @@ func main() {
 		// 使 GET /api/attachments/{path...} 与 GET /api/logs/{id}/attachments 可用。
 		// attachmentStorage 可能为 nil（启动时存储初始化失败），admin 端点对此 nil-safe。
 		if attachmentStorage != nil {
+			adminHandler.SetAttachmentStorage(attachmentStorage)
 			adminHandler.SetAttachmentHandler(attachments.NewHandler(attachmentStorage, dbConn.Pool()))
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
@@ -1423,10 +1424,8 @@ func main() {
 			// 2026-07-02: 统一存储水位 worker。
 			// 定期检查磁盘水位，超阈值时按策略自动清理附件和日志。
 			// 受 storage.auto_cleanup_enabled 开关控制（默认关闭）。
-			attachmentDir := os.Getenv("LLM_GATEWAY_ATTACHMENT_DIR")
-			if attachmentDir == "" {
-				attachmentDir = "./data/attachments"
-			}
+			// 注入 attachmentStorage（而非目录字符串快照），worker 每次 sweep
+			// 读 BaseDir() 以跟随运行时目录热切换（迁移）。
 			var logDirForWorker string
 			if lc := logging.ActiveConfig(); lc.File != "" {
 				logDirForWorker = filepath.Dir(lc.File)
@@ -1448,7 +1447,7 @@ func main() {
 				}
 				return c
 			}
-			retentionWorker := bg.NewStorageRetentionWorker(attachmentDir, logDirForWorker, retentionCfgProvider)
+			retentionWorker := bg.NewStorageRetentionWorker(attachmentStorage, logDirForWorker, retentionCfgProvider)
 			if ttl, _ := readIntSettingPublic("storage.attachment_ttl_days"); ttl > 0 {
 				retentionWorker.AttachmentTTLDays = ttl
 			} else {
