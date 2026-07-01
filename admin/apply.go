@@ -17,7 +17,7 @@ func (h *Handler) handleV1KeysApply(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 
-func (h *Handler) handleV1KeysApplyStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleV1KeysApplyStatus(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if r.Method == http.MethodGet {
 		h.v1GetApplicationStatus(w, r)
 		return
@@ -122,7 +122,7 @@ func (h *Handler) v1ApplyForkey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) v1GetApplicationStatus(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) v1GetApplicationStatus(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return

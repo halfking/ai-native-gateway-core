@@ -534,7 +534,7 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }
 
-func parseModelTags(raw string) []string {
+func parseModelTags(raw string) []string { //nolint:unused
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" {
 		return []string{}
@@ -576,7 +576,7 @@ func familyDisplayAndVendor(familyID string) (string, string) {
 	return display, vendor
 }
 
-func titleWord(s string) string {
+func titleWord(s string) string { //nolint:unused
 	if s == "" {
 		return s
 	}
