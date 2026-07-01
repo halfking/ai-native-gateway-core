@@ -281,8 +281,8 @@ func TestTransportIRConverter_CircuitBreaker_Trips(t *testing.T) {
 	conv.SetCircuitBreaker(cb)
 
 	// 2 次解析错误应触发熔断
-	conv.ParseOpenAI([]byte(`{}`))
-	conv.ParseOpenAI([]byte(`{}`))
+	_, _ = conv.ParseOpenAI([]byte(`{}`))
+	_, _ = conv.ParseOpenAI([]byte(`{}`))
 
 	if cb.State() != CircuitOpen {
 		t.Fatalf("after 2 errors state = %s, want open", cb.State())
@@ -320,11 +320,11 @@ func TestTransportIRConverter_CircuitBreaker_RecordsSuccess(t *testing.T) {
 	conv.SetCircuitBreaker(cb)
 
 	// Parse 成功不记录错误
-	conv.ParseOpenAI([]byte(`{"model":"gpt-4o"}`))
+	_, _ = conv.ParseOpenAI([]byte(`{"model":"gpt-4o"}`))
 
 	// Serialize 成功应 RecordSuccess
 	req := &ir.InternalRequest{Model: "gpt-4o"}
-	conv.SerializeOpenAI(req)
+	_, _ = conv.SerializeOpenAI(req)
 
 	// 熔断器应仍为 Closed
 	if cb.State() != CircuitClosed {

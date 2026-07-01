@@ -131,7 +131,7 @@ func (t *LegacyTransport) ConvertStream(ctx context.Context, envelope *domain.Re
 			// OpenAI 直通：复制字节流
 			tc.W.Header().Set("Content-Type", "text/event-stream")
 			_, err := io.Copy(tc.W, upstreamResp.Body)
-			upstreamResp.Body.Close()
+			_ = upstreamResp.Body.Close()
 			if err != nil {
 				conversionErrors.WithLabelValues("legacy", "stream").Inc()
 				return err
