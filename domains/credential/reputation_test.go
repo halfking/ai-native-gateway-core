@@ -12,12 +12,6 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func mustDate(t *testing.T, daysAgo int) time.Time {
-	t.Helper()
-	base := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
-	return base.AddDate(0, 0, -daysAgo)
-}
-
 func fixedNow(t time.Time) func() time.Time {
 	return func() time.Time { return t }
 }
@@ -349,6 +343,40 @@ func TestCalculateUptime(t *testing.T) {
 	}}, 7)
 	if got2 >= got {
 		t.Errorf("expected uptime to decrease after incident: got %v baseline %v", got2, got)
+	}
+}
+
+func TestCalculateUptimeAt_NegativeDuration(t *testing.T) {
+	// StartedAt 在 now 之后（异常路径）→ 应使用 5 分钟兜底
+	now := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	futureStart := now.Add(1 * time.Hour)
+	got := CalculateUptimeAt(nil, []Incident{{
+		StartedAt: futureStart,
+		Impact:    ImpactLow,
+	}}, 7, now)
+	// dur = 5min fallback; weight = 0.2 (low)
+	// fraction = 300/604800 ≈ 0.000496
+	// penalty = 0.000496 * 0.2 ≈ 0.0000992
+	// uptime = 1.0 * (1 - 0.0000992) ≈ 0.9999
+	if got < 0.999 || got > 1.0 {
+		t.Errorf("expected uptime near 1.0, got %v", got)
+	}
+}
+
+func TestCalculateUptimeAt_AllImpactLevels(t *testing.T) {
+	now := time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC)
+	started := now.Add(-1 * time.Hour)
+	impacts := []ImpactLevel{ImpactCritical, ImpactHigh, ImpactMedium, ImpactLow}
+	for _, impact := range impacts {
+		got := CalculateUptimeAt(nil, []Incident{{
+			StartedAt: started,
+			Impact:    impact,
+		}}, 7, now)
+		// Critical 应该折扣最狠
+		// Low 应该折扣最小（接近 1）
+		if got < 0 || got > 1 {
+			t.Errorf("impact %v uptime out of [0,1]: %v", impact, got)
+		}
 	}
 }
 
