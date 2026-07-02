@@ -124,6 +124,14 @@ type Config struct {
 	// Empty defaults to "en".
 	DefaultLanguage string `yaml:"default_language" env:"LLM_GATEWAY_DEFAULT_LANGUAGE"`
 
+	// WeChat Work (企业微信) notification settings for approval workflow
+	WeChatCorpID     string `yaml:"wechat_corp_id" env:"LLM_GATEWAY_WECHAT_CORP_ID"`
+	WeChatCorpSecret string `yaml:"wechat_corp_secret" env:"LLM_GATEWAY_WECHAT_CORP_SECRET"`
+	WeChatAgentID    int    `yaml:"wechat_agent_id" env:"LLM_GATEWAY_WECHAT_AGENT_ID"`
+	WeChatToken      string `yaml:"wechat_token" env:"LLM_GATEWAY_WECHAT_TOKEN"`           // Callback verification token
+	WeChatAESKey     string `yaml:"wechat_aes_key" env:"LLM_GATEWAY_WECHAT_AES_KEY"`       // Callback encryption key (optional)
+	WeChatBaseURL    string `yaml:"wechat_base_url" env:"LLM_GATEWAY_WECHAT_BASE_URL"`     // Frontend base URL for approval links
+
 	// Config file path (internal, not serialized)
 	configPath string `yaml:"-"`
 }
@@ -232,6 +240,12 @@ func Load() *Config {
 		EnableDisguise:                     false, // off by default; opt-in
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
+		// WeChat Work notification settings
+		WeChatCorpID:     os.Getenv("LLM_GATEWAY_WECHAT_CORP_ID"),
+		WeChatCorpSecret: os.Getenv("LLM_GATEWAY_WECHAT_CORP_SECRET"),
+		WeChatToken:      os.Getenv("LLM_GATEWAY_WECHAT_TOKEN"),
+		WeChatAESKey:     os.Getenv("LLM_GATEWAY_WECHAT_AES_KEY"),
+		WeChatBaseURL:    envOrDefault("LLM_GATEWAY_WECHAT_BASE_URL", "https://llm-gateway.example.com"),
 		// Log rotation: opt-in via LLM_GATEWAY_LOG_FILE. Defaults
 		// match the operator spec when file logging IS enabled:
 		// 100 MB × 10 files ≈ 1 GB ceiling, 7-day rolling
@@ -270,6 +284,13 @@ func Load() *Config {
 		}
 	} else {
 		cfg.DefaultCred = 1
+	}
+
+	// WeChat Agent ID parsing
+	if agentIDStr := os.Getenv("LLM_GATEWAY_WECHAT_AGENT_ID"); agentIDStr != "" {
+		if v, err := strconv.Atoi(agentIDStr); err == nil {
+			cfg.WeChatAgentID = v
+		}
 	}
 
 	// Boolean env-var overrides.
