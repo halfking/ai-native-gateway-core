@@ -301,56 +301,6 @@ func (h *Handler) storageConfigPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// setStr 辅助函数：写入字符串配置到 settings_kv
-	setStr := func(key string, v *string) {
-		if v == nil {
-			return
-		}
-		if _, err := store.Set(settings.ScopePlatform, key, *v); err == nil {
-			auditSettingChange(user, role, key, *v)
-		}
-	}
-
-	// 存储类型（local | oss | s3）—— 切换存储后端需重启生效
-	if req.StorageType != nil {
-		t := strings.ToLower(strings.TrimSpace(*req.StorageType))
-		if t != "local" && t != "oss" && t != "s3" {
-			writeError(w, http.StatusBadRequest, "storage_type 只支持 local / oss / s3")
-			return
-		}
-		setStr("storage.type", &t)
-	}
-
-	// OSS 配置（仅当存储类型为 oss 时有意义，但允许预先填写）
-	setStr("storage.oss.endpoint", req.OSSEndpoint)
-	setStr("storage.oss.bucket", req.OSSBucket)
-	setStr("storage.oss.access_key_id", req.OSSAccessKeyID)
-	setStr("storage.oss.base_path", req.OSSBasePath)
-	if req.OSSAccessKeySecret != nil {
-		// 密钥单独处理：前端可能传回脱敏值（***xxxx），此时跳过避免覆盖
-		s := *req.OSSAccessKeySecret
-		if !strings.HasPrefix(s, "***") {
-			setStr("storage.oss.access_key_secret", req.OSSAccessKeySecret)
-		}
-	}
-
-	// S3 配置
-	setStr("storage.s3.endpoint", req.S3Endpoint)
-	setStr("storage.s3.region", req.S3Region)
-	setStr("storage.s3.bucket", req.S3Bucket)
-	setStr("storage.s3.base_path", req.S3BasePath)
-	if req.S3SecretAccessKey != nil {
-		s := *req.S3SecretAccessKey
-		if !strings.HasPrefix(s, "***") {
-			setStr("storage.s3.secret_access_key", req.S3SecretAccessKey)
-		}
-	}
-	if req.S3UseSSL != nil {
-		if _, err := store.Set(settings.ScopePlatform, "storage.s3.use_ssl", *req.S3UseSSL); err == nil {
-			auditSettingChange(user, role, "storage.s3.use_ssl", fmt.Sprintf("%v", *req.S3UseSSL))
-		}
-	}
-
 	// triggeredMigration 记录 PUT 本次是否触发了目录迁移（供下方组装响应用）。
 	var triggeredMigration *migrationRun
 
@@ -619,45 +569,3 @@ func auditSettingChange(user, role, key, newVal string) {
 	slog.Info("storage config updated",
 		"user", user, "role", role, "key", key, "new_val", newVal)
 }
-
-// handleStorageHealthCheck 处理 GET /api/admin/storage/health
-// 检查当前存储后端的健康状态
-func (h *Handler) handleStorageHealthCheck(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if h.attachmentStorage == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
-			"healthy": false,
-			"error":   "attachment storage not initialized",
-		})
-		return
-	}
-
-	// 获取后端信息
-	backendInfo := h.attachmentStorage.BackendInfo()
-	
-	response := map[string]interface{}{
-		"backend_type": backendInfo.Type,
-		"location":     backendInfo.Location,
-		"metadata":     backendInfo.Metadata,
-	}
-
-	// 执行健康检查
-	if err := h.attachmentStorage.HealthCheck(); err != nil {
-		response["healthy"] = false
-		response["error"] = err.Error()
-		slog.Warn("storage health check failed", 
-			"backend", backendInfo.Type, 
-			"location", backendInfo.Location,
-			"error", err)
-		writeJSON(w, http.StatusServiceUnavailable, response)
-		return
-	}
-
-	response["healthy"] = true
-	writeJSON(w, http.StatusOK, response)
-}
-

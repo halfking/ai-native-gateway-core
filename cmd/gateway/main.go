@@ -872,7 +872,7 @@ func main() {
 	// attachmentStorage 提升到外层作用域：admin mux 需要它构造下载/列表 handler。
 	// 初始化失败时为 nil，对应的 admin 端点会返回 503（见 admin/attachments_routes.go）。
 	var attachmentStorage *attachments.Storage
-	if storage, err := initAttachmentStorage(attachmentDir); err != nil {
+	if storage, err := attachments.NewStorage(attachmentDir); err != nil {
 		slog.Warn("attachment storage init failed, extraction disabled", "error", err, "dir", attachmentDir)
 	} else {
 		attachmentStorage = storage
@@ -884,17 +884,9 @@ func main() {
 		}
 		attachmentExtractor := attachments.NewExtractor(attachmentStorage)
 		chatHandler.SetAttachmentExtractor(attachmentExtractor)
-		
-		// 日志信息根据后端类型调整
-		baseDir := attachmentStorage.BaseDir()
-		if baseDir != "" {
-			slog.Info("attachment extractor enabled (local storage)",
-				"dir", baseDir,
-				"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
-		} else {
-			slog.Info("attachment extractor enabled (cloud storage)",
-				"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
-		}
+		slog.Info("attachment extractor enabled",
+			"dir", attachmentStorage.BaseDir(),
+			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────
@@ -2305,128 +2297,4 @@ func parseBoolSetting(raw json.RawMessage) (bool, bool) {
 		return false, true
 	}
 	return false, false
-}
-
-// initAttachmentStorage 根据配置初始化附件存储（支持本地、OSS、S3 后端）
-func initAttachmentStorage(attachmentDir string) (*attachments.Storage, error) {
-	// 读取存储类型配置（从 settings_kv 或环境变量）
-	storageType := readStringSettingPublic("storage.type")
-	if storageType == "" {
-		// 默认使用本地存储
-		storageType = "local"
-	}
-
-	var backend attachments.StorageBackend
-	var err error
-
-	switch strings.ToLower(storageType) {
-	case "oss":
-		// 阿里云 OSS 存储后端
-		config := attachments.OSSConfig{
-			Endpoint:        readStringSettingPublic("storage.oss.endpoint"),
-			AccessKeyID:     readStringSettingPublic("storage.oss.access_key_id"),
-			AccessKeySecret: readStringSettingPublic("storage.oss.access_key_secret"),
-			BucketName:      readStringSettingPublic("storage.oss.bucket"),
-			BasePath:        readStringSettingPublic("storage.oss.base_path"),
-		}
-		
-		if config.Endpoint == "" || config.BucketName == "" {
-			return nil, fmt.Errorf("OSS storage: endpoint and bucket are required")
-		}
-		
-		backend, err = attachments.NewOSSStorageBackend(config)
-		if err != nil {
-			return nil, fmt.Errorf("init OSS backend: %w", err)
-		}
-		slog.Info("using OSS storage backend", 
-			"endpoint", config.Endpoint, 
-			"bucket", config.BucketName)
-
-	case "s3":
-		// AWS S3/MinIO 存储后端
-		config := attachments.S3Config{
-			Endpoint:        readStringSettingPublic("storage.s3.endpoint"),
-			Region:          readStringSettingPublic("storage.s3.region"),
-			AccessKeyID:     readStringSettingPublic("storage.s3.access_key_id"),
-			SecretAccessKey: readStringSettingPublic("storage.s3.secret_access_key"),
-			BucketName:      readStringSettingPublic("storage.s3.bucket"),
-			BasePath:        readStringSettingPublic("storage.s3.base_path"),
-			UsePathStyle:    false, // 默认 virtual-hosted style
-			UseSSL:          true,  // 默认使用 HTTPS
-		}
-		
-		// 读取 UseSSL 配置
-		if useSSL, src := readBoolSettingPublic("storage.s3.use_ssl"); src != "" {
-			config.UseSSL = useSSL
-		}
-		
-		if config.BucketName == "" {
-			return nil, fmt.Errorf("S3 storage: bucket name is required")
-		}
-		
-		// MinIO 需要设置 UsePathStyle = true
-		if config.Endpoint != "" {
-			config.UsePathStyle = true
-		}
-		
-		backend, err = attachments.NewS3StorageBackend(config)
-		if err != nil {
-			return nil, fmt.Errorf("init S3 backend: %w", err)
-		}
-		slog.Info("using S3 storage backend", 
-			"endpoint", config.Endpoint, 
-			"bucket", config.BucketName,
-			"region", config.Region)
-
-	default: // "local" 或空
-		// 本地文件系统存储后端
-		backend, err = attachments.NewLocalStorageBackend(attachmentDir)
-		if err != nil {
-			return nil, fmt.Errorf("init local backend: %w", err)
-		}
-		slog.Info("using local file system storage backend", "dir", attachmentDir)
-	}
-
-	// 检查是否启用重试机制（默认启用）
-	enableRetry, _ := readBoolSettingPublic("storage.retry.enabled")
-	if !enableRetry {
-		// 检查字符串值
-		enableRetryStr := readStringSettingPublic("storage.retry.enabled")
-		enableRetry = enableRetryStr != "false" // 默认启用，除非显式设置为 false
-	}
-	
-	if enableRetry {
-		// 读取重试配置
-		retryConfig := attachments.DefaultRetryConfig()
-		
-		if maxRetries, _ := readIntSettingPublic("storage.retry.max_retries"); maxRetries > 0 {
-			retryConfig.MaxRetries = maxRetries
-		}
-		
-		// 包装为带重试的后端
-		backend = attachments.NewRetryBackend(backend, retryConfig)
-		slog.Info("retry mechanism enabled", 
-			"max_retries", retryConfig.MaxRetries,
-			"initial_backoff", retryConfig.InitialBackoff)
-	}
-
-	// 使用后端创建 Storage
-	return attachments.NewStorageWithBackend(backend), nil
-}
-
-// readStringSettingPublic 从 settings.Global 读 string 值
-func readStringSettingPublic(key string) string {
-	if settings.Global == nil {
-		return ""
-	}
-	v, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, key, "")
-	if err != nil || len(v) == 0 {
-		return ""
-	}
-	// 去掉 JSON 字符串的引号
-	s := string(v)
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
 }

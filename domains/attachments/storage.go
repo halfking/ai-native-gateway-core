@@ -8,6 +8,7 @@
 //     decodeBase64Stream 按 chunk 解码，内存占用恒定（~64KB）。
 //  4. 异常容错 —— 存储失败不应阻塞请求转发，仅记录 warning。
 //  5. 线程安全 —— 多个并发请求可能同时写入，使用 per-request 目录隔离。
+//  6. 存储后端抽象 —— 支持本地文件系统、OSS、S3等多种存储后端。
 //
 // 存储路径布局：
 //
@@ -19,13 +20,13 @@
 package attachments
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,153 +63,154 @@ type AttachmentMetadata struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Storage 附件存储门面。零值不可用，必须通过 NewStorage 或 NewStorageWithBackend 构造。
-// 内部使用可插拔的 StorageBackend，支持本地文件系统、OSS、S3 等多种存储后端。
+// Storage 附件存储管理器。支持多种存储后端（本地文件系统、OSS、S3等）。
+// 零值不可用，必须通过 NewStorage 构造。
 type Storage struct {
-	// backend 存储后端（本地文件系统、OSS、S3 等）
+	// backend 存储后端接口，支持本地文件系统、OSS、S3等
 	backend StorageBackend
-	
+	// backendMu 保护 backend 的并发读写，支持运行时热切换存储后端
+	backendMu sync.RWMutex
 	// MaxSize 单文件最大字节数（解码后），0 表示用 DefaultMaxSize。
 	MaxSize int64
-	
-	// 以下字段仅用于向后兼容和迁移支持
-	// baseDir 仅当使用 LocalStorageBackend 时有效，用于 BaseDir()/SetBaseDir() API
+	// baseDir 仅用于兼容旧 API（BaseDir/SetBaseDir），对于本地存储后端有效
 	baseDir string
-	dirMu   sync.RWMutex
-	
-	// mkdirCache 已废弃，由 LocalStorageBackend 内部管理
-	mkdirCache sync.Map // map[string]bool
+	// dirMu 保护 baseDir 的并发读写
+	dirMu sync.RWMutex
 }
 
-// NewStorage 构造一个 Storage，使用本地文件系统作为默认后端。
+// NewStorage 构造一个 Storage，使用本地文件系统作为默认存储后端。
 // baseDir 为空时默认 ./data/attachments。
 // 如果 baseDir 不存在会自动创建（0755）。
 func NewStorage(baseDir string) (*Storage, error) {
 	if baseDir == "" {
 		baseDir = "./data/attachments"
 	}
+	abs, err := filepath.Abs(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("attachments: resolve base dir %q: %w", baseDir, err)
+	}
 	
-	backend, err := NewLocalStorageBackend(baseDir)
+	// 使用本地文件系统后端
+	backend, err := NewLocalStorageBackend(abs)
 	if err != nil {
 		return nil, err
 	}
 	
 	return &Storage{
 		backend: backend,
+		baseDir: abs,
 		MaxSize: DefaultMaxSize,
-		baseDir: backend.BaseDir(), // 缓存用于 BaseDir() API
 	}, nil
 }
 
-// NewStorageWithBackend 使用指定的存储后端构造 Storage
-// 用于支持 OSS、S3 等云存储后端
+// NewStorageWithBackend 使用指定的存储后端构造 Storage。
 func NewStorageWithBackend(backend StorageBackend) *Storage {
-	s := &Storage{
+	return &Storage{
 		backend: backend,
 		MaxSize: DefaultMaxSize,
 	}
-	
-	// 如果是本地后端，缓存 baseDir
-	if local, ok := backend.(*LocalStorageBackend); ok {
-		s.baseDir = local.BaseDir()
-	}
-	
-	return s
 }
 
-// BaseDir 返回当前存储根目录（绝对路径）。读锁，并发安全。
+// SetBackend 热切换存储后端。写锁，与并发的 SaveBase64Image/Load 互斥。
+func (s *Storage) SetBackend(backend StorageBackend) error {
+	if s == nil {
+		return errors.New("attachments: storage is nil")
+	}
+	if backend == nil {
+		return errors.New("attachments: backend is nil")
+	}
+	
+	s.backendMu.Lock()
+	s.backend = backend
+	s.backendMu.Unlock()
+	
+	return nil
+}
+
+// GetBackend 返回当前存储后端。读锁，并发安全。
+func (s *Storage) GetBackend() StorageBackend {
+	s.backendMu.RLock()
+	defer s.backendMu.RUnlock()
+	return s.backend
+}
+
+// BaseDir 返回当前存储根目录（绝对路径）。
+// 注意：仅对本地文件系统后端有效，其他后端返回空字符串。
 func (s *Storage) BaseDir() string {
 	s.dirMu.RLock()
 	defer s.dirMu.RUnlock()
+	
+	// 尝试从后端获取
+	if local, ok := s.GetBackend().(*LocalStorageBackend); ok {
+		return local.BaseDir()
+	}
+	
 	return s.baseDir
 }
 
-// HealthCheck 执行存储后端健康检查
-// 返回 error 如果后端不可用
-func (s *Storage) HealthCheck() error {
-	if s == nil || s.backend == nil {
-		return errors.New("attachments: storage or backend is nil")
-	}
-	return s.backend.HealthCheck()
-}
-
-// BackendInfo 返回后端信息（类型、位置等）
-func (s *Storage) BackendInfo() BackendInfo {
-	if s == nil || s.backend == nil {
-		return BackendInfo{Type: "unknown", Location: ""}
-	}
-	return s.backend.Info()
-}
-
 // SetBaseDir 热切换存储根目录。dir 为空时默认 ./data/attachments。
-// 会 MkdirAll 新目录、清空 mkdirCache（避免对旧目录的缓存误判新目录）。
-// 写锁，与并发的 SaveBase64Image/Load 互斥。
-// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端调用此方法返回错误。
+// 注意：仅对本地文件系统后端有效，其他后端返回错误。
 func (s *Storage) SetBaseDir(dir string) error {
 	if s == nil {
 		return errors.New("attachments: storage is nil")
 	}
-	
-	// 检查是否是本地存储后端
-	local, ok := s.backend.(*LocalStorageBackend)
-	if !ok {
-		return errors.New("attachments: SetBaseDir only supported for local storage backend")
-	}
-	
 	if dir == "" {
 		dir = "./data/attachments"
 	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("attachments: resolve base dir %q: %w", dir, err)
+	}
 	
-	// 调用后端的 SetBaseDir
-	if err := local.SetBaseDir(dir); err != nil {
+	// 检查当前后端是否为本地文件系统
+	backend := s.GetBackend()
+	local, ok := backend.(*LocalStorageBackend)
+	if !ok {
+		return errors.New("attachments: SetBaseDir only works with local storage backend")
+	}
+	
+	// 更新本地存储后端的基础目录
+	if err := local.SetBaseDir(abs); err != nil {
 		return err
 	}
 	
 	// 更新缓存的 baseDir
 	s.dirMu.Lock()
-	s.baseDir = local.BaseDir()
-	// 切换目录后旧缓存失效：新目录下尚未创建 YYYY/MM/req_xxx 子目录，
-	// 若不清空，ensureDir 会误判已创建而跳过 MkdirAll。
-	s.mkdirCache.Range(func(k, _ any) bool { s.mkdirCache.Delete(k); return true })
+	s.baseDir = abs
 	s.dirMu.Unlock()
+	
 	return nil
 }
 
-// Summary 统计当前存储目录的文件数、总字节数与最旧文件修改时间。
-// 供管理端「文件系统占用」与迁移前后校验复用（收口重复的 WalkDir 逻辑）。
-// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端返回错误。
+// Summary 统计当前存储的文件数、总字节数与最旧文件修改时间。
+// 供管理端「文件系统占用」与迁移前后校验复用。
 func (s *Storage) Summary() (fileCount int, totalBytes int64, oldestMod *time.Time, err error) {
 	if s == nil {
 		return 0, 0, nil, errors.New("attachments: storage is nil")
 	}
 	
-	// 检查是否是本地存储后端
-	if _, ok := s.backend.(*LocalStorageBackend); !ok {
-		return 0, 0, nil, errors.New("attachments: Summary only supported for local storage backend")
+	backend := s.GetBackend()
+	ctx := context.Background()
+	
+	// 列出所有文件
+	files, err := backend.List(ctx, "")
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("attachments: list files: %w", err)
 	}
 	
-	base := s.BaseDir()
-	err = filepath.WalkDir(base, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // 忽略无法访问的子目录
+	fileCount = len(files)
+	for _, file := range files {
+		meta, err := backend.GetMetadata(ctx, file)
+		if err != nil {
+			continue // 忽略无法访问的文件
 		}
-		if d.IsDir() {
-			return nil
+		totalBytes += meta.Size
+		if oldestMod == nil || meta.LastModified.Before(*oldestMod) {
+			t := meta.LastModified
+			oldestMod = &t
 		}
-		fileCount++
-		info, infoErr := d.Info()
-		if infoErr == nil {
-			totalBytes += info.Size()
-			mt := info.ModTime()
-			if oldestMod == nil || mt.Before(*oldestMod) {
-				oldestMod = &mt
-			}
-		}
-		return nil
-	})
-	if err != nil && !os.IsNotExist(err) {
-		return 0, 0, nil, err
 	}
+	
 	return fileCount, totalBytes, oldestMod, nil
 }
 
@@ -225,9 +227,8 @@ type SaveResult struct {
 //
 // 流程：
 //  1. 解析 data:image/png;base64,... 提取 content type 和 base64 payload
-//  2. 流式解码 + 哈希计算，同时写入临时文件（内存恒定 ~64KB）
+//  2. 流式解码 + 哈希计算
 //  3. 相同 hash 的文件已存在则跳过写入（去重）
-//  4. 通过 backend.SaveFile 持久化到目标后端
 //
 // 该方法是幂等的：对相同内容重复调用只会保留一份文件。
 //
@@ -255,7 +256,7 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		maxSize = DefaultMaxSize
 	}
 
-	// 目标目录：YYYY/MM/req_{requestID}
+	// 目标路径：YYYY/MM/req_{requestID}/
 	now := time.Now()
 	relDir := filepath.Join(
 		fmt.Sprintf("%04d", now.Year()),
@@ -263,208 +264,163 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		fmt.Sprintf("req_%s", sanitizeRequestID(requestID)),
 	)
 
-	// 流式解码：边解码边计算哈希，同时写入临时文件。
-	// 这样无论文件多大，内存占用恒定（一个 chunk buffer）。
-	ext := mimeTypeToExt(contentType)
-
-	// 创建系统临时文件（确保 baseDir 可写，对云存储后端也有效）
-	tmpFile, err := os.CreateTemp("", "attachment-*.tmp")
-	if err != nil {
-		return nil, fmt.Errorf("attachments: create tmp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	// 无论后续成功与否，最终都清理临时文件
-	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-	}()
-
+	// 流式解码：边解码边计算哈希
 	hasher := sha256.New()
 	counter := &countingWriter{}
-	// 用 base64 decoder 包裹一个 limited reader 防止超大输入耗尽内存/磁盘
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Payload))
 	limited := io.LimitReader(decoder, maxSize+1)
 
-	// tee: 同时写入临时文件和 hasher/counter
-	tee := io.MultiWriter(tmpFile, io.MultiWriter(hasher, counter))
-	if _, err := io.CopyBuffer(tee, limited, make([]byte, 64<<10)); err != nil {
-		return nil, fmt.Errorf("attachments: decode/write: %w", err)
-	}
-	if err := tmpFile.Sync(); err != nil {
-		return nil, fmt.Errorf("attachments: fsync: %w", err)
+	// 读取全部内容到内存（对于大多数图片附件来说可接受）
+	// 同时计算哈希和大小
+	tee := io.MultiWriter(hasher, counter)
+	content, err := io.ReadAll(io.TeeReader(limited, tee))
+	if err != nil {
+		return nil, fmt.Errorf("attachments: decode: %w", err)
 	}
 
-	// 超过大小限制：临时文件会在 defer 中被清理
+	// 超过大小限制
 	if counter.n > maxSize {
 		return nil, fmt.Errorf("attachments: file too large (%d > %d)", counter.n, maxSize)
 	}
 
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
+	ext := mimeTypeToExt(contentType)
 	fileName := hashHex[:16] + ext
 	relPath := filepath.Join(relDir, fileName)
 
-	// 去重：检查目标文件是否已存在
-	deduped := false
-	exists, err := s.backend.FileExists(relPath)
+	backend := s.GetBackend()
+	ctx := context.Background()
+
+	// 去重：检查文件是否已存在
+	exists, err := backend.Exists(ctx, relPath)
 	if err != nil {
 		return nil, fmt.Errorf("attachments: check exists: %w", err)
 	}
 
+	deduped := false
 	if exists {
+		// 文件已存在，跳过写入
 		deduped = true
 	} else {
-		// 读取临时文件内容，保存到后端。
-		// 这里需要将文件读入内存（受 MaxSize 限制，默认 20MB），
-		// 因为当前 StorageBackend.SaveFile 接口接受 []byte。
-		// 对于本地后端，SaveFile 内部会再次 WriteFile。
-		if err := tmpFile.Close(); err != nil {
-			return nil, fmt.Errorf("attachments: close tmp file: %w", err)
-		}
-		data, err := os.ReadFile(tmpPath)
-		if err != nil {
-			return nil, fmt.Errorf("attachments: read tmp file: %w", err)
-		}
-		if err := s.backend.SaveFile(relPath, data); err != nil {
-			return nil, fmt.Errorf("attachments: save file: %w", err)
+		// 保存文件到存储后端
+		if err := backend.Save(ctx, relPath, content); err != nil {
+			return nil, fmt.Errorf("attachments: save: %w", err)
 		}
 	}
 
-	meta := AttachmentMetadata{
+	// 构造元数据
+	originalURL := dataURI
+	if len(originalURL) > 200 {
+		originalURL = originalURL[:200] + "..."
+	}
+
+	metadata := AttachmentMetadata{
 		Type:         "image",
 		ContentType:  contentType,
 		Size:         counter.n,
-		Path:         filepath.ToSlash(relPath),
+		Path:         relPath,
 		Hash:         hashHex,
-		OriginalURL:  truncateForLog(dataURI, 200),
+		OriginalURL:  originalURL,
 		MessageIndex: msgIdx,
 		BlockIndex:   blockIdx,
 		CreatedAt:    now,
 	}
-	return &SaveResult{Path: filepath.ToSlash(relPath), Metadata: meta, Deduped: deduped}, nil
+
+	return &SaveResult{
+		Path:     relPath,
+		Metadata: metadata,
+		Deduped:  deduped,
+	}, nil
 }
 
-// LoadAttachment 读取附件内容，返回 (数据, contentType, error)。
-// relPath 必须是相对路径（来自 AttachmentMetadata.Path）。
+// LoadAttachment 从存储后端加载附件内容。
+// relPath 为相对路径，如 2026/07/req_xxx/abc.png。
+// 返回文件内容、MIME 类型和错误。
 func (s *Storage) LoadAttachment(relPath string) ([]byte, string, error) {
 	if s == nil {
 		return nil, "", errors.New("attachments: storage is nil")
 	}
-	
-	data, err := s.backend.LoadFile(relPath)
+
+	backend := s.GetBackend()
+	ctx := context.Background()
+
+	// 加载文件内容 - 使用 Get 方法
+	content, err := backend.Get(ctx, relPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("attachments: load %q: %w", relPath, err)
+		return nil, "", fmt.Errorf("attachments: load: %w", err)
 	}
-	return data, extToMimeType(filepath.Ext(relPath)), nil
+
+	// 从文件扩展名推断 MIME 类型
+	contentType := extToMimeType(filepath.Ext(relPath))
+
+	return content, contentType, nil
 }
 
-// Stat 检查附件是否存在并返回文件信息。供 handler 设置 Content-Length。
+// Stat 返回附件的元数据（兼容旧 API）。
+// 注意：返回的是 os.FileInfo 接口，仅用于向后兼容。
 func (s *Storage) Stat(relPath string) (os.FileInfo, error) {
 	if s == nil {
 		return nil, errors.New("attachments: storage is nil")
 	}
+
+	backend := s.GetBackend()
 	
-	info, err := s.backend.StatFile(relPath)
-	if err != nil {
-		return nil, fmt.Errorf("attachments: stat %q: %w", relPath, err)
+	// 如果是本地存储后端，直接调用 Stat
+	if local, ok := backend.(*LocalStorageBackend); ok {
+		fullPath := filepath.Join(local.BaseDir(), relPath)
+		return os.Stat(fullPath)
 	}
-	
-	// 将 FileInfo 转换为 os.FileInfo（适配器模式）
-	return &fileInfoAdapter{info: info, name: filepath.Base(relPath)}, nil
+
+	// 其他后端暂不支持 Stat
+	return nil, errors.New("attachments: Stat not supported for non-local backend")
 }
 
-// OpenStream 打开附件用于流式读取（大文件）。调用方负责 Close。
+// OpenStream 打开附件的读取流（兼容旧 API）。
+// 注意：仅对本地文件系统后端有效。
 func (s *Storage) OpenStream(relPath string) (io.ReadCloser, string, error) {
 	if s == nil {
 		return nil, "", errors.New("attachments: storage is nil")
 	}
+
+	backend := s.GetBackend()
 	
-	stream, err := s.backend.OpenStream(relPath)
-	if err != nil {
-		return nil, "", fmt.Errorf("attachments: open stream %q: %w", relPath, err)
-	}
-	return stream, extToMimeType(filepath.Ext(relPath)), nil
-}
-
-// FullPath 返回相对路径对应的绝对路径。仅供内部/管理端使用。
-// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端返回错误。
-func (s *Storage) FullPath(relPath string) (string, error) {
-	if _, ok := s.backend.(*LocalStorageBackend); !ok {
-		return "", errors.New("attachments: FullPath only supported for local storage backend")
-	}
-	return s.safeJoin(relPath)
-}
-
-// safeJoin 将相对路径安全拼接到 BaseDir，防止目录遍历（../../etc/passwd）。
-// 每次调用快照当前 BaseDir，确保迁移切换目录后立即生效。
-// 注意：仅用于本地存储后端。
-func (s *Storage) safeJoin(relPath string) (string, error) {
-	base := s.BaseDir()
-	if base == "" {
-		return "", errors.New("attachments: baseDir is empty (not a local storage backend)")
-	}
-	cleaned := filepath.Clean("/" + relPath) // 强制为根绝对路径，消除 ..
-	full := filepath.Join(base, cleaned)
-	// 二次校验：结果必须在 BaseDir 之内
-	absBase := filepath.Clean(base)
-	if !strings.HasPrefix(filepath.Clean(full)+string(filepath.Separator), absBase+string(filepath.Separator)) &&
-		filepath.Clean(full) != absBase {
-		return "", fmt.Errorf("attachments: path escapes base dir: %q", relPath)
-	}
-	return full, nil
-}
-
-// ensureDir 已废弃，由 LocalStorageBackend 内部管理
-// 保留此方法仅为向后兼容
-func (s *Storage) ensureDir(relDir string) error {
-	// 对于本地存储，目录创建由 backend 自动处理
-	// 对于云存储，不需要创建目录
-	return nil
-}
-
-// ─── data URI 解析 ──────────────────────────────────────────────
-
-// parseDataURI 解析 "data:image/png;base64,iVBOR..." 格式。
-// 返回 (contentType, base64Payload, error)。
-// 不支持 base64 之外的编码（如 data:text/plain,... 纯文本），会返回错误。
-func parseDataURI(uri string) (string, string, error) {
-	const prefix = "data:"
-	if !strings.HasPrefix(uri, prefix) {
-		return "", "", fmt.Errorf("missing data: prefix")
-	}
-	body := uri[len(prefix):]
-	comma := strings.IndexByte(body, ',')
-	if comma < 0 {
-		return "", "", fmt.Errorf("missing comma separator")
-	}
-	header := body[:comma]
-	payload := body[comma+1:]
-
-	contentType := "application/octet-stream"
-	isBase64 := false
-	for _, part := range strings.Split(header, ";") {
-		part = strings.TrimSpace(part)
-		if part == "base64" {
-			isBase64 = true
-		} else if part != "" && !strings.Contains(part, "=") {
-			// 形如 image/png 的部分是 MIME type
-			// 含 "=" 的（如 charset=utf-8）忽略
-			if strings.Contains(part, "/") {
-				contentType = part
-			}
+	// 如果是本地存储后端，直接打开文件
+	if local, ok := backend.(*LocalStorageBackend); ok {
+		fullPath := filepath.Join(local.BaseDir(), relPath)
+		f, err := os.Open(fullPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("attachments: open: %w", err)
 		}
+		contentType := extToMimeType(filepath.Ext(relPath))
+		return f, contentType, nil
 	}
-	if !isBase64 {
-		return "", "", fmt.Errorf("only base64-encoded data URIs are supported")
+
+	// 其他后端：先加载到内存，然后返回 ReadCloser
+	ctx := context.Background()
+	content, err := backend.Get(ctx, relPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("attachments: load: %w", err)
 	}
-	if payload == "" {
-		return "", "", fmt.Errorf("empty payload")
-	}
-	return contentType, payload, nil
+	contentType := extToMimeType(filepath.Ext(relPath))
+	return io.NopCloser(strings.NewReader(string(content))), contentType, nil
 }
 
-// ─── 工具函数 ───────────────────────────────────────────────────
+// FullPath 返回附件的完整路径（仅对本地存储后端有效）。
+func (s *Storage) FullPath(relPath string) (string, error) {
+	if s == nil {
+		return "", errors.New("attachments: storage is nil")
+	}
 
-// countingWriter 统计写入字节数（用于大小校验）。
+	backend := s.GetBackend()
+	if local, ok := backend.(*LocalStorageBackend); ok {
+		fullPath := filepath.Join(local.BaseDir(), relPath)
+		return fullPath, nil
+	}
+
+	return "", errors.New("attachments: FullPath only works with local storage backend")
+}
+
+// countingWriter 用于统计写入的字节数。
 type countingWriter struct {
 	n int64
 }
@@ -474,91 +430,150 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func mimeTypeToExt(mt string) string {
-	switch strings.ToLower(mt) {
-	case "image/png":
-		return ".png"
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/gif":
-		return ".gif"
-	case "image/webp":
-		return ".webp"
-	case "image/bmp":
-		return ".bmp"
-	case "image/svg+xml":
-		return ".svg"
-	case "application/pdf":
-		return ".pdf"
-	case "text/plain":
-		return ".txt"
-	default:
-		// 未知类型：用 .bin，保留 content_type 在元数据中
-		return ".bin"
+// parseDataURI 解析 data URI 格式：data:[<mime>][;base64],<data>
+// 返回 MIME 类型和 base64 payload。
+func parseDataURI(dataURI string) (contentType, payload string, err error) {
+	if !strings.HasPrefix(dataURI, "data:") {
+		return "", "", errors.New("missing 'data:' prefix")
 	}
-}
+	dataURI = strings.TrimPrefix(dataURI, "data:")
 
-func extToMimeType(ext string) string {
-	switch strings.ToLower(ext) {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	case ".bmp":
-		return "image/bmp"
-	case ".svg":
-		return "image/svg+xml"
-	case ".pdf":
-		return "application/pdf"
-	case ".txt":
-		return "text/plain"
-	default:
-		return "application/octet-stream"
+	comma := strings.Index(dataURI, ",")
+	if comma < 0 {
+		return "", "", errors.New("missing ',' separator")
 	}
-}
 
-// truncateForLog 将超长字符串截断（用于 OriginalURL 字段）。
-func truncateForLog(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+	header := dataURI[:comma]
+	payload = dataURI[comma+1:]
+
+	// header 格式：image/png;base64 或 image/png
+	parts := strings.Split(header, ";")
+	contentType = strings.TrimSpace(parts[0])
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
-	return s[:maxLen] + "...(truncated)"
-}
 
-// sanitizeRequestID 只保留 requestID 中的安全字符，防止路径注入。
-func sanitizeRequestID(id string) string {
-	var b strings.Builder
-	b.Grow(len(id))
-	for _, r := range id {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_' {
-			b.WriteRune(r)
+	// 检查是否包含 base64 标记
+	isBase64 := false
+	for _, part := range parts[1:] {
+		if strings.TrimSpace(part) == "base64" {
+			isBase64 = true
+			break
 		}
 	}
-	if b.Len() == 0 {
-		return "unknown"
+	if !isBase64 {
+		return "", "", errors.New("only base64 encoding is supported")
 	}
-	return b.String()
+
+	return contentType, payload, nil
 }
 
-// randomSuffix 生成临时文件后缀，避免并发写入冲突。
+// mimeTypeToExt 将 MIME 类型转换为文件扩展名。
+func mimeTypeToExt(mimeType string) string {
+	// 移除可能的参数（如 charset）
+	if idx := strings.Index(mimeType, ";"); idx >= 0 {
+		mimeType = mimeType[:idx]
+	}
+	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
+
+	exts := map[string]string{
+		"image/jpeg":      ".jpg",
+		"image/jpg":       ".jpg",
+		"image/png":       ".png",
+		"image/gif":       ".gif",
+		"image/webp":      ".webp",
+		"image/svg+xml":   ".svg",
+		"application/pdf": ".pdf",
+		"text/plain":      ".txt",
+		"text/html":       ".html",
+		"application/json": ".json",
+		"application/xml":  ".xml",
+	}
+
+	if ext, ok := exts[mimeType]; ok {
+		return ext
+	}
+	return ".bin"
+}
+
+// extToMimeType 将文件扩展名转换为 MIME 类型。
+func extToMimeType(ext string) string {
+	ext = strings.ToLower(ext)
+	mimes := map[string]string{
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".png":  "image/png",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".svg":  "image/svg+xml",
+		".pdf":  "application/pdf",
+		".txt":  "text/plain",
+		".html": "text/html",
+		".json": "application/json",
+		".xml":  "application/xml",
+	}
+
+	if mime, ok := mimes[ext]; ok {
+		return mime
+	}
+	return "application/octet-stream"
+}
+
+// sanitizeRequestID 清理 requestID，移除不安全的文件名字符。
+func sanitizeRequestID(id string) string {
+	// 只保留字母、数字、下划线、连字符
+	var sb strings.Builder
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		}
+	}
+	if sb.Len() == 0 {
+		return "unknown"
+	}
+	return sb.String()
+}
+
+// randomSuffix 生成随机后缀（用于临时文件名）。
 func randomSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-// fileInfoAdapter 适配 FileInfo 到 os.FileInfo 接口
-type fileInfoAdapter struct {
-	info *FileInfo
-	name string
+// safeJoin 安全拼接路径，防止目录遍历攻击。
+// 返回的路径保证在 BaseDir 内。
+func (s *Storage) safeJoin(relPath string) (string, error) {
+	if s == nil {
+		return "", errors.New("attachments: storage is nil")
+	}
+	
+	baseDir := s.BaseDir()
+	if baseDir == "" {
+		return "", errors.New("attachments: base directory not set")
+	}
+	
+	// 清理路径，移除 .. 和 .
+	cleanPath := filepath.Clean(relPath)
+	
+	// 拼接路径
+	fullPath := filepath.Join(baseDir, cleanPath)
+	
+	// 确保结果路径在 baseDir 内
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", fmt.Errorf("attachments: resolve base dir: %w", err)
+	}
+	
+	absFull, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", fmt.Errorf("attachments: resolve full path: %w", err)
+	}
+	
+	// 检查是否逃逸
+	if !strings.HasPrefix(absFull+string(filepath.Separator), absBase+string(filepath.Separator)) &&
+		absFull != absBase {
+		return "", fmt.Errorf("attachments: path escapes base directory: %s", relPath)
+	}
+	
+	return absFull, nil
 }
-
-func (a *fileInfoAdapter) Name() string       { return a.name }
-func (a *fileInfoAdapter) Size() int64        { return a.info.Size }
-func (a *fileInfoAdapter) Mode() fs.FileMode  { return 0644 }
-func (a *fileInfoAdapter) ModTime() time.Time { return a.info.ModTime }
-func (a *fileInfoAdapter) IsDir() bool        { return false }
-func (a *fileInfoAdapter) Sys() interface{}   { return nil }

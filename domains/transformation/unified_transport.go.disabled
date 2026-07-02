@@ -1,0 +1,389 @@
+package transformation
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+
+	"github.com/kaixuan/llm-gateway-go/domains/session"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+)
+
+// UnifiedTransport 统一的协议转换层
+// 废弃 Legacy Transport 和 anthropic_bridge，所有转换都通过 IR
+type UnifiedTransport struct {
+	detector  ProtocolDetector
+	extractor ExtensionExtractor
+	restorer  ExtensionRestorer
+}
+
+// NewUnifiedTransport 创建统一转换层
+func NewUnifiedTransport() *UnifiedTransport {
+	return &UnifiedTransport{
+		detector:  &IRProtocolDetector{},
+		extractor: &IRExtensionExtractor{},
+		restorer:  &IRExtensionRestorer{},
+	}
+}
+
+// TransformRequest 请求转换（Client → Upstream）
+// 这是请求方向的核心转换方法，负责：
+//  1. 协议检测
+//  2. 扩展字段提取（lossless round-trip）
+//  3. Client Protocol → IR 解析
+//  4. IR → Upstream Protocol 序列化
+func (t *UnifiedTransport) TransformRequest(ctx context.Context, sc *session.SessionContext) error {
+	if sc == nil {
+		return errors.New("session context is nil")
+	}
+
+	// 1. Protocol Detection
+	if sc.ClientProtocol == "" {
+		proto, err := t.detector.Detect(sc.ClientRawBody, sc.ClientHeaders)
+		if err != nil {
+			slog.Warn("protocol detection failed, using default",
+				"request_id", sc.RequestID, "error", err)
+			sc.ClientProtocol = "openai-chat" // 默认
+		} else {
+			sc.ClientProtocol = proto
+		}
+	}
+
+	// 2. Extract Extensions (for lossless round-trip)
+	ext, err := t.extractor.Extract(sc.ClientRawBody, sc.ClientHeaders)
+	if err != nil {
+		slog.Warn("extension extraction failed",
+			"request_id", sc.RequestID, "error", err)
+	} else if ext != nil {
+		sc.SetMetadata("extensions", ext)
+	}
+
+	// 3. Parse: Client Protocol → IR
+	clientIR, err := t.parseRequest(sc.ClientProtocol, sc.ClientRawBody)
+	if err != nil {
+		return fmt.Errorf("parse client request: %w", err)
+	}
+	sc.ClientIR = clientIR
+
+	// 4. 准备上游 IR（初始为客户端 IR 的副本）
+	upstreamIR := t.cloneInternalRequest(clientIR)
+	
+	// 模型映射
+	if sc.UpstreamModel != "" {
+		upstreamIR.Model = sc.UpstreamModel
+	}
+
+	sc.UpstreamIR = upstreamIR
+
+	// 5. Serialize: IR → Upstream Protocol
+	upstreamBody, err := t.serializeRequest(sc.UpstreamProtocol, upstreamIR)
+	if err != nil {
+		return fmt.Errorf("serialize upstream request: %w", err)
+	}
+	sc.UpstreamBody = upstreamBody
+
+	return nil
+}
+
+// TransformResponse 响应转换（Upstream → Client）
+// 这是响应方向的核心转换方法，负责：
+//  1. Upstream Protocol → IR 解析
+//  2. IR → Client Protocol 序列化
+//  3. 扩展字段恢复
+func (t *UnifiedTransport) TransformResponse(ctx context.Context, sc *session.SessionContext, upstreamBody []byte) error {
+	if sc == nil {
+		return errors.New("session context is nil")
+	}
+
+	// 1. Parse: Upstream Protocol → IR
+	llmIR, err := t.parseResponse(sc.UpstreamProtocol, upstreamBody)
+	if err != nil {
+		return fmt.Errorf("parse upstream response: %w", err)
+	}
+	sc.LLMResponseIR = llmIR
+
+	// 2. 准备客户端响应 IR（初始为 LLM IR 的副本）
+	clientIR := t.cloneInternalResponse(llmIR)
+	
+	// 模型名替换
+	if sc.ClientModel != "" {
+		clientIR.Model = sc.ClientModel
+	}
+
+	sc.ClientResponseIR = clientIR
+
+	// 3. Serialize: IR → Client Protocol
+	clientBody, err := t.serializeResponse(sc.ClientProtocol, clientIR, sc.ClientModel)
+	if err != nil {
+		return fmt.Errorf("serialize client response: %w", err)
+	}
+
+	// 4. Restore Extensions
+	if ext, ok := sc.GetMetadata("extensions"); ok {
+		if extData, ok := ext.(*Extensions); ok {
+			restored, err := t.restorer.Restore(clientBody, extData)
+			if err != nil {
+				slog.Warn("extension restoration failed",
+					"request_id", sc.RequestID, "error", err)
+			} else if restored != nil {
+				clientBody = restored
+			}
+		}
+	}
+
+	sc.ClientFinalBody = clientBody
+	return nil
+}
+
+// TransformStream 流式转换（统一处理流式和非流式）
+// 逐块读取上游 SSE，转换协议后写入客户端
+func (t *UnifiedTransport) TransformStream(
+	ctx context.Context,
+	sc *session.SessionContext,
+	upstreamResp *http.Response,
+	clientWriter http.ResponseWriter,
+) error {
+	if sc == nil {
+		return errors.New("session context is nil")
+	}
+
+	// 设置 SSE headers
+	clientWriter.Header().Set("Content-Type", "text/event-stream")
+	clientWriter.Header().Set("Cache-Control", "no-cache")
+	clientWriter.Header().Set("Connection", "keep-alive")
+	clientWriter.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := clientWriter.(http.Flusher)
+	if !ok {
+		return errors.New("response writer does not support flushing")
+	}
+
+	defer upstreamResp.Body.Close()
+
+	reader := bufioReader(upstreamResp.Body)
+	pendingEvent := "" // Anthropic SSE 的 event 行类型
+
+	for {
+		line, err := reader.ReadBytes('\n')
+
+		if len(line) > 0 {
+			// 处理单行 SSE
+			if writeErr := t.processStreamLine(ctx, sc, line, &pendingEvent, clientWriter, flusher); writeErr != nil {
+				return writeErr
+			}
+		}
+
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read upstream stream: %w", err)
+		}
+	}
+
+	// 发送 [DONE]（OpenAI Chat Completions 需要）
+	if sc.ClientProtocol == "openai-chat" || sc.ClientProtocol == "openai" {
+		_, _ = fmt.Fprintf(clientWriter, "data: [DONE]\n\n")
+		flusher.Flush()
+	}
+
+	return nil
+}
+
+// processStreamLine 处理单行 SSE
+func (t *UnifiedTransport) processStreamLine(
+	ctx context.Context,
+	sc *session.SessionContext,
+	line []byte,
+	pendingEvent *string,
+	writer http.ResponseWriter,
+	flusher http.Flusher,
+) error {
+	trimmed := bytes.TrimRight(line, "\r\n")
+	trimmedSpace := bytes.TrimSpace(trimmed)
+
+	// 空行（事件分隔）
+	if len(trimmedSpace) == 0 {
+		*pendingEvent = ""
+		return nil
+	}
+
+	// event: 行（Anthropic 协议）
+	if bytes.HasPrefix(trimmedSpace, []byte("event:")) {
+		*pendingEvent = string(bytes.TrimSpace(trimmedSpace[6:]))
+		return nil
+	}
+
+	// data: 行（事件负载）
+	if !bytes.HasPrefix(trimmedSpace, []byte("data:")) {
+		return nil // 跳过其他行
+	}
+
+	payload := bytes.TrimSpace(trimmedSpace[5:])
+	if len(payload) == 0 {
+		return nil
+	}
+
+	// 解析上游 chunk
+	chunk, err := t.parseUpstreamChunk(sc.UpstreamProtocol, trimmedSpace, *pendingEvent)
+	if err != nil {
+		slog.Warn("parse stream chunk failed",
+			"request_id", sc.RequestID,
+			"upstream_protocol", sc.UpstreamProtocol,
+			"error", err)
+		*pendingEvent = ""
+		return nil // 继续处理后续块
+	}
+	if chunk == nil {
+		*pendingEvent = ""
+		return nil // sentinel 帧
+	}
+
+	// 序列化为客户端协议
+	clientData := t.serializeClientChunk(sc, chunk)
+	*pendingEvent = ""
+
+	if clientData == "" {
+		return nil
+	}
+
+	// 写入客户端
+	if _, err := fmt.Fprintf(writer, "data: %s\n\n", clientData); err != nil {
+		return fmt.Errorf("write to client: %w", err)
+	}
+	flusher.Flush()
+
+	return nil
+}
+
+// parseRequest 解析客户端请求到 IR
+func (t *UnifiedTransport) parseRequest(protocol string, body []byte) (*ir.InternalRequest, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		return ir.ParseOpenAI(body)
+	case "anthropic-messages", "anthropic":
+		return ir.ParseAnthropic(body)
+	default:
+		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
+	}
+}
+
+// serializeRequest 从 IR 序列化到上游协议
+func (t *UnifiedTransport) serializeRequest(protocol string, req *ir.InternalRequest) ([]byte, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		return ir.SerializeOpenAI(req)
+	case "anthropic-messages", "anthropic":
+		return ir.SerializeAnthropic(req)
+	default:
+		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
+	}
+}
+
+// parseResponse 解析上游响应到 IR
+func (t *UnifiedTransport) parseResponse(protocol string, body []byte) (*ir.InternalResponse, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		return ir.ParseOpenAIResponse(body)
+	case "anthropic-messages", "anthropic":
+		return ir.ParseAnthropicResponse(body)
+	default:
+		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
+	}
+}
+
+// serializeResponse 从 IR 序列化到客户端协议
+func (t *UnifiedTransport) serializeResponse(protocol string, resp *ir.InternalResponse, clientModel string) ([]byte, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		return ir.SerializeOpenAIResponse(resp, clientModel)
+	case "anthropic-messages", "anthropic":
+		return ir.SerializeAnthropicResponse(resp, clientModel)
+	case "openai-responses", "responses":
+		return ir.SerializeResponsesResponse(resp, clientModel)
+	default:
+		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
+	}
+}
+
+// parseUpstreamChunk 解析上游 SSE 数据块
+func (t *UnifiedTransport) parseUpstreamChunk(protocol string, line []byte, eventType string) (*ir.StreamChunk, error) {
+	switch protocol {
+	case "openai-chat", "openai":
+		return ir.ParseOpenAIStreamChunk(string(line))
+	case "anthropic-messages", "anthropic":
+		if bytes.HasPrefix(line, []byte("data:")) {
+			payload := bytes.TrimSpace(line[5:])
+			if bytes.Equal(payload, []byte("[DONE]")) {
+				return nil, nil
+			}
+			return ir.ParseAnthropicStreamEvent(eventType, payload)
+		}
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
+	}
+}
+
+// serializeClientChunk 将 IR StreamChunk 序列化为客户端协议
+func (t *UnifiedTransport) serializeClientChunk(sc *session.SessionContext, chunk *ir.StreamChunk) string {
+	switch sc.ClientProtocol {
+	case "openai-chat", "openai":
+		return chunk.SerializeOpenAI(sc.RequestID, sc.ClientModel, sc.CreatedAt.Unix())
+	case "anthropic-messages", "anthropic":
+		return chunk.SerializeAnthropic(sc.RequestID, sc.ClientModel)
+	case "openai-responses", "responses":
+		itemID := deriveResponsesMessageID(sc.RequestID)
+		return chunk.SerializeResponses(itemID)
+	default:
+		slog.Warn("unsupported client protocol for stream",
+			"protocol", sc.ClientProtocol,
+			"request_id", sc.RequestID)
+		return ""
+	}
+}
+
+// deriveResponsesMessageID 生成 Responses API 的 message ID
+func deriveResponsesMessageID(requestID string) string {
+	if requestID == "" {
+		return "msg_stream"
+	}
+	if len(requestID) > 24 {
+		return "msg_" + requestID[8:24]
+	}
+	return "msg_" + requestID
+}
+
+// cloneInternalRequest 深拷贝 InternalRequest
+func (t *UnifiedTransport) cloneInternalRequest(req *ir.InternalRequest) *ir.InternalRequest {
+	if req == nil {
+		return nil
+	}
+	// 简化版：序列化再反序列化
+	data, _ := json.Marshal(req)
+	var cloned ir.InternalRequest
+	_ = json.Unmarshal(data, &cloned)
+	return &cloned
+}
+
+// cloneInternalResponse 深拷贝 InternalResponse
+func (t *UnifiedTransport) cloneInternalResponse(resp *ir.InternalResponse) *ir.InternalResponse {
+	if resp == nil {
+		return nil
+	}
+	data, _ := json.Marshal(resp)
+	var cloned ir.InternalResponse
+	_ = json.Unmarshal(data, &cloned)
+	return &cloned
+}
+
+// bufioReader 创建 bufio.Reader
+func bufioReader(r io.Reader) *bufio.Reader {
+	return bufio.NewReaderSize(r, 64*1024)
+}

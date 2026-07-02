@@ -5,19 +5,14 @@ import (
 	"time"
 )
 
-func TestEnsureSpecsCoversAllTables(t *testing.T) {
-	// 与 TestEnsureSpecsCoversAllFourTables 语义一致：测试 ensureSpecs 列表
-	// 覆盖所有需要按月分区的表。当前 5 张表：request_logs / request_logs_bodies
-	// (body 拆分自 052) / request_wal / routing_decision_log / credential_model_index。
-	// 函数名收紧：增加新分区表时此处需同步追加；多出来的会被识别为"unexpected"。
+func TestEnsureSpecsCoversAllFourTables(t *testing.T) {
 	specs := ensureSpecs()
 
 	expected := map[string]bool{
-		"ensure_request_logs_partition":            false,
-		"ensure_request_logs_bodies_partition":    false,
-		"ensure_request_wal_partition":             false,
-		"ensure_routing_decision_log_partition":    false,
-		"ensure_credential_model_index_partition":  false,
+		"ensure_request_logs_partition":           false,
+		"ensure_request_wal_partition":            false,
+		"ensure_routing_decision_log_partition":   false,
+		"ensure_credential_model_index_partition": false,
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {

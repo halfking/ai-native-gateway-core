@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SessionCompressorDeps are the external dependencies of SessionCompressor.
@@ -163,7 +162,7 @@ func (sc *SessionCompressor) Prepare(
 		}
 	}
 
-	// ── Phase 4: v4 Smart modes + Headroom ────────────────────────────────
+	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
 	// For delta_only mode: just delta-append, no compression
 	if mode == ModeDeltaOnly {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
@@ -171,31 +170,6 @@ func (sc *SessionCompressor) Prepare(
 			res.CompressionStrategy = "delta_append"
 		}
 		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
-		return res
-	}
-
-	// For headroom mode: apply Headroom compression algorithm
-	if mode == ModeHeadroom {
-		headroomResult := sc.tryHeadroomCompression(ctx, outboundBody, contextWindow)
-		if headroomResult != nil && len(headroomResult.CompressedBody) > 0 && len(headroomResult.CompressedBody) < len(outboundBody) {
-			outboundBody = headroomResult.CompressedBody
-			res.OutboundBody = outboundBody
-			res.CompressionStrategy = "headroom"
-			res.MsgCount = countMessages(outboundBody)
-			res.TokenEst = estimateBodyTokens(outboundBody)
-			res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
-			
-			// Store headroom metadata in state
-			if state != nil {
-				state.HeadroomApplied = true
-				state.HeadroomRatio = headroomResult.CompressionRatio
-				state.TokensSaved = headroomResult.TokensSaved
-			}
-		} else if !diffResult.Unchanged && !diffResult.IsNewSess {
-			res.OutboundBody = outboundBody
-			res.CompressionStrategy = "delta_append"
-		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, headroomResult != nil)
 		return res
 	}
 
@@ -340,157 +314,6 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, pro
 		return nil, false
 	}
 	return newBody, true
-}
-
-// HeadroomCompressionResult holds the result of Headroom compression.
-type HeadroomCompressionResult struct {
-	CompressedBody   []byte
-	CompressionRatio float64
-	TokensSaved      int
-}
-
-// tryHeadroomCompression applies Headroom compression algorithm.
-func (sc *SessionCompressor) tryHeadroomCompression(ctx context.Context, body []byte, contextWindow int) *HeadroomCompressionResult {
-	// Extract messages from body
-	msgs, err := extractMessages(body)
-	if err != nil || len(msgs) == 0 {
-		return nil
-	}
-
-	// Convert to map format for HeadroomCompressor
-	var messages []map[string]interface{}
-	for _, m := range msgs {
-		var msg map[string]interface{}
-		if err := json.Unmarshal(m, &msg); err == nil {
-			messages = append(messages, msg)
-		}
-	}
-
-	if len(messages) == 0 {
-		return nil
-	}
-
-	// Load Headroom config from settings
-	config := sc.loadHeadroomConfig()
-	
-	// Create compressor
-	compressor, err := NewHeadroomCompressor(config)
-	if err != nil {
-		slog.Warn("headroom: failed to create compressor", "error", err)
-		return nil
-	}
-
-	// Calculate target tokens
-	targetTokens := contextWindow
-	if targetTokens <= 0 {
-		targetTokens = 4096 // Default fallback
-	}
-	targetTokens = int(float64(targetTokens) * config.TargetRatio)
-
-	// Compress messages
-	compressed, err := compressor.Compress(ctx, messages, targetTokens)
-	if err != nil {
-		slog.Warn("headroom: compression failed", "error", err)
-		return nil
-	}
-
-	// Rebuild body with compressed messages
-	compressedMsgs := make([]json.RawMessage, 0, len(compressed))
-	for _, msg := range compressed {
-		msgBytes, err := json.Marshal(msg)
-		if err == nil {
-			compressedMsgs = append(compressedMsgs, msgBytes)
-		}
-	}
-
-	if len(compressedMsgs) == 0 {
-		return nil
-	}
-
-	// Reconstruct body
-	newBody, ok := spliceBodyMessages(body, mustMarshal(compressedMsgs))
-	if !ok {
-		return nil
-	}
-
-	// Get compression log
-	log := compressor.GetCompressionLog()
-
-	return &HeadroomCompressionResult{
-		CompressedBody:   newBody,
-		CompressionRatio: log.CompressionRatio,
-		TokensSaved:      log.TokensSaved,
-	}
-}
-
-// loadHeadroomConfig loads Headroom configuration from settings.Global.
-// Falls back to safe defaults when the registry is unavailable (early init,
-// unit tests) or a specific key is unset.
-func (sc *SessionCompressor) loadHeadroomConfig() HeadroomConfig {
-	config := HeadroomConfig{
-		TargetRatio:         0.5,
-		MaxTokens:           8192,
-		EnableSmartCrusher:  true,
-		EnableAdaptiveSizer: true,
-		PreserveSystem:      true,
-		PreserveLastN:       2,
-	}
-
-	if settings.Global == nil {
-		return config
-	}
-
-	if v, ok := readPlatformFloat("compression.headroom.target_ratio"); ok && v > 0 {
-		config.TargetRatio = v
-	}
-	if v, ok := readPlatformBool("compression.headroom.enable_smart_crusher"); ok {
-		config.EnableSmartCrusher = v
-	}
-	if v, ok := readPlatformBool("compression.headroom.enable_adaptive_sizer"); ok {
-		config.EnableAdaptiveSizer = v
-	}
-
-	return config
-}
-
-// readPlatformFloat reads a platform-scoped float setting via settings.Global.
-// Returns (value, false) when the registry, spec, or value is unavailable.
-func readPlatformFloat(key string) (float64, bool) {
-	sp := settings.Global.Spec(key)
-	if sp == nil {
-		return 0, false
-	}
-	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-	if err != nil || len(raw) == 0 {
-		return 0, false
-	}
-	var v float64
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return 0, false
-	}
-	return v, true
-}
-
-// readPlatformBool reads a platform-scoped bool setting via settings.Global.
-func readPlatformBool(key string) (bool, bool) {
-	sp := settings.Global.Spec(key)
-	if sp == nil {
-		return false, false
-	}
-	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-	if err != nil || len(raw) == 0 {
-		return false, false
-	}
-	var v bool
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return false, false
-	}
-	return v, true
-}
-
-func mustMarshal(v interface{}) json.RawMessage {
-	b, _ := json.Marshal(v)
-	return b
 }
 
 func (sc *SessionCompressor) updateCache(
