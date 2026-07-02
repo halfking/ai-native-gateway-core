@@ -35,12 +35,12 @@ if [[ "${PURGE}" == "true" ]]; then
   fi
   echo "▶ 删除数据卷 ..."
   docker compose down -v 2>/dev/null || true
-  echo "▶ 删除容器外持久化目录 ..."
-  rm -rf db/data redis/data attachments app/logs
-  echo "▶ 删除 .env ..."
-  rm -f .env
+  echo "▶ 删除所有持久化目录 ..."
+  rm -rf db redis attachments app backups config
+  echo "▶ 删除配置文件 ..."
+  rm -f .env compose.yml README.md
   echo ""
-  echo "✅ 已彻底清理"
+  echo "✅ 已彻底清理（仅保留 installer 和卸载脚本）"
 else
   echo ""
   echo "✅ 已停止容器（数据保留在 db/data、redis/data、attachments、app/logs）"
