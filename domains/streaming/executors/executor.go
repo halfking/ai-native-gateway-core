@@ -1354,17 +1354,24 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				break syncRetryLoop
 			}
 
-			// 重新推导候选（保留粘性）。一次失败不应该把同一会话切到
-			// 不同上游凭据——本会话的 sticky 已经在主循环里被 recordStickyFailure
-			// 评估过（model_not_found 是 client-bug kind，不解 sticky），所以
-			// 这里 PlanCandidates 仍然偏好同一 credential。
+			// 重新推导候选。
+			// - 对于 credential-fatal 错误（quota_exceeded, auth_revoked），
+			//   传 nil sticky 强制切换到其他凭据（避免重试 3 次都打到同一个已耗尽配额的凭据）
+			// - 对于 transient/client-bug 错误，保留 sticky 维持会话连续性
 			//
-			// 2026-06-24: 之前这里传 nil（去粘性），导致 sync_retry 反复切到其他
-			// 凭据，破坏会话连续性，且在 mnfStreak=3 时叠加 mnfStreakStickyBroken
-			// 形成 "一个正常一个失败" 交替模式。改为保留 sticky 偏好。
+			// 2026-07-03: 修复配额耗尽后重试仍路由到同一凭据的问题。
+			// 之前无条件保留 sticky（2026-06-24），导致 quota_exceeded 后
+			// 重试 3 次都打到同一凭据。现在根据 lastKind 判断：
+			// credential-fatal → 强制切换；其他 → 保留 sticky。
+			var retryStickyID *int
+			if errorsx.IsCredentialFatal(lastKind) {
+				retryStickyID = nil // 强制切换
+			} else {
+				retryStickyID = e.stickyCredentialID(params.StickyKey) // 保留
+			}
 			subCandidates := e.Router.PlanCandidates(
 				params.Candidates,
-				e.stickyCredentialID(params.StickyKey),
+				retryStickyID,
 				params.Policy,
 				egressPref(params.Transform),
 			)
