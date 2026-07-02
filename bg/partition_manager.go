@@ -182,9 +182,17 @@ func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMo
 
 // ensureSpecs returns the ensure_<table>_partition() functions we
 // invoke on every tick. Add a row here when a new table is onboarded.
+//
+// Migration 328a (2026-07-02) split the body columns out of
+// request_logs into request_logs_bodies. The bodies partition is
+// paired with the metadata partition by (target_ts → month), so we
+// ensure both at the same time. Without this entry, request_logs
+// would have a partition that request_logs_bodies lacks, and the
+// admin/body JOIN would silently return no rows for that month.
 func ensureSpecs() []archiveSpec {
 	return []archiveSpec{
 		{fnName: "ensure_request_logs_partition", label: "request_logs"},
+		{fnName: "ensure_request_logs_bodies_partition", label: "request_logs_bodies"},
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
