@@ -48,7 +48,7 @@ log_step() {
 
 # ==================== 步骤1: 检查未提交改动 ====================
 check_uncommitted_changes() {
-    log_step "步骤 1/9: 检查未提交改动"
+    log_step "步骤 1/8: 检查未提交改动"
     
     if ! git diff-index --quiet HEAD --; then
         log_warn "检测到未提交的改动:"
@@ -71,7 +71,7 @@ check_uncommitted_changes() {
 
 # ==================== 步骤2: 获取版本信息 ====================
 get_version_info() {
-    log_step "步骤 2/9: 获取版本信息"
+    log_step "步骤 2/8: 获取版本信息"
     
     # 从 git 获取最近的 tag 作为版本号
     GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -122,7 +122,7 @@ EOF
 
 # ==================== 步骤3: 构建Docker镜像 ====================
 build_docker_image() {
-    log_step "步骤 3/9: 构建Docker镜像"
+    log_step "步骤 3/8: 构建Docker镜像"
     
     log_info "开始构建镜像 ${IMAGE_NAME}:${IMAGE_TAG}..."
     
@@ -141,7 +141,7 @@ build_docker_image() {
 
 # ==================== 步骤4: 推送镜像 ====================
 push_docker_image() {
-    log_step "步骤 4/9: 推送镜像到Registry"
+    log_step "步骤 4/8: 推送镜像到Registry"
     
     # 推送到内部 registry
     log_info "推送到内部 registry: ${REGISTRY_INTERNAL}"
@@ -158,7 +158,7 @@ push_docker_image() {
 
 # ==================== 步骤5: 更新K8s部署 ====================
 update_k8s_deployment() {
-    log_step "步骤 5/9: 更新Kubernetes部署"
+    log_step "步骤 5/8: 更新Kubernetes部署"
     
     log_info "更新 deployment 镜像..."
     ssh -p ${SSH_PORT} ${SERVER} "kubectl set image deployment/${DEPLOYMENT} \
@@ -173,7 +173,7 @@ update_k8s_deployment() {
 
 # ==================== 步骤6: 健康检查 ====================
 health_check() {
-    log_step "步骤 6/9: 健康检查"
+    log_step "步骤 6/8: 健康检查"
     
     log_info "等待服务就绪..."
     sleep 10
@@ -205,7 +205,7 @@ health_check() {
 
 # ==================== 步骤7: 清理过期镜像 ====================
 cleanup_old_images() {
-    log_step "步骤 7/9: 清理过期镜像"
+    log_step "步骤 7/8: 清理过期镜像"
     
     log_info "在184服务器上清理过期镜像（>${OLD_IMAGE_DAYS}天）..."
     
@@ -241,7 +241,7 @@ REMOTE_SCRIPT
 
 # ==================== 步骤8: 生成部署报告 ====================
 generate_report() {
-    log_step "步骤 8/9: 生成部署报告"
+    log_step "步骤 8/8: 生成部署报告"
     
     REPORT_FILE="deployment-report-$(date +%Y%m%d-%H%M%S).md"
     
