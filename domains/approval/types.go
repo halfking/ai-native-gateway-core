@@ -91,12 +91,13 @@ type SensitiveItemSummary struct {
 
 // SessionSummary provides a high-level overview of the session context.
 type SessionSummary struct {
-	MessageCount int      `json:"message_count"`
-	TotalTokens  int      `json:"total_tokens"`
-	Duration     string   `json:"duration"`
-	Topics       []string `json:"topics,omitempty"`
-	UserIntent   string   `json:"user_intent,omitempty"`
-	LastMessages []string `json:"last_messages,omitempty"` // Last 3 messages (redacted)
+	MessageCount   int      `json:"message_count"`
+	TotalTokens    int      `json:"total_tokens"`
+	Duration       string   `json:"duration"`
+	Topics         []string `json:"topics,omitempty"`
+	UserIntent     string   `json:"user_intent,omitempty"`
+	LastMessages   []string `json:"last_messages,omitempty"`   // Last 3 messages (redacted)
+	RiskAssessment string   `json:"risk_assessment,omitempty"` // LOW/MEDIUM/HIGH from summarizer
 }
 
 // ApprovalConfig defines approval settings for a tenant.

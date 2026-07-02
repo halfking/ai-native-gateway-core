@@ -37,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1879,30 +1880,69 @@ func main() {
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
 
-		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
-		// Provides REST API for querying, approving, and rejecting approval requests
-		// with statistics support. Complements the existing admin approval handlers.
-		if approvalMgr != nil {
-			approvalAPI := api.NewApprovalHandler(approvalMgr, api.NewAdminAuthAdapter())
-			mux.HandleFunc("/api/v1/approvals/", func(w http.ResponseWriter, r *http.Request) {
-				// Route to appropriate handler based on path suffix
-				path := r.URL.Path
-				switch {
-				case strings.HasSuffix(path, "/approve"):
-					wrapAdmin(approvalAPI.ApproveApproval)(w, r)
-				case strings.HasSuffix(path, "/reject"):
-					wrapAdmin(approvalAPI.RejectApproval)(w, r)
-				case strings.Contains(path, "/approvals/") && !strings.HasSuffix(path, "/approvals/"):
-					wrapAdmin(approvalAPI.GetApproval)(w, r)
-				default:
-					http.NotFound(w, r)
-				}
-			})
-			mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
-			mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
-			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+			// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
+			// Provides REST API for querying, approving, and rejecting approval requests
+			// with statistics support. Complements the existing admin approval handlers.
+			if approvalMgr != nil {
+				approvalAPI := api.NewApprovalHandler(approvalMgr, api.NewAdminAuthAdapter())
+				mux.HandleFunc("/api/v1/approvals/", func(w http.ResponseWriter, r *http.Request) {
+					// Route to appropriate handler based on path suffix
+					path := r.URL.Path
+					switch {
+					case strings.HasSuffix(path, "/approve"):
+						wrapAdmin(approvalAPI.ApproveApproval)(w, r)
+					case strings.HasSuffix(path, "/reject"):
+						wrapAdmin(approvalAPI.RejectApproval)(w, r)
+					case strings.Contains(path, "/approvals/") && !strings.HasSuffix(path, "/approvals/"):
+						wrapAdmin(approvalAPI.GetApproval)(w, r)
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
+				mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
+				slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+			}
+
+			// Phase 3.10 (2026-07-03, Task D1): Approval Configuration Management API
+			// Provides REST API for managing approval configuration, approvers, and rules.
+			// Enables tenant admins to configure approval workflows.
+			if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
+				approvalStore := approval.NewPGApprovalStore(dbConn.Pool(), redisBackendFromClient(redisClientForCache))
+				approvalConfigMgr := approval.NewConfigManager(approvalStore, redisBackendFromClient(redisClientForCache))
+				approvalConfigHandler := admin.NewApprovalConfigHandler(approvalConfigMgr)
+
+				// Configuration endpoints
+				mux.HandleFunc("/api/admin/tenants/", func(w http.ResponseWriter, r *http.Request) {
+					path := r.URL.Path
+					switch {
+					case strings.Contains(path, "/approval-config/stats"):
+						wrapAdmin(approvalConfigHandler.GetConfigStats)(w, r)
+					case strings.Contains(path, "/approval-config") && r.Method == http.MethodGet:
+						wrapAdmin(approvalConfigHandler.GetConfig)(w, r)
+					case strings.Contains(path, "/approval-config") && r.Method == http.MethodPut:
+						wrapAdmin(approvalConfigHandler.UpdateConfig)(w, r)
+					case strings.Contains(path, "/approvers/") && r.Method == http.MethodPut:
+						wrapAdmin(approvalConfigHandler.UpdateApprover)(w, r)
+					case strings.Contains(path, "/approvers/") && r.Method == http.MethodDelete:
+						wrapAdmin(approvalConfigHandler.DeleteApprover)(w, r)
+					case strings.Contains(path, "/approvers") && r.Method == http.MethodGet:
+						wrapAdmin(approvalConfigHandler.GetApprovers)(w, r)
+					case strings.Contains(path, "/approvers") && r.Method == http.MethodPost:
+						wrapAdmin(approvalConfigHandler.AddApprover)(w, r)
+					case strings.Contains(path, "/approval-rules/") && r.Method == http.MethodDelete:
+						wrapAdmin(approvalConfigHandler.DeleteRule)(w, r)
+					case strings.Contains(path, "/approval-rules") && r.Method == http.MethodGet:
+						wrapAdmin(approvalConfigHandler.GetRules)(w, r)
+					case strings.Contains(path, "/approval-rules") && r.Method == http.MethodPost:
+						wrapAdmin(approvalConfigHandler.AddRule)(w, r)
+					default:
+						http.NotFound(w, r)
+					}
+				})
+				slog.Info("Phase 3.10 approval configuration API enabled (/api/admin/tenants/{id}/approval-config, /approvers, /approval-rules)")
+			}
 		}
-	}
 
 	slog.Info("CHECKPOINT: before middleware stack build")
 	// ── Middleware stack (declarative chain) ─────────────────────────────

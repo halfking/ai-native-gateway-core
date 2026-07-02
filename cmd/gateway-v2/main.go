@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -52,6 +53,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // v2Config 简化的 v2 配置
@@ -520,8 +523,13 @@ func httpHandler(deps *v2Deps) http.Handler {
 		if err := deps.Pipeline.Execute(ctx, env); err != nil {
 			slog.Error("v2 chat/completions pipeline failed",
 				"request_id", env.Envelope.RequestID, "err", err)
+			// 遵循 env.StatusCode (security hook 设 403, 其他默认 500)
+			statusCode := env.StatusCode
+			if statusCode == 0 {
+				statusCode = http.StatusInternalServerError
+			}
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
+			w.WriteHeader(statusCode)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"error": map[string]any{
 					"message":    "internal error",
@@ -975,7 +983,82 @@ func httpHandler(deps *v2Deps) http.Handler {
 		})
 	})
 
+	// /metrics: Prometheus 格式指标端点。
+	// 暴露两部分:
+	//   1. prometheus.DefaultGatherer —— compression 包注册的
+	//      compression_triggered_total / compression_latency_seconds / compression_ratio
+	//      (这些用 prometheus.DefaultRegisterer)
+	//   2. deps.Metrics (自研 observability.Registry) —— requests_total 等
+	//      序列化为 Prometheus 文本格式追加在后面
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", prometheusTextContentType)
+
+		// 1. 标准 Prometheus 指标 (compression_*)
+		stdHandler := promhttp.HandlerFor(prometheus.DefaultGatherer,
+			promhttp.HandlerOpts{EnableOpenMetrics: false})
+		stdHandler.ServeHTTP(w, r)
+
+		// 2. 自研 Registry 指标 (requests_total 等) —— 追加为文本
+		if deps.Metrics != nil {
+			renderInMemoryMetrics(w, deps.Metrics)
+		}
+	})
+
 	return mux
+}
+
+// prometheusTextContentType is the standard Prometheus text exposition format.
+const prometheusTextContentType = "text/plain; version=0.0.4; charset=utf-8"
+
+// renderInMemoryMetrics serializes the v2 in-memory observability.Registry
+// (Counters + Histograms) into Prometheus text format and writes it to w.
+// This is appended after the standard promhttp output so /metrics shows both
+// the compression_* metrics (prometheus.DefaultRegisterer) and the v2 pipeline
+// counters (requests_total etc.).
+func renderInMemoryMetrics(w http.ResponseWriter, reg *observability.Registry) {
+	// Counters
+	for _, c := range reg.Counters() {
+		fmt.Fprintf(w, "# TYPE %s counter\n", c.Name)
+		fmt.Fprintf(w, "%s%s %v\n", c.Name, renderLabels(c.Labels), c.Value)
+	}
+	// Histograms
+	for _, h := range reg.Histograms() {
+		fmt.Fprintf(w, "# TYPE %s histogram\n", h.Name)
+		lbl := renderLabels(h.Labels)
+		for i, b := range h.Buckets {
+			fmt.Fprintf(w, "%s_bucket%s{le=\"%g\"} %d\n", h.Name, lbl, b, h.Counts[i])
+		}
+		fmt.Fprintf(w, "%s_bucket%s{le=\"+Inf\"} %d\n", h.Name, lbl, h.Counts[len(h.Buckets)])
+		fmt.Fprintf(w, "%s_sum%s %g\n", h.Name, lbl, h.Sum)
+		fmt.Fprintf(w, "%s_count%s %d\n", h.Name, lbl, h.Count)
+	}
+}
+
+// renderLabels renders a label map as Prometheus {k="v",...} suffix,
+// or empty string if nil/empty.
+func renderLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	// deterministic order
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(k)
+		b.WriteString("=\"")
+		b.WriteString(labels[k])
+		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+	return b.String()
 }
 
 func main() {
