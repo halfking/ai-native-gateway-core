@@ -69,6 +69,11 @@ type SessionContext struct {
 	LLMReceivedAt     time.Time // 收到 LLM 响应时间
 	ClientRespondedAt time.Time // 响应客户端完成时间
 
+	// ─── 审批流程 ───
+	ApprovalRequestID string         // 审批请求 ID
+	ApprovalStatus    string         // 审批状态：pending, approved, rejected, timeout
+	ApprovalResult    map[string]any // 审批结果详情
+
 	// ─── 扩展元数据 ───
 	// 用于在不同组件间传递额外信息
 	Metadata map[string]any
