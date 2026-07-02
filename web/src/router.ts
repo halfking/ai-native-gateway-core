@@ -48,6 +48,9 @@ import ProbeHealthDetailView  from './views/ProbeHealthDetailView.vue'
 import AgentRegistryView    from './views/AgentRegistryView.vue'
 import FormatAnomaliesView  from './views/FormatAnomaliesView.vue'
 import ModulesView          from './views/ModulesView.vue'
+import ApprovalConfigView   from './views/ApprovalConfigView.vue'
+import ApprovalListView     from './views/ApprovalListView.vue'
+import ApprovalDetailView   from './views/ApprovalDetailView.vue'
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)
@@ -135,6 +138,9 @@ export const router = createRouter({
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },
     { path: '/admin/agents',       component: AgentRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/modules',      component: ModulesView, meta: { requiresSuper: true } },
+    { path: '/admin/approval-config', component: ApprovalConfigView, meta: { requiresSuper: true } },
+    { path: '/admin/approvals',    component: ApprovalListView, meta: { requiresSuper: true } },
+    { path: '/admin/approvals/:id', component: ApprovalDetailView, meta: { requiresSuper: true } },
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 
