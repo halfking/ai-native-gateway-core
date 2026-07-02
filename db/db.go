@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"database/sql"
+	"github.com/jackc/pgx/v5/stdlib"
+
+
 )
 
 type DB struct {
@@ -460,6 +464,15 @@ func (d *DB) Pool() *pgxpool.Pool {
 		return nil
 	}
 	return d.pool
+}
+
+// Stdlib 返回一个 database/sql.DB，用于需要 *sql.DB 接口的场景。
+// 注意：返回的 *sql.DB 与 Pool() 共享底层连接池，调用方不应关闭它。
+func (d *DB) Stdlib() *sql.DB {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	return stdlib.OpenDB(*d.pool.Config().ConnConfig)
 }
 
 func (d *DB) Close() {
