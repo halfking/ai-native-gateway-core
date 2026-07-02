@@ -149,6 +149,46 @@ func (b *OSSStorageBackend) DeleteFile(relPath string) error {
 	return nil
 }
 
+// HealthCheck 实现 StorageBackend 接口
+func (b *OSSStorageBackend) HealthCheck() error {
+	// 检查 bucket 是否可访问 - 尝试列举对象（limit=1）
+	lsRes, err := b.bucket.ListObjects(oss.MaxKeys(1))
+	if err != nil {
+		return fmt.Errorf("oss storage: bucket not accessible: %w", err)
+	}
+	_ = lsRes // 只要不报错就说明可访问
+
+	// 测试写入权限：上传并删除一个小文件
+	testKey := path.Join(b.prefix, ".health_check")
+	testData := []byte("health check")
+	
+	if err := b.bucket.PutObject(testKey, bytes.NewReader(testData)); err != nil {
+		return fmt.Errorf("oss storage: cannot write test object (permission denied?): %w", err)
+	}
+
+	// 清理测试对象
+	_ = b.bucket.DeleteObject(testKey)
+
+	return nil
+}
+
+// Info 实现 StorageBackend 接口
+func (b *OSSStorageBackend) Info() BackendInfo {
+	metadata := map[string]string{
+		"bucket": b.bucket.BucketName,
+	}
+	
+	if b.prefix != "" {
+		metadata["prefix"] = b.prefix
+	}
+
+	return BackendInfo{
+		Type:     "oss",
+		Location: b.client.Config.Endpoint,
+		Metadata: metadata,
+	}
+}
+
 // objectKey 拼接对象键：prefix/relPath
 // 使用 path.Join 而非 filepath.Join，因为对象存储键总是用 "/" 分隔
 func (b *OSSStorageBackend) objectKey(relPath string) string {
