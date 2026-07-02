@@ -476,6 +476,12 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		}
 	case "credentials":
 		h.handleProviderCredentials(w, r, providerID, "")
+	case "set-free-models":
+		if r.Method == http.MethodPost {
+			h.setFreeModels(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "POST required")
+		}
 	case "settings":
 		if r.Method == http.MethodGet {
 			h.getProviderSettings(w, r, providerID)
