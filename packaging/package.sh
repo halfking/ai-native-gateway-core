@@ -47,7 +47,7 @@ echo "═══ 2. 准备 3 个镜像 ═══"
 APP_IMG="kx-llm-gateway-go:${VERSION}"
 echo "  ▶ 构建应用镜像 ${APP_IMG} ..."
 cd "${PROJECT_ROOT}"
-docker build -t "${APP_IMG}" .
+docker build --no-cache -t "${APP_IMG}" .
 
 # 2.2 数据库镜像
 DB_IMG="citusdata/citus:11.3.0"
