@@ -23,6 +23,7 @@ type SessionAuditHook struct {
 	detector    *sessionaudit.FastDetector
 	eventBus    *eventbus.MemoryBus
 	approvalMgr *sessionaudit.ApprovalManager // v1 路径使用：NeedApproval 时 Enqueue 审批；v2 demo 传 nil
+	notifier    ApprovalNotifier              // 审批通知器（IM 下发），可为 nil（不发送通知）
 	enabled     bool
 }
 
@@ -47,6 +48,19 @@ func NewSessionAuditHookV1(detector *sessionaudit.FastDetector, bus *eventbus.Me
 		approvalMgr: mgr,
 		enabled:     true,
 	}
+}
+
+
+// SetNotifier 注入审批通知器。
+// ApprovalNotifier 接口定义在 approval_hook.go（同包）。
+// notification.ApprovalNotifier 实现了此接口，可直接注入。
+// 必须在 CheckV1 / Execute 被调用前设置（main.go 初始化阶段调用）。
+// 传 nil 可关闭通知（审批记录仍创建，只是不推送 IM）。
+func (h *SessionAuditHook) SetNotifier(n ApprovalNotifier) {
+	if h == nil {
+		return
+	}
+	h.notifier = n
 }
 
 func (h *SessionAuditHook) Name() string {
@@ -245,6 +259,26 @@ func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, mod
 				Snapshot:     snapshot,
 				ExpiresAt:    time.Now().Add(15 * time.Minute),
 			})
+		}
+		// 创建审批后发送 IM 通知（best-effort，不阻断审批流程）
+		if h.notifier != nil {
+			record, gerr := h.approvalMgr.GetForTenant(ctx, approvalID, tenantID)
+			if gerr == nil && record != nil {
+				if nerr := h.notifier.NotifyApproval(ctx, record); nerr != nil {
+					slog.Error("session-audit CheckV1 notify failed",
+						"approval_id", approvalID,
+						"tenant_id", tenantID,
+						"error", nerr)
+				} else {
+					slog.Info("session-audit CheckV1 notified",
+						"approval_id", approvalID,
+						"tenant_id", tenantID)
+				}
+			} else if gerr != nil {
+				slog.Error("session-audit CheckV1 get record for notify failed",
+					"approval_id", approvalID,
+					"error", gerr)
+			}
 		}
 		return CheckV1Result{
 			Decision:   sessionaudit.DecisionNeedApproval,
