@@ -204,7 +204,69 @@ func TestHeadroomCompressor_SessionStitching(t *testing.T) {
 		t.Error("First message should be compression metadata")
 	}
 
+	// StitchSession must not mutate the source log.
+	logBefore := compressor.GetCompressionLog()
+	if logBefore.SessionID != "" {
+		t.Errorf("StitchSession must not mutate receiver log SessionID, got %q", logBefore.SessionID)
+	}
+
 	t.Logf("Session stitching successful:")
 	t.Logf("  Stitched messages: %d", len(stitched))
 	t.Logf("  Metadata: %s", stitched[0].Content)
+}
+
+// TestHeadroomCompressor_PreservesExtraFields verifies that non-content
+// fields (tool_calls, tool_call_id, name) survive compression and that the
+// output stays in the original conversation order.
+func TestHeadroomCompressor_PreservesExtraFields(t *testing.T) {
+	config := HeadroomConfig{
+		TargetRatio:         0.5,
+		MaxTokens:           2000,
+		EnableSmartCrusher:  true,
+		EnableAdaptiveSizer: true,
+		PreserveSystem:      true,
+		PreserveLastN:       0,
+	}
+	compressor, err := NewHeadroomCompressor(config)
+	if err != nil {
+		t.Fatalf("Failed to create compressor: %v", err)
+	}
+
+	// Message with tool fields that must survive.
+	messages := []map[string]interface{}{
+		{"role": "system", "content": "You are a helpful assistant."},
+		{
+			"role":    "assistant",
+			"content": "Um, let me, like, call a tool.",
+			"tool_calls": []map[string]interface{}{
+				{"id": "call_1", "type": "function", "function": map[string]interface{}{"name": "get_weather"}},
+			},
+		},
+		{
+			"role":         "tool",
+			"tool_call_id": "call_1",
+			"content":      "Sunny, 25C",
+		},
+	}
+
+	out, err := compressor.Compress(context.Background(), messages, 500)
+	if err != nil {
+		t.Fatalf("Compress failed: %v", err)
+	}
+	if len(out) != len(messages) {
+		t.Fatalf("expected %d messages, got %d", len(messages), len(out))
+	}
+
+	// Order preserved.
+	if out[0]["role"] != "system" || out[1]["role"] != "assistant" || out[2]["role"] != "tool" {
+		t.Fatalf("message order changed: %v %v %v", out[0]["role"], out[1]["role"], out[2]["role"])
+	}
+
+	// Extra fields preserved verbatim.
+	if _, ok := out[1]["tool_calls"]; !ok {
+		t.Error("tool_calls field was dropped by compression")
+	}
+	if _, ok := out[2]["tool_call_id"]; !ok {
+		t.Error("tool_call_id field was dropped by compression")
+	}
 }
