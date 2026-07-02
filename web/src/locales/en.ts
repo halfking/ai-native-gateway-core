@@ -37,4 +37,25 @@ export default {
   // Version info
   version: 'Version',
   build: 'Build',
+
+  // 2026-07-02 (request-logs 附件展示): Attachment-related strings, aligned
+  // with the reference doc §6 i18n key list.
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: 'Attachments',
+        attachmentCountTitle: '{n} attachment(s)',
+        noAttachments: 'No attachments',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 Attachments',
+      attachmentsLoading: 'Loading attachments…',
+      noAttachments: 'No attachments',
+      clickToPreviewTitle: 'Click to preview',
+      download: 'Download',
+      downloadOriginal: 'Download original',
+      closePreview: 'Close',
+    },
+  },
 }

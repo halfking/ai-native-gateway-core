@@ -37,4 +37,25 @@ export default {
   // معلومات الإصدار
   version: 'الإصدار',
   build: 'البناء',
+
+  // 2026-07-02 (عرض مرفقات request-logs): نصوص المرفقات، وفقًا لوثيقة
+  // المرجع §6.
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: 'مرفقات',
+        attachmentCountTitle: '{n} مرفق(ات)',
+        noAttachments: 'لا توجد مرفقات',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 مرفقات',
+      attachmentsLoading: 'جارٍ تحميل المرفقات…',
+      noAttachments: 'لا توجد مرفقات',
+      clickToPreviewTitle: 'انقر للمعاينة',
+      download: 'تنزيل',
+      downloadOriginal: 'تنزيل الأصلي',
+      closePreview: 'إغلاق',
+    },
+  },
 }
