@@ -124,6 +124,23 @@ func (s *Storage) BaseDir() string {
 	return s.baseDir
 }
 
+// HealthCheck 执行存储后端健康检查
+// 返回 error 如果后端不可用
+func (s *Storage) HealthCheck() error {
+	if s == nil || s.backend == nil {
+		return errors.New("attachments: storage or backend is nil")
+	}
+	return s.backend.HealthCheck()
+}
+
+// BackendInfo 返回后端信息（类型、位置等）
+func (s *Storage) BackendInfo() BackendInfo {
+	if s == nil || s.backend == nil {
+		return BackendInfo{Type: "unknown", Location: ""}
+	}
+	return s.backend.Info()
+}
+
 // SetBaseDir 热切换存储根目录。dir 为空时默认 ./data/attachments。
 // 会 MkdirAll 新目录、清空 mkdirCache（避免对旧目录的缓存误判新目录）。
 // 写锁，与并发的 SaveBase64Image/Load 互斥。

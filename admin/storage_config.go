@@ -619,3 +619,45 @@ func auditSettingChange(user, role, key, newVal string) {
 	slog.Info("storage config updated",
 		"user", user, "role", role, "key", key, "new_val", newVal)
 }
+
+// handleStorageHealthCheck 处理 GET /api/admin/storage/health
+// 检查当前存储后端的健康状态
+func (h *Handler) handleStorageHealthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if h.attachmentStorage == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"healthy": false,
+			"error":   "attachment storage not initialized",
+		})
+		return
+	}
+
+	// 获取后端信息
+	backendInfo := h.attachmentStorage.BackendInfo()
+	
+	response := map[string]interface{}{
+		"backend_type": backendInfo.Type,
+		"location":     backendInfo.Location,
+		"metadata":     backendInfo.Metadata,
+	}
+
+	// 执行健康检查
+	if err := h.attachmentStorage.HealthCheck(); err != nil {
+		response["healthy"] = false
+		response["error"] = err.Error()
+		slog.Warn("storage health check failed", 
+			"backend", backendInfo.Type, 
+			"location", backendInfo.Location,
+			"error", err)
+		writeJSON(w, http.StatusServiceUnavailable, response)
+		return
+	}
+
+	response["healthy"] = true
+	writeJSON(w, http.StatusOK, response)
+}
+
