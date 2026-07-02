@@ -279,7 +279,34 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// entire credential's availability_state.
 		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_network", recoverAt, detail)
+	case errorsx.KindModelNotFound:
+		// 2026-07-03 fix: Bug #10 - model_not_found should write state
+		// (removed from IsClientBug). When upstream deprecates a model,
+		// mark it unavailable with a long cooling period (7 days) so we
+		// don't repeatedly try it, but allow eventual retry in case the
+		// model is restored.
+		recoverAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_not_found", recoverAt, detail)
+	case errorsx.KindContextLength:
+		// 2026-07-03 fix: Bug #2 - context_length_exceeded is per-request
+		// but indicates the model configuration may be wrong. Mark unavailable
+		// with short cooling (5 min) to avoid immediate retry but allow quick
+		// recovery if admin fixes the issue.
+		recoverAt := time.Now().UTC().Add(5 * time.Minute)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_context_length_exceeded", recoverAt, detail)
+	case errorsx.KindUnsupportedFeature:
+		// 2026-07-03 fix: Bug #2 - unsupported_feature (e.g., tools not supported)
+		// is configuration-related. Mark unavailable with medium cooling (1 hour)
+		// to avoid repeated failures but allow retry after potential config fix.
+		recoverAt := time.Now().UTC().Add(1 * time.Hour)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_unsupported_feature", recoverAt, detail)
+	case errorsx.KindToolCallIdMismatch, errorsx.KindCanceled:
+		// 2026-07-03 fix: Bug #2 - true client bugs (tool_call_id_mismatch,
+		// canceled) should NOT write any state - these are client errors that
+		// don't reflect provider/model availability.
+		return nil
 	default:
+		// Unknown error kinds: log but don't write state to avoid false negatives
 		return nil
 	}
 }
