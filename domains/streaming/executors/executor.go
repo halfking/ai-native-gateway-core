@@ -718,7 +718,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// "every provider failed simultaneously" outage is diagnosable from
 		// this single log line.
 		reasonCounts := make(map[string]int, 8)
-		for _, c := range params.Candidates {
+		// 2026-07-03: 限制主循环最多尝试 5 个候选，避免配额耗尽时遍历所有凭据
+		const maxCandidatesPerRequest = 5
+		candidatesToTry := params.Candidates
+		if len(candidatesToTry) > maxCandidatesPerRequest {
+			candidatesToTry = candidatesToTry[:maxCandidatesPerRequest]
+		}
+		for _, c := range candidatesToTry {
 			reason := c.UnavailableReason()
 			if reason == "" {
 				reason = "unknown"
@@ -1315,16 +1321,20 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// ── 同步重试：非流式请求，全候选失败后保持连接继续重试 ──────────
 	// 2026-06-21: 客户端在等待，不返回错误、不启动异步 goroutine，
 	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
+	// 2026-07-03: 增加最多 3 轮重试限制（加主循环共 4 轮），避免死循环。
+	const maxSyncRetryRounds = 3
 	if !params.IsStream && e.SyncRetryTimeout > 0 && tried > 0 {
 		retried := 0
+		retryRound := 0
 		e.asyncDepth.Add(1)
 		defer e.asyncDepth.Add(-1)
 
 		deadline := time.Now().Add(e.SyncRetryTimeout)
 
 	syncRetryLoop:
-		for time.Now().Before(deadline) {
+		for time.Now().Before(deadline) && retryRound < maxSyncRetryRounds {
 			retried++
+			retryRound++
 
 			// 检查客户端是否已断开
 			if err := params.R.Context().Err(); err != nil {
