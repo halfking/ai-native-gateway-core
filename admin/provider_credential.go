@@ -39,6 +39,7 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		APIKey           string  `json:"api_key"`
 		ConcurrencyLimit *int    `json:"concurrency_limit"`
 		FpSlotLimit      *int    `json:"fp_slot_limit"`
+		PlanType         *string `json:"plan_type"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -47,6 +48,14 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.APIKey == "" {
 		writeError(w, http.StatusBadRequest, "api_key required")
 		return
+	}
+	planType := "token"
+	if req.PlanType != nil && *req.PlanType != "" {
+		if !isValidPlanType(*req.PlanType) {
+			writeError(w, http.StatusBadRequest, "invalid plan_type; allowed: token, token_plan, code_plan, agent_plan, monthly, free")
+			return
+		}
+		planType = *req.PlanType
 	}
 
 	encrypted, err := h.encryptCred([]byte(req.APIKey))
@@ -73,10 +82,10 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd)
-		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0)
+		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type)
+		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6)
 		RETURNING id
-	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit).Scan(&id)
+	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
@@ -108,6 +117,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
 		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
+		       COALESCE(c.plan_type,'token') AS plan_type,
 		       COALESCE(c.circuit_state,'closed'),
 		       c.circuit_opened_at,
 		       COALESCE(c.consecutive_failures, 0),
@@ -156,6 +166,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		TrustLevel             string     `json:"trust_level"`
 		ConcurrencyLimit       *int       `json:"concurrency_limit"`
 		BalanceUSD             *float64   `json:"balance_usd"`
+		PlanType               string     `json:"plan_type"`
 		CircuitState           string     `json:"circuit_state"`
 		CircuitOpenedAt        *time.Time `json:"circuit_opened_at"`
 		ConsecutiveFailures    int        `json:"consecutive_failures"`
@@ -205,6 +216,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.TrustLevel, &c.ConcurrencyLimit,
 			&c.FpSlotLimit,
 			&balanceUSD,
+			&c.PlanType,
 			&c.CircuitState,
 			&c.CircuitOpenedAt,
 			&c.ConsecutiveFailures,
@@ -302,6 +314,7 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		Tags             []string `json:"tags"`
 		Notes            *string  `json:"notes"`
 		BalanceUSD       *float64 `json:"balance_usd"`
+		PlanType         *string  `json:"plan_type"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -401,6 +414,50 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	if req.BalanceUSD != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET balance_usd = $1 WHERE id = $2 AND provider_id = $3`, *req.BalanceUSD, credID, providerID)
+	}
+	if req.PlanType != nil {
+		if !isValidPlanType(*req.PlanType) {
+			writeError(w, http.StatusBadRequest, "invalid plan_type; allowed: token, token_plan, code_plan, agent_plan, monthly, free")
+			return
+		}
+		// 检查 plan_type 是否变化（避免不必要的级联）
+		var prevPlan sql.NullString
+		_ = h.db.QueryRow(ctx, `SELECT plan_type FROM credentials WHERE id = $1 AND provider_id = $2`, credID, providerID).Scan(&prevPlan)
+		planChanged := !prevPlan.Valid || prevPlan.String != *req.PlanType
+		if planChanged {
+			tx, txErr := h.db.Begin(ctx)
+			if txErr != nil {
+				writeError(w, http.StatusInternalServerError, "begin tx: "+txErr.Error())
+				return
+			}
+			defer func() {
+				if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+					slog.Warn("plan_type update rollback failed", "error", rbErr, "credential_id", credID)
+				}
+			}()
+			if _, e := tx.Exec(ctx, `UPDATE credentials SET plan_type = $1, updated_at = NOW() WHERE id = $2 AND provider_id = $3`, *req.PlanType, credID, providerID); e != nil {
+				writeError(w, http.StatusInternalServerError, "update plan_type: "+e.Error())
+				return
+			}
+			// 级联更新 cmb.billing_mode（仅 plan_type_origin='auto' 的行，保护手动覆盖）
+			if _, e := tx.Exec(ctx, `
+				UPDATE credential_model_bindings cmb
+				SET billing_mode = CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END,
+				    plan_type_origin = 'auto',
+				    updated_at = NOW()
+				WHERE cmb.credential_id = $2
+				  AND cmb.plan_type_origin = 'auto'
+			`, *req.PlanType, credID); e != nil {
+				writeError(w, http.StatusInternalServerError, "cascade cmb: "+e.Error())
+				return
+			}
+			if e := tx.Commit(ctx); e != nil {
+				writeError(w, http.StatusInternalServerError, "commit: "+e.Error())
+				return
+			}
+			slog.Info("plan_type updated + cmb cascaded",
+				"credential_id", credID, "old", prevPlan.String, "new", *req.PlanType)
+		}
 	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
