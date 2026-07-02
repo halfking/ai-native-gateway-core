@@ -13,11 +13,18 @@
 #
 # 卸载: docker compose -f <path> down
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   citus:
     image: kx-citus:v11.3.0
     container_name: kx-citus
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: kxuser
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
@@ -39,6 +46,7 @@ services:
     image: kx-redis:v7-alpine
     container_name: kx-redis
     restart: unless-stopped
+    logging: *default-logging
     command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -56,6 +64,7 @@ services:
     image: kx-llm-gateway-go:${APP_IMAGE_TAG}
     container_name: kx-llm-gateway-go
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       citus: { condition: service_healthy }
       redis: { condition: service_healthy }
