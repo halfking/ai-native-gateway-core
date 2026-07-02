@@ -25,9 +25,22 @@ func UpsertCredentialModel(ctx context.Context, db *pgxpool.Pool, credentialID i
 	return err
 }
 
+// DeriveBillingMode maps a credential's plan_type to the cmb.billing_mode
+// value that discovery should write. Mirrors the CASE WHEN in
+// upsertCredentialModelSQL and migrations/136. Kept in sync so the Go-side
+// rule is unit-testable without a database.
+//
+// token → per_token (legacy alias); everything else passes through.
+func DeriveBillingMode(planType string) string {
+	if planType == "" || planType == "token" {
+		return "per_token"
+	}
+	return planType
+}
+
 const upsertCredentialModelSQL = `
 WITH cred AS (
-    SELECT provider_id FROM credentials WHERE id = $1
+    SELECT provider_id, plan_type FROM credentials WHERE id = $1
 ),
 upsert_pm AS (
     INSERT INTO provider_models (provider_id, raw_model_name, canonical_id, standardized_name, available, last_seen_at)
@@ -43,9 +56,14 @@ upsert_pm AS (
 INSERT INTO credential_model_bindings (
     credential_id, provider_model_id, available,
     routing_tier, weight, manual_priority,
-    success_rate, p95_latency_ms
+    success_rate, p95_latency_ms,
+    billing_mode, plan_type_origin
 )
-SELECT $1, upsert_pm.id, TRUE, 2, 100, 99, 0.9, 0 FROM upsert_pm
+SELECT
+    $1, upsert_pm.id, TRUE, 2, 100, 99, 0.9, 0,
+    CASE WHEN cred.plan_type = 'token' THEN 'per_token' ELSE COALESCE(cred.plan_type, 'per_token') END,
+    'auto'
+FROM upsert_pm, cred
 ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
     updated_at = NOW(),
     available = CASE

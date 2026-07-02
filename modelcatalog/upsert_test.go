@@ -71,7 +71,7 @@ func TestUpsertSQL_DerivesBillingModeFromPlanType(t *testing.T) {
 	s := upsertCredentialModelSQL
 
 	required := []string{
-		"c.plan_type",                        // cred CTE pulls plan_type
+		"plan_type",                          // cred CTE pulls plan_type
 		"CASE WHEN cred.plan_type = 'token'", // mapping logic
 		"'per_token'",                        // legacy alias
 		"'auto'",                             // plan_type_origin default
