@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -63,7 +64,7 @@ func (r *Runner) InitSchema(logger func(string)) error {
 
 // applySQL 应用单个 SQL 文件（通过 docker exec + stdin）
 func (r *Runner) applySQL(filename string) error {
-	sqlPath := fmt.Sprintf("%s/%s", r.SQLDir, filename)
+	sqlPath := filepath.Join(r.SQLDir, filename)
 	content, err := readFile(sqlPath)
 	if err != nil {
 		return err

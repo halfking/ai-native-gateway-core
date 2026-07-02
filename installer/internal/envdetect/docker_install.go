@@ -48,7 +48,7 @@ func PlanInstall(info *OSInfo, hasInternet bool) *InstallStrategy {
 	if info.Distribution == DistOpenEuler && !hasInternet {
 		return &InstallStrategy{
 			Method:       "isulad",
-			RequiresSudo: info.HasSudo || os.Geteuid() == 0,
+			RequiresSudo: !(info.HasSudo || os.Geteuid() == 0), // 非 root 且无 sudo 才需要加 sudo 前缀
 			Description:  "openEuler 自带 iSulad（兼容 docker）",
 			Steps: []string{
 				"systemctl enable --now isulad",
