@@ -109,7 +109,7 @@ func (a *ReputationAnalyzer) AnalyzeProviderReputation(ctx context.Context, prov
 		rep.UnresolvedCount = len(unresolved)
 	}
 
-	rep.UptimePercentage = a.calculateUptime(timeseries, rep.RecentIncidents, days)
+	rep.UptimePercentage = a.calculateUptimeAt(timeseries, rep.RecentIncidents, days, a.now())
 	return rep, nil
 }
 
@@ -145,7 +145,7 @@ func (a *ReputationAnalyzer) DetectAnomaliesFor(ctx context.Context, providerID,
 		// 1. 错误率飙升：前一日 <10% 且今日 >30%
 		if prev.ErrorRate < t.ErrorRatePrevBelow && curr.ErrorRate > t.ErrorRateJumpAbove {
 			severity := ImpactHigh
-			if curr.ErrorRate > 0.6 {
+			if curr.ErrorRate >= 0.5 {
 				severity = ImpactCritical
 			}
 			anomalies = append(anomalies, Anomaly{
@@ -166,7 +166,7 @@ func (a *ReputationAnalyzer) DetectAnomaliesFor(ctx context.Context, providerID,
 			curr.AvgLatencyMs > t.LatencyMinMs &&
 			curr.AvgLatencyMs > prev.AvgLatencyMs*t.LatencyMultiplier {
 			severity := ImpactMedium
-			if curr.AvgLatencyMs > t.LatencyMinMs*3 {
+			if curr.AvgLatencyMs >= t.LatencyMinMs*3 {
 				severity = ImpactHigh
 			}
 			anomalies = append(anomalies, Anomaly{
@@ -276,17 +276,23 @@ func CalculateStabilityScore(rows []TimeseriesRow) float64 {
 	return score
 }
 
-// calculateUptime 计算 uptime 百分比
-//
-// 简化模型：
-//   - 基础 uptime = mean(reliability) over 窗口
-//   - 减去事件影响：每个未解决事件按 duration / window 折扣
+// calculateUptime 计算 uptime 百分比（使用注入的时钟）
 func (a *ReputationAnalyzer) calculateUptime(rows []TimeseriesRow, incidents []Incident, days int) float64 {
-	return CalculateUptime(rows, incidents, days)
+	return a.calculateUptimeAt(rows, incidents, days, a.now())
 }
 
-// CalculateUptime 公开的 uptime 计算（纯函数）
+// calculateUptimeAt 使用显式 now 计算 uptime（便于测试）
+func (a *ReputationAnalyzer) calculateUptimeAt(rows []TimeseriesRow, incidents []Incident, days int, now time.Time) float64 {
+	return CalculateUptimeAt(rows, incidents, days, now)
+}
+
+// CalculateUptime 公开的 uptime 计算（纯函数；使用 time.Now()）
 func CalculateUptime(rows []TimeseriesRow, incidents []Incident, days int) float64 {
+	return CalculateUptimeAt(rows, incidents, days, time.Now())
+}
+
+// CalculateUptimeAt 使用显式 now 计算 uptime（便于测试）
+func CalculateUptimeAt(rows []TimeseriesRow, incidents []Incident, days int, now time.Time) float64 {
 	if days <= 0 {
 		days = 7
 	}
@@ -309,11 +315,16 @@ func CalculateUptime(rows []TimeseriesRow, incidents []Incident, days int) float
 	}
 	incidentPenalty := 0.0
 	for _, inc := range incidents {
-		dur := inc.ResolvedDuration()
-		if dur <= 0 {
-			dur = 5 * time.Minute // 未结束事件默认 5 分钟影响
+		var dur time.Duration
+		if inc.EndedAt != nil {
+			dur = inc.EndedAt.Sub(inc.StartedAt)
+		} else {
+			dur = now.Sub(inc.StartedAt)
 		}
-		fraction := float64(dur) / windowSeconds
+		if dur <= 0 {
+			dur = 5 * time.Minute // 未结束事件最小 5 分钟影响
+		}
+		fraction := dur.Seconds() / windowSeconds
 		// 按影响级别加权
 		weight := 1.0
 		switch inc.Impact {
