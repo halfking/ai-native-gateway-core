@@ -8,10 +8,12 @@ $ScriptDir = $PSScriptRoot
 
 # ── 探测当前 OS / arch ─────────────────────────────────────────
 $OS = 'windows'
-$Arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {
-    'arm64'
+# 注意：PowerShell 5.1 不支持 if 作为表达式（$x = if (...) { ... }）
+# 用 if/else 分支赋值更兼容
+if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {
+    $Arch = 'arm64'
 } else {
-    'amd64'
+    $Arch = 'amd64'
 }
 
 # ── 选用二进制 ─────────────────────────────────────────────────
