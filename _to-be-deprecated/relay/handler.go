@@ -21,7 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/auth"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/circuit"
-	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/compressor"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/_to-be-deprecated/identity"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"

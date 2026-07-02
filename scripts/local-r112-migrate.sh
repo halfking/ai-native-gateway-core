@@ -126,10 +126,13 @@ info "应用 migrations (目录: $MIGRATIONS_DIR)..."
 
 # 排序: 001-052 (主序列) + 291-300 (补丁序列)
 # 用 sort -V 自动处理
-mapfile -t MIGRATION_FILES < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" -type f | sort)
+# 排除 .down.sql 回滚脚本 (正向迁移不执行回滚)
+mapfile -t MIGRATION_FILES < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name "*.sql" ! -name "*.down.sql" -type f | sort)
 
-# 本地 R1.12 只跑 schema 迁移，跳过含 demo seed / 外部依赖的迁移。
-SKIP_MIGRATIONS_REGEX='^(002_work_types\.sql|004_tuning_signals\.sql|005_tuning_proposals\.sql|021_tool_registry_and_metatools\.sql|029_seed_tool_registry\.sql)$'
+# 本地 R1.12 只跑 schema 迁移，跳过含 demo seed / 外部依赖 / Citus 兼容性问题的迁移。
+# Citus 11.3 (PG 15) 对部分索引谓词的 IMMUTABLE 检查更严, 且缺少某些函数
+# (round(double,int)), 这些 migration 在生产 PG 16+ 上能跑, 本地跳过。
+SKIP_MIGRATIONS_REGEX='^(002_work_types\.sql|004_tuning_signals\.sql|005_tuning_proposals\.sql|021_tool_registry_and_metatools\.sql|029_seed_tool_registry\.sql|031_provider_settings\.sql|033_credential_model_call_history\.sql|036_fp_slot_limit\.sql|302_unified_probe_scheduler\.sql|304_model_health_dashboard\.sql|308_probe_dashboard_state_alignment\.sql|310_session_summaries\.sql|313_probe_dashboard_followup\.sql|315_prompt_injection_detection\.sql|316_output_compliance_monitoring\.sql|317_partition_credential_model_index\.sql|321_cleanup_stale_in_progress\.sql)$'
 
 if [ "${#MIGRATION_FILES[@]}" -eq 0 ]; then
   err "未找到 .sql 迁移文件"
@@ -182,6 +185,20 @@ done
 
 # ── 总结 ──
 ok "Migrations 完成: $APPLIED applied, $SKIPPED skipped, $FAILED failed (total $TOTAL)"
+
+# ── 加载本地 mock credential seed (让 v1 /v1/chat 能转发到 mock) ──
+LOCAL_SEED="$ROOT_DIR/deploy/sql/03-local-mock-credential.sql"
+if [ -f "$LOCAL_SEED" ]; then
+  info "加载本地 mock credential seed: $(basename "$LOCAL_SEED")"
+  if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
+       -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+       -v ON_ERROR_STOP=1 -f - < "$LOCAL_SEED" >/dev/null 2>&1; then
+    ok "local mock credential seed 已加载 (provider=local-mock, model=gpt-4o)"
+  else
+    err "local mock credential seed 加载失败 (非致命, v1 chat 转发将不可用)"
+    err "  排查: PGPASSWORD=$PG_PASS docker exec -i $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $LOCAL_SEED"
+  fi
+fi
 
 # ── 验证 ──
 TABLE_COUNT=$(pg_exec_db "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null || echo "?")

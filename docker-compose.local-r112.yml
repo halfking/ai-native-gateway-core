@@ -8,9 +8,11 @@
 # 端口映射 (避免与本地其他 compose 冲突):
 #   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
 #   - 6379  redis
-#   - 1080  llm-mock  (mockserver, OpenAI 兼容)
-#   - 8782  gateway-v2 (本仓库 cmd/gateway-v2)
-#   - 10302 memora-mcp (mock 占位, 注释说明)
+#   - 1080  llm-mock       (nginx 健康桩, 供 healthcheck 依赖)
+#   - 18080 llm-mock-upstream (真 OpenAI 兼容 mock, aiohttp)
+#   - 8781  gateway        (v1 生产入口, cmd/gateway)
+#   - 8782  gateway-v2     (v2 演示入口, cmd/gateway-v2)
+#   - 10302 memora-mcp     (mock 占位, 注释说明)
 #
 # 所有 volume 名前缀 r112_ —— 避免与本地其他 docker-compose 冲突
 
@@ -87,7 +89,7 @@ services:
       - r112_net
 
   # ─────────────────────────────────────────────────────────────────────
-  # LLM mock (OpenAI 兼容 mock, 用于 v2 集成测试)
+  # LLM mock (nginx 健康桩, 供 gateway-v2 启动 healthcheck 依赖)
   # ─────────────────────────────────────────────────────────────────────
   llm-mock:
     image: nginx:alpine
@@ -106,7 +108,80 @@ services:
       - r112_net
 
   # ─────────────────────────────────────────────────────────────────────
-  # Gateway v2 (本地 build, Dockerfile 待创建于 cmd/gateway-v2/Dockerfile)
+  # LLM mock upstream (真 OpenAI 兼容 mock, aiohttp, 支持 chat/completions)
+  # 用于 v1/v2 gateway 的真正端到端转发测试
+  # ─────────────────────────────────────────────────────────────────────
+  llm-mock-upstream:
+    build:
+      context: ./scripts/mocks/llm-mock-upstream
+      dockerfile: Dockerfile
+    image: r112-llm-mock-upstream:local
+    container_name: r112_llm_mock_upstream
+    ports:
+      - "18080:18080"
+    environment:
+      # 本地快速验证: 50-100ms 延迟 (非 fp_slot 回归的 10-15s)
+      MOCK_LATENCY_MS_MIN: "50"
+      MOCK_LATENCY_MS_MAX: "100"
+      MOCK_TOKEN: "local-mock"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:18080/healthz | grep -q '\\\"ok\\\"' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Gateway v1 (生产入口, cmd/gateway, 本地构建)
+  # 监听 8781, 复用同一套 PG/Redis/mock-upstream
+  # ─────────────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: r112-gateway:local
+    container_name: r112_gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      llm-mock-upstream:
+        condition: service_healthy
+    ports:
+      - "8781:8781"
+    environment:
+      # ── 监听与运行环境 ──
+      LLM_GATEWAY_LISTEN: ":8781"
+      LLM_GATEWAY_ENV: "local"           # 非 production, 避免 fail-closed panic
+      LOG_LEVEL: "info"
+      # ── 依赖 (compose 内服务名) ──
+      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable"
+      LLM_GATEWAY_REDIS_ADDR: "redis:6379"
+      # ── credential 解密 key (与 03-local-mock-credential.sql 配对) ──
+      # 32-byte deterministic key, base64url. LOCAL ONLY, never production.
+      LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
+      # ── 关闭数据面 auth (本地测试, 不设 API_KEY 即默认 off) ──
+      # LLM_GATEWAY_API_KEY 留空 → auth middleware 不生效
+      # ── CORS (v1 启动时 panic 若未设; 本地用通配) ──
+      LLM_GATEWAY_CORS_ORIGINS: "*"
+      # ── 附件目录 (容器内可写, 避免启动时 mkdir 失败) ──
+      LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
+      # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
+      LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - r112_net
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Gateway v2 (本地 build, cmd/gateway-v2/Dockerfile)
   # ─────────────────────────────────────────────────────────────────────
   gateway-v2:
     build:
@@ -123,6 +198,8 @@ services:
         condition: service_healthy
       llm-mock:
         condition: service_healthy
+      llm-mock-upstream:
+        condition: service_healthy
     ports:
       - "8782:8782"
     environment:
@@ -134,7 +211,8 @@ services:
       DATABASE_URL: postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       MEMORA_URL: http://memora-mcp:80
-      OPENAI_BASE_URL: http://llm-mock:1080
+      # 指向真 OpenAI 兼容 mock (支持 chat/completions 真实回包)
+      OPENAI_BASE_URL: http://llm-mock-upstream:18080
       # ── v2 特性开关 ──
       GATEWAY_V2_ENABLED: "true"
       COMPRESSOR_ENABLED: "true"

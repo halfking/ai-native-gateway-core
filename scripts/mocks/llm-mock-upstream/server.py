@@ -169,9 +169,26 @@ async def handle_health(_request: web.Request) -> web.Response:
     })
 
 
+async def handle_models(_request: web.Request) -> web.Response:
+    """OpenAI-compatible /v1/models endpoint.
+
+    The gateway's credential cycler probes this to verify the upstream
+    is alive. Without it the probe gets 404 and marks the credential
+    health_status='unreachable', which makes is_routable=false.
+    """
+    return web.json_response({
+        "object": "list",
+        "data": [
+            {"id": "gpt-4o", "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+            {"id": "gpt-4o-mini", "object": "model", "created": int(time.time()), "owned_by": "local-mock"},
+        ],
+    })
+
+
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_post("/v1/chat/completions", handle_chat)
+    app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/healthz", handle_health)
     app.router.add_get("/", handle_health)
     return app

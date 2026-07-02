@@ -13,19 +13,19 @@ import (
 
 // ApprovalDetector 审批检测器
 type ApprovalDetector struct {
-	configManager     ConfigManager
+	configManager     ConfigProvider
 	sensitiveDetector *SensitiveDetector
 	costEstimator     *CostEstimator
 }
 
-// ConfigManager 配置管理器接口
-type ConfigManager interface {
+// ConfigProvider 配置提供者接口
+type ConfigProvider interface {
 	GetConfig(ctx context.Context, tenantID string) (*ApprovalConfig, error)
 }
 
 // NewApprovalDetector 创建审批检测器
 func NewApprovalDetector(
-	configManager ConfigManager,
+	configManager ConfigProvider,
 	sensitiveDetector *SensitiveDetector,
 	costEstimator *CostEstimator,
 ) *ApprovalDetector {
