@@ -16,6 +16,7 @@ import (
 type PrereqCheck struct {
 	PortsOK        bool
 	PortsInUse     []int
+	PortDetails    map[int]string // 端口 -> 进程信息
 	DiskFreeGB     int
 	RAMMB          int
 	NetworkOK      bool
@@ -32,12 +33,15 @@ type NetworkStatus struct {
 
 // CheckPrereq 前置条件检查
 func CheckPrereq(ports []int) (*PrereqCheck, error) {
-	c := &PrereqCheck{}
+	c := &PrereqCheck{
+		PortDetails: make(map[int]string),
+	}
 
 	// 1. 端口检查
 	for _, p := range ports {
 		if isPortInUse(p) {
 			c.PortsInUse = append(c.PortsInUse, p)
+			c.PortDetails[p] = getPortProcess(p)
 		}
 	}
 	c.PortsOK = len(c.PortsInUse) == 0
@@ -66,6 +70,40 @@ func isPortInUse(port int) bool {
 	}
 	_ = ln.Close()
 	return false
+}
+
+// getPortProcess 获取占用端口的进程信息（跨平台）
+func getPortProcess(port int) string {
+	switch runtime.GOOS {
+	case "linux":
+		// Linux: ss -tlnp | grep :端口
+		out, err := exec.Command("sh", "-c",
+			fmt.Sprintf("ss -tlnp 2>/dev/null | grep ':%d ' | awk '{print $6}' | head -1", port)).Output()
+		if err == nil && len(out) > 0 {
+			return strings.TrimSpace(string(out))
+		}
+		// 兜底：lsof
+		out, err = exec.Command("sh", "-c",
+			fmt.Sprintf("lsof -i :%d -sTCP:LISTEN -t 2>/dev/null | xargs ps -p 2>/dev/null | tail -1", port)).Output()
+		if err == nil && len(out) > 0 {
+			return strings.TrimSpace(string(out))
+		}
+	case "darwin":
+		// macOS: lsof -nP -iTCP:端口 -sTCP:LISTEN
+		out, err := exec.Command("sh", "-c",
+			fmt.Sprintf("lsof -nP -iTCP:%d -sTCP:LISTEN 2>/dev/null | tail -1", port)).Output()
+		if err == nil && len(out) > 0 {
+			return strings.TrimSpace(string(out))
+		}
+	case "windows":
+		// Windows: netstat -ano | findstr :端口
+		out, err := exec.Command("powershell", "-Command",
+			fmt.Sprintf("Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess | ForEach-Object { (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName }", port)).Output()
+		if err == nil && len(out) > 0 {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return "未知进程"
 }
 
 // getDiskFreeGB 获取可用磁盘空间（GB）
