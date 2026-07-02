@@ -160,12 +160,24 @@ type installOpts struct {
 func runInstall(opts installOpts) error {
 	printBanner()
 
-	// 1. 环境检测
-	osInfo, err := envdetect.Detect()
+	var osInfo *envdetect.OSInfo
+	var err error
+
+	// 1. 环境检测（--skip-doctor 可跳过）
+	if opts.SkipDoctor {
+		logStep("1/9", "环境检测（已跳过）")
+		osInfo, err = envdetect.Detect()
+		if err != nil {
+			return fmt.Errorf("基础环境检测失败: %w", err)
+		}
+		goto prereqCheck
+	}
+
+	logStep("1/9", "环境检测")
+	osInfo, err = envdetect.Detect()
 	if err != nil {
 		return fmt.Errorf("环境检测失败: %w", err)
 	}
-	logStep("1/9", "环境检测")
 	fmt.Printf("  ✅ %s (%s) | %s | %s\n",
 		osInfo.Distribution, osInfo.Arch, osInfo.PackageMgr, osInfo.ContainerEng)
 	if osInfo.ContainerEng == envdetect.EngNone {
@@ -174,15 +186,20 @@ func runInstall(opts installOpts) error {
 		if err := strategy.Execute(osInfo, logInfo); err != nil {
 			return fmt.Errorf("Docker 安装失败: %w", err)
 		}
-		// 重新探测
-		newInfo, _ := envdetect.Detect()
-		if newInfo != nil {
-			osInfo.ContainerEng = newInfo.ContainerEng
-			osInfo.DockerVersion = newInfo.DockerVersion
+		// 重新探测：必须成功，否则报错（吞错会导致后续步骤 100% 失败）
+		newInfo, err := envdetect.Detect()
+		if err != nil {
+			return fmt.Errorf("Docker 安装后重新探测失败: %w", err)
 		}
+		if newInfo == nil || newInfo.ContainerEng == envdetect.EngNone {
+			return fmt.Errorf("Docker 安装后仍检测不到容器引擎，请手动验证后重跑")
+		}
+		osInfo.ContainerEng = newInfo.ContainerEng
+		osInfo.DockerVersion = newInfo.DockerVersion
 	}
 
 	// 2. 前置条件
+prereqCheck:
 	prereq, _ := envdetect.CheckPrereq([]int{8781, 5432, 6379})
 	if !prereq.PortsOK {
 		logWarn(fmt.Sprintf("端口被占用: %v（可能需要修改配置）", prereq.PortsInUse))
