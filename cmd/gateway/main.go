@@ -2387,6 +2387,29 @@ func initAttachmentStorage(attachmentDir string) (*attachments.Storage, error) {
 		slog.Info("using local file system storage backend", "dir", attachmentDir)
 	}
 
+	// 检查是否启用重试机制（默认启用）
+	enableRetry, _ := readBoolSettingPublic("storage.retry.enabled")
+	if !enableRetry {
+		// 检查字符串值
+		enableRetryStr := readStringSettingPublic("storage.retry.enabled")
+		enableRetry = enableRetryStr != "false" // 默认启用，除非显式设置为 false
+	}
+	
+	if enableRetry {
+		// 读取重试配置
+		retryConfig := attachments.DefaultRetryConfig()
+		
+		if maxRetries, _ := readIntSettingPublic("storage.retry.max_retries"); maxRetries > 0 {
+			retryConfig.MaxRetries = maxRetries
+		}
+		
+		// 包装为带重试的后端
+		backend = attachments.NewRetryBackend(backend, retryConfig)
+		slog.Info("retry mechanism enabled", 
+			"max_retries", retryConfig.MaxRetries,
+			"initial_backoff", retryConfig.InitialBackoff)
+	}
+
 	// 使用后端创建 Storage
 	return attachments.NewStorageWithBackend(backend), nil
 }
