@@ -37,4 +37,24 @@ export default {
   // 版本資訊
   version: '版本',
   build: '構建',
+
+  // 2026-07-02 (request-logs 附件展示): 附件相關文案，對齊參考文件 §6。
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: '附件',
+        attachmentCountTitle: '{n} 個附件',
+        noAttachments: '無附件',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 附件',
+      attachmentsLoading: '載入附件中…',
+      noAttachments: '無附件',
+      clickToPreviewTitle: '點擊查看大圖',
+      download: '下載',
+      downloadOriginal: '下載原圖',
+      closePreview: '關閉',
+    },
+  },
 }

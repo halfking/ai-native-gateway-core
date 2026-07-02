@@ -37,4 +37,25 @@ export default {
   // バージョン情報
   version: 'バージョン',
   build: 'ビルド',
+
+  // 2026-07-02 (request-logs 添付ファイル表示): 添付ファイル関連文言、
+  // 参考ドキュメント §6 に整合。
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: '添付ファイル',
+        attachmentCountTitle: '添付ファイル {n} 件',
+        noAttachments: '添付ファイルなし',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 添付ファイル',
+      attachmentsLoading: '添付ファイルを読み込み中…',
+      noAttachments: '添付ファイルなし',
+      clickToPreviewTitle: 'クリックで拡大表示',
+      download: 'ダウンロード',
+      downloadOriginal: '原画像をダウンロード',
+      closePreview: '閉じる',
+    },
+  },
 }

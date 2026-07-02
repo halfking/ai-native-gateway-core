@@ -25,7 +25,7 @@ export default {
   // Navigation
   nav: {
     collapseSidebar: 'Réduire le menu',
-    expandSidebar: 'Développer la barre latérale',
+    expandSidebar: 'Déduire la barre latérale',
   },
   
   // Mot de passe
@@ -37,4 +37,25 @@ export default {
   // Informations de version
   version: 'Version',
   build: 'Build',
+
+  // 2026-07-02 (affichage des pièces jointes request-logs) : textes relatifs
+  // aux pièces jointes, conformément au document de référence §6.
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: 'Pièces jointes',
+        attachmentCountTitle: '{n} pièce(s) jointe(s)',
+        noAttachments: 'Aucune pièce jointe',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 Pièces jointes',
+      attachmentsLoading: 'Chargement des pièces jointes…',
+      noAttachments: 'Aucune pièce jointe',
+      clickToPreviewTitle: 'Cliquer pour agrandir',
+      download: 'Télécharger',
+      downloadOriginal: 'Télécharger l\'original',
+      closePreview: 'Fermer',
+    },
+  },
 }
