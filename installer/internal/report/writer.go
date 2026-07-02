@@ -2,6 +2,7 @@
 package report
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"text/template"
@@ -31,20 +32,22 @@ type ImageSourceSummary struct {
 }
 
 // Write 生成 install-report.md
+// 先在内存 buffer 中渲染完整内容，再一次性写盘，避免渲染失败时留下半截文件
 func Write(path string, data *InstallReportData, tplContent string) error {
 	tpl, err := template.New("report").Parse(tplContent)
 	if err != nil {
 		return fmt.Errorf("解析报告模板失败: %w", err)
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("创建报告文件失败: %w", err)
-	}
-	defer f.Close()
-
-	if err := tpl.Execute(f, data); err != nil {
+	// 先渲染到内存 buffer
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("渲染报告失败: %w", err)
+	}
+
+	// 渲染成功后再写文件（原子性更好，不会留半截）
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("写入报告文件失败: %w", err)
 	}
 	return nil
 }

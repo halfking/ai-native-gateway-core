@@ -7,10 +7,11 @@ package main
 
 import (
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -49,7 +50,6 @@ var sqlSchema []byte
 var sqlSeed []byte
 
 // 临时存放 embed SQL 的目录（运行时写入）
-var sqlTmpDir = ""
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
 
@@ -175,7 +175,11 @@ func runInstall(opts installOpts) error {
 			return fmt.Errorf("Docker 安装失败: %w", err)
 		}
 		// 重新探测
-		osInfo.ContainerEng, osInfo.DockerVersion = envdetect.Detect().ContainerEng, envdetect.Detect().DockerVersion
+		newInfo, _ := envdetect.Detect()
+		if newInfo != nil {
+			osInfo.ContainerEng = newInfo.ContainerEng
+			osInfo.DockerVersion = newInfo.DockerVersion
+		}
 	}
 
 	// 2. 前置条件
@@ -196,32 +200,57 @@ func runInstall(opts installOpts) error {
 		return fmt.Errorf("切换到安装目录失败: %w", err)
 	}
 
-	// 4. 配置向导
-	logStep("2/9", "配置向导")
+	// 4. 配置：交互向导 或 从文件加载（--config）/ 自动生成（--skip-prompt）
+	logStep("2/9", "配置")
 	imageTag := readAppImageTag()
-	wiz := prompt.NewWizard(imageTag)
-	cfg, err := wiz.Run(installDir)
-	if err != nil {
-		return fmt.Errorf("配置失败: %w", err)
+	var cfg *prompt.InstallConfig
+	if opts.ConfigFile != "" {
+		// 从配置文件加载（CI 自动化场景）
+		logInfo(fmt.Sprintf("  ▶ 从 %s 加载配置 ...", opts.ConfigFile))
+		cfg, err = prompt.LoadFromEnvFile(opts.ConfigFile, imageTag, installDir)
+		if err != nil {
+			return fmt.Errorf("加载配置失败: %w", err)
+		}
+		logInfo("  ✅ 配置已加载（缺失的 secrets 已自动生成）")
+	} else if opts.SkipPrompt {
+		// 跳过交互：全部用默认值 + 自动生成 secrets
+		logInfo("  ▶ --skip-prompt 模式：使用默认配置 + 自动生成 secrets")
+		cfg, err = prompt.LoadFromEnvFile("/dev/null", imageTag, installDir)
+		if err != nil {
+			return fmt.Errorf("生成默认配置失败: %w", err)
+		}
+		logInfo("  ✅ 默认配置已生成")
+	} else {
+		// 交互向导
+		wiz := prompt.NewWizard(imageTag)
+		cfg, err = wiz.Run(installDir)
+		if err != nil {
+			return fmt.Errorf("配置失败: %w", err)
+		}
 	}
 	cfg.InstallPath = installDir
 
 	// 5. 加载/拉取镜像（4 层 fallback）
+	// citus/redis 用上游原始名拉取（公网才有），成功后自动 retag 成 compose.yml 引用的 kx-* 名
 	logStep("3/9", "加载/拉取 Docker 镜像")
 	strategy := imgsrc.NewDefaultStrategy(installDir, imgsrc.LoadRegistryFromEnv(), imgsrc.LoadRegistryAuthFromEnv())
 
-	images := []imgsrc.ImageSpec{
-		{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag},
-		{Name: "kx-citus", Tag: "v11.3.0"},        // 重打 tag 后用 kx-citus
-		{Name: "kx-redis", Tag: "v7-alpine"},      // 重打 tag 后用 kx-redis
+	// image: 实际拉取的镜像（原始名，公网可达）
+	// alias: compose.yml 里引用的名字（拉取成功后自动 docker tag）
+	type pullItem struct {
+		spec  imgsrc.ImageSpec
+		alias string
 	}
-	for _, img := range images {
-		if err := strategy.Pull(img, logInfo); err != nil {
+	items := []pullItem{
+		{spec: imgsrc.ImageSpec{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag}, alias: "kx-llm-gateway-go:latest"},
+		{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
+		{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+	}
+	for _, it := range items {
+		if err := strategy.PullWithAlias(it.spec, it.alias, logInfo); err != nil {
 			return fmt.Errorf("拉取镜像失败: %w", err)
 		}
 	}
-	// 重打 citus/redis 的 tag 以便 compose 引用
-	reTagForCompose()
 
 	// 6. 写入 .env
 	logStep("4/9", "生成 .env")
@@ -231,23 +260,50 @@ func runInstall(opts installOpts) error {
 	}
 	logInfo("  ✅ .env (chmod 600, LF no BOM)")
 
-	// 7. 创建容器外目录
-	logStep("5/9", "创建持久化目录")
-	for _, dir := range []string{"volumes/attachments", "volumes/logs"} {
-		full := filepath.Join(installDir, dir)
-		if err := os.MkdirAll(full, 0755); err != nil {
-			return fmt.Errorf("创建目录失败: %w", err)
-		}
+	// 7. 创建容器外目录结构
+	logStep("5/9", "创建持久化目录结构")
+	if err := createDirectoryLayout(installDir); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
 	}
-	logInfo("  ✅ volumes/{attachments,logs}")
+	logInfo("  ✅ 9 个子目录创建完成")
 
-	// 8. 写入 compose.yml
-	logStep("6/9", "写入 compose.yml")
+	// 8. 写入 compose.yml + VERSION + 复制 installer 副本
+	logStep("6/9", "写入配置文件")
 	composePath := filepath.Join(installDir, "compose.yml")
 	if err := os.WriteFile(composePath, composeYAML, 0644); err != nil {
 		return fmt.Errorf("写入 compose.yml 失败: %w", err)
 	}
 	logInfo("  ✅ compose.yml")
+
+	// 8a. 写入 app/VERSION
+	versionPath := filepath.Join(installDir, "app", "VERSION")
+	if err := os.WriteFile(versionPath, []byte(cfg.AppImageTag+"\n"), 0644); err != nil {
+		logInfo("  ⚠️  写入 VERSION 失败: " + err.Error())
+	} else {
+		logInfo("  ✅ app/VERSION")
+	}
+
+	// 8b. 复制当前 installer 到 bin/
+	binDir := filepath.Join(installDir, "bin")
+	if err := copyInstallerSelf(binDir); err != nil {
+		logInfo("  ⚠️  复制 installer 副本失败: " + err.Error())
+	} else {
+		logInfo("  ✅ bin/llm-gw-installer")
+	}
+
+	// 8c. 复制 SQL 备份到 db/init/
+	if err := copySQLBackup(installDir); err != nil {
+		logInfo("  ⚠️  复制 SQL 备份失败: " + err.Error())
+	} else {
+		logInfo("  ✅ db/init/*.sql")
+	}
+
+	// 8d. 复制 MANIFEST.json 到 config/
+	if err := copyManifest(installDir); err != nil {
+		logInfo("  ⚠️  复制 MANIFEST 失败: " + err.Error())
+	} else {
+		logInfo("  ✅ config/MANIFEST.json")
+	}
 
 	// 9. 启动容器
 	logStep("7/9", "启动 Docker 容器")
@@ -258,7 +314,12 @@ func runInstall(opts installOpts) error {
 
 	// 10. 初始化数据库
 	logStep("8/9", "初始化数据库")
-	dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", setupSQLDir())
+	sqlDir, sqlCleanup, err := setupSQLDir()
+	if err != nil {
+		return fmt.Errorf("准备 SQL 文件失败: %w", err)
+	}
+	defer sqlCleanup()
+	dbRunner := dbinit.NewRunner("kx-citus", "kxuser", "llm_gateway", sqlDir)
 	if err := dbRunner.WaitForPG(60); err != nil {
 		return fmt.Errorf("等待 PG: %w", err)
 	}
@@ -328,14 +389,24 @@ func runUninstall(purge bool) error {
 	}
 
 	if purge {
-		logWarn("⚠️  --purge 模式：删除数据卷")
-		for _, dir := range []string{"volumes/attachments", "volumes/logs"} {
-			os.RemoveAll(filepath.Join(installDir, dir))
+		logWarn("⚠️  --purge 模式：删除所有持久化数据")
+		// 按新的目录结构（bind-mount 到容器外的实际路径）
+		purgeDirs := []string{
+			"db/data",      // PostgreSQL 数据
+			"redis/data",   // Redis 数据
+			"attachments",  // 应用附件
+			"app/logs",     // 应用日志
+		}
+		for _, dir := range purgeDirs {
+			full := filepath.Join(installDir, dir)
+			if err := os.RemoveAll(full); err != nil {
+				logWarn(fmt.Sprintf("  删除 %s 失败: %v", dir, err))
+			}
 		}
 		os.Remove(filepath.Join(installDir, ".env"))
-		logInfo("✅ 已彻底清理")
+		logInfo("✅ 已彻底清理（数据库、Redis、附件、日志、.env）")
 	} else {
-		logInfo("✅ 已停止（数据保留）")
+		logInfo("✅ 已停止（数据保留在 db/data、redis/data、attachments、app/logs）")
 	}
 	return nil
 }
@@ -345,7 +416,12 @@ func runUninstall(purge bool) error {
 func printBanner() {
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║  LLM Gateway 一键安装器 v" + installerVersion + strings.Repeat(" ", 39-len(installerVersion)) + "║")
+	// 自适应对齐：version 过长时截断，避免 strings.Repeat 负数 panic
+	pad := 39 - len(installerVersion)
+	if pad < 1 {
+		pad = 1
+	}
+	fmt.Println("║  LLM Gateway 一键安装器 v" + installerVersion + strings.Repeat(" ", pad) + "║")
 	fmt.Println("╚════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 }
@@ -375,18 +451,19 @@ func readAppImageTag() string {
 	if t := os.Getenv("APP_IMAGE_TAG"); t != "" {
 		return t
 	}
-	// 尝试读 MANIFEST.json
+	// 尝试读 MANIFEST.json（用标准库 json 解析，避免手动字符串匹配的 bug）
 	data, err := os.ReadFile("MANIFEST.json")
 	if err == nil {
-		// 简单解析（不用 JSON 库以减少依赖）
-		content := string(data)
-		idx := strings.Index(content, `"tag"`)
-		if idx > 0 {
-			// 找到 "tag": "v1.0.0"
-			line := content[idx:idx+100]
-			if start := strings.Index(line, `"`); start > 0 {
-				if end := strings.Index(line[start+1:], `"`); end > 0 {
-					return line[start+1 : start+1+end]
+		var manifest struct {
+			Images []struct {
+				Name string `json:"name"`
+				Tag  string `json:"tag"`
+			} `json:"images"`
+		}
+		if json.Unmarshal(data, &manifest) == nil {
+			for _, img := range manifest.Images {
+				if img.Name == "kx-llm-gateway-go" && img.Tag != "" {
+					return img.Tag
 				}
 			}
 		}
@@ -394,20 +471,206 @@ func readAppImageTag() string {
 	return "latest"
 }
 
-// reTagForCompose 重打 citus/redis tag 为 compose 引用的名字
-// 这样 compose.yml 里写 kx-citus:v11.3.0 / kx-redis:v7-alpine 就能找到镜像
-func reTagForCompose() {
-	pairs := []struct{ src, dst string }{
-		{"citusdata/citus:11.3.0", "kx-citus:v11.3.0"},
-		{"redis:7-alpine", "kx-redis:v7-alpine"},
+// ── 目录结构相关 ─────────────────────────────────────────────────
+
+// DirectoryLayout 客户机器上的部署目录结构
+//
+//	~/llm-gateway/
+//	├── README.md              部署说明
+//	├── .env                   所有 secrets（chmod 600）
+//	├── compose.yml            docker-compose 全栈定义
+//	├── install.sh / .ps1      入口脚本
+//	├── uninstall.sh
+//	├── bin/                   installer 副本（自更新用）
+//	│   └── llm-gw-installer
+//	├── config/                静态配置（git 可追踪）
+//	│   ├── MANIFEST.json
+//	│   └── env.template
+//	├── app/                   应用相关
+//	│   ├── VERSION
+//	│   └── logs/              bind-mount → /var/log/llm-gateway
+//	├── db/                    PostgreSQL
+//	│   ├── data/              bind-mount → /var/lib/postgresql/data
+//	│   ├── init/              SQL 初始化文件备份
+//	│   │   ├── 00-prereqs.sql
+//	│   ├── 01-schema.sql
+//	│   └── 02-seed.sql
+//	├── redis/                 Redis
+//	│   └── data/              bind-mount → /data
+//	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
+//	├── backups/               备份根目录
+//	│   ├── daily/
+//	│   └── manual/
+//	└── reports/               部署/运行报告
+//	    └── install-report.md
+type DirectoryLayout struct {
+	Root string
+}
+
+// createDirectoryLayout 创建完整的目录结构
+func createDirectoryLayout(root string) error {
+	layout := DirectoryLayout{Root: root}
+
+	dirs := []string{
+		// 一级目录
+		"bin",
+		"config",
+		"app",
+		"app/logs",
+		"db",
+		"db/data",
+		"db/init",
+		"redis",
+		"redis/data",
+		"attachments",
+		"backups",
+		"backups/daily",
+		"backups/manual",
+		"reports",
 	}
-	for _, p := range pairs {
-		// 检查 src 是否存在，存在才 tag
-		cmd := exec.Command("docker", "image", "inspect", p.src)
-		if err := cmd.Run(); err == nil {
-			_ = exec.Command("docker", "tag", p.src, p.dst).Run()
+
+	for _, d := range dirs {
+		full := filepath.Join(root, d)
+		if err := os.MkdirAll(full, 0755); err != nil {
+			return fmt.Errorf("创建 %s 失败: %w", d, err)
 		}
 	}
+
+	// 写入每个目录的 .gitkeep（防止空目录被 git 忽略）
+	for _, d := range dirs {
+		gitkeep := filepath.Join(root, d, ".gitkeep")
+		_ = os.WriteFile(gitkeep, []byte("# 持久化目录，请勿删除\n"), 0644)
+	}
+
+	// 写入 README.md 解释目录结构
+	readme := layout.GenerateReadme()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(readme), 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GenerateReadme 生成目录结构说明
+func (l DirectoryLayout) GenerateReadme() string {
+	return fmt.Sprintf(`# llm-gateway-go 部署目录
+
+本目录包含 llm-gateway-go 的全部部署内容，所有数据均在容器外持久化。
+
+## 目录结构
+
+| 目录 | 用途 | 容器内路径 |
+|------|------|------------|
+| `+"`./bin/`"+` | installer 副本（自更新用） | - |
+| `+"`./config/`"+` | 静态配置（MANIFEST/env 模板） | - |
+| `+"`./app/`"+` | 应用版本文件 | - |
+| `+"`./app/logs/`"+` | ⭐ 应用日志 | /var/log/llm-gateway |
+| `+"`./db/data/`"+` | ⭐ PostgreSQL 数据 | /var/lib/postgresql/data |
+| `+"`./db/init/`"+` | SQL 初始化文件备份 | - |
+| `+"`./redis/data/`"+` | ⭐ Redis 数据 | /data |
+| `+"`./attachments/`"+` | ⭐ 应用附件 | /opt/llm-gateway-go/data/attachments |
+| `+"`./backups/`"+` | 全栈备份（pg_dump 等） | - |
+| `+"`./reports/`"+` | 部署报告 | - |
+
+⭐ = bind-mount，容器重启数据不丢失
+
+## 数据持久化保证
+
+所有关键数据（数据库、Redis、附件、日志）都通过 bind-mount 映射到此目录下：
+
+- **容器删除/重建**：数据完整保留
+- **Docker 重启**：数据完整保留
+- **机器重启**：数据完整保留
+- **卸载（--purge）**：删除此目录后才会清理
+
+## 备份建议
+
+定期备份以下目录：
+- `+"`./db/data/`"+` （最关键，包含全部业务数据）
+- `+"`./redis/data/`"+` （缓存数据）
+- `+"`./attachments/`"+` （用户上传文件）
+- `+"`./.env`"+` （所有 secrets）
+
+或者运行 `+"`./bin/llm-gw-installer backup`"+`（如已实现）。
+`)
+}
+
+// copyInstallerSelf 复制当前运行的 installer 副本到 bin/
+func copyInstallerSelf(binDir string) error {
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		return err
+	}
+
+	selfPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+
+	dst := filepath.Join(binDir, "llm-gw-installer")
+	// Windows 加 .exe 后缀
+	if runtime.GOOS == "windows" {
+		dst += ".exe"
+	}
+
+	// 读取自身二进制
+	data, err := os.ReadFile(selfPath)
+	if err != nil {
+		return err
+	}
+
+	// 写入目标位置
+	mode := os.FileMode(0755)
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// copySQLBackup 复制 embed SQL 到 db/init/
+func copySQLBackup(root string) error {
+	initDir := filepath.Join(root, "db", "init")
+	if err := os.MkdirAll(initDir, 0755); err != nil {
+		return err
+	}
+
+	files := map[string][]byte{
+		"00-prereqs.sql": sqlPrereqs,
+		"01-schema.sql":  sqlSchema,
+		"02-seed.sql":    sqlSeed,
+	}
+	for name, content := range files {
+		path := filepath.Join(initDir, name)
+		if err := os.WriteFile(path, content, 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyManifest 复制 MANIFEST.json 到 config/
+func copyManifest(root string) error {
+	configDir := filepath.Join(root, "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+
+	// 如果存在 MANIFEST.json（从 release 包带来），复制
+	srcManifest := filepath.Join(root, "MANIFEST.json")
+	if data, err := os.ReadFile(srcManifest); err == nil {
+		dst := filepath.Join(configDir, "MANIFEST.json")
+		return os.WriteFile(dst, data, 0644)
+	}
+
+	// 否则生成一个简化的
+	manifest := fmt.Sprintf(`{
+  "version": "%s",
+  "installed_at": "%s",
+  "installer_version": "%s"
+}
+`, os.Getenv("APP_IMAGE_TAG"), report.Now(), installerVersion)
+
+	return os.WriteFile(filepath.Join(configDir, "MANIFEST.json"), []byte(manifest), 0644)
 }
 
 // envEntries 构造 .env 条目
@@ -430,15 +693,15 @@ func strconvItoa(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
-// setupSQLDir 把 embed 的 SQL 写到临时目录，返回目录路径
-func setupSQLDir() string {
-	if sqlTmpDir != "" {
-		return sqlTmpDir
-	}
+// setupSQLDir 把 embed 的 SQL 写到临时目录，返回目录路径和清理函数。
+// 调用方必须 defer 调用 cleanup 以释放临时目录。
+func setupSQLDir() (string, func(), error) {
 	tmp, err := os.MkdirTemp("", "llm-gw-sql-")
 	if err != nil {
-		return "sql"
+		return "", nil, fmt.Errorf("创建临时目录失败: %w", err)
 	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+
 	files := map[string][]byte{
 		"00-prereqs.sql": sqlPrereqs,
 		"01-schema.sql":  sqlSchema,
@@ -447,11 +710,11 @@ func setupSQLDir() string {
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
 		if err := os.WriteFile(path, content, 0644); err != nil {
-			return "sql"
+			cleanup()
+			return "", nil, fmt.Errorf("写入 %s 失败: %w", name, err)
 		}
 	}
-	sqlTmpDir = tmp
-	return sqlTmpDir
+	return tmp, cleanup, nil
 }
 
 func printSummary(cfg *prompt.InstallConfig, health *dockerutil.HealthReport) {

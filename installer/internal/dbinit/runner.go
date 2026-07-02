@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -102,29 +103,9 @@ func (r *Runner) VerifySchema() (int, error) {
 }
 
 // readFile 读取文件内容
+// readFile 读取文件全部内容（用 os.ReadFile 自动处理短读）
 func readFile(path string) ([]byte, error) {
-	return readFileLimit(path, 100*1024*1024) // 100MB 上限
-}
-
-func readFileLimit(path string, limit int64) ([]byte, error) {
-	f, err := openFile(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	// 检查文件大小
-	stat, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if stat.Size() > limit {
-		return nil, fmt.Errorf("文件过大: %d bytes (上限 %d)", stat.Size(), limit)
-	}
-
-	buf := make([]byte, stat.Size())
-	_, err = f.Read(buf)
-	return buf, err
+	return os.ReadFile(path)
 }
 
 func truncate(s string, n int) string {

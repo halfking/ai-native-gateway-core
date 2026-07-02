@@ -78,6 +78,11 @@ type OSInfo struct {
 	ContainerEng ContainerEng
 	DockerVersion string
 	HasSudo      bool
+	// VersionID 来自 /etc/os-release 的 VERSION_ID（如 "22.04" / "8.8"）
+	VersionID string
+	// VersionCodename 来自 /etc/os-release 的 VERSION_CODENAME（如 "jammy" / "bullseye"）
+	// 国产 OS 可能留空，PlanInstall 会做 fallback
+	VersionCodename string
 }
 
 // Detect 检测当前 OS 信息
@@ -114,12 +119,12 @@ func detectLinux(info *OSInfo) error {
 		return fmt.Errorf("无法读取 /etc/os-release: %w", err)
 	}
 
-	id, idLike, versionID := parseOSRelease(string(data))
+	id, idLike, versionID, codename := parseOSRelease(string(data))
 	info.Distribution = mapDistribution(id, idLike)
 	info.Family = detectFamily(id, idLike)
 	info.PackageMgr = detectPackageMgr(info.Family, id)
-
-	_ = versionID // 保留以备将来使用
+	info.VersionID = versionID
+	info.VersionCodename = codename
 	return nil
 }
 
@@ -143,7 +148,7 @@ func detectWindows(info *OSInfo) {
 }
 
 // parseOSRelease 解析 /etc/os-release
-func parseOSRelease(content string) (id, idLike, versionID string) {
+func parseOSRelease(content string) (id, idLike, versionID, codename string) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -162,6 +167,8 @@ func parseOSRelease(content string) (id, idLike, versionID string) {
 			idLike = val
 		case "VERSION_ID":
 			versionID = val
+		case "VERSION_CODENAME":
+			codename = val
 		}
 	}
 	return
