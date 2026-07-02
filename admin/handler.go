@@ -120,6 +120,11 @@ type Handler struct {
 	// approvalMgr (2026-06-27) 会话审批管理器，用于审批高风险会话
 	approvalMgr *sessionaudit.ApprovalManager
 
+	// approvalResumeHandler (2026-07-03) 审批恢复处理器，用于在审批通过后恢复 LLM 调用
+	approvalResumeHandler interface {
+		ResumeAfterApproval(ctx context.Context, approvalID, tenantID string) error
+	}
+
 	// attachmentHandler (2026-07-01, migration 325) 提供附件下载
 	// (GET /api/attachments/{path...}) 与按请求列出附件元数据
 	// (GET /api/logs/{request_id}/attachments) 的能力。nil 时附件下载
@@ -266,6 +271,13 @@ func (h *Handler) SetDiscoveryService(svc *discovery.Service) {
 // SetApprovalManager (2026-06-27) 注入审批管理器
 func (h *Handler) SetApprovalManager(mgr *sessionaudit.ApprovalManager) {
 	h.approvalMgr = mgr
+}
+
+// SetApprovalResumeHandler (2026-07-03) 注入审批恢复处理器
+func (h *Handler) SetApprovalResumeHandler(handler interface {
+	ResumeAfterApproval(ctx context.Context, approvalID, tenantID string) error
+}) {
+	h.approvalResumeHandler = handler
 }
 
 func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRecov *bg.CredentialRecovery, envCleaner *bg.EnvelopeCleaner, stickyClean *bg.StickyCleaner, taxSync *bg.TaxonomySync) {
