@@ -334,7 +334,7 @@ type providerClientAdapter struct {
 // interface signature (which would create a circular type reference).
 type routingProviderResolver interface {
 	Enabled() bool
-	GetCandidates(ctx context.Context, model, profile string) ([]provider.Candidate, *provider.Policy, error)
+	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 }
 
 func (p providerClientAdapter) Enabled() bool {
@@ -348,7 +348,8 @@ func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile
 	if p.r == nil {
 		return nil, fmt.Errorf("provider resolver nil")
 	}
-	raw, _, err := p.r.GetCandidates(ctx, model, profile)
+	// 2026-07-03: Bug #7 fix - pass empty tenantID for backward compatibility
+	raw, _, err := p.r.GetCandidates(ctx, model, profile, "")
 	if err != nil {
 		return nil, err
 	}

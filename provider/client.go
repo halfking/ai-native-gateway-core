@@ -326,15 +326,21 @@ func (c *Client) SetAvailabilityRedis(redisClient *redis.Client) {
 	c.redis = redisClient
 }
 
-func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Candidate, *Policy, error) {
+// GetCandidates returns all routable candidates for the given model.
+// tenantID: the tenant ID from the request context (empty string = load all tenants for admin)
+func (c *Client) GetCandidates(ctx context.Context, model, profile, tenantID string) ([]Candidate, *Policy, error) {
 	if !c.Enabled() {
 		return nil, DefaultPolicy(), fmt.Errorf("provider client not configured")
 	}
 	routeModel := modelname.NormalizeRouteKey(model)
 
+	// 2026-07-03: Bug #7 fix - include tenantID in cache key
 	key := routeModel
 	if profile != "" {
 		key = routeModel + "|" + profile
+	}
+	if tenantID != "" {
+		key = key + "|" + tenantID
 	}
 
 	c.mu.RLock()
@@ -347,7 +353,7 @@ func (c *Client) GetCandidates(ctx context.Context, model, profile string) ([]Ca
 	c.mu.RUnlock()
 
 	v, err, _ := c.sf.Do("cand:"+key, func() (any, error) {
-		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile)
+		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID)
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
@@ -404,7 +410,7 @@ func (c *Client) getPolicyCached(ctx context.Context) (*Policy, error) {
 	return v.(*Policy), nil
 }
 
-func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile string) (*resolveResponse, error) {
+func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile, tenantID string) (*resolveResponse, error) {
 	if c.dbPool == nil {
 		return nil, fmt.Errorf("routing DB not configured")
 	}
@@ -412,7 +418,7 @@ func (c *Client) fetchCandidatesDB(ctx context.Context, model, profile string) (
 	if err != nil {
 		return nil, err
 	}
-	cands, err := c.loadCandidatesDB(ctx, res.ClientModel)
+	cands, err := c.loadCandidatesDB(ctx, res.ClientModel, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -651,11 +657,18 @@ func (c *Client) aliasRawNamesDB(ctx context.Context, canonicalID int, profile s
 // for cross-form names (e.g. "claude-opus-4-6" ↔ "claude-opus-4.6") must be
 // inserted there, not by adding more family-specific normalization rules
 // here.
-func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Candidate, error) {
+func (c *Client) loadCandidatesDB(ctx context.Context, clientModel, tenantID string) ([]Candidate, error) {
 	if c.dbPool == nil {
 		return nil, nil
 	}
 	clientModelLower := strings.ToLower(clientModel)
+
+	// 2026-07-03: Bug #7 fix - support tenantID parameter
+	// If tenantID is empty, use 'default' as fallback (backward compatibility)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
 	rows, err := c.dbPool.Query(ctx, `
 		SELECT
 			c.id::int AS credential_id,
@@ -725,7 +738,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 		-- LIMIT 50 is a 50-row index descent per candidate — not a window
 		-- aggregate over the whole partitioned table.
 		CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
-		WHERE p.tenant_id = 'default'
+		WHERE p.tenant_id = $2
 		  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
 		  -- v.is_routable is FALSE for any model with manual disable at any layer
@@ -793,7 +806,7 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 			-- (often default 0.9) column. This makes healthy credentials sort
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
-	`, clientModelLower)
+	`, clientModelLower, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,6 +1118,9 @@ func (c *Client) defaultAsyncExitSuspicious(credentialID int, rawModel string) {
 			recordSuspiciousExit("cache_error")
 			return
 		}
+		// 2026-07-03: Bug #3 fix - invalidate candidate cache after suspicious->recovering
+		// Without this, router sees stale candidates for 30s
+		InvalidateAllCandidateCache()
 		recordSuspiciousExit("dispatched")
 	}()
 }

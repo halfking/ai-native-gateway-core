@@ -374,8 +374,12 @@ func IsCredentialFatal(kind ErrorKind) bool {
 // detail, but must NOT open a circuit or write availability_recover_at
 // in the credentials table.
 func IsClientBug(kind ErrorKind) bool {
+	// 2026-07-03: Removed KindModelNotFound from this list.
+	// model_not_found is typically a provider issue (model removed/renamed
+	// upstream), not a client bug. It should trigger binding unavailability
+	// via the dedicated mnf branch in executor.go, not skip state writes.
 	switch kind {
-	case KindToolCallIdMismatch, KindModelNotFound, KindUnsupportedFeature, KindCanceled:
+	case KindToolCallIdMismatch, KindUnsupportedFeature, KindCanceled:
 		return true
 	default:
 		return false
