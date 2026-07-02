@@ -10,6 +10,7 @@ func TestEnsureSpecsCoversAllFourTables(t *testing.T) {
 
 	expected := map[string]bool{
 		"ensure_request_logs_partition":           false,
+		"ensure_request_logs_bodies_partition":    false,
 		"ensure_request_wal_partition":            false,
 		"ensure_routing_decision_log_partition":   false,
 		"ensure_credential_model_index_partition": false,
