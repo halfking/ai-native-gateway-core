@@ -28,9 +28,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_ROOT="/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/opencode"
 BACKUP_DIR="$TMP_ROOT/llmgw-db-sync-$(date +%Y%m%d-%H%M%S)"
 
-REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@__INTERNAL_PUBLIC_IP__}"
-REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-25022}"
-REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-$HOME/.ssh/id_ed25519}"
+# ── 从 .env.local 加载真实连接参数 (placeholder 默认值只作文档) ──
+ENV_LOCAL="$ROOT_DIR/.env.local"
+if [ -f "$ENV_LOCAL" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_LOCAL"; set +a
+fi
+
+REMOTE_SSH_HOST="${REMOTE_SSH_HOST:-root@${INTERNAL_PUBLIC_IP:-14.103.112.184}}"
+REMOTE_SSH_PORT="${REMOTE_SSH_PORT:-${SSH_PORT_184:-25022}}"
+REMOTE_SSH_IDENTITY="${REMOTE_SSH_IDENTITY:-${SSH_KEY_184_PATH:-$HOME/.ssh/56_id_rsa}}"
 # SSH agent has multiple keys. Without IdentitiesOnly=yes, ssh tries them all
 # and may hang if 184's sshd has a slow/limiting response to unknown keys.
 REMOTE_SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey"
@@ -324,6 +331,16 @@ main() {
   esac
 
   verify_sync
+
+  # ── full/schema-only 模式后应用 columnar 不变量 ──
+  # pg_dump 不为分区子表记录 access method, 需显式转换以匹配 184
+  if [ "$MODE" = "full" ] || [ "$MODE" = "schema-only" ]; then
+    APPLY_SCRIPT="$ROOT_DIR/scripts/apply-columnar-local.sh"
+    if [ -x "$APPLY_SCRIPT" ]; then
+      info "applying columnar invariant to match 184..."
+      "$APPLY_SCRIPT" || err "columnar apply 失败 (非致命, 可手动运行 $APPLY_SCRIPT)"
+    fi
+  fi
 }
 
 main "$@"
