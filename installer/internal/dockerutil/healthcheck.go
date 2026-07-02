@@ -139,8 +139,8 @@ func (h *HealthChecker) checkPG() bool {
 
 // checkRedis 检查 Redis PONG
 func (h *HealthChecker) checkRedis() bool {
-	cmd := exec.Command("docker", "exec", h.RedisContainer, "redis-cli",
-		"-a", h.RedisPassword, "ping")
+	cmd := exec.Command("docker", "exec", "-e", "REDISCLI_AUTH="+h.RedisPassword,
+		h.RedisContainer, "redis-cli", "ping")
 	out, err := cmd.Output()
 	if err != nil {
 		return false

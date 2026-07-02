@@ -61,14 +61,56 @@ func NewWizard(appImageTag string) *Wizard {
 
 // LoadFromEnvFile 从 .env 风格的文件加载配置（非交互模式，CI/自动化场景）
 // 文件格式：KEY=VALUE，每行一个，支持 # 注释
+// path 为空时跳过文件读取，所有 secrets 字段通过闭包 gen 生成（返回 error 而非 panic）。
 // 缺失的必填字段会自动生成（与交互模式留空语义一致）
 func LoadFromEnvFile(path, appImageTag, defaultInstallPath string) (*InstallConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
+	var data []byte
+	if path != "" {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
+		}
 	}
 
 	values := parseEnvFile(string(data))
+
+	// gen: 缺失则调用 secrets 生成随机值并返回 error（替代 panic）
+	gen := func(key string) (string, error) {
+		if v, ok := values[key]; ok && v != "" {
+			return v, nil
+		}
+		v, err := secrets.GenerateRandom()
+		if err != nil {
+			return "", fmt.Errorf("生成随机 %s 失败: %w", key, err)
+		}
+		return v, nil
+	}
+
+	pgPwd, err := gen("POSTGRES_PASSWORD")
+	if err != nil {
+		return nil, err
+	}
+	redisPwd, err := gen("REDIS_PASSWORD")
+	if err != nil {
+		return nil, err
+	}
+	apiKey, err := gen("LLM_GATEWAY_API_KEY")
+	if err != nil {
+		return nil, err
+	}
+	adminKey, err := gen("LLM_GATEWAY_ADMIN_API_KEY")
+	if err != nil {
+		return nil, err
+	}
+	jwtSecret, err := gen("LLM_GATEWAY_JWT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	credKey, err := gen("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
 
 	cfg := &InstallConfig{
 		InstallPath:         getOrDefault(values, "INSTALL_PATH", defaultInstallPath),
@@ -76,12 +118,12 @@ func LoadFromEnvFile(path, appImageTag, defaultInstallPath string) (*InstallConf
 		PGPort:              getOrDefaultInt(values, "PG_PORT", 5432),
 		RedisPort:           getOrDefaultInt(values, "REDIS_PORT", 6379),
 		AppImageTag:         getOrDefault(values, "APP_IMAGE_TAG", appImageTag),
-		PGPassword:          getOrGen(values, "POSTGRES_PASSWORD"),
-		RedisPassword:       getOrGen(values, "REDIS_PASSWORD"),
-		APIKey:              getOrGen(values, "LLM_GATEWAY_API_KEY"),
-		AdminAPIKey:         getOrGen(values, "LLM_GATEWAY_ADMIN_API_KEY"),
-		JWTSecret:           getOrGen(values, "LLM_GATEWAY_JWT_SECRET"),
-		CredEncryptKey:      getOrGen(values, "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"),
+		PGPassword:          pgPwd,
+		RedisPassword:       redisPwd,
+		APIKey:              apiKey,
+		AdminAPIKey:         adminKey,
+		JWTSecret:           jwtSecret,
+		CredEncryptKey:      credKey,
 		ImageSourceStrategy: getOrDefault(values, "IMAGE_SOURCE_STRATEGY", "auto"),
 	}
 	return cfg, nil
@@ -124,18 +166,6 @@ func getOrDefaultInt(m map[string]string, key string, def int) int {
 		}
 	}
 	return def
-}
-
-// getOrGen 取值，空则生成随机值（与交互模式留空语义一致）
-func getOrGen(m map[string]string, key string) string {
-	if v, ok := m[key]; ok && v != "" {
-		return v
-	}
-	v, err := secrets.GenerateRandom()
-	if err != nil {
-		panic(fmt.Errorf("生成随机 %s 失败: %w", key, err))
-	}
-	return v
 }
 
 // Run 运行 11 步向导
