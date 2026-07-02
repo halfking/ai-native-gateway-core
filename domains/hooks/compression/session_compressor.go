@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SessionCompressorDeps are the external dependencies of SessionCompressor.
@@ -422,7 +423,9 @@ func (sc *SessionCompressor) tryHeadroomCompression(ctx context.Context, body []
 	}
 }
 
-// loadHeadroomConfig loads Headroom configuration from settings.
+// loadHeadroomConfig loads Headroom configuration from settings.Global.
+// Falls back to safe defaults when the registry is unavailable (early init,
+// unit tests) or a specific key is unset.
 func (sc *SessionCompressor) loadHeadroomConfig() HeadroomConfig {
 	config := HeadroomConfig{
 		TargetRatio:         0.5,
@@ -433,40 +436,62 @@ func (sc *SessionCompressor) loadHeadroomConfig() HeadroomConfig {
 		PreserveLastN:       2,
 	}
 
-	// Try to load from settings.Global if available
-	if settings := getGlobalSettings(); settings != nil {
-		if ratio := settings.GetFloat("compression.headroom.target_ratio"); ratio > 0 {
-			config.TargetRatio = ratio
-		}
-		if enableCrusher := settings.GetBool("compression.headroom.enable_smart_crusher"); !enableCrusher {
-			config.EnableSmartCrusher = false
-		}
-		if enableSizer := settings.GetBool("compression.headroom.enable_adaptive_sizer"); !enableSizer {
-			config.EnableAdaptiveSizer = false
-		}
+	if settings.Global == nil {
+		return config
+	}
+
+	if v, ok := readPlatformFloat("compression.headroom.target_ratio"); ok && v > 0 {
+		config.TargetRatio = v
+	}
+	if v, ok := readPlatformBool("compression.headroom.enable_smart_crusher"); ok {
+		config.EnableSmartCrusher = v
+	}
+	if v, ok := readPlatformBool("compression.headroom.enable_adaptive_sizer"); ok {
+		config.EnableAdaptiveSizer = v
 	}
 
 	return config
 }
 
-// getGlobalSettings is a helper to safely access global settings.
-func getGlobalSettings() settingsGetter {
-	// This would be wired from settings.Global in production
-	// For now, return nil to use defaults
-	return nil
+// readPlatformFloat reads a platform-scoped float setting via settings.Global.
+// Returns (value, false) when the registry, spec, or value is unavailable.
+func readPlatformFloat(key string) (float64, bool) {
+	sp := settings.Global.Spec(key)
+	if sp == nil {
+		return 0, false
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || len(raw) == 0 {
+		return 0, false
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
-// settingsGetter is a minimal interface for reading settings.
-type settingsGetter interface {
-	GetFloat(key string) float64
-	GetBool(key string) bool
+// readPlatformBool reads a platform-scoped bool setting via settings.Global.
+func readPlatformBool(key string) (bool, bool) {
+	sp := settings.Global.Spec(key)
+	if sp == nil {
+		return false, false
+	}
+	raw, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+	if err != nil || len(raw) == 0 {
+		return false, false
+	}
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return false, false
+	}
+	return v, true
 }
 
 func mustMarshal(v interface{}) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
-
 
 func (sc *SessionCompressor) updateCache(
 	ctx context.Context,
