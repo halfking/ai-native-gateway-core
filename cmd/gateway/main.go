@@ -1013,6 +1013,24 @@ func main() {
 				"pendingStore", pendingStore != nil)
 		}
 
+	// 2026-07-03: Tool Execution Tracking (migration 134)
+	// 记录工具调用的生命周期（start/success/error/timeout），统计 P50/P95/P99 延迟。
+	var toolExecTracking *ToolExecutionTrackingComponents
+	if dbConn != nil && dbConn.Enabled() && dbConn.Stdlib() != nil {
+		var err error
+		toolExecTracking, err = InitializeToolExecutionTracking(dbConn.Stdlib(), nil)
+		if err != nil {
+			slog.Error("tool execution tracking init failed", "error", err)
+		} else if err := ValidateToolExecutionTracking(toolExecTracking); err != nil {
+			slog.Error("tool execution tracking validation failed", "error", err)
+		} else {
+			slog.Info("tool execution tracking initialized successfully")
+		}
+	} else {
+		slog.Info("tool execution tracking skipped: database disabled")
+	}
+
+
 		// settings-management: inject the DB-backed settings store so the
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
