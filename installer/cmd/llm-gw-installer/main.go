@@ -27,24 +27,25 @@ import (
 const installerVersion = "1.0.0"
 
 // ── 内嵌资源（go:embed） ────────────────────────────────────────
-// 路径相对于当前 .go 文件，所以用 ../../ 回到 installer/ 根
+// go:embed 路径必须在当前文件同目录或子目录下
+// 所以把资源放在 embeddata/ 目录里
 
-//go:embed ../../templates/compose.yml
+//go:embed embeddata/compose.yml
 var composeYAML []byte
 
-//go:embed ../../templates/env.template
+//go:embed embeddata/env.template
 var envTemplate []byte
 
-//go:embed ../../templates/install-report.md.tmpl
+//go:embed embeddata/install-report.md.tmpl
 var reportTemplate []byte
 
-//go:embed ../../sql/00-prereqs.sql
+//go:embed embeddata/00-prereqs.sql
 var sqlPrereqs []byte
 
-//go:embed ../../sql/01-schema.sql
+//go:embed embeddata/01-schema.sql
 var sqlSchema []byte
 
-//go:embed ../../sql/02-seed.sql
+//go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
 // 临时存放 embed SQL 的目录（运行时写入）
