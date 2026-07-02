@@ -98,6 +98,11 @@ type SessionState struct {
 	CutStrategy    string `json:"cm_strat,omitempty"`
 	CutBytesBefore int    `json:"cm_bb,omitempty"`
 	CutBytesAfter  int    `json:"cm_ba,omitempty"`
+
+	// v6: Headroom compression tracking
+	HeadroomApplied bool    `json:"hr_applied,omitempty"` // true when Headroom compression was used
+	HeadroomRatio   float64 `json:"hr_ratio,omitempty"`   // compression ratio achieved
+	TokensSaved     int     `json:"hr_saved,omitempty"`   // tokens saved by compression
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
