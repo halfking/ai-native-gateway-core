@@ -21,11 +21,11 @@ coverage/
 *.out
 
 # Local binaries and build files
+# 2026-07-03: 用通配符覆盖所有 llm-gateway* 二进制变体（含 bugfix/v2 等临时构建产物）
+/llm-gateway
 /llm-gateway-go
-/llm-gateway-go-linux
-/llm-gateway-go-bin
-/llm-gateway-go-linux-amd64
-/llm-gateway-go-new
+/llm-gateway-go-*
+/build_seq
 Dockerfile.local
 # ─────────────────────────────────────────────────────────────
 # 自动补充的标准忽略规则 (2026-06-11 .gitignore 审计)

@@ -344,9 +344,20 @@ func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// 2026-07-03 fix: Bug #14 - force-recover should also clear suspended/auth_failed state
+	// When admin manually recovers a credential (e.g., after fixing revoked keys),
+	// we need to reset availability_state to 'ready' so the background recovery
+	// worker can pick it up (bg/credential_recovery.go skips suspended/auth_failed).
 	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
-		SET availability_recover_at = now() - INTERVAL '1 second'
+		SET availability_state = CASE
+		        WHEN availability_state IN ('suspended', 'auth_failed') THEN 'ready'
+		        ELSE availability_state
+		    END,
+		    availability_recover_at = now() - INTERVAL '1 second',
+		    state_reason_code = NULL,
+		    state_reason_detail = 'admin force-recover',
+		    state_updated_at = now()
 		WHERE id = $1 AND lifecycle_status = 'active'
 	`, credID)
 	if err != nil {

@@ -360,8 +360,12 @@ func TestIsClientBug(t *testing.T) {
 	if !IsClientBug(KindToolCallIdMismatch) {
 		t.Error("KindToolCallIdMismatch must be flagged as a client bug")
 	}
-	if !IsClientBug(KindModelNotFound) {
-		t.Error("KindModelNotFound must be flagged as a client bug")
+	// 2026-07-03: Bug #10 fix - KindModelNotFound is no longer a client bug.
+	// model_not_found is a provider-side issue (model removed/renamed upstream)
+	// and must trigger binding unavailability via the dedicated mnf branch,
+	// not skip state writes via IsClientBug.
+	if IsClientBug(KindModelNotFound) {
+		t.Error("KindModelNotFound must NOT be flagged as a client bug (Bug #10 fix)")
 	}
 	if !IsClientBug(KindCanceled) {
 		t.Error("KindCanceled must be flagged as a client bug")

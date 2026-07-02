@@ -301,7 +301,9 @@ func InvalidateAllCandidateCache() {
 	defaultClient.mu.Lock()
 	defaultClient.candCache = make(map[string]cacheEntry[*resolveResponse])
 	defaultClient.mu.Unlock()
-	slog.Info("candidate cache invalidated")
+	// 2026-07-03: 降级为 Debug —— 此函数在每次永久故障/状态变更时都会被调用，
+	// Info 级别会在批量故障场景下刷屏日志。
+	slog.Debug("candidate cache invalidated")
 }
 
 func (c *Client) Enabled() bool {
@@ -327,7 +329,8 @@ func (c *Client) SetAvailabilityRedis(redisClient *redis.Client) {
 }
 
 // GetCandidates returns all routable candidates for the given model.
-// tenantID: the tenant ID from the request context (empty string = load all tenants for admin)
+// tenantID: the tenant ID from the request context. Empty string falls back
+// to "default" tenant (see loadCandidatesDB) for backward compatibility.
 func (c *Client) GetCandidates(ctx context.Context, model, profile, tenantID string) ([]Candidate, *Policy, error) {
 	if !c.Enabled() {
 		return nil, DefaultPolicy(), fmt.Errorf("provider client not configured")
