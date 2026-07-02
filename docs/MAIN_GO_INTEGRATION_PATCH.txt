@@ -1,0 +1,34 @@
+// main.go 集成补丁
+// 
+// 在 line 986 之后添加以下代码：
+
+		// 2026-07-03: approval integration v2 (ApprovalHook + CacheUpdateHook + ResumeHandler)
+		// 在 SessionAuditHookV1 之后集成新的审批流程，提供完整的 snapshot 缓存和恢复能力。
+		if enableSessionAudit == "true" && scCache != nil && pendingStore != nil {
+			approvalIntegrationDeps := &ApprovalIntegrationDeps{
+				SessionCache:    scCache,
+				ApprovalMgr:     approvalMgr,
+				PendingStore:    pendingStore,
+				ChatHandler:     chatHandler,
+				AuditBus:        eventbus.NewMemoryBus(100), // 独立的 bus，避免与 v1 冲突
+				ApprovalTimeout: approvalTimeout,
+			}
+			approvalIntegrationResult, err := InitializeApprovalIntegration(approvalIntegrationDeps)
+			if err != nil {
+				slog.Error("approval integration v2 failed", "error", err)
+			} else {
+				// 将 ApprovalResumeHandler 注入到 adminHandler
+				adminHandler.SetApprovalResumeHandler(approvalIntegrationResult.ResumeHandler)
+				slog.Info("approval integration v2 completed",
+					"cache_update_hook", approvalIntegrationResult.CacheUpdateHook != nil,
+					"approval_hook", approvalIntegrationResult.ApprovalHook != nil,
+					"resume_handler", approvalIntegrationResult.ResumeHandler != nil)
+			}
+		} else {
+			slog.Info("approval integration v2 skipped: missing dependencies or disabled",
+				"session_audit_enabled", enableSessionAudit == "true",
+				"scCache", scCache != nil,
+				"pendingStore", pendingStore != nil)
+		}
+
+		// settings-management: inject the DB-backed settings store so the
