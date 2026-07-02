@@ -345,14 +345,22 @@ func (s *Storage) OpenStream(relPath string) (io.ReadCloser, string, error) {
 }
 
 // FullPath 返回相对路径对应的绝对路径。仅供内部/管理端使用。
+// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端返回错误。
 func (s *Storage) FullPath(relPath string) (string, error) {
+	if _, ok := s.backend.(*LocalStorageBackend); !ok {
+		return "", errors.New("attachments: FullPath only supported for local storage backend")
+	}
 	return s.safeJoin(relPath)
 }
 
 // safeJoin 将相对路径安全拼接到 BaseDir，防止目录遍历（../../etc/passwd）。
 // 每次调用快照当前 BaseDir，确保迁移切换目录后立即生效。
+// 注意：仅用于本地存储后端。
 func (s *Storage) safeJoin(relPath string) (string, error) {
 	base := s.BaseDir()
+	if base == "" {
+		return "", errors.New("attachments: baseDir is empty (not a local storage backend)")
+	}
 	cleaned := filepath.Clean("/" + relPath) // 强制为根绝对路径，消除 ..
 	full := filepath.Join(base, cleaned)
 	// 二次校验：结果必须在 BaseDir 之内
@@ -364,16 +372,11 @@ func (s *Storage) safeJoin(relPath string) (string, error) {
 	return full, nil
 }
 
-// ensureDir 创建 BaseDir/relDir 目录（带缓存，避免重复系统调用）。
+// ensureDir 已废弃，由 LocalStorageBackend 内部管理
+// 保留此方法仅为向后兼容
 func (s *Storage) ensureDir(relDir string) error {
-	if _, ok := s.mkdirCache.Load(relDir); ok {
-		return nil
-	}
-	full := filepath.Join(s.BaseDir(), relDir)
-	if err := os.MkdirAll(full, 0755); err != nil {
-		return err
-	}
-	s.mkdirCache.Store(relDir, true)
+	// 对于本地存储，目录创建由 backend 自动处理
+	// 对于云存储，不需要创建目录
 	return nil
 }
 
