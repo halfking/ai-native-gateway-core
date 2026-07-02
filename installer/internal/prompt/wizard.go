@@ -45,9 +45,9 @@ func (c *InstallConfig) Summary() string {
 
 // Wizard 向导上下文
 type Wizard struct {
-	reader    *bufio.Reader
-	IsTTY     bool
-	AppImageTag string  // 由 caller 传入（从 MANIFEST 读取）
+	reader      *bufio.Reader
+	IsTTY       bool
+	AppImageTag string // 由 caller 传入（从 MANIFEST 读取）
 }
 
 // NewWizard 创建 Wizard
@@ -57,6 +57,85 @@ func NewWizard(appImageTag string) *Wizard {
 		IsTTY:       term.IsTerminal(int(os.Stdin.Fd())),
 		AppImageTag: appImageTag,
 	}
+}
+
+// LoadFromEnvFile 从 .env 风格的文件加载配置（非交互模式，CI/自动化场景）
+// 文件格式：KEY=VALUE，每行一个，支持 # 注释
+// 缺失的必填字段会自动生成（与交互模式留空语义一致）
+func LoadFromEnvFile(path, appImageTag, defaultInstallPath string) (*InstallConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取配置文件 %s 失败: %w", path, err)
+	}
+
+	values := parseEnvFile(string(data))
+
+	cfg := &InstallConfig{
+		InstallPath:         getOrDefault(values, "INSTALL_PATH", defaultInstallPath),
+		AppPort:             getOrDefaultInt(values, "APP_PORT", 8781),
+		PGPort:              getOrDefaultInt(values, "PG_PORT", 5432),
+		RedisPort:           getOrDefaultInt(values, "REDIS_PORT", 6379),
+		AppImageTag:         getOrDefault(values, "APP_IMAGE_TAG", appImageTag),
+		PGPassword:          getOrGen(values, "POSTGRES_PASSWORD"),
+		RedisPassword:       getOrGen(values, "REDIS_PASSWORD"),
+		APIKey:              getOrGen(values, "LLM_GATEWAY_API_KEY"),
+		AdminAPIKey:         getOrGen(values, "LLM_GATEWAY_ADMIN_API_KEY"),
+		JWTSecret:           getOrGen(values, "LLM_GATEWAY_JWT_SECRET"),
+		CredEncryptKey:      getOrGen(values, "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"),
+		ImageSourceStrategy: getOrDefault(values, "IMAGE_SOURCE_STRATEGY", "auto"),
+	}
+	return cfg, nil
+}
+
+// parseEnvFile 解析 .env 文件内容为 map
+func parseEnvFile(content string) map[string]string {
+	result := make(map[string]string)
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// 去掉两端引号
+		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[len(val)-1] == val[0] {
+			val = val[1 : len(val)-1]
+		}
+		result[key] = val
+	}
+	return result
+}
+
+func getOrDefault(m map[string]string, key, def string) string {
+	if v, ok := m[key]; ok && v != "" {
+		return v
+	}
+	return def
+}
+
+func getOrDefaultInt(m map[string]string, key string, def int) int {
+	if v, ok := m[key]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// getOrGen 取值，空则生成随机值（与交互模式留空语义一致）
+func getOrGen(m map[string]string, key string) string {
+	if v, ok := m[key]; ok && v != "" {
+		return v
+	}
+	v, err := secrets.GenerateRandom()
+	if err != nil {
+		panic(fmt.Errorf("生成随机 %s 失败: %w", key, err))
+	}
+	return v
 }
 
 // Run 运行 11 步向导
