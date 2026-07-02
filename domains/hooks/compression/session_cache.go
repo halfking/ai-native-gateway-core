@@ -98,6 +98,26 @@ type SessionState struct {
 	CutStrategy    string `json:"cm_strat,omitempty"`
 	CutBytesBefore int    `json:"cm_bb,omitempty"`
 	CutBytesAfter  int    `json:"cm_ba,omitempty"`
+
+	// v6: Audited state (Cache 2 concept).
+	//
+	// Captures the latest result of the session-audit hook so that
+	// (a) downstream hooks can branch without re-running detection, and
+	// (b) the approval resume flow can recover what decision was made
+	// even after Redis eviction.
+	//
+	// SchemaVersion is intentionally kept at 1 — all new fields are
+	// optional (omitempty) so that legacy readers silently ignore them
+	// and new readers simply observe zero values when the keys are
+	// absent. This is a non-breaking schema evolution.
+	AuditedAt           int64  `json:"aud_at,omitempty"`  // unix seconds of last audit
+	AuditScore          int    `json:"aud_sc,omitempty"`  // composite audit score 0-10
+	SecurityScore       int    `json:"sec_sc,omitempty"`  // security sub-score 0-10
+	SensitiveDetected   bool   `json:"sen_det,omitempty"` // true when sensitive words hit
+	PIIStripped         bool   `json:"pii_strip,omitempty"`
+	ApprovalStatus      string `json:"app_st,omitempty"`  // pending|approved|rejected|""
+	ApprovalID          string `json:"app_id,omitempty"`  // approval_queue row UUID
+	OptimizationApplied string `json:"opt_app,omitempty"` // strip_tools|compress_thinking|summarize
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -399,6 +419,33 @@ func encodeSessionStateFields(st *SessionState) []any {
 			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
 		}
 	}
+	// v6: Audited state — only emit non-zero values to keep Redis hash small
+	// and to remain backward compatible with older readers that only know
+	// the v5 field set.
+	if st.AuditedAt > 0 {
+		fields = append(fields, "aud_at", fmt.Sprintf("%d", st.AuditedAt))
+	}
+	if st.AuditScore > 0 {
+		fields = append(fields, "aud_sc", fmt.Sprintf("%d", st.AuditScore))
+	}
+	if st.SecurityScore > 0 {
+		fields = append(fields, "sec_sc", fmt.Sprintf("%d", st.SecurityScore))
+	}
+	if st.SensitiveDetected {
+		fields = append(fields, "sen_det", "1")
+	}
+	if st.PIIStripped {
+		fields = append(fields, "pii_strip", "1")
+	}
+	if st.ApprovalStatus != "" {
+		fields = append(fields, "app_st", st.ApprovalStatus)
+	}
+	if st.ApprovalID != "" {
+		fields = append(fields, "app_id", st.ApprovalID)
+	}
+	if st.OptimizationApplied != "" {
+		fields = append(fields, "opt_app", st.OptimizationApplied)
+	}
 	return fields
 }
 
@@ -435,6 +482,16 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CutStrategy = fields["cm_strat"]
 	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
 	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
+	// v6: Audited state — missing keys decode to zero value, which is the
+	// intended "no audit yet" semantic.
+	st.AuditedAt = parseInt(fields["aud_at"])
+	st.AuditScore = int(parseInt(fields["aud_sc"]))
+	st.SecurityScore = int(parseInt(fields["sec_sc"]))
+	st.SensitiveDetected = fields["sen_det"] == "1" || fields["sen_det"] == "true"
+	st.PIIStripped = fields["pii_strip"] == "1" || fields["pii_strip"] == "true"
+	st.ApprovalStatus = fields["app_st"]
+	st.ApprovalID = fields["app_id"]
+	st.OptimizationApplied = fields["opt_app"]
 	return nil
 }
 
@@ -505,4 +562,92 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutStrategy = ""
 	s.CutBytesBefore = 0
 	s.CutBytesAfter = 0
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// v6: Audited state helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+// ApprovalState values that may appear in SessionState.ApprovalStatus.
+// These are mirrored from sessionaudit.ApprovalStatus to keep this package
+// import-free (callers in hot paths may read the field without needing to
+// import the audit domain).
+const (
+	ApprovalStatePending  = "pending"
+	ApprovalStateApproved = "approved"
+	ApprovalStateRejected = "rejected"
+	ApprovalStateTimeout  = "timeout"
+)
+
+// Optimization tag values for SessionState.OptimizationApplied.
+const (
+	OptStripTools       = "strip_tools"
+	OptCompressThinking = "compress_thinking"
+	OptSummarize        = "summarize"
+)
+
+// MarkAudited stamps the audit metadata into the session state.
+//
+// score and security are 0-10 integers (caller is responsible for clamping).
+// sensitiveWordsHit / piiStripped reflect the boolean outcomes of the
+// detection phase. approvalPending should be true when the detection
+// decided DecisionNeedApproval — this triggers the ApprovalHook to create
+// an approval record.
+func (s *SessionState) MarkAudited(now time.Time, score, security int, sensitiveWordsHit, piiStripped, approvalPending bool) {
+	if s == nil {
+		return
+	}
+	s.AuditedAt = now.Unix()
+	s.AuditScore = score
+	s.SecurityScore = security
+	s.SensitiveDetected = sensitiveWordsHit
+	s.PIIStripped = piiStripped
+	if approvalPending {
+		s.ApprovalStatus = ApprovalStatePending
+	}
+}
+
+// SetApprovalID records the approval_queue UUID once ApprovalManager.Create
+// has returned it. Cleared when the state is no longer pending.
+func (s *SessionState) SetApprovalID(id string) {
+	if s == nil {
+		return
+	}
+	s.ApprovalID = id
+	if id != "" {
+		s.ApprovalStatus = ApprovalStatePending
+	}
+}
+
+// SetApprovalResult updates the final approval verdict and clears the
+// pending ID. Callers should invoke this from the resume handler.
+func (s *SessionState) SetApprovalResult(state string) {
+	if s == nil {
+		return
+	}
+	s.ApprovalStatus = state
+	// When the approval lifecycle ends we drop the ID — keep ApprovalID
+	// for audit trail purposes (it can be looked up in approval_queue).
+}
+
+// ApplyOptimization stamps the optimization tag that was applied to the
+// session (strip_tools / compress_thinking / summarize). The tag is
+// informational and lets downstream hooks skip redundant work.
+func (s *SessionState) ApplyOptimization(tag string) {
+	if s == nil {
+		return
+	}
+	if tag == "" {
+		return
+	}
+	s.OptimizationApplied = tag
+}
+
+// IsApprovalPending reports whether this session is currently waiting on
+// human review. Returns false for nil receivers.
+func (s *SessionState) IsApprovalPending() bool {
+	if s == nil {
+		return false
+	}
+	return s.ApprovalStatus == ApprovalStatePending
 }
