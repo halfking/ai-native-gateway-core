@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
 	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
@@ -47,6 +48,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"                 //nolint:depguard
@@ -985,29 +987,23 @@ func main() {
 				"env", "LLM_GATEWAY_ENABLE_SESSION_AUDIT="+enableSessionAudit)
 		}
 
-		// 2026-07-03: approval integration v2 (ApprovalHook + CacheUpdateHook + ResumeHandler)
-		// 在 SessionAuditHookV1 之后集成新的审批流程，提供完整的 snapshot 缓存和恢复能力。
+		// 2026-07-03: approval resume handler wiring.
+		//
+		// 审批触发由现有 ApprovalGateHook (pipeline priority 105) 完成。
+		// 此处只创建 ApprovalResumeHandler——管理员 approve 后，
+		// POST /api/admin/approvals/:id/resume 从 DB record 中的 snapshot
+		// 恢复 LLM 调用。
 		if enableSessionAudit == "true" && scCache != nil && pendingStore != nil {
-			approvalIntegrationDeps := &ApprovalIntegrationDeps{
-				SessionCache:    scCache,
-				ApprovalMgr:     approvalMgr,
-				PendingStore:    pendingStore,
-				ChatHandler:     chatHandler,
-				AuditBus:        eventbus.NewMemoryBus(100),
-				ApprovalTimeout: approvalTimeout,
-			}
-			approvalIntegrationResult, err := InitializeApprovalIntegration(approvalIntegrationDeps)
+			resumeHandler, err := NewApprovalResumeHandler(
+				scCache, approvalMgr, chatHandler, pendingStore, approvalTimeout)
 			if err != nil {
-				slog.Error("approval integration v2 failed", "error", err)
+				slog.Error("approval resume handler init failed", "error", err)
 			} else {
-				adminHandler.SetApprovalResumeHandler(approvalIntegrationResult.ResumeHandler)
-				slog.Info("approval integration v2 completed",
-					"cache_update_hook", approvalIntegrationResult.CacheUpdateHook != nil,
-					"approval_hook", approvalIntegrationResult.ApprovalHook != nil,
-					"resume_handler", approvalIntegrationResult.ResumeHandler != nil)
+				adminHandler.SetApprovalResumeHandler(resumeHandler)
+				slog.Info("approval resume handler wired")
 			}
 		} else {
-			slog.Info("approval integration v2 skipped: missing dependencies or disabled",
+			slog.Info("approval resume handler skipped: missing dependencies",
 				"session_audit_enabled", enableSessionAudit == "true",
 				"scCache", scCache != nil,
 				"pendingStore", pendingStore != nil)
@@ -2413,4 +2409,77 @@ func parseBoolSetting(raw json.RawMessage) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// initApprovalNotifier 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）。
+// 返回 nil, nil 表示配置不全（路由表为空）；返回 nil, err 表示初始化失败。
+func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.ApprovalManager) (*notification.ApprovalNotifier, error) {
+	if pool == nil || approvalMgr == nil {
+		return nil, fmt.Errorf("init approval notifier: nil pool or approval manager")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. 加载路由规则
+	routingTable := notification.NewEmptyRoutingTable()
+	loader := notification.NewPgxRoutingLoader(pool)
+	if err := routingTable.LoadFromDB(ctx, loader); err != nil {
+		return nil, fmt.Errorf("load routing rules: %w", err)
+	}
+
+	// 2. 创建渠道实例（从环境变量配置）
+	channels := make(map[notification.ChannelType]notification.NotificationChannel)
+
+	// 飞书渠道
+	if larkAppID := os.Getenv("LARK_APP_ID"); larkAppID != "" {
+		larkAppSecret := os.Getenv("LARK_APP_SECRET")
+		larkCfg := notification.LarkBotConfig{
+			AppID:     larkAppID,
+			AppSecret: larkAppSecret,
+		}
+		channels[notification.ChannelLark] = notification.NewLarkBotChannel(larkCfg)
+		slog.Info("lark channel initialized", "app_id", larkAppID)
+	}
+
+	// 钉钉渠道
+	if dingAppKey := os.Getenv("DINGTALK_APP_KEY"); dingAppKey != "" {
+		dingAppSecret := os.Getenv("DINGTALK_APP_SECRET")
+		dingCfg := notification.DingTalkConfig{
+			AppKey:    dingAppKey,
+			AppSecret: dingAppSecret,
+		}
+		channels[notification.ChannelDingTalk] = notification.NewDingTalkChannel(dingCfg)
+		slog.Info("dingtalk channel initialized", "app_key", dingAppKey)
+	}
+
+	// 企业微信渠道
+	if wechatCorpID := os.Getenv("WECHAT_CORP_ID"); wechatCorpID != "" {
+		wechatCorpSecret := os.Getenv("WECHAT_CORP_SECRET")
+		wechatCfg := notification.WeChatConfig{
+			CorpID:     wechatCorpID,
+			CorpSecret: wechatCorpSecret,
+		}
+		channels[notification.ChannelWeChat] = notification.NewWeChatChannel(wechatCfg)
+		slog.Info("wechat channel initialized", "corp_id", wechatCorpID)
+	}
+
+	// 如果没有配置任何渠道，返回 nil（不报错，只是不发通知）
+	if len(channels) == 0 {
+		slog.Warn("no notification channels configured, approval notifications disabled")
+		return nil, nil
+	}
+
+	// 3. 构造 ApprovalNotifier
+	notifier, err := notification.NewApprovalNotifier(notification.NotifierConfig{
+		Channels:    channels,
+		Routing:     routingTable,
+		ApprovalMgr: approvalMgr,
+		Timeout:     30 * time.Second,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create approval notifier: %w", err)
+	}
+
+	return notifier, nil
 }
