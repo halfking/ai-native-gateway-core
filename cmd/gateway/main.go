@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/api"
 	"github.com/kaixuan/llm-gateway-go/apihub"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/bg"
@@ -1877,6 +1878,30 @@ func main() {
 		// Phase 3.8 (2026-06-28): Probe Health Dashboard API
 		adminHandler.RegisterProbeDashboardRoutes(mux, wrapAdmin)
 		slog.Info("Phase 3.8 probe health dashboard API enabled (/api/admin/probe/*)")
+
+		// Phase 3.9 (2026-07-02, Task D2): Approval Request Query API
+		// Provides REST API for querying, approving, and rejecting approval requests
+		// with statistics support. Complements the existing admin approval handlers.
+		if approvalMgr != nil {
+			approvalAPI := api.NewApprovalHandler(approvalMgr, api.NewAdminAuthAdapter())
+			mux.HandleFunc("/api/v1/approvals/", func(w http.ResponseWriter, r *http.Request) {
+				// Route to appropriate handler based on path suffix
+				path := r.URL.Path
+				switch {
+				case strings.HasSuffix(path, "/approve"):
+					wrapAdmin(approvalAPI.ApproveApproval)(w, r)
+				case strings.HasSuffix(path, "/reject"):
+					wrapAdmin(approvalAPI.RejectApproval)(w, r)
+				case strings.Contains(path, "/approvals/") && !strings.HasSuffix(path, "/approvals/"):
+					wrapAdmin(approvalAPI.GetApproval)(w, r)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			mux.HandleFunc("/api/admin/approvals", wrapAdmin(approvalAPI.ListApprovals))
+			mux.HandleFunc("/api/admin/approvals/stats", wrapAdmin(approvalAPI.GetApprovalStats))
+			slog.Info("Phase 3.9 approval query API enabled (/api/v1/approvals/*, /api/admin/approvals/stats)")
+		}
 	}
 
 	slog.Info("CHECKPOINT: before middleware stack build")
