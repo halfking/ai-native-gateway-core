@@ -1,0 +1,200 @@
+// Package api provides API handlers for the LLM Gateway.
+//
+// This file implements DingTalk callback handlers for approval notifications.
+package api
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"time"
+)
+
+// DingTalkCallbackHandler handles DingTalk approval callbacks.
+type DingTalkCallbackHandler struct {
+	approvalManager ApprovalManager
+	appSecret       string
+}
+
+// NewDingTalkCallbackHandler creates a new DingTalk callback handler.
+func NewDingTalkCallbackHandler(manager ApprovalManager, appSecret string) *DingTalkCallbackHandler {
+	return &DingTalkCallbackHandler{
+		approvalManager: manager,
+		appSecret:       appSecret,
+	}
+}
+
+// DingTalkCallbackRequest represents the callback request from DingTalk.
+type DingTalkCallbackRequest struct {
+	// Event type: "approval_result"
+	EventType string `json:"EventType"`
+	
+	// Timestamp
+	TimeStamp int64 `json:"TimeStamp"`
+	
+	// Approval result data
+	ApprovalID string `json:"approval_id"`
+	TenantID   string `json:"tenant_id"`
+	UserID     string `json:"user_id"`
+	Result     string `json:"result"` // "agree" or "refuse"
+	Comment    string `json:"comment"`
+}
+
+// DingTalkCallbackResponse represents the response to DingTalk.
+type DingTalkCallbackResponse struct {
+	ErrCode int    `json:"errcode"`
+	ErrMsg  string `json:"errmsg"`
+}
+
+// HandleApprovalCallback handles DingTalk approval callback.
+// POST /api/webhooks/dingtalk/approval-callback
+func (h *DingTalkCallbackHandler) HandleApprovalCallback(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Verify signature
+	if !h.verifySignature(r) {
+		slog.Warn("dingtalk callback: invalid signature",
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent())
+		h.sendResponse(w, http.StatusUnauthorized, 401, "Invalid signature")
+		return
+	}
+
+	// Read request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("dingtalk callback: read body failed", "error", err)
+		h.sendResponse(w, http.StatusBadRequest, 400, "Failed to read request body")
+		return
+	}
+
+	// Parse callback request
+	var req DingTalkCallbackRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		slog.Error("dingtalk callback: parse body failed", "error", err, "body", string(body))
+		h.sendResponse(w, http.StatusBadRequest, 400, "Invalid request format")
+		return
+	}
+
+	// Validate request
+	if req.ApprovalID == "" || req.TenantID == "" || req.UserID == "" {
+		slog.Warn("dingtalk callback: missing required fields",
+			"approval_id", req.ApprovalID,
+			"tenant_id", req.TenantID,
+			"user_id", req.UserID)
+		h.sendResponse(w, http.StatusBadRequest, 400, "Missing required fields")
+		return
+	}
+
+	// Process the approval result
+	if err := h.processApprovalResult(ctx, &req); err != nil {
+		slog.Error("dingtalk callback: process approval failed",
+			"error", err,
+			"approval_id", req.ApprovalID,
+			"tenant_id", req.TenantID,
+			"user_id", req.UserID,
+			"result", req.Result)
+		h.sendResponse(w, http.StatusInternalServerError, 500, "Failed to process approval")
+		return
+	}
+
+	// Success response
+	slog.Info("dingtalk callback: approval processed",
+		"approval_id", req.ApprovalID,
+		"tenant_id", req.TenantID,
+		"user_id", req.UserID,
+		"result", req.Result)
+	h.sendResponse(w, http.StatusOK, 0, "success")
+}
+
+// verifySignature verifies the DingTalk callback signature.
+func (h *DingTalkCallbackHandler) verifySignature(r *http.Request) bool {
+	// Get signature parameters from query string
+	timestamp := r.URL.Query().Get("timestamp")
+	sign := r.URL.Query().Get("sign")
+
+	if timestamp == "" || sign == "" {
+		return false
+	}
+
+	// Verify timestamp (within 1 hour)
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+
+	now := time.Now().Unix() * 1000 // DingTalk uses milliseconds
+	if now-ts > 3600000 || ts-now > 3600000 {
+		slog.Warn("dingtalk callback: timestamp out of range",
+			"timestamp", ts,
+			"now", now,
+			"diff_ms", now-ts)
+		return false
+	}
+
+	// Calculate expected signature
+	// DingTalk signature: HMAC-SHA256(timestamp + "\n" + app_secret)
+	stringToSign := timestamp + "\n" + h.appSecret
+	mac := hmac.New(sha256.New, []byte(h.appSecret))
+	mac.Write([]byte(stringToSign))
+	expectedSign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	// URL encode the expected signature
+	expectedSign = url.QueryEscape(expectedSign)
+
+	return sign == expectedSign
+}
+
+// processApprovalResult processes the approval result from DingTalk.
+func (h *DingTalkCallbackHandler) processApprovalResult(ctx context.Context, req *DingTalkCallbackRequest) error {
+	switch req.Result {
+	case "agree":
+		// Approve the request
+		return h.approvalManager.Approve(
+			ctx,
+			req.ApprovalID,
+			req.TenantID,
+			req.UserID,
+			req.Comment,
+		)
+
+	case "refuse":
+		// Reject the request
+		return h.approvalManager.Reject(
+			ctx,
+			req.ApprovalID,
+			req.TenantID,
+			req.UserID,
+			req.Comment,
+		)
+
+	default:
+		return fmt.Errorf("unknown approval result: %s", req.Result)
+	}
+}
+
+// sendResponse sends a JSON response to DingTalk.
+func (h *DingTalkCallbackHandler) sendResponse(w http.ResponseWriter, httpStatus, errCode int, errMsg string) {
+	resp := DingTalkCallbackResponse{
+		ErrCode: errCode,
+		ErrMsg:  errMsg,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpStatus)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// RegisterDingTalkRoutes registers DingTalk callback routes.
+func RegisterDingTalkRoutes(mux *http.ServeMux, manager ApprovalManager, appSecret string) {
+	handler := NewDingTalkCallbackHandler(manager, appSecret)
+	mux.HandleFunc("POST /api/webhooks/dingtalk/approval-callback", handler.HandleApprovalCallback)
+}
