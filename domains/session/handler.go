@@ -387,7 +387,7 @@ func (h *Handler) getPendingResponse(w http.ResponseWriter, r *http.Request, ses
 	if requestID != "" {
 		entry, found, err = h.pendingStore.Get(r.Context(), sessionID, requestID)
 	} else {
-		_, _, found, err = h.pendingStore.GetLatest(r.Context(), sessionID)
+		entry, requestID, found, err = h.pendingStore.GetLatest(r.Context(), sessionID)
 	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusServiceUnavailable, "",
