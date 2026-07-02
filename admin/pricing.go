@@ -954,3 +954,92 @@ func nullableStr(v *string) string { //nolint:unused
 	}
 	return "'" + strings.ReplaceAll(*v, "'", "''") + "'"
 }
+
+// setFreeModels批量设置指定provider的模型为免费(billing_mode='free')或取消免费
+// POST /api/providers/{id}/set-free-models
+// Body: {"raw_model_names": ["model1", "model2"], "free": true}
+func (h *Handler) setFreeModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	var req struct {
+		RawModelNames []string `json:"raw_model_names"`
+		Free          bool     `json:"free"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.RawModelNames) == 0 {
+		writeError(w, http.StatusBadRequest, "raw_model_names required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin tx: "+err.Error())
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+			// log but don't fail
+		}
+	}()
+
+	// 批量更新 cmb.billing_mode
+	// - 如果 free=true → billing_mode='free', plan_type_origin='manual'
+	// - 如果 free=false → billing_mode 恢复为 credentials.plan_type 派生值, plan_type_origin='auto'
+	var result struct{ Updated int }
+	if req.Free {
+		// 设置为免费
+		err = tx.QueryRow(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET billing_mode = 'free',
+			    plan_type_origin = 'manual',
+			    updated_at = NOW()
+			FROM credentials c, provider_models pm
+			WHERE cmb.credential_id = c.id
+			  AND cmb.provider_model_id = pm.id
+			  AND pm.provider_id = $1
+			  AND pm.raw_model_name = ANY($2)
+			RETURNING (SELECT COUNT(*) FROM credential_model_bindings WHERE credential_id = c.id)
+		`, providerID, req.RawModelNames).Scan(&result.Updated)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+	} else {
+		// 取消免费（恢复为 auto 派生）
+		err = tx.QueryRow(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET billing_mode = CASE WHEN c.plan_type = 'token' THEN 'per_token' ELSE c.plan_type END,
+			    plan_type_origin = 'auto',
+			    updated_at = NOW()
+			FROM credentials c, provider_models pm
+			WHERE cmb.credential_id = c.id
+			  AND cmb.provider_model_id = pm.id
+			  AND pm.provider_id = $1
+			  AND pm.raw_model_name = ANY($2)
+			  AND cmb.billing_mode = 'free'
+			RETURNING (SELECT COUNT(*) FROM credential_model_bindings WHERE credential_id = c.id)
+		`, providerID, req.RawModelNames).Scan(&result.Updated)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit: "+err.Error())
+		return
+	}
+
+	// 使路由缓存失效
+	// provider.InvalidateAllCandidateCache() // 已经在 import 中
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"updated":     result.Updated,
+		"free":        req.Free,
+		"model_count": len(req.RawModelNames),
+	})
+}
