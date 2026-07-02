@@ -276,11 +276,6 @@ func CalculateStabilityScore(rows []TimeseriesRow) float64 {
 	return score
 }
 
-// calculateUptime 计算 uptime 百分比（使用注入的时钟）
-func (a *ReputationAnalyzer) calculateUptime(rows []TimeseriesRow, incidents []Incident, days int) float64 {
-	return a.calculateUptimeAt(rows, incidents, days, a.now())
-}
-
 // calculateUptimeAt 使用显式 now 计算 uptime（便于测试）
 func (a *ReputationAnalyzer) calculateUptimeAt(rows []TimeseriesRow, incidents []Incident, days int, now time.Time) float64 {
 	return CalculateUptimeAt(rows, incidents, days, now)
