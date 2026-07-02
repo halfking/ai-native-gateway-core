@@ -89,13 +89,13 @@ func NewStorage(baseDir string) (*Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("attachments: resolve base dir %q: %w", baseDir, err)
 	}
-	
+
 	// 使用本地文件系统后端
 	backend, err := NewLocalStorageBackend(abs)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &Storage{
 		backend: backend,
 		baseDir: abs,
@@ -119,11 +119,11 @@ func (s *Storage) SetBackend(backend StorageBackend) error {
 	if backend == nil {
 		return errors.New("attachments: backend is nil")
 	}
-	
+
 	s.backendMu.Lock()
 	s.backend = backend
 	s.backendMu.Unlock()
-	
+
 	return nil
 }
 
@@ -139,12 +139,12 @@ func (s *Storage) GetBackend() StorageBackend {
 func (s *Storage) BaseDir() string {
 	s.dirMu.RLock()
 	defer s.dirMu.RUnlock()
-	
+
 	// 尝试从后端获取
 	if local, ok := s.GetBackend().(*LocalStorageBackend); ok {
 		return local.BaseDir()
 	}
-	
+
 	return s.baseDir
 }
 
@@ -161,24 +161,24 @@ func (s *Storage) SetBaseDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("attachments: resolve base dir %q: %w", dir, err)
 	}
-	
+
 	// 检查当前后端是否为本地文件系统
 	backend := s.GetBackend()
 	local, ok := backend.(*LocalStorageBackend)
 	if !ok {
 		return errors.New("attachments: SetBaseDir only works with local storage backend")
 	}
-	
+
 	// 更新本地存储后端的基础目录
 	if err := local.SetBaseDir(abs); err != nil {
 		return err
 	}
-	
+
 	// 更新缓存的 baseDir
 	s.dirMu.Lock()
 	s.baseDir = abs
 	s.dirMu.Unlock()
-	
+
 	return nil
 }
 
@@ -188,16 +188,16 @@ func (s *Storage) Summary() (fileCount int, totalBytes int64, oldestMod *time.Ti
 	if s == nil {
 		return 0, 0, nil, errors.New("attachments: storage is nil")
 	}
-	
+
 	backend := s.GetBackend()
 	ctx := context.Background()
-	
+
 	// 列出所有文件
 	files, err := backend.List(ctx, "")
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("attachments: list files: %w", err)
 	}
-	
+
 	fileCount = len(files)
 	for _, file := range files {
 		meta, err := backend.GetMetadata(ctx, file)
@@ -210,7 +210,7 @@ func (s *Storage) Summary() (fileCount int, totalBytes int64, oldestMod *time.Ti
 			oldestMod = &t
 		}
 	}
-	
+
 	return fileCount, totalBytes, oldestMod, nil
 }
 
@@ -364,7 +364,7 @@ func (s *Storage) Stat(relPath string) (os.FileInfo, error) {
 	}
 
 	backend := s.GetBackend()
-	
+
 	// 如果是本地存储后端，直接调用 Stat
 	if local, ok := backend.(*LocalStorageBackend); ok {
 		fullPath := filepath.Join(local.BaseDir(), relPath)
@@ -383,7 +383,7 @@ func (s *Storage) OpenStream(relPath string) (io.ReadCloser, string, error) {
 	}
 
 	backend := s.GetBackend()
-	
+
 	// 如果是本地存储后端，直接打开文件
 	if local, ok := backend.(*LocalStorageBackend); ok {
 		fullPath := filepath.Join(local.BaseDir(), relPath)
@@ -465,6 +465,11 @@ func parseDataURI(dataURI string) (contentType, payload string, err error) {
 		return "", "", errors.New("only base64 encoding is supported")
 	}
 
+	// 检查 payload 是否为空
+	if payload == "" {
+		return "", "", errors.New("empty base64 payload")
+	}
+
 	return contentType, payload, nil
 }
 
@@ -477,15 +482,15 @@ func mimeTypeToExt(mimeType string) string {
 	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
 
 	exts := map[string]string{
-		"image/jpeg":      ".jpg",
-		"image/jpg":       ".jpg",
-		"image/png":       ".png",
-		"image/gif":       ".gif",
-		"image/webp":      ".webp",
-		"image/svg+xml":   ".svg",
-		"application/pdf": ".pdf",
-		"text/plain":      ".txt",
-		"text/html":       ".html",
+		"image/jpeg":       ".jpg",
+		"image/jpg":        ".jpg",
+		"image/png":        ".png",
+		"image/gif":        ".gif",
+		"image/webp":       ".webp",
+		"image/svg+xml":    ".svg",
+		"application/pdf":  ".pdf",
+		"text/plain":       ".txt",
+		"text/html":        ".html",
 		"application/json": ".json",
 		"application/xml":  ".xml",
 	}
@@ -546,34 +551,34 @@ func (s *Storage) safeJoin(relPath string) (string, error) {
 	if s == nil {
 		return "", errors.New("attachments: storage is nil")
 	}
-	
+
 	baseDir := s.BaseDir()
 	if baseDir == "" {
 		return "", errors.New("attachments: base directory not set")
 	}
-	
+
 	// 清理路径，移除 .. 和 .
 	cleanPath := filepath.Clean(relPath)
-	
+
 	// 拼接路径
 	fullPath := filepath.Join(baseDir, cleanPath)
-	
+
 	// 确保结果路径在 baseDir 内
 	absBase, err := filepath.Abs(baseDir)
 	if err != nil {
 		return "", fmt.Errorf("attachments: resolve base dir: %w", err)
 	}
-	
+
 	absFull, err := filepath.Abs(fullPath)
 	if err != nil {
 		return "", fmt.Errorf("attachments: resolve full path: %w", err)
 	}
-	
+
 	// 检查是否逃逸
 	if !strings.HasPrefix(absFull+string(filepath.Separator), absBase+string(filepath.Separator)) &&
 		absFull != absBase {
 		return "", fmt.Errorf("attachments: path escapes base directory: %s", relPath)
 	}
-	
+
 	return absFull, nil
 }
