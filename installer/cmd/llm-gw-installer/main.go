@@ -68,6 +68,7 @@ func main() {
 	root.AddCommand(doctorCmd())
 	root.AddCommand(installCmd())
 	root.AddCommand(uninstallCmd())
+	root.AddCommand(versionCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
@@ -113,6 +114,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	fmt.Println("\n▶ 前置条件 ...")
 	prereq, _ := envdetect.CheckPrereq([]int{8781, 5432, 6379})
 	fmt.Printf("  %s 端口空闲: %v\n", boolMark(prereq.PortsOK), prereq.PortsInUse)
+	if !prereq.PortsOK {
+		for _, port := range prereq.PortsInUse {
+			if proc, ok := prereq.PortDetails[port]; ok {
+				fmt.Printf("     端口 %d: %s\n", port, proc)
+			}
+		}
+	}
 	fmt.Printf("  ✅ 磁盘:     %d GB\n", prereq.DiskFreeGB)
 	fmt.Printf("  ✅ 内存:     %d MB\n", prereq.RAMMB)
 
@@ -202,7 +210,13 @@ func runInstall(opts installOpts) error {
 prereqCheck:
 	prereq, _ := envdetect.CheckPrereq([]int{8781, 5432, 6379})
 	if !prereq.PortsOK {
-		logWarn(fmt.Sprintf("端口被占用: %v（可能需要修改配置）", prereq.PortsInUse))
+		msg := fmt.Sprintf("端口被占用: %v（可能需要修改配置）", prereq.PortsInUse)
+		for _, port := range prereq.PortsInUse {
+			if proc, ok := prereq.PortDetails[port]; ok {
+				msg += fmt.Sprintf("\n  端口 %d: %s", port, proc)
+			}
+		}
+		logWarn(msg)
 	}
 	if prereq.DiskFreeGB < 5 {
 		return fmt.Errorf("磁盘空间不足: %d GB (需要至少 5 GB)", prereq.DiskFreeGB)
@@ -375,6 +389,20 @@ prereqCheck:
 		return fmt.Errorf("健康检查未全部通过，请查看 install-report.md")
 	}
 	return nil
+}
+
+// ── version 子命令 ─────────────────────────────────────────────
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "显示 installer 版本",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("llm-gw-installer v%s\n", installerVersion)
+			fmt.Printf("Go: %s\n", runtime.Version())
+			fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		},
+	}
 }
 
 // ── uninstall 子命令 ───────────────────────────────────────────
