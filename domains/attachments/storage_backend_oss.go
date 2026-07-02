@@ -55,9 +55,11 @@ func NewOSSStorageBackend(config OSSConfig) (*OSSStorageBackend, error) {
 
 // SaveFile 实现 StorageBackend 接口
 func (b *OSSStorageBackend) SaveFile(relPath string, data []byte) error {
+	start := time.Now()
 	objectKey := b.objectKey(relPath)
 	
 	err := b.bucket.PutObject(objectKey, bytes.NewReader(data))
+	recordOp("save", "oss", start, err, int64(len(data)))
 	if err != nil {
 		return fmt.Errorf("oss storage: put object: %w", err)
 	}
@@ -67,15 +69,18 @@ func (b *OSSStorageBackend) SaveFile(relPath string, data []byte) error {
 
 // LoadFile 实现 StorageBackend 接口
 func (b *OSSStorageBackend) LoadFile(relPath string) ([]byte, error) {
+	start := time.Now()
 	objectKey := b.objectKey(relPath)
 
 	body, err := b.bucket.GetObject(objectKey)
 	if err != nil {
+		recordOp("load", "oss", start, err, 0)
 		return nil, fmt.Errorf("oss storage: get object: %w", err)
 	}
 	defer body.Close()
 
 	data, err := io.ReadAll(body)
+	recordOp("load", "oss", start, err, int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("oss storage: read object: %w", err)
 	}
@@ -151,9 +156,12 @@ func (b *OSSStorageBackend) DeleteFile(relPath string) error {
 
 // HealthCheck 实现 StorageBackend 接口
 func (b *OSSStorageBackend) HealthCheck() error {
+	start := time.Now()
+	
 	// 检查 bucket 是否可访问 - 尝试列举对象（limit=1）
 	lsRes, err := b.bucket.ListObjects(oss.MaxKeys(1))
 	if err != nil {
+		recordHealthCheck("oss", start, err)
 		return fmt.Errorf("oss storage: bucket not accessible: %w", err)
 	}
 	_ = lsRes // 只要不报错就说明可访问
@@ -163,12 +171,14 @@ func (b *OSSStorageBackend) HealthCheck() error {
 	testData := []byte("health check")
 	
 	if err := b.bucket.PutObject(testKey, bytes.NewReader(testData)); err != nil {
+		recordHealthCheck("oss", start, err)
 		return fmt.Errorf("oss storage: cannot write test object (permission denied?): %w", err)
 	}
 
 	// 清理测试对象
 	_ = b.bucket.DeleteObject(testKey)
 
+	recordHealthCheck("oss", start, nil)
 	return nil
 }
 
