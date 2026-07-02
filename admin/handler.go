@@ -431,7 +431,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))
 	mux.HandleFunc("/api/admin/storage/config/test-path", h.superAdmin(h.handleStorageTestPath))
-	mux.HandleFunc("/api/admin/storage/health", admin(h.handleStorageHealthCheck))
 	// 2026-07-02: 存储目录迁移进度查询（GET，供前端轮询迁移进度）
 	mux.HandleFunc("/api/admin/storage/migration-state", admin(h.handleMigrationState))
 

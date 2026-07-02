@@ -1,268 +1,274 @@
 package attachments
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 )
 
-// LocalStorageBackend 本地文件系统存储后端
+// LocalStorageBackend implements StorageBackend using local filesystem
 type LocalStorageBackend struct {
 	baseDir string
-	mu      sync.RWMutex
-
-	// mkdirCache 缓存已创建的目录，避免重复 MkdirAll 系统调用
-	mkdirCache sync.Map
 }
 
-// NewLocalStorageBackend 创建本地文件系统存储后端
-// baseDir: 存储根目录的绝对路径
+// NewLocalStorageBackend creates a new local filesystem storage backend
 func NewLocalStorageBackend(baseDir string) (*LocalStorageBackend, error) {
 	if baseDir == "" {
-		return nil, fmt.Errorf("local storage: baseDir cannot be empty")
+		return nil, fmt.Errorf("base directory cannot be empty")
 	}
 
-	abs, err := filepath.Abs(baseDir)
-	if err != nil {
-		return nil, fmt.Errorf("local storage: resolve baseDir: %w", err)
-	}
-
-	// 确保根目录存在
-	if err := os.MkdirAll(abs, 0755); err != nil {
-		return nil, fmt.Errorf("local storage: create baseDir: %w", err)
+	// Ensure base directory exists
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create base directory: %w", err)
 	}
 
 	return &LocalStorageBackend{
-		baseDir: abs,
+		baseDir: baseDir,
 	}, nil
 }
 
-// BaseDir 返回当前存储根目录（用于向后兼容）
-func (b *LocalStorageBackend) BaseDir() string {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return b.baseDir
+// BaseDir returns the base directory
+func (s *LocalStorageBackend) BaseDir() string {
+	return s.baseDir
 }
 
-// SetBaseDir 切换存储根目录（用于运行时迁移，需要写锁）
-func (b *LocalStorageBackend) SetBaseDir(dir string) error {
-	if dir == "" {
-		dir = "./data/attachments"
+// SetBaseDir updates the base directory
+func (s *LocalStorageBackend) SetBaseDir(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
-
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("local storage: resolve dir: %w", err)
-	}
-
-	if err := os.MkdirAll(abs, 0755); err != nil {
-		return fmt.Errorf("local storage: create dir: %w", err)
-	}
-
-	b.mu.Lock()
-	b.baseDir = abs
-	b.mu.Unlock()
-
-	// 清空目录缓存，避免对旧目录的缓存误判新目录
-	b.mkdirCache.Range(func(key, value interface{}) bool {
-		b.mkdirCache.Delete(key)
-		return true
-	})
-
+	s.baseDir = dir
 	return nil
 }
 
-// SaveFile 实现 StorageBackend 接口
-func (b *LocalStorageBackend) SaveFile(relPath string, data []byte) error {
-	start := time.Now()
-	fullPath, err := b.safeJoin(relPath)
+// Save stores file content
+func (s *LocalStorageBackend) Save(ctx context.Context, key string, data []byte) error {
+	filePath := s.getFilePath(key)
+	
+	// Ensure target directory exists
+	targetDir := filepath.Dir(filePath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+	
+	// Write file atomically using temp file + rename
+	tmpFile, err := os.CreateTemp(targetDir, ".tmp-*")
 	if err != nil {
-		recordOp("save", "local", start, err, 0)
-		return err
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-
-	// 确保父目录存在
-	dir := filepath.Dir(fullPath)
-	if err := b.ensureDir(dir); err != nil {
-		recordOp("save", "local", start, err, 0)
-		return fmt.Errorf("local storage: ensure dir: %w", err)
+	tmpPath := tmpFile.Name()
+	
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+	}()
+	
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-
-	// 写入文件
-	err = os.WriteFile(fullPath, data, 0644)
-	recordOp("save", "local", start, err, int64(len(data)))
-	if err != nil {
-		return fmt.Errorf("local storage: write file: %w", err)
+	
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
 	}
-
+	
+	// Atomic rename
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+	
 	return nil
 }
 
-// LoadFile 实现 StorageBackend 接口
-func (b *LocalStorageBackend) LoadFile(relPath string) ([]byte, error) {
-	start := time.Now()
-	fullPath, err := b.safeJoin(relPath)
+// Get retrieves file content
+func (s *LocalStorageBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	filePath := s.getFilePath(key)
+	
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		recordOp("load", "local", start, err, 0)
-		return nil, err
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("file not found: %s", key)
+		}
+		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-
-	data, err := os.ReadFile(fullPath)
-	recordOp("load", "local", start, err, int64(len(data)))
-	if err != nil {
-		return nil, fmt.Errorf("local storage: read file: %w", err)
-	}
-
+	
 	return data, nil
 }
 
-// FileExists 实现 StorageBackend 接口
-func (b *LocalStorageBackend) FileExists(relPath string) (bool, error) {
-	fullPath, err := b.safeJoin(relPath)
-	if err != nil {
-		return false, err
-	}
-
-	_, err = os.Stat(fullPath)
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, fmt.Errorf("local storage: stat file: %w", err)
+// Load is an alias for Get (for compatibility)
+func (s *LocalStorageBackend) Load(ctx context.Context, key string) ([]byte, error) {
+	return s.Get(ctx, key)
 }
 
-// StatFile 实现 StorageBackend 接口
-func (b *LocalStorageBackend) StatFile(relPath string) (*FileInfo, error) {
-	fullPath, err := b.safeJoin(relPath)
-	if err != nil {
-		return nil, err
+// Delete removes a file
+func (s *LocalStorageBackend) Delete(ctx context.Context, key string) error {
+	filePath := s.getFilePath(key)
+	
+	if err := os.Remove(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return nil // Already deleted
+		}
+		return fmt.Errorf("failed to delete file: %w", err)
 	}
+	
+	return nil
+}
 
-	info, err := os.Stat(fullPath)
+// Exists checks if a file exists
+func (s *LocalStorageBackend) Exists(ctx context.Context, key string) (bool, error) {
+	filePath := s.getFilePath(key)
+	
+	_, err := os.Stat(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("local storage: stat file: %w", err)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check file existence: %w", err)
 	}
+	
+	return true, nil
+}
 
-	return &FileInfo{
-		Size:    info.Size(),
-		ModTime: info.ModTime(),
+// List lists all files with optional prefix filter
+func (s *LocalStorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	
+	err := filepath.Walk(s.baseDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		
+		// Skip directories
+		if info.IsDir() {
+			return nil
+		}
+		
+		// Get relative path from base dir
+		relPath, err := filepath.Rel(s.baseDir, path)
+		if err != nil {
+			return err
+		}
+		
+		// Convert to storage key format (use forward slashes)
+		storageKey := filepath.ToSlash(relPath)
+		
+		// Apply prefix filter if specified
+		if prefix != "" && !strings.HasPrefix(storageKey, prefix) {
+			return nil
+		}
+		
+		keys = append(keys, storageKey)
+		return nil
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to list files: %w", err)
+	}
+	
+	return keys, nil
+}
+
+// GetReader retrieves a file reader
+func (s *LocalStorageBackend) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {
+	filePath := s.getFilePath(key)
+	
+	file, err := os.Open(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("file not found: %s", key)
+		}
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	
+	return file, nil
+}
+
+// SaveReader stores content from a reader
+func (s *LocalStorageBackend) SaveReader(ctx context.Context, key string, reader io.Reader, size int64) error {
+	filePath := s.getFilePath(key)
+	
+	// Ensure target directory exists
+	targetDir := filepath.Dir(filePath)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+	
+	// Write file atomically using temp file + rename
+	tmpFile, err := os.CreateTemp(targetDir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+	}()
+	
+	if _, err := io.Copy(tmpFile, reader); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+	
+	// Atomic rename
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+	
+	return nil
+}
+
+// GetMetadata retrieves file metadata
+func (s *LocalStorageBackend) GetMetadata(ctx context.Context, key string) (*FileMetadata, error) {
+	filePath := s.getFilePath(key)
+	
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("file not found: %s", key)
+		}
+		return nil, fmt.Errorf("failed to get file info: %w", err)
+	}
+	
+	return &FileMetadata{
+		Key:          key,
+		Size:         info.Size(),
+		LastModified: info.ModTime(),
+		ContentType:  "", // Not stored in filesystem
+		ETag:         "", // Not applicable for local storage
 	}, nil
 }
 
-// OpenStream 实现 StorageBackend 接口
-func (b *LocalStorageBackend) OpenStream(relPath string) (io.ReadCloser, error) {
-	fullPath, err := b.safeJoin(relPath)
-	if err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("local storage: open file: %w", err)
-	}
-
-	return f, nil
+// GetBackendType returns the backend type
+func (s *LocalStorageBackend) GetBackendType() string {
+	return "filesystem"
 }
 
-// DeleteFile 实现 StorageBackend 接口
-func (b *LocalStorageBackend) DeleteFile(relPath string) error {
-	fullPath, err := b.safeJoin(relPath)
+// HealthCheck performs a health check
+func (s *LocalStorageBackend) HealthCheck(ctx context.Context) error {
+	// Check if base directory is accessible
+	_, err := os.Stat(s.baseDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("base directory not accessible: %w", err)
 	}
-
-	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("local storage: delete file: %w", err)
+	
+	// Try to create a temp file to ensure write permission
+	tmpFile, err := os.CreateTemp(s.baseDir, ".healthcheck-*")
+	if err != nil {
+		return fmt.Errorf("cannot write to base directory: %w", err)
 	}
-
+	tmpFile.Close()
+	os.Remove(tmpFile.Name())
+	
 	return nil
 }
 
-// HealthCheck 实现 StorageBackend 接口
-func (b *LocalStorageBackend) HealthCheck() error {
-	start := time.Now()
-	b.mu.RLock()
-	base := b.baseDir
-	b.mu.RUnlock()
-
-	// 检查目录是否存在
-	info, err := os.Stat(base)
-	if err != nil {
-		recordHealthCheck("local", start, err)
-		return fmt.Errorf("local storage: base dir not accessible: %w", err)
-	}
-
-	if !info.IsDir() {
-		err := fmt.Errorf("local storage: base dir is not a directory: %s", base)
-		recordHealthCheck("local", start, err)
-		return err
-	}
-
-	// 测试写入权限：创建临时文件
-	testFile := filepath.Join(base, ".health_check_"+randomSuffix())
-	f, err := os.Create(testFile)
-	if err != nil {
-		recordHealthCheck("local", start, err)
-		return fmt.Errorf("local storage: cannot create test file (permission denied?): %w", err)
-	}
-	f.Close()
-	os.Remove(testFile) // 清理测试文件
-
-	recordHealthCheck("local", start, nil)
-	return nil
-}
-
-// Info 实现 StorageBackend 接口
-func (b *LocalStorageBackend) Info() BackendInfo {
-	b.mu.RLock()
-	base := b.baseDir
-	b.mu.RUnlock()
-
-	return BackendInfo{
-		Type:     "local",
-		Location: base,
-		Metadata: map[string]string{
-			"writable": "true",
-		},
-	}
-}
-
-// safeJoin 安全地拼接基础目录和相对路径，防止路径遍历攻击
-func (b *LocalStorageBackend) safeJoin(relPath string) (string, error) {
-	b.mu.RLock()
-	base := b.baseDir
-	b.mu.RUnlock()
-
-	// 强制 relPath 为相对路径，消除 ".." 等危险路径
-	cleaned := filepath.Clean("/" + relPath)
-	full := filepath.Join(base, cleaned)
-
-	// 二次校验：结果必须在 baseDir 之内
-	absBase := filepath.Clean(base)
-	if !strings.HasPrefix(filepath.Clean(full)+string(filepath.Separator), absBase+string(filepath.Separator)) &&
-		filepath.Clean(full) != absBase {
-		return "", fmt.Errorf("local storage: path escapes base dir: %q", relPath)
-	}
-
-	return full, nil
-}
-
-// ensureDir 确保目录存在（带缓存）
-func (b *LocalStorageBackend) ensureDir(dir string) error {
-	if _, ok := b.mkdirCache.Load(dir); ok {
-		return nil
-	}
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	b.mkdirCache.Store(dir, true)
-	return nil
+// getFilePath converts a storage key to an absolute file path
+func (s *LocalStorageBackend) getFilePath(storageKey string) string {
+	return filepath.Join(s.baseDir, filepath.FromSlash(storageKey))
 }

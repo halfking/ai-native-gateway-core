@@ -1,0 +1,163 @@
+package attachments
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+)
+
+// IRTransformer 将 IR 中的 data URI 附件转换为存储 URL 引用
+// 这样做的好处：
+//  1. 避免在上游请求中重复传输大体积 base64 数据
+//  2. 附件内容持久化，即使上游调用失败也可追溯
+//  3. 支持附件去重（相同 hash 的附件只存储一份）
+type IRTransformer struct {
+	storage *Storage
+	baseURL string // 附件服务基础 URL，如 https://gateway.example.com/attachments
+}
+
+// NewIRTransformer 创建附件 IR 转换器
+func NewIRTransformer(storage *Storage, baseURL string) *IRTransformer {
+	return &IRTransformer{
+		storage: storage,
+		baseURL: baseURL,
+	}
+}
+
+// TransformRequest 转换请求 IR 中的附件引用
+// 将 base64 内嵌的图片提取存储，并替换为 URL 引用
+func (t *IRTransformer) TransformRequest(ctx context.Context, requestID string, ir *ir.InternalRequest) ([]AttachmentMetadata, error) {
+	if ir == nil {
+		return nil, nil
+	}
+
+	var attachments []AttachmentMetadata
+
+	// 遍历所有消息的内容块
+	for msgIdx, msg := range ir.Messages {
+		for blockIdx, block := range msg.Content {
+			if block.Type == "image" && block.Image != nil {
+				// 处理 base64 图片
+				if block.Image.Type == "base64" && block.Image.Data != "" {
+					metadata, err := t.processImageBlock(
+						requestID, &ir.Messages[msgIdx].Content[blockIdx], 
+						msgIdx, blockIdx,
+					)
+					if err != nil {
+						slog.Warn("failed to process image attachment",
+							"request_id", requestID,
+							"msg_idx", msgIdx,
+							"block_idx", blockIdx,
+							"error", err)
+						// best-effort: 失败不阻断请求，继续处理其他附件
+						continue
+					}
+					if metadata != nil {
+						attachments = append(attachments, *metadata)
+					}
+				}
+			}
+		}
+	}
+
+	return attachments, nil
+}
+
+// processImageBlock 处理单个图片块
+func (t *IRTransformer) processImageBlock(
+	requestID string,
+	block *ir.ContentBlock,
+	msgIdx, blockIdx int,
+) (*AttachmentMetadata, error) {
+	if block.Image == nil {
+		return nil, nil
+	}
+
+	// 构造 data URI
+	mediaType := block.Image.MediaType
+	if mediaType == "" {
+		mediaType = "image/png" // 默认
+	}
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, block.Image.Data)
+
+	// 保存到存储
+	result, err := t.storage.SaveBase64Image(requestID, dataURI, msgIdx, blockIdx)
+	if err != nil {
+		return nil, fmt.Errorf("save base64 image: %w", err)
+	}
+
+	// 替换 IR 中的引用
+	storageURL := fmt.Sprintf("%s/%s", t.baseURL, result.Path)
+	block.Image.Type = "url"
+	block.Image.URL = storageURL
+	block.Image.Data = "" // 清空 base64 数据
+
+	return &result.Metadata, nil
+}
+
+// PersistMetadata 将附件元数据持久化到数据库
+// 只存储 hash/path/size 等元数据，不存储实际文件内容
+func (t *IRTransformer) PersistMetadata(ctx context.Context, db interface{}, requestID string, attachments []AttachmentMetadata) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+
+	// 序列化为 JSONB
+	metadataJSON, err := json.Marshal(attachments)
+	if err != nil {
+		return fmt.Errorf("marshal attachments metadata: %w", err)
+	}
+
+	// 根据 db 类型执行更新（简化版，实际应使用类型断言）
+	// 这里假设 db 有 Exec 方法
+	type execer interface {
+		ExecContext(ctx context.Context, query string, args ...any) (interface{}, error)
+	}
+
+	if ex, ok := db.(execer); ok {
+		_, err = ex.ExecContext(ctx, `
+			UPDATE request_logs 
+			SET attachments = $1 
+			WHERE request_id = $2
+		`, metadataJSON, requestID)
+		if err != nil {
+			return fmt.Errorf("update request_logs.attachments: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ExtractFromDataURI 从 data URI 提取 media type 和 base64 数据
+// 格式：data:image/png;base64,iVBORw0KGgo...
+func ExtractFromDataURI(dataURI string) (mediaType string, data string, err error) {
+	// 简化实现，实际应使用更健壮的解析
+	const prefix = "data:"
+	if len(dataURI) < len(prefix) || dataURI[:len(prefix)] != prefix {
+		return "", "", fmt.Errorf("invalid data URI: missing 'data:' prefix")
+	}
+
+	rest := dataURI[len(prefix):]
+	
+	// 查找 ;base64,
+	const base64Marker = ";base64,"
+	idx := -1
+	for i := 0; i < len(rest)-len(base64Marker); i++ {
+		if rest[i:i+len(base64Marker)] == base64Marker {
+			idx = i
+			break
+		}
+	}
+	
+	if idx == -1 {
+		return "", "", fmt.Errorf("invalid data URI: missing ';base64,' marker")
+	}
+
+	mediaType = rest[:idx]
+	data = rest[idx+len(base64Marker):]
+
+	return mediaType, data, nil
+}

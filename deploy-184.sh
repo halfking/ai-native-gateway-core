@@ -58,8 +58,7 @@ check_uncommitted_changes() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             git add .
-            read -p "请输入提交信息 (默认: chore: update version for deployment): " COMMIT_MSG
-            COMMIT_MSG=${COMMIT_MSG:-"chore: update version for deployment"}
+            read -p "请输入提交信息: " COMMIT_MSG
             git commit -m "${COMMIT_MSG}"
             log_success "改动已提交"
         else
@@ -150,15 +149,11 @@ push_docker_image() {
     docker push ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}
     log_success "已推送到 ${REGISTRY_INTERNAL}"
     
-    # 在184服务器上拉取并推送到本地 registry
-    log_info "在184服务器上同步到本地 registry: ${REGISTRY_LOCAL}"
-    ssh -p ${SSH_PORT} ${SERVER} bash <<EOF
-set -e
-docker pull ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG}
-docker tag ${REGISTRY_INTERNAL}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
-docker push ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
-EOF
-    log_success "已同步到 ${REGISTRY_LOCAL}"
+    # 推送到 184 本地 registry
+    log_info "推送到184本地 registry: ${REGISTRY_LOCAL}"
+    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
+    docker push ${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG}
+    log_success "已推送到 ${REGISTRY_LOCAL}"
 }
 
 # ==================== 步骤5: 更新K8s部署 ====================
@@ -187,28 +182,24 @@ health_check() {
     log_info "Pod 状态:"
     ssh -p ${SSH_PORT} ${SERVER} "kubectl get pods -n ${NAMESPACE} -l app=llm-gateway-go"
     
-    # 获取Pod名称
+    # 健康检查
+    log_info "健康检查:"
+    HEALTH_RESPONSE=$(ssh -p ${SSH_PORT} ${SERVER} "curl -s ${HEALTH_ENDPOINT}" || echo "{}")
+    echo "${HEALTH_RESPONSE}" | jq '.' 2>/dev/null || echo "${HEALTH_RESPONSE}"
+    
+    # 验证版本
+    log_info "验证容器内版本信息..."
     POD_NAME=$(ssh -p ${SSH_PORT} ${SERVER} "kubectl get pods -n ${NAMESPACE} -l app=llm-gateway-go --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'")
     log_info "Pod: ${POD_NAME}"
     
     # 验证 VERSION 文件
-    log_info "验证容器内版本信息..."
-    VERSION_IN_POD=$(ssh -p ${SSH_PORT} ${SERVER} "kubectl exec -n ${NAMESPACE} ${POD_NAME} -- cat /opt/llm-gateway-go/VERSION 2>/dev/null || kubectl exec -n ${NAMESPACE} ${POD_NAME} -- cat /.VERSION 2>/dev/null")
+    VERSION_IN_POD=$(ssh -p ${SSH_PORT} ${SERVER} "kubectl exec -n ${NAMESPACE} ${POD_NAME} -- cat /opt/llm-gateway-go/VERSION 2>/dev/null || cat /.VERSION 2>/dev/null")
     log_info "容器内版本: ${VERSION_IN_POD}"
     
     if [[ "${VERSION_IN_POD}" == "${IMAGE_TAG}" ]]; then
         log_success "版本验证通过"
     else
         log_warn "版本不匹配: 期望 ${IMAGE_TAG}, 实际 ${VERSION_IN_POD}"
-    fi
-    
-    # 测试 API 可用性
-    log_info "测试 API 可用性..."
-    API_TEST=$(ssh -p ${SSH_PORT} ${SERVER} "curl -s http://localhost:10023/v1/models | jq -r '.data | length'" 2>/dev/null || echo "0")
-    if [[ "${API_TEST}" -gt "0" ]]; then
-        log_success "API 可用: 发现 ${API_TEST} 个模型"
-    else
-        log_error "API 测试失败"
     fi
 }
 
