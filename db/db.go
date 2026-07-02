@@ -2,12 +2,14 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type DB struct {
