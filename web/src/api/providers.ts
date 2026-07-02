@@ -15,6 +15,14 @@ export interface Provider {
   catalog_code: string
   display_name: string
   enabled: boolean
+  /**
+   * manual_disabled: 通过 /api/providers/{id}/disable 接口手工禁用
+   * （区别于 enabled，后者是 toggleProvider 切换的开关）。
+   * 后端 /providers 列表在选择 health_status=healthy（"可用"）筛选时
+   * 会把 enabled=false 或 manual_disabled=true 的供应商排除掉，
+   * 与路由层 (v.is_routable) 的语义保持一致。
+   */
+  manual_disabled?: boolean
   base_url: string | null
   header_profile_code?: string | null
   notes: string | null

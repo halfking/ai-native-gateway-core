@@ -530,6 +530,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		SELECT p.id, p.tenant_id, p.code, p.display_name, p.catalog_code,
 		       p.is_custom, p.kind, p.category, p.protocol, p.base_url,
 		       p.egress_profile, p.domestic, p.discount_rate::float8, p.enabled,
+		       COALESCE(p.manual_disabled, FALSE) AS manual_disabled,
 		       COALESCE(p.notes, ''),
 		       p.network_quality_score, p.owner_user,
 		       p.created_at, p.updated_at,
@@ -585,6 +586,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		Domestic             bool       `json:"domestic"`
 		DiscountRate         float64    `json:"discount_rate"`
 		Enabled              bool       `json:"enabled"`
+		ManualDisabled       bool       `json:"manual_disabled"`
 		Notes                string     `json:"notes"`
 		NetworkQualityScore  *string    `json:"network_quality_score"`
 		OwnerUser            *string    `json:"owner_user"`
@@ -610,6 +612,7 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			&p.ID, &p.TenantID, &p.Code, &p.DisplayName, &p.CatalogCode,
 			&p.IsCustom, &p.Kind, &p.Category, &p.Protocol, &p.BaseURL,
 			&p.EgressProfile, &p.Domestic, &p.DiscountRate, &p.Enabled,
+			&p.ManualDisabled,
 			&p.Notes, &p.NetworkQualityScore, &p.OwnerUser,
 			&p.CreatedAt, &p.UpdatedAt,
 			&p.VendorName, &p.HeaderProfileCode,
@@ -621,15 +624,30 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("listProviders scan failed", "error", err)
 			continue
 		}
-		// Compute health_status from counts (same as Python)
+		// Compute health_status from counts (same as Python).
+		p.HealthStatus = "unknown"
 		if p.HealthyCredCount > 0 {
 			p.HealthStatus = "healthy"
 		} else if p.WarningCredCount > 0 {
 			p.HealthStatus = "warning"
 		} else if p.UnreachableCredCount > 0 {
 			p.HealthStatus = "unreachable"
-		} else {
-			p.HealthStatus = "unknown"
+		}
+
+		// 2026-07-03 修正："可用" 筛选语义对齐路由层。
+		// 后端路由层（provider/client.go 的 v.is_routable=TRUE、bg/model_probe.go
+		// 的 COALESCE(p.manual_disabled,FALSE)=FALSE 等）把 enabled=true 且
+		// 未手工禁用作为参与路由的必要条件。前端 /providers 页面的"可用"标签
+		// (health_status=healthy) 也必须遵守同样的语义，否则会把已关闭 /
+		// 手工禁用的供应商（即使其凭证恰好健康）误展示为可用。
+		//
+		// 这里在应用 health_status 过滤前做短路：当请求筛选 healthy 且当前
+		// 供应商被禁用 / 手工禁用时直接跳过，不影响"全部 / 警告 / 不可用"等
+		// 其它视图对凭证健康度的展示。
+		if hs := queryString(r, "health_status"); hs == "healthy" {
+			if !p.Enabled || p.ManualDisabled {
+				continue
+			}
 		}
 		p.FreeModelCount = 0 // TODO: join model_offers when table exists
 
