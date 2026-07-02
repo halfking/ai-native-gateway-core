@@ -37,4 +37,25 @@ export default {
   // Información de versión
   version: 'Versión',
   build: 'Build',
+
+  // 2026-07-02 (visualización de adjuntos request-logs): textos relacionados
+  // con adjuntos, alineados con el documento de referencia §6.
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: 'Adjuntos',
+        attachmentCountTitle: '{n} adjunto(s)',
+        noAttachments: 'Sin adjuntos',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 Adjuntos',
+      attachmentsLoading: 'Cargando adjuntos…',
+      noAttachments: 'Sin adjuntos',
+      clickToPreviewTitle: 'Clic para previsualizar',
+      download: 'Descargar',
+      downloadOriginal: 'Descargar original',
+      closePreview: 'Cerrar',
+    },
+  },
 }

@@ -37,4 +37,25 @@ export default {
   // Versionsinformationen
   version: 'Version',
   build: 'Build',
+
+  // 2026-07-02 (request-logs Anhangsansicht): Anhangsbezogene Texte,
+  // entsprechend Referenzdokument §6.
+  requests: {
+    list: {
+      table: {
+        attachmentsTitle: 'Anhänge',
+        attachmentCountTitle: '{n} Anhang/Anhänge',
+        noAttachments: 'Keine Anhänge',
+      },
+    },
+    detail_extra: {
+      attachmentsTab: '📎 Anhänge',
+      attachmentsLoading: 'Anhänge werden geladen…',
+      noAttachments: 'Keine Anhänge',
+      clickToPreviewTitle: 'Klicken zur Vorschau',
+      download: 'Herunterladen',
+      downloadOriginal: 'Original herunterladen',
+      closePreview: 'Schließen',
+    },
+  },
 }
