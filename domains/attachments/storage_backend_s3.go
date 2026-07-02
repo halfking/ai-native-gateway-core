@@ -1,13 +1,15 @@
-// +build !no_s3
+//go:build storage_s3
 
 package attachments
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,57 +19,54 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3StorageBackend AWS S3/MinIO 存储后端
+// S3StorageBackend 实现基于AWS S3或MinIO的存储后端
 type S3StorageBackend struct {
-	client *s3.Client
-	bucket string
-	prefix string // 基础路径前缀
+	client   *s3.Client
+	bucket   string
+	prefix   string // 可选的对象键前缀
+	endpoint string // MinIO或S3兼容服务的端点
 }
 
-// NewS3StorageBackend 创建 S3/MinIO 存储后端
+// S3Config S3/MinIO存储配置
+type S3Config struct {
+	Endpoint        string // 留空使用AWS S3，填写则用于MinIO等兼容服务
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	Bucket          string
+	Prefix          string // 对象键前缀，如 "attachments/"
+	UsePathStyle    bool   // MinIO通常需要设置为true
+}
+
+// NewS3StorageBackend 创建S3存储后端实例
 func NewS3StorageBackend(cfg S3Config) (*S3StorageBackend, error) {
-	if cfg.BucketName == "" {
-		return nil, fmt.Errorf("s3 storage: bucket name cannot be empty")
+	if cfg.Bucket == "" {
+		return nil, fmt.Errorf("S3 bucket name is required")
 	}
-	if cfg.AccessKeyID == "" {
-		return nil, fmt.Errorf("s3 storage: access key id cannot be empty")
-	}
-	if cfg.SecretAccessKey == "" {
-		return nil, fmt.Errorf("s3 storage: secret access key cannot be empty")
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1" // 默认区域
 	}
 
-	ctx := context.Background()
-
-	// 构建 AWS 配置
+	// 构建AWS配置
 	var opts []func(*config.LoadOptions) error
+	opts = append(opts, config.WithRegion(cfg.Region))
 
-	// 设置区域（MinIO 可以是任意值）
-	region := cfg.Region
-	if region == "" {
-		region = "us-east-1" // 默认区域
+	// 如果提供了访问密钥，使用静态凭证
+	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		opts = append(opts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		))
 	}
-	opts = append(opts, config.WithRegion(region))
 
-	// 设置静态凭证
-	opts = append(opts, config.WithCredentialsProvider(
-		credentials.NewStaticCredentialsProvider(
-			cfg.AccessKeyID,
-			cfg.SecretAccessKey,
-			"", // session token（可选）
-		),
-	))
-
-	// 加载配置
-	awsCfg, err := config.LoadDefaultConfig(ctx, opts...)
+	awsCfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("s3 storage: load config: %w", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// 创建 S3 客户端
-	var clientOpts []func(*s3.Options)
-
-	// 自定义 endpoint（用于 MinIO 或私有 S3 兼容服务）
+	// 创建S3客户端
+	clientOpts := []func(*s3.Options){}
 	if cfg.Endpoint != "" {
+		// 自定义端点（用于MinIO等）
 		clientOpts = append(clientOpts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 			o.UsePathStyle = cfg.UsePathStyle
@@ -77,222 +76,193 @@ func NewS3StorageBackend(cfg S3Config) (*S3StorageBackend, error) {
 	client := s3.NewFromConfig(awsCfg, clientOpts...)
 
 	return &S3StorageBackend{
-		client: client,
-		bucket: cfg.BucketName,
-		prefix: cfg.BasePath,
+		client:   client,
+		bucket:   cfg.Bucket,
+		prefix:   strings.TrimSuffix(cfg.Prefix, "/"),
+		endpoint: cfg.Endpoint,
 	}, nil
 }
 
-// SaveFile 实现 StorageBackend 接口
-func (b *S3StorageBackend) SaveFile(relPath string, data []byte) error {
-	start := time.Now()
-	key := b.objectKey(relPath)
+// buildKey 构建完整的对象键
+func (s *S3StorageBackend) buildKey(path string) string {
+	path = strings.TrimPrefix(path, "/")
+	if s.prefix == "" {
+		return path
+	}
+	return s.prefix + "/" + path
+}
 
-	_, err := b.client.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(key),
-		Body:   bytes.NewReader(data),
+// Save 保存文件到S3
+func (s *S3StorageBackend) Save(ctx context.Context, path string, content []byte) error {
+	key := s.buildKey(path)
+
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        aws.String(s.bucket),
+		Key:           aws.String(key),
+		Body:          bytes.NewReader(content),
+		ContentLength: aws.Int64(int64(len(content))),
+		ContentType:   aws.String(detectContentType(path)),
 	})
-	recordOp("save", "s3", start, err, int64(len(data)))
 	if err != nil {
-		return fmt.Errorf("s3 storage: put object: %w", err)
+		return fmt.Errorf("failed to upload to S3: %w", err)
 	}
 
 	return nil
 }
 
-// LoadFile 实现 StorageBackend 接口
-func (b *S3StorageBackend) LoadFile(relPath string) ([]byte, error) {
-	start := time.Now()
-	key := b.objectKey(relPath)
+// Load 从S3加载文件
+func (s *S3StorageBackend) Load(ctx context.Context, path string) ([]byte, error) {
+	key := s.buildKey(path)
 
-	result, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(b.bucket),
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		recordOp("load", "s3", start, err, 0)
-		return nil, fmt.Errorf("s3 storage: get object: %w", err)
+		return nil, fmt.Errorf("failed to get object from S3: %w", err)
 	}
 	defer result.Body.Close()
 
-	data, err := io.ReadAll(result.Body)
-	recordOp("load", "s3", start, err, int64(len(data)))
+	content, err := io.ReadAll(result.Body)
 	if err != nil {
-		return nil, fmt.Errorf("s3 storage: read object: %w", err)
+		return nil, fmt.Errorf("failed to read S3 object content: %w", err)
 	}
 
-	return data, nil
+	return content, nil
 }
 
-// FileExists 实现 StorageBackend 接口
-func (b *S3StorageBackend) FileExists(relPath string) (bool, error) {
-	key := b.objectKey(relPath)
+// Exists 检查S3对象是否存在
+func (s *S3StorageBackend) Exists(ctx context.Context, path string) (bool, error) {
+	key := s.buildKey(path)
 
-	_, err := b.client.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: aws.String(b.bucket),
+	_, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		// 检查是否是 NoSuchKey 错误
-		var nsk *types.NoSuchKey
-		var nsb *types.NotFound
-		if err != nil {
-			// 简化判断：包含这些字符串即认为对象不存在
-			errStr := err.Error()
-			if contains(errStr, "NoSuchKey") || contains(errStr, "NotFound") || contains(errStr, "404") {
-				return false, nil
-			}
-		}
-		// 使用类型断言检查
-		if nsk != nil || nsb != nil {
+		// 检查是否为NotFound错误
+		var notFound *types.NotFound
+		if errors.As(err, &notFound) {
 			return false, nil
 		}
-		return false, fmt.Errorf("s3 storage: head object: %w", err)
+		return false, fmt.Errorf("failed to check S3 object existence: %w", err)
 	}
 
 	return true, nil
 }
 
-// StatFile 实现 StorageBackend 接口
-func (b *S3StorageBackend) StatFile(relPath string) (*FileInfo, error) {
-	key := b.objectKey(relPath)
+// Delete 从S3删除文件
+func (s *S3StorageBackend) Delete(ctx context.Context, path string) error {
+	key := s.buildKey(path)
 
-	result, err := b.client.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: aws.String(b.bucket),
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("s3 storage: head object: %w", err)
-	}
-
-	info := &FileInfo{}
-	if result.ContentLength != nil {
-		info.Size = *result.ContentLength
-	}
-	if result.LastModified != nil {
-		info.ModTime = *result.LastModified
-	}
-
-	return info, nil
-}
-
-// OpenStream 实现 StorageBackend 接口
-func (b *S3StorageBackend) OpenStream(relPath string) (io.ReadCloser, error) {
-	key := b.objectKey(relPath)
-
-	result, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("s3 storage: get object stream: %w", err)
-	}
-
-	return result.Body, nil
-}
-
-// DeleteFile 实现 StorageBackend 接口
-func (b *S3StorageBackend) DeleteFile(relPath string) error {
-	key := b.objectKey(relPath)
-
-	_, err := b.client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return fmt.Errorf("s3 storage: delete object: %w", err)
+		return fmt.Errorf("failed to delete S3 object: %w", err)
 	}
 
 	return nil
 }
 
-// HealthCheck 实现 StorageBackend 接口
-func (b *S3StorageBackend) HealthCheck() error {
-	start := time.Now()
-	ctx := context.Background()
-
-	// 检查 bucket 是否存在并可访问
-	_, err := b.client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(b.bucket),
-	})
-	if err != nil {
-		recordHealthCheck("s3", start, err)
-		return fmt.Errorf("s3 storage: bucket not accessible: %w", err)
+// List 列出S3中指定前缀下的所有文件
+func (s *S3StorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	fullPrefix := s.buildKey(prefix)
+	if fullPrefix != "" && !strings.HasSuffix(fullPrefix, "/") {
+		fullPrefix += "/"
 	}
 
-	// 测试写入权限：上传并删除一个小文件
-	testKey := path.Join(b.prefix, ".health_check")
-	testData := []byte("health check")
-
-	_, err = b.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(testKey),
-		Body:   bytes.NewReader(testData),
-	})
-	if err != nil {
-		recordHealthCheck("s3", start, err)
-		return fmt.Errorf("s3 storage: cannot write test object (permission denied?): %w", err)
-	}
-
-	// 清理测试对象
-	_, _ = b.client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(testKey),
+	var files []string
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(fullPrefix),
 	})
 
-	recordHealthCheck("s3", start, nil)
-	return nil
-}
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
+		}
 
-// Info 实现 StorageBackend 接口
-func (b *S3StorageBackend) Info() BackendInfo {
-	metadata := map[string]string{
-		"bucket": b.bucket,
-	}
-
-	if b.prefix != "" {
-		metadata["prefix"] = b.prefix
-	}
-
-	// 尝试获取 bucket 区域
-	ctx := context.Background()
-	if region, err := b.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
-		Bucket: aws.String(b.bucket),
-	}); err == nil && region.LocationConstraint != "" {
-		metadata["region"] = string(region.LocationConstraint)
-	}
-
-	location := "s3.amazonaws.com"
-	if b.client.Options().BaseEndpoint != nil {
-		location = *b.client.Options().BaseEndpoint
-	}
-
-	return BackendInfo{
-		Type:     "s3",
-		Location: location,
-		Metadata: metadata,
-	}
-}
-
-// objectKey 拼接对象键：prefix/relPath
-func (b *S3StorageBackend) objectKey(relPath string) string {
-	if b.prefix == "" {
-		return relPath
-	}
-	return path.Join(b.prefix, relPath)
-}
-
-// contains 简单的字符串包含检查
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || hasSubstr(s, substr)))
-}
-
-func hasSubstr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
+		for _, obj := range page.Contents {
+			if obj.Key != nil {
+				// 移除前缀，返回相对路径
+				relPath := strings.TrimPrefix(*obj.Key, s.prefix+"/")
+				files = append(files, relPath)
+			}
 		}
 	}
-	return false
+
+	return files, nil
+}
+
+// GetMetadata 获取S3对象的元数据
+func (s *S3StorageBackend) GetMetadata(ctx context.Context, path string) (*StorageMetadata, error) {
+	key := s.buildKey(path)
+
+	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get S3 object metadata: %w", err)
+	}
+
+	size := int64(0)
+	if result.ContentLength != nil {
+		size = *result.ContentLength
+	}
+
+	modTime := time.Now()
+	if result.LastModified != nil {
+		modTime = *result.LastModified
+	}
+
+	return &StorageMetadata{
+		Size:         size,
+		ModifiedTime: modTime,
+		ContentType:  aws.ToString(result.ContentType),
+		ETag:         aws.ToString(result.ETag),
+	}, nil
+}
+
+// GetURL 获取S3对象的预签名URL
+func (s *S3StorageBackend) GetURL(ctx context.Context, path string, expiry time.Duration) (string, error) {
+	key := s.buildKey(path)
+
+	presignClient := s3.NewPresignClient(s.client)
+	presignResult, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = expiry
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+	}
+
+	return presignResult.URL, nil
+}
+
+// detectContentType 根据文件扩展名检测内容类型
+func detectContentType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	contentTypes := map[string]string{
+		".jpg":  "image/jpeg",
+		".jpeg": "image/jpeg",
+		".png":  "image/png",
+		".gif":  "image/gif",
+		".webp": "image/webp",
+		".pdf":  "application/pdf",
+		".txt":  "text/plain",
+		".json": "application/json",
+		".xml":  "application/xml",
+		".zip":  "application/zip",
+	}
+
+	if ct, ok := contentTypes[ext]; ok {
+		return ct
+	}
+	return "application/octet-stream"
 }

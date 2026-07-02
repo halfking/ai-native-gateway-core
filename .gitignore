@@ -148,4 +148,3 @@ deploy/prod-*.yml
 # 加密文件可提交
 # .env.*.enc
 deployment-report-*.md
-VERSION-VERIFICATION-REPORT.md

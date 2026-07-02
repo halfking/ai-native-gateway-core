@@ -1,0 +1,231 @@
+package streaming
+
+import (
+	"context"
+
+	"github.com/kaixuan/llm-gateway-go/internal/ir"
+)
+
+// IRTransformer 允许客户端适配器在 IR 层面修改数据
+// 这是新架构的核心扩展点：适配器不再只处理 JSON map，而是直接操作 IR
+type IRTransformer interface {
+	// TransformRequestIR 在发送到 LLM 前修改请求 IR
+	// 适配器可以：
+	//  - 补充缺失的字段（如 tool_call_id）
+	//  - 调整参数（如 max_tokens）
+	//  - 添加元数据标记
+	TransformRequestIR(ctx context.Context, ir *ir.InternalRequest) (*ir.InternalRequest, error)
+
+	// TransformResponseIR 在发送到客户端前修改响应 IR
+	// 适配器可以：
+	//  - 过滤或修改内容
+	//  - 补充客户端特定字段
+	//  - 格式化输出
+	TransformResponseIR(ctx context.Context, ir *ir.InternalResponse) (*ir.InternalResponse, error)
+}
+
+// SessionAwareAdapter 允许适配器访问会话上下文
+// 用于需要跨请求状态的客户端（如 Cursor 的长上下文追踪）
+type SessionAwareAdapter interface {
+	// OnSessionStart 会话开始时回调
+	OnSessionStart(ctx context.Context, sessionID string, metadata map[string]any) error
+
+	// OnSessionEnd 会话结束时回调
+	OnSessionEnd(ctx context.Context, sessionID string, metadata map[string]any) error
+}
+
+// StreamAwareAdapter 允许适配器处理流式数据
+type StreamAwareAdapter interface {
+	// OnStreamStart 流式响应开始时回调
+	OnStreamStart(ctx context.Context) error
+
+	// OnStreamChunk 处理每个流式数据块（在 IR 转换后）
+	OnStreamChunk(ctx context.Context, chunk *ir.StreamChunk) (*ir.StreamChunk, error)
+
+	// OnStreamEnd 流式响应结束时回调
+	OnStreamEnd(ctx context.Context, interrupted bool) error
+}
+
+// CursorAdapter 示例：完整的 Cursor 客户端适配器
+type CursorAdapter struct {
+	BaseClientAdapter
+}
+
+// NewCursorAdapter 创建 Cursor 适配器
+func NewCursorAdapter() *CursorAdapter {
+	return &CursorAdapter{
+		BaseClientAdapter: BaseClientAdapter{name: "cursor"},
+	}
+}
+
+// TransformRequestIR 实现 Cursor 特定的请求转换
+func (a *CursorAdapter) TransformRequestIR(ctx context.Context, req *ir.InternalRequest) (*ir.InternalRequest, error) {
+	// 1. 确保所有 assistant 消息的 ToolCalls 都有 ID
+	for i := range req.Messages {
+		msg := &req.Messages[i]
+		if msg.Role == "assistant" {
+			for j := range msg.ToolCalls {
+				tc := &msg.ToolCalls[j]
+				if tc.ID == "" {
+					tc.ID = generateToolCallID("cursor", j)
+				}
+			}
+		}
+	}
+
+	// 2. 长上下文检测：超过 20 条消息标记为长上下文
+	if len(req.Messages) > 20 {
+		if req.Metadata == nil {
+			req.Metadata = &ir.Metadata{}
+		}
+		if req.Metadata.Other == nil {
+			req.Metadata.Other = make(map[string]string)
+		}
+		req.Metadata.Other["_cursor_long_context"] = "true"
+	}
+
+	return req, nil
+}
+
+// TransformResponseIR 实现 Cursor 特定的响应转换
+func (a *CursorAdapter) TransformResponseIR(ctx context.Context, resp *ir.InternalResponse) (*ir.InternalResponse, error) {
+	// Cursor 对响应格式要求较宽松，暂不需要特殊处理
+	return resp, nil
+}
+
+// GetOptimizationHints 返回 Cursor 的优化提示
+func (a *CursorAdapter) GetOptimizationHints() OptimizationHints {
+	return OptimizationHints{
+		PreferLowLatency:      false,
+		PreferHighQuality:     true,
+		ExpectsLongContext:    true,  // Cursor 经常使用长上下文
+		ExpectsMultiTurn:      true,  // 多轮对话
+		ExpectsToolCalls:      true,  // 工具调用
+		CacheEnabled:          true,
+		MaxConcurrentRequests: 5,
+	}
+}
+
+// ShouldEnableToolCallTracking Cursor 需要严格的 tool call ID 追踪
+func (a *CursorAdapter) ShouldEnableToolCallTracking() bool {
+	return true
+}
+
+// ShouldEnableStrictProtocol Cursor 需要严格的协议检查
+func (a *CursorAdapter) ShouldEnableStrictProtocol() bool {
+	return true
+}
+
+// GetTimeout Cursor 支持长上下文，需要更长的超时时间
+func (a *CursorAdapter) GetTimeout() int {
+	return 90 // 90 秒
+}
+
+// WindsurfAdapter Windsurf 客户端适配器
+type WindsurfAdapter struct {
+	BaseClientAdapter
+}
+
+// NewWindsurfAdapter 创建 Windsurf 适配器
+func NewWindsurfAdapter() *WindsurfAdapter {
+	return &WindsurfAdapter{
+		BaseClientAdapter: BaseClientAdapter{name: "windsurf"},
+	}
+}
+
+// TransformRequestIR Windsurf 类似 Cursor，需要完整的 tool call ID
+func (a *WindsurfAdapter) TransformRequestIR(ctx context.Context, req *ir.InternalRequest) (*ir.InternalRequest, error) {
+	// 与 Cursor 类似的处理
+	for i := range req.Messages {
+		msg := &req.Messages[i]
+		if msg.Role == "assistant" {
+			for j := range msg.ToolCalls {
+				tc := &msg.ToolCalls[j]
+				if tc.ID == "" {
+					tc.ID = generateToolCallID("windsurf", j)
+				}
+			}
+		}
+	}
+	return req, nil
+}
+
+// TransformResponseIR Windsurf 响应转换
+func (a *WindsurfAdapter) TransformResponseIR(ctx context.Context, resp *ir.InternalResponse) (*ir.InternalResponse, error) {
+	return resp, nil
+}
+
+// GetOptimizationHints Windsurf 优化提示
+func (a *WindsurfAdapter) GetOptimizationHints() OptimizationHints {
+	return OptimizationHints{
+		PreferLowLatency:      false,
+		PreferHighQuality:     true,
+		ExpectsLongContext:    true,
+		ExpectsMultiTurn:      true,
+		ExpectsToolCalls:      true,
+		CacheEnabled:          true,
+		MaxConcurrentRequests: 5,
+	}
+}
+
+// ShouldEnableToolCallTracking Windsurf 需要工具调用追踪
+func (a *WindsurfAdapter) ShouldEnableToolCallTracking() bool {
+	return true
+}
+
+// ShouldEnableStrictProtocol Windsurf 需要严格协议
+func (a *WindsurfAdapter) ShouldEnableStrictProtocol() bool {
+	return true
+}
+
+// CopilotAdapter GitHub Copilot 适配器
+type CopilotAdapter struct {
+	BaseClientAdapter
+}
+
+// NewCopilotAdapter 创建 Copilot 适配器
+func NewCopilotAdapter() *CopilotAdapter {
+	return &CopilotAdapter{
+		BaseClientAdapter: BaseClientAdapter{name: "copilot"},
+	}
+}
+
+// TransformRequestIR Copilot 优化：短上下文、低延迟
+func (a *CopilotAdapter) TransformRequestIR(ctx context.Context, req *ir.InternalRequest) (*ir.InternalRequest, error) {
+	// Copilot 主要用于代码补全，优化 max_tokens
+	if req.MaxTokens == 0 || req.MaxTokens > 1024 {
+		req.MaxTokens = 1024 // 限制为 1024
+	}
+	return req, nil
+}
+
+// TransformResponseIR Copilot 响应转换
+func (a *CopilotAdapter) TransformResponseIR(ctx context.Context, resp *ir.InternalResponse) (*ir.InternalResponse, error) {
+	return resp, nil
+}
+
+// GetOptimizationHints Copilot 优先低延迟
+func (a *CopilotAdapter) GetOptimizationHints() OptimizationHints {
+	return OptimizationHints{
+		PreferLowLatency:      true,  // 低延迟优先
+		PreferHighQuality:     false,
+		ExpectsLongContext:    false, // 短上下文
+		ExpectsMultiTurn:      false,
+		ExpectsToolCalls:      false,
+		CacheEnabled:          true,
+		MaxConcurrentRequests: 10, // 高并发
+	}
+}
+
+// GetTimeout Copilot 需要快速响应
+func (a *CopilotAdapter) GetTimeout() int {
+	return 30 // 30 秒
+}
+
+// generateToolCallID 生成工具调用 ID
+func generateToolCallID(clientType string, index int) string {
+	return fmt.Sprintf("%s_call_%d", clientType, index)
+}
+
+// 导入 fmt
+import "fmt"
