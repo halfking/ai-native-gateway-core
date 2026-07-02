@@ -10,17 +10,28 @@ package credential
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ReputationDB 抽象 PG 接口，方便通过 pgxmock 注入（仅用于单元测试）。
+// 生产环境传入 *pgxpool.Pool。
+type ReputationDB interface {
+	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+}
 
 // PostgresReputationStore 基于 PostgreSQL 的存储实现
 type PostgresReputationStore struct {
 	pool *pgxpool.Pool
+	db   ReputationDB // 测试时可注入；nil 时回落到 pool
 }
 
 // NewPostgresReputationStore 创建 PG 存储
@@ -28,10 +39,58 @@ func NewPostgresReputationStore(pool *pgxpool.Pool) *PostgresReputationStore {
 	return &PostgresReputationStore{pool: pool}
 }
 
+// newPostgresReputationStoreWithDB 测试用：通过 mock DB 注入
+func newPostgresReputationStoreWithDB(db ReputationDB) *PostgresReputationStore {
+	return &PostgresReputationStore{db: db}
+}
+
 // Enabled 是否可用
 func (s *PostgresReputationStore) Enabled() bool {
-	return s != nil && s.pool != nil
+	if s == nil {
+		return false
+	}
+	if s.db != nil {
+		return true
+	}
+	return s.pool != nil
 }
+
+// exec / query / queryRow 在 db 存在时优先用 db，否则回落到 pool
+func (s *PostgresReputationStore) exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	if s.db != nil {
+		return s.db.Exec(ctx, sql, args...)
+	}
+	if s.pool == nil {
+		return pgconn.CommandTag{}, ErrNoDatabase
+	}
+	return s.pool.Exec(ctx, sql, args...)
+}
+
+func (s *PostgresReputationStore) query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if s.db != nil {
+		return s.db.Query(ctx, sql, args...)
+	}
+	if s.pool == nil {
+		return nil, ErrNoDatabase
+	}
+	return s.pool.Query(ctx, sql, args...)
+}
+
+func (s *PostgresReputationStore) queryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	if s.db != nil {
+		return s.db.QueryRow(ctx, sql, args...)
+	}
+	if s.pool == nil {
+		// 返回一个永远报 ErrNoDatabase 的 pgx.Row
+		return errorRow{err: ErrNoDatabase}
+	}
+	return s.pool.QueryRow(ctx, sql, args...)
+}
+
+// errorRow 是 pgx.Row 的最小占位实现（仅在 db/pool 都为 nil 时使用）
+type errorRow struct{ err error }
+
+func (r errorRow) Scan(_ ...interface{}) error { return r.err }
 
 // ---------------------------------------------------------------------------
 // Timeseries
@@ -47,7 +106,7 @@ func (s *PostgresReputationStore) GetTimeseries(ctx context.Context, providerID,
 	}
 	cutoff := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -days+1)
 
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.query(ctx, `
 		SELECT id, provider_id, model, date,
 		       reliability_score, avg_latency_ms, error_rate,
 		       request_count, success_count,
@@ -96,7 +155,7 @@ func (s *PostgresReputationStore) SaveTimeseries(ctx context.Context, row *Times
 	}
 	row.Date = row.Date.UTC().Truncate(24 * time.Hour)
 
-	_, err := s.pool.Exec(ctx, `
+	_, err := s.exec(ctx, `
 		INSERT INTO provider_reputation_timeseries (
 			provider_id, model, date,
 			reliability_score, avg_latency_ms, error_rate,
@@ -139,7 +198,7 @@ func (s *PostgresReputationStore) ListProviderModelPairs(ctx context.Context) ([
 	if !s.Enabled() {
 		return nil, nil
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.query(ctx, `
 		SELECT DISTINCT provider_id, model
 		FROM provider_reputation_timeseries
 		ORDER BY provider_id, model
@@ -183,7 +242,7 @@ func (s *PostgresReputationStore) GetRecentIncidents(ctx context.Context, provid
 		err  error
 	)
 	if model == "" {
-		rows, err = s.pool.Query(ctx, `
+		rows, err = s.query(ctx, `
 			SELECT id, provider_id, COALESCE(model, ''), incident_type, impact_level,
 			       COALESCE(description, ''),
 			       started_at, ended_at, COALESCE(duration_seconds, 0),
@@ -195,7 +254,7 @@ func (s *PostgresReputationStore) GetRecentIncidents(ctx context.Context, provid
 			ORDER BY started_at DESC
 		`, providerID, cutoff)
 	} else {
-		rows, err = s.pool.Query(ctx, `
+		rows, err = s.query(ctx, `
 			SELECT id, provider_id, COALESCE(model, ''), incident_type, impact_level,
 			       COALESCE(description, ''),
 			       started_at, ended_at, COALESCE(duration_seconds, 0),
@@ -237,7 +296,7 @@ func (s *PostgresReputationStore) GetUnresolvedIncidents(ctx context.Context, pr
 		err  error
 	)
 	if model == "" {
-		rows, err = s.pool.Query(ctx, `
+		rows, err = s.query(ctx, `
 			SELECT id, provider_id, COALESCE(model, ''), incident_type, impact_level,
 			       COALESCE(description, ''),
 			       started_at, ended_at, COALESCE(duration_seconds, 0),
@@ -249,7 +308,7 @@ func (s *PostgresReputationStore) GetUnresolvedIncidents(ctx context.Context, pr
 			ORDER BY started_at DESC
 		`, providerID)
 	} else {
-		rows, err = s.pool.Query(ctx, `
+		rows, err = s.query(ctx, `
 			SELECT id, provider_id, COALESCE(model, ''), incident_type, impact_level,
 			       COALESCE(description, ''),
 			       started_at, ended_at, COALESCE(duration_seconds, 0),
@@ -302,7 +361,7 @@ func (s *PostgresReputationStore) RecordIncident(ctx context.Context, incident *
 		endedArg = *incident.EndedAt
 	}
 
-	err := s.pool.QueryRow(ctx, `
+	err := s.queryRow(ctx, `
 		INSERT INTO provider_incidents (
 			provider_id, model, incident_type, impact_level,
 			description, started_at, ended_at,
@@ -331,7 +390,7 @@ func (s *PostgresReputationStore) ResolveIncident(ctx context.Context, incidentI
 	if !s.Enabled() {
 		return ErrNoDatabase
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tag, err := s.exec(ctx, `
 		UPDATE provider_incidents
 		SET resolved          = TRUE,
 		    ended_at          = COALESCE(ended_at, NOW()),
@@ -349,6 +408,8 @@ func (s *PostgresReputationStore) ResolveIncident(ctx context.Context, incidentI
 }
 
 // RecordIncidentIfNotExists 在窗口内去重
+//
+// 使用 created_at 作为去重基准（检测时间），避免同一异常被多次扫描重复入库。
 func (s *PostgresReputationStore) RecordIncidentIfNotExists(ctx context.Context, incident *Incident, dedupeWindow time.Duration) (bool, error) {
 	if !s.Enabled() {
 		return false, ErrNoDatabase
@@ -361,25 +422,16 @@ func (s *PostgresReputationStore) RecordIncidentIfNotExists(ctx context.Context,
 	}
 	cutoff := time.Now().UTC().Add(-dedupeWindow)
 
-	var modelArg interface{}
-	if incident.Model != "" {
-		modelArg = incident.Model
-	} else {
-		// model = "" 时存 NULL；查重时要按 IS NULL 比较
-		// 为简化实现，model 为空时不参与 dedupe（总是创建）
-		_ = modelArg
-	}
-
 	var existing int64
 	var err error
 	if incident.Model != "" {
-		err = s.pool.QueryRow(ctx, `
+		err = s.queryRow(ctx, `
 			SELECT id FROM provider_incidents
-			WHERE provider_id  = $1
-			  AND model        = $2
+			WHERE provider_id   = $1
+			  AND model         = $2
 			  AND incident_type = $3
-			  AND resolved     = FALSE
-			  AND started_at   >= $4
+			  AND resolved      = FALSE
+			  AND created_at    >= $4
 			LIMIT 1
 		`, incident.ProviderID, incident.Model, string(incident.Type), cutoff).Scan(&existing)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -404,7 +456,7 @@ func scanIncident(rows pgx.Rows) (Incident, error) {
 		inc       Incident
 		typeStr   string
 		impactStr string
-		endedAt   *time.Time
+		endedAt   sql.NullTime
 	)
 	if err := rows.Scan(
 		&inc.ID, &inc.ProviderID, &inc.Model, &typeStr, &impactStr,
@@ -418,9 +470,10 @@ func scanIncident(rows pgx.Rows) (Incident, error) {
 	}
 	inc.Type = IncidentType(typeStr)
 	inc.Impact = ImpactLevel(impactStr)
-	if endedAt != nil {
-		inc.EndedAt = endedAt
-		inc.Duration = endedAt.Sub(inc.StartedAt)
+	if endedAt.Valid {
+		t := endedAt.Time
+		inc.EndedAt = &t
+		inc.Duration = t.Sub(inc.StartedAt)
 	} else if inc.DurationSeconds > 0 {
 		inc.Duration = time.Duration(inc.DurationSeconds) * time.Second
 	}
