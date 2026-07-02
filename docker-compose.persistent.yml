@@ -1,0 +1,76 @@
+# ====================================================================
+# llm-gateway-go Docker Compose 配置（持久化存储版本）
+# ====================================================================
+# 用法: docker compose -f docker-compose.persistent.yml up -d
+# 说明: 将附件和日志持久化到宿主机，容器重启数据不丢失
+# ====================================================================
+
+version: '3.8'
+
+services:
+  llm-gateway-go:
+    image: ${REGISTRY:-registry.internal.example.com}/kaixuan-platform-llm-gateway-go:${TAG:-latest}
+    container_name: kx-llm-gateway-go
+    restart: always
+    
+    ports:
+      - "${PORT:-8080}:8080"
+    
+    # ── 持久化存储配置 ──────────────────────────────────────────────
+    volumes:
+      # 附件存储：挂载到宿主机
+      - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/opt/llm-gateway-go/data/attachments
+      # 日志存储：挂载到宿主机
+      - ${HOST_LOG_DIR:-./data/logs}:/var/log/llm-gateway
+    
+    environment:
+      # ── 基础配置 ──────────────────────────────────────────────────
+      PORT: ${PORT:-8080}
+      NODE_ENV: ${NODE_ENV:-local}
+      
+      # ── 数据库 ────────────────────────────────────────────────────
+      DB_HOST: ${DB_HOST:-localhost}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      
+      # ── Redis ─────────────────────────────────────────────────────
+      REDIS_HOST: ${REDIS_HOST:-localhost}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      
+      # ── 认证 ──────────────────────────────────────────────────────
+      CASDOOR_ENDPOINT: ${CASDOOR_ENDPOINT}
+      CASDOOR_CLIENT_ID: ${CASDOOR_CLIENT_ID}
+      CASDOOR_CLIENT_SECRET: ${CASDOOR_CLIENT_SECRET}
+      
+      # ── 存储路径配置 ──────────────────────────────────────────────
+      # 附件存储目录（容器内路径，对应 volume 挂载点）
+      LLM_GATEWAY_ATTACHMENT_DIR: /opt/llm-gateway-go/data/attachments
+      
+      # ── 日志配置 ──────────────────────────────────────────────────
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      # 日志文件路径（容器内路径，对应 volume 挂载点）
+      LLM_GATEWAY_LOG_FILE: /var/log/llm-gateway/gateway.log
+      LLM_GATEWAY_LOG_MAX_SIZE_MB: ${LLM_GATEWAY_LOG_MAX_SIZE_MB:-100}
+      LLM_GATEWAY_LOG_MAX_BACKUPS: ${LLM_GATEWAY_LOG_MAX_BACKUPS:-10}
+      LLM_GATEWAY_LOG_MAX_AGE_DAYS: ${LLM_GATEWAY_LOG_MAX_AGE_DAYS:-7}
+      LLM_GATEWAY_LOG_COMPRESS: ${LLM_GATEWAY_LOG_COMPRESS:-true}
+    
+    # ── 健康检查 ──────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    
+    # ── 网络配置 ──────────────────────────────────────────────────
+    networks:
+      - kaixuan_local_net
+
+networks:
+  kaixuan_local_net:
+    external: true

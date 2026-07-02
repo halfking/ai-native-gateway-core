@@ -1,0 +1,90 @@
+# ====================================================================
+# llm-gateway-go 持久化存储配置（Kubernetes PVC/PV）
+# ====================================================================
+# 用法: kubectl apply -f deploy/k8s/storage-pvc.yaml
+# 说明: 为附件和日志创建持久化存储卷
+# ====================================================================
+
+---
+# ── 附件存储 PV（使用 hostPath） ──────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llm-gateway-attachments-pv
+  labels:
+    app: llm-gateway-go
+    type: attachments
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  hostPath:
+    path: /data/llm-gateway/attachments
+    type: DirectoryOrCreate
+
+---
+# ── 附件存储 PVC ─────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-gateway-attachments-pvc
+  namespace: default
+  labels:
+    app: llm-gateway-go
+    type: attachments
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 50Gi
+  selector:
+    matchLabels:
+      app: llm-gateway-go
+      type: attachments
+
+---
+# ── 日志存储 PV（使用 hostPath） ──────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llm-gateway-logs-pv
+  labels:
+    app: llm-gateway-go
+    type: logs
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  hostPath:
+    path: /data/llm-gateway/logs
+    type: DirectoryOrCreate
+
+---
+# ── 日志存储 PVC ─────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-gateway-logs-pvc
+  namespace: default
+  labels:
+    app: llm-gateway-go
+    type: logs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 10Gi
+  selector:
+    matchLabels:
+      app: llm-gateway-go
+      type: logs

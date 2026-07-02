@@ -198,6 +198,14 @@ func main() {
 		}
 	}()
 
+	// ── Columnar invariant check (Phase 23 / 03, 2026-07-02) ────────
+	// Run once at startup. Surfaces drift between expected and actual
+	// access method. The event trigger + daily cron handle repair; we
+	// never block startup on this.
+	if dbConn != nil {
+		_, _ = bg.ColumnarInvariantCheck(context.Background(), dbConn.Pool())
+	}
+
 	cm := credential.NewManager()
 	lim := credential.NewLimiter()
 

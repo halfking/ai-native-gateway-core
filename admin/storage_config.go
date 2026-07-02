@@ -34,18 +34,35 @@ import (
 // StorageConfigResponse 存储配置 + 运行时实际状态
 type StorageConfigResponse struct {
 	// 配置值（来自 settings_kv 或默认值）
-	AttachmentDirOverride string `json:"attachment_dir_override"` // DB 覆盖值（空=用env）
+	StorageType           string `json:"storage_type"`            // "local" | "oss" | "s3"
+	AttachmentDirOverride string `json:"attachment_dir_override"` // DB 覆盖值（空=用env）（仅本地存储）
 	TTLDays               int    `json:"ttl_days"`                // 保留天数
 	MaxFileSizeMB         int    `json:"max_file_size_mb"`        // 单文件上限
-	DiskQuotaPercent      int    `json:"disk_quota_percent"`      // 告警水位
+	DiskQuotaPercent      int    `json:"disk_quota_percent"`      // 告警水位（仅本地存储）
 	AutoCleanupEnabled    bool   `json:"auto_cleanup_enabled"`    // 自动清理开关
-	AutoCleanupThreshold  int    `json:"auto_cleanup_threshold"`  // 触发水位
+	AutoCleanupThreshold  int    `json:"auto_cleanup_threshold"`  // 触发水位（仅本地存储）
+
+	// OSS 配置（当 storage_type = "oss" 时）
+	OSSEndpoint        string `json:"oss_endpoint,omitempty"`
+	OSSBucket          string `json:"oss_bucket,omitempty"`
+	OSSAccessKeyID     string `json:"oss_access_key_id,omitempty"`
+	OSSAccessKeySecret string `json:"oss_access_key_secret,omitempty"` // 敏感，返回时脱敏
+	OSSBasePath        string `json:"oss_base_path,omitempty"`
+
+	// S3 配置（当 storage_type = "s3" 时）
+	S3Endpoint        string `json:"s3_endpoint,omitempty"`
+	S3Region          string `json:"s3_region,omitempty"`
+	S3Bucket          string `json:"s3_bucket,omitempty"`
+	S3AccessKeyID     string `json:"s3_access_key_id,omitempty"`
+	S3SecretAccessKey string `json:"s3_secret_access_key,omitempty"` // 敏感，返回时脱敏
+	S3BasePath        string `json:"s3_base_path,omitempty"`
+	S3UseSSL          bool   `json:"s3_use_ssl,omitempty"`
 
 	// 运行时实际状态
-	EffectiveDir     string  `json:"effective_dir"`      // 当前生效目录（绝对路径）
-	AttachmentDirEnv string  `json:"attachment_dir_env"` // 环境变量原值
+	EffectiveDir     string  `json:"effective_dir"`      // 当前生效目录（绝对路径）（仅本地存储）
+	AttachmentDirEnv string  `json:"attachment_dir_env"` // 环境变量原值（仅本地存储）
 	NeedsRestart     bool    `json:"needs_restart"`      // 是否有待重启生效的改动
-	CurrentDiskUsage float64 `json:"current_disk_usage"` // 当前磁盘占用%
+	CurrentDiskUsage float64 `json:"current_disk_usage"` // 当前磁盘占用%（仅本地存储）
 	ConfigSource     string  `json:"config_source"`      // "db" | "env" | "default"
 	// DownloadURLPrefix 告知前端附件下载 URL 的固定前缀。
 	// 前端拼 URL 时用 download_url_prefix + 相对 path（见 web/src/api/logs.ts:attachmentURL）。
@@ -57,12 +74,29 @@ type StorageConfigResponse struct {
 
 // StorageConfigUpdateRequest PUT 请求体（所有字段可选，nil=不改）
 type StorageConfigUpdateRequest struct {
-	AttachmentDirOverride *string `json:"attachment_dir_override,omitempty"`
+	StorageType           *string `json:"storage_type,omitempty"`            // "local" | "oss" | "s3"
+	AttachmentDirOverride *string `json:"attachment_dir_override,omitempty"` // 仅本地存储
 	TTLDays               *int    `json:"ttl_days,omitempty"`
 	MaxFileSizeMB         *int    `json:"max_file_size_mb,omitempty"`
-	DiskQuotaPercent      *int    `json:"disk_quota_percent,omitempty"`
+	DiskQuotaPercent      *int    `json:"disk_quota_percent,omitempty"`      // 仅本地存储
 	AutoCleanupEnabled    *bool   `json:"auto_cleanup_enabled,omitempty"`
-	AutoCleanupThreshold  *int    `json:"auto_cleanup_threshold,omitempty"`
+	AutoCleanupThreshold  *int    `json:"auto_cleanup_threshold,omitempty"`  // 仅本地存储
+
+	// OSS 配置
+	OSSEndpoint        *string `json:"oss_endpoint,omitempty"`
+	OSSBucket          *string `json:"oss_bucket,omitempty"`
+	OSSAccessKeyID     *string `json:"oss_access_key_id,omitempty"`
+	OSSAccessKeySecret *string `json:"oss_access_key_secret,omitempty"`
+	OSSBasePath        *string `json:"oss_base_path,omitempty"`
+
+	// S3 配置
+	S3Endpoint        *string `json:"s3_endpoint,omitempty"`
+	S3Region          *string `json:"s3_region,omitempty"`
+	S3Bucket          *string `json:"s3_bucket,omitempty"`
+	S3AccessKeyID     *string `json:"s3_access_key_id,omitempty"`
+	S3SecretAccessKey *string `json:"s3_secret_access_key,omitempty"`
+	S3BasePath        *string `json:"s3_base_path,omitempty"`
+	S3UseSSL          *bool   `json:"s3_use_ssl,omitempty"`
 }
 
 // StorageTestPathRequest 测试路径请求
@@ -98,6 +132,7 @@ func (h *Handler) handleStorageConfig(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) storageConfigGet(w http.ResponseWriter, r *http.Request) {
 	resp := StorageConfigResponse{
+		StorageType:          "local",
 		TTLDays:              30,
 		MaxFileSizeMB:        20,
 		DiskQuotaPercent:     80,
@@ -106,8 +141,13 @@ func (h *Handler) storageConfigGet(w http.ResponseWriter, r *http.Request) {
 		ConfigSource:         "default",
 	}
 
-	// 从 settings 读取覆盖值
-	resp.AttachmentDirOverride = readStringSetting("storage.attachment_dir_override")
+	// 从 settings 读取存储类型
+	if storageType := readStringSetting("storage.type"); storageType != "" {
+		resp.StorageType = storageType
+		resp.ConfigSource = "db"
+	}
+
+	// 从 settings 读取通用配置
 	if v, src := readIntSetting("storage.attachment_ttl_days"); src != "" {
 		resp.TTLDays = v
 		resp.ConfigSource = src
@@ -115,40 +155,71 @@ func (h *Handler) storageConfigGet(w http.ResponseWriter, r *http.Request) {
 	if v, _ := readIntSetting("storage.attachment_max_size_mb"); v > 0 {
 		resp.MaxFileSizeMB = v
 	}
-	if v, _ := readIntSetting("storage.disk_quota_percent"); v > 0 {
-		resp.DiskQuotaPercent = v
-	}
 	if b, _ := readBoolSetting("storage.auto_cleanup_enabled"); b {
 		resp.AutoCleanupEnabled = true
 	}
-	if v, _ := readIntSetting("storage.auto_cleanup_threshold"); v > 0 {
-		resp.AutoCleanupThreshold = v
-	}
 
-	// 运行时实际目录
-	resp.AttachmentDirEnv = envOrEmpty("LLM_GATEWAY_ATTACHMENT_DIR")
-	resp.EffectiveDir = EffectiveAttachmentDir()
-	// 下载 URL 前缀是固定路径（经 admin 鉴权的同源端点），见 admin/handler.go 路由注册。
-	resp.DownloadURLPrefix = "/api/attachments/"
-	// needs_restart：仅当 attachmentStorage 未注入或其运行时 BaseDir 与期望目录不一致时为 true。
-	// 若已注入 Storage，说明可热切换（迁移），则 needs_restart=false。
-	if h.attachmentStorage == nil {
-		resp.NeedsRestart = resp.AttachmentDirOverride != ""
-	} else {
-		// 运行时目录与期望目录不一致（如上次迁移失败、或 env 与 DB override 不同）
-		if loadedAbs, err := filepath.Abs(h.attachmentStorage.BaseDir()); err == nil {
-			if effAbs, err2 := filepath.Abs(resp.EffectiveDir); err2 == nil && loadedAbs != effAbs {
-				resp.NeedsRestart = true
+	// 根据存储类型读取特定配置
+	switch resp.StorageType {
+	case "local":
+		resp.AttachmentDirOverride = readStringSetting("storage.attachment_dir_override")
+		if v, _ := readIntSetting("storage.disk_quota_percent"); v > 0 {
+			resp.DiskQuotaPercent = v
+		}
+		if v, _ := readIntSetting("storage.auto_cleanup_threshold"); v > 0 {
+			resp.AutoCleanupThreshold = v
+		}
+
+		// 运行时实际目录
+		resp.AttachmentDirEnv = envOrEmpty("LLM_GATEWAY_ATTACHMENT_DIR")
+		resp.EffectiveDir = EffectiveAttachmentDir()
+
+		// needs_restart：仅当 attachmentStorage 未注入或其运行时 BaseDir 与期望目录不一致时为 true。
+		if h.attachmentStorage == nil {
+			resp.NeedsRestart = resp.AttachmentDirOverride != ""
+		} else {
+			// 运行时目录与期望目录不一致
+			if loadedAbs, err := filepath.Abs(h.attachmentStorage.BaseDir()); err == nil {
+				if effAbs, err2 := filepath.Abs(resp.EffectiveDir); err2 == nil && loadedAbs != effAbs {
+					resp.NeedsRestart = true
+				}
 			}
 		}
-	}
 
-	// 当前磁盘占用
-	if abs, err := filepath.Abs(resp.EffectiveDir); err == nil {
-		if pct, _, _, _, statErr := diskUsageAt(abs); statErr == nil {
-			resp.CurrentDiskUsage = pct
+		// 当前磁盘占用
+		if abs, err := filepath.Abs(resp.EffectiveDir); err == nil {
+			if pct, _, _, _, statErr := diskUsageAt(abs); statErr == nil {
+				resp.CurrentDiskUsage = pct
+			}
+		}
+
+	case "oss":
+		resp.OSSEndpoint = readStringSetting("storage.oss.endpoint")
+		resp.OSSBucket = readStringSetting("storage.oss.bucket")
+		resp.OSSAccessKeyID = readStringSetting("storage.oss.access_key_id")
+		// 敏感信息脱敏
+		if secret := readStringSetting("storage.oss.access_key_secret"); secret != "" {
+			resp.OSSAccessKeySecret = "***" + secret[len(secret)-4:]
+		}
+		resp.OSSBasePath = readStringSetting("storage.oss.base_path")
+
+	case "s3":
+		resp.S3Endpoint = readStringSetting("storage.s3.endpoint")
+		resp.S3Region = readStringSetting("storage.s3.region")
+		resp.S3Bucket = readStringSetting("storage.s3.bucket")
+		resp.S3AccessKeyID = readStringSetting("storage.s3.access_key_id")
+		// 敏感信息脱敏
+		if secret := readStringSetting("storage.s3.secret_access_key"); secret != "" {
+			resp.S3SecretAccessKey = "***" + secret[len(secret)-4:]
+		}
+		resp.S3BasePath = readStringSetting("storage.s3.base_path")
+		if useSSL, _ := readBoolSetting("storage.s3.use_ssl"); useSSL {
+			resp.S3UseSSL = true
 		}
 	}
+
+	// 下载 URL 前缀是固定路径（经 admin 鉴权的同源端点），见 admin/handler.go 路由注册。
+	resp.DownloadURLPrefix = "/api/attachments/"
 
 	// 若 PUT 本次触发了目录迁移，带上 migration_run_id（原子读取后即用）。
 	if v := h.pendingMigrationRunID.Load(); v != nil {
