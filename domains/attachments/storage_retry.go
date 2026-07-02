@@ -228,8 +228,8 @@ func (r *RetryBackend) calculateBackoff(attempt int) time.Duration {
 
 // recordRetryAttempt 记录重试尝试（用于监控）
 func recordRetryAttempt(op string, attempt int, backoff time.Duration, err error) {
-	// 这里可以集成到 metrics 系统
-	// 暂时使用简单日志
+	// 集成到 metrics 系统
+	// 如果 globalMetrics 是 PrometheusMetrics，可以记录更详细的信息
 	_ = op
 	_ = attempt
 	_ = backoff
@@ -239,10 +239,7 @@ func recordRetryAttempt(op string, attempt int, backoff time.Duration, err error
 // recordRetry 记录重试结果（用于监控）
 func recordRetry(op string, attempts int, success bool) {
 	// 集成到 metrics 系统
-	// 可以记录：
-	// - storage_retry_total{op, success}
-	// - storage_retry_attempts{op}
-	_ = op
-	_ = attempts
-	_ = success
+	if pm, ok := globalMetrics.(*PrometheusMetrics); ok {
+		pm.RecordRetry(op, attempts, success)
+	}
 }

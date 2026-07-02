@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // LocalStorageBackend 本地文件系统存储后端
@@ -77,19 +78,24 @@ func (b *LocalStorageBackend) SetBaseDir(dir string) error {
 
 // SaveFile 实现 StorageBackend 接口
 func (b *LocalStorageBackend) SaveFile(relPath string, data []byte) error {
+	start := time.Now()
 	fullPath, err := b.safeJoin(relPath)
 	if err != nil {
+		recordOp("save", "local", start, err, 0)
 		return err
 	}
 
 	// 确保父目录存在
 	dir := filepath.Dir(fullPath)
 	if err := b.ensureDir(dir); err != nil {
+		recordOp("save", "local", start, err, 0)
 		return fmt.Errorf("local storage: ensure dir: %w", err)
 	}
 
 	// 写入文件
-	if err := os.WriteFile(fullPath, data, 0644); err != nil {
+	err = os.WriteFile(fullPath, data, 0644)
+	recordOp("save", "local", start, err, int64(len(data)))
+	if err != nil {
 		return fmt.Errorf("local storage: write file: %w", err)
 	}
 
@@ -98,12 +104,15 @@ func (b *LocalStorageBackend) SaveFile(relPath string, data []byte) error {
 
 // LoadFile 实现 StorageBackend 接口
 func (b *LocalStorageBackend) LoadFile(relPath string) ([]byte, error) {
+	start := time.Now()
 	fullPath, err := b.safeJoin(relPath)
 	if err != nil {
+		recordOp("load", "local", start, err, 0)
 		return nil, err
 	}
 
 	data, err := os.ReadFile(fullPath)
+	recordOp("load", "local", start, err, int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("local storage: read file: %w", err)
 	}
@@ -177,6 +186,7 @@ func (b *LocalStorageBackend) DeleteFile(relPath string) error {
 
 // HealthCheck 实现 StorageBackend 接口
 func (b *LocalStorageBackend) HealthCheck() error {
+	start := time.Now()
 	b.mu.RLock()
 	base := b.baseDir
 	b.mu.RUnlock()
@@ -184,22 +194,27 @@ func (b *LocalStorageBackend) HealthCheck() error {
 	// 检查目录是否存在
 	info, err := os.Stat(base)
 	if err != nil {
+		recordHealthCheck("local", start, err)
 		return fmt.Errorf("local storage: base dir not accessible: %w", err)
 	}
 
 	if !info.IsDir() {
-		return fmt.Errorf("local storage: base dir is not a directory: %s", base)
+		err := fmt.Errorf("local storage: base dir is not a directory: %s", base)
+		recordHealthCheck("local", start, err)
+		return err
 	}
 
 	// 测试写入权限：创建临时文件
 	testFile := filepath.Join(base, ".health_check_"+randomSuffix())
 	f, err := os.Create(testFile)
 	if err != nil {
+		recordHealthCheck("local", start, err)
 		return fmt.Errorf("local storage: cannot create test file (permission denied?): %w", err)
 	}
 	f.Close()
 	os.Remove(testFile) // 清理测试文件
 
+	recordHealthCheck("local", start, nil)
 	return nil
 }
 
