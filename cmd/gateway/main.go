@@ -978,19 +978,19 @@ func main() {
 		if enableSessionAudit == "true" {
 			auditDetector := sessionaudit.NewFastDetector(sessionaudit.DefaultDetectorConfig())
 			auditBus := eventbus.NewMemoryBus(100)
-		auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
+			auditHook := sessionaudithook.NewSessionAuditHookV1(auditDetector, auditBus, approvalMgr)
 
-		// 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）
-		if dbConn != nil && dbConn.Enabled() {
-			if notifier, nerr := initApprovalNotifier(dbConn.Pool(), approvalMgr); nerr != nil {
-				slog.Error("init approval notifier failed", "error", nerr)
-			} else if notifier != nil {
-				auditHook.SetNotifier(notifier)
-				slog.Info("approval notifier initialized and injected to audit hook")
+			// 初始化审批通知器（从 DB 加载路由规则 + 创建 IM 渠道）
+			if dbConn != nil && dbConn.Enabled() {
+				if notifier, nerr := initApprovalNotifier(dbConn.Pool(), approvalMgr); nerr != nil {
+					slog.Error("init approval notifier failed", "error", nerr)
+				} else if notifier != nil {
+					auditHook.SetNotifier(notifier)
+					slog.Info("approval notifier initialized and injected to audit hook")
+				}
 			}
-		}
 
-		chatHandler.SetSessionAuditHook(auditHook)
+			chatHandler.SetSessionAuditHook(auditHook)
 			slog.Info("session audit chat-time hook wired (v1)",
 				"approval_timeout", approvalTimeout.String())
 		} else {
@@ -1281,6 +1281,8 @@ func main() {
 					},
 				)
 			}
+			// 2026-07-03: Bug #8 fix - wire candidate cache invalidation
+			stateManager.SetInvalidateCandidateCache(provider.InvalidateAllCandidateCache)
 			stateManager.Start(context.Background())
 			slog.Info("credential state manager started")
 		}

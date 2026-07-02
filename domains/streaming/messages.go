@@ -388,7 +388,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.auditor.Emit(r.Context(), auditBuilder.Build())
 	}()
 
-	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	// 2026-07-03: Bug #7 fix - pass tenantID from keyInfo
+	tenantID := ""
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+	}
+	candidates, policy, candErr := h.chatHandler.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID)
 	if candErr != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel, "request_id", requestID)

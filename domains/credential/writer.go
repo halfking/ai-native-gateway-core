@@ -147,16 +147,12 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			    unavailable_at     = NULL,
 			    unavailable_recover_at = NULL,
 			    updated_at         = now()
-			FROM provider_models pm
-			WHERE pm.raw_model_name = mo.raw_model_name
-			  AND pm.id = (
-			      SELECT cmb.provider_model_id
-			      FROM credential_model_bindings cmb
-			      WHERE cmb.credential_id = $1
-			        AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
-			      LIMIT 1
-			  )
-			  AND mo.credential_id = $1
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE mo.credential_id = cmb.credential_id
+			  AND mo.raw_model_name = pm.raw_model_name
+			  AND cmb.credential_id = $1
+			  AND COALESCE(pm.outbound_model_name, pm.raw_model_name) = $2
 			  AND mo.available = FALSE
 			  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE

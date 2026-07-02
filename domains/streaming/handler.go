@@ -198,7 +198,7 @@ type chatRequestBody struct {
 
 type providerResolver interface {
 	Enabled() bool
-	GetCandidates(ctx context.Context, model, profile string) ([]provider.Candidate, *provider.Policy, error)
+	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 }
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
@@ -1324,7 +1324,12 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
+	// 2026-07-03: Bug #7 fix - pass tenantID from keyInfo
+	tenantID := ""
+	if keyInfo != nil {
+		tenantID = keyInfo.TenantID
+	}
+	candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID)
 	if err != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)

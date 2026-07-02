@@ -28,6 +28,9 @@ type Manager struct {
 
 	// Phase 2: 模型热度追踪器（可选，nil 时禁用热度感知探测）
 	popularityTracker *ModelPopularityTracker
+
+	// 2026-07-03: 候选缓存失效函数（函数注入，避免循环依赖）
+	invalidateCandidateCache func()
 }
 
 // CacheEntry 缓存条目
@@ -68,6 +71,12 @@ func (m *Manager) Stop() {
 func (m *Manager) SetProbeSubmitter(credFn func(int), modelFn func(context.Context, int, string) error) {
 	m.credProbeV2Submitter = credFn
 	m.modelProbeSubmitter = modelFn
+}
+
+// SetInvalidateCandidateCache 设置候选缓存失效函数（避免循环依赖）
+// 2026-07-03: Added to fix bug #8 - UpdateOnFailure must invalidate candidate cache
+func (m *Manager) SetInvalidateCandidateCache(fn func()) {
+	m.invalidateCandidateCache = fn
 }
 
 // UpdateOnSuccess 请求成功时更新状态
@@ -170,6 +179,12 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 			"error_kind", errKind,
 			"consecutive_fails", state.ConsecutiveFails,
 			"next_retry", nextRetry)
+
+		// 2026-07-03: Bug #8 fix - invalidate candidate cache when marking unavailable
+		// Without this, the router sees stale candidate list for 30s (cache TTL)
+		if m.invalidateCandidateCache != nil {
+			m.invalidateCandidateCache()
+		}
 
 	} else if isTransient && state.ConsecutiveFails >= 3 {
 		// 临时故障：递增退避探测 (30s → 2m → 5m)
