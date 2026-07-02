@@ -175,6 +175,49 @@ func (b *LocalStorageBackend) DeleteFile(relPath string) error {
 	return nil
 }
 
+// HealthCheck 实现 StorageBackend 接口
+func (b *LocalStorageBackend) HealthCheck() error {
+	b.mu.RLock()
+	base := b.baseDir
+	b.mu.RUnlock()
+
+	// 检查目录是否存在
+	info, err := os.Stat(base)
+	if err != nil {
+		return fmt.Errorf("local storage: base dir not accessible: %w", err)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("local storage: base dir is not a directory: %s", base)
+	}
+
+	// 测试写入权限：创建临时文件
+	testFile := filepath.Join(base, ".health_check_"+randomSuffix())
+	f, err := os.Create(testFile)
+	if err != nil {
+		return fmt.Errorf("local storage: cannot create test file (permission denied?): %w", err)
+	}
+	f.Close()
+	os.Remove(testFile) // 清理测试文件
+
+	return nil
+}
+
+// Info 实现 StorageBackend 接口
+func (b *LocalStorageBackend) Info() BackendInfo {
+	b.mu.RLock()
+	base := b.baseDir
+	b.mu.RUnlock()
+
+	return BackendInfo{
+		Type:     "local",
+		Location: base,
+		Metadata: map[string]string{
+			"writable": "true",
+		},
+	}
+}
+
 // safeJoin 安全地拼接基础目录和相对路径，防止路径遍历攻击
 func (b *LocalStorageBackend) safeJoin(relPath string) (string, error) {
 	b.mu.RLock()

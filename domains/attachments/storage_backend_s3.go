@@ -201,6 +201,70 @@ func (b *S3StorageBackend) DeleteFile(relPath string) error {
 	return nil
 }
 
+// HealthCheck 实现 StorageBackend 接口
+func (b *S3StorageBackend) HealthCheck() error {
+	ctx := context.Background()
+
+	// 检查 bucket 是否存在并可访问
+	_, err := b.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(b.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 storage: bucket not accessible: %w", err)
+	}
+
+	// 测试写入权限：上传并删除一个小文件
+	testKey := path.Join(b.prefix, ".health_check")
+	testData := []byte("health check")
+
+	_, err = b.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(b.bucket),
+		Key:    aws.String(testKey),
+		Body:   bytes.NewReader(testData),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 storage: cannot write test object (permission denied?): %w", err)
+	}
+
+	// 清理测试对象
+	_, _ = b.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(b.bucket),
+		Key:    aws.String(testKey),
+	})
+
+	return nil
+}
+
+// Info 实现 StorageBackend 接口
+func (b *S3StorageBackend) Info() BackendInfo {
+	metadata := map[string]string{
+		"bucket": b.bucket,
+	}
+
+	if b.prefix != "" {
+		metadata["prefix"] = b.prefix
+	}
+
+	// 尝试获取 bucket 区域
+	ctx := context.Background()
+	if region, err := b.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
+		Bucket: aws.String(b.bucket),
+	}); err == nil && region.LocationConstraint != "" {
+		metadata["region"] = string(region.LocationConstraint)
+	}
+
+	location := "s3.amazonaws.com"
+	if b.client.Options().BaseEndpoint != nil {
+		location = *b.client.Options().BaseEndpoint
+	}
+
+	return BackendInfo{
+		Type:     "s3",
+		Location: location,
+		Metadata: metadata,
+	}
+}
+
 // objectKey 拼接对象键：prefix/relPath
 func (b *S3StorageBackend) objectKey(relPath string) string {
 	if b.prefix == "" {

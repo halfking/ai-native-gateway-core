@@ -45,6 +45,20 @@ type StorageBackend interface {
 	// relPath: 相对路径
 	// 返回 error 如果删除失败
 	DeleteFile(relPath string) error
+
+	// HealthCheck 健康检查，验证后端是否可用
+	// 返回 error 如果后端不可用（网络错误、认证失败等）
+	HealthCheck() error
+
+	// Info 返回后端信息（用于监控和调试）
+	Info() BackendInfo
+}
+
+// BackendInfo 后端信息
+type BackendInfo struct {
+	Type     string            // 后端类型：local、oss、s3
+	Location string            // 位置：本地路径、OSS endpoint、S3 endpoint
+	Metadata map[string]string // 额外元数据
 }
 
 // FileInfo 文件元信息
