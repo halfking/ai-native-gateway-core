@@ -718,13 +718,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// "every provider failed simultaneously" outage is diagnosable from
 		// this single log line.
 		reasonCounts := make(map[string]int, 8)
-		// 2026-07-03: 限制主循环最多尝试 5 个候选，避免配额耗尽时遍历所有凭据
-		const maxCandidatesPerRequest = 5
-		candidatesToTry := params.Candidates
-		if len(candidatesToTry) > maxCandidatesPerRequest {
-			candidatesToTry = candidatesToTry[:maxCandidatesPerRequest]
-		}
-		for _, c := range candidatesToTry {
+		// 2026-07-03: 不限制单轮候选数量，允许轮转完所有可用候选。
+		// 死循环保护由 sync_retry 的轮数限制 (maxSyncRetryRounds) 提供。
+		for _, c := range params.Candidates {
 			reason := c.UnavailableReason()
 			if reason == "" {
 				reason = "unknown"
