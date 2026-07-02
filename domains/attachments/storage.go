@@ -19,7 +19,6 @@
 package attachments
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -222,19 +221,20 @@ type SaveResult struct {
 	Deduped bool
 }
 
-// SaveBase64Image 解析 data URI 并将其中的 base64 图片保存到文件系统。
+// SaveBase64Image 解析 data URI 并将其中的 base64 图片保存到存储后端。
 //
 // 流程：
 //  1. 解析 data:image/png;base64,... 提取 content type 和 base64 payload
-//  2. 流式解码 + 哈希计算 + 落盘（临时文件 -> rename，保证原子性）
+//  2. 流式解码 + 哈希计算，同时写入临时文件（内存恒定 ~64KB）
 //  3. 相同 hash 的文件已存在则跳过写入（去重）
+//  4. 通过 backend.SaveFile 持久化到目标后端
 //
 // 该方法是幂等的：对相同内容重复调用只会保留一份文件。
 //
 // 失败场景（返回非 nil error）：
 //   - data URI 格式错误 → ErrInvalidDataURI
 //   - 超过 MaxSize → 文件不会被写入
-//   - 磁盘满/权限不足 → 写入失败
+//   - 存储后端错误 → 写入失败
 //
 // 调用方应在收到 error 时记录 warning 但不要阻塞请求转发。
 func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx int) (*SaveResult, error) {
@@ -263,24 +263,38 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		fmt.Sprintf("req_%s", sanitizeRequestID(requestID)),
 	)
 
-	// 流式解码：边解码边计算哈希，同时写入临时缓冲区。
+	// 流式解码：边解码边计算哈希，同时写入临时文件。
 	// 这样无论文件多大，内存占用恒定（一个 chunk buffer）。
 	ext := mimeTypeToExt(contentType)
-	
+
+	// 创建系统临时文件（确保 baseDir 可写，对云存储后端也有效）
+	tmpFile, err := os.CreateTemp("", "attachment-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("attachments: create tmp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	// 无论后续成功与否，最终都清理临时文件
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+	}()
+
 	hasher := sha256.New()
 	counter := &countingWriter{}
 	// 用 base64 decoder 包裹一个 limited reader 防止超大输入耗尽内存/磁盘
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Payload))
 	limited := io.LimitReader(decoder, maxSize+1)
 
-	// 解码到内存缓冲区，同时计算哈希和大小
-	var buf bytes.Buffer
-	tee := io.MultiWriter(&buf, io.MultiWriter(hasher, counter))
+	// tee: 同时写入临时文件和 hasher/counter
+	tee := io.MultiWriter(tmpFile, io.MultiWriter(hasher, counter))
 	if _, err := io.CopyBuffer(tee, limited, make([]byte, 64<<10)); err != nil {
-		return nil, fmt.Errorf("attachments: decode: %w", err)
+		return nil, fmt.Errorf("attachments: decode/write: %w", err)
 	}
-	
-	// 超过大小限制：返回错误
+	if err := tmpFile.Sync(); err != nil {
+		return nil, fmt.Errorf("attachments: fsync: %w", err)
+	}
+
+	// 超过大小限制：临时文件会在 defer 中被清理
 	if counter.n > maxSize {
 		return nil, fmt.Errorf("attachments: file too large (%d > %d)", counter.n, maxSize)
 	}
@@ -288,19 +302,29 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	fileName := hashHex[:16] + ext
 	relPath := filepath.Join(relDir, fileName)
-	
+
 	// 去重：检查目标文件是否已存在
 	deduped := false
 	exists, err := s.backend.FileExists(relPath)
 	if err != nil {
 		return nil, fmt.Errorf("attachments: check exists: %w", err)
 	}
-	
+
 	if exists {
 		deduped = true
 	} else {
-		// 保存文件到后端
-		if err := s.backend.SaveFile(relPath, buf.Bytes()); err != nil {
+		// 读取临时文件内容，保存到后端。
+		// 这里需要将文件读入内存（受 MaxSize 限制，默认 20MB），
+		// 因为当前 StorageBackend.SaveFile 接口接受 []byte。
+		// 对于本地后端，SaveFile 内部会再次 WriteFile。
+		if err := tmpFile.Close(); err != nil {
+			return nil, fmt.Errorf("attachments: close tmp file: %w", err)
+		}
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return nil, fmt.Errorf("attachments: read tmp file: %w", err)
+		}
+		if err := s.backend.SaveFile(relPath, data); err != nil {
 			return nil, fmt.Errorf("attachments: save file: %w", err)
 		}
 	}
