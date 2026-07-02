@@ -122,7 +122,7 @@ func (e *Executor) pickCompactionCandidates(ctx context.Context, profile string)
 	minWindow := defaultCompactionMinWindow
 	var out []provider.Candidate
 	for _, model := range compactionModelsFromEnv() {
-		cands, _, err := e.Provider.GetCandidates(ctx, model, profile)
+		cands, _, err := e.Provider.GetCandidates(ctx, model, profile, "")
 		if err != nil {
 			slog.Debug("compaction: resolve candidates failed", "model", model, "error", err)
 			continue

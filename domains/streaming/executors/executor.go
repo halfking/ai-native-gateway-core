@@ -41,7 +41,8 @@ const maxBodySize = 128 << 20 // 128MB - increased for large context models like
 // stub without booting the DB pool.
 type providerResolver interface {
 	Enabled() bool
-	GetCandidates(ctx context.Context, model, profile string) ([]provider.Candidate, *provider.Policy, error)
+	// 2026-07-03: Bug #7 fix - added tenantID parameter
+	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 }
 
 type NormalizerFunc func(chunk []byte, isStream bool) []byte
@@ -1344,7 +1345,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				break syncRetryLoop
 			}
 
-			// 间隔等待（可被 ctx 中断），每轮 5s
+			// 间隔等待（可被 ctx 中断）
+			// 2026-07-03: Bug #12 fix - 降低重试间隔从5s到1s，减少白等时间
 			select {
 			case <-params.R.Context().Done():
 				slog.Info("sync_retry_stopped",
@@ -1353,7 +1355,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
 				break syncRetryLoop
-			case <-time.After(5 * time.Second):
+			case <-time.After(1 * time.Second):
 			}
 
 			if err := params.R.Context().Err(); err != nil {
@@ -1383,6 +1385,24 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 			if len(subCandidates) == 0 {
 				continue // 路由器也没候选，下一轮再试
+			}
+
+			// 2026-07-03: Bug #12 fix - 如果所有候选都是circuit open，提前退出
+			// 避免白等3轮 × 1s = 3s（之前是15s）
+			allCircuitOpen := true
+			for _, cand := range subCandidates {
+				if e.Circuit != nil && e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
+					allCircuitOpen = false
+					break
+				}
+			}
+			if allCircuitOpen {
+				slog.Info("sync_retry_stopped",
+					"model", params.ClientModel,
+					"reason", "all_circuit_open",
+					"elapsed_ms", time.Since(tTotal).Milliseconds(),
+				)
+				break syncRetryLoop
 			}
 
 			// 递归执行 Execute()
