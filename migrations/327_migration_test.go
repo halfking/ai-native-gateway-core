@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Migration 136 — credential plan type full standardization
+// Migration 327 — credential plan type full standardization
 // These tests are smoke tests: they confirm files exist with expected DDL
 // constructs. The behavioral validation runs on live 184 k3s via the
 // migrations/scripts/local-r112-migrate.sh + smoke tests in deploy step T1/T2.
@@ -13,12 +13,12 @@ import (
 // CI integration tests with a real PG are gated behind DATABASE_URL_TEST_MIG
 // env var so this test passes in offline CI without PG available.
 
-// TestMigration136_FilesExist verifies both up + down migrations are present.
+// TestMigration327_FilesExist verifies both up + down migrations are present.
 // Without both files a deploy cannot proceed.
-func TestMigration136_FilesExist(t *testing.T) {
+func TestMigration327_FilesExist(t *testing.T) {
 	files := []string{
-		"../migrations/136_credential_plan_type_full.sql",
-		"../migrations/136_credential_plan_type_full.down.sql",
+		"../migrations/327_credential_plan_type_full.sql",
+		"../migrations/327_credential_plan_type_full.down.sql",
 	}
 	for _, f := range files {
 		if _, err := os.Stat(f); err != nil {
@@ -27,10 +27,10 @@ func TestMigration136_FilesExist(t *testing.T) {
 	}
 }
 
-// TestMigration136_UpContainsRequiredDDL guards against the file being
+// TestMigration327_UpContainsRequiredDDL guards against the file being
 // truncated or having steps removed. Asserts key SQL tokens are present.
-func TestMigration136_UpContainsRequiredDDL(t *testing.T) {
-	body, err := os.ReadFile("../migrations/136_credential_plan_type_full.sql")
+func TestMigration327_UpContainsRequiredDDL(t *testing.T) {
+	body, err := os.ReadFile("../migrations/327_credential_plan_type_full.sql")
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
