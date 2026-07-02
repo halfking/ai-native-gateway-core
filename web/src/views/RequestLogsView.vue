@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
   getRequestLogDetail,
-  getRequestAttachments,
   attachmentURL,
   getSessionSummary,
   sessionSummaryToMemora,
@@ -72,6 +72,8 @@ watch(autoRefresh, (enabled) => {
 
 onBeforeUnmount(() => {
   stopAutoRefresh()
+  // 2026-07-02: 全局 ESC 关闭 lightbox 监听清理（参考文档 §5.2）。
+  window.removeEventListener('keydown', handleKeydown)
 })
 
 const showCompressionGuide = ref(false)
@@ -102,6 +104,10 @@ const detailTab = ref<'request' | 'outbound' | 'response' | 'attachments'>('requ
 // 控制大图预览遮罩，attachmentsLightboxSrc 为当前大图的 URL。
 const attachmentsLightbox = ref(false)
 const attachmentsLightboxSrc = ref('')
+
+// 2026-07-02: 接入 vue-i18n，附件相关文案走 t() 键
+// （键定义在 web/src/locales/*.ts，对齐参考文档 §6）。
+const { t } = useI18n()
 
 // Tenant info for display
 const tenantLabel = computed(() => {
@@ -667,8 +673,7 @@ async function showDetail(requestId: string) {
   detailLoading.value = true
   detail.value = null
   detailTab.value = 'request'
-  attachmentsLightbox.value = false
-  attachmentsLightboxSrc.value = ''
+  closeLightbox()
   try {
     detail.value = await getRequestLogDetail(requestId)
   } catch (e: unknown) {
@@ -681,8 +686,7 @@ async function showDetail(requestId: string) {
 function closeDetail() {
   detailVisible.value = false
   detail.value = null
-  attachmentsLightbox.value = false
-  attachmentsLightboxSrc.value = ''
+  closeLightbox()
 }
 
 // ── 附件辅助 (migration 325) ──────────────────────────────────────
@@ -721,6 +725,22 @@ function openLightbox(a: AttachmentInfo) {
   if (!isImageAttachment(a)) return
   attachmentsLightboxSrc.value = attachmentURL(a.path)
   attachmentsLightbox.value = true
+}
+
+// closeLightbox 主动关闭 lightbox（被 ESC handler 调用，也可在模板中内联）。
+function closeLightbox() {
+  attachmentsLightbox.value = false
+  attachmentsLightboxSrc.value = ''
+}
+
+// 2026-07-02: 全局 ESC 关闭 lightbox（参考文档 §5.2）。
+// 抽屉打开后焦点可能不在 lightbox 内，故绑到 window 而非抽屉节点。
+// 监听注册在 onMounted（line ~919），清理在 onBeforeUnmount（line ~75）。
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && attachmentsLightbox.value) {
+    e.stopPropagation()
+    closeLightbox()
+  }
 }
 
 // downloadAttachment 触发浏览器下载（非图片）或新窗口打开（图片）。
@@ -907,6 +927,9 @@ onMounted(async () => {
   if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
     hours.value = Number(q.hours)
   }
+  // 2026-07-02: 注册全局 ESC keydown 监听，用于关闭附件 lightbox
+  // （参考文档 §5.2）。清理在 onBeforeUnmount（line ~75）。
+  window.addEventListener('keydown', handleKeydown)
   await loadKeys()
   await load()
 })
@@ -1244,7 +1267,7 @@ onMounted(async () => {
               <div class="cell-line1">{{ statusLabel(r) }}</div>
               <div v-if="r.error_kind && r.request_status === 'failure'" class="cell-line2">{{ r.error_kind }}</div>
             </td>
-            <td class="col-attach" :title="r.attachment_count ? `${r.attachment_count} 个附件` : '无附件'">
+            <td class="col-attach" :title="r.attachment_count ? t('requests.list.table.attachmentCountTitle', { n: r.attachment_count }) : t('requests.list.table.noAttachments')">
               <span
                 v-if="r.attachment_count && r.attachment_count > 0"
                 class="attach-badge"
@@ -1353,14 +1376,15 @@ onMounted(async () => {
               </button>
               <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
               <!-- 2026-07-01 (migration 325): 附件标签按钮。仅在该请求含附件时显示，
-                   位于"响应内容"右侧。点击切换到附件列表面板（缩略图 + 下载）。 -->
+                   位于"响应内容"右侧。点击切换到附件列表面板（缩略图 + 下载）。
+                   2026-07-02: 文案走 i18n 键；显示附件数量。 -->
               <button
                 v-if="detailAttachments().length"
                 class="btn btn-sm"
                 :class="{ 'btn-primary': detailTab === 'attachments' }"
                 @click="detailTab = 'attachments'"
               >
-                附件
+                {{ t('requests.detail_extra.attachmentsTab') }}
                 <span class="outbound-diff-badge">{{ detailAttachments().length }}</span>
               </button>
             </div>
@@ -1439,7 +1463,9 @@ onMounted(async () => {
                     <div class="attachment-line2" :title="att.path">{{ att.path }}</div>
                     <div v-if="att.hash" class="attachment-line2" :title="att.hash">SHA256: {{ shortHash(att.hash) }}</div>
                     <div class="attachment-actions">
-                      <button class="btn btn-sm" @click="downloadAttachment(att)">下载</button>
+                      <button class="btn btn-sm" @click="downloadAttachment(att)">
+                        {{ t('requests.detail_extra.download') }}
+                      </button>
                       <button
                         v-if="isImageAttachment(att)"
                         class="btn btn-sm"
@@ -1449,7 +1475,7 @@ onMounted(async () => {
                   </div>
                 </div>
               </div>
-              <div v-else style="color:var(--muted)">(无附件)</div>
+              <div v-else style="color:var(--muted)">{{ t('requests.detail_extra.noAttachments') }}</div>
             </template>
 
             <template v-else>
@@ -1480,11 +1506,17 @@ onMounted(async () => {
           </div>
         </template>
 
-        <!-- 2026-07-01 (migration 325): 附件大图预览遮罩。点击空白处或图片关闭。 -->
-        <div v-if="attachmentsLightbox" class="lightbox-backdrop" @click="attachmentsLightbox = false">
-          <img :src="attachmentsLightboxSrc" class="lightbox-img" @click.stop alt="attachment preview" />
-          <button class="btn btn-sm lightbox-close" @click="attachmentsLightbox = false">关闭</button>
-        </div>
+        <!-- 2026-07-01 (migration 325): 附件大图预览遮罩。
+             2026-07-02: 用 Teleport to body 渲染到根（参考文档 §4.4），
+             避免 z-index 被父抽屉裁剪；ESC 由全局 keydown 关闭。 -->
+        <Teleport to="body">
+          <div v-if="attachmentsLightbox" class="lightbox-backdrop" @click="closeLightbox">
+            <img :src="attachmentsLightboxSrc" class="lightbox-img" @click.stop alt="attachment preview" />
+            <button class="btn btn-sm lightbox-close" @click="closeLightbox">
+              {{ t('requests.detail_extra.closePreview') }}
+            </button>
+          </div>
+        </Teleport>
       </div>
     </div>
   </div>
