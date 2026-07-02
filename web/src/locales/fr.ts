@@ -25,7 +25,7 @@ export default {
   // Navigation
   nav: {
     collapseSidebar: 'Réduire le menu',
-    expandSidebar: 'Déduire la barre latérale',
+    expandSidebar: 'Déployer la barre latérale',
   },
   
   // Mot de passe
