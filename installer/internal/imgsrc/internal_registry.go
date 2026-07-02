@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -109,14 +110,13 @@ func (s *InternalRegistrySource) fullReference(image string) string {
 	return fmt.Sprintf("%s/%s/%s", s.Registry, s.Project, image)
 }
 
-// dockerLogin 登录 registry
+// dockerLogin 登录 registry（用 --password-stdin 避免密码出现在进程列表）
 func (s *InternalRegistrySource) dockerLogin() error {
-	args := []string{"login", s.Registry, "-u", s.Auth.Username, "-p", s.Auth.Password}
-	if s.Insecure {
-		args = append(args, "--tls-verify=false")
-	}
+	args := []string{"login", s.Registry, "-u", s.Auth.Username, "--password-stdin"}
 	cmd := exec.Command("docker", args...)
-	// 隐藏密码输出
+	// 通过 stdin 传密码（不进 ps/进程列表）
+	cmd.Stdin = strings.NewReader(s.Auth.Password + "\n")
+	// 丢弃输出避免凭证泄露到日志（错误也吞掉，调用方看 exit code）
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run()
