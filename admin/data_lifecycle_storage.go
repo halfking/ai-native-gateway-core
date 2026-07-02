@@ -201,10 +201,10 @@ func queryDatabaseStorage(ctx context.Context, h *Handler) (*databaseStorageInfo
 	out := &databaseStorageInfo{}
 	row := h.db.QueryRow(ctx, `
 		SELECT
-			pg_database_size(current_database())::bigint,
+			pg_database_size(current_database()),
 			pg_size_pretty(pg_database_size(current_database())),
-			pg_total_database_size(current_database()::regclass::oid)::bigint,
-			pg_size_pretty(pg_total_database_size(current_database()::regclass::oid)),
+			pg_total_database_size(current_database()),
+			pg_size_pretty(pg_total_database_size(current_database())),
 			current_setting('server_version')
 	`)
 	var totalBytes int64

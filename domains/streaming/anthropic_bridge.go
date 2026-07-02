@@ -669,65 +669,81 @@ func readAnthropicSSEEvent(ctx context.Context, reader io.Reader) (eventType str
 // OpenAI→Anthropic request body converter used by the executor when
 // an OpenAI-completions client must be routed to an
 // anthropic-messages upstream.
+//
+// Fix (2026-07-02): Replaced simplified version with full message
+// structure conversion to correctly handle multi-turn conversations,
+// tool_calls, and multimodal content. The previous implementation
+// dropped tool_calls and other complex message structures, causing
+// Claude Sonnet 4-6 to lose conversation context.
 func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
-	var src struct {
-		Model    string `json:"model"`
-		Messages []struct {
-			Role    string `json:"role"`
-			Content any    `json:"content"`
-		} `json:"messages"`
-		MaxTokens       int     `json:"max_tokens"`
-		Temperature     float64 `json:"temperature"`
-		TopP            float64 `json:"top_p"`
-		Stop            any     `json:"stop"`
-		Stream          bool    `json:"stream"`
-		System          string  `json:"system"`
-		Tools           any     `json:"tools"`
-		ToolChoice      any     `json:"tool_choice"`
-		ReasoningEffort string  `json:"reasoning_effort"`
-	}
+	var src map[string]any
 	if err := json.Unmarshal(in, &src); err != nil {
-		return nil, fmt.Errorf("unmarshal chat request: %w", err)
+		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	out := map[string]any{
-		"model":       src.Model,
-		"max_tokens":  src.MaxTokens,
-		"temperature": src.Temperature,
-		"top_p":       src.TopP,
-		"stream":      src.Stream,
+		"model": src["model"],
 	}
-	if src.Stop != nil {
-		out["stop_sequences"] = src.Stop
+	if mt, ok := src["max_tokens"]; ok && mt != nil {
+		out["max_tokens"] = mt
+	} else {
+		out["max_tokens"] = 4096
 	}
-	if len(src.Messages) > 0 {
-		// OpenAI system message must become the Anthropic top-level "system" field.
-		var systemParts []string
-		var rest []map[string]any
-		for _, m := range src.Messages {
-			if m.Role == "system" {
-				if s, ok := m.Content.(string); ok && s != "" {
-					systemParts = append(systemParts, s)
+	if s, ok := src["stream"]; ok {
+		out["stream"] = s
+	}
+	if t, ok := src["temperature"]; ok {
+		out["temperature"] = t
+	}
+	if tp, ok := src["top_p"]; ok {
+		out["top_p"] = tp
+	}
+	if tk, ok := src["top_k"]; ok {
+		out["top_k"] = tk
+	}
+	if stops, ok := src["stop"]; ok {
+		out["stop_sequences"] = stops
+	}
+
+	if user, ok := src["user"].(string); ok && user != "" {
+		out["metadata"] = map[string]any{
+			"user_id": user,
+		}
+	}
+
+	var systemContent string
+	var anthropicMsgs []any
+	if msgs, ok := src["messages"].([]any); ok {
+		for _, msg := range msgs {
+			msgMap, _ := msg.(map[string]any)
+			role, _ := msgMap["role"].(string)
+			if role == "system" {
+				if system, ok := msgMap["content"].(string); ok {
+					systemContent = system
 				}
 				continue
 			}
-			entry := map[string]any{"role": m.Role, "content": m.Content}
-			rest = append(rest, entry)
+			anthropicMsgs = append(anthropicMsgs, convertBridgeChatMessageToAnthropic(msgMap))
 		}
-		if len(systemParts) > 0 {
-			out["system"] = strings.Join(systemParts, "\n")
+	}
+	if systemContent != "" {
+		out["system"] = systemContent
+	}
+	out["messages"] = anthropicMsgs
+
+	if tools, ok := src["tools"].([]any); ok {
+		anthTools := make([]any, 0, len(tools))
+		for _, tool := range tools {
+			toolMap, _ := tool.(map[string]any)
+			if anthropicTool, ok := convertBridgeOpenAIToolToAnthropic(toolMap); ok {
+				anthTools = append(anthTools, anthropicTool)
+			}
 		}
-		out["messages"] = rest
+		if len(anthTools) > 0 {
+			out["tools"] = anthTools
+		}
 	}
-	if src.ReasoningEffort != "" { //nolint:staticcheck // reasoning_effort mapping branch reserved for future per-model routing
-		// OpenAI's reasoning_effort is currently not a direct Anthropic
-		// parameter; map to thinking budget if model supports it.
-		// The executor decides per-model routing.
-	}
-	if src.Tools != nil {
-		out["tools"] = src.Tools
-	}
-	if src.ToolChoice != nil {
-		out["tool_choice"] = src.ToolChoice
+	if toolChoice, ok := src["tool_choice"]; ok {
+		out["tool_choice"] = convertBridgeChatToolChoiceToAnthropic(toolChoice)
 	}
 	return json.Marshal(out)
 }
@@ -885,4 +901,183 @@ func mapAnthropicFinishReasonToChat(reason string) string {
 	default:
 		return "stop"
 	}
+}
+
+// convertBridgeChatMessageToAnthropic converts a single OpenAI message to Anthropic format.
+// Handles text content, multimodal content, tool_calls, and tool results.
+func convertBridgeChatMessageToAnthropic(msg map[string]any) map[string]any {
+	role, _ := msg["role"].(string)
+	out := map[string]any{"role": role}
+	content := msg["content"]
+	switch typed := content.(type) {
+	case string:
+		out["content"] = typed
+	case []any:
+		blocks := make([]any, 0, len(typed))
+		for _, block := range typed {
+			blockMap, _ := block.(map[string]any)
+			switch blockMap["type"] {
+			case "text":
+				blocks = append(blocks, map[string]any{"type": "text", "text": blockMap["text"]})
+			case "image_url":
+				if imageURL, ok := blockMap["image_url"].(map[string]any); ok {
+					if url, ok := imageURL["url"].(string); ok {
+						blocks = append(blocks, map[string]any{
+							"type":   "image",
+							"source": map[string]any{"type": "url", "url": url},
+						})
+					}
+				}
+			}
+		}
+		out["content"] = blocks
+	}
+	if role == "tool" {
+		if toolCallID, ok := msg["tool_call_id"].(string); ok {
+			toolContent, _ := msg["content"].(string)
+			out = map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": toolCallID,
+						"content":     toolContent,
+					},
+				},
+			}
+		}
+		return out
+	}
+	if toolCalls, ok := msg["tool_calls"].([]any); ok {
+		var existing []any
+		switch current := out["content"].(type) {
+		case []any:
+			existing = current
+		default:
+			existing = []any{}
+		}
+		for _, toolCall := range toolCalls {
+			toolCallMap, _ := toolCall.(map[string]any)
+			function, _ := toolCallMap["function"].(map[string]any)
+			argsStr, _ := function["arguments"].(string)
+			var args any
+			if json.Unmarshal([]byte(argsStr), &args) != nil {
+				args = map[string]any{}
+			}
+			existing = append(existing, map[string]any{
+				"type":  "tool_use",
+				"id":    toolCallMap["id"],
+				"name":  function["name"],
+				"input": args,
+			})
+		}
+		out["content"] = existing
+	}
+	return out
+}
+
+// convertBridgeChatToolChoiceToAnthropic converts OpenAI tool_choice to Anthropic format.
+func convertBridgeChatToolChoiceToAnthropic(toolChoice any) any {
+	switch typed := toolChoice.(type) {
+	case string:
+		switch typed {
+		case "auto":
+			return map[string]any{"type": "auto"}
+		case "none":
+			return map[string]any{"type": "none"}
+		case "required":
+			return map[string]any{"type": "any"}
+		}
+	case map[string]any:
+		if typed["type"] == "function" {
+			if function, ok := typed["function"].(map[string]any); ok {
+				if name, ok := function["name"].(string); ok {
+					return map[string]any{"type": "tool", "name": name}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// convertBridgeOpenAIToolToAnthropic converts OpenAI tool definition to Anthropic format.
+func convertBridgeOpenAIToolToAnthropic(tool map[string]any) (map[string]any, bool) {
+	normalized := normalizeBridgeOpenAIToolDefinitions([]any{tool})
+	if len(normalized) != 1 {
+		return nil, false
+	}
+	toolMap, ok := normalized[0].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	function, _ := toolMap["function"].(map[string]any)
+	if function == nil {
+		return nil, false
+	}
+	name, _ := function["name"].(string)
+	if name == "" {
+		return nil, false
+	}
+	anthropicTool := map[string]any{"name": name}
+	if description, ok := function["description"].(string); ok && description != "" {
+		anthropicTool["description"] = description
+	}
+	if parameters, ok := function["parameters"]; ok {
+		anthropicTool["input_schema"] = parameters
+	} else {
+		anthropicTool["input_schema"] = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	return anthropicTool, true
+}
+
+// normalizeBridgeOpenAIToolDefinitions normalizes tool definitions to standard format.
+func normalizeBridgeOpenAIToolDefinitions(tools []any) []any {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := make([]any, 0, len(tools))
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if function, ok := tool["function"].(map[string]any); ok {
+			if name, _ := function["name"].(string); name != "" {
+				out = append(out, map[string]any{
+					"type":     "function",
+					"function": function,
+				})
+				continue
+			}
+		}
+		if name, _ := tool["name"].(string); name != "" {
+			if schema, hasSchema := tool["input_schema"]; hasSchema {
+				function := map[string]any{"name": name}
+				if description, ok := tool["description"].(string); ok && description != "" {
+					function["description"] = description
+				}
+				if schema != nil {
+					function["parameters"] = schema
+				}
+				out = append(out, map[string]any{"type": "function", "function": function})
+				continue
+			}
+			if _, hasParams := tool["parameters"]; hasParams || tool["type"] == "function" {
+				function := map[string]any{"name": name}
+				if description, ok := tool["description"].(string); ok && description != "" {
+					function["description"] = description
+				}
+				if parameters, ok := tool["parameters"]; ok {
+					function["parameters"] = parameters
+				} else {
+					function["parameters"] = map[string]any{}
+				}
+				out = append(out, map[string]any{"type": "function", "function": function})
+				continue
+			}
+		}
+		out = append(out, tool)
+	}
+	return out
 }
