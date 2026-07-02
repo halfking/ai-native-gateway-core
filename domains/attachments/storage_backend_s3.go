@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -84,6 +85,7 @@ func NewS3StorageBackend(cfg S3Config) (*S3StorageBackend, error) {
 
 // SaveFile 实现 StorageBackend 接口
 func (b *S3StorageBackend) SaveFile(relPath string, data []byte) error {
+	start := time.Now()
 	key := b.objectKey(relPath)
 
 	_, err := b.client.PutObject(context.Background(), &s3.PutObjectInput{
@@ -91,6 +93,7 @@ func (b *S3StorageBackend) SaveFile(relPath string, data []byte) error {
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(data),
 	})
+	recordOp("save", "s3", start, err, int64(len(data)))
 	if err != nil {
 		return fmt.Errorf("s3 storage: put object: %w", err)
 	}
@@ -100,6 +103,7 @@ func (b *S3StorageBackend) SaveFile(relPath string, data []byte) error {
 
 // LoadFile 实现 StorageBackend 接口
 func (b *S3StorageBackend) LoadFile(relPath string) ([]byte, error) {
+	start := time.Now()
 	key := b.objectKey(relPath)
 
 	result, err := b.client.GetObject(context.Background(), &s3.GetObjectInput{
@@ -107,11 +111,13 @@ func (b *S3StorageBackend) LoadFile(relPath string) ([]byte, error) {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		recordOp("load", "s3", start, err, 0)
 		return nil, fmt.Errorf("s3 storage: get object: %w", err)
 	}
 	defer result.Body.Close()
 
 	data, err := io.ReadAll(result.Body)
+	recordOp("load", "s3", start, err, int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("s3 storage: read object: %w", err)
 	}
@@ -203,6 +209,7 @@ func (b *S3StorageBackend) DeleteFile(relPath string) error {
 
 // HealthCheck 实现 StorageBackend 接口
 func (b *S3StorageBackend) HealthCheck() error {
+	start := time.Now()
 	ctx := context.Background()
 
 	// 检查 bucket 是否存在并可访问
@@ -210,6 +217,7 @@ func (b *S3StorageBackend) HealthCheck() error {
 		Bucket: aws.String(b.bucket),
 	})
 	if err != nil {
+		recordHealthCheck("s3", start, err)
 		return fmt.Errorf("s3 storage: bucket not accessible: %w", err)
 	}
 
@@ -223,6 +231,7 @@ func (b *S3StorageBackend) HealthCheck() error {
 		Body:   bytes.NewReader(testData),
 	})
 	if err != nil {
+		recordHealthCheck("s3", start, err)
 		return fmt.Errorf("s3 storage: cannot write test object (permission denied?): %w", err)
 	}
 
@@ -232,6 +241,7 @@ func (b *S3StorageBackend) HealthCheck() error {
 		Key:    aws.String(testKey),
 	})
 
+	recordHealthCheck("s3", start, nil)
 	return nil
 }
 
