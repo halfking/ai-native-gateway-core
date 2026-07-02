@@ -205,7 +205,12 @@ func (s *InMemoryReputationStore) GetRecentIncidents(ctx context.Context, provid
 		}
 		out = append(out, *inc)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].StartedAt.After(out[j].StartedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out, nil
 }
 
@@ -230,7 +235,12 @@ func (s *InMemoryReputationStore) GetUnresolvedIncidents(ctx context.Context, pr
 		}
 		out = append(out, *inc)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].StartedAt.After(out[j].StartedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out, nil
 }
 
@@ -289,6 +299,9 @@ func (s *InMemoryReputationStore) ResolveIncident(ctx context.Context, incidentI
 }
 
 // RecordIncidentIfNotExists 在窗口内去重
+//
+// 关键决策：dedupe 检查使用 CreatedAt（检测时间），不是 StartedAt（事件实际开始时间）。
+// 这样同一异常多次扫描不会被重复记录，即使原始事件发生在很久之前。
 func (s *InMemoryReputationStore) RecordIncidentIfNotExists(ctx context.Context, incident *Incident, dedupeWindow time.Duration) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -305,7 +318,7 @@ func (s *InMemoryReputationStore) RecordIncidentIfNotExists(ctx context.Context,
 			inc.Model == incident.Model &&
 			inc.Type == incident.Type &&
 			!inc.Resolved &&
-			inc.StartedAt.After(cutoff) {
+			inc.CreatedAt.After(cutoff) {
 			return false, nil
 		}
 	}
