@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,9 @@ func (s *InternalRegistrySource) Name() string {
 }
 
 // Available 探测 registry 是否可达
+// Available 探测 registry 是否可达。
+// 语义约定：返回 (ok, nil) 表示"可尝试 Pull"；返回 (false, err) 表示"不可用，跳过"。
+// 401 视为可用（registry 存在，认证在 Pull 里做）。
 func (s *InternalRegistrySource) Available() (bool, error) {
 	scheme := "https"
 	if s.Insecure {
@@ -66,12 +70,12 @@ func (s *InternalRegistrySource) Available() (bool, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, nil  // 网络错误视为不可用
+		return false, nil // 网络错误视为不可用
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 401 {
-		// 401 表明 registry 存在但需要认证
-		return true, fmt.Errorf("需要认证")
+	// 401/403：registry 存在，只是需要认证 → 仍视为可用，Pull 时会 docker login
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return true, nil
 	}
 	return resp.StatusCode < 500, nil
 }
@@ -109,14 +113,13 @@ func (s *InternalRegistrySource) fullReference(image string) string {
 	return fmt.Sprintf("%s/%s/%s", s.Registry, s.Project, image)
 }
 
-// dockerLogin 登录 registry
+// dockerLogin 登录 registry（用 --password-stdin 避免密码出现在进程列表）
 func (s *InternalRegistrySource) dockerLogin() error {
-	args := []string{"login", s.Registry, "-u", s.Auth.Username, "-p", s.Auth.Password}
-	if s.Insecure {
-		args = append(args, "--tls-verify=false")
-	}
+	args := []string{"login", s.Registry, "-u", s.Auth.Username, "--password-stdin"}
 	cmd := exec.Command("docker", args...)
-	// 隐藏密码输出
+	// 通过 stdin 传密码（不进 ps/进程列表）
+	cmd.Stdin = strings.NewReader(s.Auth.Password + "\n")
+	// 丢弃输出避免凭证泄露到日志（错误也吞掉，调用方看 exit code）
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run()

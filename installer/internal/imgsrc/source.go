@@ -8,6 +8,7 @@ package imgsrc
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -38,16 +39,22 @@ type PullStrategy struct {
 func NewDefaultStrategy(installDir, internalRegistry string, auth *RegistryAuth) *PullStrategy {
 	return &PullStrategy{
 		Sources: []ImageSource{
-			NewOfflineTarSource(installDir + "/images"),
+			NewOfflineTarSource(filepath.Join(installDir, "images")),
 			NewInternalRegistrySource(internalRegistry, auth),
-			NewPublicRegistrySource("registry.cn-hangzhou.aliyuncs.com"),  // 国内 mirror
-			NewPublicRegistrySource("docker.io"),                          // 官方
+			NewPublicRegistrySource("registry.cn-hangzhou.aliyuncs.com"), // 国内 mirror
+			NewPublicRegistrySource("docker.io"),                         // 官方
 		},
 	}
 }
 
 // Pull 智能 fallback 拉取
 func (s *PullStrategy) Pull(image ImageSpec, logger func(string)) error {
+	return s.PullWithAlias(image, "", logger)
+}
+
+// PullWithAlias 拉取镜像，并在成功后把它重打 tag 为 alias（若 alias 非空且不同于原始引用）。
+// 用于：从公网拉 citusdata/citus:11.3.0 后，重打 tag 成 compose 引用的 kx-citus:v11.3.0。
+func (s *PullStrategy) PullWithAlias(image ImageSpec, alias string, logger func(string)) error {
 	imageRef := image.FullReference()
 	var errs []string
 
@@ -70,10 +77,40 @@ func (s *PullStrategy) Pull(image ImageSpec, logger func(string)) error {
 		}
 
 		logger(fmt.Sprintf("✅ %s 拉取成功 (来源: %s)", imageRef, src.Name()))
+
+		// 可选：重打 alias tag
+		if alias != "" && alias != imageRef {
+			if err := EnsureAlias(imageRef, alias); err != nil {
+				logger(fmt.Sprintf("  ⚠️  重打 alias tag %s → %s 失败: %v", imageRef, alias, err))
+			} else {
+				logger(fmt.Sprintf("  ✅ alias: %s → %s", imageRef, alias))
+			}
+		}
 		return nil
 	}
 
 	return fmt.Errorf("所有镜像源都失败:\n  - %s", strings.Join(errs, "\n  - "))
+}
+
+// EnsureAlias 确保本地存在 alias 引用（若 src 已存在但 dst 不存在，则 docker tag）
+// 用于把上游原始镜像名（citusdata/citus:11.3.0）映射成 compose 引用名（kx-citus:v11.3.0）
+func EnsureAlias(src, alias string) error {
+	if src == alias {
+		return nil
+	}
+	// dst 已存在则跳过
+	if exec.Command("docker", "image", "inspect", alias).Run() == nil {
+		return nil
+	}
+	// src 不存在则无法 tag
+	if exec.Command("docker", "image", "inspect", src).Run() != nil {
+		return fmt.Errorf("源镜像 %s 不存在", src)
+	}
+	out, err := exec.Command("docker", "tag", src, alias).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker tag %s %s: %w\n%s", src, alias, err, string(out))
+	}
+	return nil
 }
 
 // dockerTagIfNeeded 重打 tag（如镜像来自 mirror 但需要原名）

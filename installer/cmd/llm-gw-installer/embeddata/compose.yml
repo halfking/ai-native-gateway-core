@@ -1,6 +1,18 @@
 # llm-gateway-go 全栈 docker-compose
 # 由 llm-gw-installer 自动生成，请勿手工修改
-# 卸载: docker compose -f <path> down [-v]
+# 重要：所有数据通过 bind-mount 到容器外目录（防止容器重启丢失）
+#
+# 目录结构：
+#   ~/llm-gateway/
+#   ├── db/data/       → PostgreSQL 数据 (citus 容器 /var/lib/postgresql/data)
+#   ├── db/init/       → SQL 初始化文件（备份）
+#   ├── redis/data/    → Redis 数据 (redis 容器 /data)
+#   ├── attachments/   → 应用附件 (gateway 容器 /opt/llm-gateway-go/data/attachments)
+#   ├── app/logs/      → 应用日志 (gateway 容器 /var/log/llm-gateway)
+#   └── backups/       → 备份目录
+#
+# 卸载: docker compose -f <path> down
+
 services:
   citus:
     image: kx-citus:v11.3.0
@@ -10,10 +22,12 @@ services:
       POSTGRES_USER: kxuser
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
       POSTGRES_DB: llm_gateway
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "${PG_PORT:-5432}:5432"
     volumes:
-      - citus-data:/var/lib/postgresql/data
+      # ⭐ PG 数据全部 bind-mount 到容器外
+      - ./db/data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kxuser"]
       interval: 10s
@@ -25,11 +39,12 @@ services:
     image: kx-redis:v7-alpine
     container_name: kx-redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD}
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
-      - redis-data:/data
+      # ⭐ Redis 数据 bind-mount 到容器外
+      - ./redis/data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -52,15 +67,15 @@ services:
     ports:
       - "${APP_PORT:-8781}:8781"
     volumes:
-      - ./volumes/attachments:/opt/llm-gateway-go/data/attachments
-      - ./volumes/logs:/var/log/llm-gateway
+      # ⭐ 附件持久化
+      - ./attachments:/opt/llm-gateway-go/data/attachments
+      # ⭐ 应用日志持久化
+      - ./app/logs:/var/log/llm-gateway
+      # ⭐ 版本文件 bind-mount（方便热更新）
+      - ./app/VERSION:/opt/llm-gateway-go/VERSION:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8781/healthz"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-
-volumes:
-  citus-data:
-  redis-data:
