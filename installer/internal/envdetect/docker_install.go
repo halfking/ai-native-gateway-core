@@ -114,22 +114,24 @@ func (s *InstallStrategy) Execute(info *OSInfo, logger func(string)) error {
 	for i, step := range s.Steps {
 		logger(fmt.Sprintf("  [%d/%d] %s", i+1, len(s.Steps), step))
 
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		// 注意：不能 defer cancel，否则循环内 ctx 累积；改为循环末尾显式 cancel
+
+		// 一次性构造 CommandContext（避免重复构造丢失参数）
 		var cmd *exec.Cmd
 		if s.RequiresSudo {
-			cmd = exec.Command("sudo", "sh", "-c", step)
+			cmd = exec.CommandContext(ctx, "sudo", "sh", "-c", step)
 		} else {
-			cmd = exec.Command("sh", "-c", step)
+			cmd = exec.CommandContext(ctx, "sh", "-c", step)
 		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		cmd = exec.CommandContext(ctx, cmd.Args[0], cmd.Args[1:]...)
 
 		// 实时输出
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("步骤 [%s] 失败: %w", step, err)
+		runErr := cmd.Run()
+		cancel() // 显式释放本步骤的 ctx
+		if runErr != nil {
+			return fmt.Errorf("步骤 [%s] 失败: %w", step, runErr)
 		}
 	}
 
