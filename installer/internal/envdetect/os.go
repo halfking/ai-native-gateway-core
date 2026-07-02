@@ -324,7 +324,7 @@ func probeDockerEngine() (ContainerEng, string) {
 	return EngNone, ""
 }
 
-// isEngineEngineRunning 检测 engine 是否在运行
+// isEngineRunning 检测 engine 是否在运行
 func isEngineRunning(cmd string) bool {
 	// docker: docker info / docker ps
 	// podman: podman info
