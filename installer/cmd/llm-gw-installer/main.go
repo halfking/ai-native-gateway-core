@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -201,39 +200,56 @@ func runInstall(opts installOpts) error {
 		return fmt.Errorf("切换到安装目录失败: %w", err)
 	}
 
-	// 4. 配置向导
-	logStep("2/9", "配置向导")
+	// 4. 配置：交互向导 或 从文件加载（--config）/ 自动生成（--skip-prompt）
+	logStep("2/9", "配置")
 	imageTag := readAppImageTag()
-	wiz := prompt.NewWizard(imageTag)
-	cfg, err := wiz.Run(installDir)
-	if err != nil {
-		return fmt.Errorf("配置失败: %w", err)
+	var cfg *prompt.InstallConfig
+	if opts.ConfigFile != "" {
+		// 从配置文件加载（CI 自动化场景）
+		logInfo(fmt.Sprintf("  ▶ 从 %s 加载配置 ...", opts.ConfigFile))
+		cfg, err = prompt.LoadFromEnvFile(opts.ConfigFile, imageTag, installDir)
+		if err != nil {
+			return fmt.Errorf("加载配置失败: %w", err)
+		}
+		logInfo("  ✅ 配置已加载（缺失的 secrets 已自动生成）")
+	} else if opts.SkipPrompt {
+		// 跳过交互：全部用默认值 + 自动生成 secrets
+		logInfo("  ▶ --skip-prompt 模式：使用默认配置 + 自动生成 secrets")
+		cfg, err = prompt.LoadFromEnvFile("/dev/null", imageTag, installDir)
+		if err != nil {
+			return fmt.Errorf("生成默认配置失败: %w", err)
+		}
+		logInfo("  ✅ 默认配置已生成")
+	} else {
+		// 交互向导
+		wiz := prompt.NewWizard(imageTag)
+		cfg, err = wiz.Run(installDir)
+		if err != nil {
+			return fmt.Errorf("配置失败: %w", err)
+		}
 	}
 	cfg.InstallPath = installDir
 
 	// 5. 加载/拉取镜像（4 层 fallback）
-	// 注意：citus/redis 使用上游原始名（citusdata/citus、redis）以便从公网能拉到；
-	//       拉取完成后由 reTagForCompose() 重打成 kx-* 名供 compose.yml 引用。
+	// citus/redis 用上游原始名拉取（公网才有），成功后自动 retag 成 compose.yml 引用的 kx-* 名
 	logStep("3/9", "加载/拉取 Docker 镜像")
 	strategy := imgsrc.NewDefaultStrategy(installDir, imgsrc.LoadRegistryFromEnv(), imgsrc.LoadRegistryAuthFromEnv())
 
-	images := []imgsrc.ImageSpec{
-		{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag},
-		{Name: "citusdata/citus", Tag: "11.3.0"},
-		{Name: "redis", Tag: "7-alpine"},
+	// image: 实际拉取的镜像（原始名，公网可达）
+	// alias: compose.yml 里引用的名字（拉取成功后自动 docker tag）
+	type pullItem struct {
+		spec  imgsrc.ImageSpec
+		alias string
 	}
-	for _, img := range images {
-		if err := strategy.Pull(img, logInfo); err != nil {
+	items := []pullItem{
+		{spec: imgsrc.ImageSpec{Name: "kx-llm-gateway-go", Tag: cfg.AppImageTag}, alias: "kx-llm-gateway-go:latest"},
+		{spec: imgsrc.ImageSpec{Name: "citusdata/citus", Tag: "11.3.0"}, alias: "kx-citus:v11.3.0"},
+		{spec: imgsrc.ImageSpec{Name: "redis", Tag: "7-alpine"}, alias: "kx-redis:v7-alpine"},
+	}
+	for _, it := range items {
+		if err := strategy.PullWithAlias(it.spec, it.alias, logInfo); err != nil {
 			return fmt.Errorf("拉取镜像失败: %w", err)
 		}
-	}
-	// 重打 citus/redis 的 tag 为 compose 引用的 kx-* 名
-	reTagForCompose()
-	// 应用镜像也需要 kx- 前缀别名（package.sh 推到 registry 时可能不带 kx- 前缀）
-	if cfg.AppImageTag != "" {
-		_ = exec.Command("docker", "tag",
-			"kx-llm-gateway-go:"+cfg.AppImageTag,
-			"kx-llm-gateway-go:latest").Run()
 	}
 
 	// 6. 写入 .env
@@ -453,26 +469,6 @@ func readAppImageTag() string {
 		}
 	}
 	return "latest"
-}
-
-// reTagForCompose 把上游原始镜像名重打成 compose 引用的 kx-* 名。
-// 例如：citusdata/citus:11.3.0 → kx-citus:v11.3.0
-// 仅在本地已有上游镜像但缺少 kx-* 别名时执行；失败不报错（compose 会自行拉取）。
-func reTagForCompose() {
-	pairs := []struct{ src, dst string }{
-		{"citusdata/citus:11.3.0", "kx-citus:v11.3.0"},
-		{"redis:7-alpine", "kx-redis:v7-alpine"},
-	}
-	for _, p := range pairs {
-		// 已有 dst 就跳过
-		if exec.Command("docker", "image", "inspect", p.dst).Run() == nil {
-			continue
-		}
-		// 有 src 才 tag
-		if exec.Command("docker", "image", "inspect", p.src).Run() == nil {
-			_ = exec.Command("docker", "tag", p.src, p.dst).Run()
-		}
-	}
 }
 
 // ── 目录结构相关 ─────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -57,16 +58,36 @@ func PlanInstall(info *OSInfo, hasInternet bool) *InstallStrategy {
 
 	// Debian 系（含 Deepin / UOS）
 	if info.Family == FamilyDebian {
+		// 选 docker-ce 源：ubuntu 用 ubuntu 源，debian/deepin/uos 用 debian 源
+		// codename 优先用 /etc/os-release 的 VERSION_CODENAME（不依赖 lsb_release）
+		// fallback：debian 11→bullseye, 12→bookworm；ubuntu 22.04→jammy, 24.04→noble
+		distro := "debian"
+		codename := info.VersionCodename
+		switch info.Distribution {
+		case DistUbuntu:
+			distro = "ubuntu"
+			if codename == "" {
+				codename = guessUbuntuCodename(info.VersionID)
+			}
+		default:
+			if codename == "" {
+				codename = guessDebianCodename(info.VersionID)
+			}
+		}
+		if codename == "" {
+			codename = "bullseye" // 兜底，避免源 URL 为空
+		}
+
 		return &InstallStrategy{
 			Method:       "apt-aliyun",
 			RequiresSudo: !info.HasSudo && os.Geteuid() != 0,
-			Description:  "通过 apt + 阿里云源安装 docker-ce",
+			Description:  fmt.Sprintf("通过 apt + 阿里云源安装 docker-ce (%s %s)", distro, codename),
 			Steps: []string{
 				"apt-get update -qq",
 				"apt-get install -y ca-certificates curl gnupg",
 				"install -m 0755 -d /etc/apt/keyrings",
-				"curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
-				`echo "deb [arch=$(dpkg --print-architecture)] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list`,
+				fmt.Sprintf("curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/%s/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg", distro),
+				fmt.Sprintf(`echo "deb [arch=$(dpkg --print-architecture)] https://mirrors.aliyun.com/docker-ce/linux/%s %s stable" > /etc/apt/sources.list.d/docker.list`, distro, codename),
 				"apt-get update -qq",
 				"apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
 				"systemctl enable --now docker",
@@ -110,6 +131,12 @@ func (s *InstallStrategy) Execute(info *OSInfo, logger func(string)) error {
 		return fmt.Errorf("无法自动安装 docker")
 	}
 
+	// Windows/macOS 不支持 sh/sudo，Execute 只服务 Linux 自动安装路径。
+	// 若误入此处，明确报错而非尝试执行必然失败的 sh 命令。
+	if info.Family != FamilyDebian && info.Family != FamilyRhel {
+		return fmt.Errorf("自动安装仅支持 Linux (debian/rhel 系)，当前 %s 请手动安装 docker", info.Family)
+	}
+
 	// 执行每一步
 	for i, step := range s.Steps {
 		logger(fmt.Sprintf("  [%d/%d] %s", i+1, len(s.Steps), step))
@@ -136,4 +163,41 @@ func (s *InstallStrategy) Execute(info *OSInfo, logger func(string)) error {
 	}
 
 	return nil
+}
+
+// guessUbuntuCodename 从 VERSION_ID 推断 ubuntu codename
+// /etc/os-release 没写 VERSION_CODENAME 时用
+func guessUbuntuCodename(versionID string) string {
+	switch versionID {
+	case "20.04":
+		return "focal"
+	case "22.04":
+		return "jammy"
+	case "24.04":
+		return "noble"
+	case "18.04":
+		return "bionic"
+	}
+	return ""
+}
+
+// guessDebianCodename 从 VERSION_ID 推断 debian codename
+// 也用于 Deepin / UOS（基于 debian）
+func guessDebianCodename(versionID string) string {
+	// 取主版本号
+	major := versionID
+	if idx := strings.Index(versionID, "."); idx > 0 {
+		major = versionID[:idx]
+	}
+	switch major {
+	case "10":
+		return "buster"
+	case "11":
+		return "bullseye"
+	case "12":
+		return "bookworm"
+	case "13":
+		return "trixie"
+	}
+	return ""
 }

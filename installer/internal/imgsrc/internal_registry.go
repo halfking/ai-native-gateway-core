@@ -49,6 +49,9 @@ func (s *InternalRegistrySource) Name() string {
 }
 
 // Available 探测 registry 是否可达
+// Available 探测 registry 是否可达。
+// 语义约定：返回 (ok, nil) 表示"可尝试 Pull"；返回 (false, err) 表示"不可用，跳过"。
+// 401 视为可用（registry 存在，认证在 Pull 里做）。
 func (s *InternalRegistrySource) Available() (bool, error) {
 	scheme := "https"
 	if s.Insecure {
@@ -67,12 +70,12 @@ func (s *InternalRegistrySource) Available() (bool, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, nil  // 网络错误视为不可用
+		return false, nil // 网络错误视为不可用
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 401 {
-		// 401 表明 registry 存在但需要认证
-		return true, fmt.Errorf("需要认证")
+	// 401/403：registry 存在，只是需要认证 → 仍视为可用，Pull 时会 docker login
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return true, nil
 	}
 	return resp.StatusCode < 500, nil
 }
