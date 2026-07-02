@@ -114,14 +114,24 @@ func (w *ReputationWorker) loop(ctx context.Context) {
 }
 
 // Stop 优雅停止
+//
+// 安全语义：若 Start 从未被调用，Stop 不阻塞（doneCh 由 NewReputationWorker
+// 初始化但从未被关闭；为避免 goroutine 泄漏，这里用 select 非阻塞等待）。
 func (w *ReputationWorker) Stop() {
+	if w == nil {
+		return
+	}
 	select {
 	case <-w.stopCh:
 		// already closed
 	default:
 		close(w.stopCh)
 	}
-	<-w.doneCh
+	// 等待 doneCh 关闭，最长 2s（避免测试 / 异常路径永久阻塞）
+	select {
+	case <-w.doneCh:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 // NextRunAfter 计算下次运行时间（基于 runHour 的下一个本地时间点）
