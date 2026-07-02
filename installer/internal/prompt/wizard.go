@@ -228,11 +228,11 @@ func (w *Wizard) askConfirm(prompt string, defaultYes bool) bool {
 }
 
 // genRandom 生成 32 字节 hex 随机串
+// crypto/rand 失败属于系统级灾难，直接 panic 终止（避免写入弱密码到 .env）
 func (w *Wizard) genRandom() string {
 	v, err := secrets.GenerateRandom()
 	if err != nil {
-		// fallback：使用静态值
-		return "change-me-please-this-is-fallback-only"
+		panic(fmt.Errorf("生成随机数失败（系统 CSPRNG 不可用）: %w", err))
 	}
 	return v
 }

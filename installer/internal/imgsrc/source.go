@@ -8,6 +8,7 @@ package imgsrc
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -38,10 +39,10 @@ type PullStrategy struct {
 func NewDefaultStrategy(installDir, internalRegistry string, auth *RegistryAuth) *PullStrategy {
 	return &PullStrategy{
 		Sources: []ImageSource{
-			NewOfflineTarSource(installDir + "/images"),
+			NewOfflineTarSource(filepath.Join(installDir, "images")),
 			NewInternalRegistrySource(internalRegistry, auth),
-			NewPublicRegistrySource("registry.cn-hangzhou.aliyuncs.com"),  // 国内 mirror
-			NewPublicRegistrySource("docker.io"),                          // 官方
+			NewPublicRegistrySource("registry.cn-hangzhou.aliyuncs.com"), // 国内 mirror
+			NewPublicRegistrySource("docker.io"),                         // 官方
 		},
 	}
 }

@@ -3,6 +3,7 @@ package envdetect
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os/exec"
 	"runtime"
@@ -57,22 +58,14 @@ func CheckPrereq(ports []int) (*PrereqCheck, error) {
 }
 
 // isPortInUse 检测端口是否被占用
+// 用 Go 原生 net.Listen 试探，避免依赖 ss/netstat/lsof（跨平台可靠）
 func isPortInUse(port int) bool {
-	switch runtime.GOOS {
-	case "windows":
-		out, err := exec.Command("netstat", "-ano").Output()
-		if err != nil {
-			return false
-		}
-		return strings.Contains(string(out), fmt.Sprintf(":%d ", port))
-	default:
-		// Linux/macOS: 用 ss 或 lsof 或 netstat
-		out, err := exec.Command("sh", "-c", fmt.Sprintf("ss -tln 2>/dev/null | grep -q ':%d ' || netstat -tln 2>/dev/null | grep -q ':%d ' || lsof -iTCP:%d -sTCP:LISTEN 2>/dev/null", port, port, port)).Output()
-		if err != nil {
-			return false
-		}
-		return strings.TrimSpace(string(out)) != ""
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return true // 监听失败说明端口被占
 	}
+	_ = ln.Close()
+	return false
 }
 
 // getDiskFreeGB 获取可用磁盘空间（GB）
@@ -86,7 +79,25 @@ func getDiskFreeGB() int {
 		}
 		v, _ := strconv.Atoi(strings.TrimSpace(string(out)))
 		return v
+	case "darwin":
+		// macOS: 用 -g（GB block size）
+		out, err := exec.Command("df", "-g", ".").Output()
+		if err != nil {
+			return 0
+		}
+		lines := strings.Split(string(out), "\n")
+		if len(lines) < 2 {
+			return 0
+		}
+		fields := strings.Fields(lines[1])
+		if len(fields) < 4 {
+			return 0
+		}
+		// macOS df -g 输出如 "156 50 90 36% /"
+		v, _ := strconv.Atoi(fields[3])
+		return v
 	default:
+		// Linux: 用 -BG
 		out, err := exec.Command("df", "-BG", ".").Output()
 		if err != nil {
 			return 0

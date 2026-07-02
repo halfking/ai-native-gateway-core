@@ -3,6 +3,7 @@ package secrets
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -24,11 +25,12 @@ func (e *EnvFile) Write(entries map[string]string) error {
 	sb.WriteString("# DO NOT EDIT MANUALLY - re-run installer to regenerate\n")
 	sb.WriteString("# Permissions: 600\n\n")
 
-	// 保持稳定顺序：先按字母序
+	// 按 key 字母序输出，保证生成结果稳定（便于 git 比对）
 	keys := make([]string, 0, len(entries))
 	for k := range entries {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 
 	for _, k := range keys {
 		v := entries[k]
@@ -41,6 +43,11 @@ func (e *EnvFile) Write(entries map[string]string) error {
 	// 写文件
 	if err := os.WriteFile(e.Path, []byte(content), 0600); err != nil {
 		return fmt.Errorf("写入 .env 失败: %w", err)
+	}
+
+	// 显式收紧权限：os.WriteFile 对已存在文件不会改 mode，需 chmod
+	if err := os.Chmod(e.Path, 0600); err != nil {
+		return fmt.Errorf("收紧 .env 权限失败: %w", err)
 	}
 
 	return nil
