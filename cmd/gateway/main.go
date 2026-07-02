@@ -1908,8 +1908,8 @@ func main() {
 			// Provides REST API for managing approval configuration, approvers, and rules.
 			// Enables tenant admins to configure approval workflows.
 			if dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
-				approvalStore := approval.NewPGApprovalStore(dbConn.Pool(), redisBackendFromClient(redisClientForCache))
-				approvalConfigMgr := approval.NewConfigManager(approvalStore, redisBackendFromClient(redisClientForCache))
+				approvalStore := approval.NewPGApprovalStore(dbConn.Pool(), redisClientForCache.Client())
+				approvalConfigMgr := approval.NewConfigManager(approvalStore, redisClientForCache.Client())
 				approvalConfigHandler := admin.NewApprovalConfigHandler(approvalConfigMgr)
 
 				// Configuration endpoints

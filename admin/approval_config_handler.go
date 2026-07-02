@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,13 +10,29 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/approval"
 )
 
+// ConfigManagerService 定义 ApprovalConfigHandler 依赖的配置管理接口。
+// 使用接口而非具体类型，便于测试注入 mock。
+type ConfigManagerService interface {
+	GetConfig(ctx context.Context, tenantID string) (*approval.ApprovalConfig, error)
+	UpdateConfig(ctx context.Context, tenantID string, config *approval.ApprovalConfig) error
+	GetApprovers(ctx context.Context, tenantID string) ([]approval.Approver, error)
+	AddApprover(ctx context.Context, tenantID string, approver *approval.Approver) error
+	UpdateApprover(ctx context.Context, tenantID, userID string, approver *approval.Approver) error
+	RemoveApprover(ctx context.Context, tenantID, userID string) error
+	GetRules(ctx context.Context, tenantID string) ([]approval.ApprovalRule, error)
+	AddRule(ctx context.Context, tenantID string, rule *approval.ApprovalRule) error
+	RemoveRule(ctx context.Context, tenantID, ruleName string) error
+	GetConfigStats(ctx context.Context, tenantID string) (*approval.ConfigStats, error)
+}
+
 // ApprovalConfigHandler handles approval configuration API requests.
 type ApprovalConfigHandler struct {
-	configManager *approval.ConfigManager
+	configManager ConfigManagerService
 }
 
 // NewApprovalConfigHandler creates a new approval config handler.
-func NewApprovalConfigHandler(configManager *approval.ConfigManager) *ApprovalConfigHandler {
+// 接受 ConfigManagerService 接口，*approval.ConfigManager 默认满足该接口。
+func NewApprovalConfigHandler(configManager ConfigManagerService) *ApprovalConfigHandler {
 	return &ApprovalConfigHandler{
 		configManager: configManager,
 	}
