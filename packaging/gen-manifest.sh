@@ -36,7 +36,7 @@ cat <<EOF
 {
   "package_name": "kx-llm-gateway-go",
   "version": "${VERSION}",
-  "build_seq": $(cat "$(dirname "${BUILD_DIR}")/../build_seq" 2>/dev/null || echo 0),
+  "build_seq": $(cat "$(dirname "${BUILD_DIR}")/build_seq" 2>/dev/null || echo 0),
   "git_sha": "${GIT_SHA}",
   "build_date": "${BUILD_DATE}",
   "registry": "${REGISTRY}",
