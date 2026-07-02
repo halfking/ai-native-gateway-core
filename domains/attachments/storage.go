@@ -19,6 +19,7 @@
 package attachments
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -62,31 +63,58 @@ type AttachmentMetadata struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Storage 附件文件系统存储。零值不可用，必须通过 NewStorage 构造。
+// Storage 附件存储门面。零值不可用，必须通过 NewStorage 或 NewStorageWithBackend 构造。
+// 内部使用可插拔的 StorageBackend，支持本地文件系统、OSS、S3 等多种存储后端。
 type Storage struct {
-	// baseDir 存储根目录，绝对路径。通过 BaseDir()/SetBaseDir() 访问，
-	// 受 dirMu 保护以支持运行时热切换（迁移到新目录后无需重启）。
-	baseDir string
-	// dirMu 保护 baseDir 与 mkdirCache 的并发读写。所有 baseDir 的读取
-	// 走 BaseDir()（读锁），迁移时 SetBaseDir() 持写锁原子替换。
-	dirMu sync.RWMutex
+	// backend 存储后端（本地文件系统、OSS、S3 等）
+	backend StorageBackend
+	
 	// MaxSize 单文件最大字节数（解码后），0 表示用 DefaultMaxSize。
-	// 该值在迁移时不变，无需加锁。
 	MaxSize int64
-	// mkdirCache 缓存已创建的目录，避免重复 MkdirAll 系统调用。
-	// 注意：SetBaseDir 切换目录后必须清空此缓存，否则 ensureDir 会误以为
-	// 新目录下的子目录已存在而跳过创建。
+	
+	// 以下字段仅用于向后兼容和迁移支持
+	// baseDir 仅当使用 LocalStorageBackend 时有效，用于 BaseDir()/SetBaseDir() API
+	baseDir string
+	dirMu   sync.RWMutex
+	
+	// mkdirCache 已废弃，由 LocalStorageBackend 内部管理
 	mkdirCache sync.Map // map[string]bool
 }
 
-// NewStorage 构造一个 Storage。baseDir 为空时默认 ./data/attachments。
+// NewStorage 构造一个 Storage，使用本地文件系统作为默认后端。
+// baseDir 为空时默认 ./data/attachments。
 // 如果 baseDir 不存在会自动创建（0755）。
 func NewStorage(baseDir string) (*Storage, error) {
-	s := &Storage{MaxSize: DefaultMaxSize}
-	if err := s.SetBaseDir(baseDir); err != nil {
+	if baseDir == "" {
+		baseDir = "./data/attachments"
+	}
+	
+	backend, err := NewLocalStorageBackend(baseDir)
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
+	
+	return &Storage{
+		backend: backend,
+		MaxSize: DefaultMaxSize,
+		baseDir: backend.BaseDir(), // 缓存用于 BaseDir() API
+	}, nil
+}
+
+// NewStorageWithBackend 使用指定的存储后端构造 Storage
+// 用于支持 OSS、S3 等云存储后端
+func NewStorageWithBackend(backend StorageBackend) *Storage {
+	s := &Storage{
+		backend: backend,
+		MaxSize: DefaultMaxSize,
+	}
+	
+	// 如果是本地后端，缓存 baseDir
+	if local, ok := backend.(*LocalStorageBackend); ok {
+		s.baseDir = local.BaseDir()
+	}
+	
+	return s
 }
 
 // BaseDir 返回当前存储根目录（绝对路径）。读锁，并发安全。
@@ -99,22 +127,30 @@ func (s *Storage) BaseDir() string {
 // SetBaseDir 热切换存储根目录。dir 为空时默认 ./data/attachments。
 // 会 MkdirAll 新目录、清空 mkdirCache（避免对旧目录的缓存误判新目录）。
 // 写锁，与并发的 SaveBase64Image/Load 互斥。
+// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端调用此方法返回错误。
 func (s *Storage) SetBaseDir(dir string) error {
 	if s == nil {
 		return errors.New("attachments: storage is nil")
 	}
+	
+	// 检查是否是本地存储后端
+	local, ok := s.backend.(*LocalStorageBackend)
+	if !ok {
+		return errors.New("attachments: SetBaseDir only supported for local storage backend")
+	}
+	
 	if dir == "" {
 		dir = "./data/attachments"
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return fmt.Errorf("attachments: resolve base dir %q: %w", dir, err)
+	
+	// 调用后端的 SetBaseDir
+	if err := local.SetBaseDir(dir); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(abs, 0755); err != nil {
-		return fmt.Errorf("attachments: create base dir %q: %w", abs, err)
-	}
+	
+	// 更新缓存的 baseDir
 	s.dirMu.Lock()
-	s.baseDir = abs
+	s.baseDir = local.BaseDir()
 	// 切换目录后旧缓存失效：新目录下尚未创建 YYYY/MM/req_xxx 子目录，
 	// 若不清空，ensureDir 会误判已创建而跳过 MkdirAll。
 	s.mkdirCache.Range(func(k, _ any) bool { s.mkdirCache.Delete(k); return true })
@@ -124,10 +160,17 @@ func (s *Storage) SetBaseDir(dir string) error {
 
 // Summary 统计当前存储目录的文件数、总字节数与最旧文件修改时间。
 // 供管理端「文件系统占用」与迁移前后校验复用（收口重复的 WalkDir 逻辑）。
+// 注意：仅当使用 LocalStorageBackend 时有效，云存储后端返回错误。
 func (s *Storage) Summary() (fileCount int, totalBytes int64, oldestMod *time.Time, err error) {
 	if s == nil {
 		return 0, 0, nil, errors.New("attachments: storage is nil")
 	}
+	
+	// 检查是否是本地存储后端
+	if _, ok := s.backend.(*LocalStorageBackend); !ok {
+		return 0, 0, nil, errors.New("attachments: Summary only supported for local storage backend")
+	}
+	
 	base := s.BaseDir()
 	err = filepath.WalkDir(base, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -195,66 +238,54 @@ func (s *Storage) SaveBase64Image(requestID, dataURI string, msgIdx, blockIdx in
 		maxSize = DefaultMaxSize
 	}
 
-	// 目标目录：BaseDir/YYYY/MM/req_{requestID}
+	// 目标目录：YYYY/MM/req_{requestID}
 	now := time.Now()
 	relDir := filepath.Join(
 		fmt.Sprintf("%04d", now.Year()),
 		fmt.Sprintf("%02d", int(now.Month())),
 		fmt.Sprintf("req_%s", sanitizeRequestID(requestID)),
 	)
-	if err := s.ensureDir(relDir); err != nil {
-		return nil, fmt.Errorf("attachments: ensure dir: %w", err)
-	}
 
-	// 流式解码：边解码边计算哈希，同时写入临时文件。
+	// 流式解码：边解码边计算哈希，同时写入临时缓冲区。
 	// 这样无论文件多大，内存占用恒定（一个 chunk buffer）。
 	ext := mimeTypeToExt(contentType)
-	// 在整个保存流程内固定 baseDir 快照，避免迁移切换目录中途产生跨目录路径。
-	baseDir := s.BaseDir()
-	tmpPath := filepath.Join(baseDir, relDir, ".tmp_"+randomSuffix())
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("attachments: create tmp file: %w", err)
-	}
-
+	
 	hasher := sha256.New()
 	counter := &countingWriter{}
 	// 用 base64 decoder 包裹一个 limited reader 防止超大输入耗尽内存/磁盘
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(b64Payload))
 	limited := io.LimitReader(decoder, maxSize+1)
 
-	// tee: 同时写入临时文件和 hasher/counter
-	tee := io.MultiWriter(f, io.MultiWriter(hasher, counter))
+	// 解码到内存缓冲区，同时计算哈希和大小
+	var buf bytes.Buffer
+	tee := io.MultiWriter(&buf, io.MultiWriter(hasher, counter))
 	if _, err := io.CopyBuffer(tee, limited, make([]byte, 64<<10)); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath) // best-effort 清理临时文件
-		return nil, fmt.Errorf("attachments: decode/write: %w", err)
+		return nil, fmt.Errorf("attachments: decode: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpPath)
-		return nil, fmt.Errorf("attachments: fsync: %w", err)
-	}
-	_ = f.Close()
-	// 超过大小限制：删除临时文件并返回错误
+	
+	// 超过大小限制：返回错误
 	if counter.n > maxSize {
-		_ = os.Remove(tmpPath)
 		return nil, fmt.Errorf("attachments: file too large (%d > %d)", counter.n, maxSize)
 	}
 
 	hashHex := hex.EncodeToString(hasher.Sum(nil))
 	fileName := hashHex[:16] + ext
 	relPath := filepath.Join(relDir, fileName)
-	fullPath := filepath.Join(baseDir, relPath)
-
-	// 去重：目标文件已存在则直接删除临时文件
+	
+	// 去重：检查目标文件是否已存在
 	deduped := false
-	if _, statErr := os.Stat(fullPath); statErr == nil {
-		_ = os.Remove(tmpPath)
+	exists, err := s.backend.FileExists(relPath)
+	if err != nil {
+		return nil, fmt.Errorf("attachments: check exists: %w", err)
+	}
+	
+	if exists {
 		deduped = true
-	} else if renameErr := os.Rename(tmpPath, fullPath); renameErr != nil {
-		_ = os.Remove(tmpPath)
-		return nil, fmt.Errorf("attachments: rename tmp -> final: %w", renameErr)
+	} else {
+		// 保存文件到后端
+		if err := s.backend.SaveFile(relPath, buf.Bytes()); err != nil {
+			return nil, fmt.Errorf("attachments: save file: %w", err)
+		}
 	}
 
 	meta := AttachmentMetadata{
@@ -277,13 +308,10 @@ func (s *Storage) LoadAttachment(relPath string) ([]byte, string, error) {
 	if s == nil {
 		return nil, "", errors.New("attachments: storage is nil")
 	}
-	clean, err := s.safeJoin(relPath)
+	
+	data, err := s.backend.LoadFile(relPath)
 	if err != nil {
-		return nil, "", err
-	}
-	data, err := os.ReadFile(clean)
-	if err != nil {
-		return nil, "", fmt.Errorf("attachments: read %q: %w", relPath, err)
+		return nil, "", fmt.Errorf("attachments: load %q: %w", relPath, err)
 	}
 	return data, extToMimeType(filepath.Ext(relPath)), nil
 }
@@ -293,11 +321,14 @@ func (s *Storage) Stat(relPath string) (os.FileInfo, error) {
 	if s == nil {
 		return nil, errors.New("attachments: storage is nil")
 	}
-	clean, err := s.safeJoin(relPath)
+	
+	info, err := s.backend.StatFile(relPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("attachments: stat %q: %w", relPath, err)
 	}
-	return os.Stat(clean)
+	
+	// 将 FileInfo 转换为 os.FileInfo（适配器模式）
+	return &fileInfoAdapter{info: info, name: filepath.Base(relPath)}, nil
 }
 
 // OpenStream 打开附件用于流式读取（大文件）。调用方负责 Close。
@@ -305,15 +336,12 @@ func (s *Storage) OpenStream(relPath string) (io.ReadCloser, string, error) {
 	if s == nil {
 		return nil, "", errors.New("attachments: storage is nil")
 	}
-	clean, err := s.safeJoin(relPath)
+	
+	stream, err := s.backend.OpenStream(relPath)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("attachments: open stream %q: %w", relPath, err)
 	}
-	f, err := os.Open(clean)
-	if err != nil {
-		return nil, "", fmt.Errorf("attachments: open %q: %w", relPath, err)
-	}
-	return f, extToMimeType(filepath.Ext(relPath)), nil
+	return stream, extToMimeType(filepath.Ext(relPath)), nil
 }
 
 // FullPath 返回相对路径对应的绝对路径。仅供内部/管理端使用。
@@ -477,3 +505,16 @@ func sanitizeRequestID(id string) string {
 func randomSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
+
+// fileInfoAdapter 适配 FileInfo 到 os.FileInfo 接口
+type fileInfoAdapter struct {
+	info *FileInfo
+	name string
+}
+
+func (a *fileInfoAdapter) Name() string       { return a.name }
+func (a *fileInfoAdapter) Size() int64        { return a.info.Size }
+func (a *fileInfoAdapter) Mode() fs.FileMode  { return 0644 }
+func (a *fileInfoAdapter) ModTime() time.Time { return a.info.ModTime }
+func (a *fileInfoAdapter) IsDir() bool        { return false }
+func (a *fileInfoAdapter) Sys() interface{}   { return nil }
