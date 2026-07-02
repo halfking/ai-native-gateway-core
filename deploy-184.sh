@@ -58,7 +58,8 @@ check_uncommitted_changes() {
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             git add .
-            read -p "请输入提交信息: " COMMIT_MSG
+            read -p "请输入提交信息 (默认: chore: update version for deployment): " COMMIT_MSG
+            COMMIT_MSG=${COMMIT_MSG:-"chore: update version for deployment"}
             git commit -m "${COMMIT_MSG}"
             log_success "改动已提交"
         else
