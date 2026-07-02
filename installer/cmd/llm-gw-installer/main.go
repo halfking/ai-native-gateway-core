@@ -215,7 +215,7 @@ func runInstall(opts installOpts) error {
 	} else if opts.SkipPrompt {
 		// 跳过交互：全部用默认值 + 自动生成 secrets
 		logInfo("  ▶ --skip-prompt 模式：使用默认配置 + 自动生成 secrets")
-		cfg, err = prompt.LoadFromEnvFile("/dev/null", imageTag, installDir)
+		cfg, err = prompt.LoadFromEnvFile("", imageTag, installDir)
 		if err != nil {
 			return fmt.Errorf("生成默认配置失败: %w", err)
 		}
