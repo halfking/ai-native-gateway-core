@@ -134,14 +134,14 @@ fi
 echo ""
 echo "═══ 7. 复制入口脚本 ═══"
 for f in install.sh install.ps1 install.bat uninstall.sh; do
-  if [[ -f "${SCRIPT_DIR}/${f}" ]]; then
-    cp "${SCRIPT_DIR}/${f}" "${BUILD_DIR}/"
+  if [[ -f "${PROJECT_ROOT}/${f}" ]]; then
+    cp "${PROJECT_ROOT}/${f}" "${BUILD_DIR}/"
   fi
 done
 
 # ── 8. 复制 README ───────────────────────────────────────────────
-if [[ -f "${SCRIPT_DIR}/README.md" ]]; then
-  cp "${SCRIPT_DIR}/README.md" "${BUILD_DIR}/"
+if [[ -f "${PROJECT_ROOT}/README.md" ]]; then
+  cp "${PROJECT_ROOT}/README.md" "${BUILD_DIR}/"
 fi
 
 # ── 9. 生成 MANIFEST.json ───────────────────────────────────────
