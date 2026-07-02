@@ -193,6 +193,9 @@ type ApprovalDecision struct {
 	TriggerReason    string
 	RiskLevel        RiskLevel
 	MatchedRule      *ApprovalRule
+	SensitiveItems   []SensitiveItemSummary
+	EstimatedCost    float64
+	EstimatedTokens  int
 }
 
 // ApprovalResult represents the final outcome after approval completes.
