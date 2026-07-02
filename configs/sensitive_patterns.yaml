@@ -1,0 +1,268 @@
+# 敏感信息检测配置
+# 配置各种敏感信息的检测模式、关键词和阈值
+
+# 全局配置
+global:
+  min_confidence: 0.7  # 最小置信度阈值
+  enable_cache: true   # 启用检测结果缓存
+  cache_ttl: 300       # 缓存过期时间（秒）
+
+# PII (个人身份信息) 检测规则
+pii:
+  enabled: true
+  patterns:
+    # 中国身份证：18位数字或17位数字+X
+    id_card:
+      regex: '\b[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b'
+      confidence: 0.95
+      description: "中国居民身份证号"
+      
+    # 手机号：1开头的11位数字
+    phone:
+      regex: '\b1[3-9]\d{9}\b'
+      confidence: 0.95
+      description: "中国手机号码"
+      
+    # 邮箱地址
+    email:
+      regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+      confidence: 0.95
+      description: "电子邮箱地址"
+      
+    # 地址信息
+    address:
+      regex: '[^\s]{2,}[省市区县镇乡村路街道巷弄号栋单元室]\s*[\d\-号栋单元室]+'
+      confidence: 0.7
+      description: "详细地址信息"
+      
+    # 护照号
+    passport:
+      regex: '\b[EGP]\d{8}\b'
+      confidence: 0.85
+      description: "中国护照号码"
+      
+  keywords:
+    - "身份证"
+    - "护照"
+    - "驾驶证"
+    - "户口"
+    - "姓名"
+    - "家庭住址"
+    - "详细地址"
+    - "出生日期"
+    - "籍贯"
+    
+  redaction_rules:
+    id_card: "show_first_3_last_4"  # 显示前3后4位
+    phone: "show_last_4"             # 只显示后4位
+    email: "show_first_char_domain"  # 显示首字符和域名
+    address: "show_province_city"    # 只保留省市
+    passport: "show_first_2_last_2"  # 显示前2后2位
+
+# SECRET (密钥/密码) 检测规则
+secret:
+  enabled: true
+  patterns:
+    # API Key 格式
+    api_key:
+      regex: '\b(sk|key|token|api|bearer)[-_]?[A-Za-z0-9]{16,}\b'
+      confidence: 0.9
+      description: "API密钥"
+      
+    # 密码字段
+    password:
+      regex: '(password|passwd|pwd|secret)\s*[:=]\s*[^\s]{6,}'
+      confidence: 0.8
+      description: "密码字段"
+      
+    # JWT Token
+    jwt:
+      regex: '\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b'
+      confidence: 0.95
+      description: "JWT令牌"
+      
+    # AWS Access Key
+    aws_key:
+      regex: '\b(AKIA|ASIA)[A-Z0-9]{16}\b'
+      confidence: 0.95
+      description: "AWS访问密钥"
+      
+    # RSA Private Key
+    rsa_key:
+      regex: '-----BEGIN (RSA )?PRIVATE KEY-----'
+      confidence: 1.0
+      description: "RSA私钥"
+      
+  keywords:
+    - "密码"
+    - "password"
+    - "secret"
+    - "token"
+    - "api key"
+    - "access key"
+    - "私钥"
+    - "private key"
+    - "credentials"
+    
+  redaction_rules:
+    api_key: "show_first_4_last_4"   # 显示前4后4位
+    password: "full_redact"           # 完全隐藏
+    jwt: "show_first_10_last_10"     # 显示前10后10位
+    aws_key: "show_first_4_last_4"   # 显示前4后4位
+    rsa_key: "full_redact"            # 完全隐藏
+
+# FINANCIAL (金融信息) 检测规则
+financial:
+  enabled: true
+  patterns:
+    # 银行卡号：16-19位数字
+    bank_card:
+      regex: '\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4,7}\b'
+      confidence: 0.85
+      description: "银行卡号"
+      
+    # 信用卡 CVV
+    cvv:
+      regex: '\b(cvv|安全码)\s*[:=]?\s*\d{3,4}\b'
+      confidence: 0.9
+      description: "信用卡安全码"
+      
+    # 支付宝账号
+    alipay:
+      regex: '(支付宝|alipay)\s*[:：]\s*([1]\d{10}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})'
+      confidence: 0.85
+      description: "支付宝账号"
+      
+    # 微信账号
+    wechat:
+      regex: '(微信|wechat|wx)\s*[:：]\s*[A-Za-z0-9_-]{6,20}'
+      confidence: 0.75
+      description: "微信账号"
+      
+    # IBAN (国际银行账号)
+    iban:
+      regex: '\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b'
+      confidence: 0.8
+      description: "国际银行账号"
+      
+  keywords:
+    - "银行卡"
+    - "信用卡"
+    - "储蓄卡"
+    - "账户余额"
+    - "转账"
+    - "支付宝"
+    - "微信支付"
+    - "卡号"
+    - "CVV"
+    - "安全码"
+    
+  redaction_rules:
+    bank_card: "show_last_4"         # 只显示后4位
+    cvv: "full_redact"                # 完全隐藏
+    alipay: "show_last_4"            # 只显示后4位
+    wechat: "show_first_3_last_3"    # 显示前3后3位
+    iban: "show_first_4_last_4"      # 显示前4后4位
+
+# MEDICAL (医疗信息) 检测规则
+medical:
+  enabled: true
+  patterns:
+    # 病历号
+    medical_record:
+      regex: '(病历号|就诊号|住院号)\s*[:：]?\s*[A-Z0-9]{6,20}'
+      confidence: 0.85
+      description: "病历号"
+      
+    # 诊断信息
+    diagnosis:
+      regex: '(诊断|确诊|患有|病情)\s*[:：]?\s*[\u4e00-\u9fa5]{2,20}'
+      confidence: 0.7
+      description: "诊断信息"
+      
+    # 药品名称
+    medication:
+      regex: '(服用|用药|处方)\s*[:：]?\s*[\u4e00-\u9fa5A-Za-z]{2,20}'
+      confidence: 0.65
+      description: "药品信息"
+      
+  keywords:
+    - "病历"
+    - "诊断"
+    - "处方"
+    - "病情"
+    - "症状"
+    - "治疗方案"
+    - "手术"
+    - "住院"
+    - "就诊"
+    - "病史"
+    
+  redaction_rules:
+    medical_record: "show_first_2_last_2"  # 显示前2后2位
+    diagnosis: "partial_redact"             # 部分隐藏
+    medication: "partial_redact"            # 部分隐藏
+
+# 脱敏规则详细说明
+redaction_methods:
+  full_redact:
+    description: "完全隐藏，显示为 ******"
+    example: "password123 -> ******"
+    
+  show_first_3_last_4:
+    description: "显示前3位和后4位，中间用 * 替代"
+    example: "110101199001011234 -> 110***********1234"
+    
+  show_first_4_last_4:
+    description: "显示前4位和后4位，中间用 * 替代"
+    example: "sk-1234567890abcdef -> sk-1****cdef"
+    
+  show_last_4:
+    description: "只显示后4位，前面用 * 替代"
+    example: "13812345678 -> ****5678"
+    
+  show_first_char_domain:
+    description: "邮箱只显示首字符和域名"
+    example: "username@example.com -> u***@example.com"
+    
+  partial_redact:
+    description: "部分隐藏，保留关键信息可识别性"
+    example: "高血压糖尿病 -> 高***病"
+
+# 性能优化配置
+performance:
+  max_content_length: 1048576  # 最大内容长度（1MB）
+  parallel_detection: true     # 并行检测
+  max_goroutines: 10          # 最大并发数
+  timeout_ms: 5000            # 超时时间（毫秒）
+
+# 审计日志配置
+audit:
+  log_detections: true        # 记录检测结果
+  log_redactions: true        # 记录脱敏操作
+  include_context: false      # 不包含敏感内容上下文
+  retention_days: 90          # 日志保留天数
+
+# 白名单配置
+whitelist:
+  # 测试环境白名单
+  test_patterns:
+    - "test@example.com"
+    - "1234567890"
+    - "sk-test-"
+  
+  # IP 地址不视为敏感信息
+  exclude_patterns:
+    - '\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'  # IPv4
+    - '\b[0-9a-fA-F:]+\b'                        # IPv6
+
+# 自定义规则扩展
+custom_rules:
+  enabled: true
+  rules: []
+  # 示例：
+  # - name: "internal_employee_id"
+  #   type: "PII"
+  #   regex: '\bEMP\d{6}\b'
+  #   confidence: 0.9
+  #   redaction: "show_first_3_last_2"
