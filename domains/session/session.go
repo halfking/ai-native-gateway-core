@@ -72,6 +72,15 @@ func NewRedisClient(addr, password string, db int) *RedisClient {
 	}
 }
 
+// Client 返回底层 *redis.Client，供需要直接操作 redis 的模块复用连接。
+// 调用方不得关闭该 client（其生命周期由 RedisClient 管理方负责）。
+func (r *RedisClient) Client() *redis.Client {
+	if r == nil {
+		return nil
+	}
+	return r.client
+}
+
 func (r *RedisClient) Ping(ctx context.Context) error {
 	return r.client.Ping(ctx).Err()
 }
