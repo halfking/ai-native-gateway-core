@@ -1,0 +1,150 @@
+# Hook框架配置文件
+
+# 本文件定义了llm-gateway-go中所有Hook的配置
+# 支持热更新：修改后3秒内自动生效，无需重启服务
+
+hooks:
+  # 示例Hook 1: 审计日志Hook
+  - name: audit-hook
+    enabled: true
+    priority: 10
+    phase: pre_routing
+    timeout: 2s
+    config:
+      log_level: info
+      include_headers: true
+      include_body: false
+
+  # 示例Hook 2: 压缩Hook
+  - name: compression-hook
+    enabled: true
+    priority: 50
+    phase: pre_upstream
+    timeout: 5s
+    config:
+      algorithm: gzip
+      min_size: 1024
+      compression_level: 6
+
+  # 示例Hook 3: 输出脱敏Hook (Task B2)
+  - name: output-sanitizer-hook
+    enabled: true
+    priority: 10
+    phase: post_upstream
+    timeout: 3s
+    config:
+      patterns:
+        - type: email
+          regex: "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+          replacement: "[EMAIL]"
+        - type: phone
+          regex: "\\d{3}-\\d{3}-\\d{4}"
+          replacement: "[PHONE]"
+        - type: ssn
+          regex: "\\d{3}-\\d{2}-\\d{4}"
+          replacement: "[SSN]"
+        - type: credit_card
+          regex: "\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}"
+          replacement: "[CARD]"
+
+  # 示例Hook 4: Memora自动沉淀Hook (Task B1)
+  - name: memora-auto-hook
+    enabled: true
+    priority: 20
+    phase: post_response
+    timeout: 10s
+    config:
+      kxmemory_endpoint: "http://kxmemory:8080/api/sessions/ingest"
+      batch_size: 10
+      flush_interval: 30s
+      retry_count: 3
+      retry_delay: 1s
+
+  # 示例Hook 5: 缓存Hook
+  - name: cache-hook
+    enabled: true
+    priority: 30
+    phase: post_upstream
+    timeout: 1s
+    config:
+      ttl: 3600
+      max_entries: 10000
+      eviction_policy: lru
+
+  # 示例Hook 6: Vibe Coding评估Hook (Task B4)
+  - name: vibe-code-hook
+    enabled: false  # 默认禁用
+    priority: 40
+    phase: post_upstream
+    timeout: 5s
+    config:
+      quality_threshold: 0.7
+      metrics:
+        - code_style
+        - complexity
+        - best_practices
+      report_format: json
+
+  # 示例Hook 7: 认证Hook
+  - name: auth-hook
+    enabled: true
+    priority: 5
+    phase: pre_routing
+    timeout: 2s
+    config:
+      validate_api_key: true
+      validate_tenant: true
+      allow_anonymous: false
+
+  # 示例Hook 8: 速率限制Hook
+  - name: rate-limit-hook
+    enabled: true
+    priority: 8
+    phase: pre_routing
+    timeout: 1s
+    config:
+      requests_per_minute: 60
+      burst_size: 10
+      key_prefix: "ratelimit:"
+
+  # 示例Hook 9: 请求转换Hook
+  - name: request-transform-hook
+    enabled: true
+    priority: 40
+    phase: pre_upstream
+    timeout: 3s
+    config:
+      normalize_format: true
+      inject_metadata: true
+      strip_null_values: false
+
+  # 示例Hook 10: 响应转换Hook
+  - name: response-transform-hook
+    enabled: true
+    priority: 50
+    phase: post_upstream
+    timeout: 3s
+    config:
+      format: json
+      include_timing: true
+      include_metadata: false
+
+# 全局配置（可选）
+global:
+  # 默认超时时间
+  default_timeout: 5s
+  
+  # 是否启用Hook执行
+  hooks_enabled: true
+  
+  # 最大并发Hook数量
+  max_concurrent_hooks: 100
+  
+  # Hook执行失败重试次数
+  retry_count: 0
+  
+  # 是否启用指标收集
+  metrics_enabled: true
+  
+  # 日志级别
+  log_level: info
