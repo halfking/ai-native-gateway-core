@@ -385,10 +385,29 @@ func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 // IMPORTANT: this handler is mounted inside the admin Handler (which
 // runs it inside h.admin() / h.superAdmin()). The auth check has
 // already passed by the time we get here.
+//
+// Browser EventSource cannot set Authorization headers, so when
+// the request comes in without a cookie (i.e. the dashboard is
+// authenticating via a legacy admin api key, not the JWT login
+// path) the browser's only option is to fail. To support that
+// case we ALSO accept the api_key via the `?token=` query string
+// — same shape as the v2 WebSocket path. The token is consumed
+// only when the JWT-cookie path failed; the legacy Bearer header
+// path stays untouched.
 func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
+	}
+
+	// Promote ?token=… into Authorization when no Bearer header is
+	// set. This is the only place we accept the query-string token;
+	// every other admin route still requires a proper Authorization
+	// header or a signed cookie. We do NOT log the token.
+	if r.Header.Get("Authorization") == "" {
+		if t := strings.TrimSpace(r.URL.Query().Get("token")); t != "" {
+			r.Header.Set("Authorization", "Bearer "+t)
+		}
 	}
 
 	tenantID := ""
