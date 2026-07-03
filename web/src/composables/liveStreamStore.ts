@@ -97,7 +97,17 @@ function pushOrQueue(item: LiveRequest) {
     return
   }
   if (item.type !== 'idle_marker' && item.request_id) {
-    if (idIndex.has(item.request_id)) return
+    // 2026-07-04: if request_id already exists, UPDATE in place instead of ignore.
+    // This way in_progress -> success/failure transitions update the live tile.
+    if (idIndex.has(item.request_id)) {
+      const existingIndex = liveStreamState.requests.findIndex(
+        r => r.request_id === item.request_id
+      )
+      if (existingIndex >= 0) {
+        liveStreamState.requests[existingIndex] = item
+      }
+      return
+    }
     idIndex.add(item.request_id)
   }
   liveStreamState.requests.push(item)
