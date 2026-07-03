@@ -13,7 +13,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 )
@@ -36,10 +35,10 @@ func NewDingTalkCallbackHandler(manager ApprovalManager, appSecret string) *Ding
 type DingTalkCallbackRequest struct {
 	// Event type: "approval_result"
 	EventType string `json:"EventType"`
-	
+
 	// Timestamp
 	TimeStamp int64 `json:"TimeStamp"`
-	
+
 	// Approval result data
 	ApprovalID string `json:"approval_id"`
 	TenantID   string `json:"tenant_id"`
@@ -147,9 +146,8 @@ func (h *DingTalkCallbackHandler) verifySignature(r *http.Request) bool {
 	mac.Write([]byte(stringToSign))
 	expectedSign := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	// URL encode the expected signature
-	expectedSign = url.QueryEscape(expectedSign)
-
+	// Note: query parameters are automatically URL-decoded by Go's HTTP server,
+	// so we compare the base64-encoded signature directly without URL encoding.
 	return sign == expectedSign
 }
 
