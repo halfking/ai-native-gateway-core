@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
 import OverviewCards from './provider-detail/OverviewCards.vue'
 import CredsTab from './provider-detail/CredsTab.vue'
@@ -12,10 +13,9 @@ import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
 
 const route = useRoute()
 const router = useRouter()
-// providerId must be reactive — Vue Router reuses the component when
-// navigating between /providers/1 and /providers/2, so a non-reactive
-// `Number(route.params.id)` would never update.  Use a computed and a
-// watcher to reload on change.
+const { t: td } = useI18n()
+const pp = (k: string, params?: Record<string, unknown>): string => td(`providerDetailPage.${k}` as never, params as never)
+
 const providerId = computed(() => Number(route.params.id))
 
 const provider = ref<any>(null)
@@ -29,9 +29,6 @@ const diagLoading = ref(false)
 const diagResult = ref<DiagnoseProviderResponse | null>(null)
 const diagError = ref('')
 
-// modelsFocusOffer is set when the user clicks the inline "go to Models tab"
-// link from a `endpoint_id_required` probe entry.  ModelsTab watches this
-// and opens the matching drawer once offers are loaded.
 const modelsFocusOffer = ref<{ credential_id: number; raw_model_name: string } | null>(null)
 
 function onOpenModelsTab(payload: { credential_id: number; raw_model_name: string }) {
@@ -43,20 +40,36 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    provider.value = await getProviderDetail(providerId.value)
-    creds.value = await getProviderCredentials(providerId.value)
-    // Best-effort: badge count for the "自动测试" tab. Failure here
-    // must not block the main load.
-    try {
-      const failures = await getProviderRecentProbeFailures(providerId.value)
-      probeFailureCount.value = failures.models.reduce((sum, m) => sum + m.failed_count, 0)
-    } catch {
-      probeFailureCount.value = 0
-    }
+    const [providerData, credsData, failuresData] = await Promise.all([
+      getProviderDetail(providerId.value),
+      getProviderCredentials(providerId.value),
+      getProviderRecentProbeFailures(providerId.value).catch(() => ({ models: [] }))
+    ])
+
+    provider.value = providerData
+    creds.value = credsData
+    probeFailureCount.value = failuresData.models.reduce((sum, m) => sum + m.failed_count, 0)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : pp('loadFailed')
   } finally {
     loading.value = false
+  }
+}
+
+// 2026-07-03: background refresh used by inline drawer edits (plan type
+// select, immediate probe check, manual disable toggle, lifecycle
+// change, default probe model pick). Unlike `load()` it MUST NOT set
+// `loading=true` — that flag drives the `<template v-if="provider &&
+// !loading">` wrapper that mounts the tab bodies, so flipping it would
+// unmount CredsTab mid-edit and silently destroy the open drawer.
+// We only need to refresh the creds list so badges in the table stay
+// consistent; the drawer reads its own `selected` ref.
+async function refreshCredsSilent() {
+  try {
+    const credsData = await getProviderCredentials(providerId.value)
+    creds.value = credsData
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : pp('loadFailed')
   }
 }
 
@@ -66,24 +79,22 @@ async function toggle() {
     await toggleProvider(provider.value.id)
     provider.value.enabled = !provider.value.enabled
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : pp('operationFailed')
   }
 }
 
-// 900-series: provider-level manual disable (spec §6.2)
 async function toggleProviderManual() {
   if (!provider.value) return
   const next = !provider.value.manual_disabled
-  // prompt() returns null on Cancel.  Check it BEFORE coalescing to ''
-  // — using `prompt(...) ?? ''` swallowed the cancel signal.
-  const raw = prompt(`手工${next ? '禁用' : '启用'}提供商 ${provider.value.display_name} 的原因：`, '')
+  const action = next ? 'disable' : 'enable'
+  const raw = prompt(pp(`manualToggle.${action}Prompt`, { name: provider.value.display_name }), '')
   if (raw === null) return
   const reason = raw.trim()
   try {
     await setProviderManualDisabled(provider.value.id, next, reason)
     provider.value.manual_disabled = next
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : pp('operationFailed')
   }
 }
 
@@ -94,7 +105,7 @@ async function runDiagnose() {
   try {
     diagResult.value = await diagnoseProvider(providerId.value, { force: true }) as never
   } catch (e: unknown) {
-    diagError.value = e instanceof Error ? e.message : '诊断失败'
+    diagError.value = e instanceof Error ? e.message : pp('diagFailed')
   } finally {
     diagLoading.value = false
   }
@@ -103,8 +114,6 @@ async function runDiagnose() {
 function back() { router.push('/providers') }
 
 onMounted(load)
-// Reload when the route changes (e.g. user clicks a different provider
-// link without remounting the component).
 watch(providerId, () => {
   if (!Number.isNaN(providerId.value)) {
     load()
@@ -116,48 +125,58 @@ watch(providerId, () => {
   <div>
     <div class="page-header" style="display:flex;justify-content:space-between;align-items:center">
       <div style="display:flex;align-items:center;gap:12px">
-        <button class="btn btn-ghost" @click="back">&larr; 返回供应商列表</button>
+        <button class="btn btn-ghost" @click="back">{{ pp('back') }}</button>
         <h2 style="margin:0">{{ provider?.display_name || '...' }}</h2>
-        <span v-if="provider?.manual_disabled" class="badge badge-red" title="提供商级手工禁用 — 整个 provider 不可路由">🔒 手工已禁用</span>
-        <span v-else-if="!provider?.enabled" class="badge badge-gray">已禁用</span>
+        <span v-if="provider?.manual_disabled" class="badge badge-red" :title="pp('manualDisabledTitle')">🔒 {{ pp('manualDisabledBadge') }}</span>
+        <span v-else-if="!provider?.enabled" class="badge badge-gray">{{ pp('disabledBadge') }}</span>
       </div>
       <div style="display:flex;gap:8px">
         <button
           class="btn btn-ghost btn-sm"
           :style="provider?.manual_disabled ? 'color:var(--danger);border-color:var(--danger)' : ''"
           @click="toggleProviderManual"
-          :title="provider?.manual_disabled ? '取消手工禁用 (恢复自动)' : '手工禁用整个 provider'"
-        >{{ provider?.manual_disabled ? '解除手工禁用' : '手工禁用' }}</button>
-        <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? '禁用' : '启用' }}</button>
-        <button class="btn btn-ghost btn-sm" @click="load">刷新</button>
+          :title="provider?.manual_disabled ? pp('manualToggle.releaseTitle') : pp('manualToggle.setTitle')"
+        >{{ provider?.manual_disabled ? pp('manualToggle.release') : pp('manualToggle.set') }}</button>
+        <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? pp('disable') : pp('enable') }}</button>
+        <button class="btn btn-ghost btn-sm" @click="load">{{ pp('refresh') }}</button>
       </div>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
-    <div v-if="loading" class="empty">加载中…</div>
+    <div v-if="loading" class="empty">{{ pp('loading') }}</div>
 
     <template v-if="provider && !loading">
       <OverviewCards :provider="provider" />
 
       <div class="tabs">
-        <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="tab = 'creds'">凭据 ({{ creds.length }})</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">模型</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">请求日志</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">诊断</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="tab = 'creds'">{{ pp('tabCreds', { n: creds.length }) }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">{{ pp('tabModels') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">{{ pp('tabLogs') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">{{ pp('tabDiag') }}</button>
         <button
           type="button"
           class="tab-btn"
           :class="{ active: tab === 'probe' }"
           @click="tab = 'probe'"
-          :title="'查看自动测试记录（每 10 分钟对失败绑定重新探测）'"
+          :title="pp('tabProbeTitle')"
         >
-          自动测试
+          {{ pp('tabProbe') }}
           <span v-if="probeFailureCount > 0" class="tab-badge tab-badge-red">{{ probeFailureCount }}</span>
         </button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">{{ pp('tabSettings') }}</button>
       </div>
 
-      <CredsTab v-if="tab==='creds'" :provider="provider" :creds="creds" @refresh="load" />
+      <!-- 2026-07-03: `@silent-refresh` lets inline drawer edits (plan
+           type select, 立即检测) refresh the creds list without
+           flipping `loading=true`, which would unmount CredsTab and
+           close the drawer mid-edit. -->
+      <CredsTab
+        v-if="tab==='creds'"
+        :provider="provider"
+        :creds="creds"
+        @refresh="load"
+        @silent-refresh="refreshCredsSilent"
+      />
       <ModelsTab
         v-if="tab==='models'"
         :provider-id="providerId"

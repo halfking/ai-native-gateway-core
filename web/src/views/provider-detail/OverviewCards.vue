@@ -1,4 +1,12 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+import { useFormat } from '../../i18n/useFormat'
+
+const { t: td } = useI18n()
+const pd = (k: string, params?: Record<string, unknown>): string =>
+  td(`providerDetail.${k}` as never, params as never)
+const { fmtDateTime } = useFormat()
+
 defineProps<{
   provider: any
 }>()
@@ -12,41 +20,40 @@ function credCount(provider: any, detailKey: string, listKey: string): number {
 function fmt(v: any) { return v ?? '—' }
 function fmtPct(v: any) { return v != null ? Number(v).toFixed(1) + '%' : '—' }
 function timeText(v?: string | null) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN', { hour12: false })
+  return v ? fmtDateTime(v) : '—'
 }
 </script>
 
 <template>
   <div class="overview-grid provider-detail-grid">
     <div class="card">
-      <h4>基础信息</h4>
+      <h4>{{ pd('overviewCards.basicInfo') }}</h4>
       <dl>
-        <dt>目录代码</dt><dd><code>{{ fmt(provider?.catalog_code) }}</code></dd>
-        <dt>Base URL</dt><dd><code style="word-break:break-all">{{ fmt(provider?.base_url) }}</code></dd>
-        <dt>协议</dt><dd>{{ fmt(provider?.protocol) }}</dd>
-        <dt>Header Profile</dt><dd>{{ fmt(provider?.header_profile_code) }}</dd>
-        <dt>厂商</dt><dd>{{ fmt(provider?.vendor_name) }}</dd>
-        <dt>状态</dt><dd><span :class="provider?.enabled ? 'badge badge-green' : 'badge badge-gray'">{{ provider?.enabled ? '已启用' : '已禁用' }}</span></dd>
-        <dt>最近检查</dt><dd>{{ timeText(provider?.health_checked_at) }}</dd>
-        <dt v-if="provider?.notes">备注</dt><dd v-if="provider?.notes">{{ provider.notes }}</dd>
+        <dt>{{ pd('overviewCards.labelCatalogCode') }}</dt><dd><code>{{ fmt(provider?.catalog_code) }}</code></dd>
+        <dt>{{ pd('overviewCards.labelBaseUrl') }}</dt><dd><code style="word-break:break-all">{{ fmt(provider?.base_url) }}</code></dd>
+        <dt>{{ pd('overviewCards.labelProtocol') }}</dt><dd>{{ fmt(provider?.protocol) }}</dd>
+        <dt>{{ pd('overviewCards.labelHeaderProfile') }}</dt><dd>{{ fmt(provider?.header_profile_code) }}</dd>
+        <dt>{{ pd('overviewCards.labelVendor') }}</dt><dd>{{ fmt(provider?.vendor_name) }}</dd>
+        <dt>{{ pd('overviewCards.labelStatus') }}</dt><dd><span :class="provider?.enabled ? 'badge badge-green' : 'badge badge-gray'">{{ provider?.enabled ? pd('settings.statusEnabled') : pd('settings.statusDisabled') }}</span></dd>
+        <dt>{{ pd('overviewCards.labelLastCheck') }}</dt><dd>{{ timeText(provider?.health_checked_at) }}</dd>
+        <dt v-if="provider?.notes">{{ pd('overviewCards.labelNotes') }}</dt><dd v-if="provider?.notes">{{ provider.notes }}</dd>
       </dl>
     </div>
     <div class="card">
-      <h4>凭据概览</h4>
+      <h4>{{ pd('overviewCards.credOverview') }}</h4>
       <div class="metric-grid">
-        <div class="metric"><b>{{ credCount(provider, 'active_cred_count', 'active_credential_count') }}</b><span>可用</span></div>
-        <div class="metric"><b>{{ credCount(provider, 'healthy_cred_count', 'healthy_credential_count') }}</b><span>健康</span></div>
-        <div class="metric"><b>{{ credCount(provider, 'cooling_cred_count', 'cooling_credential_count') }}</b><span>冷却</span></div>
-        <div class="metric"><b>{{ credCount(provider, 'unreachable_cred_count', 'unreachable_credential_count') }}</b><span>不可达</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'active_cred_count', 'active_credential_count') }}</b><span>{{ pd('overviewCards.credAvailable') }}</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'healthy_cred_count', 'healthy_credential_count') }}</b><span>{{ pd('overviewCards.credHealthy') }}</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'cooling_cred_count', 'cooling_credential_count') }}</b><span>{{ pd('overviewCards.credCooling') }}</span></div>
+        <div class="metric"><b>{{ credCount(provider, 'unreachable_cred_count', 'unreachable_credential_count') }}</b><span>{{ pd('overviewCards.credUnreachable') }}</span></div>
       </div>
     </div>
     <div class="card">
-      <h4>模型 & 错误</h4>
+      <h4>{{ pd('overviewCards.modelErrors') }}</h4>
       <div class="metric-grid">
-        <div class="metric"><b>{{ provider?.available_model_count ?? 0 }}</b><span>可用模型</span></div>
-        <div class="metric"><b>{{ provider?.unavailable_model_count ?? 0 }}</b><span>不可用</span></div>
-        <div class="metric"><b>{{ fmtPct(provider?.error_rate_24h) }}</b><span>24h 错误率</span></div>
+        <div class="metric"><b>{{ provider?.available_model_count ?? 0 }}</b><span>{{ pd('overviewCards.modelAvailable') }}</span></div>
+        <div class="metric"><b>{{ provider?.unavailable_model_count ?? 0 }}</b><span>{{ pd('overviewCards.modelUnavailable') }}</span></div>
+        <div class="metric"><b>{{ fmtPct(provider?.error_rate_24h) }}</b><span>{{ pd('overviewCards.errorRate24h') }}</span></div>
       </div>
     </div>
   </div>

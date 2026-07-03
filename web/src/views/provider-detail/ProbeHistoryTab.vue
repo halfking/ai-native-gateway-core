@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getProviderProbeHistory,
   getProviderProbeStates,
@@ -7,15 +8,16 @@ import {
   type ProbeRun,
   type ProbeState,
 } from '../../api'
+import { useFormat } from '../../i18n/useFormat'
 
 const props = defineProps<{ providerId: number }>()
-
-// `open-models-tab` is fired when the user clicks the inline link to jump
-// from a `endpoint_id_required` probe error to the Models tab drawer.
-// The parent (ProviderDetailView) listens and switches tab + opens drawer.
 const emit = defineEmits<{
   (e: 'open-models-tab', payload: { credential_id: number; raw_model_name: string }): void
 }>()
+
+const { t: td } = useI18n()
+const pp = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.probe.${k}` as never, params as never)
+const { fmtDateTime } = useFormat()
 
 const runs = ref<ProbeRun[]>([])
 const states = ref<ProbeState[]>([])
@@ -25,23 +27,23 @@ const statusFilter = ref<string>('')
 const stateFilter = ref<string>('')
 const triggering = ref<Set<string>>(new Set())
 
-const statusOptions = [
-  { value: '', label: '全部' },
-  { value: 'ok', label: '成功' },
-  { value: 'http_4xx', label: '客户端错误 (4xx)' },
-  { value: 'http_5xx', label: '服务端错误 (5xx)' },
-  { value: 'network', label: '网络错误' },
-  { value: 'auth', label: '鉴权错误' },
-  { value: 'skipped', label: '已跳过' },
-]
+const statusOptions = computed(() => [
+  { value: '', label: pp('statusOptions.all') },
+  { value: 'ok', label: pp('statusOptions.ok') },
+  { value: 'http_4xx', label: pp('statusOptions.http4xx') },
+  { value: 'http_5xx', label: pp('statusOptions.http5xx') },
+  { value: 'network', label: pp('statusOptions.network') },
+  { value: 'auth', label: pp('statusOptions.auth') },
+  { value: 'skipped', label: pp('statusOptions.skipped') },
+])
 
-const stateOptions = [
-  { value: '', label: '全部状态' },
-  { value: 'unknown', label: '未知' },
-  { value: 'recovering', label: '探测中' },
-  { value: 'healthy_confirmed', label: '已恢复' },
-  { value: 'broken_confirmed', label: '确认失败' },
-]
+const stateOptions = computed(() => [
+  { value: '', label: pp('stateOptions.all') },
+  { value: 'unknown', label: pp('stateOptions.unknown') },
+  { value: 'recovering', label: pp('stateOptions.recovering') },
+  { value: 'healthy_confirmed', label: pp('stateOptions.healthyConfirmed') },
+  { value: 'broken_confirmed', label: pp('stateOptions.brokenConfirmed') },
+])
 
 const RequiredConsensus = 3
 
@@ -58,11 +60,10 @@ async function load() {
         state: stateFilter.value || undefined,
       }),
     ])
-    // Go nil slice JSON-encodes as null — always coerce to array.
     runs.value = r.runs ?? []
     states.value = s.states ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : pp('loadFailed')
   } finally {
     loading.value = false
   }
@@ -75,7 +76,7 @@ async function trigger(credentialId: number, rawModel: string) {
     await triggerProviderProbe(props.providerId, credentialId, rawModel)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '触发失败'
+    error.value = e instanceof Error ? e.message : pp('triggerFailed')
   } finally {
     triggering.value.delete(key)
   }
@@ -103,23 +104,23 @@ function consensusBadge(s: string) {
 }
 
 function consensusLabel(s: string) {
-  const hit = stateOptions.find(o => o.value === s)
+  const hit = stateOptions.value.find(o => o.value === s)
   return hit?.label ?? s
 }
 
 function fmtTime(iso: string | null | undefined) {
   if (!iso) return '—'
-  return new Date(iso).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' })
+  return fmtDateTime(iso)
 }
 
 function fmtDelta(iso: string) {
   const ms = new Date(iso).getTime() - Date.now()
-  if (ms <= 0) return '即将'
+  if (ms <= 0) return pp('deltaNow')
   const mins = Math.round(ms / 60000)
-  if (mins < 60) return `${mins} 分钟后`
+  if (mins < 60) return pp('deltaMinutes', { n: mins })
   const hrs = Math.round(mins / 60)
-  if (hrs < 24) return `${hrs} 小时后`
-  return `${Math.round(hrs / 24)} 天后`
+  if (hrs < 24) return pp('deltaHours', { n: hrs })
+  return pp('deltaDays', { n: Math.round(hrs / 24) })
 }
 
 watch(() => props.providerId, load, { immediate: true })
@@ -130,36 +131,36 @@ watch(stateFilter, load)
 <template>
   <div class="probe-history">
     <div class="consensus-banner">
-      <strong>共识机制</strong>
-      <span>连续 {{ RequiredConsensus }} 次成功 → 标记为已恢复 · 连续 {{ RequiredConsensus }} 次失败 → 确认失败（停止探测）</span>
-      <span class="banner-muted">回退间隔：1m → 5m → 15m → 60m（逐级）</span>
+      <strong>{{ pp('consensusTitle') }}</strong>
+      <span>{{ pp('consensusDesc', { n: RequiredConsensus }) }}</span>
+      <span class="banner-muted">{{ pp('consensusFallback') }}</span>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
     <details open class="probe-section card">
-      <summary>当前共识状态（{{ states.length }}）</summary>
+      <summary>{{ pp('sectionCurrent', { n: states.length }) }}</summary>
       <div class="compact-filter-bar probe-filter-bar">
-        <span class="cf-hint">状态过滤</span>
+        <span class="cf-hint">{{ pp('filterStateTitle') }}</span>
         <select v-model="stateFilter" class="cf-select cf-status">
           <option v-for="o in stateOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
-        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">{{ loading ? '…' : '刷新' }}</button>
+        <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">{{ loading ? pp('refreshLoading') : pp('refresh') }}</button>
       </div>
 
       <div class="table-wrap">
         <table v-if="states.length > 0" class="data-table probe-table">
           <thead>
             <tr>
-              <th>凭据</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>连续成功</th>
-              <th>连续失败</th>
-              <th>总尝试</th>
-              <th>上次结果</th>
-              <th>下次探测</th>
-              <th>状态变更于</th>
+              <th>{{ pp('table.credential') }}</th>
+              <th>{{ pp('table.model') }}</th>
+              <th>{{ pp('table.state') }}</th>
+              <th>{{ pp('table.consecutiveOk') }}</th>
+              <th>{{ pp('table.consecutiveFail') }}</th>
+              <th>{{ pp('table.total') }}</th>
+              <th>{{ pp('table.lastResult') }}</th>
+              <th>{{ pp('table.nextProbe') }}</th>
+              <th>{{ pp('table.stateChangedAt') }}</th>
               <th></th>
             </tr>
           </thead>
@@ -180,39 +181,39 @@ watch(stateFilter, load)
                   :disabled="triggering.has(`${s.credential_id}:${s.raw_model_name}`)"
                   @click="trigger(s.credential_id, s.raw_model_name)"
                 >
-                  {{ triggering.has(`${s.credential_id}:${s.raw_model_name}`) ? '…' : '立即探测' }}
+                  {{ triggering.has(`${s.credential_id}:${s.raw_model_name}`) ? pp('actionLoading') : pp('actionTrigger') }}
                 </button>
               </td>
             </tr>
           </tbody>
         </table>
-        <div v-else-if="!loading" class="empty-hint">暂无共识状态记录</div>
+        <div v-else-if="!loading" class="empty-hint">{{ pp('emptyStates') }}</div>
       </div>
     </details>
 
     <details class="probe-section card">
-      <summary>探针历史记录（{{ runs.length }}）</summary>
+      <summary>{{ pp('sectionHistory', { n: runs.length }) }}</summary>
       <div class="compact-filter-bar probe-filter-bar">
-        <span class="cf-hint">状态过滤</span>
+        <span class="cf-hint">{{ pp('filterStateTitle') }}</span>
         <select v-model="statusFilter" class="cf-select probe-status-select">
           <option v-for="o in statusOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
-        <span class="cf-meta">最近 100 条 · scheduler 自动 / manual 手动</span>
+        <span class="cf-meta">{{ pp('historyMeta') }}</span>
       </div>
 
       <div class="table-wrap">
         <table v-if="runs.length > 0" class="data-table probe-table">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>凭据</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>HTTP</th>
-              <th>错误</th>
-              <th>延迟</th>
-              <th>状态变化</th>
-              <th>触发</th>
+              <th>{{ pp('table.time') }}</th>
+              <th>{{ pp('table.credential') }}</th>
+              <th>{{ pp('table.model') }}</th>
+              <th>{{ pp('stateCol') }}</th>
+              <th>{{ pp('table.http') }}</th>
+              <th>{{ pp('table.error') }}</th>
+              <th>{{ pp('table.latency') }}</th>
+              <th>{{ pp('table.stateChange') }}</th>
+              <th>{{ pp('table.triggeredBy') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -224,16 +225,14 @@ watch(stateFilter, load)
               <td>{{ r.http_status ?? '—' }}</td>
               <td class="err-cell">
                 <template v-if="r.error_code === 'endpoint_id_required'">
-                  <span class="badge badge-amber">需配置 endpoint ID</span>
+                  <span class="badge badge-amber">{{ pp('endpointIdBadge') }}</span>
                   <div class="cell-muted err-msg">
-                    此模型（如火山方舟 minimax-m3 / glm-5.1）必须用 deployment endpoint ID
-                    （如 <code>ep-XXXXXXXX</code>）调用，而非原始模型名。
-                    请前往
+                    {{ pp('endpointIdDetail') }}
                     <button
                       type="button"
                       class="link-btn"
                       @click="emit('open-models-tab', { credential_id: r.credential_id, raw_model_name: r.raw_model_name })"
-                    >模型清单 → 编辑 outbound_model_name</button>
+                    >{{ pp('endpointIdLink') }}</button>
                   </div>
                 </template>
                 <template v-else>
@@ -247,7 +246,7 @@ watch(stateFilter, load)
             </tr>
           </tbody>
         </table>
-        <div v-else-if="!loading" class="empty-hint">暂无测试记录</div>
+        <div v-else-if="!loading" class="empty-hint">{{ pp('emptyHistory') }}</div>
       </div>
     </details>
   </div>

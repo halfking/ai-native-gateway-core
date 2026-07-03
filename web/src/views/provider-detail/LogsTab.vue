@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getProviderLogs, getProviderCredentials, type ProviderLogEntry, type ProviderCredential } from '../../api'
 import ModelPicker from '../../components/ModelPicker.vue'
+import { useFormat } from '../../i18n/useFormat'
 
 const props = defineProps<{ providerId: number }>()
+const { t: td } = useI18n()
+const pl = (k: string, params?: Record<string, unknown>): string => td(`providerDetail.logs.${k}` as never, params as never)
+const { fmtDateTime, fmtNumber } = useFormat()
+
 const logs = ref<ProviderLogEntry[]>([])
 const credentials = ref<ProviderCredential[]>([])
 const total = ref(0)
@@ -40,7 +46,7 @@ async function load() {
     logs.value = resp.items
     total.value = resp.total
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : pl('loadFailed')
   } finally {
     loading.value = false
   }
@@ -74,8 +80,8 @@ function credLabel(l: ProviderLogEntry) {
   return l.credential_id != null ? `#${l.credential_id}` : '—'
 }
 
-function fmtTs(ts: string | null) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—' }
-function token(v: number | null | undefined) { return v == null ? '—' : v.toLocaleString() }
+function fmtTs(ts: string | null) { return ts ? fmtDateTime(ts) : '—' }
+function token(v: number | null | undefined) { return v == null ? '—' : fmtNumber(v) }
 
 onMounted(() => { loadCredentials(); load() })
 watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
@@ -84,74 +90,74 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
 <template>
   <div>
     <div class="compact-filter-bar">
-      <span class="cf-hint" title="仅显示经本供应商凭据路由的请求">本供应商</span>
-      <select v-model.number="hours" class="cf-select cf-hours" title="时间范围" @change="search">
-        <option :value="1">1小时</option>
-        <option :value="6">6小时</option>
-        <option :value="24">24小时</option>
-        <option :value="168">7天</option>
+      <span class="cf-hint" :title="pl('filterHintTitle')">{{ pl('filterTitle') }}</span>
+      <select v-model.number="hours" class="cf-select cf-hours" :title="pl('hoursLabel')" @change="search">
+        <option :value="1">{{ pl('hours1') }}</option>
+        <option :value="6">{{ pl('hours6') }}</option>
+        <option :value="24">{{ pl('hours24') }}</option>
+        <option :value="168">{{ pl('hours168') }}</option>
       </select>
       <div class="cf-grow" style="min-width:200px">
         <ModelPicker
           v-model="modelFilter"
-          placeholder="选择模型…"
-          title="筛选供应商日志模型"
+          :placeholder="pl('modelPlaceholder')"
+          :title="pl('modelPickerTitle')"
           @update:model-value="search"
         />
       </div>
-      <select v-model="credentialId" class="cf-select cf-cred" title="凭据" @change="search">
-        <option value="">全部凭据</option>
+      <select v-model="credentialId" class="cf-select cf-cred" :title="pl('credentialTitle')" @change="search">
+        <option value="">{{ pl('credentialAll') }}</option>
         <option v-for="c in credentials" :key="c.id" :value="c.id">
           #{{ c.id }} {{ c.label || '—' }}
         </option>
       </select>
-      <select v-model="successFilter" class="cf-select cf-status" title="结果" @change="search">
-        <option value="all">全部</option>
-        <option value="true">成功</option>
-        <option value="false">失败</option>
+      <select v-model="successFilter" class="cf-select cf-status" :title="pl('credentialTitle')" @change="search">
+        <option value="all">{{ pl('resultAll') }}</option>
+        <option value="true">{{ pl('resultOk') }}</option>
+        <option value="false">{{ pl('resultFail') }}</option>
       </select>
       <input
         v-model="errorKindFilter"
         class="cf-input cf-medium"
-        placeholder="错误类型"
+        :placeholder="pl('errorKindPlaceholder')"
         @keyup.enter="search"
       />
-      <button class="btn btn-primary btn-sm" @click="search" :disabled="loading">{{ loading ? '…' : '查询' }}</button>
-      <button class="btn btn-ghost btn-sm" @click="resetFilters" :disabled="loading">重置</button>
-      <span class="cf-meta">共 {{ total }} 条</span>
+      <button class="btn btn-primary btn-sm" @click="search" :disabled="loading">{{ loading ? pl('searchLoading') : pl('search') }}</button>
+      <button class="btn btn-ghost btn-sm" @click="resetFilters" :disabled="loading">{{ pl('reset') }}</button>
+      <span class="cf-meta">{{ pl('total', { n: total }) }}</span>
     </div>
 
     <div v-if="error" class="alert alert-danger">{{ error }}</div>
 
     <div v-if="total > 50" class="pager">
-      <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">上一页</button>
+      <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">{{ pl('pagerPrev') }}</button>
       <span class="cf-meta">{{ page }} / {{ Math.ceil(total / 50) }}</span>
-      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">下一页</button>
+      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">{{ pl('pagerNext') }}</button>
     </div>
 
     <div class="card" style="overflow-x:auto">
       <table v-if="logs.length" class="data-table logs-table">
         <thead>
           <tr>
-            <th>时间</th>
-            <th>凭据</th>
-            <th>客户端模型</th>
-            <th>出站模型</th>
-            <th>结果</th>
-            <th>错误类型</th>
-            <th>Token (入/出)</th>
-            <th>费用</th>
-            <th>延迟</th>
+            <th>{{ pl('table.time') }}</th>
+            <th>{{ pl('table.credential') }}</th>
+            <th>{{ pl('table.clientModel') }}</th>
+            <th>{{ pl('table.outboundModel') }}</th>
+            <th>{{ pl('table.result') }}</th>
+            <th>{{ pl('table.errorKind') }}</th>
+            <th>{{ pl('table.tokens') }}</th>
+            <th>{{ pl('table.cost') }}</th>
+            <th>{{ pl('table.latency') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(l, i) in logs" :key="l.request_id || i">
             <td>{{ fmtTs(l.ts) }}</td>
-            <td class="cell-muted" :title="l.credential_id != null ? `凭据 #${l.credential_id}` : ''">{{ credLabel(l) }}</td>
+            <td class="cell-muted" :title="l.credential_id != null ? pl('credentialTitleAttr', { id: l.credential_id }) : ''">{{ credLabel(l) }}</td>
             <td><code>{{ l.client_model || '—' }}</code></td>
             <td><code>{{ l.outbound_model || '—' }}</code></td>
             <td>
-              <span class="badge" :class="l.success ? 'badge-green' : 'badge-red'">{{ l.success ? 'OK' : 'FAIL' }}</span>
+              <span class="badge" :class="l.success ? 'badge-green' : 'badge-red'">{{ l.success ? pl('resultOk') : pl('resultFail') }}</span>
             </td>
             <td class="cell-muted">{{ l.error_kind || '—' }}</td>
             <td>{{ token(l.prompt_tokens) }} / {{ token(l.completion_tokens) }}</td>
@@ -160,13 +166,13 @@ watch(() => props.providerId, () => { loadCredentials(); resetFilters() })
           </tr>
         </tbody>
       </table>
-      <div v-if="!loading && logs.length === 0" class="empty-hint">该时间范围内暂无本供应商请求日志</div>
+      <div v-if="!loading && logs.length === 0" class="empty-hint">{{ pl('empty') }}</div>
     </div>
 
     <div v-if="total > 50" class="pager">
-      <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">上一页</button>
+      <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="page--; load()">{{ pl('pagerPrev') }}</button>
       <span class="cf-meta">{{ page }} / {{ Math.ceil(total / 50) }}</span>
-      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">下一页</button>
+      <button class="btn btn-ghost btn-sm" :disabled="page >= Math.ceil(total / 50)" @click="page++; load()">{{ pl('pagerNext') }}</button>
     </div>
   </div>
 </template>

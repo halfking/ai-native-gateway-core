@@ -15,13 +15,9 @@ export interface Provider {
   catalog_code: string
   display_name: string
   enabled: boolean
-  /**
-   * manual_disabled: 通过 /api/providers/{id}/disable 接口手工禁用
-   * （区别于 enabled，后者是 toggleProvider 切换的开关）。
-   * 后端 /providers 列表在选择 health_status=healthy（"可用"）筛选时
-   * 会把 enabled=false 或 manual_disabled=true 的供应商排除掉，
-   * 与路由层 (v.is_routable) 的语义保持一致。
-   */
+  // 2026-07-03: surfaced in /api/providers so the list view can render a
+  // "manual disabled" badge and filter manually-disabled rows out of the
+  // default "healthy" chip.
   manual_disabled?: boolean
   base_url: string | null
   header_profile_code?: string | null
@@ -31,7 +27,7 @@ export interface Provider {
   warning_credential_count?: number
   unreachable_credential_count?: number
   free_model_count?: number
-  health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
+  health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable' | 'manual_disabled'
   health_checked_at?: string | null
   created_at: string
   // Optional fields populated by /api/providers/.../{id} (ProviderDetail)
@@ -40,6 +36,19 @@ export interface Provider {
   protocol?: string | null
   category?: string | null
   vendor_name?: string | null
+  // 2026-07-03 v738: routability is the orthogonal dimension to
+  // health_status. A provider can have healthy credentials but still
+  // be unavailable (all credentials in quota_exhausted state, or all
+  // models filtered out by plan_type/billing_mode), or no models at
+  // all (catalog_provider with no model_offer rows yet). The /providers
+  // page's "可用 / 不可用 / 无模型 / 已禁用" chips filter on this field.
+  routability?: 'available' | 'unavailable' | 'no_models' | 'manual_disabled'
+  // routable_binding_count and total_binding_count back the routability
+  // computation on the server side. The view
+  // v_routable_credential_models.is_routable drives these. The frontend
+  // can use them to render the per-provider badge breakdown if needed.
+  routable_binding_count?: number
+  total_binding_count?: number
 }
 
 export interface CredentialCheckResult {
@@ -83,11 +92,32 @@ export interface DiagnoseProviderResponse {
   results: CredentialCheckResult[]
 }
 
-export function getProviders(params?: { search?: string; health_status?: string; has_free_model?: boolean }) {
+export function getProviders(params?: {
+  search?: string
+  health_status?: string
+  // 2026-07-03 v738: routability filter for the "可用/不可用/无模型/已禁用"
+  // chip on the /providers page. Maps 1:1 to the routability field on
+  // the Provider interface.
+  routability?: 'available' | 'unavailable' | 'no_models' | 'manual_disabled' | 'all'
+  has_free_model?: boolean
+  // Four-state (2026-07-03 v738): "all" / "false" / "true" / "only".
+  // `boolean` is kept for backward-compat with the existing 0.7 frontend
+  // but new code should pass the four-state string to avoid the
+  // ambiguous true=only/false=include/missing=exclude case.
+  manual_disabled?: boolean | 'all' | 'true' | 'false' | 'only'
+}) {
   const query = new URLSearchParams()
   if (params?.search) query.set('search', params.search)
   if (params?.health_status && params.health_status !== 'all') query.set('health_status', params.health_status)
+  if (params?.routability && params.routability !== 'all') query.set('routability', params.routability)
   if (params?.has_free_model != null) query.set('has_free_model', String(params.has_free_model))
+  if (params?.manual_disabled != null) {
+    const v = params.manual_disabled
+    // Translate boolean to the four-state string so the wire contract
+    // stays explicit. false → "false" (exclude), true → "true" (only).
+    if (typeof v === 'boolean') query.set('manual_disabled', v ? 'true' : 'false')
+    else query.set('manual_disabled', v)
+  }
   const qs = query.toString()
   return req<Provider[]>('GET', `/api/providers${qs ? '?' + qs : ''}`)
 }
@@ -216,6 +246,11 @@ export interface ProviderCredential {
   balance_usd?: number | string | null
   quotas: CredentialQuota[]
   quota_summary: CredentialQuotaSummary | null
+  // v735: route-side plan type. Drives v_routable_credential_models
+  // rule 8 (plan_type ↔ cmb.billing_mode parity). Editable via the
+  // /providers/{id} → creds drawer. NULL/empty means "no plan, behaves
+  // like 'token'" for routing purposes.
+  plan_type?: string | null
 }
 
 export interface CredentialUsage {
@@ -236,7 +271,15 @@ export function getProviderCredentials(providerId: number) {
   return req<ProviderCredential[]>('GET', `/api/providers/${providerId}/credentials`)
 }
 
-export function addCredential(providerId: number, data: { api_key: string; label?: string }) {
+export function addCredential(
+  providerId: number,
+  data: {
+    api_key: string
+    label?: string
+    concurrency_limit?: number | null
+    fp_slot_limit?: number | null
+  },
+) {
   return req<{ id: number }>('POST', `/api/providers/${providerId}/credentials`, data)
 }
 
@@ -252,6 +295,8 @@ export function updateCredential(providerId: number, credId: number, data: Parti
   effective_at: string | null
   expires_at: string | null
   balance_usd: number | null
+  // v735: route-side plan. Empty string clears (DB NULL).
+  plan_type: string | null
   tags: string[]
   notes: string
 }>) {
@@ -283,10 +328,19 @@ export interface BackgroundTask {
   id: number
   task_type: string
   status: 'running' | 'succeeded' | 'failed'
+  provider_id?: number
+  credential_id?: number
+  request?: any
   result?: any
   error?: string
   started_at: string
   finished_at?: string
+  id_inconsistency?: {
+    top_provider_id?: number | null
+    top_credential_id?: number | null
+    request_provider_id?: number | null
+    request_credential_id?: number | null
+  }
 }
 
 export function getTask(taskId: number) {
@@ -480,6 +534,7 @@ export function startCredentialCheck(providerId: number, credId: number) {
 export async function checkCredential(providerId: number, credId: number) {
   const { task_id } = await startCredentialCheck(providerId, credId)
   const task = await pollTask(task_id)
+  assertTaskMatches(task, providerId, credId)
   if (task.status === 'failed') {
     throw new Error(task.error || 'credential check failed')
   }
@@ -488,7 +543,28 @@ export async function checkCredential(providerId: number, credId: number) {
 
 export async function checkCredentialHealth(providerId: number, credId: number) {
   const { task_id } = await startCredentialCheck(providerId, credId)
-  return pollTask(task_id)
+  const task = await pollTask(task_id)
+  assertTaskMatches(task, providerId, credId)
+  return task
+}
+
+/**
+ * Defensive guard: the polled task row must refer to the same
+ * (providerId, credId) we just triggered. If the server's row has different
+ * IDs we are looking at someone else's task (DB drift, a stale insert path,
+ * or a UI race). Surface that explicitly instead of silently swallowing it.
+ */
+function assertTaskMatches(task: BackgroundTask, providerId: number, credId: number) {
+  const tp = task.provider_id
+  const tc = task.credential_id
+  if (tp == null || tc == null) return
+  if (tp === providerId && tc === credId) return
+  const msg =
+    `[check] task ${task.id} refers to provider=${tp} credential=${tc} ` +
+    `but caller requested provider=${providerId} credential=${credId}; ` +
+    `treating as a stale/foreign task`
+  console.error(msg, task)
+  throw new Error(msg)
 }
 
 export function batchRecoverCredentials(providerId: number) {
@@ -543,6 +619,34 @@ export function getCredentialFpSlotStats(providerId: number, credId: number) {
   )
 }
 
+// V3.1 (2026-06-26): per-slot fingerprint + inflight details for the
+// credential-detail "双层槽位信息" panel. Backed by
+// admin/credential_slot_info.go handler /api/credentials/{id}/slots.
+export interface SlotInfoV3 {
+  index: number
+  holder: string
+  ttl_seconds: number
+  expired: boolean
+  inflight: number
+  pin_holder: string
+  pin_ttl_seconds: number
+  memory_mode: boolean
+}
+
+export interface SlotInfoResponse {
+  credential_id: number
+  enabled: boolean
+  fp_slot_limit: number | null
+  total_slots: number
+  active_slots: number
+  total_inflight: number
+  slots: SlotInfoV3[]
+}
+
+export function getCredentialSlots(credId: number) {
+  return req<SlotInfoResponse>('GET', `/api/credentials/${credId}/slots`)
+}
+
 export function forceRecoverCredential(credId: number) {
   return req<{ triggered: boolean; credential_id: number }>(
     'POST', `/api/providers/credentials/${credId}/force-recover`
@@ -565,7 +669,26 @@ export function getDiagnoseResult(providerId: number) {
 
 export async function diagnoseProvider(providerId: number, opts: { force?: boolean } = {}) {
   const { task_id } = await startDiagnose(providerId, opts)
-  return pollTask(task_id)
+  const task = await pollTask(task_id)
+  assertProviderMatches(task, providerId)
+  return task
+}
+
+/**
+ * Same defensive guard as assertTaskMatches but for provider-only tasks
+ * (diagnose). If the polled task row belongs to a different provider, fail
+ * loudly instead of silently reporting wrong-provider results.
+ */
+function assertProviderMatches(task: BackgroundTask, providerId: number) {
+  const tp = task.provider_id
+  if (tp == null) return
+  if (tp === providerId) return
+  const msg =
+    `[diagnose] task ${task.id} refers to provider=${tp} ` +
+    `but caller requested provider=${providerId}; ` +
+    `treating as a stale/foreign task`
+  console.error(msg, task)
+  throw new Error(msg)
 }
 
 export function queryProviderModels(providerId: number, body: {
