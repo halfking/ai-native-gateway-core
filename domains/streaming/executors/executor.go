@@ -1685,6 +1685,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 	if coolMins <= 0 {
 		coolMins = 2
 	}
+	recoverAt := time.Now().Add(time.Duration(coolMins) * time.Minute)
 
 	var recentCount int
 	err := e.DB.Pool().QueryRow(ctx, `
@@ -1710,7 +1711,9 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		UPDATE credential_model_bindings cmb
 		SET available = FALSE,
 		    unavailable_reason = 'mnf_cooling',
-		    unavailable_at = now()
+		    unavailable_at = now(),
+		    unavailable_recover_at = $3,
+		    updated_at = now()
 		FROM model_offers mo
 		WHERE mo.id = cmb.provider_model_id
 		  AND cmb.credential_id = $1
@@ -1718,7 +1721,7 @@ func (e *Executor) coolBindingOnMnfStreak(ctx context.Context, credentialID int,
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-	`, credentialID, rawModel)
+	`, credentialID, rawModel, recoverAt)
 	if err != nil {
 		slog.Warn("cool_binding_mnf: update failed",
 			"credential_id", credentialID,
