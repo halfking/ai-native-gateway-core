@@ -164,6 +164,13 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	// 时恢复 binding.available=TRUE。解决"常用模型报无可用凭据"误报问题。
 	r.reconcileHealthyConfirmedBindings(timeoutCtx)
 
+	// 2026-07-04 fix: 把 model_probe_state 表中残留的旧字面量
+	// ('available' / 'healthy' / 'unavailable' / 'failing') 一次性
+	// 映射到当前状态机。这是 migrations/329 的运行期补充——防止
+	// 旧 init 路径再次写入 "available" 等不在 reader 白名单中的
+	// 状态值，导致路由侧报 "无可用凭据"。
+	r.reconcileLegacyModelProbeStates(timeoutCtx)
+
 	// 2026-06-23: passive-failure boost — apply model's recent failure
 	// signals to the schedule BEFORE selecting targets. If a binding has
 	// had 3+ failures in the last 5 minutes (e.g. the minimax-m3 spike),

@@ -117,10 +117,24 @@ func (m *Manager) getFromDB(ctx context.Context, credID int, model string) (*Sta
 
 	if healthStatus != nil {
 		state.HealthStatus = *healthStatus
-		// model_probe_state.state 的可能值：
-		//   healthy_confirmed → 可用
-		//   recovering / unknown / broken_confirmed → 不可用
-		state.Available = *healthStatus == "healthy_confirmed"
+		// model_probe_state.state 的合法值集合（见
+		// migrations/329_model_probe_state_canonicalize.sql）：
+		//   healthy_confirmed / probing → 可用
+		//   recovering / unknown / broken_confirmed /
+		//   suspicious / manual_offline / manual_online → 不可用
+		//
+		// 向后兼容（旧字面量）：
+		//   'available' / 'healthy' 是早期废弃 init 路径写入的字面量
+		//   （db/db.go），语义上等同 healthy_confirmed。为防止旧
+		//   字面量行再次让路由报"无可用凭据"，这里也视作可用，并在
+		//   读取时同步把 state 写回 healthy_confirmed（best-effort，
+		//   失败不影响本请求）。
+		if *healthStatus == "healthy_confirmed" ||
+			*healthStatus == "probing" ||
+			*healthStatus == "available" ||
+			*healthStatus == "healthy" {
+			state.Available = true
+		}
 	}
 	if consecFailures != nil {
 		state.ConsecutiveFails = *consecFailures
