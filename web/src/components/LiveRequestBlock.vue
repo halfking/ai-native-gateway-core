@@ -288,17 +288,17 @@ function onClick() {
 }
 
 .live-block__vendor {
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: 0.5px;
-  color: var(--text, #e6edf3);
+  font-size: 9px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  text-transform: uppercase;
   width: 100%;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  padding: 0 2px;
 }
 
 /* Error-kind label takes the model line in failure mode. Display
@@ -320,10 +320,10 @@ function onClick() {
 }
 
 .live-block__provider {
-  font-size: 8px;
+  font-size: 7px;
   line-height: 1.1;
   font-weight: 600;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.3px;
   color: var(--muted, #8b949e);
   text-transform: uppercase;
   width: 100%;
@@ -332,7 +332,7 @@ function onClick() {
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0.85;
-  padding-left: 4px;
+  padding-left: 2px;
 }
 
 .live-block__latency {
