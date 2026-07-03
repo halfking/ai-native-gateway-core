@@ -293,26 +293,27 @@ function onClick() {
   line-height: 1.1;
   letter-spacing: 0.5px;
   color: var(--text, #e6edf3);
-  max-width: 100%;
+  width: 100%;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-/* Error-kind label takes the model line in failure mode. Same
- * geometry as __vendor, but redder and uppercase so the failure
- * mode reads at a glance. The text-shadow keeps it legible on
- * top of the translucent failure background. */
+/* Error-kind label takes the model line in failure mode. Display
+ * the full error_kind string with ellipsis truncation so operators
+ * see complete diagnostic info without hovering. */
 .live-block__error-kind {
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1.1;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
   text-transform: uppercase;
   color: #fecaca;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
-  max-width: 100%;
+  width: 100%;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -325,11 +326,13 @@ function onClick() {
   letter-spacing: 0.6px;
   color: var(--muted, #8b949e);
   text-transform: uppercase;
-  max-width: 100%;
+  width: 100%;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   opacity: 0.85;
+  padding-left: 4px;
 }
 
 .live-block__latency {
