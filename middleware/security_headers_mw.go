@@ -56,7 +56,7 @@ func (m *SecurityHeadersMiddleware) Wrap(next http.Handler) http.Handler {
 		if isHTML {
 			h.Set("Content-Security-Policy",
 				"default-src 'self'; "+
-					"script-src 'self'; "+
+					"script-src 'self' 'unsafe-eval'; "+ // 2026-07-03: allow vue-i18n runtime message compilation
 					"style-src 'self' 'unsafe-inline'; "+
 					"img-src 'self' data: https:; "+
 					"connect-src 'self'; "+
