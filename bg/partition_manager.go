@@ -196,21 +196,24 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_request_wal_partition", label: "request_wal"},
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
+		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"}, // Migration 330
 	}
 }
 
 // archiveSpecs returns the archive_<table>() functions we invoke on
 // day-1..3 of each month, paired with the day-of-month they run on.
-// Two tables share day 1 (request_logs + routing_decision_log) because
-// they are similar in size and the schema-aware columnar inserts run
-// quickly. credential_model_index gets its own day because it carries
-// a 7-day cutoff (data younger than 7d is preserved in the main
-// table, so it has the most rows to scan).
+//
+// Migration 331 (2026-07-04): Removed archive_request_logs and archive_request_wal
+// to simplify architecture. Archive tables had minimal storage footprint (~30 MB/partition)
+// and no application code queried them. Old partitions are now dropped directly when
+// no longer needed, or retained longer in main table if required.
+//
+// Remaining archive functions:
+//   - routing_decision_log: lightweight archive
+//   - credential_model_index: 7-day cutoff archive
 func archiveSpecs() []archiveSpec {
 	return []archiveSpec{
-		{day: 1, fnName: "archive_request_logs", label: "request_logs"},
 		{day: 1, fnName: "archive_routing_decision_log", label: "routing_decision_log"},
-		{day: 2, fnName: "archive_request_wal", label: "request_wal"},
 		{day: 3, fnName: "archive_credential_model_index", label: "credential_model_index"},
 	}
 }

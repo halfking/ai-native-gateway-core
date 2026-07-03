@@ -19,21 +19,12 @@ type partitionedTableConfig struct {
 }
 
 // Supported partitioned tables for columnar archive management
+//
+// Migration 331 (2026-07-04): Removed request_logs_archive and request_wal_archive
+// to simplify architecture. Archive tables had minimal storage footprint and no
+// application code queried them. Old partitions are now dropped directly or retained
+// longer in main table if needed.
 var partitionedTables = []partitionedTableConfig{
-	{
-		TableName:        "request_logs",
-		ArchiveTableName: "request_logs_archive",
-		PartitionColumn:  "ts",
-		Description:      "请求日志表（主表）",
-		HasArchiveFunc:   true,
-	},
-	{
-		TableName:        "request_wal",
-		ArchiveTableName: "request_wal_archive",
-		PartitionColumn:  "created_at",
-		Description:      "请求预写日志表",
-		HasArchiveFunc:   true, // Added in migration 305
-	},
 	{
 		TableName:        "routing_decision_log",
 		ArchiveTableName: "routing_decision_log_archive",
