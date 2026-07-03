@@ -73,15 +73,15 @@ const idleLabel = computed(() => {
 // Line 1: HH:MM start time (locale-aware).
 const timeLabel = computed(() => timeHHMM(props.request.ts, locale.value))
 
-// Line 2: model-family code (success / in_progress) or the
+// Line 2: full model name (success / in_progress) or the
 // coarse error_kind label (failure). When the failure has no
-// recognisable error_kind, we fall back to the family code so the
+// recognisable error_kind, we fall back to the model name so the
 // tile still shows the model that was attempted.
 const errorLabel = computed(() => errorKindLabel(props.request.error_kind))
-const vendorLabel = computed(() => modelShortLabel(props.request.model))
+const vendorLabel = computed(() => props.request.model || '???')
 
-// Line 3: provider code (small, muted). Always shown.
-const providerLabel = computed(() => providerShortLabel(props.request.provider_code))
+// Line 3: full provider name (small, muted). Always shown.
+const providerLabel = computed(() => props.request.provider_code || '???')
 
 // Line 4: latency.
 const latencyText = computed(() =>
