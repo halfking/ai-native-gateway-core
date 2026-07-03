@@ -467,9 +467,7 @@ func (e *Executor) executeOpenAI(
 					}
 				} else if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
-				} else if errKind == errorsx.KindConcurrent {
-					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindConcurrent)
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
+				} else if errKind == errorsx.KindConcurrent {					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.RawModel, errorsx.KindConcurrent,
 						fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
 					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",

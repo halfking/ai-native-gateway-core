@@ -1159,6 +1159,7 @@ func main() {
 	var callHistoryAggregator *bg.CallHistoryAggregator
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
+	var autoRouteListener *bg.AutoRouteRealtimeListener
 	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
 	var unifiedProbe *bg.UnifiedProbeScheduler
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
@@ -1516,7 +1517,7 @@ func main() {
 			// v2.0.1: realtime listener for sub-second index refresh
 			// (PG LISTEN/NOTIFY trigger on credential_model_bindings /
 			// credentials / api_keys / model_offers).
-			autoRouteListener := bg.NewAutoRouteRealtimeListener(dbConn.Pool(), autoIndexRefresher)
+			autoRouteListener = bg.NewAutoRouteRealtimeListener(dbConn.Pool(), autoIndexRefresher)
 			autoRouteListener.Start(context.Background())
 
 			// v2.1 (P7.5): TuningViewRefresher keeps the materialised
@@ -2182,6 +2183,12 @@ func main() {
 	}
 	if autoIndexRefresher != nil {
 		autoIndexRefresher.Stop()
+	if autoRouteListener != nil {
+		autoRouteListener.Stop()
+	}
+	if healthAutoRecover != nil {
+		healthAutoRecover.Stop()
+	}
 	}
 	// Drain the Memora sink queue on shutdown so in-flight writes
 	// are not lost. Bounded to 5s so shutdown is not held hostage
