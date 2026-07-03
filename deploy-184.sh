@@ -48,7 +48,7 @@ log_step() {
 
 # ==================== 步骤1: 检查未提交改动 ====================
 check_uncommitted_changes() {
-    log_step "步骤 1/8: 检查未提交改动"
+    log_step "步骤 1/10: 检查未提交改动"
     
     if ! git diff-index --quiet HEAD --; then
         log_warn "检测到未提交的改动:"
@@ -71,7 +71,7 @@ check_uncommitted_changes() {
 
 # ==================== 步骤2: 获取版本信息 ====================
 get_version_info() {
-    log_step "步骤 2/8: 获取版本信息"
+    log_step "步骤 2/10: 获取版本信息"
     
     # 从 git 获取最近的 tag 作为版本号
     GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
@@ -122,7 +122,7 @@ EOF
 
 # ==================== 步骤3: 构建Docker镜像 ====================
 build_docker_image() {
-    log_step "步骤 3/8: 构建Docker镜像"
+    log_step "步骤 3/10: 构建Docker镜像"
     
     log_info "开始构建镜像 ${IMAGE_NAME}:${IMAGE_TAG}..."
     
@@ -141,7 +141,7 @@ build_docker_image() {
 
 # ==================== 步骤4: 推送镜像 ====================
 push_docker_image() {
-    log_step "步骤 4/8: 推送镜像到Registry"
+    log_step "步骤 4/10: 推送镜像到Registry"
     
     # 推送到内部 registry
     log_info "推送到内部 registry: ${REGISTRY_INTERNAL}"
@@ -156,24 +156,75 @@ push_docker_image() {
     log_success "已推送到 ${REGISTRY_LOCAL}"
 }
 
-# ==================== 步骤5: 更新K8s部署 ====================
+# ==================== 步骤5: 显示部署中页面 ====================
+show_deploying_page() {
+    log_step "步骤 5/10: 显示部署中页面"
+
+    DEPLOY_MSG="${DEPLOY_MSG:-系统升级与优化}"
+    DEPLOY_ETA="${DEPLOY_ETA:-约 1-2 分钟}"
+
+    if [[ ! -f web/dist/index-deploying.html ]]; then
+        log_warn "web/dist/index-deploying.html 不存在，跳过（请确认 SPA 已构建）"
+        return 0
+    fi
+
+    log_info "备份原 index.html..."
+    ssh -p ${SSH_PORT} ${SERVER} bash <<'BACKUP_HTML'
+set -e
+REMOTE_WEB="/opt/llm-gateway-go/web"
+BAK_FILE="${REMOTE_WEB}/index.html.bak.$(date +%s)"
+if [[ -f "${REMOTE_WEB}/index.html" ]]; then
+    cp "${REMOTE_WEB}/index.html" "${BAK_FILE}"
+    echo "Backup: ${BAK_FILE}"
+fi
+BACKUP_HTML
+
+    log_info "上传部署中页面..."
+    scp -P ${SSH_PORT} web/dist/index-deploying.html \
+      ${SERVER}:/opt/llm-gateway-go/web/index.html
+
+    log_success "部署中页面已显示 (msg=${DEPLOY_MSG}, eta=${DEPLOY_ETA})"
+}
+
+# ==================== 步骤6: 更新K8s部署 ====================
 update_k8s_deployment() {
-    log_step "步骤 5/8: 更新Kubernetes部署"
-    
+    log_step "步骤 6/10: 更新Kubernetes部署"
+
     log_info "更新 deployment 镜像..."
     ssh -p ${SSH_PORT} ${SERVER} "kubectl set image deployment/${DEPLOYMENT} \
         llm-gateway-go=${REGISTRY_LOCAL}/${IMAGE_NAME}:${IMAGE_TAG} \
         -n ${NAMESPACE}"
-    
+
     log_info "等待 rolling update 完成..."
     ssh -p ${SSH_PORT} ${SERVER} "kubectl rollout status deployment/${DEPLOYMENT} -n ${NAMESPACE} --timeout=5m"
-    
+
     log_success "Kubernetes 部署更新完成"
 }
 
-# ==================== 步骤6: 健康检查 ====================
+# ==================== 步骤7: 恢复页面 ====================
+restore_normal_page() {
+    log_step "步骤 7/10: 恢复页面"
+
+    log_info "恢复正常的 index.html..."
+    ssh -p ${SSH_PORT} ${SERVER} bash <<'RESTORE_HTML'
+set -e
+REMOTE_WEB="/opt/llm-gateway-go/web"
+BAK_FILE=\$(ls -t \$REMOTE_WEB/index.html.bak.* 2>/dev/null | head -1)
+if [[ -n "\$BAK_FILE" ]]; then
+    cp "\$BAK_FILE" "\$REMOTE_WEB/index.html"
+    echo "Restored from: \$BAK_FILE"
+    rm -f "\$BAK_FILE"
+else
+    echo "No backup found, keeping deploying page"
+fi
+RESTORE_HTML
+
+    log_success "页面已恢复"
+}
+
+# ==================== 步骤8: 健康检查 ====================
 health_check() {
-    log_step "步骤 6/8: 健康检查"
+    log_step "步骤 8/10: 健康检查"
     
     log_info "等待服务就绪..."
     sleep 10
@@ -203,9 +254,9 @@ health_check() {
     fi
 }
 
-# ==================== 步骤7: 清理过期镜像 ====================
+# ==================== 步骤9: 清理过期镜像 ====================
 cleanup_old_images() {
-    log_step "步骤 7/8: 清理过期镜像"
+    log_step "步骤 9/10: 清理过期镜像"
     
     log_info "在184服务器上清理过期镜像（>${OLD_IMAGE_DAYS}天）..."
     
@@ -241,7 +292,7 @@ REMOTE_SCRIPT
 
 # ==================== 步骤8: 生成部署报告 ====================
 generate_report() {
-    log_step "步骤 8/8: 生成部署报告"
+    log_step "步骤 10/10: 生成部署报告"
     
     REPORT_FILE="deployment-report-$(date +%Y%m%d-%H%M%S).md"
     
@@ -315,7 +366,9 @@ main() {
     get_version_info
     build_docker_image
     push_docker_image
+    show_deploying_page
     update_k8s_deployment
+    restore_normal_page
     health_check
     cleanup_old_images
     generate_report
