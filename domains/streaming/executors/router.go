@@ -12,6 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -41,8 +42,11 @@ type Router struct {
 	// always selecting the first candidate in a sorted list.
 	rrCounter atomic.Uint64
 
-	// 新增：状态管理器引用
+	// 新增：状态管理器引用（向后兼容）
 	StateManager credentialstate.StateProvider
+
+	// 新增：URSM统一路由状态管理器
+	URSM *ursm.Manager
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
@@ -55,7 +59,128 @@ func (r *Router) PlanCandidates(
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
-	// 新增：使用状态管理器过滤（如果启用）
+	// 新增：优先使用URSM路由（如果可用）
+	if r.URSM != nil && r.URSM.Enabled() {
+		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
+	}
+
+	// 使用状态管理器过滤（如果启用）
+	var available []provider.Candidate
+	if r.StateManager != nil && r.StateManager.Enabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		available = r.filterAvailableWithStateManager(ctx, candidates)
+	} else {
+		available = filterAvailable(candidates)
+	}
+
+	if len(available) == 0 {
+		// Build a per-reason breakdown so the next "all providers failed at
+		// the same time" outage can be root-caused from this log line alone.
+		reasonCounts := make(map[string]int, 8)
+		var sampleReasons []string
+		for _, c := range candidates {
+			reason := c.UnavailableReason()
+			if reason == "" {
+				reason = "unknown"
+			}
+			reasonCounts[reason]++
+			if len(sampleReasons) < 5 {
+				sampleReasons = append(sampleReasons, fmt.Sprintf(
+					"cred=%d prov=%d reason=%s", c.CredentialID, c.ProviderID, reason,
+				))
+			}
+		}
+		slog.Warn("router: all candidates unavailable",
+			"total", len(candidates),
+			"reasons", reasonCounts,
+			"sample", sampleReasons,
+		)
+		return nil
+	}
+
+	available = r.filterHealthyNodes(available)
+
+	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
+	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
+	round1, round2 := splitByBillingRound(available)
+	ordered := r.planByTier(round1, policy)
+	if len(round2) > 0 {
+		ordered = append(ordered, r.planByTier(round2, policy)...)
+	}
+
+	if stickyCredentialID != nil {
+		ordered = prioritizeSticky(ordered, *stickyCredentialID)
+	}
+
+	if len(egressPreference) > 0 {
+		ordered = applyProtocolAffinity(ordered, egressPreference)
+	}
+
+	return ordered
+}
+
+// planWithURSM 使用URSM路由（新增）
+func (r *Router) planWithURSM(
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	policy *provider.Policy,
+	egressPreference []string,
+) []provider.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// 提取model和sessionID
+	model := candidates[0].RawModel
+	sessionID := "" // TODO: 从context或请求参数中获取
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// 调用URSM获取可用节点
+	nodes, err := r.URSM.GetAvailableNodes(ctx, model, sessionID)
+	if err != nil {
+		slog.Warn("ursm get nodes failed, fallback to legacy",
+			"error", err,
+			"model", model)
+		// 回退到旧逻辑
+		return r.planLegacy(candidates, stickyCredentialID, policy, egressPreference)
+	}
+
+	// 转换RouteNode到Candidate
+	result := make([]provider.Candidate, 0, len(nodes))
+	for _, node := range nodes {
+		// 在原始candidates中找到匹配的Candidate
+		for _, cand := range candidates {
+			if cand.CredentialID == node.CredentialID && cand.RawModel == node.RawModel {
+				result = append(result, cand)
+				break
+			}
+		}
+	}
+
+	// 应用sticky偏好
+	if stickyCredentialID != nil {
+		result = prioritizeSticky(result, *stickyCredentialID)
+	}
+
+	// 应用协议偏好
+	if len(egressPreference) > 0 {
+		result = applyProtocolAffinity(result, egressPreference)
+	}
+
+	return result
+}
+
+// planLegacy 保留旧逻辑（向后兼容）
+func (r *Router) planLegacy(
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	policy *provider.Policy,
+	egressPreference []string,
+) []provider.Candidate {
+	// 使用状态管理器过滤（如果启用）
 	var available []provider.Candidate
 	if r.StateManager != nil && r.StateManager.Enabled() {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -195,6 +320,12 @@ func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 	return out
 }
 
+// DEPRECATED: filterAvailableWithStateManager 将被 URSM.GetAvailableNodes() 替代
+// Replaced by: r.URSM.GetAvailableNodes(ctx, filters)
+// Migration date: 2026-07-03
+// Status: 等待 Router 适配 URSM 完成后删除此方法
+// DO NOT use this method in new code. Use URSM.GetAvailableNodes() instead.
+//
 // filterAvailableWithStateManager 新增：使用状态管理器优先判断可用性
 func (r *Router) filterAvailableWithStateManager(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
 	var out []provider.Candidate

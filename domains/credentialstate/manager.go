@@ -1,3 +1,9 @@
+// DEPRECATED: This file will be moved to _to-be-deprecated/routing-old/credentialstate/
+// Replaced by: domains/ursm/manager.go
+// Migration date: 2026-07-03
+// Status: 等待 Router/Executor 适配 URSM 完成后迁移
+// DO NOT use this package in new code. Use domains/ursm instead.
+
 package credentialstate
 
 import (

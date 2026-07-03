@@ -1,3 +1,9 @@
+// DEPRECATED: This file will be moved to _to-be-deprecated/routing-old/credentialfpslot/
+// Replaced by: domains/ursm/state.go (NodeState 结构和健康状态管理)
+// Migration date: 2026-07-03
+// Status: 等待 Router/Executor 适配 URSM 完成后迁移
+// DO NOT use NodeState from this package in new code. Use domains/ursm.NodeState instead.
+
 package credentialfpslot
 
 import (
