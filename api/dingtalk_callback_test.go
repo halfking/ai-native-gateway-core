@@ -112,7 +112,8 @@ func TestDingTalkCallbackHandler_VerifySignature(t *testing.T) {
 				stringToSign := timestamp + "\n" + appSecret
 				mac := hmac.New(sha256.New, []byte(appSecret))
 				mac.Write([]byte(stringToSign))
-				sign = url.QueryEscape(base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+				// Do not URL-encode here; q.Encode() will handle it automatically
+				sign = base64.StdEncoding.EncodeToString(mac.Sum(nil))
 			}
 
 			// Create request
@@ -138,10 +139,10 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_Success(t *testing.T) {
 	handler := NewDingTalkCallbackHandler(manager, appSecret)
 
 	tests := []struct {
-		name           string
-		result         string
-		expectApprove  bool
-		expectReject   bool
+		name          string
+		result        string
+		expectApprove bool
+		expectReject  bool
 	}{
 		{
 			name:          "approve",
@@ -177,6 +178,7 @@ func TestDingTalkCallbackHandler_HandleApprovalCallback_Success(t *testing.T) {
 			stringToSign := timestamp + "\n" + appSecret
 			mac := hmac.New(sha256.New, []byte(appSecret))
 			mac.Write([]byte(stringToSign))
+			// URL-encode the signature because we're embedding it directly in the URL string
 			sign := url.QueryEscape(base64.StdEncoding.EncodeToString(mac.Sum(nil)))
 
 			// Create HTTP request
