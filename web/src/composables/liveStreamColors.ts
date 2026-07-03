@@ -1,11 +1,22 @@
 // liveStreamColors — single source of truth for swim-lane palette.
+// Model categories are now based on original model creators/vendors for international compatibility.
 
 export const MODEL_COLORS: Record<string, string> = {
-  openai: '#4d8df7',
-  anthropic: '#a379f7',
-  domestic: '#f97316',
-  oss: '#10b981',
-  other: '#8b949e',
+  openai: '#4d8df7',      // OpenAI (GPT, O1, O3, O4)
+  anthropic: '#a379f7',   // Anthropic (Claude)
+  google: '#34a853',      // Google (Gemini, PaLM)
+  alibaba: '#ff6a00',     // Alibaba (Qwen)
+  zhipu: '#5470c6',       // Zhipu (GLM)
+  deepseek: '#9333ea',    // DeepSeek
+  bytedance: '#00d4ff',   // ByteDance (Doubao)
+  baidu: '#2932e1',       // Baidu (ERNIE)
+  moonshot: '#fbbf24',    // Moonshot
+  '01ai': '#ec4899',      // 01.AI (Yi)
+  baichuan: '#10b981',    // Baichuan
+  meta: '#0668e1',        // Meta (Llama)
+  mistral: '#f97316',     // Mistral AI
+  microsoft: '#00a4ef',   // Microsoft (Phi)
+  other: '#8b949e',       // Other/Unknown
 }
 
 export const STATUS_COLORS: Record<string, string> = {
@@ -31,8 +42,18 @@ export const STATUS_BORDER_WIDTHS: Record<string, string> = {
 export const MODEL_FAMILY_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
-  domestic: 'Domestic',
-  oss: 'Open Source',
+  google: 'Google',
+  alibaba: 'Alibaba',
+  zhipu: 'Zhipu',
+  deepseek: 'DeepSeek',
+  bytedance: 'ByteDance',
+  baidu: 'Baidu',
+  moonshot: 'Moonshot',
+  '01ai': '01.AI',
+  baichuan: 'Baichuan',
+  meta: 'Meta',
+  mistral: 'Mistral AI',
+  microsoft: 'Microsoft',
   other: 'Other',
 }
 
