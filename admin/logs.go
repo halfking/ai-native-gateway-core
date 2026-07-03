@@ -587,6 +587,10 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.CompressionStrategy,
 		&detail.CompressionReason,
 		&detail.ParentRequestID,
+		// 2026-07-01: attachment_count (migration 325). Same COALESCE expression
+		// as the list query; re-evaluated here so the detail payload also
+		// exposes the count without forcing the client to parse attachments.
+		&detail.AttachmentCount,
 		&detail.OutboundBody,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,
