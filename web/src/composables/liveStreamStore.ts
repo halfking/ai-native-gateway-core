@@ -155,8 +155,28 @@ function openConnection() {
     liveStreamState.connection = 'unsupported'
     return
   }
+  // Browser EventSource cannot set Authorization headers, and the
+  // project uses HttpOnly cookies that some reverse-proxy / dev
+  // setups do not propagate to the EventSource request (e.g. a
+  // vite dev-server reverse-proxy, or a third-party iframe host).
+  // To stay robust in BOTH the production cookie path and the
+  // legacy api_key path, we promote the admin api_key (read from
+  // localStorage) to a `?token=` query parameter when present.
+  //
+  // The backend (admin/live_stream_sse.go) accepts this only as a
+  // fallback when neither the Bearer header nor the cookie is set,
+  // so the security profile is unchanged.
+  let url = ENDPOINT
   try {
-    es = new EventSource(ENDPOINT, { withCredentials: true })
+    const apiKey = localStorage.getItem('llmgw_api_key')
+    if (apiKey && !apiKey.startsWith('cookie')) {
+      url = `${ENDPOINT}?token=${encodeURIComponent(apiKey)}`
+    }
+  } catch {
+    /* SSR or storage disabled — fall back to cookie auth */
+  }
+  try {
+    es = new EventSource(url, { withCredentials: true })
   } catch (err) {
     console.warn('[liveStream] EventSource construct failed', err)
     liveStreamState.connection = 'closed'
