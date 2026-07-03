@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -197,6 +198,13 @@ func main() {
 		dbConn = nil // Prevent using closed connection pool
 	}
 	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("main: panic during startup", "panic", fmt.Sprintf("%v", r), "stack", string(debug.Stack()))
+			if dbConn != nil {
+				dbConn.Close()
+			}
+			os.Exit(1)
+		}
 		if dbConn != nil {
 			dbConn.Close()
 		}
