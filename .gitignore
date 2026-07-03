@@ -149,3 +149,5 @@ deploy/prod-*.yml
 # .env.*.enc
 deployment-report-*.md
 _to-be-deprecated/
+Dockerfile.web-fix
+web-dist.tar.gz
