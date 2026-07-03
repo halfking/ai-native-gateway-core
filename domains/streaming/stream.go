@@ -259,10 +259,24 @@ func StreamChatWithPendingCapture(
 		if pc != nil {
 			pc.append(firstLine)
 		}
-		safeWriteSSE(w, firstLine)
-		safeFlush(flusher)
-		lastSend = time.Now()
-		chunkCount++ // Count first chunk
+		if safeWriteSSE(w, firstLine) && safeFlush(flusher) {
+			lastSend = time.Now()
+			chunkCount++ // Count first chunk
+			if capture != nil {
+				capture.RecordChunkSent()
+			}
+		} else {
+			// Write failed, client likely disconnected
+			slog.Warn("failed to send first chunk to client")
+			if capture != nil {
+				capture.MarkInterruptedWithReason("client_write_failed")
+			}
+			outcome.Interrupted = true
+			outcome.Reason = "client_write_failed"
+			outcome.ChunkCount = 0
+			outcome.Resumable = false
+			return outcome
+		}
 	}
 
 	// ── Main streaming loop with keep-alive ─────────────────────────
@@ -418,10 +432,24 @@ func StreamChatWithPendingCapture(
 			}
 		}
 
-		safeWriteSSE(w, line)
-		safeFlush(flusher)
-		lastSend = time.Now()
-		chunkCount++ // Track chunks sent
+		if safeWriteSSE(w, line) && safeFlush(flusher) {
+			lastSend = time.Now()
+			chunkCount++ // Track chunks sent
+			if capture != nil {
+				capture.RecordChunkSent()
+			}
+		} else {
+			// Write failed, client likely disconnected
+			slog.Warn("failed to send chunk to client", "chunk_num", chunkCount)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("client_write_failed")
+			}
+			outcome.Interrupted = true
+			outcome.Reason = "client_write_failed"
+			outcome.ChunkCount = chunkCount
+			outcome.Resumable = false
+			return outcome
+		}
 	}
 }
 
@@ -538,23 +566,32 @@ func extractModelFromChunk(line string) string {
 	return ""
 }
 
-func safeFlush(flusher http.Flusher) {
+func safeFlush(flusher http.Flusher) bool {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Debug("flush after close", "recover", r)
+			slog.Warn("flush after close (client likely disconnected)", "recover", r)
 		}
 	}()
 	flusher.Flush()
+	return true
 }
 
-func safeWriteSSE(w io.Writer, line string) {
+func safeWriteSSE(w io.Writer, line string) bool {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Debug("write after close", "recover", r)
+			slog.Warn("write after close (client likely disconnected)", "recover", r)
 		}
 	}()
-	//nolint:errcheck // test write, non-critical
-	io.WriteString(w, line)
+	n, err := io.WriteString(w, line)
+	if err != nil {
+		slog.Warn("failed to write SSE chunk to client", "error", err)
+		return false
+	}
+	if n != len(line) {
+		slog.Warn("incomplete write to client", "expected", len(line), "written", n)
+		return false
+	}
+	return true
 }
 
 func replaceModelInChunk(line, clientModel, discoveredUpstream string) string {

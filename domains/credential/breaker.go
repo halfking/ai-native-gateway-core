@@ -207,6 +207,13 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 
 // RecordFailure records a failure and transitions the circuit state.
 func (b *Breaker) RecordFailure(kind ErrorKind) {
+	// 2026-07-03 P0 fix: client bugs (tool_call_id_mismatch, invalid_request_format,
+	// etc.) should not trigger circuit breaker state changes. These are client-side
+	// issues, not credential/upstream health problems.
+	if errorsx.IsClientBug(errorsx.ErrorKind(kind)) {
+		return
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
