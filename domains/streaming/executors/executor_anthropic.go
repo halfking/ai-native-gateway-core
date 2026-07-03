@@ -836,8 +836,21 @@ func (e *Executor) executeAnthropicOnce(
 					headers: resp.Header.Clone(),
 				}
 			}
+			// 2026-07-03 (Bug #N, same as executor_chat.go): preserve
+			// the precise errKind via a typed *upstreampkg.Error so the
+			// outer Execute() loop and CandidateFailureLogger can read
+			// Kind=errKind instead of re-classifying a fmt.Errorf string
+			// via ClassifyError, which would degrade body-driven kinds
+			// (KindToolCallIdMismatch, KindUnsupportedFeature) back to
+			// KindTransient in request_logs.error_kind.
+			upstreamErr := &upstreampkg.Error{
+				Kind:       errKind,
+				Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+				Body:       append([]byte(nil), body[:n]...),
+				StatusCode: resp.StatusCode,
+			}
 			if params.PreStreamPrepared {
-				return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+				return nil, upstreamErr
 			}
 			for k, vs := range resp.Header {
 				for _, v := range vs {
@@ -849,7 +862,7 @@ func (e *Executor) executeAnthropicOnce(
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(body[:n])
 			}
-			return nil, fmt.Errorf("upstream %d", resp.StatusCode)
+			return nil, upstreamErr
 		}
 		// Even for retryable kinds (e.g. 413 classified as KindTransient),
 		// check if this is a heuristic-compact candidate (413 or body-size
@@ -863,7 +876,16 @@ func (e *Executor) executeAnthropicOnce(
 				headers: resp.Header.Clone(),
 			}
 		}
-		return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+		// 2026-07-03 (Bug #N, same fix as above): preserve errKind on
+		// the retryable wrapper so the outer loop sees the precise
+		// body-driven kind (e.g. KindToolCallIdMismatch) instead of
+		// a transient-shaped fmt.Errorf.
+		return nil, &retryableError{err: &upstreampkg.Error{
+			Kind:       errKind,
+			Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+			Body:       append([]byte(nil), body[:n]...),
+			StatusCode: resp.StatusCode,
+		}}
 	}
 
 	e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)

@@ -51,6 +51,10 @@ type Handler struct {
 	// unaffected (it lives in the sessions package, not here).
 	pendingStore  *pending.Store
 	settingsStore *settings.StoreDB // settings-management: DB-backed settings backend (Q1: B)
+	// liveStreamHub (2026-07-03) fans out newly-persisted
+	// request_logs rows to dashboard SSE clients at
+	// GET /api/admin/live-stream. nil disables the endpoint.
+	liveStreamHub *LiveStreamSSEHub
 	peakCollector interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
@@ -218,6 +222,13 @@ func (h *Handler) GetAutoTitleGenerator() *AutoTitleGenerator {
 // loading the KEYRING_JSON environment variable.
 func (h *Handler) SetKeyring(kr *secret.Keyring) {
 	h.keyring = kr
+}
+
+// SetLiveStreamSSE wires the dashboard swim-lane SSE hub. Once set,
+// GET /api/admin/live-stream starts streaming real-time request
+// telemetry to connected dashboards. Pass nil to disable.
+func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
+	h.liveStreamHub = hub
 }
 
 // encryptCred encrypts a plaintext credential using AES-256-GCM (if keyring is
@@ -439,6 +450,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/attachments/cleanup/preview", admin(h.handleDataLifecycleAttachmentCleanupPreview))
 	mux.HandleFunc("/api/admin/attachments/cleanup/execute", h.superAdmin(h.handleDataLifecycleAttachmentCleanupExecute))
 	mux.HandleFunc("/api/admin/attachments/", admin(h.handleDataLifecycleAttachmentItem))
+
+	// 2026-07-03: live request stream SSE feed. Rides the cookie
+	// JWT auth path (admin middleware) — no custom token shim, no
+	// query-string bearer leakage. nil hub means the endpoint is
+	// not registered.
+	if h.liveStreamHub != nil {
+		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
+	}
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
 	mux.HandleFunc("/api/admin/storage/config", h.superAdmin(h.handleStorageConfig))

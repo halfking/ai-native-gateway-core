@@ -21,6 +21,13 @@ type Client struct {
 	queue chan any
 	done  chan struct{}
 	wg    sync.WaitGroup
+
+	// onPersisted is invoked once after every successful INSERT/UPDATE
+	// of a request_logs row. Consumers (e.g. admin.LiveStreamSSEHub)
+	// use this hook to fan-out live dashboard updates without
+	// coupling telemetry to admin. May be nil; the callback MUST be
+	// cheap and non-blocking.
+	onPersisted func(entry *RequestLogEntry)
 }
 
 type DecisionLogEntry struct {
@@ -260,6 +267,14 @@ func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 }
 
+// SetOnRequestLogPersisted registers a hook invoked after each
+// successful INSERT/UPDATE of a request_logs row. The hook runs on
+// the telemetry worker goroutine — it must be cheap and non-blocking.
+// Pass nil to clear. Safe to call before or after the worker starts.
+func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
+	c.onPersisted = fn
+}
+
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	if !c.Enabled() {
 		return
@@ -421,10 +436,26 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
+	var err error
 	if entry.Op == RequestLogUpdate {
-		return c.updateRequestLog(entry)
+		err = c.updateRequestLog(entry)
+	} else {
+		err = c.insertRequestLog(entry)
 	}
-	return c.insertRequestLog(entry)
+	if err == nil && c.onPersisted != nil {
+		// Fan-out hook (e.g. live dashboard SSE hub) — must never
+		// block telemetry. recover() guards against a panicking
+		// consumer that could otherwise take down the worker.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onPersisted panic", "request_id", entry.RequestID)
+				}
+			}()
+			c.onPersisted(entry)
+		}()
+	}
+	return err
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {

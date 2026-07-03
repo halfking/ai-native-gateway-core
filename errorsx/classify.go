@@ -199,6 +199,30 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if unsupportedFeatureRe.MatchString(msg) {
 			return KindUnsupportedFeature
 		}
+		// 2026-07-03 (Bug #N, defense in depth): the body-driven kinds
+		// below were previously only checked in ClassifyErrorWithBody /
+		// ClassifyResponseBody, which require the raw body bytes. When
+		// an upstream.Error is re-wrapped via fmt.Errorf (the legacy
+		// `fmt.Errorf("upstream %d: %s", status, body)` pattern that
+		// the executor's tryCandidate used to emit), the body is
+		// collapsed into err.Error() and ClassifyError(err, nil) was
+		// returning KindTransient for these cases. That broke the
+		// IsClientBug / IsRetryable / writeCredentialStateOnError
+		// branches downstream and polluted request_logs.error_kind
+		// with "transient" for what is actually a client-side bug.
+		//
+		// Running the same regexes on the err.Error() string closes
+		// the gap for any caller (current or future) that loses the
+		// typed *upstream.Error while still keeping the body text in
+		// the wrapped message. The patterns are model-agnostic on
+		// purpose — they match OpenAI, Anthropic, MiniMax, deepseek,
+		// and zhipu bodies alike.
+		if toolCallIdMismatchRe.MatchString(msg) {
+			return KindToolCallIdMismatch
+		}
+		if contextLengthRe.MatchString(msg) || contextLengthCJKRe.MatchString(msg) {
+			return KindContextLength
+		}
 		return KindTransient
 	}
 	if resp == nil {

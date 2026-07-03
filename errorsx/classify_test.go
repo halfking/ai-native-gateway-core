@@ -3,6 +3,7 @@ package errorsx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -445,5 +446,79 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 					got, retryable, retryableWant)
 			}
 		})
+	}
+}
+
+// 2026-07-03 Bug #N regression test (defense-in-depth for the
+// `fmt.Errorf("upstream %d: %s", status, body)` re-wrap path).
+//
+// Production: 326 transient errors in 24h, 325 of which were
+// minimax-m3 tool_call_id_mismatch 4xx re-classified as KindTransient
+// because ClassifyError(err, nil) was a pure text-match fallback that
+// did not include toolCallIdMismatchRe / contextLengthRe. The primary
+// fix in executor_chat.go / executor_anthropic.go returns a typed
+// *upstream.Error (so ClassifyError is never even called). This test
+// pins the secondary fix in ClassifyError itself: even if a future code
+// path re-wraps with fmt.Errorf, the kind is still recoverable from
+// err.Error(). The patterns are model-agnostic — they cover OpenAI,
+// Anthropic, MiniMax, deepseek, zhipu bodies alike.
+func TestClassifyError_BodyDrivenKindsFromWrappedString(t *testing.T) {
+	toolCallBodies := []string{
+		// MiniMax code 2013 (the production incident)
+		`{"error":{"code":2013,"message":"invalid params, tool result's tool id (call_function_poab3apjo8kn_1) not found","type":"invalid_request"}}`,
+		// Anthropic-style tool_use_id
+		`{"type":"error","error":{"type":"invalid_request_error","message":"tool_use_id not found"}}`,
+		// OpenAI-style tool_call_id
+		`{"error":{"message":"Invalid tool_call_id: call_xxx","type":"invalid_request_error"}}`,
+		// Generic phrasing
+		`tool call id call_abc123 not found`,
+	}
+	for _, body := range toolCallBodies {
+		wrapped := fmt.Errorf("upstream 400: %s", body)
+		got := ClassifyError(wrapped, nil)
+		if got != KindToolCallIdMismatch {
+			t.Errorf("ClassifyError(wrapped body %q) = %q, want %q — body-driven tool_call_id_mismatch must NOT regress to %q",
+				body[:min(80, len(body))], got, KindToolCallIdMismatch, KindTransient)
+		}
+		if !IsClientBug(got) {
+			t.Errorf("ClassifyError(wrapped body %q) = %q, expected IsClientBug=true so the credential is NOT cooled for a client bug",
+				body[:min(80, len(body))], got)
+		}
+	}
+
+	contextLengthBodies := []string{
+		`{"error":{"message":"This model's maximum context length is 8192 tokens."}}`,
+		`{"error":"prompt is too long"}`,
+		`{"error":"input is too long"}`,
+		`{"error":"上下文长度超出限制"}`,
+		`{"error":"tokens exceed model limit"}`,
+	}
+	for _, body := range contextLengthBodies {
+		wrapped := fmt.Errorf("upstream 400: %s", body)
+		got := ClassifyError(wrapped, nil)
+		if got != KindContextLength {
+			t.Errorf("ClassifyError(wrapped body %q) = %q, want %q — body-driven context_length_exceeded must NOT regress to %q",
+				body[:min(80, len(body))], got, KindContextLength, KindTransient)
+		}
+		if IsRetryable(got) {
+			t.Errorf("ClassifyError(wrapped body %q) = %q, expected IsRetryable=false (context-length has its own trim+retry path in the executor)",
+				body[:min(80, len(body))], got)
+		}
+	}
+}
+
+// 2026-07-03: explicit pin for the production incident. The exact body
+// from the 184 production logs (326/325 cases) must classify correctly
+// even when wrapped via fmt.Errorf.
+func TestClassifyError_ProductionIncident_MinimaxM3_ToolCallIdMismatch(t *testing.T) {
+	body := `{"error":{"code":2013,"message":"invalid params, tool result's tool id (call_function_poab3apjo8kn_1) not found","type":"invalid_request"}}`
+	// This is the exact wrapping the executor used to emit before the
+	// primary fix. It must still classify correctly (secondary fix).
+	wrapped := fmt.Errorf("upstream 400: %s", body)
+	got := ClassifyError(wrapped, nil)
+	if got != KindToolCallIdMismatch {
+		t.Fatalf("production regression: ClassifyError(MiniMax 2013 body wrapped in fmt.Errorf) = %q, want %q. "+
+			"This is the bug that polluted request_logs.error_kind with 'transient' for 325 of 326 transient rows in 24h.",
+			got, KindToolCallIdMismatch)
 	}
 }
