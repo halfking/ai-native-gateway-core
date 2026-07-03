@@ -9,9 +9,9 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   define: {
-    // 2026-07-03: Force vue-i18n JIT compilation path to avoid 'new Function()' CSP violation
-    __INTLIFY_JIT_COMPILATION__: 'true',
-    __INTLIFY_DROP_MESSAGE_COMPILER__: 'true',
+    // 2026-07-03: Enable vue-i18n JIT compilation in production
+    // DO NOT set __INTLIFY_DROP_MESSAGE_COMPILER__ to true when using JIT mode
+    __INTLIFY_JIT_COMPILATION__: true,
   },
   build: {
     outDir: 'dist',
