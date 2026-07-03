@@ -842,7 +842,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger
+			UPDATE usage_ledger_default
 			   SET prompt_tokens = COALESCE($2, prompt_tokens),
 			       completion_tokens = COALESCE($3, completion_tokens),
 			       total_tokens = COALESCE($4, total_tokens),
@@ -870,7 +870,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	} else {
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger
+			UPDATE usage_ledger_default
 			   SET latency_ms = COALESCE($2, latency_ms),
 			       success = COALESCE($3, success),
 			       error_kind = COALESCE($4, error_kind),
@@ -891,12 +891,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	tag, err := tx.Exec(ctx, `
 		WITH latest AS (
 			SELECT id, ts
-			FROM request_logs
+			FROM request_logs_default
 			WHERE request_id = $1
 			ORDER BY ts DESC
 			LIMIT 1
 		)
-		UPDATE request_logs
+		UPDATE request_logs_default
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),
