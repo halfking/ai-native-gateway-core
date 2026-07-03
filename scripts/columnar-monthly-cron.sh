@@ -34,20 +34,20 @@ PG_DB="llm_gateway"
 PG_USER="llm_gateway"
 
 # day-of-month in 1..3
+# Migration 331 (2026-07-04): Removed archive_request_logs and archive_request_wal
+# Archive tables had minimal storage footprint and no code queried them.
+# Old partitions are now dropped directly or retained longer in main table.
 TODAY=$(date +%e | tr -d ' ')
 
 case "$TODAY" in
   1)
-    TARGETS=("archive_request_logs" "archive_routing_decision_log")
-    ;;
-  2)
-    TARGETS=("archive_request_wal")
+    TARGETS=("archive_routing_decision_log")
     ;;
   3)
     TARGETS=("archive_credential_model_index")
     ;;
   *)
-    echo "[$(date)] day=$TODAY: not an archive day (1-3 only), exit 0"
+    echo "[$(date)] day=$TODAY: not an archive day (1 or 3 only), exit 0"
     exit 0
     ;;
 esac
