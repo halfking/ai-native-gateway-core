@@ -401,7 +401,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
 	mux.HandleFunc("/api/auth/logout", h.handleLogout)
-	mux.HandleFunc("/api/system/version", h.handleSystemVersion) // Public endpoint for frontend version display
+	mux.HandleFunc("/api/system/version", h.handleSystemVersion)    // Public endpoint for frontend version display
+	mux.HandleFunc("/api/system/client-error", h.handleClientError) // Frontend error reporting (public, rate-limited)
 	// JWT-authenticated routes (JWT or admin key)
 	mux.Handle("/v1/keys/apply", h.admin(h.handleV1KeysApply))
 
@@ -457,6 +458,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// not registered.
 	if h.liveStreamHub != nil {
 		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
+		mux.HandleFunc("/api/admin/live-stream/stats", admin(h.handleLiveStreamStats))
 	}
 
 	// 2026-07-02: 存储配置管理（附件目录/保留策略/水位/自动清理）
