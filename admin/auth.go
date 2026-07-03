@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,6 +81,17 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func AdminMiddleware(next http.HandlerFunc, db *pgxpool.Pool, secretKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Browser EventSource cannot set Authorization headers, so we
+		// accept the bearer token via ?token= query param as well.
+		// Promote it to Authorization header when no Bearer is set.
+		// This is the only middleware that accepts query-string tokens;
+		// the rest stay Bearer-only. (rule 20 §6 + v2 ws_relay pattern)
+		if r.Header.Get("Authorization") == "" {
+			if t := strings.TrimSpace(r.URL.Query().Get("token")); t != "" {
+				r.Header.Set("Authorization", "Bearer "+t)
+			}
+		}
+
 		// ── Try JWT auth first (Bearer header or session cookie) ──
 		if tokenStr, ok := extractBearerOrCookieToken(r); ok {
 			claims, err := VerifyToken(tokenStr, secretKey)
