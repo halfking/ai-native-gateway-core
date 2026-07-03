@@ -8,6 +8,11 @@ import vue from '@vitejs/plugin-vue'
 // share the same plugin list (vue), avoiding drift.
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    // 2026-07-03: Force vue-i18n JIT compilation path to avoid 'new Function()' CSP violation
+    __INTLIFY_JIT_COMPILATION__: 'true',
+    __INTLIFY_DROP_MESSAGE_COMPILER__: 'true',
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
