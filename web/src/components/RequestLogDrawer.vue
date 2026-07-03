@@ -49,7 +49,22 @@ watch(
     if (!id) return
     loading.value = true
     try {
-      detail.value = await getRequestLogDetail(id)
+      // 2026-07-04: live-stream requests may arrive before DB persistence.
+      // Retry once after 100ms if first attempt is 404/not-found.
+      try {
+        detail.value = await getRequestLogDetail(id)
+      } catch (firstError: unknown) {
+        const isNotFound = firstError instanceof Error &&
+          (firstError.message.includes('not found') ||
+           firstError.message.includes('404'))
+
+        if (isNotFound) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+          detail.value = await getRequestLogDetail(id)
+        } else {
+          throw firstError
+        }
+      }
     } catch (e: unknown) {
       error.value = e instanceof Error ? e.message : '加载失败'
     } finally {
