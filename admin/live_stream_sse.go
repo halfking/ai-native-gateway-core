@@ -406,6 +406,7 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	// header or a signed cookie. We do NOT log the token.
 	if r.Header.Get("Authorization") == "" {
 		if t := strings.TrimSpace(r.URL.Query().Get("token")); t != "" {
+			slog.Debug("live stream: promoting ?token= to Authorization header")
 			r.Header.Set("Authorization", "Bearer "+t)
 		}
 	}
