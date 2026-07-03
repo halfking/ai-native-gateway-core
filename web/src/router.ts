@@ -1,56 +1,59 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { store, isDefaultTenant } from './store'
 
-import LoginView              from './views/LoginView.vue'
-import HomeView               from './views/HomeView.vue'
-import ProvidersView          from './views/ProvidersView.vue'
-import KeysView               from './views/KeysView.vue'
-import KeyDetailView          from './views/KeyDetailView.vue'
-import KeyApplicationsView    from './views/KeyApplicationsView.vue'
-import ExamplesView           from './views/ExamplesView.vue'
-import ChatView               from './views/ChatView.vue'
-import RoutingOverviewView    from './views/RoutingOverviewView.vue'
-import RoutingPolicyView      from './views/RoutingPolicyView.vue'
-import DecisionsView          from './views/DecisionsView.vue'
-import CorrelationsView       from './views/CorrelationsView.vue'
-import RoutingOverrideView   from './views/RoutingOverrideView.vue'
-import QualityCorrelationsView from './views/QualityCorrelationsView.vue'
-import RoutingAuditView from './views/RoutingAuditView.vue'
-import RequestLogsView        from './views/RequestLogsView.vue'
-import ModelsView             from './views/ModelsView.vue'
-import ProviderDetailView     from './views/ProviderDetailView.vue'
-import PricingManagementView  from './views/PricingManagementView.vue'
-import StandardModelPricingView from './views/StandardModelPricingView.vue'
-import FreePoolView           from './views/FreePoolView.vue'
-import TenantsView            from './views/TenantsView.vue'
-import TenantDetailView       from './views/TenantDetailView.vue'
-import RoutingDashboardView   from './views/RoutingDashboardView.vue'
-import WorkTypesView          from './views/WorkTypesView.vue'
-import UsersView              from './views/UsersView.vue'
-import AuditLogView          from './views/AuditLogView.vue'
-import CompressionView       from './views/CompressionView.vue'
-import DataLifecycleView     from './views/DataLifecycleView.vue'
-import SettingsView          from './views/SettingsView.vue'
-import SessionContextLayout      from './layouts/SessionContextLayout.vue'
-import SessionContextListView    from './views/session-context/SessionContextListView.vue'
-import SessionContextDetailView  from './views/session-context/SessionContextDetailView.vue'
-import SessionCompareView        from './views/SessionCompareView.vue'
-import SessionListView            from './views/SessionListView.vue'
-import ForbiddenView          from './views/ForbiddenView.vue'
-import MaaSAccountView        from './views/tenant/MaaSAccountView.vue'
-import MaaSPricingView        from './views/tenant/MaaSPricingView.vue'
-import MaaSUsageView          from './views/tenant/MaaSUsageView.vue'
-import MaaSOrderView          from './views/tenant/MaaSOrderView.vue'
-import TenantModelsView       from './views/tenant/TenantModelsView.vue'
-import CredentialMonitorView  from './views/CredentialMonitorView.vue'
-import ProbeHealthView        from './views/ProbeHealthView.vue'
-import ProbeHealthDetailView  from './views/ProbeHealthDetailView.vue'
-import AgentRegistryView    from './views/AgentRegistryView.vue'
-import FormatAnomaliesView  from './views/FormatAnomaliesView.vue'
-import ModulesView          from './views/ModulesView.vue'
-import ApprovalConfigView   from './views/ApprovalConfigView.vue'
-import ApprovalListView     from './views/ApprovalListView.vue'
-import ApprovalDetailView   from './views/ApprovalDetailView.vue'
+// Critical views loaded immediately (login, home, layout)
+import LoginView from './views/LoginView.vue'
+import HomeView from './views/HomeView.vue'
+import SessionContextLayout from './layouts/SessionContextLayout.vue'
+import ForbiddenView from './views/ForbiddenView.vue'
+
+// All other views are lazy-loaded to reduce initial bundle size
+const ProvidersView = () => import('./views/ProvidersView.vue')
+const KeysView = () => import('./views/KeysView.vue')
+const KeyDetailView = () => import('./views/KeyDetailView.vue')
+const KeyApplicationsView = () => import('./views/KeyApplicationsView.vue')
+const ExamplesView = () => import('./views/ExamplesView.vue')
+const ChatView = () => import('./views/ChatView.vue')
+const RoutingOverviewView = () => import('./views/RoutingOverviewView.vue')
+const RoutingPolicyView = () => import('./views/RoutingPolicyView.vue')
+const DecisionsView = () => import('./views/DecisionsView.vue')
+const CorrelationsView = () => import('./views/CorrelationsView.vue')
+const RoutingOverrideView = () => import('./views/RoutingOverrideView.vue')
+const QualityCorrelationsView = () => import('./views/QualityCorrelationsView.vue')
+const RoutingAuditView = () => import('./views/RoutingAuditView.vue')
+const RequestLogsView = () => import('./views/RequestLogsView.vue')
+const ModelsView = () => import('./views/ModelsView.vue')
+const ProviderDetailView = () => import('./views/ProviderDetailView.vue')
+const PricingManagementView = () => import('./views/PricingManagementView.vue')
+const StandardModelPricingView = () => import('./views/StandardModelPricingView.vue')
+const FreePoolView = () => import('./views/FreePoolView.vue')
+const TenantsView = () => import('./views/TenantsView.vue')
+const TenantDetailView = () => import('./views/TenantDetailView.vue')
+const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
+const WorkTypesView = () => import('./views/WorkTypesView.vue')
+const UsersView = () => import('./views/UsersView.vue')
+const AuditLogView = () => import('./views/AuditLogView.vue')
+const CompressionView = () => import('./views/CompressionView.vue')
+const DataLifecycleView = () => import('./views/DataLifecycleView.vue')
+const SettingsView = () => import('./views/SettingsView.vue')
+const SessionContextListView = () => import('./views/session-context/SessionContextListView.vue')
+const SessionContextDetailView = () => import('./views/session-context/SessionContextDetailView.vue')
+const SessionCompareView = () => import('./views/SessionCompareView.vue')
+const SessionListView = () => import('./views/SessionListView.vue')
+const MaaSAccountView = () => import('./views/tenant/MaaSAccountView.vue')
+const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
+const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
+const MaaSOrderView = () => import('./views/tenant/MaaSOrderView.vue')
+const TenantModelsView = () => import('./views/tenant/TenantModelsView.vue')
+const CredentialMonitorView = () => import('./views/CredentialMonitorView.vue')
+const ProbeHealthView = () => import('./views/ProbeHealthView.vue')
+const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
+const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
+const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
+const ModulesView = () => import('./views/ModulesView.vue')
+const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
+const ApprovalListView = () => import('./views/ApprovalListView.vue')
+const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
 
 function isAuthed(): boolean {
   return !!(store.jwtToken || store.apiKey)

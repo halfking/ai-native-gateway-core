@@ -16,6 +16,17 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Split vendor libraries into separate chunks to improve caching
+          'vue-vendor': ['vue', 'vue-router'],
+          'element-vendor': ['element-plus', '@element-plus/icons-vue'],
+          'i18n-vendor': ['vue-i18n'],
+          'chart-vendor': ['chart.js'],
+        },
+      },
+    },
   },
   server: {
     port: 5780,
@@ -25,6 +36,7 @@ export default defineConfig({
       '/healthz': { target: 'http://localhost:8781', changeOrigin: true },
     },
   },
+  // @ts-ignore - vitest config is valid but not in vite's types
   test: {
     globals: true,
     environment: 'jsdom',
