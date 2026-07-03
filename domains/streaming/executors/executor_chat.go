@@ -198,6 +198,7 @@ func (e *Executor) executeOpenAI(
 	// accumulates. This lets the single mnf probe happen even when policy
 	// maxRetries is 0, without forcing unrelated errors to retry.
 	mnfBonus := 0
+	var lastErr error // 2026-07-03 (Bug #N extension): preserve last error for "exhausted retries"
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
@@ -507,7 +508,15 @@ func (e *Executor) executeOpenAI(
 							if err != nil {
 								return nil, err
 							}
-							return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+							// 2026-07-03 (Bug #N extension): preserve errKind in the
+							// retryableError wrapper so if retries are exhausted, the
+							// outer tryCandidate returns lastErr with the precise Kind.
+							return nil, &retryableError{err: &upstreampkg.Error{
+								Kind:       errKind,
+								Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
+								Body:       append([]byte(nil), body[:n]...),
+								StatusCode: resp.StatusCode,
+							}}
 						case ctxLenGiveUp:
 							// Return a typed error so the outer Execute
 							// loop knows this is a context-length
@@ -854,9 +863,16 @@ func (e *Executor) executeOpenAI(
 		// context.WithTimeout immediately, regardless of whether the attempt
 		// succeeded or failed.
 		upCancel()
+		lastErr = tryErr // 2026-07-03 (Bug #N extension): save for "exhausted retries"
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
 		}
+	}
+	// 2026-07-03 (Bug #N extension): return lastErr instead of fmt.Errorf
+	// so the precise Kind (e.g. KindContextLength, KindTimeout) is preserved.
+	// Before this fix, "exhausted retries" always re-classified to KindTransient.
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", effectiveMaxRetries, cand.CredentialID)
 }
