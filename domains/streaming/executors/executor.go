@@ -21,6 +21,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -476,6 +477,12 @@ type Executor struct {
 		UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
 		UpdateOnFailure(ctx context.Context, credID int, model string, errKind errorsx.ErrorKind, requestID string)
 	}
+
+	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
+	// 当非nil时，Executor使用URSM.RecordRequest()记录请求结果，
+	// 自动触发状态更新、探测调度和资源释放。
+	// Nil则保留旧的状态管理逻辑（向后兼容）。
+	URSM *ursm.Manager
 }
 
 func NewExecutor(
@@ -974,6 +981,36 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
+			// 2026-07-03: URSM统一状态回写（优先于旧的StateObserver）
+			if e.URSM != nil && e.URSM.Enabled() {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				// 异步记录，不阻塞响应
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
+						RequestID:    requestID,
+						CredentialID: cand.CredentialID,
+						RawModel:     cand.RawModel,
+						SessionID:    params.SessionID,
+						Success:      true,
+						LatencyMs:    result.LatencyMs,
+						ErrorKind:    "",
+						Timestamp:    time.Now(),
+					})
+					if err != nil {
+						slog.Warn("failed to record success to ursm",
+							"error", err,
+							"request_id", requestID,
+							"credential_id", cand.CredentialID)
+					}
+				}()
+			}
+
 			trace.Chosen = &TraceCandidate{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -1134,6 +1171,37 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					kind,
 					requestID,
 				)
+			}
+
+			// 2026-07-03: URSM统一状态回写（失败）
+			if e.URSM != nil && e.URSM.Enabled() {
+				requestID := params.R.Header.Get("X-Request-Id")
+				if requestID == "" {
+					requestID = "async-" + time.Now().Format("20060102T150405.000")
+				}
+				// 异步记录
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
+						RequestID:    requestID,
+						CredentialID: cand.CredentialID,
+						RawModel:     cand.RawModel,
+						SessionID:    params.SessionID,
+						Success:      false,
+						LatencyMs:    0,
+						ErrorKind:    string(kind),
+						Timestamp:    time.Now(),
+					})
+					if err != nil {
+						slog.Warn("failed to record failure to ursm",
+							"error", err,
+							"request_id", requestID,
+							"credential_id", cand.CredentialID,
+							"error_kind", kind)
+					}
+				}()
 			}
 
 			if sie.resumable {
