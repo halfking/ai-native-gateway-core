@@ -133,19 +133,12 @@ export function hexToRgba(hex: string, alpha: number): string {
  */
 export function errorKindLabel(errorKind: string | undefined | null): string {
   if (!errorKind) return ''
-  const k = errorKind.toLowerCase().trim()
+  const k = errorKind.trim()
   if (!k) return ''
-  if (/(?<!upstream_)(?<!backend_)(?<!server_)timeout/.test(k)) return 'timeout'
-  if (/client_disconnect|\bdisconnect\b|network_reset|network_error|connection_reset|eof|cancelled|canceled/.test(k)) return 'disc'
-  if (/(5xx|server|upstream|provider|overloaded|backend|internal)/.test(k)) return '5xx'
-  if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) {
-    if (/(quota|rate)/.test(k)) return 'rate'
-    if (/(auth|unauthor|forbidden)/.test(k)) return 'auth'
-    if (/(billing|payment)/.test(k)) return 'billing'
-    return '4xx'
-  }
-  if (/(not_found|model_not|\brout|no_route|resolve|policy|missing)/.test(k)) return 'no model'
-  return k.replace(/_/g, ' ').slice(0, 8)
+  // Return the full error_kind for complete visibility, replacing
+  // underscores with spaces for readability. The tile CSS will handle
+  // truncation with ellipsis if needed.
+  return k.replace(/_/g, ' ')
 }
 
 /**

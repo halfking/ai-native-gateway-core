@@ -28,6 +28,14 @@ type Client struct {
 	// coupling telemetry to admin. May be nil; the callback MUST be
 	// cheap and non-blocking.
 	onPersisted func(entry *RequestLogEntry)
+
+	// onEmitted is invoked immediately when EmitRequestLog is called,
+	// BEFORE the entry is queued or persisted to the database. This
+	// provides faster real-time updates from the in-memory pipeline
+	// rather than waiting for DB write completion. The callback runs
+	// on the caller's goroutine and MUST be non-blocking (use select
+	// with default for channel sends). May be nil.
+	onEmitted func(entry *RequestLogEntry)
 }
 
 type DecisionLogEntry struct {
@@ -275,6 +283,15 @@ func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 	c.onPersisted = fn
 }
 
+// SetOnRequestLogEmitted registers a hook invoked immediately when
+// EmitRequestLog is called, BEFORE DB persistence. This provides
+// faster real-time updates from the in-memory pipeline. The hook
+// runs on the caller's goroutine and MUST be non-blocking (use
+// select with default for channel sends). Pass nil to clear.
+func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
+	c.onEmitted = fn
+}
+
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	if !c.Enabled() {
 		return
@@ -296,6 +313,21 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 	if entry.Op == "" {
 		entry.Op = RequestLogInsert
 	}
+
+	// Fire the onEmitted hook immediately from the caller's goroutine
+	// BEFORE queuing. This provides faster real-time updates from the
+	// in-memory pipeline rather than waiting for DB write completion.
+	if c.onEmitted != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onEmitted panic", "request_id", entry.RequestID)
+				}
+			}()
+			c.onEmitted(entry)
+		}()
+	}
+
 	select {
 	case c.queue <- entry:
 	default:
