@@ -5,14 +5,15 @@
 //   - 数据库大小 vs 本机磁盘的对比（独立显示，避免误以为 DB 在本机）
 //   - 表级 Top-N 占用排行（pg_stat_user_tables 视角）
 //   - 本机日志目录大小（lumberjack 旋转的 .log / .log.gz）
+//   - 列存（citus_columnar）单独展示：表数 / 字段数 / 占用
 //   - 给运维一个"还剩多少、谁在涨"的总览面板
 //
 // 实现要点：
 //   - 不引入新依赖；用 syscall.Statfs（stdlib）拿磁盘容量
-//   - 复用 h.db 查询 pg_database_size / pg_total_database_size
-//   - 复用 log file 路径（settings.Global "log.*" 之外的 cfg.LogFile
-//     在结构上不可见，所以这里走 os.Stat 探测常见路径 + 全局 slog
-//     写入器 fallback；详见 resolveLogDir）
+//   - 复用 h.db 查询 pg_database_size（标准 PG / Citus 均可用）
+//   - 2026-07-03: 移除 pg_total_database_size — Citus 不提供该函数
+//     改为 SUM(pg_total_relation_size) 近似估算
+//   - 列存统计使用 pg_class.relam = columnar AM 过滤
 
 package admin
 
@@ -36,17 +37,36 @@ type databaseStorageInfo struct {
 	// pg_database_size：当前连接的 database 自己的数据+索引
 	DatabaseBytes int64  `json:"database_bytes"`
 	DatabaseHuman string `json:"database_human"`
-	// pg_total_database_size：含 WAL、pg_xlog、TOAST、统计信息
-	// 通常 DatabaseBytes < TotalBytes
+	// TotalBytes：估算的"含 TOAST / WAL" 总占用。
+	// 2026-07-03: Citus 不支持 pg_total_database_size(name)，改为
+	//   SUM(pg_total_relation_size) 在所有用户 schema 上求和作为近似。
+	//   通常 DatabaseBytes ≤ TotalBytes（pg_database_size 只算 heap+index；
+	//   这里额外包含 TOAST，且仅算 user schemas，所以两值有差异是正常的）。
 	TotalBytes int64  `json:"total_bytes"`
 	TotalHuman string `json:"total_human"`
-	// 表 / 索引 / TOAST 三段拆分（来自 pg_total_relation_size 之和）
+	// 表 / 索引 / TOAST 三段拆分（来自 pg_class 视角）
 	TablesBytes   int64  `json:"tables_bytes"`
 	IndexesBytes  int64  `json:"indexes_bytes"`
 	ToastBytes    int64  `json:"toast_bytes"`
 	FreeBytes     int64  `json:"free_bytes"` // 当前 connection 看不到 PG server 端 fs 剩余（仅客户端视角）
 	FreeHuman     string `json:"free_human"`
 	ServerVersion string `json:"server_version,omitempty"`
+}
+
+// columnarStorageInfo 列存（citus_columnar）统计
+// 2026-07-03: 单独展示，方便运维识别压缩效果 + 监控列存合规
+type columnarStorageInfo struct {
+	// Available：citus_columnar 扩展是否安装
+	Available bool `json:"available"`
+	// TableCount：使用 columnar 访问方法的表（含分区）数量
+	TableCount int `json:"table_count"`
+	// TotalColumns：所有 columnar 表的字段数之和（粗粒度：用于了解数据形状）
+	TotalColumns int `json:"total_columns"`
+	// TotalBytes / TotalHuman：列存占用（含 chunk 元数据与压缩数据）
+	TotalBytes int64  `json:"total_bytes"`
+	TotalHuman string `json:"total_human"`
+	// Note：若扩展未安装或查询失败，在此说明原因（前端可降级展示）
+	Note string `json:"note,omitempty"`
 }
 
 // filesystemInfo 本机视角的磁盘容量（针对 gateway binary 所在 filesystem）
@@ -88,6 +108,7 @@ type tableSizeInfo struct {
 // storageOverview 总览响应
 type storageOverview struct {
 	Database    databaseStorageInfo `json:"database"`
+	Columnar    columnarStorageInfo `json:"columnar"`
 	Filesystem  filesystemInfo      `json:"filesystem"`
 	LocalLogs   *directoryInfo      `json:"local_logs,omitempty"`
 	Warnings    []string            `json:"warnings"`
@@ -124,6 +145,15 @@ func (h *Handler) handleDataLifecycleStorage(w http.ResponseWriter, r *http.Requ
 		resp.Warnings = append(resp.Warnings, "数据库大小查询失败: "+dbErr.Error())
 	} else {
 		resp.Database = *dbInfo
+	}
+
+	// 1b. 列存统计（独立展示）—— 失败不阻塞主流程，记 warning
+	colInfo, colErr := queryColumnarStorageSafe(ctx, h)
+	if colErr != nil {
+		slog.Warn("storage: columnar query failed", "error", colErr)
+		resp.Warnings = append(resp.Warnings, "列存统计查询失败: "+colErr.Error())
+	} else {
+		resp.Columnar = colInfo
 	}
 
 	// 2. Filesystem
@@ -197,29 +227,45 @@ func (h *Handler) handleDataLifecycleTableSizes(w http.ResponseWriter, r *http.R
 // ── helpers ────────────────────────────────────────────────────────
 
 // queryDatabaseStorage 查询 PG 当前 database 的三段大小 + server version
+//
+// 2026-07-03: Citus 不支持 pg_total_database_size(name)，报错：
+//
+//	ERROR: function pg_total_database_size(name) does not exist (SQLSTATE 42883)
+//
+// 改用 SUM(pg_total_relation_size) 在所有用户 schema 上求和作为 TotalBytes 近似。
+// 这相当于"所有表(含索引、TOAST)占用的字节总和"，与原 pg_total_database_size
+// 的主要差异是：不含 WAL / pg_xlog / 统计信息。运维角度够用。
 func queryDatabaseStorage(ctx context.Context, h *Handler) (*databaseStorageInfo, error) {
 	out := &databaseStorageInfo{}
+
+	// 1. server_version + pg_database_size（PG / Citus 都支持）
 	row := h.db.QueryRow(ctx, `
 		SELECT
 			pg_database_size(current_database()),
 			pg_size_pretty(pg_database_size(current_database())),
-			pg_total_database_size(current_database()),
-			pg_size_pretty(pg_total_database_size(current_database())),
 			current_setting('server_version')
 	`)
-	var totalBytes int64
-	if err := row.Scan(
-		&out.DatabaseBytes,
-		&out.DatabaseHuman,
-		&totalBytes,
-		&out.TotalHuman,
-		&out.ServerVersion,
-	); err != nil {
+	if err := row.Scan(&out.DatabaseBytes, &out.DatabaseHuman, &out.ServerVersion); err != nil {
 		return nil, err
 	}
-	out.TotalBytes = totalBytes
 
-	// 表 / 索引 / TOAST 拆分（pg_class 视角）
+	// 2. TotalBytes：SUM(pg_total_relation_size) over user schemas
+	//    包含表 + 索引 + TOAST。替代 pg_total_database_size。
+	var totalBytes int64
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+	`).Scan(&totalBytes); err == nil {
+		out.TotalBytes = totalBytes
+	} else {
+		// 兜底：若该查询也失败（Citus 偶发），至少保证有 pg_database_size 的值
+		out.TotalBytes = out.DatabaseBytes
+	}
+	out.TotalHuman = humanBytes(out.TotalBytes)
+
+	// 3. 表 / 索引 / TOAST 拆分（pg_class 视角）
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			COALESCE(SUM(pg_relation_size(c.oid)) FILTER (WHERE c.relkind IN ('r','p')), 0)::bigint,
@@ -237,6 +283,64 @@ func queryDatabaseStorage(ctx context.Context, h *Handler) (*databaseStorageInfo
 	}
 
 	return out, nil
+}
+
+// queryColumnarStorageSafe 列存统计的安全包装（不阻塞主流程）
+//
+// 2026-07-03: 列存查询是 advisory 性质，失败应降级而非阻塞。
+// 返回 (colInfo, err) 而非 panic，便于 handler 收 warning。
+func queryColumnarStorageSafe(ctx context.Context, h *Handler) (columnarStorageInfo, error) {
+	out := columnarStorageInfo{Available: false}
+	if h == nil || h.db == nil {
+		out.Note = "数据库连接未就绪"
+		return out, nil
+	}
+	return queryColumnarStorage(ctx, h), nil
+}
+
+// queryColumnarStorage 查询列存（citus_columnar）表统计
+//
+// 2026-07-03: 单独统计列存，方便运维识别哪些表已转列存。
+// 关键检测：c.relam = (SELECT oid FROM pg_am WHERE amname = 'columnar')
+// 若 citus_columnar 扩展未安装，Available=false + Note 提示。
+func queryColumnarStorage(ctx context.Context, h *Handler) columnarStorageInfo {
+	out := columnarStorageInfo{Available: false}
+
+	// 先确认扩展存在
+	var extExists bool
+	if err := h.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_extension WHERE extname = 'citus_columnar'
+		)
+	`).Scan(&extExists); err != nil || !extExists {
+		out.Note = "citus_columnar 扩展未安装"
+		return out
+	}
+	out.Available = true
+
+	// 列存统计：表数 / 字段数 / 总占用
+	row := h.db.QueryRow(ctx, `
+		SELECT
+			COUNT(*)::int AS table_count,
+			COALESCE(SUM(c.relnatts), 0)::int AS total_columns,
+			COALESCE(SUM(pg_total_relation_size(c.oid)), 0)::bigint AS total_bytes
+		FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE am.amname = 'columnar'
+		  AND n.nspname NOT IN ('pg_catalog','information_schema',
+		                        'citus','citus_internal',
+		                        'columnar','columnar_internal')
+	`)
+	if err := row.Scan(&out.TableCount, &out.TotalColumns, &out.TotalBytes); err != nil {
+		out.Note = "列存统计查询失败: " + err.Error()
+		return out
+	}
+	out.TotalHuman = humanBytes(out.TotalBytes)
+	if out.TableCount == 0 {
+		out.Note = "尚无表使用列存（citus_columnar 已加载）"
+	}
+	return out
 }
 
 // queryFilesystem syscall.Statfs 探测 path 所在 filesystem 容量

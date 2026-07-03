@@ -316,6 +316,15 @@ export interface DatabaseStorageInfo {
   server_version?: string
 }
 
+export interface ColumnarStorageInfo {
+  available: boolean
+  table_count: number
+  total_columns: number
+  total_bytes: number
+  total_human: string
+  note?: string
+}
+
 export interface FilesystemInfo {
   path: string
   total_bytes: number
@@ -339,6 +348,7 @@ export interface LocalDirInfo {
 
 export interface StorageOverview {
   database: DatabaseStorageInfo
+  columnar: ColumnarStorageInfo
   filesystem: FilesystemInfo
   local_logs?: LocalDirInfo
   warnings: string[]
