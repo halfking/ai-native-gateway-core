@@ -43,7 +43,6 @@ export default {
     list: {
       table: {
         attachmentsTitle: '附件',
-        attachmentCountTitle: '{n} 個附件',
         noAttachments: '無附件',
       },
     },

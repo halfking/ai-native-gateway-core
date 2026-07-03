@@ -1281,7 +1281,7 @@ onMounted(async () => {
               <div class="cell-line1">{{ statusLabel(r) }}</div>
               <div v-if="r.error_kind && r.request_status === 'failure'" class="cell-line2">{{ r.error_kind }}</div>
             </td>
-            <td class="col-attach" :title="r.attachment_count ? t('requests.list.table.attachmentCountTitle', { n: r.attachment_count }) : t('requests.list.table.noAttachments')">
+            <td class="col-attach" :title="r.attachment_count ? `${r.attachment_count} ${t('requests.list.table.attachmentsTitle')}` : t('requests.list.table.noAttachments')">
               <span
                 v-if="r.attachment_count && r.attachment_count > 0"
                 class="attach-badge"

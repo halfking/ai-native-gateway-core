@@ -44,7 +44,6 @@ export default {
     list: {
       table: {
         attachmentsTitle: '添付ファイル',
-        attachmentCountTitle: '添付ファイル {n} 件',
         noAttachments: '添付ファイルなし',
       },
     },

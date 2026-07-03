@@ -44,7 +44,6 @@ export default {
     list: {
       table: {
         attachmentsTitle: 'Pièces jointes',
-        attachmentCountTitle: '{n} pièce(s) jointe(s)',
         noAttachments: 'Aucune pièce jointe',
       },
     },

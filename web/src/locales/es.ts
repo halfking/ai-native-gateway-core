@@ -44,7 +44,6 @@ export default {
     list: {
       table: {
         attachmentsTitle: 'Adjuntos',
-        attachmentCountTitle: '{n} adjunto(s)',
         noAttachments: 'Sin adjuntos',
       },
     },
