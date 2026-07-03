@@ -623,13 +623,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
 		// Requires redis for sliding window access; recorder is optional.
+		// 2026-07-04: 改用 h.admin 中间件，允许 tenant_admin 访问凭据监控页面
 		if h.redisClient != nil {
 			var rc *redis.Client
 			if r, ok := h.redisClient.(*redis.Client); ok {
 				rc = r
 			}
 			monitorH := NewCredentialMonitorHandlers(h, nil, rc)
-			monitorH.RegisterMonitorRoutes(mux, h.superAdmin)
+			monitorH.RegisterMonitorRoutes(mux, h.admin)
 		}
 
 		// Credential state management (2026-06-30): manual probe + live state query.
