@@ -605,6 +605,7 @@ func (e *Executor) executeAnthropic(
 
 	contextLenRecovery := contextLengthRecoveryState{}
 
+	var lastErr error // 2026-07-03 (Bug #N extension): preserve last error for "exhausted retries"
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
@@ -658,9 +659,16 @@ func (e *Executor) executeAnthropic(
 				}
 			}
 		}
+		lastErr = tryErr // 2026-07-03 (Bug #N extension): save for "exhausted retries"
 		if _, ok := tryErr.(*retryableError); !ok {
 			return nil, tryErr
 		}
+	}
+	// 2026-07-03 (Bug #N extension): return lastErr instead of fmt.Errorf
+	// so the precise Kind (e.g. KindContextLength, KindTimeout) is preserved.
+	// Before this fix, "exhausted retries" always re-classified to KindTransient.
+	if lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", maxRetries, cand.CredentialID)
 }
