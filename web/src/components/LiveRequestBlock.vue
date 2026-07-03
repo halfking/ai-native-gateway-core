@@ -285,10 +285,12 @@ function onClick() {
   line-height: 1.1;
   color: var(--muted, #8b949e);
   letter-spacing: 0.3px;
+  text-align: center;
+  width: 100%;
 }
 
 .live-block__vendor {
-  font-size: 9px;
+  font-size: 8px;
   line-height: 1.2;
   font-weight: 600;
   letter-spacing: 0.1px;
@@ -340,6 +342,8 @@ function onClick() {
   line-height: 1.1;
   color: var(--muted, #8b949e);
   font-variant-numeric: tabular-nums;
+  text-align: center;
+  width: 100%;
 }
 
 .live-block--idle {
