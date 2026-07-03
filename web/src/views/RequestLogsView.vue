@@ -930,8 +930,22 @@ onMounted(async () => {
   // 2026-07-02: 注册全局 ESC keydown 监听，用于关闭附件 lightbox
   // （参考文档 §5.2）。清理在 onBeforeUnmount（line ~75）。
   window.addEventListener('keydown', handleKeydown)
-  await loadKeys()
-  await load()
+  
+  // 2026-07-03: 添加错误处理，确保即使 API 失败页面也能正常显示
+  try {
+    await loadKeys()
+  } catch (e) {
+    console.error('Failed to load keys:', e)
+    keys.value = []
+  }
+  
+  try {
+    await load()
+  } catch (e) {
+    console.error('Failed to load request logs:', e)
+    error.value = e instanceof Error ? e.message : String(e)
+    loading.value = false
+  }
 })
 </script>
 
