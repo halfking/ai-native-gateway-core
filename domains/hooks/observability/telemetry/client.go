@@ -121,6 +121,7 @@ type RequestLogEntry struct {
 	IdentityHash       *string `json:"identity_hash,omitempty"`
 	StreamFirstChunkMs *int    `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int    `json:"stream_chunk_count,omitempty"`
+	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
 	StreamDoneReceived *bool   `json:"stream_done_received,omitempty"`
 	StreamInterrupted  *bool   `json:"stream_interrupted,omitempty"`
 	ResponseChecksum   *string `json:"response_checksum,omitempty"`
@@ -214,7 +215,6 @@ type RequestLogEntry struct {
 	ClientTimeout      *bool   `json:"client_timeout,omitempty"`
 	ClientEndpoint     *string `json:"client_endpoint,omitempty"`
 	StreamChunkErrors  *int    `json:"stream_chunk_errors,omitempty"`
-	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
 
 	// 2026-07-01: 附件元数据（migration 325）
 	// 从请求体中提取的 base64/data-URI 附件元数据，存储到 request_logs.attachments JSONB。
@@ -1435,6 +1435,7 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.CostCurrency, src.CostCurrency)
 	mergeIntPtr(&dst.StreamFirstChunkMs, src.StreamFirstChunkMs)
 	mergeIntPtr(&dst.StreamChunkCount, src.StreamChunkCount)
+	mergeIntPtr(&dst.StreamChunksSent, src.StreamChunksSent)
 	mergeBoolPtr(&dst.StreamDoneReceived, src.StreamDoneReceived)
 	mergeBoolPtr(&dst.StreamInterrupted, src.StreamInterrupted)
 	mergeStringPtr(&dst.ResponseChecksum, src.ResponseChecksum)

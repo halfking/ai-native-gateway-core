@@ -111,6 +111,7 @@ type StreamCapture struct {
 	mu               sync.Mutex
 	startTime        time.Time
 	chunkCount       int
+	chunksSent       int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
 	firstChunkMs     int
 	doneReceived     bool
 	interrupted      bool
@@ -194,6 +195,16 @@ func (sc *StreamCapture) RecordDone() {
 	sc.doneReceived = true
 }
 
+
+// RecordChunkSent increments the count of chunks successfully sent to the client.
+// This is called after a chunk is written and flushed to the client, distinguishing
+// it from chunkCount (which tracks chunks received from upstream).
+func (sc *StreamCapture) RecordChunkSent() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.chunksSent++
+}
+
 func (sc *StreamCapture) MarkInterrupted() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -210,6 +221,7 @@ func (sc *StreamCapture) Reset() {
 	defer sc.mu.Unlock()
 	sc.startTime = time.Now()
 	sc.chunkCount = 0
+	sc.chunksSent = 0
 	sc.firstChunkMs = 0
 	sc.doneReceived = false
 	sc.interrupted = false
@@ -463,6 +475,7 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 
 	m := map[string]any{
 		"stream_chunk_count":   sc.chunkCount,
+		"stream_chunks_sent":   sc.chunksSent,
 		"stream_done_received": sc.doneReceived,
 		"stream_interrupted":   sc.interrupted,
 	}
