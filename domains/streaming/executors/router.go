@@ -91,6 +91,22 @@ func (r *Router) PlanCandidates(
 				))
 			}
 		}
+
+		// 2026-07-04: 单候选者降级逻辑（minimax-m3 model_not_found 修复）
+		// 当所有候选者都被过滤，但只有1-2个候选者且原因是瞬态的（cooling, rate_limited, suspicious），
+		// 则降级使用该候选者，避免完全失败。这是针对单点候选者场景的容错机制。
+		if len(candidates) <= 2 {
+			degradedCandidates := r.tryDegradedMode(candidates)
+			if len(degradedCandidates) > 0 {
+				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
+					"total_candidates", len(candidates),
+					"degraded_count", len(degradedCandidates),
+					"reasons", reasonCounts,
+				)
+				return degradedCandidates
+			}
+		}
+
 		slog.Warn("router: all candidates unavailable",
 			"total", len(candidates),
 			"reasons", reasonCounts,
@@ -743,4 +759,55 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 	}
 
 	return result
+}
+
+// tryDegradedMode 尝试在单候选者场景下启用降级模式。
+// 当唯一的候选者因为瞬态原因（cooling, rate_limited, suspicious）被过滤时，
+// 降级使用该候选者而不是返回 model_not_found，避免完全失败。
+//
+// 这是针对 2026-07-03 minimax-m3 model_not_found 问题的修复：
+// 当只有1个候选者且因瞬态原因不可用时，系统会进入完全失败状态，
+// 即使该候选者可能在几秒后恢复。降级模式允许在这种情况下继续使用该候选者。
+//
+// 2026-07-04: 单候选者降级逻辑
+func (r *Router) tryDegradedMode(candidates []provider.Candidate) []provider.Candidate {
+	var degradedCandidates []provider.Candidate
+
+	for _, c := range candidates {
+		reason := c.UnavailableReason()
+		if isTransientUnavailableReason(reason) {
+			slog.Info("router: degraded mode candidate accepted",
+				"credential_id", c.CredentialID,
+				"provider_id", c.ProviderID,
+				"model", c.RawModel,
+				"reason", reason,
+			)
+			degradedCandidates = append(degradedCandidates, c)
+		}
+	}
+
+	return degradedCandidates
+}
+
+// isTransientUnavailableReason 判断不可用原因是否为瞬态的。
+// 瞬态原因包括：
+// - availability:cooling - 冷却期，通常几分钟后恢复
+// - availability:rate_limited - 速率限制，通常几秒到几分钟后恢复
+// - availability:suspended - 临时暂停，可能很快恢复
+//
+// 永久原因（不应降级使用）：
+// - availability:auth_failed - 认证失败，需要人工修复
+// - quota:balance_exhausted - 余额耗尽，需要充值
+// - lifecycle:disabled - 已禁用，需要人工启用
+//
+// 2026-07-04: 单候选者降级逻辑
+func isTransientUnavailableReason(reason string) bool {
+	switch reason {
+	case "availability:cooling",
+		"availability:rate_limited",
+		"availability:suspended":
+		return true
+	default:
+		return false
+	}
 }
