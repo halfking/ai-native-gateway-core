@@ -49,7 +49,7 @@ export default {
       },
     },
     detail_extra: {
-      attachmentsTab: '📎 添付ファイル',
+      attachmentsTab: '添付ファイル',
       attachmentsLoading: '添付ファイルを読み込み中…',
       noAttachments: '添付ファイルなし',
       clickToPreviewTitle: 'クリックで拡大表示',

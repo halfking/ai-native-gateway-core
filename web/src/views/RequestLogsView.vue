@@ -1398,7 +1398,7 @@ onMounted(async () => {
                 :class="{ 'btn-primary': detailTab === 'attachments' }"
                 @click="detailTab = 'attachments'"
               >
-                {{ t('requests.detail_extra.attachmentsTab') }}
+                📎 {{ t('requests.detail_extra.attachmentsTab') }}
                 <span class="outbound-diff-badge">{{ detailAttachments().length }}</span>
               </button>
             </div>

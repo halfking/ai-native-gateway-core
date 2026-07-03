@@ -48,7 +48,7 @@ export default {
       },
     },
     detail_extra: {
-      attachmentsTab: '📎 附件',
+      attachmentsTab: '附件',
       attachmentsLoading: '加载附件中…',
       noAttachments: '无附件',
       clickToPreviewTitle: '点击查看大图',

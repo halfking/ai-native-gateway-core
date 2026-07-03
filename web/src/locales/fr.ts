@@ -49,7 +49,7 @@ export default {
       },
     },
     detail_extra: {
-      attachmentsTab: '📎 Pièces jointes',
+      attachmentsTab: 'Pièces jointes',
       attachmentsLoading: 'Chargement des pièces jointes…',
       noAttachments: 'Aucune pièce jointe',
       clickToPreviewTitle: 'Cliquer pour agrandir',

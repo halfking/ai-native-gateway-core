@@ -49,7 +49,7 @@ export default {
       },
     },
     detail_extra: {
-      attachmentsTab: '📎 مرفقات',
+      attachmentsTab: 'مرفقات',
       attachmentsLoading: 'جارٍ تحميل المرفقات…',
       noAttachments: 'لا توجد مرفقات',
       clickToPreviewTitle: 'انقر للمعاينة',

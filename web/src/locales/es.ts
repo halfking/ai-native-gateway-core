@@ -49,7 +49,7 @@ export default {
       },
     },
     detail_extra: {
-      attachmentsTab: '📎 Adjuntos',
+      attachmentsTab: 'Adjuntos',
       attachmentsLoading: 'Cargando adjuntos…',
       noAttachments: 'Sin adjuntos',
       clickToPreviewTitle: 'Clic para previsualizar',
