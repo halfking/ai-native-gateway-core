@@ -543,8 +543,9 @@ func (h *LiveStreamSSEHub) replay(ctx context.Context, tenantID string, isSuper 
 	return out, nil
 }
 
-// classifyModelCategory reduces a model name to one of the 5 swim-lane
-// families. See admin/live_stream_sse.go for the full mapping rationale.
+// classifyModelCategory reduces a model name to one of the model family
+// categories. Categories are based on the original model creators/vendors,
+// dynamically grouping by most-used providers for international compatibility.
 func classifyModelCategory(model string) string {
 	m := strings.ToLower(model)
 	switch {
@@ -552,13 +553,32 @@ func classifyModelCategory(model string) string {
 		return "openai"
 	case strings.Contains(m, "claude"):
 		return "anthropic"
-	case strings.Contains(m, "qwen"), strings.Contains(m, "glm"), strings.Contains(m, "ernie"),
-		strings.Contains(m, "doubao"), strings.Contains(m, "deepseek"), strings.Contains(m, "moonshot"),
-		strings.Contains(m, "yi-"), strings.Contains(m, "baichuan"):
-		return "domestic"
-	case strings.Contains(m, "llama"), strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"),
-		strings.Contains(m, "qwen2"), strings.Contains(m, "phi"), strings.Contains(m, "gemma"):
-		return "oss"
+	case strings.Contains(m, "gemini"), strings.Contains(m, "palm"):
+		return "google"
+	case strings.Contains(m, "qwen"):
+		return "alibaba"
+	case strings.Contains(m, "glm"):
+		return "zhipu"
+	case strings.Contains(m, "deepseek"):
+		return "deepseek"
+	case strings.Contains(m, "doubao"):
+		return "bytedance"
+	case strings.Contains(m, "ernie"):
+		return "baidu"
+	case strings.Contains(m, "moonshot"):
+		return "moonshot"
+	case strings.Contains(m, "yi-"):
+		return "01ai"
+	case strings.Contains(m, "baichuan"):
+		return "baichuan"
+	case strings.Contains(m, "llama"):
+		return "meta"
+	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"):
+		return "mistral"
+	case strings.Contains(m, "phi"):
+		return "microsoft"
+	case strings.Contains(m, "gemma"):
+		return "google"
 	default:
 		return "other"
 	}
