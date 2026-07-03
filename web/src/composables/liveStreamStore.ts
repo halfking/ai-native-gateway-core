@@ -8,7 +8,7 @@
 // headers, but it does honour `credentials: 'include'` for same-
 // origin requests — which is exactly what we want, no token shim.
 
-import { reactive, type Ref } from 'vue'
+import { reactive, computed, type ComputedRef } from 'vue'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure'
 
@@ -48,10 +48,17 @@ export const liveStreamState = reactive({
   lastEventAt: 0,
 })
 
-export const requestsRef: Ref<LiveRequest[]> = liveStreamState.requests as unknown as Ref<LiveRequest[]>
-export const connectionRef: Ref<ConnectionState> = liveStreamState.connection as unknown as Ref<ConnectionState>
-export const pausedRef: Ref<boolean> = liveStreamState.paused as unknown as Ref<boolean>
-export const lastEventAtRef: Ref<number> = liveStreamState.lastEventAt as unknown as Ref<number>
+// Vue auto-unwraps `ref` and `reactive` proxies in templates.
+// Exposing the reactive properties as ComputedRef keeps the
+// type-safety of the composable's public API while letting
+// `useLiveStream()` return a stable interface. We deliberately
+// wrap the reactive property in a computed() so consumers do not
+// need to know whether the underlying state is a ref or a
+// reactive object property.
+export const requestsRef: ComputedRef<LiveRequest[]> = computed(() => liveStreamState.requests)
+export const connectionRef: ComputedRef<ConnectionState> = computed(() => liveStreamState.connection)
+export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.paused)
+export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
 
 export const MAX_VISIBLE = 60
 export const ENDPOINT = '/api/admin/live-stream'
