@@ -269,7 +269,7 @@
               <el-tag type="info" size="small">{{ sw.from_model }}</el-tag>
               <el-icon style="margin: 0 8px"><Right /></el-icon>
               <el-tag type="success" size="small">{{ sw.to_model }}</el-tag>
-              <span style="margin-left: 12px; color: #909399">{{ sw.reason }}</span>
+              <span style="margin-left: 12px; color: var(--muted, #8b949e)">{{ sw.reason }}</span>
             </el-timeline-item>
           </el-timeline>
         </el-card>
@@ -607,7 +607,7 @@ onMounted(() => {
     p {
       margin: 0;
       line-height: 1.6;
-      color: #606266;
+      color: var(--muted, #8b949e);
     }
   }
 
@@ -615,7 +615,7 @@ onMounted(() => {
     display: flex;
     justify-content: space-between;
     padding: 8px 0;
-    border-bottom: 1px solid #ebeef5;
+    border-bottom: 1px solid var(--border, #30363d);
 
     &:last-child {
       border-bottom: none;
@@ -623,7 +623,8 @@ onMounted(() => {
   }
 
   .timeline-card {
-    background: #fafafa;
+    background: #0f1117;
+    border: 1px solid var(--border, #30363d);
 
     .timeline-content {
       .timeline-row {
@@ -632,11 +633,11 @@ onMounted(() => {
         .label {
           font-weight: bold;
           margin-right: 8px;
-          color: #909399;
+          color: var(--muted, #8b949e);
         }
 
         &.error {
-          color: #f56c6c;
+          color: var(--danger, #f85149);
         }
       }
     }
@@ -649,7 +650,7 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   height: 400px;
-  color: #909399;
+  color: var(--muted, #8b949e);
 
   .el-icon {
     font-size: 48px;
