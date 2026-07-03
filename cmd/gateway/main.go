@@ -1981,7 +1981,14 @@ func main() {
 			approvalConfigHandler := admin.NewApprovalConfigHandler(approvalConfigMgr)
 
 			// Configuration endpoints
-			mux.HandleFunc("/api/admin/tenants/", func(w http.ResponseWriter, r *http.Request) {
+			// (2026-07-03 fix) Changed path from /api/admin/tenants/ to
+			// /api/admin/tenant-approval-config/ to avoid conflict with the
+			// legacy tenant handler at admin/handler.go:407 which also
+			// owns /api/admin/tenants/. Both paths map to the same URL
+			// pattern in net/http.ServeMux, so registering both caused
+			// a runtime panic during startup (caught by the new recover
+			// in main's top-level defer).
+			mux.HandleFunc("/api/admin/tenant-approval-config/", func(w http.ResponseWriter, r *http.Request) {
 				path := r.URL.Path
 				switch {
 				case strings.Contains(path, "/approval-config/stats"):
@@ -2008,7 +2015,7 @@ func main() {
 					http.NotFound(w, r)
 				}
 			})
-			slog.Info("Phase 3.10 approval configuration API enabled (/api/admin/tenants/{id}/approval-config, /approvers, /approval-rules)")
+			slog.Info("Phase 3.10 approval configuration API enabled (/api/admin/tenant-approval-config/{id}/approval-config, /approvers, /approval-rules)")
 		}
 	}
 
