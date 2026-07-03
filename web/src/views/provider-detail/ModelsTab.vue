@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useFormat } from '../../i18n/useFormat'
 import {
   getProviderModels,
   refreshProviderModels,
@@ -18,6 +20,11 @@ import {
   type ProbeAllResult,
   type ProviderRefreshRun,
 } from '../../api'
+
+const { t: td } = useI18n()
+const pm = (k: string, params?: Record<string, unknown>): string =>
+  td(`providerDetail.models.${k}` as never, params as never)
+const { fmtDateTime } = useFormat()
 
 const props = defineProps<{
   providerId: number
@@ -102,7 +109,7 @@ async function load() {
       routableLoading.value = false
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = e instanceof Error ? e.message : pm('loadFailed')
   } finally {
     loading.value = false
   }
@@ -127,19 +134,19 @@ async function pollRefreshStatus() {
       if (run.status === 'succeeded') {
         await load()
       } else if (run.status === 'failed') {
-        refreshError.value = run.message || run.errors?.join('; ') || '从供应商读取失败'
+        refreshError.value = run.message || run.errors?.join('; ') || pm('refreshFailed')
       }
     }
   } catch (e: unknown) {
     stopPolling()
     refreshing.value = false
-    refreshError.value = e instanceof Error ? e.message : '查询刷新状态失败'
+    refreshError.value = e instanceof Error ? e.message : pm('refreshStatusFailed')
   }
 }
 
 async function clearModels() {
   if (clearing.value || refreshing.value) return
-  if (!confirm('确定清空当前供应商的全部模型绑定？清空后可重新从供应商读取。')) return
+  if (!confirm(pm('clearConfirm'))) return
   clearing.value = true
   refreshError.value = ''
   try {
@@ -158,10 +165,10 @@ async function clearModels() {
       models_upserted: 0,
       credentials_failed: 0,
       errors: [],
-      message: `已清空 ${resp.deleted} 条模型绑定`,
+      message: pm('clearMessage', { n: resp.deleted }),
     }
   } catch (e: unknown) {
-    refreshError.value = e instanceof Error ? e.message : '清空失败'
+    refreshError.value = e instanceof Error ? e.message : pm('clearFailed')
   } finally {
     clearing.value = false
   }
@@ -186,11 +193,11 @@ async function refreshFromProvider() {
       await load()
     } else if (start.run.status === 'failed') {
       refreshing.value = false
-      refreshError.value = start.run.message || '从供应商读取失败'
+      refreshError.value = start.run.message || pm('refreshFailed')
     }
   } catch (e: unknown) {
     refreshing.value = false
-    refreshError.value = e instanceof Error ? e.message : '从供应商读取失败'
+    refreshError.value = e instanceof Error ? e.message : pm('refreshFailed')
   }
 }
 
@@ -199,13 +206,13 @@ const refreshSummary = computed(() => {
   if (!r || r.status === 'running') return ''
   const parts: string[] = []
   if (r.models_upserted > 0) {
-    parts.push(`新增/更新 ${r.models_upserted}`)
+    parts.push(pm('refreshSummaryUpserted', { n: r.models_upserted }))
   }
   if (r.credentials_failed > 0) {
-    parts.push(`失败 ${r.credentials_failed}`)
+    parts.push(pm('refreshSummaryFailed', { n: r.credentials_failed }))
   }
   if (parts.length === 0) {
-    return r.message || '无变化'
+    return r.message || pm('refreshSummaryEmpty')
   }
   return parts.join(' · ')
 })
@@ -226,7 +233,7 @@ async function triggerAllProbes() {
     }
   } catch (e: unknown) {
     probeAllSummary.value = null
-    alert(e instanceof Error ? e.message : '探测失败')
+    alert(e instanceof Error ? e.message : pm('probeFailed'))
   } finally {
     probeAllLoading.value = false
   }
@@ -240,24 +247,24 @@ function probeResultBadge(category: string) {
 }
 
 function probeResultLabel(category: string) {
-  if (category === 'ok') return '成功'
-  if (category === 'model_unavailable') return '模型不可用'
-  if (category === 'provider_error') return '供应商问题'
-  if (category === 'skipped') return '已跳过'
+  if (category === 'ok') return pm('probeCategory.ok')
+  if (category === 'model_unavailable') return pm('probeCategory.unavailable')
+  if (category === 'provider_error') return pm('probeCategory.providerError')
+  if (category === 'skipped') return pm('probeCategory.skipped')
   return category
 }
 
 onBeforeUnmount(stopPolling)
 
 function sourceLabel(v?: string | null) {
-  if (v === 'auto') return '自动'
-  if (v === 'manual') return '手动'
-  return '从未'
+  if (v === 'auto') return pm('source.auto')
+  if (v === 'manual') return pm('source.manual')
+  return pm('source.never')
 }
 
 function timeText(v?: string | null) {
   if (!v) return '—'
-  return new Date(v).toLocaleString('zh-CN', { hour12: false })
+  return fmtDateTime(v)
 }
 
 function resetDraft(o: ModelOffer) {
@@ -279,7 +286,7 @@ async function openDrawer(o: ModelOffer) {
   try {
     draft.suggest = await getModelOfferSuggestions(props.providerId, o.id)
   } catch (e: unknown) {
-    draft.suggestErr = e instanceof Error ? e.message : '加载推荐失败'
+    draft.suggestErr = e instanceof Error ? e.message : pm('suggestionFailed')
   } finally {
     draft.loadingSuggest = false
   }
@@ -314,85 +321,85 @@ async function checkModelAcrossCredentials() {
           // Phase 1 failed: Not in offers list
           return {
             credential_id: cred.id,
-            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
             phase1_status: 'unavailable' as const,
-            phase1_message: '模型列表中无此模型',
+            phase1_message: pm('phase1Missing'),
             phase2_status: null,
             phase2_message: null,
             status: 'unavailable' as const,
-            error: '该凭据的模型列表中未找到此模型'
+            error: pm('offerNotInList')
           }
         }
-        
+
         // Phase 1 passed: Model exists in offers
         // Phase 2: Dynamic check - run checkCredential for health check
         try {
           const result = await checkCredential(props.providerId, cred.id)
-          
+
           // Analyze Phase 1: models_ok (ability to fetch model list)
           let phase1Status: 'ok' | 'warning' | 'error'
           let phase1Message: string
-          
+
           if (result.models_ok) {
             phase1Status = 'ok'
-            phase1Message = '✓ 模型列表获取成功'
+            phase1Message = pm('phase1ModelsOk')
           } else if (result.effective_source === 'manifest' || result.effective_source === 'manifest_only') {
             phase1Status = 'warning'
-            phase1Message = '⚠ 使用manifest备用（API不可达）'
+            phase1Message = pm('phase1ManifestFallback')
           } else {
             phase1Status = 'error'
-            const reason = result.models_failure_reason || result.models_error || '未知错误'
-            phase1Message = `✗ 模型列表获取失败: ${reason}`
+            const reason = result.models_failure_reason || result.models_error || ''
+            phase1Message = pm('phase1Failed', { reason })
           }
-          
+
           // Analyze Phase 2: probe_ok (actual chat test)
           let phase2Status: 'ok' | 'error' | null = null
           let phase2Message: string | null = null
           let finalStatus: 'ok' | 'error' | 'warning'
           let finalError: string | null = null
-          
+
           if (result.probe_ok) {
             phase2Status = 'ok'
-            phase2Message = '✓ Chat调用测试成功'
+            phase2Message = pm('phase2ChatOk')
             finalStatus = 'ok'
           } else if (result.probe_error) {
             phase2Status = 'error'
-            
+
             // Classify error types
             const error = result.probe_error.toLowerCase()
             const statusCode = result.probe_http_status
-            
+
             if (statusCode === 401 || error.includes('unauthorized') || error.includes('invalid') || error.includes('api key')) {
-              phase2Message = `✗ 认证失败: ${result.probe_error}`
+              phase2Message = pm('phase2Auth', { msg: result.probe_error })
             } else if (statusCode === 402 || statusCode === 429 || error.includes('quota') || error.includes('insufficient') || error.includes('balance')) {
-              phase2Message = `✗ 配额/费用问题: ${result.probe_error}`
+              phase2Message = pm('phase2Quota', { msg: result.probe_error })
             } else if (statusCode === 404 || error.includes('not found') || error.includes('does not exist')) {
-              phase2Message = `✗ 模型不存在/不支持: ${result.probe_error}`
+              phase2Message = pm('phase2NotFound', { msg: result.probe_error })
             } else if (statusCode && statusCode >= 500) {
-              phase2Message = `✗ 服务器错误: ${result.probe_error}`
+              phase2Message = pm('phase2Server', { msg: result.probe_error })
             } else if (error.includes('timeout') || error.includes('network')) {
-              phase2Message = `✗ 网络/超时: ${result.probe_error}`
+              phase2Message = pm('phase2Network', { msg: result.probe_error })
             } else {
-              phase2Message = `✗ 调用失败: ${result.probe_error}`
+              phase2Message = pm('phase2Generic', { msg: result.probe_error })
             }
-            
+
             if (statusCode) {
               phase2Message += ` (HTTP ${statusCode})`
             }
-            
+
             finalStatus = 'error'
             finalError = phase2Message
           } else {
             // No probe result
             phase2Status = null
-            phase2Message = '未执行chat测试'
+            phase2Message = pm('phase2Skipped')
             finalStatus = 'warning'
-            finalError = '健康检查未包含chat测试'
+            finalError = pm('phase2Skipped')
           }
-          
+
           return {
             credential_id: cred.id,
-            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
             phase1_status: phase1Status,
             phase1_message: phase1Message,
             phase2_status: phase2Status,
@@ -403,21 +410,21 @@ async function checkModelAcrossCredentials() {
         } catch (e: unknown) {
           return {
             credential_id: cred.id,
-            credential_label: cred.label || cred.name || `凭据 #${cred.id}`,
+            credential_label: cred.label || cred.name || pm('creds.labelFallback', { id: cred.id }),
             phase1_status: 'ok' as const,
-            phase1_message: '✓ 模型在列表中',
+            phase1_message: pm('phase2InOfferOnly'),
             phase2_status: 'error' as const,
-            phase2_message: `✗ 检查失败: ${e instanceof Error ? e.message : String(e)}`,
+            phase2_message: pm('phase2Generic', { msg: e instanceof Error ? e.message : String(e) }),
             status: 'error' as const,
-            error: `检查请求失败: ${e instanceof Error ? e.message : String(e)}`
+            error: pm('checkFailedPrefix', { msg: e instanceof Error ? e.message : String(e) })
           }
         }
       })
     )
-    
+
     modelCheckResults.value = results
   } catch (e: unknown) {
-    alert('检查失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(pm('checkFailedPrefix', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
     checkingModel.value = false
   }
@@ -462,7 +469,7 @@ async function saveEdit() {
       selected.value = offers.value[idx]
     }
   } catch (e: unknown) {
-    draft.saveErr = e instanceof Error ? e.message : '保存失败'
+    draft.saveErr = e instanceof Error ? e.message : pm('saveFailed')
   } finally {
     draft.saving = false
   }
@@ -478,7 +485,7 @@ async function toggleAvailable() {
     const refreshed = offers.value.find(x => x.id === o.id)
     if (refreshed) selected.value = refreshed
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : '操作失败'
+    error.value = e instanceof Error ? e.message : pm('operationFailed')
   } finally {
     draft.toggling = false
   }
@@ -511,10 +518,10 @@ load()
   <div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
       <h4 style="margin:0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span>模型清单 ({{ offers.length }})</span>
+        <span>{{ pm('title', { n: offers.length }) }}</span>
         <span v-if="refreshing" class="refresh-hint refresh-hint--loading" role="status" aria-live="polite">
           <span class="refresh-spinner" aria-hidden="true"></span>
-          正在从供应商读取数据…
+          {{ pm('refreshing') }}
         </span>
         <span
           v-else-if="refreshError"
@@ -534,53 +541,53 @@ load()
         <button
           class="btn btn-sm"
           :disabled="refreshing || clearing"
-          :title="refreshing ? '正在从供应商读取模型列表…' : '调用供应商 /v1/models 接口，新增未入库的模型'"
+          :title="pm('refreshTitle')"
           @click="refreshFromProvider"
         >
-          {{ refreshing ? '读取中…' : '从供应商读取' }}
+          {{ refreshing ? pm('refreshLoading') : pm('refreshBtn') }}
         </button>
         <button
           class="btn btn-sm btn-ghost"
           :disabled="loading || refreshing || clearing || offers.length === 0"
-          title="移除当前供应商的全部模型绑定，便于重新拉取"
+          :title="pm('clearTitle')"
           @click="clearModels"
-        >{{ clearing ? '清空中…' : '清空' }}</button>
+        >{{ clearing ? pm('clearLoading') : pm('clearBtn') }}</button>
         <button
           class="btn btn-sm btn-ghost"
           :disabled="loading || refreshing || clearing"
-          title="仅从本地缓存重新加载，不调用供应商接口"
+          :title="pm('refreshLocalTitle')"
           @click="load"
-        >{{ loading ? '加载中…' : '刷新' }}</button>
+        >{{ loading ? pm('refreshLocalLoading') : pm('refreshLocalBtn') }}</button>
         <button
           class="btn btn-sm"
           :disabled="probeAllLoading || offers.length === 0"
-          title="对列表中所有模型发起探测，验证可用性"
+          :title="pm('probeAllTitle')"
           @click="triggerAllProbes"
-        >{{ probeAllLoading ? '探测中…' : '全面探测' }}</button>
+        >{{ probeAllLoading ? pm('probeAllLoading') : pm('probeAllBtn') }}</button>
       </div>
       <div v-if="probeAllLoading" class="probe-all-loading">
         <span class="refresh-spinner" aria-hidden="true"></span>
-        正在探测模型…
+        {{ pm('probingModels') }}
       </div>
       <div v-else-if="probeAllSummary" class="probe-all-summary">
         <div class="probe-summary-stats">
-          <span class="stat stat-ok">✅ 成功 {{ probeAllSummary.ok }}</span>
-          <span class="stat stat-error">❌ 模型不可用 {{ probeAllSummary.model_unavailable }}</span>
-          <span class="stat stat-warn">⚠️ 供应商问题 {{ probeAllSummary.provider_error }}</span>
-          <span class="stat stat-skip">⏭️ 跳过 {{ probeAllSummary.skipped }}</span>
+          <span class="stat stat-ok">{{ pm('probeResultOk', { n: probeAllSummary.ok }) }}</span>
+          <span class="stat stat-error">{{ pm('probeResultUnavailable', { n: probeAllSummary.model_unavailable }) }}</span>
+          <span class="stat stat-warn">{{ pm('probeResultProviderErr', { n: probeAllSummary.provider_error }) }}</span>
+          <span class="stat stat-skip">{{ pm('probeResultSkipped', { n: probeAllSummary.skipped }) }}</span>
         </div>
         <details class="probe-results-details">
-          <summary>查看详细结果 ({{ probeAllResults.length }})</summary>
+          <summary>{{ pm('probeResultsDetails', { n: probeAllResults.length }) }}</summary>
           <table class="data-table probe-results-table">
             <thead>
               <tr>
-                <th>凭据</th>
-                <th>模型</th>
-                <th>状态</th>
-                <th>分类</th>
-                <th>HTTP</th>
-                <th>错误</th>
-                <th>延迟</th>
+                <th>{{ pm('tableCol.credential') }}</th>
+                <th>{{ pm('tableCol.model') }}</th>
+                <th>{{ pm('tableCol.status') }}</th>
+                <th>{{ pm('tableCol.category') }}</th>
+                <th>{{ pm('tableCol.http') }}</th>
+                <th>{{ pm('tableCol.error') }}</th>
+                <th>{{ pm('tableCol.latency') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -612,7 +619,7 @@ load()
         </div>
         <div class="metric" v-if="Object.keys(routable.unavailable_breakdown).length > 0">
           <b>细分</b>
-          <div style="font-size:10px;text-align:left;max-height:80px;overflow-y:auto">
+          <div class="routable-breakdown">
             <div v-for="(count, code) in routable.unavailable_breakdown" :key="code">
               <code>{{ code }}</code>: {{ count }}
             </div>
@@ -626,18 +633,18 @@ load()
       <table class="data-table model-table">
         <thead>
           <tr>
-            <th>原始模型名</th>
-            <th>标准化名</th>
-            <th>关联凭据</th>
-            <th>可用</th>
-            <th>来源</th>
-            <th>延迟 P95</th>
-            <th>成功率</th>
+            <th>{{ pm('table.rawModel') }}</th>
+            <th>{{ pm('table.standardName') }}</th>
+            <th>{{ pm('table.credential') }}</th>
+            <th>{{ pm('table.available') }}</th>
+            <th>{{ pm('table.source') }}</th>
+            <th>{{ pm('table.latencyP95') }}</th>
+            <th>{{ pm('table.successRate') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="7">加载中…</td></tr>
-          <tr v-else-if="!offers.length"><td colspan="7">暂无模型</td></tr>
+          <tr v-if="loading"><td colspan="7">{{ pm('tableLoading') }}</td></tr>
+          <tr v-else-if="!offers.length"><td colspan="7">{{ pm('tableEmpty') }}</td></tr>
           <tr
             v-for="o in offers"
             :key="o.id"
@@ -654,7 +661,7 @@ load()
             <td>#{{ o.credential_id }} {{ o.credential_label }}</td>
             <td>
               <span class="avail-badge" :class="o.available ? 'on' : 'off'">
-                {{ o.available ? '可用' : '不可用' }}
+                {{ o.available ? pm('overview.chipAvailable') : pm('overview.chipUnavailable') }}
               </span>
             </td>
             <td>
@@ -675,17 +682,17 @@ load()
         <div class="drawer-header">
           <div>
             <h3 style="margin:0"><code>{{ selected.raw_model_name }}</code></h3>
-            <div class="drawer-sub">offer #{{ selected.id }} · 凭据 #{{ selected.credential_id }} {{ selected.credential_label }}</div>
+            <div class="drawer-sub">{{ pm('drawTitle', { id: selected.id, credId: selected.credential_id, credLabel: selected.credential_label }) }}</div>
           </div>
-          <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">关闭</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">{{ pm('drawerClose') }}</button>
         </div>
 
         <div class="drawer-body">
           <div class="drawer-section">
-            <div class="drawer-section-title">可用状态</div>
+            <div class="drawer-section-title">{{ pm('drawerSectionAvailable') }}</div>
             <div class="avail-row">
               <span class="avail-badge lg" :class="selected.available ? 'on' : 'off'">
-                {{ selected.available ? '可用' : '不可用' }}
+                {{ selected.available ? pm('overview.chipAvailable') : pm('overview.chipUnavailable') }}
               </span>
               <span class="cell-muted">{{ sourceLabel(selected.availability_source) }}</span>
               <span v-if="selected.unavailable_at" class="cell-muted">{{ timeText(selected.unavailable_at) }}</span>
@@ -696,24 +703,24 @@ load()
               style="margin-top:10px"
               @click="toggleAvailable"
             >
-              {{ draft.toggling ? '处理中…' : (selected.available ? '禁用此绑定' : '启用此绑定') }}
+              {{ draft.toggling ? pm('drawToggleLoading') : (selected.available ? pm('drawToggleDisable') : pm('drawToggleEnable')) }}
             </button>
           </div>
 
           <div class="drawer-section">
             <div class="drawer-section-title">
-              标准化名
+              {{ pm('drawerSectionStandard') }}
             </div>
             <input
               v-model="draft.standardized_name"
               class="field-input"
-              placeholder="标准化模型名"
+              :placeholder="pm('standardizedPlaceholder')"
             />
             <div v-if="draft.saveErr" class="alert alert-danger" style="margin:8px 0;padding:6px 10px">{{ draft.saveErr }}</div>
             <div class="suggest-block">
               <div class="suggest-row">
-                <span class="suggest-label">规则推荐</span>
-                <span v-if="draft.loadingSuggest" class="suggest-loading">计算中…</span>
+                <span class="suggest-label">{{ pm('ruleBased') }}</span>
+                <span v-if="draft.loadingSuggest" class="suggest-loading">{{ pm('ruleBasedLoading') }}</span>
                 <button
                   v-else-if="draft.suggest?.rule_based"
                   type="button"
@@ -723,14 +730,14 @@ load()
                 <span v-else class="suggest-empty">—</span>
               </div>
               <div class="suggest-row">
-                <span class="suggest-label">已认可标准化名</span>
+                <span class="suggest-label">{{ pm('canonicalLabel') }}</span>
                 <select
                   :value="draft.canonical_id ?? ''"
                   class="field-input"
                   style="margin:0"
                   @change="(ev) => applyCanonical((ev.target as HTMLSelectElement).value === '' ? null : Number((ev.target as HTMLSelectElement).value))"
                 >
-                  <option value="">— 不关联 canonical —</option>
+                  <option value="">{{ pm('canonicalEmpty') }}</option>
                   <option
                     v-for="c in (draft.suggest?.canonical_options ?? [])"
                     :key="c.id"
@@ -744,35 +751,35 @@ load()
 
           <div class="drawer-section">
             <div class="drawer-section-title">
-              出口模型名（endpoint ID）
+              {{ pm('drawerSectionOutbound') }}
               <span
                 class="hint"
-                title="某些供应商（如火山方舟）需要 endpoint ID（如 ep-20241227XXXX）作为模型字段，而非原始名称。未配置时探针会被跳过（错误码 endpoint_id_required）。"
+                :title="pm('drawerOutboundHint')"
               >?</span>
             </div>
             <input
               v-model="draft.outbound_model_name"
               class="field-input"
-              :placeholder="selected?.raw_model_name || 'ep-XXXXXXXX'"
+              :placeholder="selected?.raw_model_name || pm('drawerOutboundPlaceholder')"
             />
             <div class="cell-sub" style="margin-top:6px">
               <span v-if="draft.outbound_model_name">
-                将发送：<code>{{ draft.outbound_model_name }}</code>
+                {{ pm('drawerOutboundSend') }}<code>{{ draft.outbound_model_name }}</code>
               </span>
               <span v-else class="cell-muted">
-                未设置 — 将使用 <code>{{ selected?.raw_model_name }}</code>
+                {{ pm('drawerOutboundUnset') }} <code>{{ selected?.raw_model_name }}</code>
               </span>
             </div>
           </div>
 
           <div class="drawer-section">
-            <div class="drawer-section-title">指标</div>
+            <div class="drawer-section-title">{{ pm('drawerSectionMetrics') }}</div>
             <div class="metric-row">
-              <span>P95 延迟</span>
+              <span>{{ pm('metricP95') }}</span>
               <b>{{ selected.p95_latency_ms != null ? selected.p95_latency_ms + 'ms' : '—' }}</b>
             </div>
             <div class="metric-row">
-              <span>成功率</span>
+              <span>{{ pm('metricSuccessRate') }}</span>
               <b>{{ selected.success_rate != null ? (selected.success_rate * 100).toFixed(1) + '%' : '—' }}</b>
             </div>
           </div>
@@ -780,42 +787,47 @@ load()
           <!-- Phase 3.2: Batch credential check results -->
           <div v-if="modelCheckResults" class="drawer-section">
             <div class="drawer-section-title">
-              凭据检查结果
-              <span class="cell-sub">({{ modelCheckResults.length }}个凭据)</span>
+              {{ pm('drawerSectionCheck') }}
+              <span class="cell-sub">{{ pm('drawerCheckSuffix', { n: modelCheckResults.length }) }}</span>
             </div>
-            
+
             <div class="check-results">
-              <div 
-                v-for="result in modelCheckResults" 
+              <div
+                v-for="result in modelCheckResults"
                 :key="result.credential_id"
                 class="check-result-row"
               >
                 <div class="result-header">
                   <span class="credential-label">{{ result.credential_label }}</span>
                   <span class="status-badge" :class="result.status">
-                    {{ result.status === 'ok' ? '✓ 可用' : result.status === 'unavailable' ? '✗ 不可用' : result.status === 'warning' ? '⚠ 警告' : '✗ 错误' }}
+                    {{
+                      result.status === 'ok' ? pm('checkStatusOk') :
+                      result.status === 'unavailable' ? pm('checkStatusUnavailable') :
+                      result.status === 'warning' ? pm('checkStatusWarning') :
+                      pm('checkStatusError')
+                    }}
                   </span>
                 </div>
-                
+
                 <!-- Two-phase validation details -->
                 <div class="phase-details">
                   <!-- Phase 1: Model availability -->
                   <div class="phase-row">
-                    <span class="phase-label">阶段1 - 模型列表:</span>
+                    <span class="phase-label">{{ pm('phaseLabel.phase1') }}</span>
                     <span class="phase-status" :class="result.phase1_status">
                       {{ result.phase1_message }}
                     </span>
                   </div>
-                  
+
                   <!-- Phase 2: Chat test (if applicable) -->
                   <div v-if="result.phase2_message" class="phase-row">
-                    <span class="phase-label">阶段2 - Chat测试:</span>
+                    <span class="phase-label">{{ pm('phaseLabel.phase2') }}</span>
                     <span class="phase-status" :class="result.phase2_status">
                       {{ result.phase2_message }}
                     </span>
                   </div>
                 </div>
-                
+
                 <!-- Overall error message (if different from phase messages) -->
                 <div v-if="result.error && result.status === 'unavailable'" class="result-error">
                   {{ result.error }}
@@ -828,19 +840,19 @@ load()
         <div class="drawer-footer">
           <div class="btn-row btn-row--space-between">
             <!-- Left: Check all credentials button -->
-            <button 
-              class="btn btn-outline" 
+            <button
+              class="btn btn-outline"
               :disabled="checkingModel"
               @click="checkModelAcrossCredentials"
             >
-              {{ checkingModel ? '检查中…' : '检查所有凭据' }}
+              {{ checkingModel ? pm('drawCheckAllLoading') : pm('drawCheckAllBtn') }}
             </button>
-            
+
             <!-- Right: Save and cancel buttons -->
             <div class="btn-row btn-row--end">
-              <button class="btn btn-ghost" @click="closeDrawer">取消</button>
+              <button class="btn btn-ghost" @click="closeDrawer">{{ pm('drawCancel') }}</button>
               <button class="btn btn-primary" :disabled="draft.saving" @click="saveEdit">
-                {{ draft.saving ? '保存中…' : '保存标准化名' }}
+                {{ draft.saving ? pm('drawSaving') : pm('drawSave') }}
               </button>
             </div>
           </div>
@@ -1164,5 +1176,11 @@ load()
   justify-content: space-between;
   align-items: center;
   width: 100%;
+}
+.routable-breakdown {
+  font-size: 10px;
+  text-align: start;
+  max-height: 80px;
+  overflow-y: auto;
 }
 </style>
