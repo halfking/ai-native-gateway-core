@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // Checker detects continuous failures and marks credentials as degraded.
@@ -86,8 +88,10 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 	errorKinds := make(map[string]int)
 
 	for _, e := range entries {
-		// Skip network errors (transient, not credential issue)
-		if e.ErrorKind == "network" {
+		// 2026-07-03 P0 fix: skip network errors AND client bugs.
+		// Client bugs (tool_call_id_mismatch, invalid_request_format, etc.)
+		// are not credential health issues and should not affect failureRate.
+		if e.ErrorKind == "network" || errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue
 		}
 		total++
