@@ -691,7 +691,7 @@ onMounted(() => {
   }
 
   .description {
-    color: #909399;
+    color: var(--muted, #8b949e);
     margin: 0;
   }
 }
@@ -708,13 +708,13 @@ onMounted(() => {
 
 .help-text {
   margin-left: 12px;
-  color: #909399;
+  color: var(--muted, #8b949e);
   font-size: 12px;
 }
 
 .info-icon {
   margin-left: 4px;
-  color: #909399;
+  color: var(--muted, #8b949e);
   cursor: help;
 }
 
@@ -747,23 +747,23 @@ onMounted(() => {
     }
 
     &.risk-critical {
-      background: #fef0f0;
-      color: #f56c6c;
+      background: rgba(248,81,73,.12);
+      color: #f85149;
     }
 
     &.risk-high {
-      background: #fef0f0;
-      color: #f56c6c;
+      background: rgba(248,81,73,.12);
+      color: #f85149;
     }
 
     &.risk-medium {
-      background: #fdf6ec;
-      color: #e6a23c;
+      background: rgba(210,153,34,.12);
+      color: #d29922;
     }
 
     &.risk-low {
-      background: #f0f9ff;
-      color: #409eff;
+      background: rgba(99,102,241,.12);
+      color: #818cf8;
     }
   }
 }
@@ -771,7 +771,7 @@ onMounted(() => {
 .policy-stats {
   p {
     margin: 4px 0;
-    color: #606266;
+    color: var(--muted, #8b949e);
   }
 }
 
