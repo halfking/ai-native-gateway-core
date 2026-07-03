@@ -11,7 +11,7 @@
         </h3>
         <div class="big-stat">
           <div class="big-value">{{ data?.database.total_human || '—' }}</div>
-          <div class="big-label">总占用（含 WAL / TOAST）</div>
+          <div class="big-label">总占用（表 + 索引 + TOAST 之和）</div>
         </div>
         <div class="metric-row">
           <span>Database</span>
@@ -73,6 +73,43 @@
           ></div>
         </div>
       </div>
+    </div>
+
+    <!-- 列存 (citus_columnar) — 单独一行展示 -->
+    <div class="card columnar-card">
+      <h3 class="card-title">
+        列存存储（citus_columnar）
+        <span v-if="data?.columnar.available" class="badge ok">已启用</span>
+        <span v-else class="badge warn">未安装</span>
+      </h3>
+      <div v-if="data?.columnar.available" class="columnar-grid">
+        <div class="columnar-stat">
+          <div class="stat-label">表数（含分区）</div>
+          <div class="stat-value">{{ data.columnar.table_count }}</div>
+          <div class="stat-meta">使用 columnar 访问方法的表</div>
+        </div>
+        <div class="columnar-stat">
+          <div class="stat-label">字段总数</div>
+          <div class="stat-value">{{ data.columnar.total_columns }}</div>
+          <div class="stat-meta">所有列存表的字段之和</div>
+        </div>
+        <div class="columnar-stat">
+          <div class="stat-label">列存占用</div>
+          <div class="stat-value">{{ data.columnar.total_human || '—' }}</div>
+          <div class="stat-meta">压缩后（含 chunk 元数据）</div>
+        </div>
+        <div class="columnar-stat">
+          <div class="stat-label">DB 占比</div>
+          <div class="stat-value">{{ columnarPctOfDB }}%</div>
+          <div class="stat-meta">列存 / Database 总和</div>
+        </div>
+      </div>
+      <div v-else class="empty-hint">
+        ⚠️ {{ data?.columnar.note || 'citus_columnar 扩展未安装' }}
+      </div>
+      <p v-if="data?.columnar.available && data.columnar.note" class="columnar-note">
+        {{ data.columnar.note }}
+      </p>
     </div>
 
     <!-- 本机日志目录 -->
@@ -163,12 +200,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { dataLifecycleStorage, dataLifecycleTableSizes, type StorageOverview, type TableSizeInfo } from '../../api'
 
 const data = ref<StorageOverview | null>(null)
 const tables = ref<TableSizeInfo[]>([])
 const loadingTables = ref(false)
+
+// 列存占 DB 的比例
+const columnarPctOfDB = computed(() => {
+  if (!data.value?.columnar.available) return 0
+  const col = data.value.columnar.total_bytes
+  const db = data.value.database.total_bytes
+  if (!db || db <= 0) return 0
+  return ((col / db) * 100).toFixed(1)
+})
 
 async function load() {
   try {
@@ -433,6 +479,51 @@ onMounted(() => {
   padding: 16px;
   color: #8b949e;
   font-size: 13px;
+}
+
+/* ── 列存 (citus_columnar) ── */
+.columnar-card {
+  border-left: 3px solid rgba(99, 102, 241, 0.5);
+}
+.columnar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+.columnar-stat {
+  background: #0f1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.columnar-stat .stat-label {
+  font-size: 11px;
+  color: #8b949e;
+  margin-bottom: 6px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.columnar-stat .stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #e6edf3;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.columnar-stat .stat-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+.columnar-note {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  border-left: 2px solid #6366f1;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #818cf8;
 }
 
 @media (max-width: 800px) {
