@@ -1,5 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { useFormat } from '../../i18n/useFormat'
 import type { ProviderDetail, ModelOffer } from '../../api'
+
+const { t: td } = useI18n()
+const pd = (k: string, params?: Record<string, unknown>): string =>
+  td(`providerDetail.${k}` as never, params as never)
+const { fmtDateTime } = useFormat()
 
 const props = defineProps<{
   provider: ProviderDetail
@@ -17,65 +25,71 @@ function fmtMoney(v: number | null | undefined): string {
 
 const availableModels = computed(() => props.models.filter(m => m.available))
 const unavailableModels = computed(() => props.models.filter(m => !m.available))
-
-import { computed } from 'vue'
 </script>
 
 <template>
   <div class="overview-grid">
     <div class="metric-card">
-      <div class="metric-label">活跃凭据</div>
+      <div class="metric-label">{{ pd('overview.activeCreds') }}</div>
       <div class="metric-value">{{ provider.active_cred_count }}</div>
       <div class="metric-sub">
-        <span class="dot dot-green"></span> 健康 {{ provider.healthy_cred_count }}
-        <span class="dot dot-amber" style="margin-left:8px"></span> 警示 {{ provider.warning_cred_count }}
+        <span class="dot dot-green"></span> {{ pd('overview.healthySuffix', { n: provider.healthy_cred_count }) }}
+        <span class="dot dot-amber dot-amber--gapped"></span> {{ pd('overview.warningSuffix', { n: provider.warning_cred_count }) }}
       </div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">熔断/不可达</div>
+      <div class="metric-label">{{ pd('overview.circuitTitle') }}</div>
       <div class="metric-value">{{ provider.cooling_cred_count }} / {{ provider.unreachable_cred_count }}</div>
-      <div class="metric-sub">凭据健康状态</div>
+      <div class="metric-sub">{{ pd('overview.circuitSub') }}</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">可用模型</div>
+      <div class="metric-label">{{ pd('overview.modelCoverageTitle') }}</div>
       <div class="metric-value">{{ provider.available_model_count }} / {{ provider.available_model_count + provider.unavailable_model_count }}</div>
-      <div class="metric-sub">覆盖率 {{ provider.available_model_count + provider.unavailable_model_count > 0 ? ((provider.available_model_count / (provider.available_model_count + provider.unavailable_model_count)) * 100).toFixed(1) + '%' : '-' }}</div>
+      <div class="metric-sub">
+        {{
+          provider.available_model_count + provider.unavailable_model_count > 0
+            ? pd('overview.coverageSuffix', {
+                pct: ((provider.available_model_count / (provider.available_model_count + provider.unavailable_model_count)) * 100).toFixed(1) + '%',
+              })
+            : '-'
+        }}
+      </div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">24h 错误率</div>
+      <div class="metric-label">{{ pd('overview.errorRate24h') }}</div>
       <div class="metric-value" :class="provider.error_rate_24h > 0.1 ? 'text-danger' : ''">
         {{ fmtPct(provider.error_rate_24h) }}
       </div>
-      <div class="metric-sub">最近 24 小时</div>
+      <div class="metric-sub">{{ pd('overview.last24h') }}</div>
     </div>
 
     <div class="info-section" style="grid-column: 1 / -1; margin-top: 12px">
-      <h4>基本信息</h4>
+      <h4>{{ pd('overview.basicInfo') }}</h4>
       <div class="info-grid">
-        <div><span class="info-label">目录代码</span><code>{{ provider.catalog_code || provider.code }}</code></div>
-        <div><span class="info-label">协议</span><code>{{ provider.protocol }}</code></div>
-        <div><span class="info-label">Base URL</span><code class="url">{{ provider.base_url || '-' }}</code></div>
-        <div><span class="info-label">类型</span>{{ provider.kind }} / {{ provider.category }}</div>
-        <div><span class="info-label">折扣率</span>{{ provider.discount_rate || '-' }}</div>
-        <div><span class="info-label">状态</span>
+        <div><span class="info-label">{{ pd('overview.labelCatalogCode') }}</span><code>{{ provider.catalog_code || provider.code }}</code></div>
+        <div><span class="info-label">{{ pd('overview.labelProtocol') }}</span><code>{{ provider.protocol }}</code></div>
+        <div><span class="info-label">{{ pd('overview.labelBaseUrl') }}</span><code class="url">{{ provider.base_url || '-' }}</code></div>
+        <div><span class="info-label">{{ pd('overview.labelKind') }}</span>{{ provider.kind }} / {{ provider.category }}</div>
+        <div><span class="info-label">{{ pd('overview.labelDiscountRate') }}</span>{{ provider.discount_rate || '-' }}</div>
+        <div><span class="info-label">{{ pd('overview.labelStatus') }}</span>
           <span class="badge" :class="provider.enabled ? 'badge-green' : 'badge-red'">
-            {{ provider.enabled ? '已启用' : '已禁用' }}
+            {{ provider.enabled ? pd('settings.statusEnabled') : pd('settings.statusDisabled') }}
           </span>
         </div>
-        <div v-if="provider.notes"><span class="info-label">备注</span>{{ provider.notes }}</div>
-        <div><span class="info-label">创建时间</span>{{ provider.created_at ? new Date(provider.created_at).toLocaleString('zh-CN') : '-' }}</div>
+        <div v-if="provider.notes"><span class="info-label">{{ pd('overview.labelNotes') }}</span>{{ provider.notes }}</div>
+        <div><span class="info-label">{{ pd('overview.labelCreatedAt') }}</span>{{ provider.created_at ? fmtDateTime(provider.created_at) : '-' }}</div>
       </div>
     </div>
 
     <div class="model-matrix" style="grid-column: 1 / -1" v-if="models.length > 0">
-      <h4>模型可用性矩阵 <span class="muted">({{ availableModels.length }} 可用 / {{ unavailableModels.length }} 不可用)</span></h4>
+      <h4>{{ pd('overview.matrixTitle') }} <span class="muted">{{ pd('overview.matrixMeta', { ok: availableModels.length, fail: unavailableModels.length }) }}</span></h4>
       <div class="matrix-chips">
         <span
           v-for="m in models"
           :key="m.id"
           class="model-chip"
           :class="m.available ? 'chip-green' : 'chip-red'"
-          :title="m.available ? '可用' : (m.unavailable_reason || '不可用')"
+          :title="m.available ? pd('overview.chipAvailable') : (m.unavailable_reason || pd('overview.chipUnavailable'))"
         >
           {{ m.raw_model_name }}
           <span v-if="m.unavailable_reason" class="chip-reason">({{ m.unavailable_reason }})</span>
@@ -115,10 +129,11 @@ import { computed } from 'vue'
 .text-danger { color: #f44336; }
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
-  display: inline-block; vertical-align: middle; margin-right: 2px;
+  display: inline-block; vertical-align: middle; margin-inline-end: 2px;
 }
 .dot-green { background: #4caf50; }
 .dot-amber { background: #f0b429; }
+.dot-amber--gapped { margin-inline-start: 8px; }
 .info-section { margin-top: 8px; }
 .info-section h4 { margin: 0 0 8px; font-size: 14px; color: var(--text); }
 .info-grid {
@@ -130,7 +145,7 @@ import { computed } from 'vue'
 }
 .info-label {
   color: var(--muted);
-  margin-right: 8px;
+  margin-inline-end: 8px;
   font-size: 12px;
 }
 code { font-size: 12px; }
