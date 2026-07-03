@@ -982,8 +982,8 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   stream_chunk_errors = COALESCE($68, stream_chunk_errors),
 	   stream_chunks_sent = COALESCE($69, stream_chunks_sent)
 	  FROM latest
-	 WHERE request_logs.id = latest.id
-	   AND request_logs.ts = latest.ts
+	 WHERE request_logs_default.id = latest.id
+	   AND request_logs_default.ts = latest.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,
