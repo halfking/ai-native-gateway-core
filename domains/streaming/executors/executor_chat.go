@@ -527,9 +527,34 @@ func (e *Executor) executeOpenAI(
 					// Do not write 4xx to ResponseWriter here — Execute() may
 					// fail over to the next credential. Writing first would
 					// prepend e.g. "404 page not found" before a later 200 body.
-					return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)]))
+					//
+					// 2026-07-03 (Bug #N): preserve errKind via a typed
+					// *upstreampkg.Error so the outer Execute() loop and
+					// CandidateFailureLogger can read Kind=errKind instead
+					// of re-classifying the wrapped fmt.Errorf string via
+					// ClassifyError, which falls through to KindTransient
+					// for body-driven kinds (KindToolCallIdMismatch,
+					// KindContextLength, KindUnsupportedFeature). Without
+					// this, the same minimax-m3 tool_call_id_mismatch
+					// 4xx that surfaces as "client bug" on the inner
+					// branch (line 456) regresses to "transient" in
+					// request_logs.error_kind / circuit / sticky / URSM.
+					return nil, &upstreampkg.Error{
+						Kind:       errKind,
+						Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)])),
+						Body:       append([]byte(nil), body[:n]...),
+						StatusCode: resp.StatusCode,
+					}
 				}
-				return nil, &retryableError{err: fmt.Errorf("upstream %d", resp.StatusCode)}
+				// Same fix for the retryable path: keep the precise kind
+				// on the *retryableError wrapper so the outer loop sees
+				// the right value if it ever unwraps to a *upstreampkg.Error.
+				return nil, &retryableError{err: &upstreampkg.Error{
+					Kind:       errKind,
+					Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
+					Body:       append([]byte(nil), body[:n]...),
+					StatusCode: resp.StatusCode,
+				}}
 			}
 
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)

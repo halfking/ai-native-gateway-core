@@ -804,6 +804,39 @@ func main() {
 		slog.Info("telemetry emission enabled (chatHandler + routingExec)")
 	}
 
+	// ── Live request stream SSE hub (2026-07-03) ───────────────────
+	// Fans out newly-persisted request_logs rows to dashboard clients
+	// at GET /api/admin/live-stream. Created here (not in admin) so
+	// we have access to the database pool and the telemetry client.
+	// Without a DB the hub still relays live broadcasts from
+	// telemetry — only the initial replay is empty.
+	var liveStreamHub *admin.LiveStreamSSEHub
+	if dbConn != nil && dbConn.Enabled() {
+		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
+			BroadcastQueueSize: 2048,
+			InitialReplayLimit: 50,
+			IdleThreshold:      60 * time.Second,
+			IdleTickInterval:   10 * time.Second,
+			KeepaliveInterval:  25 * time.Second,
+		})
+		go liveStreamHub.Run()
+
+		// Wire the telemetry persistence hook → SSE hub. The hook
+		// runs on the telemetry worker goroutine, so we MUST keep
+		// the closure cheap. The hub's Publish() is a non-blocking
+		// channel send; the provider_id→catalog_code resolution
+		// inside is a sync.Map lookup with a 200ms-timeout DB
+		// fallback on miss. Bounded to <1ms in the common case.
+		if telemetryClient.Enabled() {
+			hub := liveStreamHub
+			telemetryClient.SetOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+				hub.Publish(adminLiveRequestFromEntry(entry, hub))
+			})
+			slog.Info("telemetry onPersisted wired → live stream SSE hub")
+		}
+		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)")
+	}
+
 	// ── Request WAL (Request Logger) ───────────────────────────────────────
 	// 2026-06-22: Synchronous initial log + async batch updates for request lifecycle.
 	// Uses same DB pool as telemetryClient. Disabled if env var LLM_GATEWAY_REQUEST_WAL_DISABLE=true.
@@ -1052,6 +1085,14 @@ func main() {
 		// settings-management: inject the DB-backed settings store so the
 		// /api/admin/settings/* endpoints can read/write settings_kv.
 		adminHandler.SetSettingsStore(settings.NewStoreDB(dbConn.Pool()))
+
+		// 2026-07-03: wire the live request stream SSE hub into the
+		// admin mux. The hub is created earlier in this file (so the
+		// telemetry client can publish into it before adminHandler is
+		// fully configured); this just registers the route.
+		if liveStreamHub != nil {
+			adminHandler.SetLiveStreamSSE(liveStreamHub)
+		}
 
 		slog.Info("CHECKPOINT: before modelPolicy check")
 		// model-policy: share the same Checker instance with the
@@ -2510,4 +2551,51 @@ func initApprovalNotifier(pool *pgxpool.Pool, approvalMgr *sessionaudit.Approval
 	}
 
 	return notifier, nil
+}
+
+// adminLiveRequestFromEntry adapts a freshly-persisted telemetry
+// RequestLogEntry into the dashboard's swim-lane LiveRequest shape.
+// Called on the telemetry worker goroutine, so the implementation
+// MUST be cheap — the only I/O is the provider_id → catalog_code
+// sync.Map lookup (with a 200ms-timeout DB fallback on miss).
+func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.LiveStreamSSEHub) admin.LiveRequest {
+	clientModel := ""
+	if entry.ClientModel != nil {
+		clientModel = strings.TrimSpace(*entry.ClientModel)
+	}
+	outboundModel := ""
+	if entry.OutboundModel != nil {
+		outboundModel = strings.TrimSpace(*entry.OutboundModel)
+	}
+	status := ""
+	if entry.RequestStatus != nil {
+		status = strings.TrimSpace(*entry.RequestStatus)
+	}
+	var totalTokens *int
+	if entry.PromptTokens != nil && entry.CompletionTokens != nil {
+		t := *entry.PromptTokens + *entry.CompletionTokens
+		totalTokens = &t
+	}
+	providerCode := ""
+	if entry.ProviderID != nil && hub != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		providerCode = hub.ProviderCodeFor(ctx, *entry.ProviderID)
+		cancel()
+	}
+	return admin.LiveRequestFromTelemetry(
+		entry.RequestID,
+		time.Now().UTC(),
+		entry.TenantID,
+		clientModel,
+		outboundModel,
+		providerCode,
+		status,
+		entry.Success,
+		entry.ErrorKind,
+		entry.LatencyMs,
+		entry.PromptTokens,
+		entry.CompletionTokens,
+		totalTokens,
+		entry.CostUSD,
+	)
 }

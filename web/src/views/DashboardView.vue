@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
+import LiveRequestStream from '../components/LiveRequestStream.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
 import {
   getUsageSummary,
@@ -20,7 +22,8 @@ import {
   type HealthResponse,
   type CompressionStats,
 } from '../api'
-import { store, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+import { useLiveStream } from '../composables/useLiveStream'
+import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const days    = ref(7)
 const summary = ref<UsageSummary | null>(null)
@@ -36,6 +39,7 @@ const error   = ref('')
 let discoveryPollTimer: ReturnType<typeof setInterval> | null = null
 let healthPollTimer: ReturnType<typeof setInterval> | null = null
 let probeFailuresPollTimer: ReturnType<typeof setInterval> | null = null
+let statsRecalibrateTimer: ReturnType<typeof setInterval> | null = null
 
 // Tenant info display
 const tenantLabel = computed(() => {
@@ -172,6 +176,7 @@ onUnmounted(() => {
   if (discoveryPollTimer) clearInterval(discoveryPollTimer)
   if (healthPollTimer) clearInterval(healthPollTimer)
   if (probeFailuresPollTimer) clearInterval(probeFailuresPollTimer)
+  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
 })
 
 function scheduleProbeFailuresPoll() {
@@ -180,6 +185,104 @@ function scheduleProbeFailuresPoll() {
     void loadRecentProbeFailures()
   }, 30000) // 30s — cheap endpoint
 }
+
+// ── Live request stream (2026-07-03) ─────────────────────────────
+// The composable owns the EventSource (via the liveStreamStore
+// singleton). We pass requests through a watch to incrementally
+// update the stat cards instead of re-fetching the full summary
+// on every push.
+//
+// ID-based dedup: the store buffers up to N requests and silently
+// evicts the oldest when full. We cannot rely on a positional delta
+// (`items[prevCount:]`) because the buffer can roll over between
+// two ticks. Instead, every request_id is added to
+// `seenLiveRequestIds` the first time it shows up in the buffer
+// (and removed when the store evicts it via `onRequestEvicted`).
+const {
+  requests: liveRequests,
+  onRequestEvicted,
+  reset: resetLiveStream,
+} = useLiveStream()
+const activeRequestId = ref<string | null>(null)
+function openRequestDetail(id: string) {
+  activeRequestId.value = id
+}
+function closeRequestDrawer() {
+  activeRequestId.value = null
+}
+
+const seenLiveRequestIds = new Set<string>()
+
+onRequestEvicted((id: string) => {
+  seenLiveRequestIds.delete(id)
+})
+
+function applyIncrementalStats() {
+  if (!summary.value) return
+  const items = liveRequests.value
+  const added: typeof items = []
+  for (const r of items) {
+    if (r.type === 'idle_marker' || !r.request_id) continue
+    if (seenLiveRequestIds.has(r.request_id)) continue
+    seenLiveRequestIds.add(r.request_id)
+    added.push(r)
+  }
+  if (added.length === 0) return
+
+  const costDelta = added.reduce((s, r) => s + (r.cost_usd ?? 0), 0)
+  const successes = added.filter((r) => r.status === 'success').length
+  const inProgress = added.filter((r) => r.status === 'in_progress').length
+  if (inProgress > 0) {
+    // In-flight requests don't change success_rate because we
+    // don't yet know the outcome.
+    console.debug('[liveStream] in-progress skipped for success_rate:', inProgress)
+  }
+
+  summary.value.total_requests = (summary.value.total_requests ?? 0) + added.length
+  summary.value.total_prompt_tokens = (summary.value.total_prompt_tokens ?? 0) +
+    added.reduce((s, r) => s + (r.prompt_tokens ?? 0), 0)
+  summary.value.total_completion_tokens = (summary.value.total_completion_tokens ?? 0) +
+    added.reduce((s, r) => s + (r.completion_tokens ?? 0), 0)
+  summary.value.total_cost_usd = (summary.value.total_cost_usd ?? 0) + costDelta
+
+  // Latency: weighted running average.
+  const addedLatency = added.reduce((s, r) => s + (r.latency_ms ?? 0), 0)
+  const addedLatencyN = added.filter((r) => r.latency_ms != null).length
+  if (addedLatencyN > 0) {
+    const prevAvg = summary.value.avg_latency_ms ?? 0
+    const prevN = Math.max(0, (summary.value.total_requests ?? 0) - added.length)
+    const totalN = prevN + addedLatencyN
+    if (totalN > 0) {
+      summary.value.avg_latency_ms = Math.round((prevAvg * prevN + addedLatency) / totalN)
+    }
+  }
+
+  // Success rate: incremental Bayesian update.
+  const knownSuccesses = Math.round((summary.value.success_rate ?? 1) * (summary.value.total_requests - added.length))
+  const newSuccesses = knownSuccesses + successes
+  if (summary.value.total_requests > 0) {
+    summary.value.success_rate = newSuccesses / summary.value.total_requests
+  }
+}
+
+watch(liveRequests, applyIncrementalStats, { deep: true })
+
+// Periodic recalibration against the backend to wipe out any
+// client-side drift. 5 minutes.
+function scheduleStatsRecalibrate() {
+  if (statsRecalibrateTimer) clearInterval(statsRecalibrateTimer)
+  statsRecalibrateTimer = setInterval(async () => {
+    try {
+      const fresh = await getUsageSummary(days.value)
+      summary.value = fresh
+      seenLiveRequestIds.clear()
+      resetLiveStream()
+    } catch {
+      /* non-blocking; next tick will retry */
+    }
+  }, 5 * 60 * 1000)
+}
+scheduleStatsRecalibrate()
 </script>
 
 <template>
@@ -339,6 +442,9 @@ function scheduleProbeFailuresPoll() {
       </div>
     </div>
 
+    <!-- 2026-07-03: 实时请求流 swim lane (SSE, 单例连接) -->
+    <LiveRequestStream @open-detail="openRequestDetail" />
+
     <div class="card" style="margin-top:20px" v-if="hotKeys.length > 0 || loading">
       <div style="font-size:14px;font-weight:600;margin-bottom:12px">高用量 API Key 排行</div>
       <div v-if="loading" class="empty">加载中…</div>
@@ -398,6 +504,9 @@ function scheduleProbeFailuresPoll() {
       🚀 暂无请求数据。配置好提供商后，通过 <code>/v1/chat/completions</code> 发起调用吧。
     </div>
   </div>
+
+  <!-- 2026-07-03: tile 点击 → 详情抽屉。复用现有 RequestLogDrawer。 -->
+  <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
 </template>
 
 <style scoped>
