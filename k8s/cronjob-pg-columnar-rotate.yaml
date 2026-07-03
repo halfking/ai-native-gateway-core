@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-columnar-rotate
+  namespace: pms-test
+  labels:
+    app: pg-columnar-rotate
+    component: database-maintenance
+spec:
+  # 每月 1 号凌晨 2:00 执行
+  schedule: "0 2 1 * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600  # 1 小时超时
+      template:
+        metadata:
+          labels:
+            app: pg-columnar-rotate
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: llm-gateway-admin  # 需要有 kubectl exec 权限
+          containers:
+          - name: columnar-rotate
+            image: bitnami/kubectl:1.28
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              # 安装 psql client
+              apt-get update -qq && apt-get install -y -qq postgresql-client curl > /dev/null 2>&1
+              
+              # 下载脚本
+              curl -sSL https://raw.githubusercontent.com/your-org/llm-gateway-go/main/scripts/pg-columnar-rotate.sh -o /tmp/rotate.sh
+              chmod +x /tmp/rotate.sh
+              
+              # 执行
+              export NAMESPACE=pms-test
+              export POD_SELECTOR="app=llm-gateway-pg"
+              export AGE_DAYS=30
+              export DRY_RUN=false
+              export FEISHU_WEBHOOK="${FEISHU_WEBHOOK}"
+              
+              /tmp/rotate.sh
+            env:
+            - name: FEISHU_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: llm-gateway-secrets
+                  key: feishu-webhook
+                  optional: true
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+---
+# ServiceAccount 需要有 exec 权限
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llm-gateway-admin
+  namespace: pms-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llm-gateway-admin
+  namespace: pms-test
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/exec"]
+  verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llm-gateway-admin
+  namespace: pms-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: llm-gateway-admin
+subjects:
+- kind: ServiceAccount
+  name: llm-gateway-admin
+  namespace: pms-test
