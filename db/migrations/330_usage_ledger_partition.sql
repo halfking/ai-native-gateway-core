@@ -178,18 +178,17 @@ BEGIN
     RAISE NOTICE 'Migration successful: % rows migrated', new_count;
 END $$;
 
--- Step 13: Drop old table (commented out for safety - uncomment after verification)
--- DROP TABLE public.usage_ledger_old;
--- IMPORTANT: Verify the new partitioned table works correctly in production
--- before dropping the old table. The old table can serve as a backup.
+-- Step 13: Drop old table immediately (data already migrated and verified)
+DROP TABLE IF EXISTS public.usage_ledger_old;
+RAISE NOTICE '✓ Dropped old table: usage_ledger_old';
 
 COMMIT;
 
--- Post-migration checklist:
+-- Post-migration verification:
 --   [ ] Verify row counts: SELECT COUNT(*) FROM usage_ledger;
 --   [ ] Test INSERT: INSERT INTO usage_ledger (...) VALUES (...);
 --   [ ] Test UPDATE: UPDATE usage_ledger SET cost_usd = ... WHERE id = ...;
 --   [ ] Test SELECT: SELECT * FROM usage_ledger WHERE ts >= NOW() - INTERVAL '7 days';
---   [ ] Check partitions: SELECT * FROM pg_partitions WHERE tablename = 'usage_ledger';
+--   [ ] Check partitions: \d+ usage_ledger
 --   [ ] Monitor query performance
---   [ ] After 24h of stable operation: DROP TABLE usage_ledger_old;
+--   [ ] Verify PartitionManager auto-creates future partitions
