@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -141,6 +142,12 @@ type LiveStreamSSEHub struct {
 	providerCache sync.Map
 
 	stopCh chan struct{}
+
+	// Metrics (added 2026-07-03 for monitoring)
+	totalConnections    int64 // 累计连接数
+	totalDisconnections int64 // 累计断开数
+	authFailures        int64 // 认证失败次数
+	broadcastCount      int64 // 广播消息数
 }
 
 // NewLiveStreamSSEHub constructs a hub. The caller MUST call Run()
@@ -175,16 +182,19 @@ func (h *LiveStreamSSEHub) Run() {
 			h.mu.Lock()
 			h.clients[c] = struct{}{}
 			h.mu.Unlock()
+			atomic.AddInt64(&h.totalConnections, 1)
 		case c := <-h.unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[c]; ok {
 				delete(h.clients, c)
 			}
 			h.mu.Unlock()
+			atomic.AddInt64(&h.totalDisconnections, 1)
 		case req := <-h.broadcast:
 			h.lastActivityMu.Lock()
 			h.lastActivity = time.Now()
 			h.lastActivityMu.Unlock()
+			atomic.AddInt64(&h.broadcastCount, 1)
 			h.fanOut(LiveStreamEnvelope{
 				Type:      "request",
 				Timestamp: time.Now().UTC(),
@@ -588,4 +598,25 @@ func LiveRequestFromTelemetry(requestID string, ts time.Time, tenantID, clientMo
 		out.Status = status
 	}
 	return out
+}
+
+// Stats 返回 SSE Hub 的监控指标
+func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
+	h.mu.RLock()
+	activeClients := len(h.clients)
+	h.mu.RUnlock()
+
+	h.lastActivityMu.RLock()
+	lastActivity := h.lastActivity
+	h.lastActivityMu.RUnlock()
+
+	return map[string]interface{}{
+		"active_clients":         activeClients,
+		"total_connections":      atomic.LoadInt64(&h.totalConnections),
+		"total_disconnections":   atomic.LoadInt64(&h.totalDisconnections),
+		"auth_failures":          atomic.LoadInt64(&h.authFailures),
+		"broadcast_count":        atomic.LoadInt64(&h.broadcastCount),
+		"last_activity":          lastActivity.UTC().Format(time.RFC3339),
+		"seconds_since_activity": time.Since(lastActivity).Seconds(),
+	}
 }

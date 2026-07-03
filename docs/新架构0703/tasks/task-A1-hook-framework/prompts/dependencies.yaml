@@ -1,0 +1,517 @@
+# Task A1: Hook框架增强 - 依赖关系定义
+
+task_id: A1
+task_name: Hook框架增强
+team: Go后端
+status: pending
+
+# ==================== 上游依赖 ====================
+dependencies:
+  upstream: []  # 无上游依赖，可立即开始
+  
+  downstream:   # 下游任务依赖本任务
+    - task_id: B1
+      task_name: Memora自动沉淀
+      depends_on:
+        - interface: HookRegistry.Register()
+          usage: 注册MemoraAutoHook
+        - interface: Hook接口
+          usage: 实现MemoraAutoHook
+        - interface: Environment
+          usage: 访问会话信息
+      
+    - task_id: B2
+      task_name: 输出脱敏插件
+      depends_on:
+        - interface: HookRegistry.Register()
+          usage: 注册OutputSanitizerHook
+        - interface: Hook接口
+          usage: 实现脱敏Hook
+        - interface: PhasePostUpstream
+          usage: 在上游响应后执行
+    
+    - task_id: B3
+      task_name: 会话编辑器
+      depends_on:
+        - interface: HookRegistry
+          usage: 不直接依赖，但需要理解Hook机制
+    
+    - task_id: B4
+      task_name: Vibe Coding评估
+      depends_on:
+        - interface: Hook接口
+          usage: 实现质量评估Hook
+        - interface: PhasePostUpstream
+          usage: 在响应后评估代码质量
+
+# ==================== 提供的接口 ====================
+provides:
+  # 核心接口1: HookRegistry
+  - interface: HookRegistry
+    package: domains/hooks
+    methods:
+      - name: Register(hook Hook) error
+        description: 注册Hook到Registry
+        parameters:
+          - name: hook
+            type: Hook
+            description: 实现Hook接口的实例
+        returns:
+          - type: error
+            description: 注册失败时返回错误
+        usage: |
+          所有Hook插件在系统启动时调用此方法注册
+          
+      - name: Execute(ctx context.Context, phase Phase, env *Environment) error
+        description: 执行指定Phase的Hook链
+        parameters:
+          - name: ctx
+            type: context.Context
+            description: 上下文（超时控制）
+          - name: phase
+            type: Phase
+            description: 执行阶段
+          - name: env
+            type: "*Environment"
+            description: 执行环境
+        returns:
+          - type: error
+            description: Hook执行失败时返回错误
+        usage: |
+          在请求处理的各个阶段调用：
+          1. PhasePreRouting - 路由前
+          2. PhaseRouting - 路由中
+          3. PhasePreUpstream - 上游前
+          4. PhasePostUpstream - 上游后
+          5. PhasePostResponse - 响应后
+      
+      - name: GetHooks(phase Phase) []Hook
+        description: 获取指定Phase的所有Hook
+        usage: 用于调试和监控
+      
+      - name: ReloadConfig() error
+        description: 重新加载配置
+        usage: 配置热更新时调用
+  
+  # 核心接口2: Hook接口
+  - interface: Hook
+    package: domains/hooks
+    description: 所有Hook插件必须实现的接口
+    methods:
+      - name: Name() string
+        description: 返回Hook名称（全局唯一）
+      - name: Priority() int
+        description: 返回执行优先级（0-1000，越小越先执行）
+      - name: Enabled() bool
+        description: 返回是否启用
+      - name: Phase() Phase
+        description: 返回执行阶段
+      - name: Execute(ctx context.Context, env *Environment) error
+        description: 执行Hook逻辑
+    usage: |
+      所有Hook插件（Task B1, B2, B4等）都需要实现此接口
+      示例：
+      ```go
+      type MyHook struct {
+          enabled bool
+      }
+      
+      func (h *MyHook) Name() string { return "my-hook" }
+      func (h *MyHook) Priority() int { return 50 }
+      func (h *MyHook) Enabled() bool { return h.enabled }
+      func (h *MyHook) Phase() Phase { return PhasePostUpstream }
+      func (h *MyHook) Execute(ctx context.Context, env *Environment) error {
+          // 实现逻辑
+          return nil
+      }
+      ```
+  
+  # 核心接口3: Environment
+  - interface: Environment
+    package: domains/hooks
+    description: Hook执行环境，包含请求、响应、会话等信息
+    fields:
+      - name: RequestID
+        type: string
+        description: 请求ID
+      - name: TenantID
+        type: string
+        description: 租户ID
+      - name: SessionKey
+        type: string
+        description: 会话Key
+      - name: Session
+        type: "*Session"
+        description: 会话对象（可能为nil）
+      - name: Request
+        type: "*Request"
+        description: 客户端请求
+      - name: Response
+        type: "*Response"
+        description: 客户端响应
+      - name: Metadata
+        type: "map[string]interface{}"
+        description: Hook间共享数据
+      - name: Skip
+        type: bool
+        description: 跳过后续Hook
+      - name: Abort
+        type: bool
+        description: 中止请求
+      - name: AbortReason
+        type: string
+        description: 中止原因
+    usage: |
+      Hook可以：
+      1. 读取请求信息：env.Request
+      2. 修改Metadata：env.Metadata["key"] = value
+      3. 控制流程：env.Skip = true 或 env.Abort = true
+  
+  # 核心类型4: Phase
+  - interface: Phase
+    package: domains/hooks
+    description: Hook执行阶段枚举
+    constants:
+      - name: PhasePreRouting
+        value: "pre_routing"
+        description: 路由前（认证、审计）
+      - name: PhaseRouting
+        value: "routing"
+        description: 路由中（模型选择）
+      - name: PhasePreUpstream
+        value: "pre_upstream"
+        description: 上游前（压缩、转换）
+      - name: PhasePostUpstream
+        value: "post_upstream"
+        description: 上游后（缓存、脱敏）
+      - name: PhasePostResponse
+        value: "post_response"
+        description: 响应后（异步处理）
+
+# ==================== 依赖的接口 ====================
+consumes:
+  # 依赖1: domains/session
+  - module: domains/session
+    package: github.com/kaixuan/llm-gateway-go/domains/session
+    interfaces:
+      - name: Session
+        usage: Environment中使用Session结构体
+        required_fields:
+          - SessionKey
+          - TaskID
+          - CreatedAt
+        notes: Session可能为nil，Hook需要检查
+  
+  # 依赖2: Prometheus
+  - module: prometheus
+    package: github.com/prometheus/client_golang/prometheus
+    interfaces:
+      - name: CounterVec
+        usage: 记录Hook执行次数
+      - name: HistogramVec
+        usage: 记录Hook执行时长
+    notes: Prometheus不可用不影响Hook执行
+  
+  # 依赖3: slog
+  - module: slog
+    package: log/slog
+    interfaces:
+      - name: Logger
+        usage: 记录Hook执行日志
+    notes: 标准库，无额外依赖
+
+# ==================== 集成点 ====================
+integration_points:
+  # 集成点1: cmd/gateway/main.go
+  - module: cmd/gateway/main.go
+    integration_type: 初始化
+    code_location: "启动时，约第100-150行"
+    integration_code: |
+      // 创建ConfigManager
+      configManager, err := hooks.NewConfigManager("config/hooks.yaml")
+      if err != nil {
+          log.Fatal(err)
+      }
+      
+      // 创建HookRegistry
+      hookRegistry := hooks.NewHookRegistry(
+          configManager,
+          hooks.NewMetricsCollector(),
+          logger,
+      )
+      
+      // 注册所有Hook
+      hookRegistry.Register(compression.NewCompressionHook())
+      hookRegistry.Register(audit.NewAuditHook())
+      // ... 其他Hook
+    timing: 系统启动时执行一次
+  
+  # 集成点2: domains/streaming/handler.go
+  - module: domains/streaming/handler.go
+    integration_type: 请求处理
+    code_location: "HandleRequest方法中"
+    integration_code: |
+      func (h *Handler) HandleRequest(ctx context.Context, req *Request) (*Response, error) {
+          // 构建Environment
+          env := &hooks.Environment{
+              RequestID: req.ID,
+              Request:   req,
+              Session:   getSession(ctx),
+              Metadata:  make(map[string]interface{}),
+          }
+          
+          // 执行PreRouting Hook链
+          if err := h.hookRegistry.Execute(ctx, hooks.PhasePreRouting, env); err != nil {
+              return nil, err
+          }
+          
+          // 检查中止
+          if env.Abort {
+              return abortResponse(env.AbortReason), nil
+          }
+          
+          // ... 继续处理
+      }
+    timing: 每个请求的多个阶段
+
+# ==================== 数据流 ====================
+data_flows:
+  # 数据流1: Hook注册流程
+  - flow_name: Hook注册流程
+    participants:
+      - main.go
+      - HookRegistry
+      - Hook实例
+    steps:
+      - step: 1
+        actor: main.go
+        action: 创建Hook实例
+        data: "NewMyHook(config) -> Hook"
+      - step: 2
+        actor: main.go
+        action: 调用Register
+        data: "hookRegistry.Register(hook)"
+      - step: 3
+        actor: HookRegistry
+        action: 验证并添加
+        data: "按Priority排序，存入map[Phase][]Hook"
+      - step: 4
+        actor: HookRegistry
+        action: 记录日志
+        data: "logger.Info(\"hook registered\", ...)"
+  
+  # 数据流2: Hook执行流程
+  - flow_name: Hook执行流程
+    participants:
+      - Handler
+      - HookRegistry
+      - Hook1
+      - Hook2
+    steps:
+      - step: 1
+        actor: Handler
+        action: 构建Environment
+        data: "env := &Environment{...}"
+      - step: 2
+        actor: Handler
+        action: 调用Execute
+        data: "Execute(ctx, PhasePreRouting, env)"
+      - step: 3
+        actor: HookRegistry
+        action: 遍历Hook列表
+        data: "hooks := r.hooks[PhasePreRouting]"
+      - step: 4
+        actor: HookRegistry
+        action: 执行Hook1
+        data: "hook1.Execute(ctx, env)"
+      - step: 5
+        actor: Hook1
+        action: 处理请求
+        data: "修改env.Metadata"
+      - step: 6
+        actor: HookRegistry
+        action: 执行Hook2
+        data: "hook2.Execute(ctx, env)"
+      - step: 7
+        actor: HookRegistry
+        action: 记录指标
+        data: "metrics.RecordHookExecution(...)"
+  
+  # 数据流3: 配置热更新流程
+  - flow_name: 配置热更新流程
+    participants:
+      - hooks.yaml
+      - FileWatcher
+      - ConfigManager
+      - HookRegistry
+      - ConfigurableHook
+    steps:
+      - step: 1
+        actor: hooks.yaml
+        action: 文件被修改
+        data: "enabled: true -> false"
+      - step: 2
+        actor: FileWatcher
+        action: 检测文件变更
+        data: "ModTime变化"
+      - step: 3
+        actor: FileWatcher
+        action: 触发回调
+        data: "callback()"
+      - step: 4
+        actor: ConfigManager
+        action: 重新加载配置
+        data: "Load() 读取YAML"
+      - step: 5
+        actor: HookRegistry
+        action: 通知ConfigurableHook
+        data: "hook.OnConfigChange(newConfig)"
+      - step: 6
+        actor: ConfigurableHook
+        action: 应用新配置
+        data: "h.enabled = newConfig[\"enabled\"]"
+
+# ==================== 版本兼容性 ====================
+compatibility:
+  go_version: ">=1.25"
+  dependencies:
+    - package: gopkg.in/yaml.v3
+      version: ">=3.0"
+    - package: github.com/prometheus/client_golang
+      version: ">=1.18"
+  
+  breaking_changes: []  # 首次实现，无破坏性变更
+  
+  migration_notes: |
+    从无Hook框架迁移到有Hook框架：
+    1. 现有Hook（compression, audit等）需要适配新接口
+    2. main.go需要添加HookRegistry初始化代码
+    3. handler.go需要添加Hook执行调用
+    4. 需要创建config/hooks.yaml配置文件
+
+# ==================== 测试策略 ====================
+testing:
+  unit_tests:
+    - test_name: TestHookRegistry_Register
+      description: 测试Hook注册功能
+      coverage: 注册、去重、排序
+    
+    - test_name: TestHookRegistry_Execute
+      description: 测试Hook执行功能
+      coverage: 执行顺序、错误处理、超时控制
+    
+    - test_name: TestConfigManager_Load
+      description: 测试配置加载
+      coverage: YAML解析、默认值、错误处理
+    
+    - test_name: TestConfigManager_HotReload
+      description: 测试配置热更新
+      coverage: 文件监控、配置重载、通知Hook
+  
+  integration_tests:
+    - test_name: TestHookIntegration
+      description: 测试Hook与主流程集成
+      setup: 启动完整服务
+      steps:
+        - 注册多个Hook
+        - 发送HTTP请求
+        - 验证Hook按顺序执行
+        - 检查Metadata传递
+      assertions:
+        - Hook执行次数正确
+        - Environment数据正确
+        - 指标正确记录
+  
+  performance_tests:
+    - test_name: BenchmarkHookExecution
+      description: Hook执行性能测试
+      target: P95 < 50ms
+      scenarios:
+        - 5个Hook，轻量级逻辑
+        - 10个Hook，中等逻辑
+        - 并发1000请求
+
+# ==================== 监控指标 ====================
+monitoring:
+  metrics:
+    - name: llmgw_hook_executions_total
+      type: counter
+      labels: [hook, phase, status]
+      description: Hook执行总次数
+    
+    - name: llmgw_hook_duration_seconds
+      type: histogram
+      labels: [hook, phase]
+      description: Hook执行时长
+      buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5]
+    
+    - name: llmgw_hook_failures_total
+      type: counter
+      labels: [hook, phase, error_type]
+      description: Hook失败总次数
+  
+  alerts:
+    - alert: HookHighFailureRate
+      expr: rate(llmgw_hook_failures_total[5m]) / rate(llmgw_hook_executions_total[5m]) > 0.1
+      for: 5m
+      severity: warning
+    
+    - alert: HookSlowExecution
+      expr: histogram_quantile(0.95, llmgw_hook_duration_seconds) > 0.5
+      for: 5m
+      severity: warning
+
+# ==================== 部署说明 ====================
+deployment:
+  prerequisites:
+    - Go 1.25+已安装
+    - config/hooks.yaml配置文件已创建
+    - Prometheus已配置
+  
+  deployment_steps:
+    - step: 1
+      action: 编译代码
+      command: go build -o gateway cmd/gateway/main.go
+    
+    - step: 2
+      action: 准备配置文件
+      command: cp config/hooks.yaml.example config/hooks.yaml
+    
+    - step: 3
+      action: 启动服务
+      command: ./gateway --config=config/local.yaml
+    
+    - step: 4
+      action: 验证Hook已注册
+      command: curl http://localhost:8781/api/admin/hooks
+  
+  rollback_plan:
+    - 如果Hook框架有问题，可以临时禁用所有Hook
+    - 修改config/hooks.yaml，设置enabled: false
+    - 配置会在3秒内生效，无需重启
+
+# ==================== 文档链接 ====================
+documentation:
+  - name: 详细设计
+    path: ../01-design.md
+  - name: 数据模型
+    path: ../02-data-model.md
+  - name: 外部集成说明
+    path: ../06-external-integration.md
+  - name: 验收标准
+    path: ../05-acceptance-criteria.md
+
+# ==================== 联系方式 ====================
+contacts:
+  owner: 待指派
+  reviewers:
+    - 架构师
+  approvers:
+    - 技术负责人
+
+# ==================== 元数据 ====================
+metadata:
+  created_at: 2026-07-03
+  updated_at: 2026-07-03
+  version: v1.0
+  status: draft
