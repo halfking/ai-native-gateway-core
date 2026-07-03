@@ -10,6 +10,9 @@ import {
   type RequestLogRow,
 } from '../api'
 import { getCurrentTenantId } from '../store'
+import LiveRequestStream from '../components/LiveRequestStream.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
+import { useLiveStream } from '../composables/useLiveStream'
 
 const days = ref(7)
 const summary = ref<MaasUsageSummary | null>(null)
@@ -143,6 +146,16 @@ async function showDateDetail(day: string) {
   }
 }
 
+// 实时请求流和抽屉
+const { requests: liveRequests } = useLiveStream()
+const activeRequestId = ref<string | null>(null)
+function openRequestDetail(id: string) {
+  activeRequestId.value = id
+}
+function closeRequestDrawer() {
+  activeRequestId.value = null
+}
+
 onMounted(load)
 </script>
 
@@ -194,6 +207,9 @@ onMounted(load)
         开通月包后可优先消耗订阅额度。
       </div>
     </div>
+
+    <!-- 实时请求流 -->
+    <LiveRequestStream @open-detail="openRequestDetail" />
 
     <div class="stat-grid" v-if="summary && wallet">
       <div class="stat-card highlight">
@@ -366,6 +382,9 @@ onMounted(load)
       签发密钥后发起调用。
     </div>
   </div>
+
+  <!-- 请求详情抽屉 -->
+  <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
 </template>
 
 <style scoped>
