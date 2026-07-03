@@ -44,7 +44,6 @@ export default {
     list: {
       table: {
         attachmentsTitle: 'مرفقات',
-        attachmentCountTitle: '{n} مرفق(ات)',
         noAttachments: 'لا توجد مرفقات',
       },
     },
