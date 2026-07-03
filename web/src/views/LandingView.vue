@@ -37,7 +37,7 @@ const features = [
   {
     icon: '🌐',
     title: '多协议兼容',
-    description: 'OpenAI Chat / Anthropic Messages / Responses 三套入向统一归一，国产与海外模型无缝接入。',
+    description: 'OpenAI Chat / Anthropic Messages / Responses 三套入向统一归一，开源与商业模型无缝接入。',
   },
   {
     icon: '🏗️',
@@ -47,7 +47,7 @@ const features = [
 ];
 
 const advantages = [
-  { icon: '🇨🇳', title: '中国本地化', description: '全中文界面、国产模型优先、支付宝/微信支付接入、等保合规模板' },
+  { icon: '🇨🇳', title: '中国本地化', description: '全中文界面、开源模型优先、支付宝/微信支付接入、等保合规模板' },
   { icon: '🔒', title: '私有化部署', description: '完全私有部署，数据不出企业，k3s + Docker 双形态，零外部依赖' },
   { icon: '🛡️', title: '抗封号体系', description: '50+ UA 轮换 + utls TLS 指纹池 + 11 浏览器 profile + 5 分钟自动轮换' },
   { icon: '⚡', title: 'Go 高性能数据面', description: '原生 Go 实现，40MB 轻量镜像，200 并发 P99 < 500ms，SSE 流式稳定中继' },
