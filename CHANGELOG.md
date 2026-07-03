@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-07-03] - build_seq 6 (r1.13-done-2bde6aad)
+
+### 🐛 Bug Fixes
+
+#### 数据生命周期 — 存储总览修复
+- **修复**：移除 `pg_total_database_size(name)` 调用（Citus 不支持该函数）。
+  - 现象：184/71 生产 + 本地 r112 均使用 `citusdata/citus:11.3` 镜像，访问 `/api/admin/data-lifecycle/storage` 时报 `ERROR: function pg_total_database_size(name) does not exist (SQLSTATE 42883)`，整条查询失败导致 Database 字段为空。
+  - 修复：改用 `COALESCE(SUM(pg_total_relation_size(c.oid)), 0)` 在所有 user schema 上求和作为 `TotalBytes` 近似（包含表 + 索引 + TOAST）。
+  - 兜底：SUM 查询失败时回退到 `pg_database_size` 值。
+- **新增**：列存（citus_columnar）单独展示 — `table_count` / `total_columns` / `total_bytes`。
+- 部署到 184：build_seq 5 → 6，验证 https://llmgo.kxpms.cn/api/admin/data-lifecycle/storage 返回正常 JSON，无 warnings。
+
 ## [Unreleased] - 2026-07-02
 
 ### 概述
