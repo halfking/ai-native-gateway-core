@@ -1,0 +1,22 @@
+# Memora 自动沉淀 Hook 配置示例
+
+# 是否启用 Hook
+enabled: true
+
+# kxmemory API 地址
+kxmemory_url: "http://localhost:8000/api/sessions/ingest"
+
+# HTTP 请求超时时间
+timeout: 10s
+
+# 空闲时间阈值（会话最后活动时间超过此值才被认为空闲）
+idle_threshold: 1h
+
+# 最小请求数（会话至少需要这么多请求才会被检测）
+min_request_count: 3
+
+# 最大重试次数
+max_retries: 3
+
+# 重试退避基础时间（实际退避时间为 base * 2^attempt）
+retry_backoff: 1s
