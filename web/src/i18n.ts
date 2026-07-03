@@ -1,4 +1,5 @@
 import { createI18n } from 'vue-i18n'
+import type { Ref } from 'vue'
 import en from './locales/en'
 import zhCN from './locales/zh-CN'
 import ja from './locales/ja'
@@ -38,3 +39,8 @@ export const languages = [
   { code: 'zh-TW', name: '繁體中文', flag: '🇹🇼' },
   { code: 'ar', name: 'العربية', flag: '🇸🇦' },
 ]
+
+// 2026-07-04 (v738 port): vue-i18n's reactive locale ref. Aliased so callers
+// (ProvidersView, useFormat.ts) can use it without depending on the parallel
+// `web/src/i18n/` directory setup.
+export const localeRef = i18n.global.locale as unknown as Ref<string>
