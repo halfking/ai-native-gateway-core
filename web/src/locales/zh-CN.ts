@@ -1,4 +1,5 @@
-export default {
+// Updated: 2026-07-03 19:40 - Fixed vue-i18n emoji issue
+export default { 
   // 通用
   login: '登录',
   logout: '退出',
@@ -35,7 +36,7 @@ export default {
   },
   
   // 版本信息
-  version: '版本',
+  version: '版本 ',
   build: '构建',
 
   // 2026-07-02 (request-logs 附件展示): 附件相关文案，对齐参考文档 §6。
