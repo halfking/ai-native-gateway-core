@@ -99,7 +99,7 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 	if len(system.Parts) > 0 {
 		parts := make([]map[string]any, 0, len(system.Parts))
 		for _, part := range system.Parts {
-			parts = append(parts, serializeAnthropicContentBlock(part))
+			parts = append(parts, serializeAnthropicContentBlock(part, ""))
 		}
 		return parts
 	}
@@ -198,7 +198,7 @@ func serializeAnthropicMessage(msg Message, targetProvider string) map[string]an
 		out["content"] = msg.Content[0].Text
 	} else {
 		// Content blocks (may include tool_use blocks)
-		content := serializeAnthropicMessageContent(msg)
+		content := serializeAnthropicMessageContent(msg, targetProvider)
 		out["content"] = content
 	}
 
@@ -224,12 +224,14 @@ func joinTextPartsAnthropic(parts []string) string {
 }
 
 // serializeAnthropicMessageContent converts IR message content to Anthropic content blocks.
-func serializeAnthropicMessageContent(msg Message) []map[string]any {
+// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
+// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
+func serializeAnthropicMessageContent(msg Message, targetProvider string) []map[string]any {
 	result := make([]map[string]any, 0)
 
 	// First, add text and other content blocks
 	for _, block := range msg.Content {
-		result = append(result, serializeAnthropicContentBlock(block))
+		result = append(result, serializeAnthropicContentBlock(block, targetProvider))
 	}
 
 	// Then, add tool_use blocks from ToolCalls
@@ -255,7 +257,9 @@ func serializeAnthropicMessageContent(msg Message) []map[string]any {
 }
 
 // serializeAnthropicContentBlock converts an IR ContentBlock to Anthropic format.
-func serializeAnthropicContentBlock(block ContentBlock) map[string]any {
+// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
+// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
+func serializeAnthropicContentBlock(block ContentBlock, targetProvider string) map[string]any {
 	out := map[string]any{
 		"type": block.Type,
 	}
@@ -322,7 +326,13 @@ func serializeAnthropicContentBlock(block ContentBlock) map[string]any {
 
 	case "tool_result":
 		if block.ToolResult != nil {
-			out["tool_use_id"] = block.ToolResult.ToolUseID
+			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
+			// Anthropic 的 tool_use_id。根据 targetProvider 分支处理。
+			if targetProvider == "minimax" {
+				out["tool_call_id"] = block.ToolResult.ToolUseID
+			} else {
+				out["tool_use_id"] = block.ToolResult.ToolUseID
+			}
 			out["is_error"] = block.ToolResult.IsError
 
 			// Serialize content - can be text blocks
