@@ -446,5 +446,5 @@ echo "=== Verification complete ==="
 **维护者**: DevOps Team  
 **相关文档**: 
 - [数据库环境分离规范](./DATABASE-ENVIRONMENT-SEPARATION.md)
-- [部署检查清单](./DEPLOYMENT_CHECKLIST_20260630.md)
+- [部署检查清单](./partition/MONTHLY_CHECKLIST.md)
 - [安全审计报告](../SECURITY-AUDIT-2026-06-28.md)

@@ -1,7 +1,13 @@
 # 分区表月度维护清单
 
-**日期**: 2026-07-05  
+**日期**: 2026-07-05
 **版本**: 1.0
+
+## 修订历史
+
+| 版本 | 日期 | 变更 | 作者 |
+|------|------|------|------|
+| 1.0 | 2026-07-05 | 初始版本（合并自 DEPLOYMENT_CHECKLIST_PARTITION_ARCHIVE / DEPLOYMENT_CHECKLIST_20260630 两份旧文档） | Infrastructure Team |
 
 ---
 
@@ -225,7 +231,7 @@ ALTER TABLE request_logs DETACH PARTITION request_logs_2026_08;
 ### 4.1 检查积压
 
 ```bash
-./scripts/partition/report-default-sizes.sh --env 71 --format json
+./scripts/partition/check-partition-health.sh --env 71 --report-only --format json
 ```
 
 ### 4.2 手动清理（如果需要）
@@ -378,5 +384,218 @@ ALTER TABLE request_logs DETACH PARTITION request_logs_2026_08;
 
 ---
 
-**维护团队**: Infrastructure Team  
+## 部署前分区归档验证清单（合并自 DEPLOYMENT_CHECKLIST_PARTITION_ARCHIVE.md）
+
+### 1. 部署前检查
+
+#### 代码部署
+- [ ] 拉取最新代码：`git pull origin main`
+- [ ] 验证提交存在：`git log --oneline | grep "feat(admin): add partition table columnar archive"`
+- [ ] 检查文件完整性：
+  ```bash
+  ls -la admin/data_lifecycle_partition.go
+  ls -la db/migrations/305_partition_archive_functions.sql
+  ```
+
+#### 环境准备
+- [ ] 确认数据库连接正常
+- [ ] 确认 Citus columnar 扩展已安装：
+  ```sql
+  SELECT * FROM pg_extension WHERE extname = 'citus_columnar';
+  ```
+- [ ] 备份数据库（建议）：
+  ```bash
+  pg_dump -h $DB_HOST -U $DB_USER -d llm_gateway > backup_before_migration_305.sql
+  ```
+
+#### 构建和测试
+- [ ] 编译项目：`go build ./cmd/gateway`
+- [ ] 运行单元测试：`go test ./admin -run TestPartition -v`
+- [ ] 检查测试通过
+
+### 2. 部署步骤
+
+#### Step 1：应用数据库迁移
+
+```bash
+psql -h $DB_HOST -U $DB_USER -d llm_gateway
+
+# 检查当前迁移状态
+SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 5;
+
+# 应用 Migration 305
+\i db/migrations/305_partition_archive_functions.sql
+```
+
+#### Step 2：验证数据库对象
+
+```sql
+-- 验证归档函数存在
+\df archive_request_*
+
+-- 应该看到：
+-- archive_request_logs(date)
+-- archive_request_wal(date)
+
+-- 验证归档表存在
+\d request_wal_archive
+```
+
+#### Step 3：重启服务
+
+```bash
+# 方式 1: systemd
+sudo systemctl restart llm-gateway-go
+
+# 方式 2: kubernetes
+kubectl rollout restart deployment/llm-gateway-go -n production
+```
+
+#### Step 4：验证 API 端点
+
+```bash
+# 1. 查询分区状态
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions | jq .
+
+# 2. 测试试运行归档
+curl -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive | jq .
+```
+
+#### Step 5：功能测试
+
+```bash
+# 使用非 super_admin token 测试归档端点（应该失败）
+curl -X POST \
+  -H "Authorization: Bearer $NON_SUPER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"table_name":"request_logs","archive_month":"2026-04","dry_run":true}' \
+  https://llmgateway.internal.example.com/api/admin/data-lifecycle/partitions/archive
+# 预期：403 Forbidden
+```
+
+### 3. 回滚计划
+
+#### Option 1：仅回滚代码（保留数据库更改）
+
+```bash
+git revert cec00d34
+go build ./cmd/gateway
+sudo systemctl restart llm-gateway-go
+```
+
+#### Option 2：完全回滚（包括数据库）
+
+```bash
+# 1. 回滚代码
+git revert cec00d34
+
+# 2. 回滚数据库迁移
+psql -h $DB_HOST -U $DB_USER -d llm_gateway \
+  -f db/migrations/305_partition_archive_functions.down.sql
+
+# 3. 重新构建和部署
+go build ./cmd/gateway
+sudo systemctl restart llm-gateway-go
+```
+
+### 4. 4-Table 分区与归档部署检查（合并自 DEPLOYMENT_CHECKLIST_20260630.md）
+
+#### 前置条件
+
+```bash
+# SSH 到 184
+ssh -p 25022 root@__INTERNAL_PUBLIC_IP__
+
+# 检查 migrations 是否已应用
+export PGPASSWORD='__REDACTED_DB_PASSWORD__'
+POD=$(kubectl get pod -n pms-test -l app=llm-gateway-pg -o jsonpath="{.items[0].metadata.name}")
+
+kubectl exec -n pms-test $POD -c citus -- psql -U llm_gateway -d llm_gateway -c "
+SELECT
+  '317' AS migration,
+  CASE WHEN EXISTS (SELECT 1 FROM pg_class WHERE relname = 'credential_model_index' AND relkind = 'p')
+    THEN '✓ CMI is partitioned' ELSE '✗ CMI not partitioned' END AS status
+UNION ALL
+SELECT '318', CASE WHEN EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'archive_request_logs' AND pg_get_functiondef(oid) LIKE '%CHUNK_SIZE%')
+    THEN '✓ archive functions fixed' ELSE '✗ archive functions not fixed' END
+UNION ALL
+SELECT '319', CASE WHEN EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'ensure_credential_model_index_partition')
+    THEN '✓ ensure functions added' ELSE '✗ ensure functions missing' END;
+"
+
+# 预期 SHA256：7e80d9aa6f886c484009839f6dc876a96f61c7547b7e464aefe1d6b8c7d23efd
+ls -lh /opt/databackup/pg-daily/184/pg-full-184-20260630.dump
+sha256sum /opt/databackup/pg-daily/184/pg-full-184-20260630.dump
+
+# Cron 检查
+crontab -l | grep columnar
+# 预期输出：0 4 1-3 * * /opt/scripts/columnar-monthly-cron.sh ...
+```
+
+#### 镜像信息（参考 2026-06-30 部署）
+
+- 镜像名：`registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8`
+- 构建时间：2026-06-29T22:48:35Z
+- Git SHA：0b0d80e8
+- 部署日期：2026-06-30
+- 备份位置：`184:/opt/databackup/pg-daily/184/pg-full-184-20260630.dump`
+
+#### 部署命令
+
+```bash
+# 清理异常 Pods
+kubectl delete pod -n pms-test -l app=llm-gateway-go \
+  --field-selector="status.phase!=Running" \
+  --force --grace-period=0
+
+# 更新镜像
+kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8
+
+# 监控 Rollout
+kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test --timeout=180s
+```
+
+#### 一键部署 / 验证 / 回滚
+
+```bash
+# 一键部署
+kubectl set image deployment/llm-gateway-go-deployment -n pms-test \
+  llm-gateway-go=registry.internal.example.com/kx-llm-gateway-go:gitsha-0b0d80e8 && \
+kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test
+
+# 一键验证
+curl http://localhost:30082/healthz && \
+kubectl logs -n pms-test -l app=llm-gateway-go --tail=50 | grep partition_manager
+
+# 一键回滚
+kubectl rollout undo deployment/llm-gateway-go-deployment -n pms-test && \
+kubectl rollout status deployment/llm-gateway-go-deployment -n pms-test
+```
+
+### 5. 已知问题（合并自 DEPLOYMENT_CHECKLIST_20260630.md）
+
+| 问题 | 原因 | 影响 | 缓解 |
+|------|------|------|------|
+| `request_logs_archive` 使用 heap | JSONB 列太大（>1MB/行），columnar 会 OOM | 压缩比低于其他 3 个表 | 拆分 JSONB 到独立表 |
+| `credential_model_index` 7d cutoff | 只归档 7 天前的数据 | 主表行数较多（~186K 行） | 定期检查主表行数增长 |
+| Cron 执行时间 | 每月 1-3 日 04:00 | 分散在 day1/2/3 | 查看 `/var/log/columnar-monthly.log` |
+
+---
+
+## 合并来源
+
+本文档于 2026-07-05 合并以下旧文档：
+
+- `docs/DEPLOYMENT_CHECKLIST_PARTITION_ARCHIVE.md`（已迁移到 `_to-be-deprecated/`）— 列存储归档功能部署前验证、API 端点测试、回滚计划
+- `docs/DEPLOYMENT_CHECKLIST_20260630.md`（已迁移到 `_to-be-deprecated/`）— 4-Table 分区与归档部署清单 2026-06-30、镜像信息、k8s 部署步骤
+
+---
+
+**维护团队**: Infrastructure Team
 **最后更新**: 2026-07-05

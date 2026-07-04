@@ -149,7 +149,7 @@
 - 自动 VACUUM FULL 回收空间
 - 进度显示
 
-### 3. 文档（docs/data-lifecycle-management.md）
+### 3. 文档（已合并至 `docs/partition/OPERATIONS_RUNBOOK.md` §8）
 
 完整的数据生命周期管理方案文档，包含：
 
@@ -229,7 +229,7 @@ $ go build ./...
 **文件**：
 - `admin/data_lifecycle.go` (299 行)
 - `admin/handler.go` (2 处路由注册)
-- `docs/data-lifecycle-management.md` (341 行)
+- `docs/partition/OPERATIONS_RUNBOOK.md` §8 数据生命周期管理（已合并 docs/data-lifecycle-management.md）
 - `scripts/analyze-request-logs-size.sh` (166 行)
 - `scripts/archive-request-logs.sh` (228 行)
 - `scripts/delete-old-request-logs.sh` (199 行)

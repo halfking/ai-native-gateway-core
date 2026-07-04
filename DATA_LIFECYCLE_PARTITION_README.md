@@ -52,8 +52,8 @@ db/migrations/
 └── 305_partition_archive_functions.down.sql # 回滚脚本
 
 docs/
-├── data-lifecycle-partition-archive.md              # 功能文档
-└── data-lifecycle-partition-implementation-summary.md # 实现总结
+├── ~~data-lifecycle-partition-archive.md~~              # 已合并 → docs/partition/OPERATIONS_RUNBOOK.md §7
+└── ~~data-lifecycle-partition-implementation-summary.md~~ # 已合并 → docs/partition/OPERATIONS_RUNBOOK.md §8
 ```
 
 ### 修改文件
@@ -73,9 +73,14 @@ admin/handler.go  # 添加 3 个 API 路由（第 351-356 行）
 
 ## 详细文档
 
-- **功能使用指南**: [data-lifecycle-partition-archive.md](./data-lifecycle-partition-archive.md)
-- **实现总结**: [data-lifecycle-partition-implementation-summary.md](./data-lifecycle-partition-implementation-summary.md)
-- **原始需求**: [data-lifecycle-management.md](./data-lifecycle-management.md)
+> ⚠️ 以下 3 个文档已于 2026-07-05 合并至 [`docs/partition/OPERATIONS_RUNBOOK.md`](./docs/partition/OPERATIONS_RUNBOOK.md) §8
+
+- ~~[data-lifecycle-partition-archive.md](./docs/data-lifecycle-partition-archive.md)~~ — 已合并 → OPERATIONS_RUNBOOK.md §7
+- ~~[data-lifecycle-partition-implementation-summary.md](./docs/data-lifecycle-partition-implementation-summary.md)~~ — 已合并 → OPERATIONS_RUNBOOK.md §8
+- ~~[data-lifecycle-management.md](./docs/data-lifecycle-management.md)~~ — 已合并 → OPERATIONS_RUNBOOK.md §8
+
+请使用主文档：`docs/partition/OPERATIONS_RUNBOOK.md`
+- ~~**原始需求**: [data-lifecycle-management.md](./docs/data-lifecycle-management.md)~~ — 已合并 → OPERATIONS_RUNBOOK.md §8
 
 ## 测试状态
 
@@ -97,7 +102,7 @@ admin/handler.go  # 添加 3 个 API 路由（第 351-356 行）
 
 ## 联系支持
 
-遇到问题请查看故障排查指南：[data-lifecycle-partition-archive.md#故障排查](./data-lifecycle-partition-archive.md#故障排查)
+遇到问题请查看故障排查指南：[OPERATIONS_RUNBOOK.md#7-http-api-归档操作](./docs/partition/OPERATIONS_RUNBOOK.md#7-http-api-归档操作合并自-operations_guide_partition_archive-md)
 
 ---
 
