@@ -163,6 +163,8 @@ services:
       # ── credential 解密 key (与 03-local-mock-credential.sql 配对) ──
       # 32-byte deterministic key, base64url. LOCAL ONLY, never production.
       LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
+      # ── JWT signing secret (本地测试用固定值) ──
+      LLM_GATEWAY_JWT_SECRET: "local-dev-secret-do-not-use-in-production-12345678"
       # ── 关闭数据面 auth (本地测试, 不设 API_KEY 即默认 off) ──
       # LLM_GATEWAY_API_KEY 留空 → auth middleware 不生效
       # ── CORS (v1 启动时 panic 若未设; 本地用通配) ──

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { setLocale } from '../store'
+import { setLocale } from '../i18n/index'
 import { languages } from '../i18n'
 
 const { locale } = useI18n()
@@ -15,9 +15,8 @@ function toggleDropdown() {
   isOpen.value = !isOpen.value
 }
 
-function selectLanguage(code: string) {
-  locale.value = code
-  setLocale(code)
+async function selectLanguage(code: string) {
+  await setLocale(code)
   isOpen.value = false
 }
 

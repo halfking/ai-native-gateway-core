@@ -26,3 +26,7 @@ export {
 // catalog and system helpers that the providers page also references
 export { getCatalog, type CatalogEntry } from './catalog'
 export { getBackgroundTasksStatus, type BackgroundTasksStatus } from './system'
+
+// auth helpers for LoginModal
+export { login, logout, type LoginResponse } from './auth'
+export { getAuthMe } from './admin'

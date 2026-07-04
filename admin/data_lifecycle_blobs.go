@@ -236,7 +236,7 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 	// 2. 执行（仅 super_admin）
 	if execute {
 		_, err := h.db.Exec(ctx, `
-			UPDATE request_logs_default
+			UPDATE request_logs
 			SET request_body = NULL,
 			    outbound_body = NULL
 			`+where, args...)
@@ -246,7 +246,7 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 			return
 		}
 		// VACUUM 释放空间需要单独在 idle 时刻跑，这里先记录
-		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs_default`)
+		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs`)
 	}
 
 	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)
