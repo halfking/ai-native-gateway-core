@@ -1,0 +1,15 @@
+export default {
+  tierAll: 'すべて',
+  tierLocal: 'ローカル',
+  loadFailed: '読み込みに失敗しました',
+  tierLabel: '階層',
+  searchLabel: '検索',
+  providerCount: '{count} 件のプロバイダー',
+  noMatchingProviders: '現在の検索条件に一致するプロバイダーがありません',
+  searchPlaceholder: 'プロバイダーを検索…',
+  loading: '読み込み中…',
+  domestic: '国内',
+  modelCount: '{count} 件のモデル',
+  documentation: 'ドキュメント →',
+  noResults: '一致する結果がありません',
+}

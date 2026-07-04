@@ -1,0 +1,63 @@
+// Auto-translated draft (es-ES) · 2026-07-02 · please review
+// compression.ts — Vista de compresión.
+export default {
+  title: 'Panorama de compresión',
+  refresh: 'Actualizar',
+  loading: 'Cargando…',
+  tabs: {
+    h24: '24 horas',
+    d7: '7 días',
+    d30: '30 días',
+    custom: 'Personalizado',
+  },
+  custom: {
+    from: 'Hora de inicio',
+    to: 'Hora de fin',
+    apply: 'Aplicar',
+    sep: 'a',
+  },
+  stats: {
+    totalRequests: 'Solicitudes totales',
+    compressed: 'Comprimidas',
+    compressionRate: 'Tasa de compresión',
+    estimatedSaved: 'Tokens ahorrados estimados',
+  },
+  charts: {
+    strategyDistribution: 'Distribución de estrategias',
+    compressionRateTrend: 'Tendencia de la tasa de compresión',
+    timeBucketHour: 'Por hora',
+    timeBucket6Hour: 'Cada 6 horas',
+    timeBucketDay: 'Diario',
+    noData: 'Sin datos de series temporales disponibles',
+    titleSuffix: '{strategy}: {count} ({pct})',
+    barTitle: '{hour}: {n} solicitudes, {pct} compresión',
+  },
+  table: {
+    title: 'Detalle de compresión de sesión',
+    count: '{n} en total',
+    sessionId: 'ID de sesión',
+    strategy: 'Estrategia',
+    requests: 'Solicitudes',
+    compressedMsgs: 'Mensajes comprimidos',
+    compressedTokens: 'Tokens comprimidos',
+    msgSaved: 'Mensajes ahorrados',
+    lastTime: 'Última hora',
+    empty: 'Sin sesiones de compresión en la ventana seleccionada',
+  },
+  pagination: {
+    previous: 'Anterior',
+    next: 'Siguiente',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: 'Delta append',
+    sliding_window_token: 'Ventana deslizante (tokens)',
+    sliding_window_count: 'Ventana deslizante (recuento)',
+    sliding_window_idle: 'Ventana deslizante (inactividad)',
+    mechanical_trim: 'Recorte mecánico',
+    memora_l1_inject: 'Inyección Memora',
+    llm_summary: 'Resumen LLM',
+    noop: 'Sin operación',
+    none: 'Sin compresión',
+  },
+}

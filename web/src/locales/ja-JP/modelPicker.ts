@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: 'モデルを選択…',
+  titleSelect: 'モデルを選択',
+  loadFailed: 'モデルの読み込みに失敗しました',
+  selectedCount: '{count} 件のモデルを選択',
+  editButton: '編集',
+  selectButton: '選択',
+  clearTitle: 'クリア',
+  closeLabel: '閉じる',
+  loading: '読み込み中…',
+  sectionPopular: '人気モデル',
+  moreButton: 'さらに表示… ({count})',
+  footerHint: '{count} 件選択',
+  cancelButton: 'キャンセル',
+  confirmButton: '確認',
+  backButton: '戻る',
+  other: 'その他',
+}

@@ -1,71 +1,93 @@
 <script setup lang="ts">
-import ServiceLandingPage from '../components/ServiceLandingPage.vue';
+import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
+import ServiceLandingPage from '../components/ServiceLandingPage.vue'
 
-const features = [
+const { t, tm } = useI18n()
+
+const heroPoints = computed(() => tm('landing.heroPoints') as string[])
+
+const features = computed(() => [
   {
     icon: '🧭',
-    title: '智能路由与凭据池',
-    description: '按租户、模型与任务类型自动选路；多凭据指纹池 + 自适应探测，故障秒级切换、封号率趋零。',
+    title: t('landing.features.smartRouting.title'),
+    description: t('landing.features.smartRouting.description'),
   },
   {
     icon: '🔐',
-    title: '调用安全护盾',
-    description: 'LLM-as-judge 提示词注入检测（v1 可观测模式）+ 敏感数据脱敏规划，企业级合规防线。',
-    badge: 'beta',
+    title: t('landing.features.safety.title'),
+    description: t('landing.features.safety.description'),
+    badge: t('landing.features.safety.badge'),
   },
   {
     icon: '⚡',
-    title: '缓存对齐与降本',
-    description: 'Prompt 前缀稳定化 + 语义缓存，最大化 KV Cache 命中率，降低 Token 算力开销。',
+    title: t('landing.features.cache.title'),
+    description: t('landing.features.cache.description'),
   },
   {
     icon: '🤖',
-    title: 'Agent 与 MCP 网关',
-    description: 'Agent 注册中心、A2A 协议、MCP 工具托管与协议转换——从 LLM 代理升级为智能体编排入口。',
-    badge: '即将上线',
+    title: t('landing.features.agent.title'),
+    description: t('landing.features.agent.description'),
+    badge: t('landing.features.agent.badge'),
   },
   {
     icon: '📊',
-    title: '全链路可观测',
-    description: '请求日志、路由决策审计、OTel 链路追踪、SIEM/CEF 事件导出，等保 2.0 与 GDPR 就绪。',
+    title: t('landing.features.observability.title'),
+    description: t('landing.features.observability.description'),
   },
   {
     icon: '💳',
-    title: 'MaaS 计费体系',
-    description: '套餐 + 积分 + 三池钱包（订阅 / 信用 / 充值），面向租户自助的完整商业化闭环。',
+    title: t('landing.features.billing.title'),
+    description: t('landing.features.billing.description'),
   },
   {
     icon: '🌐',
-    title: '多协议兼容',
-    description: 'OpenAI Chat / Anthropic Messages / Responses 三套入向统一归一，开源与商业模型无缝接入。',
+    title: t('landing.features.multiProtocol.title'),
+    description: t('landing.features.multiProtocol.description'),
   },
   {
     icon: '🏗️',
-    title: '多租户隔离',
-    description: 'PostgreSQL RLS 行级安全 + 43 轮审计 L1=0，租户间数据零泄漏，每租户独立策略与配额。',
+    title: t('landing.features.multiTenant.title'),
+    description: t('landing.features.multiTenant.description'),
   },
-];
+])
 
-const advantages = [
-  { icon: '🇨🇳', title: '中国本地化', description: '全中文界面、开源模型优先、支付宝/微信支付接入、等保合规模板' },
-  { icon: '🔒', title: '私有化部署', description: '完全私有部署，数据不出企业，k3s + Docker 双形态，零外部依赖' },
-  { icon: '🛡️', title: '抗封号体系', description: '50+ UA 轮换 + utls TLS 指纹池 + 11 浏览器 profile + 5 分钟自动轮换' },
-  { icon: '⚡', title: 'Go 高性能数据面', description: '原生 Go 实现，40MB 轻量镜像，200 并发 P99 < 500ms，SSE 流式稳定中继' },
-];
+const advantages = computed(() => [
+  { 
+    icon: '🇨🇳', 
+    title: t('landing.advantages.local.title'), 
+    description: t('landing.advantages.local.description') 
+  },
+  { 
+    icon: '🔒', 
+    title: t('landing.advantages.private.title'), 
+    description: t('landing.advantages.private.description') 
+  },
+  { 
+    icon: '🛡️', 
+    title: t('landing.advantages.antiBan.title'), 
+    description: t('landing.advantages.antiBan.description') 
+  },
+  { 
+    icon: '⚡', 
+    title: t('landing.advantages.perf.title'), 
+    description: t('landing.advantages.perf.description') 
+  },
+])
 </script>
 
 <template>
   <div class="llmgo-landing">
     <ServiceLandingPage
-      kicker="Enterprise AI & Agent Gateway"
-      title="启圭WM企业 AI 与智能体网关"
-      subtitle="从大模型代理到智能体编排的统一入口。统一接入多家 LLM，智能路由、安全护盾、缓存降本、全链路审计——让企业的每一次 AI 调用可控、可观测、可计费。"
-      :hero-points="['智能路由', '调用安全', '缓存降本', 'Agent 就绪', '全链路审计', 'MaaS 计费']"
+      :kicker="t('landing.kicker')"
+      :title="t('landing.title')"
+      :subtitle="t('landing.subtitle')"
+      :hero-points="heroPoints"
       :features="features"
       :advantages="advantages"
-      advantages-title="差异化优势"
-      advantages-subtitle="海外厂商给不了的能力"
-      footer-text="启圭WM LLM Gateway · llmgateway.internal.example.com · 私有部署 · 中国本地化"
+      :advantages-title="t('landing.advantagesTitle')"
+      :advantages-subtitle="t('landing.advantagesSubtitle')"
+      :footer-text="t('landing.footer')"
       accent="#6366f1"
       :hide-cta="true"
     />
@@ -73,28 +95,28 @@ const advantages = [
     <!-- 路线图预告区块 -->
     <section class="llmgo-roadmap">
       <div class="llmgo-roadmap__inner">
-        <h2 class="llmgo-roadmap__title">产品演进路线</h2>
-        <p class="llmgo-roadmap__sub">从 LLM 数据面到企业 Agent 网关，持续构建</p>
+        <h2 class="llmgo-roadmap__title">{{ t('landing.roadmap.title') }}</h2>
+        <p class="llmgo-roadmap__sub">{{ t('landing.roadmap.subtitle') }}</p>
         <ol class="llmgo-roadmap__list">
           <li>
-            <span class="llmgo-roadmap__phase">v3.1 · 2026 Q3</span>
-            <strong>API Hub 资产中心 + MCP 工具托管</strong>
-            <span>统一登记 LLM 端点、MCP 服务与 Agent，开发者自助发现与复用。</span>
+            <span class="llmgo-roadmap__phase">{{ t('landing.roadmap.v31.phase') }}</span>
+            <strong>{{ t('landing.roadmap.v31.title') }}</strong>
+            <span>{{ t('landing.roadmap.v31.description') }}</span>
           </li>
           <li>
-            <span class="llmgo-roadmap__phase">v3.2 · 2026 Q4</span>
-            <strong>安全护盾 GA + SIEM 对接 + SpecBoost</strong>
-            <span>提示词注入拦截、敏感数据脱敏、API 描述智能富集提升 Function Calling 准确率。</span>
+            <span class="llmgo-roadmap__phase">{{ t('landing.roadmap.v32.phase') }}</span>
+            <strong>{{ t('landing.roadmap.v32.title') }}</strong>
+            <span>{{ t('landing.roadmap.v32.description') }}</span>
           </li>
           <li>
-            <span class="llmgo-roadmap__phase">v4.0 · 2027 Q1</span>
-            <strong>Agent 注册中心 + A2A 协议网关</strong>
-            <span>跨智能体任务委派与编排，OpenClaw 与业务 Agent 统一接入。</span>
+            <span class="llmgo-roadmap__phase">{{ t('landing.roadmap.v40.phase') }}</span>
+            <strong>{{ t('landing.roadmap.v40.title') }}</strong>
+            <span>{{ t('landing.roadmap.v40.description') }}</span>
           </li>
           <li>
-            <span class="llmgo-roadmap__phase">v5.0 · 2027 Q3</span>
-            <strong>行业方案 GA</strong>
-            <span>客服、HR、销售、物流四大行业模板，开箱即用的智能体方案。</span>
+            <span class="llmgo-roadmap__phase">{{ t('landing.roadmap.v50.phase') }}</span>
+            <strong>{{ t('landing.roadmap.v50.title') }}</strong>
+            <span>{{ t('landing.roadmap.v50.description') }}</span>
           </li>
         </ol>
       </div>

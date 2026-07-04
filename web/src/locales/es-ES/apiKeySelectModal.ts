@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'Clave de sesión no coincide',
+  titleManual: 'Seleccionar clave API',
+  hintSessionForbidden: 'La sesión de gateway vinculada a esta conversación pertenece a otra clave API. Seleccione la clave que posee la sesión y el sistema reenviará automáticamente el último mensaje.',
+  hintManual: 'La conversación requiere una clave sk-* completa. Seleccione una clave disponible a continuación.',
+  closeLabel: 'Cerrar',
+  unrevealabledBadge: 'No se puede restaurar',
+  buttonLoading: 'Cargando…',
+  buttonUnavailable: 'No disponible',
+  buttonCurrent: 'Clave actual',
+  buttonUse: 'Usar esta clave',
+  emptyMessage: 'No hay claves disponibles. Cree o solicite una clave API primero.',
+  createNewKey: 'Emitir nueva clave',
+  goToKeyManagement: 'Ir a la gestión de claves API',
+}

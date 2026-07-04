@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: 'Seleccionar modelo…',
+  titleSelect: 'Seleccionar modelo',
+  loadFailed: 'Error al cargar modelos',
+  selectedCount: '{count} modelos seleccionados',
+  editButton: 'Editar',
+  selectButton: 'Seleccionar',
+  clearTitle: 'Limpiar',
+  closeLabel: 'Cerrar',
+  loading: 'Cargando…',
+  sectionPopular: 'Modelos populares',
+  moreButton: 'Más… ({count})',
+  footerHint: '{count} seleccionados',
+  cancelButton: 'Cancelar',
+  confirmButton: 'Confirmar',
+  backButton: 'Volver',
+  other: 'Otro',
+}

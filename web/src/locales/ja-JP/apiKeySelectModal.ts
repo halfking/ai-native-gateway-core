@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'セッションキーが一致しません',
+  titleManual: 'APIキーを選択',
+  hintSessionForbidden: 'この会話にバインドされたゲートウェイセッションは別のAPIキーに属しています。セッションを所有するキーを選択してください。システムは最後のメッセージを自動的に再送信します。',
+  hintManual: '会話には完全な sk-* キーが必要です。以下から利用可能なキーを選択してください。',
+  closeLabel: '閉じる',
+  unrevealabledBadge: '復元不可',
+  buttonLoading: '読み込み中…',
+  buttonUnavailable: '選択不可',
+  buttonCurrent: '現在のキー',
+  buttonUse: 'このキーを使用',
+  emptyMessage: '利用可能なキーがありません。まずAPIキーを申請または作成してください。',
+  createNewKey: '新しいキーを発行',
+  goToKeyManagement: 'APIキー管理に移動',
+}

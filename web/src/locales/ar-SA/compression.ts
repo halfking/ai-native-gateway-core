@@ -1,0 +1,63 @@
+// Auto-translated draft (ar-SA) · 2026-07-02 · please review
+// compression.ts — نصوص CompressionView.
+export default {
+  title: 'نظرة عامة على الضغط',
+  refresh: 'تحديث',
+  loading: 'جاري التحميل…',
+  tabs: {
+    h24: '24 ساعة',
+    d7: '7 أيام',
+    d30: '30 يومًا',
+    custom: 'مخصص',
+  },
+  custom: {
+    from: 'وقت البدء',
+    to: 'وقت الانتهاء',
+    apply: 'استعلام',
+    sep: 'إلى',
+  },
+  stats: {
+    totalRequests: 'إجمالي الطلبات',
+    compressed: 'تم ضغطها',
+    compressionRate: 'معدل الضغط',
+    estimatedSaved: 'الرموز المميزة الموفرة المقدرة',
+  },
+  charts: {
+    strategyDistribution: 'توزيع استراتيجية الضغط',
+    compressionRateTrend: 'اتجاه معدل الضغط',
+    timeBucketHour: 'بالساعة',
+    timeBucket6Hour: 'كل 6 ساعات',
+    timeBucketDay: 'يوميًا',
+    noData: 'لا توجد بيانات سلاسل زمنية متاحة',
+    titleSuffix: '{strategy}: {count} ({pct})',
+    barTitle: '{hour}: {n} طلب، معدل ضغط {pct}',
+  },
+  table: {
+    title: 'تفاصيل ضغط الجلسات',
+    count: 'إجمالي {n} سجل',
+    sessionId: 'معرّف الجلسة',
+    strategy: 'الاستراتيجية',
+    requests: 'عدد الطلبات',
+    compressedMsgs: 'الرسائل المضغوطة',
+    compressedTokens: 'الرموز المضغوطة',
+    msgSaved: 'الرسائل الموفرة',
+    lastTime: 'آخر وقت',
+    empty: 'لا توجد سجلات ضغط جلسات في الفترة الزمنية المحددة',
+  },
+  pagination: {
+    previous: 'السابق',
+    next: 'التالي',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: 'إلحاق تدريجي',
+    sliding_window_token: 'نافذة منزلقة (رموز)',
+    sliding_window_count: 'نافذة منزلقة (عدد)',
+    sliding_window_idle: 'نافذة منزلقة (خامل)',
+    mechanical_trim: 'تشذيب آلي',
+    memora_l1_inject: 'حقن Memora',
+    llm_summary: 'ملخص LLM',
+    noop: 'بدون عملية',
+    none: 'غير مضغوط',
+  },
+}

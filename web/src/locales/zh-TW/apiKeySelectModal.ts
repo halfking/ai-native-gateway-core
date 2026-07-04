@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: '會話金鑰不匹配',
+  titleManual: '選擇 API 金鑰',
+  hintSessionForbidden: '此對話綁定的閘道器會話屬於另一把 API 金鑰。請選擇擁有該會話的金鑰，系統將自動重發上一條訊息。',
+  hintManual: '對話需要完整的 sk-* 金鑰。請從下方選擇一把可用金鑰。',
+  closeLabel: '關閉',
+  unrevealabledBadge: '無法還原',
+  buttonLoading: '載入中…',
+  buttonUnavailable: '不可選',
+  buttonCurrent: '當前金鑰',
+  buttonUse: '使用此金鑰',
+  emptyMessage: '沒有可用的金鑰。請先申請或創建 API 金鑰。',
+  createNewKey: '簽發新金鑰',
+  goToKeyManagement: '前往 API 金鑰管理',
+}

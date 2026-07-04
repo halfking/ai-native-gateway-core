@@ -1,0 +1,63 @@
+// Auto-translated draft (fr-FR) · 2026-07-02 · please review
+// compression.ts — CompressionView strings.
+export default {
+  title: 'Aperçu de la compression',
+  refresh: 'Actualiser',
+  loading: 'Chargement…',
+  tabs: {
+    h24: '24 heures',
+    d7: '7 jours',
+    d30: '30 jours',
+    custom: 'Personnalisé',
+  },
+  custom: {
+    from: 'Heure de début',
+    to: 'Heure de fin',
+    apply: 'Appliquer',
+    sep: 'à',
+  },
+  stats: {
+    totalRequests: 'Total des requêtes',
+    compressed: 'Compressées',
+    compressionRate: 'Taux de compression',
+    estimatedSaved: 'Tokens estimés économisés',
+  },
+  charts: {
+    strategyDistribution: 'Répartition des stratégies',
+    compressionRateTrend: 'Tendance du taux de compression',
+    timeBucketHour: 'Toutes les heures',
+    timeBucket6Hour: 'Toutes les 6 heures',
+    timeBucketDay: 'Quotidien',
+    noData: 'Aucune donnée de série temporelle disponible',
+    titleSuffix: '{strategy} : {count} ({pct})',
+    barTitle: '{hour} : {n} requêtes, {pct} compressées',
+  },
+  table: {
+    title: 'Détail de la compression de session',
+    count: '{n} au total',
+    sessionId: 'ID de session',
+    strategy: 'Stratégie',
+    requests: 'Requêtes',
+    compressedMsgs: 'Msg compressés',
+    compressedTokens: 'Tokens compressés',
+    msgSaved: 'Msg économisés',
+    lastTime: 'Dernière heure',
+    empty: 'Aucune session de compression dans la plage sélectionnée',
+  },
+  pagination: {
+    previous: 'Précédent',
+    next: 'Suivant',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: 'Ajout delta',
+    sliding_window_token: 'Fenêtre glissante (tokens)',
+    sliding_window_count: 'Fenêtre glissante (nombre)',
+    sliding_window_idle: 'Fenêtre glissante (inactivité)',
+    mechanical_trim: 'Découpage mécanique',
+    memora_l1_inject: 'Injection Memora',
+    llm_summary: 'Résumé LLM',
+    noop: 'No-op',
+    none: 'Non compressé',
+  },
+}

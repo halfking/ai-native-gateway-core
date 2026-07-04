@@ -1,0 +1,43 @@
+// Auto-translated draft (de-DE) · 2026-07-02 · please review
+// nav.ts — sidebar navigation labels, mirroring config/appNav.ts NAV_PRIMARY_ITEMS / NAV_GROUPS.
+export default {
+  primary: {
+    overview: 'Übersicht',
+  },
+  group: {
+    tenantPortal: 'Meine Dienste',
+    modelsRouting: 'Modelle & Routing',
+    tenantUsers: 'Mandanten & Benutzer',
+    requestsSessions: 'Anfragen & Sitzungen',
+    dataOps: 'Datenoperationen',
+    guide: 'Onboarding',
+    chat: 'Chat',
+  },
+  item: {
+    tenantModels: 'Standardmodelle',
+    tenantAccount: 'Mein Konto',
+    tenantPricing: 'Tarife & Aufladung',
+    tenantUsage: 'Meine Nutzung',
+    modelsCatalog: 'Modelle & Katalog',
+    routingOverview: 'Routing-Übersicht',
+    routingCredentials: 'Anmeldedaten-Überwachung',
+    providers: 'Anbieter',
+    pricing: 'Kostenpreise',
+    modelPricing: 'Preisverwaltung',
+    freePool: 'Kostenloser Pool',
+    tenants: 'Mandanten',
+    users: 'Benutzer',
+    keys: 'API-Schlüssel',
+    keyApplications: 'Schlüssel-Anträge',
+    auditLogs: 'Audit-Logs',
+    requestLogs: 'Anfrage-Logs',
+    sessions: 'Sitzungen',
+    sessionCompare: 'Sitzungsvergleich',
+    compression: 'Komprimierung',
+    sessionContext: 'Sitzungskontext',
+    adminSettings: 'Systemeinstellungen',
+    dataLifecycle: 'Datenlebenszyklus',
+    examples: 'Beispiele',
+    chat: 'Chat',
+  },
+}

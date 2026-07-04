@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'Session key mismatch',
+  titleManual: 'Select API Key',
+  hintSessionForbidden: 'The gateway session bound to this conversation belongs to another API key. Please select the key that owns the session, and the system will automatically resend the last message.',
+  hintManual: 'The conversation requires a full sk-* key. Please select an available key from below.',
+  closeLabel: 'Close',
+  unrevealabledBadge: 'Cannot restore',
+  buttonLoading: 'Loading…',
+  buttonUnavailable: 'Unavailable',
+  buttonCurrent: 'Current key',
+  buttonUse: 'Use this key',
+  emptyMessage: 'No available keys. Please create or apply for an API key first.',
+  createNewKey: 'Issue new key',
+  goToKeyManagement: 'Go to API key management',
+}

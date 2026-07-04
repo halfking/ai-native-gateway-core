@@ -1,0 +1,38 @@
+// providerDetailPage.ts — 供应商详情页根视图 (ProviderDetailView) 文案。
+// 命名空间：providerDetailPage.*
+// Tab 内部的文案请见 providerDetail.ts。
+export default {
+  back: '← 返回',
+  tabCreds: '凭据 ({n})',
+  tabModels: '模型',
+  tabLogs: '请求日志',
+  tabDiag: '诊断',
+  tabProbe: '自动测试',
+  tabProbeTitle: '查看自动测试记录（每 10 分钟对失败绑定重新探测）',
+  tabSettings: '设置',
+  loading: '加载中…',
+  loadingFallback: '...',
+  refresh: '刷新',
+  enable: '启用',
+  disable: '禁用',
+  manualDisable: '手工禁用',
+  manualEnable: '解除手工禁用',
+  manualDisableTitle: '手工禁用整个 provider',
+  manualEnableTitle: '取消手工禁用 (恢复自动)',
+  manualDisableBadge: '🔒 手工已禁用',
+  manualDisableBadgeTitle: '提供商级手工禁用 — 整个 provider 不可路由',
+  disabledBadge: '已禁用',
+  manualToggle: {
+    set: '手工禁用',
+    release: '解除手工禁用',
+    setTitle: '手工禁用整个 provider',
+    releaseTitle: '取消手工禁用 (恢复自动)',
+    disablePrompt: '手工禁用提供商 {name} 的原因：',
+    enablePrompt: '手工启用提供商 {name} 的原因：',
+  },
+  manualDisabledTitle: '提供商级手工禁用 — 整个 provider 不可路由',
+  manualDisabledBadge: '手工已禁用',
+  loadFailed: '加载失败',
+  operationFailed: '操作失败',
+  diagFailed: '诊断失败',
+}

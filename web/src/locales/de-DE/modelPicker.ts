@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: 'Modell auswählen…',
+  titleSelect: 'Modell auswählen',
+  loadFailed: 'Modelle konnten nicht geladen werden',
+  selectedCount: '{count} Modelle ausgewählt',
+  editButton: 'Bearbeiten',
+  selectButton: 'Auswählen',
+  clearTitle: 'Löschen',
+  closeLabel: 'Schließen',
+  loading: 'Wird geladen…',
+  sectionPopular: 'Beliebte Modelle',
+  moreButton: 'Mehr… ({count})',
+  footerHint: '{count} ausgewählt',
+  cancelButton: 'Abbrechen',
+  confirmButton: 'Bestätigen',
+  backButton: 'Zurück',
+  other: 'Andere',
+}
