@@ -1,13 +1,16 @@
 <script setup lang="ts">
 // LiveRequestStreamV2.vue — 实时请求流V2（泳道系统）
 // 2026-07-05: 支持按原厂/供应商/模型分组的多泳道可视化
+// 2026-07-05 v2: 添加管理员连接详情弹窗、空闲块机制
 
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
+import { isSuperAdmin } from '../store'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import type { GroupByDimension } from '../types/swimlane'
+import { createIdleTile } from '../types/swimlane'
 
 const emit = defineEmits<{
   openDetail: [requestId: string]
@@ -32,6 +35,62 @@ const {
   toggleLegend,
   clearLegendSelection,
 } = useSwimLane()
+
+// 管理员连接详情弹窗
+const showConnectionDetail = ref(false)
+const isAdmin = computed(() => isSuperAdmin())
+
+// 空闲块定时器
+let idleCheckTimer: number | null = null
+let lastRequestTime = Date.now()
+
+// WebSocket地址
+const wsUrl = computed(() => {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.host
+  return `${protocol}//${host}/api/admin/live-stream`
+})
+
+// 切换连接详情弹窗
+function toggleConnectionDetail() {
+  if (isAdmin.value) {
+    showConnectionDetail.value = !showConnectionDetail.value
+  }
+}
+
+// 测试WebSocket连接
+function testConnection() {
+  if (connection.value === 'open') {
+    alert('WebSocket连接正常！\n状态: 已连接\n地址: ' + wsUrl.value)
+  } else {
+    alert('WebSocket未连接\n状态: ' + connection.value + '\n地址: ' + wsUrl.value)
+  }
+}
+
+// 启动空闲块检测定时器
+function startIdleTimer() {
+  if (idleCheckTimer) return
+  
+  idleCheckTimer = window.setInterval(() => {
+    const now = Date.now()
+    const elapsed = now - lastRequestTime
+    
+    // 超过60秒无请求，插入空闲块
+    if (elapsed >= 60000) {
+      const idleTile = createIdleTile()
+      queueRequest(idleTile as any)
+      lastRequestTime = now // 重置时间，避免连续插入
+    }
+  }, 30000) // 每30秒检查一次
+}
+
+// 停止空闲块检测定时器
+function stopIdleTimer() {
+  if (idleCheckTimer) {
+    clearInterval(idleCheckTimer)
+    idleCheckTimer = null
+  }
+}
 
 // WebSocket地址显示（仅管理员）
 const showWsAddress = ref(false)
@@ -74,6 +133,13 @@ const dimensionLabel = computed(() => {
 onMounted(() => {
   // 用现有的liveRequests初始化泳道
   initializeLanes(liveRequests.value)
+  // 启动空闲块检测
+  startIdleTimer()
+})
+
+// 清理
+onUnmounted(() => {
+  stopIdleTimer()
 })
 
 // 监听新请求
@@ -84,6 +150,7 @@ watch(liveRequests, (newRequests, oldRequests) => {
   
   for (const req of newItems) {
     queueRequest(req)
+    lastRequestTime = Date.now() // 更新最后请求时间
   }
 }, { deep: true })
 
@@ -142,14 +209,34 @@ function handleToggleLegend(key: string) {
             type="button"
             class="connection-status"
             :class="connectionClass"
-            @click="showWsAddress = !showWsAddress"
-            :title="showWsAddress ? '隐藏地址' : '显示地址（仅管理员）'"
+            @click="toggleConnectionDetail"
+            :title="isAdmin ? '点击查看连接详情' : connectionLabel"
+            :disabled="!isAdmin"
           >
             <span class="status-dot" />
             {{ connectionLabel }}
           </button>
-          <div v-if="showWsAddress" class="ws-address">
-            <code>{{ wsAddress }}</code>
+        </div>
+        
+        <!-- 连接详情弹窗（仅管理员） -->
+        <div v-if="showConnectionDetail && isAdmin" class="connection-detail-popup">
+          <div class="popup-header">
+            <h4>WebSocket 连接详情</h4>
+            <button type="button" class="popup-close" @click="showConnectionDetail = false">✕</button>
+          </div>
+          <div class="popup-body">
+            <div class="detail-row">
+              <span class="detail-label">连接状态:</span>
+              <span class="detail-value" :class="connectionClass">{{ connectionLabel }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">WebSocket地址:</span>
+              <code class="detail-value">{{ wsUrl }}</code>
+            </div>
+            <div class="popup-actions">
+              <button type="button" class="test-btn" @click="testConnection">测试连接</button>
+              <button type="button" class="close-btn" @click="showConnectionDetail = false">关闭</button>
+            </div>
           </div>
         </div>
         
@@ -261,6 +348,7 @@ function handleToggleLegend(key: string) {
 }
 
 .connection-status {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -275,8 +363,14 @@ function handleToggleLegend(key: string) {
   white-space: nowrap;
 }
 
-.connection-status:hover {
+.connection-status:hover:not(:disabled) {
   background: var(--bg-subtle, #161b22);
+  border-color: var(--accent, #6366f1);
+}
+
+.connection-status:disabled {
+  cursor: default;
+  opacity: 0.8;
 }
 
 .status-dot {
@@ -302,24 +396,130 @@ function handleToggleLegend(key: string) {
   50% { opacity: 0.4; }
 }
 
-.ws-address {
+/* 连接详情弹窗 */
+.connection-detail-popup {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 8px);
   left: 0;
-  margin-top: 4px;
-  padding: 6px 10px;
-  background: var(--bg-subtle, #161b22);
+  min-width: 400px;
+  background: var(--bg, #0f1117);
   border: 1px solid var(--border, #30363d);
-  border-radius: 4px;
-  z-index: 100;
-  white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  overflow: hidden;
 }
 
-.ws-address code {
-  font-size: 11px;
+.popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-subtle, #161b22);
+  border-bottom: 1px solid var(--border, #30363d);
+}
+
+.popup-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text, #e6edf3);
+}
+
+.popup-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.popup-close:hover {
+  background: var(--bg, #0f1117);
+  color: var(--text, #e6edf3);
+}
+
+.popup-body {
+  padding: 16px;
+}
+
+.detail-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.detail-label {
+  font-size: 12px;
+  color: var(--text-secondary, #8b949e);
+  min-width: 90px;
+}
+
+.detail-value {
+  font-size: 12px;
+  color: var(--text, #e6edf3);
+  flex: 1;
+}
+
+.detail-value code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-subtle, #161b22);
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  border: 1px solid var(--border, #30363d);
+}
+
+.popup-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, #30363d);
+}
+
+.test-btn,
+.close-btn {
+  flex: 1;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid var(--border, #30363d);
+}
+
+.test-btn {
+  background: var(--accent, #6366f1);
+  color: white;
+  border-color: var(--accent, #6366f1);
+}
+
+.test-btn:hover {
+  background: #5558e3;
+  border-color: #5558e3;
+}
+
+.close-btn {
+  background: var(--bg-subtle, #161b22);
+  color: var(--text, #e6edf3);
+}
+
+.close-btn:hover {
+  background: var(--bg, #0f1117);
 }
 
 .cache-stats {

@@ -364,7 +364,7 @@ export function useSwimLane() {
         key,
         name: key,
         count: stat?.requestCount || 0,
-        color: dimension === 'vendor' ? VENDOR_COLORS[key] || VENDOR_COLORS['__unknown__'] : undefined,
+        color: dimension === 'vendor' ? (VENDOR_COLORS[key] || VENDOR_COLORS['__unknown__']) : (VENDOR_COLORS['__unknown__']),
       }
     })
     
@@ -375,7 +375,7 @@ export function useSwimLane() {
         key: '__others__',
         name: '其它',
         count: otherStats.reduce((sum, s) => sum + s.requestCount, 0),
-        color: dimension === 'vendor' ? VENDOR_COLORS['__others__'] : undefined,
+        color: VENDOR_COLORS['__others__'],
       })
     }
     

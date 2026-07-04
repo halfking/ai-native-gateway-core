@@ -166,8 +166,6 @@ function onSelect(requestId: string) {
         {{ t('dashboard.liveStream.empty') }}
       </div>
     </div>
-
-    <LiveStreamLegend />
   </div>
 </template>
 
