@@ -1,20 +1,19 @@
-// landing.ts — 落地頁文案（未登錄首頁）。對應 LandingView 傳給 ServiceLandingPage 的 props，
-// 以及 LandingView 模板內自帶的「路線圖」區塊。
+// landing.ts — 落地頁文案（未登錄首頁）。
 //
-// 2026-07-05: 更新為當前 official-deploy 項目的實際內容（匹配 LandingView.vue）。
+// 2026-07-05: 更新為中性化、全球化的產品定位。
 export default {
-  kicker: '核心開源 · 中國本地化 · 企業級',
-  title: 'LLM Gateway — 面向全球市場的開源 AI 網關',
-  subtitle: '唯一兼具核心開源與深度中國本地化的 AI 網關。企業級治理、全球 LLM 接入、合規與資料主權 — 全部核心開源。',
+  kicker: '核心開源 · 企業級 · 全球部署',
+  title: 'LLM Gateway — 企業級開源 AI 網關',
+  subtitle: '核心開源的企業級 AI 網關。統一治理、全球 LLM 接入、合規與資料主權 — 全部核心開源。',
   featuresTitle: '核心能力',
   featuresSubtitle: '覆蓋從接入到營運的關鍵環節',
   heroPoints: [
     '核心開源 · Apache 2.0',
-    '中國本地化 · 等保 2.0',
-    '企業級 AI 入口',
-    'Vibe Coding 治理',
-    'AI 會話資產化',
+    '企業級治理',
+    '全球 LLM 接入',
     '資料安全防護',
+    'AI 會話資產化',
+    '私有化部署',
   ],
   features: {
     smartRouting: {
@@ -37,7 +36,7 @@ export default {
     },
     observability: {
       title: '全鏈路可觀測',
-      description: '請求日誌、路由決策稽核、OTel 鏈路追蹤、SIEM/CEF 事件匯出，等保 2.0 與 GDPR 就緒。',
+      description: '請求日誌、路由決策稽核、OTel 鏈路追蹤、SIEM/CEF 事件匯出，企業合規就緒。',
     },
     billing: {
       title: 'MaaS 計費體系',
@@ -53,47 +52,47 @@ export default {
     },
   },
   advantagesTitle: '為什麼選擇 LLM Gateway',
-  advantagesSubtitle: '面向有中國業務需求的全球企業',
+  advantagesSubtitle: '面向全球企業的企業級 AI 網關',
   advantages: {
     local: {
-      title: '深度中國本地化',
-      description: '全中文介面、國產開源 LLM 優先對接、支付寶/微信支付接入、等保 2.0 合規範本、國內雲端基礎設施就緒',
+      title: '全球化部署',
+      description: '多語言介面支援、全球主流 LLM 優先接入、靈活的支付整合、全球雲端基礎設施就緒',
     },
     private: {
       title: '私有化部署',
       description: '完全私有部署，資料不出企業，k3s + Docker 雙形態，零外部依賴',
     },
     antiBan: {
-      title: '抗封號體系',
-      description: '50+ UA 輪換 + utls TLS 指紋池 + 11 瀏覽器 profile + 5 分鐘自動輪換',
+      title: '高可用體系',
+      description: '多憑證輪換 + 智慧探測 + 自動故障切換，保障服務連續性',
     },
     perf: {
       title: 'Go 高效能資料面',
       description: '原生 Go 實作，40MB 輕量映像，200 並發 P99 < 500ms，SSE 串流穩定中繼',
     },
   },
-  footer: 'LLM Gateway · llmgateway.internal.example.com · 核心開源 · 中國本地化 · 私有部署',
+  footer: 'LLM Gateway · 核心開源 · 企業級部署 · 全球化支援',
   ariaPoints: '核心亮點',
   roadmap: {
     title: '產品演進路線',
     subtitle: '從 LLM 資料面到企業 Agent 網關，持續建構',
     v31: {
-      phase: 'v3.1 · 2026 Q3',
+      phase: 'v3.1',
       title: 'API Hub 資產中心 + MCP 工具託管',
       description: '統一登記 LLM 端點、MCP 服務與 Agent，開發者自助發現與複用。',
     },
     v32: {
-      phase: 'v3.2 · 2026 Q4',
+      phase: 'v3.2',
       title: '安全防護 GA + SIEM 對接 + SpecBoost',
       description: '提示詞注入攔截、敏感資料脫敏、API 描述智慧富集提升 Function Calling 準確率。',
     },
     v40: {
-      phase: 'v4.0 · 2027 Q1',
+      phase: 'v4.0',
       title: 'Agent 註冊中心 + A2A 協定網關',
       description: '跨智慧體任務委派與編排，OpenClaw 與業務 Agent 統一接入。',
     },
     v50: {
-      phase: 'v5.0 · 2027 Q3',
+      phase: 'v5.0',
       title: '行業方案 GA',
       description: '客服、HR、銷售、物流四大行業範本，開箱即用的智慧體方案。',
     },
