@@ -1,19 +1,19 @@
 // landing.ts — Landing page copy (guest homepage).
 //
-// 2026-07-05: Updated to match current official-deploy project content (LandingView.vue).
+// 2026-07-05: Updated to neutral, global positioning.
 export default {
-  kicker: 'Core Open Source · China Localization · Enterprise-Grade',
-  title: 'LLM Gateway — Open Source AI Gateway for Global Markets',
-  subtitle: 'The only AI gateway combining core open source with deep China localization. Enterprise governance, global LLM access, compliance and data sovereignty — all core open source.',
+  kicker: 'Core Open Source · Enterprise-Grade · Global Deployment',
+  title: 'LLM Gateway — Enterprise Open Source AI Gateway',
+  subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
   featuresTitle: 'Core Capabilities',
   featuresSubtitle: 'Covering key aspects from access to operations',
   heroPoints: [
     'Core Open Source · Apache 2.0',
-    'China Localization · Djbh 2.0',
-    'Enterprise AI Gateway',
-    'Vibe Coding Governance',
-    'AI Session Asset Management',
+    'Enterprise Governance',
+    'Global LLM Access',
     'Data Security Shield',
+    'AI Session Asset Management',
+    'Private Deployment',
   ],
   features: {
     smartRouting: {
@@ -36,7 +36,7 @@ export default {
     },
     observability: {
       title: 'Full-Chain Observability',
-      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, Djbh 2.0 and GDPR ready.',
+      description: 'Request logs, routing decision audit, OTel tracing, SIEM/CEF event export, enterprise compliance ready.',
     },
     billing: {
       title: 'MaaS Billing System',
@@ -52,47 +52,47 @@ export default {
     },
   },
   advantagesTitle: 'Why Choose LLM Gateway',
-  advantagesSubtitle: 'For global enterprises with China business needs',
+  advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
   advantages: {
     local: {
-      title: 'Deep China Localization',
-      description: 'Full Chinese interface, domestic open source LLM priority access, Alipay/WeChat Pay integration, Djbh 2.0 compliance templates, domestic cloud infrastructure ready',
+      title: 'Global Deployment',
+      description: 'Multi-language interface support, global mainstream LLM priority access, flexible payment integration, global cloud infrastructure ready',
     },
     private: {
       title: 'Private Deployment',
       description: 'Fully private deployment, data stays in enterprise, k3s + Docker dual form, zero external dependencies',
     },
     antiBan: {
-      title: 'Anti-Ban System',
-      description: '50+ UA rotation + utls TLS fingerprint pool + 11 browser profiles + 5-minute auto-rotation',
+      title: 'High Availability System',
+      description: 'Multi-credential rotation + intelligent probing + automatic failover, ensuring service continuity',
     },
     perf: {
       title: 'Go High-Performance Data Plane',
       description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
     },
   },
-  footer: 'LLM Gateway · llmgateway.internal.example.com · Core Open Source · China Localization · Private Deployment',
+  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Global Support',
   ariaPoints: 'Key Highlights',
   roadmap: {
     title: 'Product Roadmap',
     subtitle: 'From LLM data plane to enterprise Agent gateway, continuous build',
     v31: {
-      phase: 'v3.1 · 2026 Q3',
+      phase: 'v3.1',
       title: 'API Hub Asset Center + MCP Tool Hosting',
       description: 'Unified registration of LLM endpoints, MCP services and Agents, developer self-service discovery and reuse.',
     },
     v32: {
-      phase: 'v3.2 · 2026 Q4',
+      phase: 'v3.2',
       title: 'Security Shield GA + SIEM Integration + SpecBoost',
       description: 'Prompt injection blocking, sensitive data masking, API description intelligent enrichment to improve Function Calling accuracy.',
     },
     v40: {
-      phase: 'v4.0 · 2027 Q1',
+      phase: 'v4.0',
       title: 'Agent Registry + A2A Protocol Gateway',
       description: 'Cross-agent task delegation and orchestration, unified access to OpenClaw and business Agents.',
     },
     v50: {
-      phase: 'v5.0 · 2027 Q3',
+      phase: 'v5.0',
       title: 'Industry Solution GA',
       description: 'Four industry templates for customer service, HR, sales, logistics, out-of-the-box agent solutions.',
     },

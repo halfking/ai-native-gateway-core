@@ -1,20 +1,20 @@
 // landing.ts — 落地页文案（未登录首页）。对应 LandingView 传给 ServiceLandingPage 的 props，
 // 以及 LandingView 模板内自带的"路线图"区块。
 //
-// 2026-07-05: 更新为当前 official-deploy 项目的实际内容（匹配 LandingView.vue）。
+// 2026-07-05: 更新为中性化、全球化的产品定位。
 export default {
-  kicker: '核心开源 · 中国本地化 · 企业级',
-  title: 'LLM Gateway — 面向全球市场的开源 AI 网关',
-  subtitle: '唯一兼具核心开源与深度中国本地化的 AI 网关。企业级治理、全球 LLM 接入、合规与数据主权 — 全部核心开源。',
+  kicker: '核心开源 · 企业级 · 全球部署',
+  title: 'LLM Gateway — 企业级开源 AI 网关',
+  subtitle: '核心开源的企业级 AI 网关。统一治理、全球 LLM 接入、合规与数据主权 — 全部核心开源。',
   featuresTitle: '核心能力',
   featuresSubtitle: '覆盖从接入到运营的关键环节',
   heroPoints: [
     '核心开源 · Apache 2.0',
-    '中国本地化 · 等保 2.0',
-    '企业级 AI 入口',
-    'Vibe Coding 治理',
-    'AI 会话资产化',
+    '企业级治理',
+    '全球 LLM 接入',
     '数据安全护盾',
+    'AI 会话资产化',
+    '私有化部署',
   ],
   features: {
     smartRouting: {
@@ -53,47 +53,47 @@ export default {
     },
   },
   advantagesTitle: '为什么选择 LLM Gateway',
-  advantagesSubtitle: '面向有中国业务需求的全球企业',
+  advantagesSubtitle: '面向全球企业的企业级 AI 网关',
   advantages: {
     local: {
-      title: '深度中国本地化',
-      description: '全中文界面、国产开源 LLM 优先对接、支付宝/微信支付接入、等保 2.0 合规模板、国内云基础设施就绪',
+      title: '全球化部署',
+      description: '多语言界面支持、全球主流 LLM 优先接入、灵活的支付集成、全球云基础设施就绪',
     },
     private: {
       title: '私有化部署',
       description: '完全私有部署，数据不出企业，k3s + Docker 双形态，零外部依赖',
     },
     antiBan: {
-      title: '抗封号体系',
-      description: '50+ UA 轮换 + utls TLS 指纹池 + 11 浏览器 profile + 5 分钟自动轮换',
+      title: '高可用体系',
+      description: '多凭据轮换 + 智能探测 + 自动故障切换，保障服务连续性',
     },
     perf: {
       title: 'Go 高性能数据面',
       description: '原生 Go 实现，40MB 轻量镜像，200 并发 P99 < 500ms，SSE 流式稳定中继',
     },
   },
-  footer: 'LLM Gateway · llmgateway.internal.example.com · 核心开源 · 中国本地化 · 私有部署',
+  footer: 'LLM Gateway · 核心开源 · 企业级部署 · 全球化支持',
   ariaPoints: '核心亮点',
   roadmap: {
     title: '产品演进路线',
     subtitle: '从 LLM 数据面到企业 Agent 网关，持续构建',
     v31: {
-      phase: 'v3.1 · 2026 Q3',
+      phase: 'v3.1',
       title: 'API Hub 资产中心 + MCP 工具托管',
       description: '统一登记 LLM 端点、MCP 服务与 Agent，开发者自助发现与复用。',
     },
     v32: {
-      phase: 'v3.2 · 2026 Q4',
+      phase: 'v3.2',
       title: '安全护盾 GA + SIEM 对接 + SpecBoost',
       description: '提示词注入拦截、敏感数据脱敏、API 描述智能富集提升 Function Calling 准确率。',
     },
     v40: {
-      phase: 'v4.0 · 2027 Q1',
+      phase: 'v4.0',
       title: 'Agent 注册中心 + A2A 协议网关',
       description: '跨智能体任务委派与编排，OpenClaw 与业务 Agent 统一接入。',
     },
     v50: {
-      phase: 'v5.0 · 2027 Q3',
+      phase: 'v5.0',
       title: '行业方案 GA',
       description: '客服、HR、销售、物流四大行业模板，开箱即用的智能体方案。',
     },
