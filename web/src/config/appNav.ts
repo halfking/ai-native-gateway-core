@@ -3,6 +3,7 @@
 export type NavItem = {
   path: string
   label: string
+  labelKey?: string  // i18n key, if present will be used via t(labelKey)
   icon: string
   /** super_admin only */
   super?: boolean
@@ -22,81 +23,89 @@ export type NavItem = {
 export type NavGroup = {
   id: string
   label: string
+  labelKey?: string  // i18n key for group title
   items: NavItem[]
 }
 
 /** Top-level sidebar links (no accordion group). Used for default-tenant platform ops. */
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
-  { path: '/', label: '总览', icon: '📊', platformOps: true },
+  { path: '/', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true },
 ]
 
 export const NAV_GROUPS: NavGroup[] = [
   {
     id: 'tenant-portal',
     label: '我的服务',
+    labelKey: 'nav.group.tenantPortal',
     items: [
-      { path: '/tenant/models', label: '标准模型', icon: '🤖', tenantOnly: true },
-      { path: '/tenant/account', label: '我的账户', icon: '💰', tenantOnly: true },
-      { path: '/tenant/pricing', label: '套餐与充值', icon: '💳', tenantOnly: true },
-      { path: '/tenant/usage', label: '我的消耗', icon: '📉', tenantOnly: true },
+      { path: '/tenant/models', label: '标准模型', labelKey: 'nav.item.tenantModels', icon: '🤖', tenantOnly: true },
+      { path: '/tenant/account', label: '我的账户', labelKey: 'nav.item.tenantAccount', icon: '💰', tenantOnly: true },
+      { path: '/tenant/pricing', label: '套餐与充值', labelKey: 'nav.item.tenantPricing', icon: '💳', tenantOnly: true },
+      { path: '/tenant/usage', label: '我的消耗', labelKey: 'nav.item.tenantUsage', icon: '📉', tenantOnly: true },
     ],
   },
   {
     id: 'models-routing',
     label: '模型与路由',
+    labelKey: 'nav.group.modelsRouting',
     items: [
-      { path: '/models', label: '模型与目录', icon: '🏷️', platformOps: true, hideForTenant: true },
-      { path: '/routing-v2', label: '路由全景', icon: '🗺️', super: true, hideForTenant: true, exact: true },
-      { path: '/routing-v2/credentials', label: '凭据监控', icon: '📊' }, // 2026-07-04: 允许所有管理员访问
-      { path: '/probe-health', label: '探测健康度', icon: '🔍', super: true, hideForTenant: true },
-      { path: '/providers', label: '供应商', icon: '🔌', super: true, hideForTenant: true },
-      { path: '/pricing', label: '成本价格', icon: '📉', platformOps: true, hideForTenant: true },
-      { path: '/model-pricing', label: '定价管理', icon: '💰', platformOps: true, hideForTenant: true },
-      { path: '/free-pool', label: '免费资源', icon: '🎁', super: true, hideForTenant: true },
+      { path: '/models', label: '模型与目录', labelKey: 'nav.item.models', icon: '🏷️', platformOps: true, hideForTenant: true },
+      { path: '/routing-v2', label: '路由全景', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
+      { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
+      { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '🔍', super: true, hideForTenant: true },
+      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', super: true, hideForTenant: true },
+      { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
+      { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
+      { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
     ],
   },
   {
     id: 'tenant-users',
     label: '租户用户',
+    labelKey: 'nav.group.tenantUsers',
     items: [
-      { path: '/tenants', label: '租户管理', icon: '🏢', super: true, hideForTenant: true },
-      { path: '/users', label: '用户管理', icon: '👤' },
-      { path: '/keys', label: 'API 密钥', icon: '🔑' },
-      { path: '/key-applications', label: '密钥申请', icon: '📬', super: true, hideForTenant: true },
-      { path: '/audit-logs', label: '审计日志', icon: '📋', super: true, hideForTenant: true },
+      { path: '/tenants', label: '租户管理', labelKey: 'nav.item.tenants', icon: '🏢', super: true, hideForTenant: true },
+      { path: '/users', label: '用户管理', labelKey: 'nav.item.users', icon: '👤' },
+      { path: '/keys', label: 'API 密钥', labelKey: 'nav.item.keys', icon: '🔑' },
+      { path: '/key-applications', label: '密钥申请', labelKey: 'nav.item.keyApplications', icon: '📬', super: true, hideForTenant: true },
+      { path: '/audit-logs', label: '审计日志', labelKey: 'nav.item.auditLogs', icon: '📋', super: true, hideForTenant: true },
     ],
   },
   {
     id: 'requests-sessions',
     label: '请求与会话',
+    labelKey: 'nav.group.requestsSessions',
     items: [
-      { path: '/request-logs', label: '请求日志', icon: '📋' },
-      { path: '/sessions', label: '会话列表', icon: '💬' },
-      { path: '/session-compare', label: '会话对比', icon: '🔍' },
-      { path: '/admin/compression', label: '压缩概览', icon: '📦', platformOps: true, hideForTenant: true },
-      { path: '/session-context', label: '会话上下文', icon: '💭' },
+      { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      { path: '/sessions', label: '会话列表', labelKey: 'nav.item.sessions', icon: '💬' },
+      { path: '/session-compare', label: '会话对比', labelKey: 'nav.item.sessionCompare', icon: '🔍' },
+      { path: '/admin/compression', label: '压缩概览', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
+      { path: '/session-context', label: '会话上下文', labelKey: 'nav.item.sessionContext', icon: '💭' },
     ],
   },
   {
     id: 'data-ops',
     label: '数据运维',
+    labelKey: 'nav.group.dataOps',
     items: [
-      { path: '/admin/settings', label: '系统设置', icon: '⚙️', super: true, hideForTenant: true },
-      { path: '/admin/data-lifecycle', label: '数据生命周期', icon: '💾', platformOps: true, hideForTenant: true },
-      { path: '/format-anomalies', label: '格式异常监控', icon: '⚠️', super: true, hideForTenant: true },
-      { path: '/admin/modules', label: '模块管理', icon: '🧩', super: true, hideForTenant: true },
-      { path: '/admin/agents', label: 'Agent Registry', icon: '🤖', super: true, hideForTenant: true },
+      { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
+      { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
+      { path: '/admin/modules', label: '模块管理', labelKey: 'nav.item.modules', icon: '🧩', super: true, hideForTenant: true },
+      { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
     ],
   },
   {
     id: 'guide',
     label: '接入指南',
-    items: [{ path: '/examples', label: '接入示例', icon: '📝' }],
+    labelKey: 'nav.group.guide',
+    items: [{ path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' }],
   },
   {
     id: 'chat',
     label: '对话',
-    items: [{ path: '/chat', label: '对话', icon: '💬' }],
+    labelKey: 'nav.group.chat',
+    items: [{ path: '/chat', label: '对话', labelKey: 'nav.item.chat', icon: '💬' }],
   },
 ]
 

@@ -152,10 +152,10 @@ function handleChangePasswordSuccess() {
             :to="item.path"
             class="nav-item nav-item-primary"
             :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-            :title="collapsed ? item.label : undefined"
+            :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
           >
             <span class="nav-icon">{{ item.icon }}</span>
-            <span v-show="!collapsed" class="nav-label">{{ item.label }}</span>
+            <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
           </RouterLink>
         </div>
 
@@ -171,7 +171,7 @@ function handleChangePasswordSuccess() {
             :aria-expanded="isGroupExpanded(group.id)"
             @click="toggleGroup(group.id)"
           >
-            <span class="nav-group-title">{{ group.label }}</span>
+            <span class="nav-group-title">{{ group.labelKey ? t(group.labelKey) : group.label }}</span>
             <span class="nav-group-chevron" aria-hidden="true" />
           </button>
           <div
@@ -184,10 +184,10 @@ function handleChangePasswordSuccess() {
               :to="item.path"
               class="nav-item"
               :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-              :title="collapsed ? item.label : undefined"
+              :title="collapsed ? (item.labelKey ? t(item.labelKey) : item.label) : undefined"
             >
               <span class="nav-icon">{{ item.icon }}</span>
-              <span v-show="!collapsed" class="nav-label">{{ item.label }}</span>
+              <span v-show="!collapsed" class="nav-label">{{ item.labelKey ? t(item.labelKey) : item.label }}</span>
             </RouterLink>
           </div>
         </section>
