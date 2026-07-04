@@ -363,7 +363,22 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 	// 1. Collect all assistant tool_call IDs
 	for _, msg := range messages {
 		if role, _ := msg["role"].(string); role == "assistant" {
-			if tcs, ok := msg["tool_calls"].([]map[string]any); ok {
+			toolCallsAny := msg["tool_calls"]
+			if toolCallsAny == nil {
+				continue
+			}
+
+			// Handle both []interface{} (from json.Unmarshal) and []map[string]any (from Go code)
+			switch tcs := toolCallsAny.(type) {
+			case []interface{}:
+				for _, tc := range tcs {
+					if tcMap, ok := tc.(map[string]interface{}); ok {
+						if id, _ := tcMap["id"].(string); id != "" {
+							toolCallIDs[id] = true
+						}
+					}
+				}
+			case []map[string]any:
 				for _, tc := range tcs {
 					if id, _ := tc["id"].(string); id != "" {
 						toolCallIDs[id] = true

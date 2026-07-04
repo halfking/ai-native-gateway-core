@@ -177,3 +177,98 @@ func ValidateAnthropicMessages(body []byte) error {
 
 	return nil
 }
+
+// ValidateAnthropicToolCallIntegrity checks that all tool_result blocks in an
+// Anthropic-format request body have matching tool_use blocks in assistant messages.
+// This provides defense-in-depth validation at the executor layer after IR serialization.
+//
+// Returns an error if orphaned tool_results are detected (likely caused by client-side
+// context compression bugs or upstream transformation errors).
+func ValidateAnthropicToolCallIntegrity(body []byte) error {
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil // Not JSON or malformed - skip validation
+	}
+
+	if len(req.Messages) <= 2 {
+		return nil // Skip validation for short message lists
+	}
+
+	toolUseIDs := make(map[string]bool)
+
+	// 1. Collect all tool_use IDs from assistant messages
+	for _, msg := range req.Messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+
+		// Content can be string or []interface{} (content blocks)
+		contentBlocks, ok := msg.Content.([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, block := range contentBlocks {
+			blockMap, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if blockType, _ := blockMap["type"].(string); blockType == "tool_use" {
+				if id, ok := blockMap["id"].(string); ok && id != "" {
+					toolUseIDs[id] = true
+				}
+			}
+		}
+	}
+
+	// 2. Check all tool_result blocks have matching IDs
+	var orphans []string
+	for _, msg := range req.Messages {
+		if msg.Role != "user" {
+			continue
+		}
+
+		contentBlocks, ok := msg.Content.([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, block := range contentBlocks {
+			blockMap, ok := block.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if blockType, _ := blockMap["type"].(string); blockType == "tool_result" {
+				// Check both tool_use_id (standard Anthropic) and tool_call_id (MiniMax)
+				var id string
+				if toolUseID, ok := blockMap["tool_use_id"].(string); ok {
+					id = toolUseID
+				} else if toolCallID, ok := blockMap["tool_call_id"].(string); ok {
+					id = toolCallID
+				}
+
+				if id != "" && !toolUseIDs[id] {
+					orphans = append(orphans, id)
+				}
+			}
+		}
+	}
+
+	if len(orphans) > 0 {
+		// Limit displayed orphans to first 3
+		displayOrphans := orphans
+		if len(displayOrphans) > 3 {
+			displayOrphans = displayOrphans[:3]
+		}
+		return fmt.Errorf("found %d orphaned tool_result(s) without matching assistant tool_use: %v (likely client bug or transformation error)",
+			len(orphans), displayOrphans)
+	}
+
+	return nil
+}
