@@ -263,7 +263,10 @@ function handleChangePasswordSuccess() {
         </svg>
         <span>LLM Gateway</span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login') }}</button>
+      <div class="guest-header-right">
+        <LanguageSelector />
+        <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="openLogin">{{ t('login') }}</button>
+      </div>
     </header>
     <main class="guest-main">
       <RouterView />
@@ -613,6 +616,14 @@ function handleChangePasswordSuccess() {
   font-size: 14px;
   font-weight: 700;
   color: var(--text);
+}
+
+.guest-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .guest-login-btn {
