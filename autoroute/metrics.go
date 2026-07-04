@@ -30,7 +30,6 @@ package autoroute
 import (
 	"log/slog"
 	"sync"
-	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -90,6 +89,7 @@ func registerRoutingMetrics() {
 
 func init() {
 	registerRoutingMetrics()
+	registerLiveFilterMetrics()
 }
 
 // DecisionPoolLabel 与 DecisionReasonLabel 是 recordRoutingDecision
@@ -144,34 +144,43 @@ func formatFactor(f float64) string {
 }
 
 // 2026-07-04 V17: live availability filter observability.
+// 2026-07-05 V27: Expose as Prometheus metrics instead of in-process counters.
 //
 // When the DB-bound filter fails, the router falls back to a cached
 // snapshot (up to 5min stale). Without these metrics, operators have
 // no way to detect a backend DB blip that's silently degrading routing.
 
 var (
-	liveFilterTotal  int64
-	liveFilterFailed int64
+	liveFilterTotal  prometheus.Counter
+	liveFilterFailed prometheus.Counter
 )
 
+func registerLiveFilterMetrics() {
+	liveFilterTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: routingMetricPrefix + "live_filter_total",
+			Help: "Total live availability filter operations (success + failure).",
+		},
+	)
+	liveFilterFailed = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: routingMetricPrefix + "live_filter_failed",
+			Help: "Live availability filter operations that fell back to snapshot due to DB error.",
+		},
+	)
+	prometheus.MustRegister(liveFilterTotal, liveFilterFailed)
+}
+
 func recordLiveFilterSuccess(filtered int) {
-	atomic.AddInt64(&liveFilterTotal, 1)
+	liveFilterTotal.Inc()
 	// (filtered = removed candidate count) — populated for observability.
 }
 
 func recordLiveFilterFailure(poolConfigured bool, err error) {
-	atomic.AddInt64(&liveFilterTotal, 1)
-	atomic.AddInt64(&liveFilterFailed, 1)
+	liveFilterTotal.Inc()
+	liveFilterFailed.Inc()
 	slog.Error("recommend_v2: live availability filter failed, using snapshot",
 		"error", err,
 		"pool_configured", poolConfigured,
 	)
-}
-
-// LiveFilterStats returns the total and failed counts for live filter operations.
-// Operators can use this to calculate failure rate and trigger alerts.
-func LiveFilterStats() (total, failed int64) {
-	total = atomic.LoadInt64(&liveFilterTotal)
-	failed = atomic.LoadInt64(&liveFilterFailed)
-	return
 }

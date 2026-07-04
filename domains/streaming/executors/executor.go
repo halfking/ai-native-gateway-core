@@ -2649,13 +2649,22 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	if !shouldWriteCredentialState(kind) {
 		return false
 	}
-	// Quota errors (402 Payment Required) should write state immediately
-	// without waiting for circuit open, since 402 is definitive evidence
-	// that the credential is exhausted
-	if kind == errorsx.KindQuota || kind == errorsx.KindQuotaBalance ||
-		kind == errorsx.KindQuotaPeriodic || kind == errorsx.KindQuotaPermanent {
+	// 2026-07-05 V23 fix: Quota/Auth errors should write state immediately
+	// without waiting for circuit open. These are definitive failures that
+	// need to propagate to other instances immediately to prevent repeated
+	// failures across the cluster.
+	//
+	// Before V23: Auth/RateLimit/Concurrent errors waited for Circuit OPEN
+	// → 3×RTT cross-instance propagation delay
+	// After V23: These errors write DB immediately on first failure
+	// → <30s propagation via candidate cache invalidation
+	switch kind {
+	case errorsx.KindQuota, errorsx.KindQuotaBalance, errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent,
+		errorsx.KindAuth, errorsx.KindAuthRevoked:
 		return true
 	}
+	// Other error kinds (RateLimit, Concurrent, StreamTimeout) still require
+	// Circuit OPEN confirmation to avoid false positives
 	if e.Circuit == nil {
 		return true
 	}
