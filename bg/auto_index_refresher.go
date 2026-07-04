@@ -180,7 +180,7 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // metrics always overwrite the conservative half-2 baseline as soon as
 // a credential gets real traffic.
 func (r *AutoIndexRefresher) rollupCredentialModelIndex(ctx context.Context, bucket time.Time) (int, error) {
-	fullSQL := `INSERT INTO credential_model_index (
+	fullSQL := `INSERT INTO credential_model_index_default (
 	    bucket, credential_id, raw_model, canonical_id,
 	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
 	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
