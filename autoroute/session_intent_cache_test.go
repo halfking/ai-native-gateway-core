@@ -69,30 +69,30 @@ func TestSessionIntentCache_Len(t *testing.T) {
 
 func TestShouldReclassify_VisionOverride(t *testing.T) {
 	// Images present but cached was chat → reclassify
-	if !shouldReclassify(TaskChat, ClassificationSignals{HasImages: true}) {
+	if !shouldReclassify(TaskChat, ClassificationSignals{HasImages: true}, 0) {
 		t.Fatal("vision override should trigger reclassify")
 	}
 	// Images present and cached was vision → no reclassify
-	if shouldReclassify(TaskVision, ClassificationSignals{HasImages: true}) {
+	if shouldReclassify(TaskVision, ClassificationSignals{HasImages: true}, 0) {
 		t.Fatal("cached=vision + images should NOT reclassify")
 	}
 }
 
 func TestShouldReclassify_LongContextOverride(t *testing.T) {
-	if !shouldReclassify(TaskChat, ClassificationSignals{EstimatedTokens: 80_000}) {
+	if !shouldReclassify(TaskChat, ClassificationSignals{EstimatedTokens: 80_000}, 0) {
 		t.Fatal("long_context override should trigger reclassify")
 	}
-	if shouldReclassify(TaskLongContext, ClassificationSignals{EstimatedTokens: 80_000}) {
+	if shouldReclassify(TaskLongContext, ClassificationSignals{EstimatedTokens: 80_000}, 0) {
 		t.Fatal("cached=long_context + long should NOT reclassify")
 	}
 }
 
 func TestShouldReclassify_AgentOverride(t *testing.T) {
 	sigs := ClassificationSignals{ToolCount: 5, HasToolResults: true}
-	if !shouldReclassify(TaskChat, sigs) {
+	if !shouldReclassify(TaskChat, sigs, 0) {
 		t.Fatal("agent override should trigger reclassify")
 	}
-	if shouldReclassify(TaskAgent, sigs) {
+	if shouldReclassify(TaskAgent, sigs, 0) {
 		t.Fatal("cached=agent + agent signals should NOT reclassify")
 	}
 }
@@ -100,7 +100,7 @@ func TestShouldReclassify_AgentOverride(t *testing.T) {
 func TestShouldReclassify_NoDrift(t *testing.T) {
 	// Same task type, soft signal change → no reclassify
 	sigs := ClassificationSignals{LastUserPrompt: "write a function"}
-	if shouldReclassify(TaskCode, sigs) {
+	if shouldReclassify(TaskCode, sigs, 0) {
 		t.Fatal("soft signal change should NOT reclassify")
 	}
 }
@@ -170,5 +170,25 @@ func TestDecider_NoSessionID_AlwaysReclassify(t *testing.T) {
 	dec2, _ := d.Decide(context.Background(), ClassificationSignals{}, 0, "", "", "")
 	if dec2.Classifier == "session_cache" {
 		t.Fatal("empty sessionID should never hit cache")
+	}
+}
+
+// 2026-07-04 V18: test task-drift detection via hit count threshold.
+func TestShouldReclassify_DriftThreshold(t *testing.T) {
+	sigs := ClassificationSignals{} // no override signals
+
+	// Below threshold → no reclassify
+	if shouldReclassify(TaskChat, sigs, intentCacheDriftThreshold-1) {
+		t.Fatal("below drift threshold should NOT reclassify")
+	}
+
+	// At threshold → force reclassify
+	if !shouldReclassify(TaskChat, sigs, intentCacheDriftThreshold) {
+		t.Fatal("at drift threshold should trigger reclassify")
+	}
+
+	// Above threshold → force reclassify
+	if !shouldReclassify(TaskChat, sigs, intentCacheDriftThreshold+10) {
+		t.Fatal("above drift threshold should trigger reclassify")
 	}
 }

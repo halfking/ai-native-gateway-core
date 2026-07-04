@@ -27,7 +27,10 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// Step 0: 会话缓存检查（仅在启用重校验时保留该分支）
 	if flags.UseCacheRevalidation && sessionID != "" && d.intentCache != nil {
 		if cached, ok := d.intentCache.Get(sessionID); ok {
-			if !shouldReclassify(cached.TaskType, sigs) {
+			// 2026-07-04 V18: increment hit count and check drift threshold
+			cached.HitCount++
+			d.intentCache.Put(sessionID, cached)
+			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				// 新增：验证缓存的模型是否仍可用
 				if idx.pool != nil && ValidateCachedChoice(ctx, idx.pool, cached.CredentialID, cached.ChosenModel) {
 					slog.Info("autoroute.v2: reusing cached decision (revalidated)",
