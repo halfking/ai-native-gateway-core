@@ -233,7 +233,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 	defer cancel()
 
 	tag, err := h.db.Exec(ctx, `
-		UPDATE request_logs
+		UPDATE request_logs_default
 		SET attachments = NULL
 		WHERE attachments IS NOT NULL
 		  AND ts < NOW() - ($1 || ' days')::interval`,
