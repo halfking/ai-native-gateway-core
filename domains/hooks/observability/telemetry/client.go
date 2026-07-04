@@ -251,12 +251,12 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 	defer cancel()
 
 	var sessionID string
-	// 2026-07 partition-aware: 会话查找窗口（默认 5 分钟）落在 request_logs_default
-	// 的 7 天热数据范围内，查询 _default 表（heap 性能最优）即可。
+	// 2026-07-05 migration 341: 会话查找窗口（默认 5 分钟）落在 request_logs_hot
+	// 的 0-7 天热数据范围内，查询 _hot 表（独立 heap 表，性能最优）即可。
 	// 符合 docs/partition/partition-standards.md 查询规范。
 	err := c.dbPool.QueryRow(queryCtx, `
 		SELECT gw_session_id
-		FROM request_logs_default
+		FROM request_logs_hot
 		WHERE tenant_id = $1
 		  AND api_key_id = $2
 		  AND identity_hash = $3
@@ -568,21 +568,17 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err != nil {
 		return err
 	}
-	// INSERT directly targets request_logs_default (the canonical write
-	// target per the 2026-07 data-lifecycle architecture). All
-	// INSERT/UPDATE/DELETE on request_logs must go through *_default —
-	// the parent's auto-routing is intentionally bypassed so writes never
-	// land in a non-default partition (which would block subsequent
-	// UPDATE/DELETE once that partition is converted to columnar storage
-	// by the background migrator).
+	// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
+	// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
+	// 后台 partition_manager 会定期调用 promote_request_logs_hot_to_partition()
+	// 将冷数据（>7 天）迁移到月度分区。热表采用 heap 存储，支持高频写入；
+	// 月度分区采用 columnar 存储，优化归档查询性能。
 	//
 	// The ON CONFLICT (request_id, ts) clause catches same-row upserts
 	// from race conditions (e.g. async retry landing on the same
-	// request_id). The default partition's UNIQUE constraint covers the
-	// conflict target because we only ever write to *_default — migrated
-	// rows in monthly partitions are exclusive of the default partition.
+	// request_id). 热表的 UNIQUE 约束覆盖冲突目标。
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_default (
+		INSERT INTO request_logs_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
@@ -723,7 +719,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		quality_score = EXCLUDED.quality_score,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
-		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_default.client_request_id),
+		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_hot.client_request_id),
 		-- 2026-06-30: upstream diagnostics (migration 320)
 		upstream_status_code = EXCLUDED.upstream_status_code,
 		client_timeout = EXCLUDED.client_timeout,
@@ -735,7 +731,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
 		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
 		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
-		attachments = COALESCE(request_logs_default.attachments, EXCLUDED.attachments)
+		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -925,24 +921,19 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	tag, err := tx.Exec(ctx, `
-		-- CTE selects the latest row from the canonical write target
-		-- (request_logs_default). Once data is migrated into a monthly
-		-- partition by the background migrator, that row leaves
-		-- *_default and is no longer editable in-place (columnar /
-		-- long-archived partitions do not support UPDATE). That is the
-		-- intended behavior: late updates after migration are silently
-		-- dropped, which is exactly what the data-lifecycle architecture
-		-- promises.
+		-- 2026-07-05 migration 341: CTE selects the latest row from request_logs_hot
+		-- (独立热表，0-7 天数据窗口)。一旦数据被后台 promote 函数迁移到月度分区，
+		-- 该行将从 _hot 表中删除，不再可编辑（columnar 归档分区不支持 UPDATE）。
+		-- 这是预期行为：迁移后的延迟更新会被静默丢弃，符合数据生命周期架构。
 		WITH latest AS (
 			SELECT id, ts
-			FROM request_logs_default
+			FROM request_logs_hot
 			WHERE request_id = $1
 			ORDER BY ts DESC
 			LIMIT 1
 		)
-		-- UPDATE directly targets request_logs_default — the canonical
-		-- write target per the 2026-07 data-lifecycle architecture.
-		UPDATE request_logs_default
+		-- UPDATE directly targets request_logs_hot — 所有写操作的规范目标。
+		UPDATE request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
 		       credential_id = COALESCE($4, credential_id),
