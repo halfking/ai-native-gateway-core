@@ -256,14 +256,14 @@ func (s *PostgresStore) SaveStats(ctx context.Context, stats *ToolUsageStats) er
 	}
 	now := time.Now().UTC()
 
-	// INSERT directly targets tool_usage_stats_default (the canonical
+	// INSERT directly targets tool_usage_stats_hot (the canonical
 	// write target per the 2026-07 data-lifecycle architecture). All
 	// INSERT/UPDATE/DELETE on tool_usage_stats goes through *_default —
 	// the parent's auto-routing is intentionally bypassed so writes
 	// never land in a non-default partition that cannot be
 	// UPDATEd/DELETEd later.
 	const q = `
-		INSERT INTO tool_usage_stats_default (
+		INSERT INTO tool_usage_stats_hot (
 			tool_name, date,
 			total_calls, success_calls, failed_calls, timeout_calls,
 			avg_duration_ms, p50_duration_ms, p95_duration_ms, p99_duration_ms,

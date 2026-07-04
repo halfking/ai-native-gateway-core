@@ -410,7 +410,7 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	defer cancel()
 	rawModelsJSON, _ := json.Marshal(coalesceRawModels(entry.ResolutionRawModels))
 	traceJSON := coalesceTrace(entry.DecisionTrace)
-	// INSERT directly targets routing_decision_log_default (the canonical
+	// INSERT directly targets routing_decision_log_hot (the canonical
 	// write target per the 2026-07 data-lifecycle architecture). Monthly
 	// partitions are pre-created for current+next month by
 	// bg/partition_manager.go ensure_routing_decision_log_partition(), but
@@ -420,7 +420,7 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 	// a non-default partition (which would block subsequent UPDATEs once
 	// the partition is converted to columnar).
 	_, err := c.dbPool.Exec(ctx, `
-		INSERT INTO routing_decision_log_default (
+		INSERT INTO routing_decision_log_hot (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
 			model, chosen_credential_id, chosen_provider_id, tier,
 			candidates_tried, latency_ms, success, error_class,
@@ -525,14 +525,14 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
-	// INSERT directly targets usage_ledger_default (the canonical write
+	// INSERT directly targets usage_ledger_hot (the canonical write
 	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
 	// operations (cost/tokens/latency enrichment after streaming) require
 	// a heap-storage row that supports UPDATE in place. *_default stays
 	// heap; the matching month partition (after migration) is also heap
 	// (columnar cannot hold UPDATE-heavy data).
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger_default (
+		INSERT INTO usage_ledger_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
@@ -868,12 +868,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	defer tx.Rollback(ctx)
 
 	if entry.PromptTokens != nil || entry.CompletionTokens != nil {
-		// UPDATE directly targets usage_ledger_default — UPDATE-heavy
+		// UPDATE directly targets usage_ledger_hot — UPDATE-heavy
 		// operations require heap storage with row-level UPDATE support.
 		// *_default stays heap regardless of how monthly partitions are
 		// (re)configured.
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger_default
+			UPDATE usage_ledger_hot
 			   SET prompt_tokens = COALESCE($2, prompt_tokens),
 			       completion_tokens = COALESCE($3, completion_tokens),
 			       total_tokens = COALESCE($4, total_tokens),
@@ -900,9 +900,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 			return err
 		}
 	} else {
-		// UPDATE directly targets usage_ledger_default.
+		// UPDATE directly targets usage_ledger_hot.
 		_, err = tx.Exec(ctx, `
-			UPDATE usage_ledger_default
+			UPDATE usage_ledger_hot
 			   SET latency_ms = COALESCE($2, latency_ms),
 			       success = COALESCE($3, success),
 			       error_kind = COALESCE($4, error_kind),
