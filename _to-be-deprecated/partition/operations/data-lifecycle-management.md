@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/OPERATIONS_RUNBOOK.md`](../../docs/partition/OPERATIONS_RUNBOOK.md) 第 §8 节
+> **原因**: 内容已合并到主运维手册（三温数据模型、字段裁剪策略、备份方案）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # 数据生命周期管理方案
 
 > 版本: v1.0  

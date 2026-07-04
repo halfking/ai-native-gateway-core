@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/IMPLEMENTATION_NOTES.md`](../../docs/partition/IMPLEMENTATION_NOTES.md) 第 §14 节
+> **原因**: 内容已合并到主实施记录（PostgreSQL 分区表架构审计报告 3 P0 + 2 P1 + 1 文档）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # PostgreSQL 分区表架构审计报告
 
 **报告日期**: 2026-07-04

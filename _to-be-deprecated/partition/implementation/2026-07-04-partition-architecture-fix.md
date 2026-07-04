@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/IMPLEMENTATION_NOTES.md`](../../docs/partition/IMPLEMENTATION_NOTES.md) 第 §15 节
+> **原因**: 内容已合并到主实施记录（架构修复与规范落地、root cause + 部署步骤）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # PostgreSQL 分区表架构修复与规范落地（2026-07-04）
 
 ## 问题根因

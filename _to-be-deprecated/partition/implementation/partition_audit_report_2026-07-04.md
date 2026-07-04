@@ -1,3 +1,12 @@
+# ⚠️ 本文件已废弃 / This File Is Deprecated
+
+> **归档日期**: 2026-07-05
+> **替代文档**: [`docs/partition/IMPLEMENTATION_NOTES.md`](../../docs/partition/IMPLEMENTATION_NOTES.md) 第 §16 节
+> **原因**: 内容已合并到主实施记录（三环境 184/71/本地 分区架构深度审计）
+> **保留原因**: 提供历史归档追溯
+
+---
+
 # 分区架构深度审计报告
 
 **生成时间**: 2026-07-04 13:15:00  

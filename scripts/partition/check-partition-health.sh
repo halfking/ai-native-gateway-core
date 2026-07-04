@@ -1,24 +1,94 @@
 #!/bin/bash
+# ========================================
+# 修订历史 / Revision History
+# ========================================
+# | 版本 | 日期       | 变更                                                          | 作者                |
+# |------|------------|---------------------------------------------------------------|---------------------|
+# | 1.0  | 2026-07-05 | 初始版本                                                      | Infrastructure Team |
+# | 1.1  | 2026-07-05 | 合并 report-default-sizes.sh（新增 --report-only / --format）| Infrastructure Team |
+# ========================================
+#
 # Partition Health Checker
-# 
+#
 # 用途：快速诊断所有分区表的健康状态
-# 使用：./scripts/partition/check-partition-health.sh [--env local|71|184]
-# 
-# 输出：
+# 使用：
+#   ./scripts/partition/check-partition-health.sh [--env local|71|184]
+#   ./scripts/partition/check-partition-health.sh --report-only [--env X] [--format text|json|csv]
+#
+# 输出（默认 - 完整诊断 6 节）：
 #   1. DEFAULT 表大小和写入统计
 #   2. 分区附加状态（ATTACHED vs DETACHED）
-#   3. 最近写入活动
-#   4. Promote 函数执行状态
+#   3. 当月分区状态（2026_07 DETACHED）
+#   4. 最近写入活动
+#   5. Promote 函数执行状态
+#   6. 磁盘空间检查
 #
-# 依赖：psql, PostgreSQL 客户端
+# 输出（--report-only）：
+#   仅 DEFAULT 表大小报告（text/json/csv 三种格式）
+#   等同于旧 scripts/partition/report-default-sizes.sh
+#
+# 依赖：psql, PostgreSQL 客户端, bc
 
 set -euo pipefail
 
 # ========================================
-# 配置
+# 配置与参数解析
 # ========================================
 
-ENV="${1:-local}"
+ENV=""
+REPORT_ONLY=false
+FORMAT="text"
+
+usage() {
+  echo "用法：$0 [OPTIONS]"
+  echo ""
+  echo "选项："
+  echo "  --env ENV            指定环境 (local|71|184)，默认 local"
+  echo "  --report-only        仅输出 DEFAULT 表大小报告，跳过其他诊断"
+  echo "  --format FORMAT      --report-only 模式下的输出格式 (text|json|csv)，默认 text"
+  echo "  --help, -h           显示帮助"
+  echo ""
+  echo "示例："
+  echo "  $0 --env 71                              # 完整健康检查"
+  echo "  $0 --env 71 --report-only                # 仅大小报告（文本）"
+  echo "  $0 --report-only --format json            # JSON 格式"
+  echo "  $0 --report-only --format csv             # CSV 格式"
+  echo ""
+  echo "位置参数形式（向后兼容）：$0 [local|71|184]"
+  exit "${1:-0}"
+}
+
+# 参数解析
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      ENV="$2"
+      shift 2
+      ;;
+    --report-only)
+      REPORT_ONLY=true
+      shift
+      ;;
+    --format)
+      FORMAT="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage 0
+      ;;
+    local|71|184)
+      # 向后兼容：位置参数形式
+      ENV="$1"
+      shift
+      ;;
+    *)
+      echo "❌ 未知参数: $1" >&2
+      usage 1
+      ;;
+  esac
+done
+
+ENV="${ENV:-local}"
 
 case "$ENV" in
   local)
@@ -98,6 +168,163 @@ if ! psql -c "SELECT 1" > /dev/null 2>&1; then
 fi
 
 ok "数据库连接成功"
+
+# ========================================
+# Report-only 模式：仅输出 DEFAULT 表大小报告
+# （合并自 scripts/partition/report-default-sizes.sh）
+# ========================================
+
+if [[ "$REPORT_ONLY" == "true" ]]; then
+  case "$FORMAT" in
+    text)
+      echo ""
+      echo "=== *_default 表存储使用报告 ==="
+      echo "环境: $ENV ($PGHOST:$PGPORT/$PGDATABASE)"
+      echo "时间: $(date)"
+      echo ""
+      psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -x -c "
+        SELECT
+          tablename AS table_name,
+          pg_total_relation_size(schemaname||'.'||tablename) AS total_bytes,
+          pg_relation_size(schemaname||'.'||tablename) AS table_bytes,
+          pg_indexes_size(schemaname||'.'||tablename) AS indexes_bytes,
+          n_tup_ins AS inserts,
+          n_tup_upd AS updates,
+          n_tup_del AS deletes,
+          n_live_tup AS live_rows,
+          n_dead_tup AS dead_rows,
+          last_vacuum,
+          last_autovacuum,
+          last_analyze
+        FROM pg_stat_user_tables
+        WHERE tablename LIKE '%_default'
+        ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+      " 2>/dev/null || {
+        echo "错误：无法连接数据库" >&2
+        exit 1
+      }
+      ;;
+
+    json)
+      psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -c "
+        SELECT
+          tablename,
+          pg_total_relation_size(schemaname||'.'||tablename) AS total_bytes,
+          pg_relation_size(schemaname||'.'||tablename) AS table_bytes,
+          pg_indexes_size(schemaname||'.'||tablename) AS indexes_bytes,
+          n_tup_ins AS inserts,
+          n_tup_upd AS updates,
+          n_tup_del AS deletes,
+          n_live_tup AS live_rows,
+          n_dead_tup AS dead_rows,
+          CASE
+            WHEN pg_total_relation_size(schemaname||'.'||tablename) > 10737418240 THEN 'CRITICAL'
+            WHEN pg_total_relation_size(schemaname||'.'||tablename) > 5368709120 THEN 'WARNING'
+            ELSE 'OK'
+          END AS status
+        FROM pg_stat_user_tables
+        WHERE tablename LIKE '%_default'
+        ORDER BY total_bytes DESC;
+      " 2>/dev/null | awk '
+        BEGIN { print "["; first=1 }
+        NF==0 { next }
+        {
+          gsub(/[|]/, "", $0)
+          split($0, a, "|")
+          for(i in a) gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[i])
+          if (!first) print ","
+          first=0
+          print "  {"
+          print "    \"table\": \"" a[1] "\","
+          print "    \"total_bytes\": " a[2] ","
+          print "    \"table_bytes\": " a[3] ","
+          print "    \"indexes_bytes\": " a[4] ","
+          print "    \"inserts\": " a[5] ","
+          print "    \"updates\": " a[6] ","
+          print "    \"deletes\": " a[7] ","
+          print "    \"live_rows\": " a[8] ","
+          print "    \"dead_rows\": " a[9] ","
+          print "    \"status\": \"" a[10] "\""
+          print "  }"
+        }
+        END { print "]" }
+      ' 2>/dev/null || {
+        echo '{"error": "Failed to connect or query database"}' >&2
+        exit 1
+      }
+      ;;
+
+    csv)
+      echo "table,total_bytes,table_bytes,indexes_bytes,inserts,updates,deletes,live_rows,dead_rows,status"
+      psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -c "
+        SELECT
+          tablename,
+          pg_total_relation_size(schemaname||'.'||tablename),
+          pg_relation_size(schemaname||'.'||tablename),
+          pg_indexes_size(schemaname||'.'||tablename),
+          n_tup_ins,
+          n_tup_upd,
+          n_tup_del,
+          n_live_tup,
+          n_dead_tup,
+          CASE
+            WHEN pg_total_relation_size(schemaname||'.'||tablename) > 10737418240 THEN 'CRITICAL'
+            WHEN pg_total_relation_size(schemaname||'.'||tablename) > 5368709120 THEN 'WARNING'
+            ELSE 'OK'
+          END
+        FROM pg_stat_user_tables
+        WHERE tablename LIKE '%_default'
+        ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+      " 2>/dev/null | awk -F'|' '{
+          gsub(/^ +| +$/,"",$0);
+          for (i=1; i<=NF; i++) gsub(/^ +| +$/,"",$i);
+          print $1","$2","$3","$4","$5","$6","$7","$8","$9","$10
+        }' || {
+        echo "错误：无法生成 CSV" >&2
+        exit 1
+      }
+      ;;
+
+    *)
+      echo "错误：未知格式 '$FORMAT'（支持 text|json|csv）" >&2
+      exit 1
+      ;;
+  esac
+
+  # 文本模式附加告警检查
+  if [[ "$FORMAT" == "text" ]]; then
+    echo ""
+    echo "=== 告警检查 ==="
+    CRITICAL_COUNT=$(psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -c "
+      SELECT COUNT(*) FROM pg_stat_user_tables
+      WHERE tablename LIKE '%_default'
+        AND pg_total_relation_size(schemaname||'.'||tablename) > 10737418240
+    " 2>/dev/null | tr -d ' ')
+
+    WARNING_COUNT=$(psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -t -c "
+      SELECT COUNT(*) FROM pg_stat_user_tables
+      WHERE tablename LIKE '%_default'
+        AND pg_total_relation_size(schemaname||'.'||tablename) > 5368709120
+        AND pg_total_relation_size(schemaname||'.'||tablename) <= 10737418240
+    " 2>/dev/null | tr -d ' ')
+
+    if [[ "$CRITICAL_COUNT" -gt 0 ]]; then
+      echo -e "${RED}🚨 CRITICAL: $CRITICAL_COUNT 个表超过 10GB${NC}"
+      echo "  立即执行: ./scripts/partition/manual-promote-default.sh --all"
+    elif [[ "$WARNING_COUNT" -gt 0 ]]; then
+      echo -e "${YELLOW}⚠️  WARNING: $WARNING_COUNT 个表超过 5GB${NC}"
+      echo "  建议执行: ./scripts/partition/manual-promote-default.sh --all --retention 7"
+    else
+      echo -e "${GREEN}✅ 所有 *_default 表大小正常${NC}"
+    fi
+  fi
+
+  exit 0
+fi
+
+# ========================================
+# 完整健康检查模式：原有 6 节诊断
+# ========================================
 
 # ========================================
 # 1. DEFAULT 表大小和统计
