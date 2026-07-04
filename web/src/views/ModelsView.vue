@@ -486,9 +486,9 @@ async function pollDiscovery(runId?: number) {
     const latest = status.latest
     if (latest?.summary) discoverResult.value = latest.summary
     if (!status.running || (runId && latest?.id === runId && latest.status !== 'running')) {
-      if (latest?.status === 'failed') error.value = latest.error || '扫描失败'
+      if (latest?.status === 'failed') error.value = latest.error || t('models.discovery.failed')
       if (latest?.status === 'succeeded') {
-        discoverMessage.value = '扫描完成'
+        discoverMessage.value = t('models.discovery.completed')
         await reloadAll()
         window.dispatchEvent(new CustomEvent('llm-gateway:models-updated'))
       }
@@ -538,7 +538,7 @@ async function loadDiscoveryStatus() {
       discoverRun.value = status.running
       if (status.running.summary) discoverResult.value = status.running.summary
       discovering.value = true
-      discoverMessage.value = '扫描正在后台运行'
+      discoverMessage.value = t('models.discovery.runningInBackground')
       showDiscoveryCard.value = true
       await pollDiscovery(status.running.id)
       return

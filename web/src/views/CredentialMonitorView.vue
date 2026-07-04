@@ -553,10 +553,10 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
     errorPieChart = new Chart(canvas, {
       type: 'pie',
       data: {
-        labels: ['无错误'],
+        labels: [t('credentialMonitor.chart.allHealthy')],
         datasets: [{
           data: [1],
-          backgroundColor: ['#10b981'],  // green-500
+          backgroundColor: ['#10b981'],
           borderColor: ['#059669'],
           borderWidth: 2,
         }],
@@ -566,7 +566,7 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
         maintainAspectRatio: false,
         plugins: {
           legend: { position: 'right' },
-          title: { display: true, text: '错误类型分布 (当前无错误)' },
+          title: { display: true, text: t('credentialMonitor.chart.errorsWhenHealthy') },
         },
       },
     })
@@ -590,7 +590,7 @@ function renderErrorPieChart(errorKinds: Record<string, number>) {
       maintainAspectRatio: false,
       plugins: {
         legend: { position: 'right' },
-        title: { display: true, text: '错误类型分布' },
+        title: { display: true, text: t('credentialMonitor.chart.errorsTitle') },
       },
     },
   })
@@ -616,7 +616,7 @@ function toggleAutoRefresh() {
 
 function openBatchDialog(action: 'promote' | 'demote') {
   if (selectedIds.value.size === 0) {
-    alert('请先选择凭据')
+    alert(t('credentialMonitor.error.selectFirst'))
     return
   }
   batchAction.value = action
@@ -638,7 +638,7 @@ async function submitBatch() {
     selectedIds.value.clear()
     load()
   } catch (e) {
-    alert('批量操作失败: ' + (e instanceof Error ? e.message : String(e)))
+    alert(t('credentialMonitor.error.batchFailed') + (e instanceof Error ? e.message : String(e)))
   }
 }
 
