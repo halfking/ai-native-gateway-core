@@ -1,114 +1,100 @@
-// Auto-translated draft (es-ES) · 2026-07-02 · please review
-// landing.ts — Página de aterrizaje pública.
+// landing.ts — Textos de la página de inicio (página de inicio de invitados).
+//
+// 2026-07-05: Actualizado con el contenido real del proyecto official-deploy actual (coincide con LandingView.vue).
 export default {
-  kicker: 'AI-Native · Enterprise Governance',
-  title: 'Pasarela núcleo de organización AI-Native',
-  subtitle: [
-    'Haz que la IA sea una capacidad nativa de tu organización.',
-    'Núcleo abierto + refuerzo empresarial + gobernanza Vibe Coding + capitalización de sesiones.',
-  ],
-  featuresTitle: 'Capacidades principales',
-  featuresSubtitle: 'Cubriendo toda la cadena, desde el acceso hasta las operaciones',
+  kicker: 'Código Abierto Principal · Localización China · Nivel Empresarial',
+  title: 'LLM Gateway — Puerta de Enlace IA de Código Abierto para Mercados Globales',
+  subtitle: 'La única puerta de enlace IA que combina código abierto principal con localización profunda en China. Gobernanza empresarial, acceso LLM global, cumplimiento y soberanía de datos — todo código abierto principal.',
+  featuresTitle: 'Capacidades Principales',
+  featuresSubtitle: 'Cubriendo aspectos clave desde el acceso hasta las operaciones',
   heroPoints: [
-    'Enrutamiento inteligente',
-    'Seguridad de llamadas',
-    'Reducción de costes por caché',
-    'Listo para agentes',
-    'Auditoría de extremo a extremo',
-    'Facturación MaaS',
+    'Código Abierto Principal · Apache 2.0',
+    'Localización China · Djbh 2.0',
+    'Puerta de Enlace IA Empresarial',
+    'Gobernanza Vibe Coding',
+    'Gestión de Activos de Sesión IA',
+    'Escudo de Seguridad de Datos',
   ],
   features: {
     smartRouting: {
-      title: 'Enrutamiento inteligente y pool de credenciales',
-      description:
-        'Selecciona automáticamente por inquilino, modelo y tipo de tarea. Pool de huellas dactilares multi-credencial más sondeo adaptativo: conmutación en subsegundos, tasa de baneo cercana a cero.',
+      title: 'Enrutamiento Inteligente y Pool de Credenciales',
+      description: 'Enrutamiento automático por inquilino, modelo y tipo de tarea; pool de huellas digitales de múltiples credenciales + sondeo adaptativo, conmutación por error en segundos, tasa de prohibición casi nula.',
     },
     safety: {
-      title: 'Escudo de seguridad de llamadas',
-      description:
-        'Detección de inyección de prompt con LLM-as-judge (modo observable v1) y planificación de enmascaramiento de datos sensibles: defensa de cumplimiento de nivel empresarial.',
+      title: 'Escudo de Seguridad de Llamadas',
+      description: 'Detección de inyección de prompt LLM-as-judge (modo de observabilidad v1) + planificación de enmascaramiento de datos sensibles, defensa de cumplimiento empresarial.',
       badge: 'beta',
     },
     cache: {
-      title: 'Alineación de caché y reducción de costes',
-      description:
-        'Estabilización del prefijo del prompt y caché semántica que maximizan la tasa de acierto de KV-cache y reducen el coste computacional por tokens.',
+      title: 'Alineación de Caché y Reducción de Costos',
+      description: 'Estabilización de prefijo de prompt + almacenamiento en caché semántico, maximización de la tasa de aciertos de KV Cache, reducción de sobrecarga de cómputo de tokens.',
     },
     agent: {
-      title: 'Pasarela de agentes y MCP',
-      description:
-        'Registro de agentes, protocolo A2A, hosting de herramientas MCP y conversión de protocolos: del proxy LLM al punto de entrada de orquestación de agentes.',
+      title: 'Puerta de Enlace Agent y MCP',
+      description: 'Registro de agentes, protocolo A2A, alojamiento de herramientas MCP y conversión de protocolo — actualización de proxy LLM a puerta de enlace de orquestación de agentes.',
       badge: 'Próximamente',
     },
     observability: {
-      title: 'Observabilidad de extremo a extremo',
-      description:
-        'Registros de solicitudes, auditoría de decisiones de enrutamiento, trazado con OpenTelemetry, exportación de eventos SIEM/CEF — listo para MLPS 2.0 y GDPR.',
+      title: 'Observabilidad de Cadena Completa',
+      description: 'Registros de solicitudes, auditoría de decisiones de enrutamiento, seguimiento OTel, exportación de eventos SIEM/CEF, listo para Djbh 2.0 y GDPR.',
     },
     billing: {
-      title: 'Sistema de facturación MaaS',
-      description:
-        'Planes + créditos + monedero de tres pools (suscripción / crédito / recarga): bucle completo de comercialización autoservicio para inquilinos.',
+      title: 'Sistema de Facturación MaaS',
+      description: 'Plan + créditos + billetera de tres niveles (suscripción / crédito / recarga), ciclo de comercialización completo para autoservicio de inquilinos.',
     },
     multiProtocol: {
-      title: 'Compatibilidad multiprotocolo',
-      description:
-        'OpenAI Chat / Anthropic Messages / Responses — tres formatos entrantes normalizados, integración perfecta de modelos chinos y globales.',
+      title: 'Compatibilidad Multi-Protocolo',
+      description: 'OpenAI Chat / Anthropic Messages / Responses tres protocolos entrantes unificados, acceso fluido a modelos de código abierto y comerciales.',
     },
     multiTenant: {
-      title: 'Aislamiento multi-inquilino',
-      description:
-        'Seguridad a nivel de fila (RLS) de PostgreSQL + auditoría de 43 rondas L1=0, cero fugas de datos entre inquilinos, política y cuota por inquilino.',
+      title: 'Aislamiento Multi-Inquilino',
+      description: 'Seguridad a nivel de fila PostgreSQL RLS + 43 rondas de auditoría L1=0, cero filtración de datos entre inquilinos, política y cuota independientes por inquilino.',
     },
   },
-  advantagesTitle: 'Ventajas diferenciales',
-  advantagesSubtitle: 'Lo que los proveedores globales no pueden ofrecer',
+  advantagesTitle: '¿Por Qué Elegir LLM Gateway?',
+  advantagesSubtitle: 'Para empresas globales con necesidades comerciales en China',
   advantages: {
     local: {
-      title: 'Localización en China',
-      description: 'Interfaz completamente en chino, prioridad de modelos nacionales, Alipay / WeChat Pay, plantillas compatibles con MLPS',
+      title: 'Localización Profunda en China',
+      description: 'Interfaz completa en chino, acceso prioritario a LLM de código abierto doméstico, integración Alipay/WeChat Pay, plantillas de cumplimiento Djbh 2.0, infraestructura en la nube doméstica lista',
     },
     private: {
-      title: 'Despliegue privado',
-      description: 'Totalmente on-prem, los datos nunca salen de la empresa, modos dual k3s + Docker, cero dependencias externas',
+      title: 'Implementación Privada',
+      description: 'Implementación totalmente privada, los datos permanecen en la empresa, forma dual k3s + Docker, cero dependencias externas',
     },
     antiBan: {
-      title: 'Sistema anti-baneo',
-      description: 'Rotación de 50+ UA + pool de huellas TLS utls + 11 perfiles de navegador + rotación automática cada 5 minutos',
+      title: 'Sistema Anti-Prohibición',
+      description: 'Rotación de más de 50 UA + pool de huellas digitales TLS utls + 11 perfiles de navegador + rotación automática de 5 minutos',
     },
     perf: {
-      title: 'Plano de datos de alto rendimiento en Go',
-      description: 'Go nativo, imagen ligera de 40 MB, P99 < 500 ms con 200 concurrentes, retransmisión estable de SSE en streaming',
+      title: 'Plano de Datos de Alto Rendimiento Go',
+      description: 'Implementación Go nativa, imagen ligera de 40 MB, 200 concurrencias P99 < 500 ms, relevo estable de transmisión SSE',
     },
   },
-  footer: 'Kaixuan LLM Gateway · [GATEWAY_DOMAIN] · Despliegue privado · Localización en China',
-  ariaPoints: 'Puntos destacados',
+  footer: 'LLM Gateway · llmgateway.internal.example.com · Código Abierto Principal · Localización China · Implementación Privada',
+  ariaPoints: 'Aspectos Destacados Clave',
   roadmap: {
-    title: 'Hoja de ruta de evolución del producto',
-    subtitle: 'Del plano de datos LLM a la pasarela de agentes empresariales, en construcción continua',
+    title: 'Hoja de Ruta del Producto',
+    subtitle: 'Desde el plano de datos LLM hasta la puerta de enlace Agent empresarial, construcción continua',
     v31: {
       phase: 'v3.1 · 2026 Q3',
-      title: 'API Hub Asset Center + hosting de herramientas MCP',
-      description:
-        'Registro unificado de endpoints LLM, servicios MCP y agentes. Autoservicio de descubrimiento y reutilización para desarrolladores.',
+      title: 'Centro de Activos API Hub + Alojamiento de Herramientas MCP',
+      description: 'Registro unificado de puntos finales LLM, servicios MCP y Agents, descubrimiento y reutilización de autoservicio para desarrolladores.',
     },
     v32: {
       phase: 'v3.2 · 2026 Q4',
-      title: 'Escudo de seguridad GA + integración SIEM + SpecBoost',
-      description:
-        'Bloqueo de inyección de prompt, enmascaramiento de datos sensibles, enriquecimiento inteligente de la descripción de la API para mejorar la precisión del Function Calling.',
+      title: 'Escudo de Seguridad GA + Integración SIEM + SpecBoost',
+      description: 'Bloqueo de inyección de prompt, enmascaramiento de datos sensibles, enriquecimiento inteligente de descripción de API para mejorar la precisión de Function Calling.',
     },
     v40: {
       phase: 'v4.0 · 2027 Q1',
-      title: 'Registro de agentes + pasarela de protocolo A2A',
-      description:
-        'Delegación y orquestación de tareas entre agentes, entrada unificada de OpenClaw y agentes de negocio.',
+      title: 'Registro de Agentes + Puerta de Enlace de Protocolo A2A',
+      description: 'Delegación de tareas entre agentes y orquestación, acceso unificado a OpenClaw y Agents de negocio.',
     },
     v50: {
       phase: 'v5.0 · 2027 Q3',
-      title: 'Soluciones sectoriales GA',
-      description:
-        'Plantillas sectoriales para atención al cliente, RR. HH., ventas y logística: soluciones de agentes listas para usar.',
+      title: 'Soluciones de Industria GA',
+      description: 'Cuatro plantillas de industria para servicio al cliente, RRHH, ventas, logística, soluciones de agentes listas para usar.',
     },
   },
 }
