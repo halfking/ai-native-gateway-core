@@ -102,6 +102,15 @@ type InternalRequest struct {
 	// provider-private params, future API additions). Extensions preserves
 	// them so a round-trip is lossless.
 	Extensions map[string]json.RawMessage
+
+	// TargetProvider 是目标上游 provider 的 catalog code（来自
+	// provider.Candidate.CatalogCode），用于在序列化层处理 provider 特定的
+	// 协议变体。例如 MiniMax（Anthropic 兼容）的 tool_result 块使用
+	// tool_call_id 字段名而非标准 Anthropic 的 tool_use_id。
+	//
+	// 空字符串 = 未指定，序列化器按标准协议处理。
+	// 常见值: "minimax"、"anthropic"、"openai"。
+	TargetProvider string
 }
 
 // SystemPrompt represents a normalized system prompt.

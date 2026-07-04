@@ -44,7 +44,7 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 	}
 
 	// Messages
-	messages := serializeAnthropicMessages(req)
+	messages := serializeAnthropicMessages(req, req.TargetProvider)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -139,18 +139,22 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 }
 
 // serializeAnthropicMessages converts IR messages to Anthropic format.
-func serializeAnthropicMessages(req *InternalRequest) []map[string]any {
+// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
+// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
+func serializeAnthropicMessages(req *InternalRequest, targetProvider string) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages))
 
 	for _, msg := range req.Messages {
-		messages = append(messages, serializeAnthropicMessage(msg))
+		messages = append(messages, serializeAnthropicMessage(msg, targetProvider))
 	}
 
 	return messages
 }
 
 // serializeAnthropicMessage converts a single IR Message to Anthropic format.
-func serializeAnthropicMessage(msg Message) map[string]any {
+// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
+// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
+func serializeAnthropicMessage(msg Message, targetProvider string) map[string]any {
 	// Tool role messages: convert to user+tool_result format (Anthropic convention)
 	if msg.Role == "tool" {
 		out := map[string]any{
@@ -160,7 +164,14 @@ func serializeAnthropicMessage(msg Message) map[string]any {
 			"type": "tool_result",
 		}
 		if msg.ToolCallID != "" {
-			toolResult["tool_use_id"] = msg.ToolCallID
+			// MiniMax（Anthropic 兼容协议）使用 tool_call_id 字段名而非标准
+			// Anthropic 的 tool_use_id。这里根据 targetProvider 分支处理。
+			// 参考：MiniMax-M3 tool_call_id not found (2013) bug 修复。
+			if targetProvider == "minimax" {
+				toolResult["tool_call_id"] = msg.ToolCallID
+			} else {
+				toolResult["tool_use_id"] = msg.ToolCallID
+			}
 		}
 		// Extract content from text blocks
 		var textParts []string

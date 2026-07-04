@@ -468,7 +468,7 @@ func TestIRConverter_RoundTrip_OpenAI_Anthropic_OpenAI(t *testing.T) {
 		"messages": [
 			{"role": "system", "content": "you are a helpful assistant"},
 			{"role": "user", "content": "what's the weather in tokyo?"},
-			{"role": "assistant", "content": "I'll check that for you"},
+			{"role": "assistant", "content": "", "tool_calls": [{"id": "call_123", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}]},
 			{"role": "tool", "tool_call_id": "call_123", "content": "sunny, 25C"},
 			{"role": "assistant", "content": "It's sunny and 25C in Tokyo!"}
 		],

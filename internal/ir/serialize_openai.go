@@ -87,6 +87,14 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["tool_choice"] = serializeOpenAIToolChoice(req.ToolChoice)
 	}
 
+	// Validate tool_call integrity before sending to upstream
+	// Skip validation for single-message requests to avoid breaking unit tests
+	if len(messages) > 2 {
+		if err := validateToolCallIntegrity(messages); err != nil {
+			return nil, fmt.Errorf("tool_call validation failed: %w", err)
+		}
+	}
+
 	return json.Marshal(out)
 }
 
@@ -187,7 +195,11 @@ func serializeOpenAIMessage(msg Message) map[string]any {
 
 	// Handle content for non-tool roles
 	if len(msg.Content) == 0 {
-		// Empty content - may need tool_calls
+		// Empty content - may still have tool_calls
+		out["content"] = ""
+		if len(msg.ToolCalls) > 0 {
+			out["tool_calls"] = serializeOpenAIToolCalls(msg.ToolCalls)
+		}
 	} else if len(msg.Content) == 1 && msg.Content[0].Type == "text" && msg.ToolCalls == nil {
 		// Simple text content - use string format
 		out["content"] = msg.Content[0].Text
@@ -340,4 +352,55 @@ func serializeOpenAIToolChoice(tc *ToolChoice) any {
 	}
 
 	return tc.Type
+}
+
+// validateToolCallIntegrity checks that all tool messages have matching assistant tool_calls.
+// This prevents upstream provider errors (e.g., MiniMax "tool id not found (2013)") caused by
+// client-side context compression bugs that delete assistant messages but leave orphaned tool results.
+func validateToolCallIntegrity(messages []map[string]any) error {
+	toolCallIDs := make(map[string]bool)
+
+	// 1. Collect all assistant tool_call IDs
+	for _, msg := range messages {
+		if role, _ := msg["role"].(string); role == "assistant" {
+			if tcs, ok := msg["tool_calls"].([]map[string]any); ok {
+				for _, tc := range tcs {
+					if id, _ := tc["id"].(string); id != "" {
+						toolCallIDs[id] = true
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Check that all tool messages have matching IDs
+	var orphans []string
+	for _, msg := range messages {
+		if role, _ := msg["role"].(string); role == "tool" {
+			if id, _ := msg["tool_call_id"].(string); id != "" {
+				if !toolCallIDs[id] {
+					orphans = append(orphans, id)
+				}
+			}
+		}
+	}
+
+	if len(orphans) > 0 {
+		// Limit displayed orphans to first 3 to avoid huge error messages
+		displayOrphans := orphans
+		if len(displayOrphans) > 3 {
+			displayOrphans = displayOrphans[:3]
+		}
+		return fmt.Errorf("found %d orphaned tool result(s) without matching assistant tool_calls: %v (likely client bug: assistant messages with tool_calls were removed during context compression)",
+			len(orphans), displayOrphans)
+	}
+
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
