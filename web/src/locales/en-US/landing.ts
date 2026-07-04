@@ -2,7 +2,7 @@
 //
 // 2026-07-05: Updated to neutral, global positioning.
 export default {
-  kicker: 'Core Open Source · Enterprise-Grade · Global Deployment',
+  kicker: 'Core Open Source · Enterprise-Grade · Private Deployment',
   title: 'LLM Gateway — Enterprise Open Source AI Gateway',
   subtitle: 'Core open source enterprise AI gateway. Unified governance, global LLM access, compliance and data sovereignty — all core open source.',
   featuresTitle: 'Core Capabilities',
@@ -55,8 +55,8 @@ export default {
   advantagesSubtitle: 'Enterprise AI gateway for global enterprises',
   advantages: {
     local: {
-      title: 'Global Deployment',
-      description: 'Multi-language interface support, global mainstream LLM priority access, flexible payment integration, global cloud infrastructure ready',
+      title: 'Core Open Source',
+      description: 'Data plane, control plane, authentication, routing scheduler all open source. Zero black box, enterprise auditable, customizable, and evolvable',
     },
     private: {
       title: 'Private Deployment',
@@ -71,7 +71,7 @@ export default {
       description: 'Native Go implementation, 40MB lightweight image, 200 concurrency P99 < 500ms, SSE streaming stable relay',
     },
   },
-  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Global Support',
+  footer: 'LLM Gateway · Core Open Source · Enterprise Deployment · Data Sovereignty',
   ariaPoints: 'Key Highlights',
   roadmap: {
     title: 'Product Roadmap',
