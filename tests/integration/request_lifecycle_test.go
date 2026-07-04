@@ -228,7 +228,7 @@ func TestRequestBodies_Storage(t *testing.T) {
 	// Create a request and body record
 	reqID := "test-body-" + time.Now().Format("20060102150405.000000")
 	_, err = pool.Exec(ctx,
-		`INSERT INTO request_wal (request_id, tenant_id, client_model) VALUES ($1, $2, $3)`,
+		`INSERT INTO request_wal_default (request_id, tenant_id, client_model) VALUES ($1, $2, $3)`,
 		reqID, "test-tenant", "gpt-4o-mini",
 	)
 	if err != nil {

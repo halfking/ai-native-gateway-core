@@ -117,7 +117,7 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 
 	// Insert test data
 	_, err = pool.Exec(ctx, `
-		INSERT INTO routing_decision_log (
+		INSERT INTO routing_decision_log_default (
 			ts, request_id, tenant_id, model, chosen_credential_id, chosen_provider_id,
 			tier, candidates_tried, success, latency_ms
 		) VALUES ($1, gen_random_uuid(), 'test', 'gpt-4', 999, 1, 0, 1, true, 100)
@@ -151,7 +151,7 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 	}
 
 	// Cleanup
-	_, _ = pool.Exec(ctx, "DELETE FROM routing_decision_log WHERE chosen_credential_id = 999")
+	_, _ = pool.Exec(ctx, "DELETE FROM routing_decision_log_default WHERE chosen_credential_id = 999")
 }
 
 // testDBURL returns the test database URL from environment or empty string.

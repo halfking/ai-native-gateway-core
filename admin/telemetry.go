@@ -167,8 +167,12 @@ func (t *telemetryIngester) flush(batch []any) { //nolint:unused
 func (t *telemetryIngester) persistDecisionLog(ctx context.Context, e *decisionLogInput) { //nolint:unused
 	rawModelsJSON, _ := json.Marshal(coalesceRawModels(e.ResolutionRawModels))
 	traceJSON := coalesceTrace(e.DecisionTrace)
+	// INSERT directly targets routing_decision_log_default (the canonical
+	// write target per the 2026-07 data-lifecycle architecture — never
+	// the parent table, which would let PG auto-route rows into monthly
+	// partitions that are not safe to UPDATE/DELETE later).
 	_, err := t.db.Exec(ctx, `
-		INSERT INTO routing_decision_log (
+		INSERT INTO routing_decision_log_default (
 			ts, request_id, idempotency_key, tenant_id, api_key_id,
 			model, chosen_credential_id, chosen_provider_id, tier,
 			candidates_tried, latency_ms, success, error_class,
@@ -218,8 +222,13 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	//nolint:errcheck // deferred rollback, best-effort
 	defer tx.Rollback(ctx)
 
+	// INSERT directly targets usage_ledger_default (the canonical write
+	// target per the 2026-07 data-lifecycle architecture). UPDATE-heavy
+	// operations (cost/tokens/latency enrichment) require heap storage
+	// with row-level UPDATE support — monthly partitions (columnar or
+	// long-archived) cannot serve this traffic.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO usage_ledger (
+		INSERT INTO usage_ledger_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, credential_id, provider_id, canonical_id,
 			raw_model_name, prompt_tokens, completion_tokens,
@@ -244,8 +253,14 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
+	// INSERT directly targets request_logs_default (the canonical write
+	// target per the 2026-07 data-lifecycle architecture). All
+	// INSERT/UPDATE/DELETE on request_logs goes through *_default — the
+	// parent's auto-routing is intentionally bypassed so writes never
+	// land in a non-default partition (which would block subsequent
+	// UPDATE/DELETE once that partition is converted to columnar storage).
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs (
+		INSERT INTO request_logs_default (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
@@ -327,8 +342,11 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 		defer cancel()
 		rawModelsJSON, _ := json.Marshal(coalesceRawModels(entry.ResolutionRawModels))
 		traceJSON := coalesceTrace(entry.DecisionTrace)
+		// INSERT directly targets routing_decision_log_default
+		// (canonical write target per the 2026-07 data-lifecycle
+		// architecture — never the parent table).
 		_, err := h.db.Exec(ctx, `
-			INSERT INTO routing_decision_log (
+			INSERT INTO routing_decision_log_default (
 				ts, request_id, idempotency_key, tenant_id, api_key_id,
 				model, chosen_credential_id, chosen_provider_id, tier,
 				candidates_tried, latency_ms, success, error_class,

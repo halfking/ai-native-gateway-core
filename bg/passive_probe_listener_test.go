@@ -35,10 +35,10 @@ func TestPassiveProbe_TransientErrorTracking(t *testing.T) {
 	now := time.Now()
 	for i := 0; i < 5; i++ {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO request_logs 
-			(tenant_id, api_key_id, credential_id, client_model, outbound_model, 
+			INSERT INTO request_logs_default
+			(tenant_id, api_key_id, credential_id, client_model, outbound_model,
 			 success, error_kind, ts, provider_id)
-			VALUES 
+			VALUES
 			($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`, "test-tenant", 1, 999, "minimax-m3", "minimax-m3",
 			false, "transient", now.Add(-time.Duration(i)*time.Minute), 1)
@@ -204,10 +204,10 @@ func TestPassiveProbe_TransientKindsTracked(t *testing.T) {
 	now := time.Now()
 	for _, kind := range append(trackedKinds, untrackedKinds...) {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO request_logs 
-			(tenant_id, api_key_id, credential_id, client_model, outbound_model, 
+			INSERT INTO request_logs_default
+			(tenant_id, api_key_id, credential_id, client_model, outbound_model,
 			 success, error_kind, ts, provider_id)
-			VALUES 
+			VALUES
 			($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`, "test-tenant", 1, 999, "test-model", "test-model",
 			false, kind, now.Add(-1*time.Minute), 1)
@@ -305,7 +305,7 @@ func cleanupTestData(t *testing.T, pool *pgxpool.Pool) {
 
 	// Clean up test data
 	_, _ = pool.Exec(ctx, "DELETE FROM passive_probe_state WHERE credential_id = 999")
-	_, _ = pool.Exec(ctx, "DELETE FROM request_logs WHERE credential_id = 999")
+	_, _ = pool.Exec(ctx, "DELETE FROM request_logs_default WHERE credential_id = 999")
 	_, _ = pool.Exec(ctx, "DELETE FROM credentials WHERE id = 999")
 	_, _ = pool.Exec(ctx, "DELETE FROM providers WHERE id = 1")
 }
