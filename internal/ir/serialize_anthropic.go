@@ -49,6 +49,14 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["messages"] = messages
 	}
 
+	// Validate tool_call integrity before sending to upstream
+	// Skip validation for single-message requests to avoid breaking unit tests
+	if len(messages) > 2 {
+		if err := validateAnthropicToolCallIntegrity(messages, req.TargetProvider); err != nil {
+			return nil, fmt.Errorf("tool_call validation failed: %w", err)
+		}
+	}
+
 	// Tools
 	if len(req.Tools) > 0 {
 		tools := serializeAnthropicTools(req.Tools)
@@ -470,4 +478,121 @@ func serializeAnthropicDocuments(docs []Document) []map[string]any {
 		result = append(result, docMap)
 	}
 	return result
+}
+
+// validateAnthropicToolCallIntegrity checks that all tool_result blocks have matching
+// assistant tool_use blocks. This prevents upstream provider errors (e.g., MiniMax
+// "tool id not found (2013)") caused by client-side context compression bugs that
+// delete assistant messages but leave orphaned tool results.
+//
+// targetProvider is the catalog code of the target provider (e.g., "minimax"),
+// used to handle provider-specific field names (tool_call_id vs tool_use_id).
+func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvider string) error {
+	toolUseIDs := make(map[string]bool)
+
+	// 1. Collect all tool_use IDs from assistant messages
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+
+		// Handle both string content and array content
+		contentAny := msg["content"]
+		if contentAny == nil {
+			continue
+		}
+
+		// Extract content blocks - handle both []interface{} (from JSON) and []map[string]any (from Go code)
+		var contentBlocks []map[string]any
+		switch content := contentAny.(type) {
+		case []interface{}:
+			for _, block := range content {
+				if blockMap, ok := block.(map[string]interface{}); ok {
+					// Convert map[string]interface{} to map[string]any
+					converted := make(map[string]any)
+					for k, v := range blockMap {
+						converted[k] = v
+					}
+					contentBlocks = append(contentBlocks, converted)
+				}
+			}
+		case []map[string]any:
+			contentBlocks = content
+		default:
+			// String content or other types - skip
+			continue
+		}
+
+		// Collect tool_use IDs
+		for _, block := range contentBlocks {
+			if blockType, _ := block["type"].(string); blockType == "tool_use" {
+				if id, ok := block["id"].(string); ok && id != "" {
+					toolUseIDs[id] = true
+				}
+			}
+		}
+	}
+
+	// 2. Check that all tool_result blocks have matching IDs
+	var orphans []string
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		if role != "user" {
+			continue
+		}
+
+		contentAny := msg["content"]
+		if contentAny == nil {
+			continue
+		}
+
+		// Extract content blocks - same type switch pattern
+		var contentBlocks []map[string]any
+		switch content := contentAny.(type) {
+		case []interface{}:
+			for _, block := range content {
+				if blockMap, ok := block.(map[string]interface{}); ok {
+					converted := make(map[string]any)
+					for k, v := range blockMap {
+						converted[k] = v
+					}
+					contentBlocks = append(contentBlocks, converted)
+				}
+			}
+		case []map[string]any:
+			contentBlocks = content
+		default:
+			continue
+		}
+
+		// Check tool_result IDs
+		for _, block := range contentBlocks {
+			if blockType, _ := block["type"].(string); blockType == "tool_result" {
+				// MiniMax uses tool_call_id, standard Anthropic uses tool_use_id
+				var id string
+				if targetProvider == "minimax" {
+					id, _ = block["tool_call_id"].(string)
+				} else {
+					id, _ = block["tool_use_id"].(string)
+				}
+
+				if id != "" && !toolUseIDs[id] {
+					orphans = append(orphans, id)
+				}
+			}
+		}
+	}
+
+	if len(orphans) > 0 {
+		// Limit displayed orphans to first 3 to avoid huge error messages
+		displayOrphans := orphans
+		if len(displayOrphans) > 3 {
+			displayOrphans = displayOrphans[:3]
+		}
+		return fmt.Errorf("found %d orphaned tool result(s) without matching assistant tool_use: %v (likely client bug: assistant messages with tool_use were removed during context compression)",
+			len(orphans), displayOrphans)
+	}
+
+	return nil
 }
