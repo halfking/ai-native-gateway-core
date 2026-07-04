@@ -104,7 +104,7 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	defer cancel()
 
 	_, err := rl.db.Exec(ctx, `
-		INSERT INTO request_wal (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+		INSERT INTO request_wal_default (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (request_id, created_at) DO NOTHING
 	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
@@ -240,7 +240,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	// tokens/provider), the guard is skipped via NULLIF so legitimate
 	// mid-flight field updates still apply.
 	_, err := tx.Exec(ctx, `
-		UPDATE request_wal SET
+		UPDATE request_wal_default SET
 			status = COALESCE(NULLIF($2, ''), status),
 			stage = COALESCE($3, stage),
 			completed_at = COALESCE($4, completed_at),
@@ -255,15 +255,15 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			compression_meta = COALESCE($13, compression_meta)
 		WHERE request_id = $1
 		  AND created_at = (
-		      SELECT created_at FROM request_wal
+		      SELECT created_at FROM request_wal_default
 		      WHERE request_id = $1
 		      ORDER BY created_at DESC
 		      LIMIT 1
 		  )
 		  AND (
 		      NULLIF($2, '') IS NULL
-		      OR request_wal.status IS NULL
-		      OR request_wal.status = 'pending'
+		      OR request_wal_default.status IS NULL
+		      OR request_wal_default.status = 'pending'
 		  )
 	`, update.RequestID, update.Status, update.Stage, update.CompletedAt,
 		update.UpstreamRequestAt, update.UpstreamResponseAt,
