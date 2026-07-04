@@ -232,13 +232,11 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// UPDATE targets request_logs_default — the canonical write target
-	// per the 2026-07 data-lifecycle architecture. We never write to the
-	// parent table; the parent's auto-routing is intentionally bypassed
-	// so attachments cleanup never touches a columnar/archived partition
-	// where UPDATE would fail.
+	// 2026-07-05 migration 341: UPDATE targets request_logs_hot (独立热表)。
+	// 附件清理仅针对热表中的 0-7 天数据，已迁移到月度分区的数据不受影响
+	// (columnar 分区不支持 UPDATE，但已归档数据无需清理)。
 	tag, err := h.db.Exec(ctx, `
-		UPDATE request_logs_default
+		UPDATE request_logs_hot
 		SET attachments = NULL
 		WHERE attachments IS NOT NULL
 		  AND ts < NOW() - ($1 || ' days')::interval`,

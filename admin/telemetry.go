@@ -253,14 +253,11 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
-	// INSERT directly targets request_logs_default (the canonical write
-	// target per the 2026-07 data-lifecycle architecture). All
-	// INSERT/UPDATE/DELETE on request_logs goes through *_default — the
-	// parent's auto-routing is intentionally bypassed so writes never
-	// land in a non-default partition (which would block subsequent
-	// UPDATE/DELETE once that partition is converted to columnar storage).
+	// 2026-07-05 migration 341: INSERT directly targets request_logs_hot
+	// (独立热表，0-7 天数据窗口)。所有 INSERT/UPDATE/DELETE 统一写入 _hot 表，
+	// 后台 partition_manager 会定期将冷数据（>7 天）迁移到月度分区。
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_default (
+		INSERT INTO request_logs_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
