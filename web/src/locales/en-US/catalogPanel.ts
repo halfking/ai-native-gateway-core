@@ -1,0 +1,15 @@
+export default {
+  tierAll: 'All',
+  tierLocal: 'Local',
+  loadFailed: 'Load failed',
+  tierLabel: 'Tier',
+  searchLabel: 'Search',
+  providerCount: '{count} providers',
+  noMatchingProviders: 'No matching providers under current search criteria',
+  searchPlaceholder: 'Search providers…',
+  loading: 'Loading…',
+  domestic: 'Domestic',
+  modelCount: '{count} models',
+  documentation: 'Documentation →',
+  noResults: 'No results',
+}

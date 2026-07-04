@@ -35,10 +35,10 @@ const props = withDefaults(
   {
     heroPoints: () => [],
     advantages: () => [],
-    advantagesTitle: '竞争优势',
-    advantagesSubtitle: '差异化能力，面向企业生产场景',
+    advantagesTitle: '为什么选择 LLM Gateway',
+    advantagesSubtitle: '面向有中国业务需求的全球企业',
     ctaLabel: '登录开始使用',
-    footerText: '开轩启圭WM · 企业智能工作台',
+    footerText: 'LLM Gateway · 核心开源 · 中国本地化 · 私有部署',
     accent: '',
     hideCta: true,
   },

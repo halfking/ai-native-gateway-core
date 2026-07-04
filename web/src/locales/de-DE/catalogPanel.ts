@@ -1,0 +1,15 @@
+export default {
+  tierAll: 'Alle',
+  tierLocal: 'Lokal',
+  loadFailed: 'Laden fehlgeschlagen',
+  tierLabel: 'Ebene',
+  searchLabel: 'Suche',
+  providerCount: '{count} Anbieter',
+  noMatchingProviders: 'Keine passenden Anbieter unter aktuellen Suchkriterien',
+  searchPlaceholder: 'Anbieter durchsuchen…',
+  loading: 'Wird geladen…',
+  domestic: 'Inland',
+  modelCount: '{count} Modelle',
+  documentation: 'Dokumentation →',
+  noResults: 'Keine Ergebnisse',
+}

@@ -1,0 +1,71 @@
+// Auto-translated draft (zh-TW/ja-JP) · 2026-07-02 · please review
+// auditLog.ts — AuditLogView 文案。命名空間：page / filter / table / pagination / detail / actions / errors。
+// 技術術語保持不譯：target_type / before_json / after_json。
+export default {
+  page: {
+    title: '稽核記錄',
+    desc: '記錄使用者管理與認證相關操作，僅超級管理員可查看。',
+    totalChip: '共 {n} 條',
+    refresh: '重新整理',
+    refreshing: '重新整理中…',
+    emptyTitle: '暫無稽核紀錄',
+    emptyHint: '調整篩選條件或擴大時間範圍後重試',
+    loading: '載入中…',
+  },
+  filter: {
+    actorLabel: '操作員',
+    actorPlaceholder: '模糊匹配使用者名稱',
+    actorAria: '操作員篩選',
+    actionLabel: '動作',
+    actionPlaceholder: '如 user.* 或 auth.*',
+    actionAria: '動作篩選',
+    fromLabel: '起始時間',
+    fromAria: '起始時間',
+    toLabel: '截止時間',
+    toAria: '截止時間',
+    query: '查詢',
+    reset: '重設',
+  },
+  table: {
+    headers: {
+      time: '時間',
+      actor: '操作員',
+      action: '動作',
+      target: '目標',
+      details: '詳情',
+    },
+  },
+  pagination: {
+    total: '共 {n} 條',
+    pageOf: '· 第 {page} / {total} 頁',
+    perPage: '每頁',
+    previous: '上一頁',
+    next: '下一頁',
+    dash: '—',
+  },
+  detail: {
+    titleWithId: '稽核詳情 #{id}',
+    close: '關閉',
+    metaTime: '時間',
+    metaActor: '操作員',
+    metaAction: '動作',
+    metaTarget: '目標',
+    beforeTitle: '變更前',
+    afterTitle: '變更後',
+    noExtra: '無附加詳情',
+  },
+  actions: {
+    'user.create': '建立使用者',
+    'user.update': '更新使用者',
+    'user.delete': '刪除使用者',
+    'user.reset_password': '重設密碼',
+    'user.change_password': '修改密碼',
+    'auth.login': '登入',
+    'auth.login_failed': '登入失敗',
+    'auth.logout': '登出',
+    'auth.rate_limited': '限流',
+  },
+  errors: {
+    loadFailed: '載入失敗',
+  },
+}

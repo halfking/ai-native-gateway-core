@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: 'Select model…',
+  titleSelect: 'Select Model',
+  loadFailed: 'Failed to load models',
+  selectedCount: '{count} models selected',
+  editButton: 'Edit',
+  selectButton: 'Select',
+  clearTitle: 'Clear',
+  closeLabel: 'Close',
+  loading: 'Loading…',
+  sectionPopular: 'Popular Models',
+  moreButton: 'More… ({count})',
+  footerHint: '{count} selected',
+  cancelButton: 'Cancel',
+  confirmButton: 'Confirm',
+  backButton: 'Back',
+  other: 'Other',
+}

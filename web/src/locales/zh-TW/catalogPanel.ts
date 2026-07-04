@@ -1,0 +1,15 @@
+export default {
+  tierAll: '全部',
+  tierLocal: '本機',
+  loadFailed: '載入失敗',
+  tierLabel: '層級',
+  searchLabel: '搜尋',
+  providerCount: '{count} 個提供商',
+  noMatchingProviders: '當前搜尋條件下無匹配提供商',
+  searchPlaceholder: '搜尋提供商…',
+  loading: '載入中…',
+  domestic: '國內',
+  modelCount: '{count} 個模型',
+  documentation: '文件 →',
+  noResults: '無匹配結果',
+}

@@ -1,0 +1,38 @@
+// providerDetailPage.ts — Root ProviderDetailView chrome.
+// Namespace: providerDetailPage.*
+// Per-tab copy lives in providerDetail.ts.
+export default {
+  back: '← Back',
+  tabCreds: 'Credentials ({n})',
+  tabModels: 'Models',
+  tabLogs: 'Request logs',
+  tabDiag: 'Diagnosis',
+  tabProbe: 'Auto-probe',
+  tabProbeTitle: 'View auto-probe records (failed bindings are re-probed every 10 minutes)',
+  tabSettings: 'Settings',
+  loading: 'Loading…',
+  loadingFallback: '...',
+  refresh: 'Refresh',
+  enable: 'Enable',
+  disable: 'Disable',
+  manualDisable: 'Manually disable',
+  manualEnable: 'Lift manual disable',
+  manualDisableTitle: 'Manually disable the entire provider',
+  manualEnableTitle: 'Lift manual disable (resume auto control)',
+  manualDisableBadge: '🔒 Manually disabled',
+  manualDisableBadgeTitle: 'Provider-level manual disable — the entire provider is unroutable',
+  disabledBadge: 'Disabled',
+  manualToggle: {
+    set: 'Manually disable',
+    release: 'Lift manual disable',
+    setTitle: 'Manually disable the entire provider',
+    releaseTitle: 'Lift manual disable (resume auto control)',
+    disablePrompt: 'Reason for manually disabling provider {name}:',
+    enablePrompt: 'Reason for manually enabling provider {name}:',
+  },
+  manualDisabledTitle: 'Provider-level manual disable — the entire provider is unroutable',
+  manualDisabledBadge: 'Manually disabled',
+  loadFailed: 'Load failed',
+  operationFailed: 'Operation failed',
+  diagFailed: 'Diagnosis failed',
+}

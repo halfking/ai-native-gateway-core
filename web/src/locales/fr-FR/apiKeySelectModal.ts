@@ -1,0 +1,15 @@
+export default {
+  titleSessionForbidden: 'Clé de session incompatible',
+  titleManual: 'Sélectionner une clé API',
+  hintSessionForbidden: 'La session de passerelle liée à cette conversation appartient à une autre clé API. Veuillez sélectionner la clé qui possède la session, et le système renverra automatiquement le dernier message.',
+  hintManual: 'La conversation nécessite une clé sk-* complète. Veuillez sélectionner une clé disponible ci-dessous.',
+  closeLabel: 'Fermer',
+  unrevealabledBadge: 'Impossible à restaurer',
+  buttonLoading: 'Chargement…',
+  buttonUnavailable: 'Indisponible',
+  buttonCurrent: 'Clé actuelle',
+  buttonUse: 'Utiliser cette clé',
+  emptyMessage: 'Aucune clé disponible. Veuillez d\'abord créer ou demander une clé API.',
+  createNewKey: 'Émettre une nouvelle clé',
+  goToKeyManagement: 'Aller à la gestion des clés API',
+}

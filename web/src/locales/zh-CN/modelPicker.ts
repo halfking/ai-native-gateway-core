@@ -1,0 +1,18 @@
+export default {
+  placeholderSelect: '选择模型…',
+  titleSelect: '选择模型',
+  loadFailed: '加载模型失败',
+  selectedCount: '已选 {count} 个模型',
+  editButton: '编辑',
+  selectButton: '选择',
+  clearTitle: '清空',
+  closeLabel: '关闭',
+  loading: '加载中…',
+  sectionPopular: '热门模型',
+  moreButton: '更多… ({count})',
+  footerHint: '已选 {count} 个',
+  cancelButton: '取消',
+  confirmButton: '确认',
+  backButton: '返回',
+  other: '其他',
+}

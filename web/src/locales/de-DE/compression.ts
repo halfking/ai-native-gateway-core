@@ -1,0 +1,63 @@
+// Auto-translated draft (de-DE) · 2026-07-02 · please review
+// compression.ts — CompressionView strings.
+export default {
+  title: 'Komprimierungsübersicht',
+  refresh: 'Aktualisieren',
+  loading: 'Wird geladen…',
+  tabs: {
+    h24: '24 Stunden',
+    d7: '7 Tage',
+    d30: '30 Tage',
+    custom: 'Benutzerdefiniert',
+  },
+  custom: {
+    from: 'Startzeit',
+    to: 'Endzeit',
+    apply: 'Anwenden',
+    sep: 'bis',
+  },
+  stats: {
+    totalRequests: 'Gesamtanfragen',
+    compressed: 'Komprimiert',
+    compressionRate: 'Komprimierungsrate',
+    estimatedSaved: 'Geschätzte Token-Einsparung',
+  },
+  charts: {
+    strategyDistribution: 'Strategieverteilung',
+    compressionRateTrend: 'Trend der Komprimierungsrate',
+    timeBucketHour: 'Stündlich',
+    timeBucket6Hour: 'Alle 6 Stunden',
+    timeBucketDay: 'Täglich',
+    noData: 'Keine Zeitreihendaten verfügbar',
+    titleSuffix: '{strategy}: {count} ({pct})',
+    barTitle: '{hour}: {n} Anfragen, {pct} komprimiert',
+  },
+  table: {
+    title: 'Sitzungs-Komprimierungsdetails',
+    count: '{n} insgesamt',
+    sessionId: 'Sitzungs-ID',
+    strategy: 'Strategie',
+    requests: 'Anfragen',
+    compressedMsgs: 'Komprimierte Nachr.',
+    compressedTokens: 'Komprimierte Token',
+    msgSaved: 'Eingesp. Nachr.',
+    lastTime: 'Letzte Zeit',
+    empty: 'Keine Komprimierungssitzungen im ausgewählten Zeitraum',
+  },
+  pagination: {
+    previous: 'Zurück',
+    next: 'Weiter',
+    pageInfo: '{current} / {total}',
+  },
+  strategies: {
+    delta_append: 'Delta anhängen',
+    sliding_window_token: 'Sliding-Window (Token)',
+    sliding_window_count: 'Sliding-Window (Anzahl)',
+    sliding_window_idle: 'Sliding-Window (Leerlauf)',
+    mechanical_trim: 'Mechanisches Trimmen',
+    memora_l1_inject: 'Memora-Injektion',
+    llm_summary: 'LLM-Zusammenfassung',
+    noop: 'No-op',
+    none: 'Nicht komprimiert',
+  },
+}
