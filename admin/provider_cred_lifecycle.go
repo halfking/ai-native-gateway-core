@@ -290,11 +290,18 @@ func (h *Handler) getCredentialUsage(w http.ResponseWriter, r *http.Request, cre
 	var promptTok, compTok int
 	var cost, avgLatency, successRate float64
 	//nolint:errcheck // scan error non-critical
+	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
+	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
+	// docs/partition/partition-standards.md 查询规范。
+	usageTable := "usage_ledger"
+	if days <= 7 {
+		usageTable = "usage_ledger_default"
+	}
 	h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
 		       COALESCE(SUM(cost_usd),0)::float8, COALESCE(AVG(latency_ms),0)::float8,
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END)::FLOAT / NULLIF(COUNT(*),0), 1.0)
-		FROM usage_ledger WHERE credential_id = $1 AND tenant_id = 'default' AND ts >= now() - ($2 * INTERVAL '1 day')
+		FROM `+usageTable+` WHERE credential_id = $1 AND tenant_id = 'default' AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, credID, days).Scan(&reqCount, &promptTok, &compTok, &cost, &avgLatency, &successRate)
 
 	writeJSON(w, http.StatusOK, map[string]any{
