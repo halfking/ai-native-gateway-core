@@ -87,12 +87,20 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
+	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
+	// docs/partition/partition-standards.md 查询规范。
+	logsTable := "request_logs"
+	if days <= 7 {
+		logsTable = "request_logs_default"
+	}
+
 	if includeCost {
 		if err := s.pool.QueryRow(ctx, `
 			SELECT COUNT(*),
 			       COALESCE(SUM(COALESCE(credits_charged, 0)), 0),
 			       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8
-			FROM request_logs
+			FROM `+logsTable+`
 			WHERE tenant_id = $1
 			  AND ts >= now() - ($2 * INTERVAL '1 day')
 		`, tenantID, days).Scan(&out.TotalRequests, &out.TotalCredits, &out.TotalCostUSD); err != nil {
@@ -101,7 +109,7 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 	} else if err := s.pool.QueryRow(ctx, `
 		SELECT COUNT(*),
 		       COALESCE(SUM(COALESCE(credits_charged, 0)), 0)
-		FROM request_logs
+		FROM `+logsTable+`
 		WHERE tenant_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, tenantID, days).Scan(&out.TotalRequests, &out.TotalCredits); err != nil {
@@ -117,7 +125,7 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8`
 	}
 	modelSQL += `
-		FROM request_logs
+		FROM ` + logsTable + `
 		WHERE tenant_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY 1
@@ -153,7 +161,7 @@ func (s *Service) queryUsageSummary(ctx context.Context, tenantID string, days, 
 		       COALESCE(SUM(COALESCE(cost_usd, 0)), 0)::float8`
 	}
 	trendSQL += `
-		FROM request_logs
+		FROM ` + logsTable + `
 		WHERE tenant_id = $1
 		  AND ts >= now() - ($2 * INTERVAL '1 day')
 		GROUP BY DATE(ts AT TIME ZONE 'UTC')

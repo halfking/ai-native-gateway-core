@@ -223,9 +223,11 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var ec errorClassification
+	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范：最近数据走 _default
 	ecRows, err := h.db.Query(ctx, `
 		SELECT COALESCE(error_kind,'other'), COUNT(*)
-		FROM request_logs
+		FROM request_logs_default
 		WHERE provider_id = $1 AND ts >= now() - interval '24 hours'
 		GROUP BY error_kind
 	`, providerID)

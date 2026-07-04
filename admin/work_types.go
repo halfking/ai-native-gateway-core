@@ -133,9 +133,11 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 		wtArgs = append(wtArgs, wtTenantArgs...)
 	}
 	wtDirect := map[string]int{}
+	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(work_type, 'unknown'), COUNT(*)
-		FROM request_logs
+		FROM request_logs_default
 		WHERE ts >= NOW() - INTERVAL '24 hours'
 		  AND work_type IS NOT NULL AND work_type <> ''
 		  AND (
@@ -167,9 +169,11 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// composite key. Same fix as the audit handler task_distribution.
 	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 	l1Dist := map[string]int{}
+	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范
 	rows, err = h.db.Query(ctx, fmt.Sprintf(`
 		SELECT %s, COUNT(*)
-		FROM request_logs
+		FROM request_logs_default
 		WHERE ts >= NOW() - INTERVAL '24 hours'
 		  AND (
 		    is_auto_request = TRUE
@@ -196,11 +200,13 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// counted as non-auto. Same fix applied in admin/auto_route.go
 	// handleAudit (2026-06-24).
 	var totalAuto, totalSpec int
+	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范
 	_ = h.db.QueryRow(ctx, `
 		SELECT
 		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) AND client_model IS NOT NULL AND client_model <> '' THEN 1 ELSE 0 END), 0)
-		FROM request_logs
+		FROM request_logs_default
 		WHERE ts >= NOW() - INTERVAL '24 hours'`+wtTenantWhere+`
 	`, wtArgs...).Scan(&totalAuto, &totalSpec)
 	out["total_auto"] = totalAuto
@@ -255,9 +261,11 @@ func (h *WorkTypeHandlers) handleStats(w http.ResponseWriter, r *http.Request) {
 	// Top models 24h (union auto + specified, with client_model fallback).
 	// 2026-06-24: same NULL-safe filter as the other two queries above.
 	topModels := make([]map[string]interface{}, 0)
+	// 24 小时窗口查询走 request_logs_default（heap 落地热数据，性能最优）
+	// 符合 docs/partition/partition-standards.md 查询规范
 	rows, err = h.db.Query(ctx, `
 		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
-		FROM request_logs
+		FROM request_logs_default
 		WHERE ts >= NOW() - INTERVAL '24 hours'
 		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
 		  AND (
