@@ -1,119 +1,100 @@
-// Auto-translated draft (fr-FR) · 2026-07-02 · please review
-// landing.ts — Landing page copy for the public (logged-out) home view.
-// Mirrors the props that LandingView passes to ServiceLandingPage plus the
-// extra "Roadmap" section that lives directly in LandingView's template.
+// landing.ts — Textes de la page d'accueil (page d'accueil invité).
 //
-// Keys use camelCase nested objects so vue-i18n's `t()` interpolation and
-// `t('landing.features.X.title', { ... })` substitution both work.
+// 2026-07-05 : Mis à jour avec le contenu réel du projet official-deploy actuel (correspond à LandingView.vue).
 export default {
-  kicker: 'AI-Native · Enterprise Governance',
-  title: 'Passerelle cœur d\'organisation AI-Native',
-  subtitle: [
-    'Faites de l\'IA une capacité native de votre organisation.',
-    'Open core + renforcement entreprise + gouvernance Vibe Coding + monétisation des sessions.',
-  ],
-  featuresTitle: 'Capacités clés',
-  featuresSubtitle: 'Couvre toute la chaîne, de l\'accès à l\'exploitation',
+  kicker: 'Noyau Open Source · Localisation Chine · Niveau Entreprise',
+  title: 'LLM Gateway — Passerelle IA Open Source pour les Marchés Mondiaux',
+  subtitle: 'La seule passerelle IA combinant noyau open source et localisation approfondie en Chine. Gouvernance d\'entreprise, accès LLM mondial, conformité et souveraineté des données — tout en open source.',
+  featuresTitle: 'Capacités Principales',
+  featuresSubtitle: 'Couvrant les aspects clés de l\'accès aux opérations',
   heroPoints: [
-    'Routage intelligent',
-    'Sécurité des appels',
-    'Réduction des coûts par cache',
-    'Prêt pour les agents',
-    'Audit de bout en bout',
-    'Facturation MaaS',
+    'Noyau Open Source · Apache 2.0',
+    'Localisation Chine · Djbh 2.0',
+    'Passerelle IA Entreprise',
+    'Gouvernance Vibe Coding',
+    'Gestion des Actifs de Session IA',
+    'Bouclier de Sécurité des Données',
   ],
   features: {
     smartRouting: {
-      title: 'Routage intelligent & pool d\'identifiants',
-      description:
-        'Sélection automatique par locataire, modèle et type de tâche. Pool multi-identifiants à empreintes plus sondage adaptatif — basculement en moins d\'une seconde, taux de bannissement proche de zéro.',
+      title: 'Routage Intelligent & Pool d\'Identifiants',
+      description: 'Routage automatique par locataire, modèle et type de tâche ; pool d\'empreintes multi-identifiants + sondage adaptatif, basculement en secondes, taux d\'interdiction quasi nul.',
     },
     safety: {
-      title: 'Bouclier de sécurité des appels',
-      description:
-        'Détection d\'injection de prompt LLM-as-judge (v1 mode observable) et planification du masquage des données sensibles — défense de conformité de niveau entreprise.',
+      title: 'Bouclier de Sécurité des Appels',
+      description: 'Détection d\'injection de prompt LLM-as-judge (mode observabilité v1) + planification du masquage des données sensibles, défense de conformité d\'entreprise.',
       badge: 'beta',
     },
     cache: {
-      title: 'Alignement du cache & réduction des coûts',
-      description:
-        'Stabilisation du préfixe du prompt plus mise en cache sémantique pour maximiser le taux de succès du KV-cache et réduire le coût de calcul des tokens.',
+      title: 'Alignement du Cache & Réduction des Coûts',
+      description: 'Stabilisation du préfixe de prompt + mise en cache sémantique, maximisation du taux de réussite du cache KV, réduction des frais de calcul de tokens.',
     },
     agent: {
       title: 'Passerelle Agent & MCP',
-      description:
-        'Registre d\'agents, protocole A2A, hébergement d\'outils MCP et conversion de protocole — évoluez d\'un proxy LLM au point d\'entrée d\'orchestration d\'agents.',
-      badge: 'Bientôt disponible',
+      description: 'Registre d\'agents, protocole A2A, hébergement d\'outils MCP et conversion de protocole — mise à niveau du proxy LLM vers la passerelle d\'orchestration d\'agents.',
+      badge: 'Prochainement',
     },
     observability: {
-      title: 'Observabilité de bout en bout',
-      description:
-        'Journaux de requêtes, audit des décisions de routage, traçage OpenTelemetry, export d\'événements SIEM/CEF — prêt pour MLPS 2.0 et RGPD.',
+      title: 'Observabilité Full-Chain',
+      description: 'Journaux de requêtes, audit des décisions de routage, traçage OTel, export d\'événements SIEM/CEF, prêt pour Djbh 2.0 et GDPR.',
     },
     billing: {
-      title: 'Système de facturation MaaS',
-      description:
-        'Forfaits + crédits + portefeuille à trois pools (abonnement / crédit / recharge) — boucle complète de commercialisation en libre-service pour les locataires.',
+      title: 'Système de Facturation MaaS',
+      description: 'Plan + crédits + portefeuille à trois niveaux (abonnement / crédit / recharge), boucle de commercialisation complète pour le libre-service des locataires.',
     },
     multiProtocol: {
-      title: 'Compatibilité multi-protocoles',
-      description:
-        'OpenAI Chat / Anthropic Messages / Responses — trois formats entrants normalisés, intégration transparente des modèles chinois et mondiaux.',
+      title: 'Compatibilité Multi-Protocoles',
+      description: 'OpenAI Chat / Anthropic Messages / Responses trois protocoles entrants unifiés, accès transparent aux modèles open source et commerciaux.',
     },
     multiTenant: {
-      title: 'Isolation multi-locataires',
-      description:
-        'Sécurité au niveau des lignes RLS PostgreSQL + audit de 43 tours L1=0, zéro fuite de données entre locataires, politique et quota par locataire.',
+      title: 'Isolation Multi-Locataires',
+      description: 'Sécurité au niveau des lignes PostgreSQL RLS + 43 tours d\'audit L1=0, zéro fuite de données entre locataires, stratégie et quota indépendants par locataire.',
     },
   },
-  advantagesTitle: 'Avantages différenciants',
-  advantagesSubtitle: 'Ce que les fournisseurs mondiaux ne peuvent pas offrir',
+  advantagesTitle: 'Pourquoi Choisir LLM Gateway',
+  advantagesSubtitle: 'Pour les entreprises mondiales ayant des besoins commerciaux en Chine',
   advantages: {
     local: {
-      title: 'Localisation en Chine',
-      description: 'Interface entièrement en chinois, priorité aux modèles nationaux, Alipay / WeChat Pay, modèles conformes MLPS',
+      title: 'Localisation Profonde en Chine',
+      description: 'Interface complète en chinois, accès prioritaire aux LLM open source domestiques, intégration Alipay/WeChat Pay, modèles de conformité Djbh 2.0, infrastructure cloud domestique prête',
     },
     private: {
-      title: 'Déploiement privé',
-      description: 'Entièrement sur site, les données ne quittent jamais l\'entreprise, double mode k3s + Docker, zéro dépendance externe',
+      title: 'Déploiement Privé',
+      description: 'Déploiement entièrement privé, les données restent dans l\'entreprise, forme duale k3s + Docker, zéro dépendance externe',
     },
     antiBan: {
-      title: 'Système anti-bannissement',
-      description: 'Rotation de 50+ UA + pool d\'empreintes TLS utls + 11 profils de navigateur + rotation automatique toutes les 5 minutes',
+      title: 'Système Anti-Interdiction',
+      description: 'Rotation de plus de 50 UA + pool d\'empreintes TLS utls + 11 profils de navigateur + rotation automatique de 5 minutes',
     },
     perf: {
-      title: 'Plan de données Go haute performance',
-      description: 'Go natif, image légère de 40 Mo, 200 simultanés P99 < 500 ms, relais de streaming SSE stable',
+      title: 'Plan de Données Haute Performance Go',
+      description: 'Implémentation Go native, image légère de 40 Mo, 200 concurrences P99 < 500 ms, relais stable de streaming SSE',
     },
   },
-  footer: 'Kaixuan LLM Gateway · [GATEWAY_DOMAIN] · Déploiement privé · Localisation en Chine',
-  ariaPoints: 'Points forts',
+  footer: 'LLM Gateway · llmgateway.internal.example.com · Noyau Open Source · Localisation Chine · Déploiement Privé',
+  ariaPoints: 'Points Forts Clés',
   roadmap: {
-    title: 'Feuille de route produit',
-    subtitle: 'Du plan de données LLM à la passerelle Agent entreprise — construit en continu',
+    title: 'Feuille de Route Produit',
+    subtitle: 'Du plan de données LLM à la passerelle Agent d\'entreprise, construction continue',
     v31: {
       phase: 'v3.1 · 2026 Q3',
-      title: 'Centre de ressources API Hub + hébergement d\'outils MCP',
-      description:
-        'Enregistrement unifié des points d\'accès LLM, des services MCP et des agents. Découverte et réutilisation en libre-service pour les développeurs.',
+      title: 'Centre d\'Actifs API Hub + Hébergement d\'Outils MCP',
+      description: 'Enregistrement unifié des points de terminaison LLM, des services MCP et des Agents, découverte et réutilisation en libre-service pour les développeurs.',
     },
     v32: {
       phase: 'v3.2 · 2026 Q4',
-      title: 'Bouclier de sécurité GA + intégration SIEM + SpecBoost',
-      description:
-        'Blocage des injections de prompt, masquage des données sensibles, enrichissement intelligent des descriptions API pour améliorer la précision du Function Calling.',
+      title: 'Bouclier de Sécurité GA + Intégration SIEM + SpecBoost',
+      description: 'Blocage d\'injection de prompt, masquage des données sensibles, enrichissement intelligent de la description API pour améliorer la précision de Function Calling.',
     },
     v40: {
       phase: 'v4.0 · 2027 Q1',
-      title: 'Registre d\'agents + passerelle protocole A2A',
-      description:
-        'Délégation et orchestration de tâches inter-agents, point d\'entrée unifié pour OpenClaw et les agents métier.',
+      title: 'Registre d\'Agents + Passerelle de Protocole A2A',
+      description: 'Délégation de tâches inter-agents et orchestration, accès unifié à OpenClaw et aux Agents métier.',
     },
     v50: {
       phase: 'v5.0 · 2027 Q3',
-      title: 'Solutions sectorielles GA',
-      description:
-        'Modèles sectoriels pour le service client, les RH, les ventes et la logistique — solutions d\'agents prêtes à l\'emploi.',
+      title: 'Solutions Sectorielles GA',
+      description: 'Quatre modèles sectoriels pour le service client, les RH, les ventes, la logistique, solutions d\'agents prêtes à l\'emploi.',
     },
   },
 }
