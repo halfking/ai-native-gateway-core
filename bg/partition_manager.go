@@ -261,29 +261,28 @@ func archiveSpecs() []archiveSpec {
 }
 
 // promoteSpecs lists every hot → monthly-partition migration function.
-// Migration 341 (2026-07-05) replaced *_default promote functions with
-// request_logs_hot_to_partition. Other tables still use *_default_batch.
+// Migrations 341, 343-347 (2026-07-05) unified all tables to hot table architecture.
+// All promote functions now use *_hot_to_partition pattern.
 //
-// Each function signature is promote_<table>_xxx(p_retention interval,
+// Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
 // returns 0 (no more eligible cold rows for this table).
 func promoteSpecs() []archiveSpec {
 	return []archiveSpec{
-		// 2026-07-05: request_logs uses hot table (migration 341)
 		{fnName: "promote_request_logs_hot_to_partition", label: "request_logs_hot"},
-		{fnName: "promote_request_wal_default_batch", label: "request_wal"},
-		{fnName: "promote_usage_ledger_default_batch", label: "usage_ledger"},
-		{fnName: "promote_routing_decision_log_default_batch", label: "routing_decision_log"},
-		{fnName: "promote_credential_model_index_default_batch", label: "credential_model_index"},
-		{fnName: "promote_request_logs_bodies_default_batch", label: "request_logs_bodies"},
-		{fnName: "promote_credit_ledger_default_batch", label: "credit_ledger"},
-		{fnName: "promote_tool_usage_stats_default_batch", label: "tool_usage_stats"},
+		{fnName: "promote_usage_ledger_hot_to_partition", label: "usage_ledger_hot"},
+		{fnName: "promote_request_wal_hot_to_partition", label: "request_wal_hot"},
+		{fnName: "promote_routing_decision_log_hot_to_partition", label: "routing_decision_log_hot"},
+		{fnName: "promote_credential_model_index_hot_to_partition", label: "credential_model_index_hot"},
+		{fnName: "promote_request_logs_bodies_default_batch", label: "request_logs_bodies"}, // TODO: migration pending
+		{fnName: "promote_credit_ledger_default_batch", label: "credit_ledger"},             // TODO: migration pending
+		{fnName: "promote_tool_usage_stats_default_batch", label: "tool_usage_stats"},       // TODO: migration pending
 	}
 }
 
 // promoteDefaultToPartitions iterates promoteSpecs() and, for each,
-// drains all cold rows from *_default into the matching monthly
-// partition by repeatedly calling promote_<table>_default_batch with
+// drains all cold rows from *_hot tables into the matching monthly
+// partition by repeatedly calling promote_<table>_hot_to_partition with
 // DefaultRetentionWindow and promoteBatchSize. Each iteration is one
 // single-statement CTE inside PostgreSQL — atomic per batch.
 //
