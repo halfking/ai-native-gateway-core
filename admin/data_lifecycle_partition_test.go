@@ -80,28 +80,12 @@ func TestPartitionedTableConfig(t *testing.T) {
 		}
 	}
 
-	// Verify we have at least request_logs
-	found := false
-	for _, config := range partitionedTables {
-		if config.TableName == "request_logs" {
-			found = true
-			if !config.HasArchiveFunc {
-				t.Errorf("request_logs should have HasArchiveFunc=true")
-			}
-			if config.ArchiveTableName != "request_logs_archive" {
-				t.Errorf("request_logs ArchiveTableName = %s, want request_logs_archive", config.ArchiveTableName)
-			}
-			break
-		}
-	}
-	if !found {
-		t.Errorf("request_logs not found in partitionedTables")
-	}
-
-	// Verify all 4 expected tables are present (added in migration 318)
+	// Migration 331 (2026-07-04) removed archive_request_logs and
+	// archive_request_wal from the admin UI surface. The remaining
+	// (still-archive-managed) tables are routing_decision_log and
+	// credential_model_index. Pin that set so a future onboarding
+	// updates both this test and the live partitionedTables slice.
 	expected := map[string]string{
-		"request_logs":           "request_logs_archive",
-		"request_wal":            "request_wal_archive",
 		"routing_decision_log":   "routing_decision_log_archive",
 		"credential_model_index": "credential_model_index_archive",
 	}
@@ -120,7 +104,7 @@ func TestPartitionedTableConfig(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("%s not found in partitionedTables (added by migration 318)", tbl)
+			t.Errorf("%s not found in partitionedTables (removed by migration 331 from the UI, but still archive-managed)", tbl)
 		}
 	}
 }
@@ -148,7 +132,7 @@ func TestExecuteArchivePartition(t *testing.T) {
 		{
 			name: "invalid month format",
 			req: archivePartitionRequest{
-				TableName:    "request_logs",
+				TableName:    "routing_decision_log",
 				ArchiveMonth: "2026-13", // Invalid month
 				DryRun:       true,
 			},
@@ -158,7 +142,7 @@ func TestExecuteArchivePartition(t *testing.T) {
 		{
 			name: "valid table name validation",
 			req: archivePartitionRequest{
-				TableName:    "request_logs",
+				TableName:    "routing_decision_log",
 				ArchiveMonth: "2026-04",
 				DryRun:       true,
 			},
