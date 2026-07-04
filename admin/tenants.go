@@ -675,18 +675,28 @@ func (h *Handler) getTenantStats(w http.ResponseWriter, r *http.Request, code st
 	var s tenantStats
 	s.Days = days
 
+	// 2026-07 partition-aware: 当 days <= 7 时查询 *_default（heap 热数据，性能最优），
+	// 当 days > 7 时跨月查询父表（聚合所有分区）。符合
+	// docs/partition/partition-standards.md 查询规范。
+	usageTable := "usage_ledger"
+	logsTable := "request_logs"
+	if days <= 7 {
+		usageTable = "usage_ledger_default"
+		logsTable = "request_logs_default"
+	}
+
 	// Overall totals (upstream cost from usage_ledger; credits from request_logs)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cost_usd), 0.0),
 		       COUNT(DISTINCT api_key_id), COUNT(DISTINCT COALESCE(NULLIF(raw_model_name, ''), canonical_id::text)),
 		       COUNT(DISTINCT application_id)
-		FROM usage_ledger
+		FROM `+usageTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalRequests, &s.TotalTokens, &s.TotalCost,
 		&s.UniqueKeys, &s.UniqueModels, &s.UniqueApps)
 	_ = h.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(COALESCE(credits_charged, 0)), 0)::bigint
-		FROM request_logs
+		FROM `+logsTable+`
 		WHERE tenant_id = $1 AND ts >= now() - ($2 * INTERVAL '1 day')
 	`, code, days).Scan(&s.TotalCredits)
 
