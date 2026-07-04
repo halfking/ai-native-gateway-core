@@ -235,8 +235,13 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 
 	// 2. 执行（仅 super_admin）
 	if execute {
+		// UPDATE targets request_logs_default — the canonical write
+		// target per the 2026-07 data-lifecycle architecture. We never
+		// write to the parent table; the parent's auto-routing is
+		// intentionally bypassed so blob cleanup never touches a
+		// columnar/archived partition where UPDATE would fail.
 		_, err := h.db.Exec(ctx, `
-			UPDATE request_logs
+			UPDATE request_logs_default
 			SET request_body = NULL,
 			    outbound_body = NULL
 			`+where, args...)

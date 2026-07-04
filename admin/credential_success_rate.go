@@ -120,8 +120,13 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
+		// DELETE targets request_logs_default — the canonical write
+		// target per the 2026-07 data-lifecycle architecture. We never
+		// delete from the parent table; the parent's auto-routing is
+		// intentionally bypassed so this cleanup never touches a
+		// columnar/archived partition where DELETE would fail.
 		result, err := db.Exec(r.Context(), `
-		DELETE FROM request_logs
+		DELETE FROM request_logs_default
 		WHERE credential_id = $1
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND success = false

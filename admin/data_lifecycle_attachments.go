@@ -232,8 +232,13 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// UPDATE targets request_logs_default — the canonical write target
+	// per the 2026-07 data-lifecycle architecture. We never write to the
+	// parent table; the parent's auto-routing is intentionally bypassed
+	// so attachments cleanup never touches a columnar/archived partition
+	// where UPDATE would fail.
 	tag, err := h.db.Exec(ctx, `
-		UPDATE request_logs
+		UPDATE request_logs_default
 		SET attachments = NULL
 		WHERE attachments IS NOT NULL
 		  AND ts < NOW() - ($1 || ' days')::interval`,
