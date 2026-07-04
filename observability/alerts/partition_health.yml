@@ -1,0 +1,228 @@
+# Partition Health Monitoring Alerts
+#
+# 用途：监控分区表健康状态，及时发现和预警潜在问题
+# 集成：配置到 Prometheus Alertmanager
+# 维护：每月检查阈值是否需要调整
+
+groups:
+  - name: partition_health
+    interval: 60s
+    rules:
+      # ========================================
+      # 告警 1：default 表大小监控
+      # ========================================
+      
+      - alert: PartitionDefaultTableSizeWarning
+        expr: pg_table_size_bytes{table=~".*_default"} > 5368709120  # 5GB
+        for: 10m
+        labels:
+          severity: warning
+          component: partition
+          team: infrastructure
+        annotations:
+          summary: "分区表 default 大小超过 5GB"
+          description: |
+            表 {{ $labels.table }} 大小已达 {{ humanize $value }}。
+            
+            **影响**：
+            - 查询性能可能下降
+            - promote 函数可能积压
+            
+            **排查步骤**：
+            1. 检查 promote 函数是否正常执行
+            2. 运行 scripts/partition/check-partition-health.sh
+            3. 手动触发 promote（如需要）
+          runbook_url: "https://docs.example.com/partition-runbook#default-table-size-high"
+      
+      - alert: PartitionDefaultTableSizeCritical
+        expr: pg_table_size_bytes{table=~".*_default"} > 10737418240  # 10GB
+        for: 5m
+        labels:
+          severity: critical
+          component: partition
+          team: infrastructure
+          page: "true"  # 触发 PagerDuty
+        annotations:
+          summary: "🚨 分区表 default 大小超过 10GB（严重）"
+          description: |
+            表 {{ $labels.table }} 大小已达 {{ humanize $value }}，超过临界阈值。
+            
+            **紧急操作**：
+            1. 立即检查 bg/partition_manager.go 日志
+            2. 运行 scripts/partition/manual-promote-default.sh 手动迁移
+            3. 如果 promote 失败，检查月度分区是否存在
+            
+            **潜在原因**：
+            - promote 函数停止工作
+            - 月度分区未创建（ensureNextMonthPartitions 失败）
+            - 写入量激增超过迁移速度
+          runbook_url: "https://docs.example.com/partition-runbook#default-table-critical"
+      
+      # ========================================
+      # 告警 2：promote 函数执行延迟
+      # ========================================
+      
+      - alert: PartitionPromoteLag
+        expr: time() - partition_manager_last_promote_timestamp > 7200  # 2 小时
+        for: 5m
+        labels:
+          severity: warning
+          component: partition
+          team: infrastructure
+        annotations:
+          summary: "分区 promote 函数超过 2 小时未执行"
+          description: |
+            bg/partition_manager.go 的 promoteDefaultToPartitions() 函数
+            已超过 2 小时未成功执行。
+            
+            **影响**：
+            - *_default 表持续膨胀
+            - 热数据窗口超过 7 天
+            
+            **排查步骤**：
+            1. 检查 partition_manager 进程是否运行
+            2. 查看日志中是否有 "promote failed" 错误
+            3. 手动运行 promote SQL 函数测试
+          runbook_url: "https://docs.example.com/partition-runbook#promote-lag"
+      
+      - alert: PartitionPromoteFunctionError
+        expr: rate(partition_manager_promote_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: partition
+          team: infrastructure
+        annotations:
+          summary: "分区 promote 函数执行失败"
+          description: |
+            promote_*_default_batch() 函数在过去 5 分钟内报错。
+            
+            **常见原因**：
+            - 目标月度分区不存在
+            - 约束冲突（主键重复）
+            - 磁盘空间不足
+            
+            **紧急操作**：
+            1. 查看 PostgreSQL 日志
+            2. 验证月度分区存在：SELECT * FROM pg_inherits WHERE inhparent = 'request_logs'::regclass
+            3. 检查磁盘空间：df -h
+          runbook_url: "https://docs.example.com/partition-runbook#promote-error"
+      
+      # ========================================
+      # 告警 3：分区约束冲突
+      # ========================================
+      
+      - alert: PartitionConstraintViolations
+        expr: rate(pg_errors_total{sqlstate="23514"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: partition
+          team: infrastructure
+          page: "true"
+        annotations:
+          summary: "🚨 检测到分区约束冲突错误"
+          description: |
+            PostgreSQL 报告 SQLSTATE 23514（分区约束冲突）错误。
+            
+            **根因分析**：
+            - 当月分区仍为 ATTACHED 状态（应为 DETACHED）
+            - DEFAULT 分区动态排除了当月时间范围
+            - INSERT INTO *_default 被拒绝
+            
+            **紧急修复**：
+            1. 立即 DETACH 当月分区：
+               ALTER TABLE request_logs DETACH PARTITION request_logs_2026_07;
+            2. 验证所有表的当月分区状态
+            3. 重新应用 migration 337（如需要）
+            
+            **预防措施**：
+            - 确保 migration 337 已在所有环境应用
+            - 每月 1 号自动 DETACH 新月分区
+          runbook_url: "https://docs.example.com/partition-runbook#constraint-violation"
+      
+      # ========================================
+      # 告警 4：月度分区缺失
+      # ========================================
+      
+      - alert: PartitionMonthlyPartitionMissing
+        expr: |
+          (
+            time() - (date_trunc('month', now()) + interval '1 month')::epoch
+          ) / 86400 > 25  # 距离下月还有 < 5 天
+          AND
+          partition_next_month_exists == 0
+        for: 1h
+        labels:
+          severity: warning
+          component: partition
+          team: infrastructure
+        annotations:
+          summary: "下月分区未预创建"
+          description: |
+            距离下月仅剩 < 5 天，但下月分区尚未创建。
+            
+            **影响**：
+            - 月初可能出现写入失败
+            - ensureNextMonthPartitions 可能失败
+            
+            **操作**：
+            1. 检查 bg/partition_manager.go 日志
+            2. 手动调用 ensure_*_partition() SQL 函数
+            3. 验证创建成功后 DETACH 该分区
+          runbook_url: "https://docs.example.com/partition-runbook#missing-partition"
+      
+      # ========================================
+      # 告警 5：分区表 VACUUM 滞后
+      # ========================================
+      
+      - alert: PartitionVacuumLag
+        expr: |
+          time() - pg_stat_user_tables_last_autovacuum{tablename=~".*_default"} > 86400  # 24 小时
+          AND
+          pg_stat_user_tables_n_dead_tup{tablename=~".*_default"} > 100000  # 10 万死元组
+        for: 30m
+        labels:
+          severity: warning
+          component: partition
+          team: infrastructure
+        annotations:
+          summary: "分区表 VACUUM 滞后"
+          description: |
+            表 {{ $labels.tablename }} 超过 24 小时未执行 VACUUM，
+            且死元组数量 > 10 万。
+            
+            **影响**：
+            - 查询性能下降
+            - 磁盘空间膨胀
+            
+            **操作**：
+            手动触发 VACUUM：
+            VACUUM ANALYZE {{ $labels.tablename }};
+          runbook_url: "https://docs.example.com/partition-runbook#vacuum-lag"
+
+# ========================================
+# 配置说明
+# ========================================
+#
+# 1. 集成到 Prometheus：
+#    将本文件放到 Prometheus 配置的 rule_files 路径，然后 reload：
+#    curl -X POST http://localhost:9090/-/reload
+#
+# 2. 指标导出（需要实现）：
+#    - pg_table_size_bytes: PostgreSQL exporter 标准指标
+#    - partition_manager_last_promote_timestamp: 需在 bg/partition_manager.go 添加
+#    - partition_manager_promote_errors_total: 需在 bg/partition_manager.go 添加
+#    - partition_next_month_exists: 需在 bg/partition_manager.go 添加
+#    - pg_errors_total: PostgreSQL 日志 exporter 或 pg_stat_database
+#
+# 3. 测试告警：
+#    # 模拟 default 表膨胀
+#    INSERT INTO request_logs_default (...) SELECT ... FROM generate_series(1, 1000000);
+#
+#    # 检查告警状态
+#    curl http://localhost:9090/api/v1/alerts | jq '.data.alerts[] | select(.labels.component=="partition")'
+#
+# 4. 静默规则（可选）：
+#    在维护窗口静默告警：
+#    amtool silence add alertname=PartitionPromoteLag --duration=2h --comment="Maintenance window"
